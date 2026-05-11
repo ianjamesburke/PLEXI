@@ -32,6 +32,7 @@ pub struct KeybindingsConfig {
     pub first_tab: Option<String>,
     pub last_tab: Option<String>,
     pub nav_back: Option<String>,
+    pub focus_history_forward: Option<String>,
     pub toggle_sidebar: Option<String>,
     pub toggle_zoom: Option<String>,
     pub toggle_shortcuts: Option<String>,
@@ -83,6 +84,7 @@ impl KeybindingsConfig {
         overlay_field!(first_tab);
         overlay_field!(last_tab);
         overlay_field!(nav_back);
+        overlay_field!(focus_history_forward);
         overlay_field!(toggle_sidebar);
         overlay_field!(toggle_zoom);
         overlay_field!(toggle_shortcuts);
@@ -589,6 +591,7 @@ model_high   = "anthropic/claude-opus-4-7"
 # first_tab               = "cmd+shift+k"
 # last_tab                = "cmd+shift+j"
 # nav_back                = "cmd+open_bracket"
+# focus_history_forward   = "cmd+close_bracket"
 # toggle_sidebar          = "cmd+b"
 # toggle_zoom             = "cmd+enter"
 # toggle_shortcuts        = "cmd+slash"

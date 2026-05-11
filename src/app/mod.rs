@@ -252,6 +252,15 @@ pub struct PlexiApp {
     /// empty event buffer while a non-`Pane` layer is on top. See the
     /// `FocusLayer` docs for the invariant.
     pub(crate) focus_stack: Vec<FocusLayer>,
+    /// Pane focus history for Cmd+[ time-travel. Each entry is (window_id, tile_id)
+    /// captured just before a focus change. Capped at 100; oldest evicted from front.
+    pub(crate) pane_focus_history: Vec<(u64, egui_tiles::TileId)>,
+    /// Pane focus future — entries undone by back-navigation; cleared on any
+    /// organic focus change.
+    pub(crate) pane_focus_future: Vec<(u64, egui_tiles::TileId)>,
+    /// Set to true during step_focus_history_back/forward to suppress recording
+    /// the history-driven focus change as a new history entry.
+    pub(crate) navigating_history: bool,
     pub(crate) host: crate::host::model::HostModel,
     pub(crate) host_services: crate::host::services::HostServices,
     /// Parked background ProcessApps — kept alive when their pane is closed.
@@ -639,6 +648,9 @@ impl PlexiApp {
                     notifications_focus_mode,
                     notifications_interrupt_threshold,
                     focus_stack: Vec::new(),
+                    pane_focus_history: Vec::new(),
+                    pane_focus_future: Vec::new(),
+                    navigating_history: false,
                     last_notify_poll: std::time::Instant::now(),
                     host,
                     host_services: crate::host::services::HostServices::new(),
@@ -736,6 +748,9 @@ impl PlexiApp {
             notifications_focus_mode,
             notifications_interrupt_threshold,
             focus_stack: Vec::new(),
+            pane_focus_history: Vec::new(),
+            pane_focus_future: Vec::new(),
+            navigating_history: false,
             last_notify_poll: std::time::Instant::now(),
             host: crate::host::model::HostModel::new(),
             host_services: crate::host::services::HostServices::new(),
@@ -846,6 +861,9 @@ impl PlexiApp {
             notifications_focus_mode: false,
             notifications_interrupt_threshold: 100,
             focus_stack: Vec::new(),
+            pane_focus_history: Vec::new(),
+            pane_focus_future: Vec::new(),
+            navigating_history: false,
             host: crate::host::model::HostModel::new(),
             host_services: crate::host::services::HostServices::new(),
             background_apps: HashMap::new(),
@@ -867,6 +885,40 @@ impl PlexiApp {
             update_available: None,
             pane_ipc_rx,
         }, pane_ipc_tx)
+    }
+
+    /// Add a minimal `ProcessApp` pane directly to window 0 for unit tests.
+    /// Returns `(tile_id, pane_id)` — `tile_id` is suitable for `focused_pane` assignments.
+    #[cfg(test)]
+    pub(crate) fn add_test_pane(&mut self) -> (egui_tiles::TileId, u64) {
+        use crate::app_permissions::AppPermissions;
+        use crate::process_app::ProcessApp;
+        use crate::pane::{AppPane, AppRuntime};
+
+        // Use a simple incrementing id; start high to avoid collisions with HostHarness ids.
+        static NEXT_PANE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(10000);
+        let pane_id = NEXT_PANE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        let (process_app, _draw_tx) = ProcessApp::new_for_test(pane_id, AppPermissions::builtin());
+        let app_pane = AppPane {
+            id: pane_id,
+            runtime: AppRuntime::Process(Box::new(process_app)),
+            workspace_root: std::env::temp_dir(),
+            permissions: AppPermissions::builtin(),
+            manifest_id: "test".to_string(),
+            name: "Test App".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: None,
+        };
+
+        let win = &mut self.windows[0];
+        win.panes.insert(pane_id, crate::pane::Pane::App(Box::new(app_pane)));
+        let tile_id = win.tree.tiles.insert_pane(pane_id);
+        if win.tree.root.is_none() {
+            win.tree.root = Some(tile_id);
+        }
+        (tile_id, pane_id)
     }
 
     fn resolve_theme_config(config: &config::PlexiConfig) -> config::ThemeConfig {
@@ -2232,6 +2284,8 @@ impl eframe::App for PlexiApp {
                 }
                 Action::Navigate(dir) => {
                     let was_zoomed = self.windows[self.active_window].zoomed_pane.is_some();
+                    let old_focus = self.windows[self.active_window].focused_pane;
+                    let old_window_id = self.windows[self.active_window].window_id;
                     self.navigate(dir);
                     if was_zoomed {
                         let new_pane = self.windows[self.active_window].focused_pane;
@@ -2242,6 +2296,11 @@ impl eframe::App for PlexiApp {
                                 m.surrender_focus(id);
                             }
                         });
+                    }
+                    let new_window_id = self.windows[self.active_window].window_id;
+                    let new_focus = self.windows[self.active_window].focused_pane;
+                    if new_window_id != old_window_id || new_focus != old_focus {
+                        self.push_focus_history(old_window_id, old_focus);
                     }
                 }
                 Action::SwapPane(dir) => {
@@ -2289,8 +2348,13 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::NavBackApp => {
-                    self.try_nav_back_focused();
+                    if !self.try_nav_back_focused() {
+                        self.step_focus_history_back();
+                    }
                     log::info!("nav: back-app — window={}", self.active_window);
+                }
+                Action::FocusHistoryForward => {
+                    self.step_focus_history_forward();
                 }
                 Action::NewTab => {
                     self.new_tab();
@@ -2593,6 +2657,11 @@ impl eframe::App for PlexiApp {
                     counts
                 };
 
+                // Capture focus before rendering so we can record a history entry
+                // if the user clicks a different pane this frame.
+                let canvas_old_focus = self.windows[self.active_window].focused_pane;
+                let canvas_old_window_id = self.windows[self.active_window].window_id;
+
                 let ctx = &mut self.windows[self.active_window];
 
                 // Resolve focused_pane if simplifier moved the tile
@@ -2737,9 +2806,13 @@ impl eframe::App for PlexiApp {
                     }
                 }
 
-                if let Some(new) = behavior.new_focused {
+                let canvas_focus_changed = if let Some(new) = behavior.new_focused {
+                    let changed = Some(new) != canvas_old_focus;
                     ctx.focused_pane = Some(new);
-                }
+                    changed
+                } else {
+                    false
+                };
 
                 let should_close_exited = behavior.close_exited.is_some();
 
@@ -2996,6 +3069,11 @@ impl eframe::App for PlexiApp {
                 if should_close_exited {
                     self.close_focused();
                 }
+
+                // Record canvas click focus change in pane history (ctx borrow released above).
+                if canvas_focus_changed {
+                    self.push_focus_history(canvas_old_window_id, canvas_old_focus);
+                }
             });
 
         // Shortcuts overlay
@@ -3153,6 +3231,88 @@ impl PlexiApp {
         }
     }
 
+    /// Push `old_focus` onto `pane_focus_history` for `window_id`, clear `pane_focus_future`,
+    /// and cap history at 100. No-op if `navigating_history` is true or `old_focus` is None.
+    pub(crate) fn push_focus_history(&mut self, window_id: u64, old_focus: Option<egui_tiles::TileId>) {
+        if self.navigating_history {
+            return;
+        }
+        let Some(tile_id) = old_focus else { return };
+        self.pane_focus_history.push((window_id, tile_id));
+        if self.pane_focus_history.len() > 100 {
+            self.pane_focus_history.remove(0);
+        }
+        self.pane_focus_future.clear();
+        log::info!("focus_history: recorded window={window_id} tile={tile_id:?} history_len={}", self.pane_focus_history.len());
+    }
+
+    /// Step backward through pane focus history (Cmd+[).
+    /// Skips stale entries where the window or tile no longer exists.
+    pub(crate) fn step_focus_history_back(&mut self) {
+        self.navigating_history = true;
+        loop {
+            let Some((window_id, tile_id)) = self.pane_focus_history.pop() else {
+                log::info!("focus_history: back exhausted");
+                self.navigating_history = false;
+                return;
+            };
+            let window_idx = self.windows.iter().position(|w| w.window_id == window_id);
+            let Some(idx) = window_idx else {
+                log::info!("focus_history: skipping stale entry window={window_id} tile={tile_id:?} (window gone)");
+                continue;
+            };
+            if self.windows[idx].tree.tiles.get(tile_id).is_none() {
+                log::info!("focus_history: skipping stale entry window={window_id} tile={tile_id:?} (tile gone)");
+                continue;
+            }
+            // Save current focus to future stack before navigating.
+            let current_window_id = self.windows[self.active_window].window_id;
+            if let Some(current_tile) = self.windows[self.active_window].focused_pane {
+                self.pane_focus_future.push((current_window_id, current_tile));
+            }
+            self.windows[idx].focused_pane = Some(tile_id);
+            self.active_window = idx;
+            log::info!("focus_history: back — to window={window_id} tile={tile_id:?} history_len={}", self.pane_focus_history.len());
+            break;
+        }
+        self.navigating_history = false;
+    }
+
+    /// Step forward through pane focus future (Cmd+]).
+    /// Skips stale entries where the window or tile no longer exists.
+    pub(crate) fn step_focus_history_forward(&mut self) {
+        self.navigating_history = true;
+        loop {
+            let Some((window_id, tile_id)) = self.pane_focus_future.pop() else {
+                log::info!("focus_history: forward exhausted");
+                self.navigating_history = false;
+                return;
+            };
+            let window_idx = self.windows.iter().position(|w| w.window_id == window_id);
+            let Some(idx) = window_idx else {
+                log::info!("focus_history: skipping stale entry window={window_id} tile={tile_id:?} (window gone)");
+                continue;
+            };
+            if self.windows[idx].tree.tiles.get(tile_id).is_none() {
+                log::info!("focus_history: skipping stale entry window={window_id} tile={tile_id:?} (tile gone)");
+                continue;
+            }
+            // Save current focus to history stack before navigating.
+            let current_window_id = self.windows[self.active_window].window_id;
+            if let Some(current_tile) = self.windows[self.active_window].focused_pane {
+                self.pane_focus_history.push((current_window_id, current_tile));
+                if self.pane_focus_history.len() > 100 {
+                    self.pane_focus_history.remove(0);
+                }
+            }
+            self.windows[idx].focused_pane = Some(tile_id);
+            self.active_window = idx;
+            log::info!("focus_history: forward — to window={window_id} tile={tile_id:?} future_len={}", self.pane_focus_future.len());
+            break;
+        }
+        self.navigating_history = false;
+    }
+
     /// Re-read configuration from disk and apply changes that can take
     /// effect without a restart (theme, font size, notification settings,
     /// confirmation toggles). Logs the reload so the user knows it worked.
@@ -3273,33 +3433,35 @@ impl PlexiApp {
     /// Navigate to a pane by id, updating both `focused_pane` on its window and
     /// `active_window`. Returns `true` if the pane was found.
     pub(crate) fn pane_navigate(&mut self, pane_id: u64) -> bool {
-        // Use find_map so the mutable borrow of self.windows ends before we
-        // touch self.router (Rust can't prove disjointness across the loop).
-        let found = self.windows.iter_mut().enumerate().find_map(|(idx, win)| {
-            win.tree.tiles.find_pane(&pane_id).map(|tile_id| {
-                win.focused_pane = Some(tile_id);
-                (idx, win.context_id)
-            })
+        // Read-only pass: find the window index, tile_id, and context_id before mutating.
+        // Using iter() instead of iter_mut() so self.windows borrow ends before we call
+        // push_focus_history (which needs &mut self).
+        let found_read = self.windows.iter().enumerate().find_map(|(idx, win)| {
+            win.tree.tiles.find_pane(&pane_id).map(|tile_id| (idx, tile_id, win.context_id))
         });
-        if let Some((idx, ctx_id)) = found {
-            let prev = self.active_window;
-            self.active_window = idx;
-            // Sync the router so the sidebar context switcher reflects the
-            // new active context immediately (router.active_idx() drives the highlight).
-            if let Some(ctx_idx) = self.router.position(|ctx| ctx.context_id == ctx_id) {
-                self.router.set_active(ctx_idx);
-                log::info!(
-                    "notify:action: pane_navigate active_window {prev}→{idx} ctx_idx={ctx_idx} pane_id={pane_id}"
-                );
-            } else {
-                log::warn!(
-                    "notify:action: pane_navigate active_window {prev}→{idx} pane_id={pane_id} ctx_id={ctx_id} not found in router"
-                );
-            }
-            return true;
+        let Some((idx, tile_id, ctx_id)) = found_read else {
+            log::warn!("notify:action: pane_navigate pane_id={pane_id} not found");
+            return false;
+        };
+        let old_focus = self.windows[self.active_window].focused_pane;
+        let old_window_id = self.windows[self.active_window].window_id;
+        self.windows[idx].focused_pane = Some(tile_id);
+        self.push_focus_history(old_window_id, old_focus);
+        let prev = self.active_window;
+        self.active_window = idx;
+        // Sync the router so the sidebar context switcher reflects the
+        // new active context immediately (router.active_idx() drives the highlight).
+        if let Some(ctx_idx) = self.router.position(|ctx| ctx.context_id == ctx_id) {
+            self.router.set_active(ctx_idx);
+            log::info!(
+                "notify:action: pane_navigate active_window {prev}→{idx} ctx_idx={ctx_idx} pane_id={pane_id}"
+            );
+        } else {
+            log::warn!(
+                "notify:action: pane_navigate active_window {prev}→{idx} pane_id={pane_id} ctx_id={ctx_id} not found in router"
+            );
         }
-        log::warn!("notify:action: pane_navigate pane_id={pane_id} not found");
-        false
+        true
     }
 
     /// Reconcile the rename-pane focus layer with `renaming_pane`.
@@ -4001,5 +4163,102 @@ mod tests {
             h.app.input_captured_by_overlay(),
             "input_captured_by_overlay must be true while rename modal is open"
         );
+    }
+
+    // ── Focus history tests ───────────────────────────────────────────────────
+
+    #[test]
+    fn focus_history_records_on_navigate() {
+        let ctx = egui::Context::default();
+        let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
+        let (tile_a, _) = app.add_test_pane();
+        let (_tile_b, _) = app.add_test_pane();
+        app.windows[0].focused_pane = Some(tile_a);
+
+        let old_window_id = app.windows[0].window_id;
+        app.push_focus_history(old_window_id, Some(tile_a));
+
+        assert_eq!(app.pane_focus_history.len(), 1);
+        assert_eq!(app.pane_focus_history[0].1, tile_a);
+        assert!(app.pane_focus_future.is_empty());
+    }
+
+    #[test]
+    fn focus_history_back_restores_previous_pane() {
+        let ctx = egui::Context::default();
+        let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
+        let (tile_a, _) = app.add_test_pane();
+        let (tile_b, _) = app.add_test_pane();
+        let window_id = app.windows[0].window_id;
+
+        app.windows[0].focused_pane = Some(tile_a);
+        app.push_focus_history(window_id, Some(tile_a));
+        app.windows[0].focused_pane = Some(tile_b);
+
+        app.step_focus_history_back();
+
+        assert_eq!(app.windows[0].focused_pane, Some(tile_a));
+        assert_eq!(app.pane_focus_future.len(), 1);
+        assert_eq!(app.pane_focus_future[0].1, tile_b);
+    }
+
+    #[test]
+    fn focus_history_forward_re_applies_undone_move() {
+        let ctx = egui::Context::default();
+        let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
+        let (tile_a, _) = app.add_test_pane();
+        let (tile_b, _) = app.add_test_pane();
+        let window_id = app.windows[0].window_id;
+
+        app.windows[0].focused_pane = Some(tile_a);
+        app.push_focus_history(window_id, Some(tile_a));
+        app.windows[0].focused_pane = Some(tile_b);
+        app.step_focus_history_back();
+        app.step_focus_history_forward();
+
+        assert_eq!(app.windows[0].focused_pane, Some(tile_b));
+    }
+
+    #[test]
+    fn focus_history_organic_focus_clears_future() {
+        let ctx = egui::Context::default();
+        let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
+        let (tile_a, _) = app.add_test_pane();
+        let (tile_b, _) = app.add_test_pane();
+        let (_tile_c, _) = app.add_test_pane();
+        let window_id = app.windows[0].window_id;
+
+        app.windows[0].focused_pane = Some(tile_a);
+        app.push_focus_history(window_id, Some(tile_a));
+        app.windows[0].focused_pane = Some(tile_b);
+        app.step_focus_history_back(); // now future has tile_b
+
+        // organic focus change to tile_c should clear future
+        app.push_focus_history(window_id, Some(tile_a));
+
+        assert!(app.pane_focus_future.is_empty());
+    }
+
+    #[test]
+    fn focus_history_skips_stale_tile() {
+        let ctx = egui::Context::default();
+        let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
+        let (tile_a, _) = app.add_test_pane();
+        let (tile_b, _) = app.add_test_pane();
+        let window_id = app.windows[0].window_id;
+
+        app.windows[0].focused_pane = Some(tile_b);
+        // Push a stale tile_id that doesn't exist in the tree.
+        app.pane_focus_history.push((window_id, egui_tiles::TileId::from_u64(9999)));
+        app.pane_focus_history.push((window_id, tile_a));
+
+        app.step_focus_history_back();
+
+        assert_eq!(app.windows[0].focused_pane, Some(tile_a));
     }
 }

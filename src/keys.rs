@@ -21,6 +21,8 @@ use crate::config::KeybindingsConfig;
 // Cmd+P                       — command palette
 // Cmd+R                       — rename pane
 // Cmd+Shift+R                 — rename context
+// Cmd+[                       — nav back / focus history back
+// Cmd+]                       — focus history forward
 // Cmd+Up / Cmd+Down           — scroll
 // Cmd+= / Cmd+-               — font size
 // Cmd+E                       — file browser
@@ -111,6 +113,8 @@ pub enum Action {
     /// emit `PlexiEvent::NavBack`. Falls through to cycling tabs backwards
     /// if no nav is active on the focused pane.
     NavBackApp,
+    /// Step forward through pane focus history. Bound to Cmd+].
+    FocusHistoryForward,
     /// Swap the focused pane with its neighbor in the given direction.
     /// Bound to Cmd+Ctrl+H/J/K/L.
     SwapPane(Direction),
@@ -141,6 +145,7 @@ pub struct KeyBindings {
     pub first_tab: (egui::Modifiers, egui::Key),
     pub last_tab: (egui::Modifiers, egui::Key),
     pub nav_back: (egui::Modifiers, egui::Key),
+    pub focus_history_forward: (egui::Modifiers, egui::Key),
     pub toggle_sidebar: (egui::Modifiers, egui::Key),
     pub toggle_zoom: (egui::Modifiers, egui::Key),
     pub toggle_shortcuts: (egui::Modifiers, egui::Key),
@@ -197,6 +202,7 @@ impl Default for KeyBindings {
             first_tab:                 (cmd_shift(), egui::Key::K),
             last_tab:                  (cmd_shift(), egui::Key::J),
             nav_back:                  (cmd(),       egui::Key::OpenBracket),
+            focus_history_forward:     (cmd(),       egui::Key::CloseBracket),
             toggle_sidebar:            (cmd(),       egui::Key::B),
             toggle_zoom:               (cmd(),       egui::Key::Enter),
             toggle_shortcuts:          (cmd(),       egui::Key::Slash),
@@ -343,6 +349,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(first_tab, "first_tab");
     apply_override!(last_tab, "last_tab");
     apply_override!(nav_back, "nav_back");
+    apply_override!(focus_history_forward, "focus_history_forward");
     apply_override!(toggle_sidebar, "toggle_sidebar");
     apply_override!(toggle_zoom, "toggle_zoom");
     apply_override!(toggle_shortcuts, "toggle_shortcuts");
@@ -386,6 +393,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("first_tab",                 bindings.first_tab),
         ("last_tab",                  bindings.last_tab),
         ("nav_back",                  bindings.nav_back),
+        ("focus_history_forward",     bindings.focus_history_forward),
         ("toggle_sidebar",            bindings.toggle_sidebar),
         ("toggle_zoom",               bindings.toggle_zoom),
         ("toggle_shortcuts",          bindings.toggle_shortcuts),
@@ -520,6 +528,13 @@ pub fn poll_actions(
                 Action::NotificationCyclePrev
             } else {
                 Action::NavBackApp
+            });
+        }
+        if input.consume_key(bindings.focus_history_forward.0, bindings.focus_history_forward.1) {
+            actions.push(if overlay_open {
+                Action::NotificationCycleNext
+            } else {
+                Action::FocusHistoryForward
             });
         }
 
