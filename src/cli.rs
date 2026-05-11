@@ -573,8 +573,9 @@ This file demonstrates core SDK primitives — delete what you don't need.
 """
 from plexi_sdk import (
     App, RenderContext,
-    BG, SURFACE, FG, ACCENT, MUTED,
-    BODY, CAPTION, TITLE,
+    BG, SURFACE, FG, ACCENT, MUTED, HIGHLIGHT,
+    BODY, CAPTION, HEADING, HINT,
+    GREEN,
     PAD, PAD_TIGHT,
     PRIORITY_NORMAL,
 )
@@ -595,7 +596,13 @@ class __CLASS_NAME__(App):
         self.emit.info("__DISPLAY_NAME__ initialized")
 
         # ButtonStyle fields: fill, hover_fill, active_fill, text_color, font_size, radius
-        self._btn = Button("increment", x=PAD, y=120, w=120, h=36, label="Click me")
+        self._btn = Button(
+            "increment", x=PAD, y=0, w=120, h=28, label="[ Click me ]",
+            style=ButtonStyle(
+                fill=SURFACE, hover_fill=HIGHLIGHT, active_fill=HIGHLIGHT,
+                text_color=ACCENT, font_size=CAPTION, radius=3.0,
+            ),
+        )
 
     def on_render(self, ctx: RenderContext) -> None:
         # Called every frame. ctx.w / ctx.h are the current pane dimensions.
@@ -603,39 +610,66 @@ class __CLASS_NAME__(App):
 
         # ── 1. Background ────────────────────────────────────────────────────────
         # Theme colors: BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, RED, GREEN, YELLOW
-        # Font sizes:   TITLE (22), HEADING (18), BODY (15), CAPTION (13), HINT (12)
+        # Font sizes:   HEADING (18), BODY (15), CAPTION (13), HINT (12)
         # Layout:       PAD (16), PAD_TIGHT (8), HEADER_H (48), STATUS_H (44)
         ctx.clear(BG)
 
-        # ── 2. Header card ───────────────────────────────────────────────────────
+        # ── 2. Header ───────────────────────────────────────────────────────────
         # ctx.rect(x, y, w, h, fill, radius=0.0, stroke=None, stroke_width=1.0)
         # ctx.text(x, y, text, size, color, bold=False, monospace=False, max_width=None)
-        ctx.rect(PAD, PAD, ctx.w - PAD * 2, 56, fill=SURFACE, radius=8.0)
-        ctx.text(PAD * 2, PAD + 10, "__DISPLAY_NAME__", size=TITLE, color=FG, bold=True)
-        ctx.text(PAD * 2, PAD + 36, "Edit main.py to build your app", size=CAPTION, color=MUTED)
+        #
+        # Title: monospace, accent color, HEADING size
+        ctx.text(PAD, PAD, "__DISPLAY_NAME__", size=HEADING, color=ACCENT, bold=True, monospace=True)
 
-        # ── 3. Host info panel ───────────────────────────────────────────────────
+        # Version badge: small SURFACE rect with muted HINT-size version text.
+        # Fixed x offset works for typical short app names; adjust if your name is long.
+        badge_x = PAD + 130
+        badge_y = PAD
+        ctx.rect(badge_x, badge_y, 48, 18, fill=SURFACE, radius=3.0)
+        ctx.text(badge_x + 4, badge_y + 3, "v0.1.0", size=HINT, color=MUTED, monospace=True)
+
+        # Subtitle: optional muted line below the title row.
+        # Delete this line and the table will shift up automatically.
+        ctx.text(PAD, PAD + 24, "Edit main.py to build your app", size=CAPTION, color=MUTED)
+
+        # ── 3. Host info table ───────────────────────────────────────────────────
         # These values come from the host after Init and update each frame:
         #   self.app_id        — unique identifier (from manifest.toml [app] id)
         #   ctx.workspace_root — the workspace directory Plexi is rooted in
         #   ctx.w, ctx.h       — current pane dimensions in pixels
         #   ctx.capabilities   — list of granted runtime capabilities
         rows = [
-            ("App ID",       self.app_id),
-            ("Workspace",    ctx.workspace_root or "(none)"),
-            ("Dimensions",   f"{ctx.w:.0f} × {ctx.h:.0f}"),
-            ("Capabilities", ", ".join(ctx.capabilities) or "none"),
+            ("app_id",      self.app_id),
+            ("workspace",   ctx.workspace_root or "(none)"),
+            ("dimensions",  f"{ctx.w:.0f} × {ctx.h:.0f}"),
+            ("caps",        ", ".join(ctx.capabilities) or "none"),
         ]
-        y = 90
-        for label, value in rows:
-            ctx.text(PAD, y, f"{label}:", size=CAPTION, color=MUTED)
-            ctx.text(PAD + 100, y, value, size=CAPTION, color=FG, max_width=ctx.w - PAD - 110)
-            y += 20
+        ROW_H    = 26
+        NUM_ROWS = len(rows)
+        # table_y is calculated dynamically so removing the subtitle line above
+        # automatically moves the table up.
+        table_y = PAD + 24 + CAPTION + PAD_TIGHT   # subtitle bottom + gap
+        table_h = ROW_H * NUM_ROWS
+        KEY_COL  = 100
+
+        # Table background
+        ctx.rect(PAD, table_y, ctx.w - PAD * 2, table_h, fill=SURFACE, radius=6.0)
+
+        for i, (key, value) in enumerate(rows):
+            row_y = table_y + i * ROW_H
+            # Row divider (1px BG line between rows, not after last)
+            if i > 0:
+                ctx.rect(PAD, row_y, ctx.w - PAD * 2, 1, fill=BG)
+            # Vertically center text within the 26px row
+            text_y = row_y + (ROW_H - CAPTION) / 2
+            ctx.text(PAD + 8,           text_y, key,   size=CAPTION, color=GREEN, monospace=True)
+            ctx.text(PAD + 8 + KEY_COL, text_y, value, size=CAPTION, color=FG,    monospace=True,
+                     max_width=ctx.w - PAD - 8 - KEY_COL - PAD)
 
         # ── 4. Button ────────────────────────────────────────────────────────────
         # Button.render(ctx) draws the button and returns True on click this frame.
         # The button tracks hover/active state across frames via its id.
-        self._btn.y = y + PAD_TIGHT
+        self._btn.y = table_y + table_h + PAD
         if self._btn.render(ctx):
             self.click_count += 1
             ctx.status_summary(f"Clicked {self.click_count} time(s)")
