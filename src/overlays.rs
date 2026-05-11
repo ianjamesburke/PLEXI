@@ -278,7 +278,7 @@ impl PlexiApp {
 
                                     crate::widgets::key_combo_list(
                                         ui,
-                                        &[&["\u{2318}", "\u{21E7}", "J"], &["\u{2318}", "\u{21E7}", "K"]],
+                                        &[&["\u{2318}", "\u{21E7}", "K"], &["\u{2318}", "\u{21E7}", "J"]],
                                         None,
                                         colors,
                                     );

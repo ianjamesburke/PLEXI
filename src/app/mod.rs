@@ -3345,11 +3345,9 @@ impl PlexiApp {
                     if shift && matches!(key, egui::Key::A) {
                         return true;
                     }
-                    // Cmd+] / Cmd+[ — cycle the notification queue without
+                    // Cmd+Shift+L / Cmd+Shift+H — cycle the notification queue without
                     // acknowledging. Only meaningful while the modal is open.
-                    if !shift
-                        && matches!(key, egui::Key::CloseBracket | egui::Key::OpenBracket)
-                    {
+                    if shift && matches!(key, egui::Key::L | egui::Key::H) {
                         return true;
                     }
                     false

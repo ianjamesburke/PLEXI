@@ -13,7 +13,7 @@ use crate::config::KeybindingsConfig;
 // Cmd+Shift+M                 — toggle minimap overlay
 // Cmd+T                       — new tab
 // Cmd+Shift+L/H               — next/prev tab
-// Cmd+Shift+J/K               — first/last tab
+// Cmd+Shift+K/J               — first/last tab
 // Cmd+Q                       — quit
 // Cmd+B                       — toggle sidebar
 // Cmd+Enter                   — toggle zoom
@@ -194,8 +194,8 @@ impl Default for KeyBindings {
             new_tab:                   (cmd(),       egui::Key::T),
             next_tab:                  (cmd_shift(), egui::Key::L),
             prev_tab:                  (cmd_shift(), egui::Key::H),
-            first_tab:                 (cmd_shift(), egui::Key::J),
-            last_tab:                  (cmd_shift(), egui::Key::K),
+            first_tab:                 (cmd_shift(), egui::Key::K),
+            last_tab:                  (cmd_shift(), egui::Key::J),
             nav_back:                  (cmd(),       egui::Key::OpenBracket),
             toggle_sidebar:            (cmd(),       egui::Key::B),
             toggle_zoom:               (cmd(),       egui::Key::Enter),
