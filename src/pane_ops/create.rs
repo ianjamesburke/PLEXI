@@ -690,11 +690,12 @@ impl PlexiApp {
     }
 
     /// Commit a quick note: write backlog or spawn a pane.
+    /// Returns `false` only for backlog destinations that fail to write.
     pub(crate) fn commit_quick_note(
         &mut self,
         text: &str,
         dest: &crate::config::QuickNoteDestinationConfig,
-    ) {
+    ) -> bool {
         let ctx = self.quick_note_ctx.clone();
         match dest.dest_type.as_deref() {
             Some("backlog") | None if dest.options.is_none() => {
@@ -711,14 +712,14 @@ impl PlexiApp {
                     };
                     expanded
                 };
-                Self::write_backlog_note(text, &dir, &ctx);
+                Self::write_backlog_note(text, &dir, &ctx)
             }
             Some("pane") => {
                 let cmd_template = match &dest.command {
                     Some(c) => c.clone(),
                     None => {
                         log::warn!("QuickNote: pane destination '{}' has no command", dest.label);
-                        return;
+                        return false;
                     }
                 };
                 let cmd = Self::substitute_note_tokens_static(&cmd_template, text, &ctx);
@@ -733,22 +734,25 @@ impl PlexiApp {
                     "context-start" => self.open_at_context_start(&cmd),
                     _ => self.split_focused(false, Some(&cmd), true),
                 }
+                true
             }
             _ => {
                 log::warn!("QuickNote: unknown dest_type for '{}'", dest.label);
+                false
             }
         }
     }
 
     /// Commit the hard-coded destination 0: save to config_dir/backlog.
-    pub(crate) fn commit_quick_note_global_backlog(&mut self, text: &str) {
+    /// Returns `false` if the write fails.
+    pub(crate) fn commit_quick_note_global_backlog(&mut self, text: &str) -> bool {
         let ctx = self.quick_note_ctx.clone();
         let dir = crate::config::config_dir().join("backlog");
         log::info!("QuickNote: committed via global backlog (destination 0)");
-        Self::write_backlog_note(text, &dir, &ctx);
+        Self::write_backlog_note(text, &dir, &ctx)
     }
 
-    fn write_backlog_note(text: &str, dir: &PathBuf, ctx: &crate::app::QuickNoteCtx) {
+    fn write_backlog_note(text: &str, dir: &PathBuf, ctx: &crate::app::QuickNoteCtx) -> bool {
         use chrono::Local;
         let now = Local::now();
         let timestamp = now.format("%Y-%m-%d-%H%M%S").to_string();
@@ -775,12 +779,12 @@ impl PlexiApp {
 
         if let Err(e) = std::fs::create_dir_all(dir) {
             log::error!("QuickNote: failed to create backlog dir {}: {e}", dir.display());
-            return;
+            return false;
         }
         let path = dir.join(&filename);
         match std::fs::write(&path, &content) {
-            Ok(()) => log::info!("QuickNote: saved to {}", path.display()),
-            Err(e) => log::error!("QuickNote: save failed {}: {e}", path.display()),
+            Ok(()) => { log::info!("QuickNote: saved to {}", path.display()); true }
+            Err(e) => { log::error!("QuickNote: save failed {}: {e}", path.display()); false }
         }
     }
 

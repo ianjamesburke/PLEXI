@@ -760,11 +760,12 @@ impl PlexiApp {
         if let Some(key) = pressed {
             if key == 0 {
                 let text = self.quick_note_text.clone();
-                self.commit_quick_note_global_backlog(&text);
-                self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
-                self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
-                self.quick_note_text.clear();
                 log::info!("QuickNote: destination selected: key=0 (global backlog)");
+                if self.commit_quick_note_global_backlog(&text) {
+                    self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
+                    self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+                    self.quick_note_text.clear();
+                }
                 return;
             }
             let dest = self.config.quick_note.as_ref()
@@ -777,10 +778,11 @@ impl PlexiApp {
                     log::info!("QuickNote: submenu opened: parent={key}");
                 } else {
                     let text = self.quick_note_text.clone();
-                    self.commit_quick_note(&text, &dest);
-                    self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
-                    self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
-                    self.quick_note_text.clear();
+                    if self.commit_quick_note(&text, &dest) {
+                        self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
+                        self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+                        self.quick_note_text.clear();
+                    }
                 }
             }
             return;
