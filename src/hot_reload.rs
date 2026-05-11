@@ -170,6 +170,11 @@ impl HotReloadWatcher {
         }
     }
 
+    /// Returns the pane IDs of all actively-watched panes.
+    pub fn watched_pane_ids(&self) -> Vec<PaneId> {
+        self.watchers.keys().copied().collect()
+    }
+
     /// Test-only — number of active watchers.
     #[cfg(test)]
     pub fn len(&self) -> usize {
@@ -332,5 +337,22 @@ mod tests {
         let (mut watcher, _rx) = HotReloadWatcher::new();
         watcher.unwatch(999); // never watched
         assert_eq!(watcher.len(), 0);
+    }
+
+    #[test]
+    fn watched_pane_ids_returns_all_watched() {
+        let dir = tempdir().unwrap();
+        let (mut watcher, _rx) = HotReloadWatcher::new();
+        watcher.watch(10, dir.path());
+        watcher.watch(20, dir.path());
+
+        let mut ids = watcher.watched_pane_ids();
+        ids.sort();
+        assert_eq!(ids, vec![10, 20]);
+
+        watcher.unwatch(10);
+        let mut ids = watcher.watched_pane_ids();
+        ids.sort();
+        assert_eq!(ids, vec![20]);
     }
 }
