@@ -70,6 +70,7 @@ pollster = "0.4"
 wgpu = { version = "24", default-features = false, features = ["wgsl", "metal"] }
 egui-wgpu = "0.31"
 png = "0.17"
+taffy = "0.5"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Keychain access via Security.framework C API — no subprocess, distinct error

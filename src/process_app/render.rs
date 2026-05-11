@@ -2,10 +2,11 @@
 
 use std::collections::HashMap;
 
-use crate::app_protocol::RenderCommand;
+use crate::app_protocol::{LayoutChild, LayoutDirection, RenderCommand};
 use crate::style;
 use crate::theme::Colors;
 use egui::Color32;
+use taffy::prelude::*;
 
 /// Render a committed frame's draw commands into the given egui Ui.
 ///
@@ -353,6 +354,14 @@ pub(crate) fn render_draw_commands(
 
             RenderCommand::TextRow { x, y, items, gap, align } => {
                 render_text_row(ui, origin, clip, *x, *y, items, *gap, align, colors);
+            }
+
+            RenderCommand::Layout { x, y, direction, children, gap } => {
+                render_layout_node(
+                    ui, pane_rect, clip, *x, *y,
+                    direction, children, *gap,
+                    colors, commonmark_cache, audio_peaks,
+                );
             }
 
             RenderCommand::Markdown {
@@ -785,6 +794,208 @@ fn font_family_for_text(monospace: bool) -> egui::FontFamily {
     } else {
         egui::FontFamily::Proportional
     }
+}
+
+// ── Declarative layout renderer (taffy flexbox) ───────────────────────────────
+
+/// Measure the natural size of a leaf RenderCommand using egui font metrics.
+/// Returns (width, height) in logical pixels.
+/// Unsupported leaf types return (0.0, 0.0).
+fn measure_leaf_size(ui: &egui::Ui, cmd: &RenderCommand) -> (f32, f32) {
+    match cmd {
+        RenderCommand::Badge { label, font_size, .. } => {
+            let font_id = egui::FontId::proportional(*font_size);
+            let galley = ui.fonts(|f| {
+                f.layout_no_wrap(label.clone(), font_id, egui::Color32::WHITE)
+            });
+            let w = (galley.size().x + crate::style::BADGE_PAD_H * 2.0)
+                .max(crate::style::BADGE_MIN_W);
+            let h = galley.size().y + crate::style::BADGE_PAD_V * 2.0;
+            (w, h)
+        }
+        RenderCommand::Text { text, size, monospace, .. } => {
+            let font_id = if *monospace {
+                egui::FontId::monospace(*size)
+            } else {
+                egui::FontId::proportional(*size)
+            };
+            let galley = ui.fonts(|f| {
+                f.layout_no_wrap(text.clone(), font_id, egui::Color32::WHITE)
+            });
+            (galley.size().x, galley.size().y)
+        }
+        RenderCommand::KeyChip { label, font_size, .. } => {
+            let font_id = egui::FontId::monospace(*font_size);
+            let galley = ui.fonts(|f| {
+                f.layout_no_wrap(label.clone(), font_id, egui::Color32::WHITE)
+            });
+            let w = (galley.size().x + crate::style::KEYCHIP_PAD_H * 2.0)
+                .max(crate::style::KEYCHIP_MIN_W);
+            let h = galley.size().y + crate::style::KEYCHIP_PAD_V * 2.0;
+            (w, h)
+        }
+        _ => (0.0, 0.0),
+    }
+}
+
+/// Build a taffy node for a LayoutChild. Leaves get measured sizes; nodes
+/// get flex containers. Returns the NodeId in the given TaffyTree.
+fn build_taffy_node<'a>(
+    taffy: &mut TaffyTree<Option<&'a RenderCommand>>,
+    child: &'a LayoutChild,
+    ui: &egui::Ui,
+) -> NodeId {
+    match child {
+        LayoutChild::Leaf { command } => {
+            let (w, h) = measure_leaf_size(ui, command);
+            let style = Style {
+                size: taffy::geometry::Size {
+                    width: length(w),
+                    height: length(h),
+                },
+                ..Default::default()
+            };
+            taffy.new_leaf_with_context(style, Some(command.as_ref())).unwrap()
+        }
+        LayoutChild::Node { direction, children, gap } => {
+            let flex_dir = match direction {
+                LayoutDirection::Row | LayoutDirection::Stack => FlexDirection::Row,
+                LayoutDirection::Column => FlexDirection::Column,
+            };
+            let child_ids: Vec<NodeId> = children
+                .iter()
+                .map(|c| build_taffy_node(taffy, c, ui))
+                .collect();
+            let style = Style {
+                display: Display::Flex,
+                flex_direction: flex_dir,
+                gap: taffy::geometry::Size {
+                    width: length(*gap),
+                    height: length(0.0),
+                },
+                ..Default::default()
+            };
+            taffy.new_with_children(style, &child_ids).unwrap()
+        }
+    }
+}
+
+/// Paint a resolved taffy node tree onto the egui Ui.
+/// `abs_x`, `abs_y` — accumulated taffy layout offset from the root.
+fn paint_node(
+    taffy: &TaffyTree<Option<&RenderCommand>>,
+    node: NodeId,
+    abs_x: f32,
+    abs_y: f32,
+    ui: &mut egui::Ui,
+    screen_origin: egui::Pos2,
+    pane_x: f32,
+    pane_y: f32,
+    clip: egui::Rect,
+    colors: &Colors,
+) {
+    let layout = taffy.layout(node).unwrap();
+    let my_abs_x = abs_x + layout.location.x;
+    let my_abs_y = abs_y + layout.location.y;
+
+    if let Some(Some(cmd)) = taffy.get_node_context(node) {
+        let abs_screen_x = screen_origin.x + pane_x + my_abs_x;
+        let abs_screen_y = screen_origin.y + pane_y + my_abs_y;
+        let leaf_h = layout.size.height;
+        let paint_origin = egui::Pos2::ZERO;
+        match cmd {
+            RenderCommand::Badge { label, fill, fg, font_size, radius, .. } => {
+                render_badge(
+                    ui, paint_origin, clip,
+                    abs_screen_x, abs_screen_y + leaf_h / 2.0,
+                    label, fill, fg, *font_size, *radius,
+                );
+            }
+            RenderCommand::Text { text, size, color, monospace, .. } => {
+                let font_id = if *monospace {
+                    egui::FontId::monospace(*size)
+                } else {
+                    egui::FontId::proportional(*size)
+                };
+                let text_color = parse_color(color).unwrap_or(colors.text_primary);
+                let galley = ui.fonts(|f| {
+                    f.layout_no_wrap(text.clone(), font_id, text_color)
+                });
+                ui.painter().with_clip_rect(clip).galley(
+                    egui::pos2(abs_screen_x, abs_screen_y),
+                    galley,
+                    text_color,
+                );
+            }
+            RenderCommand::KeyChip { label, font_size, .. } => {
+                render_key_chip_at(
+                    ui, paint_origin, clip,
+                    abs_screen_x, abs_screen_y,
+                    label, *font_size, colors,
+                );
+            }
+            _ => {
+                log::warn!("render_layout_node: unsupported leaf command type, skipping");
+            }
+        }
+    }
+
+    for child in taffy.children(node).unwrap() {
+        paint_node(taffy, child, my_abs_x, my_abs_y, ui, screen_origin, pane_x, pane_y, clip, colors);
+    }
+}
+
+/// Resolve a declarative flex layout tree using taffy, then paint each leaf.
+///
+/// `pane_x`, `pane_y` — pane-relative anchor of this layout node (from the Layout command).
+/// `direction`, `children`, `gap` — the root node's layout properties.
+pub(crate) fn render_layout_node(
+    ui: &mut egui::Ui,
+    pane_rect: egui::Rect,
+    clip: egui::Rect,
+    pane_x: f32,
+    pane_y: f32,
+    direction: &LayoutDirection,
+    children: &[LayoutChild],
+    gap: f32,
+    colors: &Colors,
+    _commonmark_cache: &mut egui_commonmark::CommonMarkCache,
+    _audio_peaks: &HashMap<String, f32>,
+) {
+    // ── Phase 1: Build taffy tree ─────────────────────────────────────────────
+    let mut taffy: TaffyTree<Option<&RenderCommand>> = TaffyTree::new();
+
+    let flex_dir = match direction {
+        LayoutDirection::Row | LayoutDirection::Stack => FlexDirection::Row,
+        LayoutDirection::Column => FlexDirection::Column,
+    };
+    let child_ids: Vec<NodeId> = children
+        .iter()
+        .map(|c| build_taffy_node(&mut taffy, c, ui))
+        .collect();
+    let root_style = Style {
+        display: Display::Flex,
+        flex_direction: flex_dir,
+        gap: taffy::geometry::Size {
+            width: length(gap),
+            height: length(0.0),
+        },
+        ..Default::default()
+    };
+    let root = taffy.new_with_children(root_style, &child_ids).unwrap();
+
+    // ── Phase 2: Compute layout ───────────────────────────────────────────────
+    let available = taffy::geometry::Size {
+        width: AvailableSpace::Definite(pane_rect.width() - pane_x),
+        height: AvailableSpace::MaxContent,
+    };
+    taffy.compute_layout(root, available).unwrap();
+
+    // ── Phase 3: Paint leaves ─────────────────────────────────────────────────
+    let screen_origin = pane_rect.min;
+    paint_node(&taffy, root, 0.0, 0.0, ui, screen_origin, pane_x, pane_y, clip, colors);
+
+    log::info!("render_layout_node: painted layout tree at pane ({pane_x}, {pane_y})");
 }
 
 /// Parse a hex color string like `"#1e1e2e"` into Color32.

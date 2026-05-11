@@ -590,6 +590,94 @@ class RenderContext:
         self.emit.spawn_pane(type_id, layout=layout, args=args, pipe_id=pipe_id,
                              from_pane_id=from_pane_id, request_id=request_id)
 
+    # ── Declarative layout ──────────────────────────────────────────────────────
+
+    def badge_child(self, label: str, fill: str = "#89b4fa", fg: str = "#1e1e2e",
+                    font_size: float = 11.0, radius: float = 8.0) -> dict:
+        """Return a layout child node for a Badge. Use inside ctx.row/column/stack."""
+        return {"type": "leaf", "command": {
+            "type": "badge", "x": 0.0, "y": 0.0,
+            "label": label, "fill": fill, "fg": fg,
+            "font_size": font_size, "radius": radius,
+        }}
+
+    def text_child(self, text: str, size: float = 12.0, color: str = "#cdd6f4",
+                   monospace: bool = False, bold: bool = False) -> dict:
+        """Return a layout child node for Text. Use inside ctx.row/column/stack."""
+        return {"type": "leaf", "command": {
+            "type": "text", "x": 0.0, "y": 0.0,
+            "text": text, "size": size, "color": color,
+            "monospace": monospace, "bold": bold,
+            "align": "top_left", "elide": False, "selectable": False,
+        }}
+
+    def key_chip_child(self, label: str, font_size: float = 11.0) -> dict:
+        """Return a layout child node for a KeyChip. Use inside ctx.row/column/stack."""
+        return {"type": "leaf", "command": {
+            "type": "key_chip", "x": 0.0, "y": 0.0,
+            "label": label, "font_size": font_size,
+        }}
+
+    def layout_node(self, direction: str, children: "list[dict]", gap: float = 0.0) -> dict:
+        """Return a nested layout node for use inside ctx.row/column/stack."""
+        return {"type": "node", "direction": direction, "children": children, "gap": gap}
+
+    def row(self, x: float, y: float, children: "list[dict]", gap: float = 6.0) -> None:
+        """Emit a declarative flex-row layout tree.
+
+        The host resolves all child positions using taffy (flexbox) and real
+        egui font metrics. Children are layout child dicts from badge_child(),
+        text_child(), key_chip_child(), or layout_node().
+
+        `x`, `y`    — pane-relative top-left anchor.
+        `children`  — list of layout child dicts.
+        `gap`       — space between children in pixels (default 6.0).
+
+        Example::
+
+            ctx.row(
+                x=24.0, y=40.0,
+                children=[
+                    ctx.badge_child("4 files"),
+                    ctx.text_child(" modified"),
+                ],
+                gap=6.0,
+            )
+        """
+        self._queue({
+            "type": "layout",
+            "x": x, "y": y,
+            "direction": "row",
+            "children": children,
+            "gap": gap,
+        })
+
+    def column(self, x: float, y: float, children: "list[dict]", gap: float = 6.0) -> None:
+        """Emit a declarative flex-column layout tree.
+
+        Same as row() but stacks children top-to-bottom.
+        """
+        self._queue({
+            "type": "layout",
+            "x": x, "y": y,
+            "direction": "column",
+            "children": children,
+            "gap": gap,
+        })
+
+    def stack(self, x: float, y: float, children: "list[dict]") -> None:
+        """Emit a declarative stack layout — all children rendered at the same origin.
+
+        Use for layering (background rect behind text, etc.).
+        """
+        self._queue({
+            "type": "layout",
+            "x": x, "y": y,
+            "direction": "stack",
+            "children": children,
+            "gap": 0.0,
+        })
+
     def frame_done(self) -> None:
         self._buf.append(json.dumps({"type": "frame_done", "frame_id": self.frame_id}) + "\n")
         with _LOCK:
