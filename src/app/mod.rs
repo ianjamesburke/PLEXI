@@ -231,6 +231,10 @@ pub struct PlexiApp {
     pub(crate) quick_note_ctx: QuickNoteCtx,
     /// If in QuickNoteSubDestination phase, the key of the parent destination entry.
     pub(crate) quick_note_pending_parent: Option<u8>,
+    /// Cursor row in the destination picker (0 = global backlog, 1+ = config destinations).
+    pub(crate) quick_note_dest_cursor: usize,
+    /// Cursor row in the sub-destination picker.
+    pub(crate) quick_note_sub_cursor: usize,
     /// notify_id of the notification the modal currently has state for. Used to
     /// detect a front-of-queue change and reset focus/input buffer.
     pub(crate) modal_state_notify_id: String,
@@ -642,6 +646,8 @@ impl PlexiApp {
                     quick_note_text: String::new(),
                     quick_note_ctx: QuickNoteCtx::default(),
                     quick_note_pending_parent: None,
+                    quick_note_dest_cursor: 0,
+                    quick_note_sub_cursor: 0,
                     modal_state_notify_id: String::new(),
                     notification_images: HashMap::new(),
                     notifications_enabled,
@@ -742,6 +748,8 @@ impl PlexiApp {
             quick_note_text: String::new(),
             quick_note_ctx: QuickNoteCtx::default(),
             quick_note_pending_parent: None,
+            quick_note_dest_cursor: 0,
+            quick_note_sub_cursor: 0,
             modal_state_notify_id: String::new(),
             notification_images: HashMap::new(),
             notifications_enabled,
@@ -855,6 +863,8 @@ impl PlexiApp {
             quick_note_text: String::new(),
             quick_note_ctx: QuickNoteCtx::default(),
             quick_note_pending_parent: None,
+            quick_note_dest_cursor: 0,
+            quick_note_sub_cursor: 0,
             modal_state_notify_id: String::new(),
             notification_images: HashMap::new(),
             notifications_enabled: false,
