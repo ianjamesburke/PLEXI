@@ -1,6 +1,52 @@
 # Changelog
 
 Newest releases appear first.
+## [3.5.135] — 2026-05-11
+
+### Changes
+- fix(app-init): remove ctx.notify() from default app scaffold (#1094)
+- polish(sdk): reduce badge() default radius from RADIUS_MD to 6.0 (#1096)
+- feat(pgap): declarative layout model — flex/stack/row trees (#1090)
+- feat(dev): auto-restart watched apps after crash with 2s delay (#1055) (#1092)
+- fix(sdk): hold button active_fill for 150ms after click (#1083) (#1085)
+- feat(examples): gh-issues — GitHub Issues viewer app (#1081)
+- polish(examples): migrate mcp-demo, backlog, csv_viewer to SelectList/FormField (#1071)
+- feat(pane-ops): Cmd+Ctrl+H/L moves pane into adjacent window at boundary (#1078)
+- feat(nav): Cmd+K/J at vertical boundary wraps within context (#1077)
+- feat(sdk): restyle default app init screen (#1073)
+- feat(sdk): add on_text_submitted hook (#1067) (#1072)
+- fix(cli): app init splits origin pane, not focused pane (#1068)
+- feat(sdk): add ListView widget to plexi_sdk.widgets (#1069)
+- feat(apps): add keyboard-driven Kanban app
+- chore: update dev log
+- fix(examples/timer): add 15s duration + global notification scope (#1063)
+- polish(renderers): migrate mcp-renderer + descriptor-renderer to plexi_sdk.ui (#1061)
+- chore: restore session edits carried through merge
+- fix(sdk+timer): key aliases + timer ring rendering (#1060)
+- chore: commit alpha changes before branching
+- feat(examples): timer app with J/K duration and custom notifications (#1056)
+- fix(sdk): always re-seed SDK on launch; add AppBar subtitle support (#1054)
+- fix(mcp-renderer): augment PATH when spawning MCP server subprocess (#1053)
+- feat(examples): migrate csv_viewer file list to ctx.list_view() (#1052)
+- feat(cli): improve app init Python template with SDK primitives (#1049)
+- feat(examples): csv_viewer — browse and inspect CSVs in launch directory (#1046)
+- feat(cli): --mcp and --cli flags on plexi open (#1033, #1034) (#1048)
+- fix(deps): disable eframe accesskit feature to eliminate accesskit_consumer panic (#1039)
+- feat(cli): cli_help_parser — parse_help_to_descriptor (#1042)
+- example(mcp-renderer): add demo_server.py — local MCP server for renderer testing (#1044)
+- fix(mcp-renderer): use plexi open syntax in no-command error message (#1041)
+- chore: commit alpha changes before branching
+- feat(quick-note): destination picker UI stub (#1030)
+- fix(file-browser): verify Enter/l/→ open files via system opener (#138) (#1029)
+- feat(navigation): Cmd+HJKL falls through to window nav at pane boundary (#1017)
+- fix(keybindings): Cmd+R rename-pane and font-size bindings broken by exact-modifier guard (#1027)
+- feat(logging): date-based log rotation with configurable retention (#1028)
+- chore: update ship-issue skill
+- feat: app_states rename, pane key injection, file-browser no-repeat nav (#1026)
+- feat(notify): snooze choice — defer notification by N seconds (#1024)
+- feat(cli): inject PLEXI_CONTEXT_ID/NAME env vars + context current command (#1025)
+- fix(bundle): keyboard_capture for input-inspector + rename app_state dir (#907, #851) (#1023)
+- chore: auto-install after promoting to main
 ## [3.5.134] — 2026-05-11
 
 ### Changes
