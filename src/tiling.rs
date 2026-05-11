@@ -1,5 +1,6 @@
 use crate::pane::{Pane, TerminalPane};
 use crate::render;
+use crate::style;
 use crate::theme::Colors;
 use egui::Color32;
 use egui_term::{BackendCommand, TerminalTheme};
@@ -92,15 +93,23 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         let Some(pane) = self.panes.get_mut(pane_id) else {
             return UiResponse::None;
         };
-        ui.painter().rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
-        let mut inner_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect.shrink(8.0)));
-        let ui = &mut inner_ui;
 
         if let Some(app_pane) = pane.as_app_mut() {
-            render::app_pane::render(ui, app_pane, &self.colors, is_focused);
+            // App panes: fill with bg_darkest so the inset band doesn't show
+            // terminal_bg through the gap — bg_darkest is dark enough to be
+            // nearly invisible against the SDK's default BG token. Use SPACE_MD
+            // inset so content has consistent breathing room from the pane edge.
+            ui.painter().rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
+            let mut app_ui = ui.new_child(
+                egui::UiBuilder::new().max_rect(pane_rect.shrink(style::SPACE_MD)),
+            );
+            render::app_pane::render(&mut app_ui, app_pane, &self.colors, is_focused);
         } else if let Some(terminal) = pane.as_terminal_mut() {
+            ui.painter().rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
+            let mut terminal_ui =
+                ui.new_child(egui::UiBuilder::new().max_rect(pane_rect.shrink(style::SPACE_SM)));
             let close_exited = render::terminal_pane::render(
-                ui,
+                &mut terminal_ui,
                 terminal,
                 tile_id,
                 pane_id,
