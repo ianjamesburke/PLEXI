@@ -154,7 +154,7 @@ class App:
                 if not getattr(self_inner, "_sdk_initialized", False):
                     App.__init__(self_inner)
                 _orig(self_inner, *args, **kw)
-            cls.__init__ = wrapped  # type: ignore[method-assign]
+            cls.__init__ = wrapped  # type: ignore[assignment]
 
     # ── Override these ──────────────────────────────────────────────────────
     # All hooks may be overridden as either `def` (sync) or `async def`.
