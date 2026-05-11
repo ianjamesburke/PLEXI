@@ -746,6 +746,150 @@ impl PlexiApp {
         SwapResult::Swapped { rect_a, rect_b }
     }
 
+    /// Move the focused pane from the active window into the adjacent window in
+    /// `dir`. Returns `true` if the move happened; `false` if there is no
+    /// adjacent window in that direction (caller should show the edge pulse).
+    pub(crate) fn move_focused_pane_to_adjacent_window(&mut self, dir: Direction) -> bool {
+        use egui_tiles::Tile;
+
+        let (dx, dy): (i32, i32) = match dir {
+            Direction::Left  => (-1,  0),
+            Direction::Right => ( 1,  0),
+            Direction::Up    => ( 0, -1),
+            Direction::Down  => ( 0,  1),
+        };
+
+        let src_idx = self.active_window;
+        let cur_x = self.windows[src_idx].grid_x;
+        let cur_y = self.windows[src_idx].grid_y;
+        let ws_id = self.router.active().context_id;
+
+        // Find the index of the adjacent window in the direction of movement.
+        let adj_idx = {
+            let pages: Vec<(u32, u32, u64)> = self
+                .windows
+                .iter()
+                .map(|w| (w.grid_x, w.grid_y, w.context_id))
+                .collect();
+            if dx != 0 {
+                let tx = cur_x as i32 + dx;
+                if tx < 0 {
+                    return false;
+                }
+                let tx = tx as u32;
+                pages
+                    .iter()
+                    .position(|&(gx, gy, ws)| gx == tx && gy == cur_y && ws == ws_id)
+            } else {
+                let ty = cur_y as i32 + dy;
+                if ty < 0 {
+                    return false;
+                }
+                let ty = ty as u32;
+                let preferred_x = self.last_page_x_per_row.get(&ty).copied().unwrap_or(cur_x);
+                pages
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &(_, gy, ws))| gy == ty && ws == ws_id)
+                    .min_by_key(|(_, &(gx, _, _))| {
+                        (gx as i64 - preferred_x as i64).unsigned_abs()
+                    })
+                    .map(|(i, _)| i)
+            }
+        };
+        let Some(adj_idx) = adj_idx else {
+            return false;
+        };
+
+        // Resolve focused tile and pane ID.
+        let src_focused_tile = match self.windows[src_idx].focused_pane {
+            Some(t) => t,
+            None => return false,
+        };
+        let src_pane_id = match self.windows[src_idx].tree.tiles.get(src_focused_tile) {
+            Some(Tile::Pane(id)) => *id,
+            _ => return false,
+        };
+
+        // Determine what focus moves to in the source window after removal.
+        let next_src_focus = self.windows[src_idx].find_next_focus(src_focused_tile);
+
+        // Detach the tile from the source window tree.
+        let extracted_pane = {
+            let ctx = &mut self.windows[src_idx];
+            if let Some(parent_id) = ctx.tree.tiles.parent_of(src_focused_tile) {
+                if let Some(Tile::Container(parent)) = ctx.tree.tiles.get_mut(parent_id) {
+                    parent.remove_child(src_focused_tile);
+                }
+            }
+            ctx.tree.tiles.remove(src_focused_tile);
+            let pane = ctx.panes.remove(&src_pane_id);
+            ctx.tree.simplify(&SimplificationOptions {
+                all_panes_must_have_tabs: true,
+                ..SimplificationOptions::default()
+            });
+            ctx.focused_pane = next_src_focus;
+            pane
+        };
+
+        let Some(pane) = extracted_pane else {
+            return false;
+        };
+
+        // If source window is now empty, delete it and adjust adj_idx for the
+        // removed slot.
+        let adj_idx = if self.windows[src_idx].panes.is_empty() {
+            let adjusted = if adj_idx > src_idx { adj_idx - 1 } else { adj_idx };
+            self.delete_window(src_idx);
+            adjusted
+        } else {
+            adj_idx
+        };
+
+        // Switch active window to the destination.
+        self.active_window = adj_idx;
+        let new_ws_id = self.windows[adj_idx].context_id;
+        let new_win_id = self.windows[adj_idx].window_id;
+        self.last_page_x_per_row
+            .insert(self.windows[adj_idx].grid_y, self.windows[adj_idx].grid_x);
+        self.context_active_window.insert(new_ws_id, new_win_id);
+        self.record_context_visit(new_win_id);
+
+        // Insert pane into destination window at the incoming edge.
+        let ctx = &mut self.windows[adj_idx];
+        let new_tile = ctx.tree.tiles.insert_pane(src_pane_id);
+        ctx.panes.insert(src_pane_id, pane);
+
+        // new_pane_first = true when entering from the left/top (pane leads).
+        let new_pane_first = matches!(dir, Direction::Right | Direction::Down);
+        if ctx.tree.root.is_none() {
+            ctx.tree.root = Some(new_tile);
+        } else if let Some(root) = ctx.tree.root {
+            let ordered = if new_pane_first {
+                vec![new_tile, root]
+            } else {
+                vec![root, new_tile]
+            };
+            let container_tile = if dx != 0 {
+                ctx.tree.tiles.insert_horizontal_tile(ordered)
+            } else {
+                ctx.tree.tiles.insert_vertical_tile(ordered)
+            };
+            ctx.tree.root = Some(container_tile);
+        }
+        ctx.focused_pane = Some(new_tile);
+
+        log::info!(
+            "move_focused_pane_to_adjacent_window({:?}): pane {} moved from window index {} to {}",
+            dir,
+            src_pane_id,
+            src_idx,
+            adj_idx
+        );
+
+        true
+    }
+
     pub(crate) fn scroll_focused_pane(&mut self, lines: i32) {
         let ctx = &mut self.windows[self.active_window];
         let Some(focused_tile) = ctx.focused_pane else {
@@ -951,5 +1095,118 @@ mod swap_tests {
         app.windows[0].focused_pane = Some(tile);
         // No neighbors (rects unset = Rect::ZERO, geometric search returns None)
         assert!(matches!(app.swap_pane(Direction::Right), SwapResult::AtBoundary));
+    }
+}
+
+#[cfg(test)]
+mod move_to_adjacent_window_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn test_app() -> PlexiApp {
+        let ctx = egui::Context::default();
+        let ft = crate::logging::new_frame_tick();
+        PlexiApp::new_for_test(ctx, ft).0
+    }
+
+    fn make_app_pane(id: u64) -> crate::pane::Pane {
+        use crate::app_permissions::AppPermissions;
+        use crate::pane::{AppPane, AppRuntime};
+        use crate::process_app::ProcessApp;
+        let (process_app, _draw_tx) = ProcessApp::new_for_test(id, AppPermissions::builtin());
+        crate::pane::Pane::App(Box::new(AppPane {
+            id,
+            runtime: AppRuntime::Process(Box::new(process_app)),
+            workspace_root: std::env::temp_dir(),
+            permissions: AppPermissions::builtin(),
+            manifest_id: "test".to_string(),
+            name: "Test".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: None,
+        }))
+    }
+
+    fn window_at(context_id: u64, window_id: u64, grid_x: u32, grid_y: u32) -> crate::context::Window {
+        crate::context::Window {
+            name: "test".into(),
+            path: std::env::temp_dir(),
+            tree: egui_tiles::Tree::empty(format!("tree_{window_id}")),
+            panes: HashMap::new(),
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x,
+            grid_y,
+            window_id,
+            context_id,
+        }
+    }
+
+    #[test]
+    fn no_adjacent_window_returns_false() {
+        let mut app = test_app();
+        let pane_id: u64 = 42;
+        let tile = app.windows[0].tree.tiles.insert_pane(pane_id);
+        app.windows[0].tree.root = Some(tile);
+        app.windows[0].focused_pane = Some(tile);
+        app.windows[0].panes.insert(pane_id, make_app_pane(pane_id));
+
+        assert!(!app.move_focused_pane_to_adjacent_window(Direction::Right));
+        // State unchanged
+        assert_eq!(app.active_window, 0);
+        assert!(app.windows[0].panes.contains_key(&pane_id));
+    }
+
+    #[test]
+    fn moves_pane_to_adjacent_window_deletes_empty_source() {
+        let mut app = test_app();
+        // Window 0: context 1, grid (0,0), one pane
+        let pane_id: u64 = 42;
+        let tile = app.windows[0].tree.tiles.insert_pane(pane_id);
+        app.windows[0].tree.root = Some(tile);
+        app.windows[0].focused_pane = Some(tile);
+        app.windows[0].panes.insert(pane_id, make_app_pane(pane_id));
+        // Window 1: context 1, grid (1,0), empty
+        app.windows.push(window_at(1, 2, 1, 0));
+
+        let moved = app.move_focused_pane_to_adjacent_window(Direction::Right);
+        assert!(moved);
+
+        // Source had only 1 pane → deleted; one window remains (destination, compacted to grid_x=0)
+        assert_eq!(app.windows.len(), 1, "empty source window must be deleted");
+        assert_eq!(app.active_window, 0);
+        assert!(app.windows[0].panes.contains_key(&pane_id), "pane must be in destination");
+        // compact_workspace_grid renumbers the surviving column to 0
+        assert_eq!(app.windows[0].grid_x, 0);
+    }
+
+    #[test]
+    fn moves_pane_source_survives_with_remaining_pane() {
+        let mut app = test_app();
+        // Window 0: context 1, grid (0,0), two panes
+        let pane_a: u64 = 10;
+        let pane_b: u64 = 20;
+        let tile_a = app.windows[0].tree.tiles.insert_pane(pane_a);
+        let tile_b = app.windows[0].tree.tiles.insert_pane(pane_b);
+        let container = app.windows[0].tree.tiles.insert_horizontal_tile(vec![tile_a, tile_b]);
+        app.windows[0].tree.root = Some(container);
+        app.windows[0].focused_pane = Some(tile_a);
+        app.windows[0].panes.insert(pane_a, make_app_pane(pane_a));
+        app.windows[0].panes.insert(pane_b, make_app_pane(pane_b));
+        // Window 1: context 1, grid (1,0), empty
+        app.windows.push(window_at(1, 2, 1, 0));
+
+        let moved = app.move_focused_pane_to_adjacent_window(Direction::Right);
+        assert!(moved);
+
+        // Two windows remain
+        assert_eq!(app.windows.len(), 2);
+        // Active window is the destination (index 1 is unchanged since source survived)
+        assert_eq!(app.active_window, 1);
+        assert_eq!(app.windows[1].grid_x, 1);
+        assert!(app.windows[1].panes.contains_key(&pane_a), "moved pane in destination");
+        // Source still has pane_b
+        assert!(app.windows[0].panes.contains_key(&pane_b), "remaining pane still in source");
+        assert!(!app.windows[0].panes.contains_key(&pane_a), "moved pane no longer in source");
     }
 }
