@@ -597,7 +597,7 @@ class __CLASS_NAME__(App):
 
         # ButtonStyle fields: fill, hover_fill, active_fill, text_color, font_size, radius
         self._btn = Button(
-            "increment", x=PAD, y=0, w=120, h=28, label="[ Click me ]",
+            "increment", x=PAD, y=0, w=130, h=30, label="[ Click me ]",
             style=ButtonStyle(
                 fill=SURFACE, hover_fill=HIGHLIGHT, active_fill=HIGHLIGHT,
                 text_color=ACCENT, font_size=CAPTION, radius=3.0,
@@ -621,16 +621,16 @@ class __CLASS_NAME__(App):
         # Title: monospace, accent color, HEADING size
         ctx.text(PAD, PAD, "__DISPLAY_NAME__", size=HEADING, color=ACCENT, bold=True, monospace=True)
 
-        # Version badge: small SURFACE rect with muted HINT-size version text.
-        # Fixed x offset works for typical short app names; adjust if your name is long.
-        badge_x = PAD + 130
-        badge_y = PAD
-        ctx.rect(badge_x, badge_y, 48, 18, fill=SURFACE, radius=3.0)
-        ctx.text(badge_x + 4, badge_y + 3, "v0.1.0", size=HINT, color=MUTED, monospace=True)
+        # Version badge: right-aligned so it never overlaps the title.
+        BADGE_W = 48
+        ctx.rect(ctx.w - PAD - BADGE_W, PAD + 1, BADGE_W, 18, fill=SURFACE, radius=3.0)
+        ctx.text(ctx.w - PAD - BADGE_W + 4, PAD + 4, "v0.1.0", size=HINT, color=MUTED, monospace=True)
 
-        # Subtitle: optional muted line below the title row.
-        # Delete this line and the table will shift up automatically.
-        ctx.text(PAD, PAD + 24, "Edit main.py to build your app", size=CAPTION, color=MUTED)
+        # Subtitle: optional muted line below the title.
+        # To remove: delete this ctx.text call and change table_y below to:
+        #   table_y = PAD + HEADING + PAD * 2
+        subtitle_y = PAD + HEADING + PAD_TIGHT
+        ctx.text(PAD, subtitle_y, "Edit main.py to build your app", size=CAPTION, color=MUTED)
 
         # ── 3. Host info table ───────────────────────────────────────────────────
         # These values come from the host after Init and update each frame:
@@ -644,12 +644,10 @@ class __CLASS_NAME__(App):
             ("dimensions",  f"{ctx.w:.0f} × {ctx.h:.0f}"),
             ("caps",        ", ".join(ctx.capabilities) or "none"),
         ]
-        ROW_H    = 26
+        ROW_H    = 30
         NUM_ROWS = len(rows)
-        # table_y is calculated dynamically so removing the subtitle line above
-        # automatically moves the table up.
-        table_y = PAD + 24 + CAPTION + PAD_TIGHT   # subtitle bottom + gap
-        table_h = ROW_H * NUM_ROWS
+        table_y  = subtitle_y + CAPTION + PAD   # subtitle bottom + gap
+        table_h  = ROW_H * NUM_ROWS
         KEY_COL  = 100
 
         # Table background
@@ -660,11 +658,11 @@ class __CLASS_NAME__(App):
             # Row divider (1px BG line between rows, not after last)
             if i > 0:
                 ctx.rect(PAD, row_y, ctx.w - PAD * 2, 1, fill=BG)
-            # Vertically center text within the 26px row
+            # Vertically center text within the row
             text_y = row_y + (ROW_H - CAPTION) / 2
-            ctx.text(PAD + 8,           text_y, key,   size=CAPTION, color=GREEN, monospace=True)
-            ctx.text(PAD + 8 + KEY_COL, text_y, value, size=CAPTION, color=FG,    monospace=True,
-                     max_width=ctx.w - PAD - 8 - KEY_COL - PAD)
+            ctx.text(PAD + 10,            text_y, key,   size=CAPTION, color=GREEN, monospace=True)
+            ctx.text(PAD + 10 + KEY_COL, text_y, value, size=CAPTION, color=FG,    monospace=True,
+                     max_width=ctx.w - PAD - 10 - KEY_COL - PAD)
 
         # ── 4. Button ────────────────────────────────────────────────────────────
         # Button.render(ctx) draws the button and returns True on click this frame.
@@ -673,6 +671,7 @@ class __CLASS_NAME__(App):
         if self._btn.render(ctx):
             self.click_count += 1
             ctx.status_summary(f"Clicked {self.click_count} time(s)")
+            ctx.notify("__DISPLAY_NAME__", f"Click #{self.click_count}", priority=PRIORITY_NORMAL)
 
         # ── 5. State label ───────────────────────────────────────────────────────
         # Mutations to self.* are visible on the next frame.
@@ -692,11 +691,7 @@ class __CLASS_NAME__(App):
         # Blocking:        ctx.notify_and_wait(...)  → "acknowledge" | "cancel"
         #                  ctx.notify_choice(title, options, ...)  → chosen value
         #                  ctx.notify_input(title, prompt, ...)    → typed string
-        ctx.notify(
-            "__DISPLAY_NAME__",
-            f"Clicked at ({x:.0f}, {y:.0f}) with {button} button",
-            priority=PRIORITY_NORMAL,
-        )
+        pass
 
 
 __CLASS_NAME__().run()
