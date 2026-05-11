@@ -1,6 +1,19 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.7] — 2026-05-11
+
+### Changes
+- docs: add DEV_LOG entry for PR #1117 config template
+- feat(config): all 6 theme presets + docs link in generated config (#1114) (#1117)
+- feat(navigation): pane focus history — Cmd+[ / Cmd+] time-travel through recently focused panes (#1087) (#1119)
+- fix(rename-pane): one-shot focus guard, immediate sync, and overlay modal gate (#1118)
+- feat(navigation): remap tab cycle to Cmd+Shift+H/L, add first/last Cmd+Shift+J/K (#1102) (#1107)
+- fix(mcp-renderer): reduce handshake timeout to 10s, surface server stderr (#1050) (#1106)
+- chore(skills): ship-issue skill update
+- feat(quick-note): backend — FocusLayer modal, config routing, submenu (#1105)
+- chore(skills): add bundle mode to ship-issue skill
+- fix(examples): normalize Enter/Escape key strings in mcp-renderer and descriptor-renderer (#1103)
 ## [3.6.6] — 2026-05-11
 
 ### Changes
