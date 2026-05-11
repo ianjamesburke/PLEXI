@@ -275,9 +275,13 @@ impl FileBrowserApp {
         }
         #[cfg(not(test))]
         match std::process::Command::new(Self::system_opener()).arg(path).status() {
-            Ok(_) => log::info!("file_browser: opened '{}'", path.display()),
+            Ok(status) if status.success() => log::info!("file_browser: opened '{}'", path.display()),
+            Ok(status) => log::error!(
+                "file_browser: system-open failed for '{}': {status}",
+                path.display()
+            ),
             Err(e) => log::error!(
-                "file_browser: system-open failed for '{}': {e}",
+                "file_browser: system-open failed to spawn for '{}': {e}",
                 path.display()
             ),
         }
