@@ -3832,33 +3832,83 @@ mod tests {
         }
     }
 
-    /// Regression guard for #863: navigate() at the pane boundary of window 0
-    /// must fall through to navigate_page() and switch active_window to window 1.
-    #[test]
-    fn navigate_at_pane_boundary_falls_through_to_page_navigation() {
-        let mut h = HostHarness::new();
-        let pane_a = h.add_test_pane();
-        // Window 1 is directly below window 0 on the spatial grid, same workspace.
-        h.app.windows.push(same_workspace_window_below(2, 9910));
-
-        // Establish focus on window 0's pane so navigate() enters the pane-lookup branch.
-        assert!(h.app.pane_navigate(pane_a), "pane_navigate must succeed to set up focus");
-        assert_eq!(h.app.active_window, 0);
-        // Direction::Down with no pane below in the same window should fall through.
-        h.app.navigate(crate::keys::Direction::Down);
-        assert_eq!(h.app.active_window, 1, "navigate() at boundary must switch active_window via page navigation");
+    /// Build a third window in the same workspace at grid_y=2, directly below
+    /// `same_workspace_window_below` (which is at grid_y=1).
+    fn same_workspace_window_bottom(window_id: u64, pane_id: u64) -> Window {
+        let mut tree = egui_tiles::Tree::empty("test_tree_bottom");
+        let tile = tree.tiles.insert_pane(pane_id);
+        tree.root = Some(tile);
+        Window {
+            name: "Test".into(),
+            path: std::env::temp_dir(),
+            tree,
+            panes: HashMap::new(),
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 2,
+            window_id,
+            context_id: 1,
+        }
     }
 
-    /// Regression guard for #863: navigate() at the boundary of the bottommost
-    /// window must be a silent no-op (no crash, active_window unchanged).
+    /// #1074: navigate(Down) at the vertical pane boundary jumps to the LAST
+    /// window in the workspace list — skipping intermediate windows entirely.
     #[test]
-    fn navigate_at_grid_boundary_is_noop() {
+    fn navigate_down_at_vertical_boundary_jumps_to_last_window() {
         let mut h = HostHarness::new();
         let pane_a = h.add_test_pane();
-        // Only one window — no neighbor below.
+        // Three windows: grid_y 0 (window 0), 1 (window 1), 2 (window 2).
+        h.app.windows.push(same_workspace_window_below(2, 9910));  // grid_y=1
+        h.app.windows.push(same_workspace_window_bottom(3, 9911)); // grid_y=2
+
         assert!(h.app.pane_navigate(pane_a), "pane_navigate must succeed to set up focus");
         assert_eq!(h.app.active_window, 0);
+
+        // Down from window 0 must jump directly to the LAST window (grid_y=2), not step to grid_y=1.
         h.app.navigate(crate::keys::Direction::Down);
-        assert_eq!(h.app.active_window, 0, "navigate() at grid boundary must not change active_window");
+        assert_eq!(h.app.active_window, 2, "navigate(Down) at vertical boundary must jump to last window");
+    }
+
+    /// #1074: navigate(Up) at the vertical pane boundary jumps to the FIRST
+    /// window in the workspace list.
+    #[test]
+    fn navigate_up_at_vertical_boundary_jumps_to_first_window() {
+        let mut h = HostHarness::new();
+        let pane_a = h.add_test_pane();
+        h.app.windows.push(same_workspace_window_below(2, 9910));  // grid_y=1
+        h.app.windows.push(same_workspace_window_bottom(3, 9911)); // grid_y=2
+
+        // Start from the middle window.
+        assert_eq!(h.app.active_window, 0);
+        h.app.active_window = 1;
+
+        // Up from window 1 must jump to the FIRST window (grid_y=0).
+        h.app.navigate(crate::keys::Direction::Up);
+        assert_eq!(h.app.active_window, 0, "navigate(Up) at vertical boundary must jump to first window");
+    }
+
+    /// Single-window workspace: navigate(Down) at boundary is a no-op —
+    /// the only window is both first and last.
+    #[test]
+    fn navigate_down_single_window_is_noop() {
+        let mut h = HostHarness::new();
+        let pane_a = h.add_test_pane();
+        assert!(h.app.pane_navigate(pane_a), "pane_navigate must succeed");
+        assert_eq!(h.app.active_window, 0);
+        h.app.navigate(crate::keys::Direction::Down);
+        assert_eq!(h.app.active_window, 0, "navigate(Down) in single-window workspace must not change active_window");
+    }
+
+    /// Horizontal boundary (Left/Right) still falls through to page navigation unchanged.
+    #[test]
+    fn navigate_left_at_horizontal_boundary_still_page_navigates() {
+        let mut h = HostHarness::new();
+        let pane_a = h.add_test_pane();
+        assert!(h.app.pane_navigate(pane_a), "pane_navigate must succeed");
+        assert_eq!(h.app.active_window, 0);
+        // No window to the left of (0,0) → Left is a no-op (not wrapped).
+        h.app.navigate(crate::keys::Direction::Left);
+        assert_eq!(h.app.active_window, 0, "Left at boundary must not change active_window");
     }
 }

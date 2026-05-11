@@ -96,6 +96,7 @@ impl Window {
         }
     }
 
+
     pub(crate) fn find_next_focus(&self, excluding: TileId) -> Option<TileId> {
         for dir in [
             Direction::Left,

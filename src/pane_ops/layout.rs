@@ -670,6 +670,32 @@ impl PlexiApp {
                     }
                 }
             }
+        } else if dy != 0 {
+            // Vertical boundary: jump to the first or last window in the current
+            // workspace (the minimap list). Down at bottom → last window;
+            // Up at top → first window. This is a list-end jump, not a one-step move.
+            let ws_id = self.router.active().context_id;
+            let jump_idx = if dy < 0 {
+                self.windows.iter().enumerate()
+                    .filter(|(_, w)| w.context_id == ws_id)
+                    .min_by_key(|(_, w)| (w.grid_y, w.grid_x))
+                    .map(|(i, _)| i)
+            } else {
+                self.windows.iter().enumerate()
+                    .filter(|(_, w)| w.context_id == ws_id)
+                    .max_by_key(|(_, w)| (w.grid_y, w.grid_x))
+                    .map(|(i, _)| i)
+            };
+            if let Some(idx) = jump_idx {
+                if idx != self.active_window {
+                    log::info!("navigate({:?}): jumping to {} window in workspace", dir, if dy < 0 { "first" } else { "last" });
+                    self.active_window = idx;
+                    let w = &self.windows[idx];
+                    let wid = w.window_id;
+                    self.context_active_window.insert(ws_id, wid);
+                    self.record_context_visit(wid);
+                }
+            }
         } else {
             log::info!("navigate({:?}): falling through to page navigation", dir);
             self.navigate_page(dx, dy);
