@@ -163,7 +163,7 @@ pub(crate) fn crawl_with_runner(
 // ── parsing ───────────────────────────────────────────────────────────────────
 
 /// Synthesise a `PlexiDescriptor` by parsing `--help` output.
-fn parse_help(cli_name: &str, text: &str, version: Option<String>) -> PlexiDescriptor {
+pub(crate) fn parse_help(cli_name: &str, text: &str, version: Option<String>) -> PlexiDescriptor {
     let commands = extract_commands(text);
     let description = extract_description(text);
 

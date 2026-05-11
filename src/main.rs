@@ -15,6 +15,7 @@ mod audio;
 mod cli;
 mod cli_args;
 mod cli_crawl;
+mod cli_help_parser;
 mod cli_registry;
 mod cli_setup;
 mod command_palette;
@@ -381,7 +382,13 @@ fn main() -> eframe::Result {
                         std::process::exit(cli::open_cli(&type_id, &extra_args, layout.as_deref(), from_pane_id));
                     }
                     Commands::Descriptor { cmd } => match cmd {
-                        DescriptorCmd::Probe { command, no_registry, no_crawl, extra_args } => {
+                        DescriptorCmd::Probe { command, no_registry, no_crawl, json, extra_args } => {
+                            if json {
+                                match cli_help_parser::parse_help_to_descriptor(&command) {
+                                    Ok(j) => { println!("{j}"); std::process::exit(0); }
+                                    Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
+                                }
+                            }
                             let runner = cli::descriptor::RealRunner;
                             let opts = cli::descriptor::ProbeOptions { use_registry: !no_registry, use_crawl: !no_crawl };
                             let extra: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
