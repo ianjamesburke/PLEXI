@@ -21,7 +21,7 @@ from plexi_sdk import App, RenderContext, CapabilityDeniedError
 from plexi_sdk.ui import (
     Column, AppBar, SelectList, FormField,
     ListItem, Label, Spacer, Card,
-    HIGHLIGHT, ACCENT, MUTED, RED,
+    BG, HIGHLIGHT, ACCENT, MUTED, RED,
     TEXT_HINT,
     SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG,
     RADIUS_SM,
@@ -209,10 +209,11 @@ class DescriptorRendererApp(App):
             else:
                 self._hits = []
             header_items.append(self._select_list)
-            ctx.render(Column(header_items, padding=0, gap=0))
+            ctx.render(Column(header_items, padding=0, padding_top=0, gap=0))
             return
 
         if self._view == "form":
+            ctx.clear(BG)
             self._render_form(ctx)
 
     def _render_form(self, ctx: RenderContext) -> None:

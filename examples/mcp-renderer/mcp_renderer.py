@@ -22,11 +22,10 @@ from typing import IO
 
 from plexi_sdk import App, RenderContext
 from plexi_sdk.ui import (
-    Column, AppBar, SelectList, FormField, ScrollLog, FooterKeys,
+    Column, AppBar, SelectList, FormField, Scrollable, FooterKeys,
     ListItem, Label, Spacer, Card,
-    ACCENT, RED,
-    TEXT_CAPTION,
-    SPACE_SM, SPACE_LG,
+    BG, ACCENT, RED,
+    SPACE_XS, SPACE_SM, SPACE_LG,
 )
 
 
@@ -147,7 +146,7 @@ class McpRendererApp(App):
         self._hits: list[tuple[float, float, object]] = []
         # UI components
         self._select_list = SelectList([])
-        self._result_log = ScrollLog([], line_size=TEXT_CAPTION)
+        self._result_scrollable = Scrollable(Label("", tone="hint"))
         # MCP client
         self._client: McpClient | None = None
         self._tools_ready = threading.Event()
@@ -206,6 +205,7 @@ class McpRendererApp(App):
         finally:
             self._calling = False
             self._view = "result"
+            self._result_scrollable.scroll_offset = 0.0
         self.emit.schedule_render(after_ms=16)
 
     # ── Render ────────────────────────────────────────────────────────────────
@@ -221,7 +221,7 @@ class McpRendererApp(App):
                 Spacer(grow=True),
                 Label("Connecting to MCP server…", tone="hint"),
                 Spacer(grow=True),
-            ], padding=0, gap=0))
+            ], padding=0, padding_top=0, gap=0))
             return
 
         if self._view == "error":
@@ -244,21 +244,29 @@ class McpRendererApp(App):
             ctx.render(Column([
                 AppBar(f"MCP · {cmd_name}", subtitle=subtitle),
                 self._select_list,
-            ], padding=0, gap=0))
+            ], padding=0, padding_top=0, gap=0))
             return
 
         if self._view == "form":
+            ctx.clear(BG)
             self._render_form(ctx)
             return
 
         if self._view == "result":
-            self._result_log.lines = self._result_lines
             tool_name = self._active_tool.get("name", "result")
+            if self._result_lines:
+                result_content = Column(
+                    [Label(line, tone="caption") for line in self._result_lines],
+                    padding=SPACE_LG, padding_top=SPACE_SM, gap=SPACE_XS,
+                )
+            else:
+                result_content = Column([Label("No output", tone="hint")], padding=SPACE_LG)
+            self._result_scrollable.child = result_content
             ctx.render(Column([
                 AppBar(f"Result: {tool_name}"),
-                self._result_log,
-                FooterKeys([("↑/↓", "scroll"), ("esc", "back")]),
-            ], padding=0, gap=0))
+                self._result_scrollable,
+                FooterKeys([("j/k", "scroll"), ("esc", "back")]),
+            ], padding=0, padding_top=0, gap=0))
 
     def _render_form(self, ctx: RenderContext) -> None:
         self._hits = []
@@ -413,7 +421,9 @@ class McpRendererApp(App):
                 self.emit.schedule_render(after_ms=16)
 
         elif self._view == "result":
-            if key == "Escape":
+            if self._result_scrollable.handle_key(key):
+                self.emit.schedule_render(after_ms=16)
+            elif key == "Escape":
                 self._view = "list"
                 self._select_list.selected_idx = 0
                 self.emit.schedule_render(after_ms=16)
