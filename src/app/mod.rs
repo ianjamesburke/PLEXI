@@ -2297,8 +2297,9 @@ impl eframe::App for PlexiApp {
                             }
                         });
                     }
+                    let new_window_id = self.windows[self.active_window].window_id;
                     let new_focus = self.windows[self.active_window].focused_pane;
-                    if new_focus != old_focus {
+                    if new_window_id != old_window_id || new_focus != old_focus {
                         self.push_focus_history(old_window_id, old_focus);
                     }
                 }
@@ -3442,8 +3443,8 @@ impl PlexiApp {
             log::warn!("notify:action: pane_navigate pane_id={pane_id} not found");
             return false;
         };
-        let old_focus = self.windows[idx].focused_pane;
-        let old_window_id = self.windows[idx].window_id;
+        let old_focus = self.windows[self.active_window].focused_pane;
+        let old_window_id = self.windows[self.active_window].window_id;
         self.windows[idx].focused_pane = Some(tile_id);
         self.push_focus_history(old_window_id, old_focus);
         let prev = self.active_window;
