@@ -378,8 +378,44 @@ fn main() -> eframe::Result {
                     Commands::Terminal { cmd, ephemeral, layout, from_pane_id } => {
                         std::process::exit(cli::terminal_cli(cmd.as_deref(), ephemeral, layout.as_deref(), from_pane_id));
                     }
-                    Commands::Open { type_id, layout, from_pane_id, extra_args } => {
-                        std::process::exit(cli::open_cli(&type_id, &extra_args, layout.as_deref(), from_pane_id));
+                    Commands::Open { type_id, mcp, cli: cli_flag, layout, from_pane_id, extra_args } => {
+                        let mode_count = type_id.is_some() as u8
+                            + (!mcp.is_empty()) as u8
+                            + cli_flag.is_some() as u8;
+                        if mode_count == 0 {
+                            eprintln!("error: one of TYPE_ID, --mcp, or --cli is required");
+                            std::process::exit(2);
+                        }
+                        if mode_count > 1 {
+                            eprintln!("error: TYPE_ID, --mcp, and --cli are mutually exclusive");
+                            std::process::exit(2);
+                        }
+                        if let Some(tid) = type_id {
+                            std::process::exit(cli::open_cli(&tid, &extra_args, layout.as_deref(), from_pane_id));
+                        } else if !mcp.is_empty() {
+                            log::info!("open:mcp: launching mcp-renderer with command {:?}", mcp);
+                            std::process::exit(cli::open_cli("mcp-renderer", &mcp, layout.as_deref(), from_pane_id));
+                        } else {
+                            let binary = cli_flag.unwrap();
+                            log::info!("open:cli-flag: running --help parser for `{binary}`");
+                            match cli_help_parser::parse_help_to_descriptor(&binary) {
+                                Ok(json) => {
+                                    let tmp = std::env::temp_dir()
+                                        .join(format!("plexi-descriptor-{binary}.json"));
+                                    if let Err(e) = std::fs::write(&tmp, &json) {
+                                        eprintln!("error: could not write descriptor temp file: {e}");
+                                        std::process::exit(1);
+                                    }
+                                    let path = tmp.to_string_lossy().into_owned();
+                                    log::info!("open:cli-flag: launching descriptor-renderer with descriptor at {path}");
+                                    std::process::exit(cli::open_cli("descriptor-renderer", &[path], layout.as_deref(), from_pane_id));
+                                }
+                                Err(e) => {
+                                    eprintln!("error: could not parse --help output for `{binary}`: {e}");
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
                     }
                     Commands::Descriptor { cmd } => match cmd {
                         DescriptorCmd::Probe { command, no_registry, no_crawl, json, extra_args } => {
