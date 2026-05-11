@@ -12,6 +12,7 @@ Form view:   host-managed text_input per field; first field auto-focused;
 Result view: Shows tool call output inline. Escape or Back returns to list.
 """
 
+import asyncio
 import json
 import os
 import select
@@ -142,7 +143,7 @@ class McpRendererApp(App):
         self._form_fields: list[FormField] = []
         # Result state
         self._result_lines: list[str] = []
-        self._calling: bool = False
+        self._calling: bool = False  # UI-only flag: True while tool call is in-flight
         # Hit regions for form/result views: (y_top, y_bot, tag)
         self._hits: list[tuple[float, float, object]] = []
         # UI components
@@ -185,7 +186,8 @@ class McpRendererApp(App):
         self._tools_ready.set()
         self.emit.schedule_render(after_ms=16)
 
-    def _call_tool_bg(self, name: str, arguments: dict) -> None:
+    def _do_call_tool(self, name: str, arguments: dict) -> list[str]:
+        """Blocking MCP call — runs via asyncio.to_thread. Returns result lines."""
         assert self._client is not None
         try:
             content = self._client.call_tool(name, arguments)
@@ -198,16 +200,11 @@ class McpRendererApp(App):
                     lines.append("[Image — open in terminal to view]")
                 else:
                     lines.append(json.dumps(item))
-            self._result_lines = lines
             self.emit.info(f"mcp-renderer: tool {name!r} returned {len(lines)} lines")
+            return lines
         except Exception as e:
-            self._result_lines = [f"Error: {e}"]
             self.emit.warn(f"mcp-renderer: tool call failed: {e}")
-        finally:
-            self._calling = False
-            self._view = "result"
-            self._result_scrollable.scroll_offset = 0.0
-        self.emit.schedule_render(after_ms=16)
+            return [f"Error: {e}"]
 
     # ── Render ────────────────────────────────────────────────────────────────
 
@@ -296,13 +293,8 @@ class McpRendererApp(App):
             run.render(ctx, 0, y, ctx.w, run_h)
             self._hits.append((y, y + run_h, "run"))
         else:
-            # Process submitted values from form fields
+            # Render form fields; submissions are handled in on_text_submitted
             for ff in self._form_fields:
-                sub = ff.submitted
-                if sub is not None:
-                    self._field_values[ff.id] = sub
-                    if ff.id == self._form_fields[-1].id:
-                        self._run_tool()
                 fh = ff.measure(ctx.w - 2 * SPACE_LG)
                 ff.render(ctx, SPACE_LG, y, ctx.w - 2 * SPACE_LG, fh)
                 y += fh
@@ -317,9 +309,21 @@ class McpRendererApp(App):
                 run.render(ctx, 0, y, ctx.w, run_h)
                 self._hits.append((y, y + run_h, "run"))
 
-    # ── Interaction ───────────────────────────────────────────────────────────
+    # ── Event handlers ────────────────────────────────────────────────────────
 
-    def on_click(self, _ctx: RenderContext, _x: float, y: float, button: str) -> None:
+    async def on_text_submitted(self, ctx: RenderContext, id: str, text: str) -> None:
+        """Handle TextInput submissions — field values and tool dispatch live here."""
+        if self._view != "form":
+            return
+        self._field_values[id] = text
+        self.emit.info(f"mcp-renderer: field {id!r} submitted: {text!r}")
+        # If this was the last field, run the tool automatically
+        if self._form_fields and id == self._form_fields[-1].id:
+            await self._run_tool()
+        else:
+            self.emit.schedule_render(after_ms=16)
+
+    async def on_click(self, _ctx: RenderContext, _x: float, y: float, button: str) -> None:
         if button != "primary":
             return
         # List view: use ListView hit detection
@@ -328,17 +332,17 @@ class McpRendererApp(App):
             if idx is not None:
                 self._list.set_selected(idx)
                 self._selected_idx = idx
-                self._handle(idx)
+                await self._handle(idx)
                 self.emit.schedule_render(after_ms=16)
             return
         # Form/result views: use _hits
         for (y_top, y_bot, tag) in self._hits:
             if y_top <= y < y_bot:
-                self._handle(tag)
+                await self._handle(tag)
                 self.emit.schedule_render(after_ms=16)
                 return
 
-    def _handle(self, tag: object) -> None:
+    async def _handle(self, tag: object) -> None:
         if tag == "back":
             if self._view in ("form", "result"):
                 self._view = "list"
@@ -347,7 +351,7 @@ class McpRendererApp(App):
             return
 
         if tag == "run":
-            self._run_tool()
+            await self._run_tool()
             return
 
         if isinstance(tag, int) and self._view == "list":
@@ -377,15 +381,14 @@ class McpRendererApp(App):
             ))
         self._view = "form"
 
-    def _run_tool(self) -> None:
-        if self._calling or self._client is None:
+    async def _run_tool(self) -> None:
+        if self._client is None:
             return
         self._calling = True
         arguments: dict = {}
         for field in self._fields:
             val = self._field_values.get(field["name"], "").strip()
             if val:
-                # Coerce to int/float if schema says so
                 ftype = field.get("type", "string")
                 if ftype == "integer":
                     try:
@@ -403,11 +406,13 @@ class McpRendererApp(App):
                     arguments[field["name"]] = val
         tool_name = self._active_tool.get("name", "")
         self.emit.info(f"mcp-renderer: calling tool {tool_name!r} with {arguments!r}")
-        threading.Thread(
-            target=self._call_tool_bg,
-            args=(tool_name, arguments),
-            daemon=True,
-        ).start()
+        self.emit.schedule_render(after_ms=16)  # show "Calling…" state
+        result_lines = await asyncio.to_thread(self._do_call_tool, tool_name, arguments)
+        self._calling = False
+        self._result_lines = result_lines
+        self._view = "result"
+        self._result_scrollable.scroll_offset = 0.0
+        self.emit.schedule_render(after_ms=16)
 
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._view == "list":
@@ -415,7 +420,9 @@ class McpRendererApp(App):
                 self._selected_idx = self._list.selected_index
                 self.emit.schedule_render(after_ms=16)
             elif key in ("Return", "Enter"):
-                self._handle(self._list.selected_index)
+                idx = self._list.selected_index
+                if 0 <= idx < len(self._tools):
+                    self._enter_form(self._tools[idx])
                 self.emit.schedule_render(after_ms=16)
 
         elif self._view == "form":

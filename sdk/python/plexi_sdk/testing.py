@@ -413,6 +413,10 @@ class AppHarness:
         """Inject a synthetic key event."""
         self._send({"type": "key", "key": key, "modifiers": modifiers or {}})
 
+    def text_submit(self, id: str, value: str) -> None:
+        """Inject a synthetic text_submitted event (user pressed Enter in a TextInput)."""
+        self._send({"type": "text_submitted", "id": id, "value": value})
+
     def screenshot(self) -> bytes:
         """Render current draw commands to PNG. Requires the plexi binary."""
         return render_draw_commands(self._draw_commands, self._width, self._height)
