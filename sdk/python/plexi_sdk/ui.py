@@ -355,7 +355,7 @@ class AppBar(Component):
         ctx.rect(x, y, w, h, BG)
         band = self._band()
         text_x = x + SPACE_MD
-        text_w = w - SPACE_MD
+        text_w = w - 2 * SPACE_MD
         if self.subtitle:
             block_h = self.TITLE_SIZE + SPACE_XS + self.SUBTITLE_SIZE
             title_y = y + (band - block_h) / 2.0
