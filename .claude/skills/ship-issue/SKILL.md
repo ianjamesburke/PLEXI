@@ -155,6 +155,18 @@ Before writing any code, read the issue and the relevant codebase to produce a t
 
 **When prior commits exist on the branch:** Before reading worktree files, grep the issue's key identifiers (field names, function names listed in "Files to change" or "Done when") directly on alpha (`src/` in the repo root). If a grep hit confirms an identifier already exists on alpha, that criterion is already implemented — skip reading its worktree file and focus Phase 3 only on what's genuinely missing. This avoids reading files that are identical to alpha and misreading branch-vs-alpha diffs.
 
+**Grep GOTCHAS.md and DEV_LOG.md for related pitfalls (required):**
+
+Extract 3–5 key terms from the issue title and Done-When criteria (e.g. the noun being changed, the subsystem, the SDK method). Run:
+```bash
+grep -in "<term1>\|<term2>\|<term3>" GOTCHAS.md DEV_LOG.md
+```
+Surface every match under a **Gotchas found:** heading in your context. Each match requires an explicit disposition before writing any code:
+- **NOTED** — constraint will be respected; call out how in the spec
+- **N/A** — explain in one clause why it doesn't apply
+
+If nothing matches, write "Gotchas found: none." and proceed. Do not skip this step.
+
 **Assess scope:** count the files that will likely change.
 
 **If the issue involves a third-party library or framework** (egui, egui_tiles, tokio, etc.) and the expected behavior isn't immediately obvious from the code: invoke the `coding-conventions` skill and read the relevant section before speculating on the approach. Unexpected API behavior not yet documented there is a signal to add it via `/improve` after the session.
