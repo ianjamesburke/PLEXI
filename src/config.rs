@@ -238,6 +238,7 @@ pub struct NotificationsConfig {
 #[derive(Deserialize, Default, Clone)]
 pub struct LogConfig {
     pub level: Option<String>,
+    pub retention_days: Option<u32>,
 }
 
 impl LogConfig {
@@ -558,7 +559,8 @@ model_high   = "anthropic/claude-opus-4-7"
 
 # ── Logging ────────────────────────────────────────────────────
 # [log]
-# level = "info"   # error | warn | info | debug  (default: info)
+# level = "info"          # error | warn | info | debug  (default: info)
+# retention_days = 30     # days to keep dated log archives (default: 30)
 
 # ── Keybindings ────────────────────────────────────────────────
 # Override any default keybinding. Format: "modifier+key" (case-insensitive).
@@ -786,6 +788,9 @@ impl LogConfig {
     fn overlay(&mut self, other: Self) {
         if other.level.is_some() {
             self.level = other.level;
+        }
+        if other.retention_days.is_some() {
+            self.retention_days = other.retention_days;
         }
     }
 }
