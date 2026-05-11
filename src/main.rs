@@ -400,13 +400,9 @@ fn main() -> eframe::Result {
                             log::info!("open:cli-flag: running --help parser for `{binary}`");
                             match cli_help_parser::parse_help_to_descriptor(&binary) {
                                 Ok(json) => {
-                                    let safe_name = std::path::Path::new(&binary)
-                                        .file_name()
-                                        .and_then(|n| n.to_str())
-                                        .unwrap_or("unknown")
-                                        .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+                                    let id = uuid::Uuid::new_v4();
                                     let tmp = std::env::temp_dir()
-                                        .join(format!("plexi-descriptor-{safe_name}.json"));
+                                        .join(format!("plexi-descriptor-{id}.json"));
                                     if let Err(e) = std::fs::write(&tmp, &json) {
                                         eprintln!("error: could not write descriptor temp file: {e}");
                                         std::process::exit(1);
