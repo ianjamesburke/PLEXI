@@ -1087,6 +1087,39 @@ impl PlexiApp {
                         }
                     }
                 }
+                crate::app_protocol::HostCommand::KeyPane { pane_id, key, response_file } => {
+                    log::info!("pane_ipc: kind=key_pane pane_id={pane_id} key={key:?}");
+                    let result = match self.windows.iter_mut().find_map(|win| win.panes.get_mut(pane_id)) {
+                        None => {
+                            log::warn!("pane_ipc: key_pane: pane_id={pane_id} not found");
+                            Err(format!("pane {pane_id} not found"))
+                        }
+                        Some(pane) => {
+                            if let Some(term) = pane.as_terminal_mut() {
+                                let bytes = key_str_to_pty_bytes(key);
+                                term.backend.process_command(egui_term::BackendCommand::Write(bytes));
+                                Ok(())
+                            } else if let Some(app_pane) = pane.as_app_mut() {
+                                let (key_str, modifiers) = parse_key_str_to_event(key);
+                                app_pane.runtime.queue_outbound_event(
+                                    crate::app_protocol::PlexiEvent::Key { key: key_str, modifiers }
+                                );
+                                Ok(())
+                            } else {
+                                Err(format!("pane {pane_id}: unknown pane type"))
+                            }
+                        }
+                    };
+                    if let Some(rf) = response_file {
+                        let json = match &result {
+                            Ok(()) => serde_json::json!({"ok": true}).to_string(),
+                            Err(msg) => serde_json::json!({"error": msg}).to_string(),
+                        };
+                        if let Err(e) = std::fs::write(rf, &json) {
+                            log::error!("pane_ipc: key_pane: could not write response file: {e}");
+                        }
+                    }
+                }
                 crate::app_protocol::HostCommand::Notify {
                     level, title, body, kind, options, input_prompt,
                     required, priority, image_inline, image_pipe_id,
@@ -3362,9 +3395,83 @@ impl PlexiApp {
 
 // ── Directed pipe helpers (#286) ─────────────────────────────────────────────
 
-/// Register a duplex JSON pipe on the target pane's typed-pipe registry so
-/// `has_reader` returns `true` and the SDK can `pipe_send` back through the
-/// same id. Returns `true` on success, `false` if the target pane has no
+/// Translate a key string (e.g. "enter", "ctrl+c", "h") to PTY bytes.
+fn key_str_to_pty_bytes(key: &str) -> Vec<u8> {
+    let key_lower = key.to_lowercase();
+    // Handle ctrl+X chords using bit-mask to support any ASCII char ([, ], \, /, @, etc.)
+    if let Some(rest) = key_lower.strip_prefix("ctrl+") {
+        if let Some(ch) = rest.chars().next() {
+            if ch.is_ascii() && !ch.is_ascii_control() {
+                return vec![(ch as u8) & 0x1F];
+            }
+        }
+    }
+    match key_lower.as_str() {
+        "enter" => b"\r".to_vec(),
+        "escape" | "esc" => b"\x1b".to_vec(),
+        "space" => b" ".to_vec(),
+        "backspace" => b"\x7f".to_vec(),
+        "tab" => b"\t".to_vec(),
+        "up" | "arrowup" => b"\x1b[A".to_vec(),
+        "down" | "arrowdown" => b"\x1b[B".to_vec(),
+        "right" | "arrowright" => b"\x1b[C".to_vec(),
+        "left" | "arrowleft" => b"\x1b[D".to_vec(),
+        _ => {
+            // single printable char
+            let mut chars = key.chars();
+            if let Some(ch) = chars.next() {
+                if chars.next().is_none() {
+                    let mut buf = [0u8; 4];
+                    return ch.encode_utf8(&mut buf).as_bytes().to_vec();
+                }
+            }
+            log::warn!("pane_ipc: key_pane: unrecognized key string {key:?}, sending raw bytes");
+            key.as_bytes().to_vec()
+        }
+    }
+}
+
+/// Parse a key string into a (key_name, Modifiers) pair for PGAP app panes.
+fn parse_key_str_to_event(key: &str) -> (String, crate::app_protocol::Modifiers) {
+    let mut parts: Vec<&str> = key.split('+').collect();
+    let key_part = parts.pop().unwrap_or(key);
+    let mut modifiers = crate::app_protocol::Modifiers::default();
+    for m in &parts {
+        match m.to_lowercase().as_str() {
+            "ctrl" | "control" => modifiers.ctrl = true,
+            "shift" => modifiers.shift = true,
+            "alt" => modifiers.alt = true,
+            "cmd" | "command" | "meta" => modifiers.cmd = true,
+            _ => {}
+        }
+    }
+    let key_str = match key_part.to_lowercase().as_str() {
+        "enter" | "return" => "Enter".to_string(),
+        "escape" | "esc" => "Escape".to_string(),
+        "space" => " ".to_string(),
+        "backspace" => "Backspace".to_string(),
+        "tab" => "Tab".to_string(),
+        "up" | "arrowup" => "ArrowUp".to_string(),
+        "down" | "arrowdown" => "ArrowDown".to_string(),
+        "right" | "arrowright" => "ArrowRight".to_string(),
+        "left" | "arrowleft" => "ArrowLeft".to_string(),
+        _ => {
+            // Preserve original case for single chars (e.g. "A" stays "A", not "a").
+            // Multi-word named keys get title-case.
+            if key_part.chars().count() == 1 {
+                key_part.to_string()
+            } else {
+                let mut s = key_part.to_string();
+                if let Some(c) = s.get_mut(0..1) {
+                    c.make_ascii_uppercase();
+                }
+                s
+            }
+        }
+    };
+    (key_str, modifiers)
+}
+
 /// process-app registry to register against (terminals — should never reach
 /// this path; logged at the call site).
 fn register_directed_pipe_on_target(pane: &mut crate::pane::Pane, pipe_id: &str) -> bool {

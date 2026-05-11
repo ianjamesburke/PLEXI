@@ -370,6 +370,7 @@ fn main() -> eframe::Result {
                             std::process::exit(cli::pane_close_cli(id));
                         }
                         PaneCmd::Send { pane_id, text } => std::process::exit(cli::pane_send_cli(pane_id, &text)),
+                        PaneCmd::Key { pane_id, key } => std::process::exit(cli::pane_key_cli(pane_id, &key)),
                         PaneCmd::Info => std::process::exit(cli::pane_info_cli()),
                     },
                     Commands::Terminal { cmd, ephemeral, layout, from_pane_id } => {

@@ -969,6 +969,19 @@ pub enum HostCommand {
         response_file: Option<String>,
     },
 
+    /// Deliver a synthetic key event to any pane. Sent by `plexi pane key`.
+    /// For terminal panes, the key is translated to PTY bytes.
+    /// For PGAP app panes, a `PlexiEvent::Key` is delivered.
+    /// Host writes `{"ok":true}` or `{"error":"..."}` to `response_file` when set.
+    KeyPane {
+        pane_id: u64,
+        /// Key string: single char ("h"), named key ("enter", "escape", "up", "down",
+        /// "left", "right", "space", "backspace"), or chord ("ctrl+c", "ctrl+d").
+        key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
+    },
+
     /// Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.
     CreateContext {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2611,5 +2624,38 @@ mod tests {
         assert!(!is_reserved_shortcut("jk"));
         // Empty is not reserved
         assert!(!is_reserved_shortcut(""));
+    }
+
+    #[test]
+    fn key_pane_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"key_pane","pane_id":42,"key":"enter","response_file":"result.json"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Host(HostCommand::KeyPane { pane_id, key, response_file }) => {
+                assert_eq!(*pane_id, 42);
+                assert_eq!(key, "enter");
+                assert_eq!(response_file.as_deref(), Some("result.json"));
+            }
+            other => panic!("expected KeyPane, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""type":"key_pane""#), "wire tag missing: {serialised}");
+
+        // Optional field: response_file absent → None
+        let minimal = r#"{"type":"key_pane","pane_id":1,"key":"h"}"#;
+        let cmd2: DrawCommand = serde_json::from_str(minimal).expect("deserialise minimal");
+        match &cmd2 {
+            DrawCommand::Host(HostCommand::KeyPane { response_file, .. }) => {
+                assert!(response_file.is_none(), "absent response_file must deserialise to None");
+            }
+            other => panic!("expected KeyPane, got {other:?}"),
+        }
+
+        // Required-field discipline: missing key field must fail
+        let bad = r#"{"type":"key_pane","pane_id":1}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required key field"
+        );
     }
 }

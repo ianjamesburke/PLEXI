@@ -310,6 +310,21 @@ pub enum PaneCmd {
     },
     /// Print JSON info for the current pane [requires PLEXI_PANE_ID]
     Info,
+    /// Deliver a synthetic key event to a pane [requires PLEXI_SOCKET — run inside a Plexi pane]
+    ///
+    /// For terminal panes, injects as PTY keystroke.
+    /// For app panes, delivers a structured key event.
+    ///
+    /// Key format: single char ("h"), named key ("enter", "escape", "space",
+    /// "up", "down", "left", "right", "backspace"), or chord ("ctrl+c").
+    ///
+    /// Example: plexi pane key 42 enter
+    Key {
+        /// Pane ID (from `plexi pane list`)
+        pane_id: u64,
+        /// Key to inject
+        key: String,
+    },
 }
 
 #[derive(Subcommand)]
