@@ -4,6 +4,30 @@ use crate::theme::Colors;
 use crate::tiling::PaneId;
 use egui::{Align, Align2, Color32, CornerRadius, Layout, RichText, Stroke, Vec2};
 
+/// Consume the first digit key (0–9) pressed this frame; return its value.
+fn consume_digit_key(ctx: &egui::Context) -> Option<u8> {
+    ctx.input_mut(|i| {
+        let keys = [
+            (egui::Key::Num0, 0u8),
+            (egui::Key::Num1, 1),
+            (egui::Key::Num2, 2),
+            (egui::Key::Num3, 3),
+            (egui::Key::Num4, 4),
+            (egui::Key::Num5, 5),
+            (egui::Key::Num6, 6),
+            (egui::Key::Num7, 7),
+            (egui::Key::Num8, 8),
+            (egui::Key::Num9, 9),
+        ];
+        for (key, n) in keys {
+            if i.consume_key(egui::Modifiers::NONE, key) {
+                return Some(n);
+            }
+        }
+        None
+    })
+}
+
 use crate::app::PlexiApp;
 
 pub(crate) const MODAL_WIDTH: f32 = 400.0;
@@ -630,6 +654,350 @@ impl PlexiApp {
             }
             self.renaming_window = None;
         }
+    }
+
+    /// Quick note compose phase: full-screen scrim + centered text input.
+    pub(crate) fn draw_quick_note_modal(&mut self, ctx: &egui::Context) {
+        use crate::style;
+        use egui::{Align2, RichText, Vec2};
+
+        // Consume Esc to close.
+        let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if esc {
+            self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+            self.quick_note_text.clear();
+            log::info!("QuickNote: modal dismissed");
+            return;
+        }
+
+        // Plain Enter (no shift) → advance to destination picker.
+        let advance = ctx.input_mut(|i| {
+            if !i.modifiers.shift && !i.modifiers.command {
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+            } else {
+                false
+            }
+        });
+        if advance && !self.quick_note_text.trim().is_empty() {
+            self.push_focus_layer(crate::app::FocusLayer::QuickNoteDestination);
+            log::info!("QuickNote: advancing to destination picker");
+            return;
+        }
+
+        let screen_rect = ctx.screen_rect();
+
+        // Scrim
+        egui::Area::new(egui::Id::new("quick_note_scrim"))
+            .fixed_pos(screen_rect.min)
+            .order(egui::Order::Middle)
+            .show(ctx, |ui| {
+                ui.painter().rect_filled(
+                    screen_rect,
+                    0.0,
+                    egui::Color32::from_black_alpha(230),
+                );
+            });
+
+        // Modal
+        let modal_w = (screen_rect.width() * 0.6).min(720.0).max(400.0);
+        egui::Area::new(egui::Id::new("quick_note_modal"))
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(egui::Stroke::new(1.0, self.colors.border))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::symmetric(24, 20))
+                    .show(ui, |ui| {
+                        ui.set_width(modal_w);
+
+                        // Hint
+                        ui.label(
+                            RichText::new("Enter to send  ·  Shift+Enter for new line  ·  Esc to discard")
+                                .color(self.colors.text_dim.linear_multiply(0.5))
+                                .size(style::TEXT_HINT)
+                                .family(egui::FontFamily::Monospace),
+                        );
+                        ui.add_space(style::SPACE_SM);
+
+                        // Text input
+                        let text_response = ui.add_sized(
+                            [modal_w, 120.0],
+                            egui::TextEdit::multiline(&mut self.quick_note_text)
+                                .id(egui::Id::new("quick_note_text"))
+                                .font(egui::FontId::monospace(style::TEXT_BODY))
+                                .text_color(self.colors.text_primary)
+                                .desired_width(f32::INFINITY)
+                                .frame(false)
+                                .hint_text(
+                                    RichText::new("What's on your mind?")
+                                        .color(self.colors.text_dim.linear_multiply(0.3))
+                                        .size(style::TEXT_BODY),
+                                ),
+                        );
+                        text_response.request_focus();
+                    });
+            });
+    }
+
+    /// Quick note destination picker: digit keys route instantly.
+    pub(crate) fn draw_quick_note_destination(&mut self, ctx: &egui::Context) {
+        use crate::style;
+        use crate::widgets;
+        use egui::{Align2, RichText, Vec2};
+
+        // Esc → back to compose.
+        let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if esc {
+            self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
+            log::info!("QuickNote: destination picker dismissed, back to composing");
+            return;
+        }
+
+        let pressed = consume_digit_key(ctx);
+
+        if let Some(key) = pressed {
+            if key == 0 {
+                let text = self.quick_note_text.clone();
+                log::info!("QuickNote: destination selected: key=0 (global backlog)");
+                if self.commit_quick_note_global_backlog(&text) {
+                    self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
+                    self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+                    self.quick_note_text.clear();
+                }
+                return;
+            }
+            let dest = self.config.quick_note.as_ref()
+                .and_then(|qn| qn.destinations.iter().find(|d| d.key == key).cloned());
+            if let Some(dest) = dest {
+                log::info!("QuickNote: destination selected: key={key}");
+                if dest.options.is_some() {
+                    self.quick_note_pending_parent = Some(key);
+                    self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(key));
+                    log::info!("QuickNote: submenu opened: parent={key}");
+                } else {
+                    let text = self.quick_note_text.clone();
+                    if self.commit_quick_note(&text, &dest) {
+                        self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
+                        self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+                        self.quick_note_text.clear();
+                    }
+                }
+            }
+            return;
+        }
+
+        // Render
+        let screen_rect = ctx.screen_rect();
+
+        egui::Area::new(egui::Id::new("quick_note_dest_scrim"))
+            .fixed_pos(screen_rect.min)
+            .order(egui::Order::Middle)
+            .show(ctx, |ui| {
+                ui.painter().rect_filled(
+                    screen_rect,
+                    0.0,
+                    egui::Color32::from_black_alpha(230),
+                );
+            });
+
+        let modal_w = (screen_rect.width() * 0.5).min(560.0).max(340.0);
+        egui::Area::new(egui::Id::new("quick_note_dest_modal"))
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(egui::Stroke::new(1.0, self.colors.border))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::symmetric(24, 20))
+                    .show(ui, |ui| {
+                        ui.set_width(modal_w);
+
+                        // Note preview
+                        let preview = {
+                            let t = self.quick_note_text.trim();
+                            if let Some((idx, _)) = t.char_indices().nth(80) {
+                                format!("{}…", &t[..idx])
+                            } else {
+                                t.to_string()
+                            }
+                        };
+                        ui.label(
+                            RichText::new(&preview)
+                                .color(self.colors.text_dim.linear_multiply(0.5))
+                                .size(style::TEXT_BODY)
+                                .family(egui::FontFamily::Monospace),
+                        );
+                        ui.add_space(style::SPACE_XL);
+
+                        ui.label(
+                            RichText::new("Send to…")
+                                .color(self.colors.text_primary)
+                                .size(style::TEXT_BODY),
+                        );
+                        ui.add_space(style::SPACE_MD);
+
+                        // Hard-coded destination 0
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = style::SPACE_SM;
+                            widgets::key_chip(ui, "0", &self.colors);
+                            ui.label(
+                                RichText::new("Backlog (global)")
+                                    .color(self.colors.text_dim)
+                                    .size(style::TEXT_BODY),
+                            );
+                        });
+                        ui.add_space(style::SPACE_SM);
+
+                        // Config destinations
+                        if let Some(qn) = &self.config.quick_note {
+                            for dest in &qn.destinations {
+                                let label = if dest.options.is_some() {
+                                    format!("{} ›", dest.label)
+                                } else {
+                                    dest.label.clone()
+                                };
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = style::SPACE_SM;
+                                    widgets::key_chip(ui, &dest.key.to_string(), &self.colors);
+                                    ui.label(
+                                        RichText::new(&label)
+                                            .color(self.colors.text_dim)
+                                            .size(style::TEXT_BODY),
+                                    );
+                                });
+                                ui.add_space(style::SPACE_SM);
+                            }
+                        }
+
+                        ui.add_space(style::SPACE_XL);
+                        ui.label(
+                            RichText::new("Esc to go back")
+                                .color(self.colors.text_dim.linear_multiply(0.4))
+                                .size(style::TEXT_HINT)
+                                .family(egui::FontFamily::Monospace),
+                        );
+                    });
+            });
+    }
+
+    /// Quick note sub-destination picker.
+    pub(crate) fn draw_quick_note_subdestination(&mut self, ctx: &egui::Context) {
+        use crate::style;
+        use crate::widgets;
+        use egui::{Align2, RichText, Vec2};
+
+        let parent_key = match self.focus_stack.last() {
+            Some(crate::app::FocusLayer::QuickNoteSubDestination(k)) => *k,
+            _ => {
+                // Shouldn't happen — defensive pop of whatever is on top.
+                self.focus_stack.pop();
+                return;
+            }
+        };
+
+        // Esc → back to destination picker.
+        let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+        if esc {
+            self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteSubDestination(parent_key));
+            self.quick_note_pending_parent = None;
+            log::info!("QuickNote: submenu dismissed, back to destination picker");
+            return;
+        }
+
+        // Find parent destination options.
+        let options: Vec<crate::config::QuickNoteSubOptionConfig> = self.config.quick_note.as_ref()
+            .and_then(|qn| qn.destinations.iter().find(|d| d.key == parent_key))
+            .and_then(|d| d.options.clone())
+            .unwrap_or_default();
+
+        let pressed = consume_digit_key(ctx);
+
+        if let Some(key) = pressed {
+            if let Some(opt) = options.iter().find(|o| o.key == key) {
+                let text = self.quick_note_text.clone();
+                let cmd_template = opt.command.clone();
+                let position = opt.position.clone().unwrap_or_else(|| "split".to_string());
+                let ctx_data = self.quick_note_ctx.clone();
+                let cmd = Self::substitute_note_tokens_static(
+                    &cmd_template, &text, &ctx_data,
+                );
+                log::info!("QuickNote: submenu selected: parent={parent_key} key={key}");
+                log::info!("QuickNote: committed via '{}' position={position:?}", opt.label);
+                match position.as_str() {
+                    "context-end" => self.open_at_context_end(&cmd),
+                    "context-start" => self.open_at_context_start(&cmd),
+                    _ => self.split_focused(false, Some(&cmd), true),
+                }
+                self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteSubDestination(parent_key));
+                self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
+                self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+                self.quick_note_text.clear();
+                self.quick_note_pending_parent = None;
+            }
+            // Unrecognised key — digit was consumed but no matching option; redraw.
+            return;
+        }
+
+        // Render
+        let screen_rect = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("quick_note_sub_scrim"))
+            .fixed_pos(screen_rect.min)
+            .order(egui::Order::Middle)
+            .show(ctx, |ui| {
+                ui.painter().rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(230));
+            });
+
+        let modal_w = (screen_rect.width() * 0.5).min(560.0).max(340.0);
+        egui::Area::new(egui::Id::new("quick_note_sub_modal"))
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(egui::Stroke::new(1.0, self.colors.border))
+                    .corner_radius(egui::CornerRadius::same(8))
+                    .inner_margin(egui::Margin::symmetric(24, 20))
+                    .show(ui, |ui| {
+                        ui.set_width(modal_w);
+
+                        let parent_label = self.config.quick_note.as_ref()
+                            .and_then(|qn| qn.destinations.iter().find(|d| d.key == parent_key))
+                            .map(|d| d.label.as_str())
+                            .unwrap_or("Submenu");
+
+                        ui.label(
+                            RichText::new(parent_label)
+                                .color(self.colors.text_primary)
+                                .size(style::TEXT_BODY)
+                                .strong(),
+                        );
+                        ui.add_space(style::SPACE_MD);
+
+                        for opt in &options {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = style::SPACE_SM;
+                                widgets::key_chip(ui, &opt.key.to_string(), &self.colors);
+                                ui.label(
+                                    RichText::new(&opt.label)
+                                        .color(self.colors.text_dim)
+                                        .size(style::TEXT_BODY),
+                                );
+                            });
+                            ui.add_space(style::SPACE_SM);
+                        }
+
+                        ui.add_space(style::SPACE_XL);
+                        ui.label(
+                            RichText::new("Esc to go back")
+                                .color(self.colors.text_dim.linear_multiply(0.4))
+                                .size(style::TEXT_HINT)
+                                .family(egui::FontFamily::Monospace),
+                        );
+                    });
+            });
     }
 
     pub(crate) fn draw_quit_confirm_overlay(&self, ctx: &egui::Context) {

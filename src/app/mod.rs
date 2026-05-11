@@ -38,6 +38,14 @@ fn is_auto_window_name(name: &str) -> bool {
     false
 }
 
+/// Context captured when the quick note modal opens.
+#[derive(Default, Clone)]
+pub(crate) struct QuickNoteCtx {
+    pub cwd: std::path::PathBuf,
+    pub workspace_root: Option<std::path::PathBuf>,
+    pub context: String,
+}
+
 /// Which layer currently owns keyboard input.
 ///
 /// The top of `PlexiApp.focus_stack` is the active layer. When a non-`Pane`
@@ -60,6 +68,12 @@ pub(crate) enum FocusLayer {
     /// sidebar is hidden. Mirrors the inline sidebar rename but as a centred
     /// overlay so the terminal is immediately usable after dismissal.
     ContextRename,
+    /// Quick note compose modal (text input phase).
+    QuickNote,
+    /// Quick note destination picker.
+    QuickNoteDestination,
+    /// Quick note sub-destination picker. Inner u8 = parent key.
+    QuickNoteSubDestination(u8),
 }
 
 #[derive(Clone)]
@@ -207,6 +221,12 @@ pub struct PlexiApp {
     pub(crate) modal_focused_option: usize,
     /// Buffer for `kind = "input"` notifications.
     pub(crate) modal_input_buffer: String,
+    /// Text being composed in the quick note modal.
+    pub(crate) quick_note_text: String,
+    /// Context captured at the time the quick note modal was opened.
+    pub(crate) quick_note_ctx: QuickNoteCtx,
+    /// If in QuickNoteSubDestination phase, the key of the parent destination entry.
+    pub(crate) quick_note_pending_parent: Option<u8>,
     /// notify_id of the notification the modal currently has state for. Used to
     /// detect a front-of-queue change and reset focus/input buffer.
     pub(crate) modal_state_notify_id: String,
@@ -454,25 +474,6 @@ impl PlexiApp {
                                     overlay_replaced: None,
                                 })));
                             }
-                            "quick_note" => {
-                                let mut app =
-                                    crate::quick_note_app::QuickNoteApp::new(app_cwd.clone());
-                                if let Some(state) = &saved_pane.app_state {
-                                    use crate::app_trait::App;
-                                    app.restore_state(state);
-                                }
-                                pane_entry = Some(Pane::App(Box::new(crate::pane::AppPane {
-                                    id: saved_pane.id,
-                                    runtime: crate::pane::AppRuntime::Builtin(Box::new(app)),
-                                    workspace_root: app_cwd,
-                                    permissions: builtin_perms,
-                                    manifest_id: "quick_note".to_string(),
-                                    name: "Quick Note".to_string(),
-                                    pane_group: None,
-                                    linked_pane_id: None,
-                                    overlay_replaced: None,
-                                })));
-                            }
                             "secrets_manager" => {
                                 let mut app = crate::secrets_app::SecretsApp::new(app_cwd.clone());
                                 if let Some(state) = &saved_pane.app_state {
@@ -624,6 +625,9 @@ impl PlexiApp {
                     current_notify_id: None,
                     modal_focused_option: 0,
                     modal_input_buffer: String::new(),
+                    quick_note_text: String::new(),
+                    quick_note_ctx: QuickNoteCtx::default(),
+                    quick_note_pending_parent: None,
                     modal_state_notify_id: String::new(),
                     notification_images: HashMap::new(),
                     notifications_enabled,
@@ -717,6 +721,9 @@ impl PlexiApp {
             current_notify_id: None,
             modal_focused_option: 0,
             modal_input_buffer: String::new(),
+            quick_note_text: String::new(),
+            quick_note_ctx: QuickNoteCtx::default(),
+            quick_note_pending_parent: None,
             modal_state_notify_id: String::new(),
             notification_images: HashMap::new(),
             notifications_enabled,
@@ -823,6 +830,9 @@ impl PlexiApp {
             current_notify_id: None,
             modal_focused_option: 0,
             modal_input_buffer: String::new(),
+            quick_note_text: String::new(),
+            quick_note_ctx: QuickNoteCtx::default(),
+            quick_note_pending_parent: None,
             modal_state_notify_id: String::new(),
             notification_images: HashMap::new(),
             notifications_enabled: false,
@@ -1567,6 +1577,15 @@ impl eframe::App for PlexiApp {
                 }
                 Some(FocusLayer::ContextRename) => {
                     self.draw_rename_context_overlay(ctx);
+                }
+                Some(FocusLayer::QuickNote) => {
+                    self.draw_quick_note_modal(ctx);
+                }
+                Some(FocusLayer::QuickNoteDestination) => {
+                    self.draw_quick_note_destination(ctx);
+                }
+                Some(FocusLayer::QuickNoteSubDestination(_)) => {
+                    self.draw_quick_note_subdestination(ctx);
                 }
                 None => {}
             }
@@ -2371,7 +2390,7 @@ impl eframe::App for PlexiApp {
                     self.open_file_browser();
                 }
                 Action::OpenQuickNote => {
-                    self.open_quick_note();
+                    self.open_quick_note_modal();
                 }
                 Action::OpenConfig => {
                     crate::config::open_config_file();
@@ -3008,6 +3027,12 @@ impl eframe::App for PlexiApp {
             ctx.memory_mut(|m| m.request_focus(egui::Id::new("palette_search")));
         }
 
+        // Same pattern: QuickNote compose mode needs re-focus every frame so
+        // pane TextInput widgets rendered in CentralPanel can't steal it.
+        if matches!(self.focus_stack.last(), Some(FocusLayer::QuickNote)) {
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("quick_note_text")));
+        }
+
         let frame_ms = _frame_start.elapsed().as_millis();
         if frame_ms > 50 {
             log::warn!("slow frame: {}ms", frame_ms);
@@ -3027,6 +3052,9 @@ impl PlexiApp {
                 | Some(FocusLayer::CommandPalette)
                 | Some(FocusLayer::RenamePane)
                 | Some(FocusLayer::ContextRename)
+                | Some(FocusLayer::QuickNote)
+                | Some(FocusLayer::QuickNoteDestination)
+                | Some(FocusLayer::QuickNoteSubDestination(_))
         )
     }
 
