@@ -142,6 +142,9 @@ class App:
         self._mx: float = 0.0
         self._my: float = 0.0
         self._click_buf: list[tuple[float, float]] = []
+        # Hold timer for ctx.button() active_fill (#1083): maps button id →
+        # monotonic timestamp at which the active state expires.
+        self._btn_active_until: dict[str, float] = {}
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
