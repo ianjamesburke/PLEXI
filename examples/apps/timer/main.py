@@ -57,14 +57,11 @@ class _Face(Component):
         cy = y + h / 2
         r = min(w, h) * 0.36
 
-        # Ring geometry: outer rim 2px, track 12px, then BG center punch-out.
-        # ctx.arc draws filled pie slices from center, so we layer:
-        #   1. outer circle (SURFACE) at r
-        #   2. full track arc at r-2 (MUTED or GREEN)
-        #   3. progress arc at r-2 (ACCENT) — overlays track for running state
-        #   4. BG circle at r-14 to hollow out the center
-        rim = r - 2
-        hole = r - 14
+        # Ring geometry: 2px outer rim, 12px track, BG center punch-out.
+        # ctx.arc draws filled pie slices from center, so we layer circles
+        # to build a donut: outer circle → track circle → progress arc → hole.
+        rim = r - 2    # inner edge of outer rim / outer edge of track
+        hole = r - 14  # center hole (track width = rim - hole = 12px)
 
         if app._state == "running":
             total = app._total_secs
@@ -72,7 +69,7 @@ class _Face(Component):
             remaining = max(0.0, total - elapsed)
             frac = remaining / total if total > 0 else 0.0
             ctx.circle(cx, cy, r, SURFACE)
-            ctx.arc(cx, cy, rim, 0, TWO_PI, MUTED)
+            ctx.circle(cx, cy, rim, MUTED)
             if frac > 0:
                 start_angle = -math.pi / 2
                 ctx.arc(cx, cy, rim, start_angle, start_angle + frac * TWO_PI, ACCENT)
@@ -82,7 +79,8 @@ class _Face(Component):
             color = ACCENT
 
         elif app._state == "done":
-            ctx.circle(cx, cy, r, GREEN)
+            ctx.circle(cx, cy, r, SURFACE)
+            ctx.circle(cx, cy, rim, GREEN)
             ctx.circle(cx, cy, hole, BG)
             label = "✓"
             sub = app._msg.strip() or DEFAULT_MSG
@@ -90,7 +88,7 @@ class _Face(Component):
 
         else:  # setup
             ctx.circle(cx, cy, r, SURFACE)
-            ctx.arc(cx, cy, rim, 0, TWO_PI, MUTED)
+            ctx.circle(cx, cy, rim, MUTED)
             ctx.circle(cx, cy, hole, BG)
             label = _fmt(DURATIONS[app._dur_idx][0])
             if app._editing_msg:
