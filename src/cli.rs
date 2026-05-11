@@ -522,8 +522,11 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
                 // The host rescans the registry on cache miss, so newly scaffolded
                 // apps are immediately openable without restarting Plexi.
                 if std::env::var("PLEXI_SOCKET").is_ok() {
-                    log::info!("app_init: auto-opening '{name}' via socket");
-                    let exit_code = crate::cli::open_cli(name, &[], None, None);
+                    let from_pane_id = std::env::var("PLEXI_PANE_ID")
+                        .ok()
+                        .and_then(|s| s.parse::<u64>().ok());
+                    log::info!("app_init: auto-opening '{name}' via socket from_pane_id={from_pane_id:?}");
+                    let exit_code = crate::cli::open_cli(name, &[], None, from_pane_id);
                     if exit_code != 0 {
                         eprintln!("warning: app created but could not auto-open '{name}' (exit {exit_code}) — run: plexi open {name}");
                     }
