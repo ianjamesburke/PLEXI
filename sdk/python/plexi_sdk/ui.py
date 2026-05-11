@@ -1101,10 +1101,9 @@ class SelectList(Component):
         return y
 
     def _total_content_h(self) -> float:
-        total = 0.0
-        for i in range(len(self.items)):
-            total += self._item_h(i) + SPACE_XS
-        return total
+        if not self.items:
+            return 0.0
+        return sum(self._item_h(i) for i in range(len(self.items))) + SPACE_XS * (len(self.items) - 1)
 
     def _clamp_scroll(self) -> None:
         max_scroll = max(0.0, self._total_content_h() - self._viewport_h)
