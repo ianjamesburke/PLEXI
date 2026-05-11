@@ -736,8 +736,8 @@ impl PlexiApp {
             });
 
         // Modal — grows with content up to (screen_height - 96px insets) then scrolls.
-        let modal_w = (screen_rect.width() * 0.6).min(720.0).max(400.0);
-        let max_text_h = (screen_rect.height() - 160.0).max(80.0);
+        let modal_w = (screen_rect.width() * 0.72).min(864.0).max(480.0);
+        let max_text_h = (screen_rect.height() * 0.8).max(80.0);
         egui::Area::new(egui::Id::new("quick_note_modal"))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .order(egui::Order::Foreground)
@@ -923,7 +923,7 @@ impl PlexiApp {
         // Render
         let screen_rect = ctx.screen_rect();
 
-        egui::Area::new(egui::Id::new("quick_note_dest_scrim"))
+        egui::Area::new(egui::Id::new("quick_note_scrim"))
             .fixed_pos(screen_rect.min)
             .order(egui::Order::Middle)
             .show(ctx, |ui| {
@@ -934,7 +934,7 @@ impl PlexiApp {
                 );
             });
 
-        let modal_w = (screen_rect.width() * 0.5).min(560.0).max(340.0);
+        let modal_w = (screen_rect.width() * 0.6).min(672.0).max(408.0);
         let cursor = self.quick_note_dest_cursor;
         let destinations = self.config.quick_note.as_ref()
             .map(|qn| qn.destinations.as_slice())
@@ -951,17 +951,23 @@ impl PlexiApp {
                     .show(ui, |ui| {
                         ui.set_width(modal_w);
 
-                        // Note preview — first line only, clean truncation.
+                        // Note preview — up to 4 lines, each truncated at 80 chars.
                         let preview = {
                             let t = self.quick_note_text.trim();
-                            let first_line = t.lines().next().unwrap_or("");
-                            if let Some((idx, _)) = first_line.char_indices().nth(80) {
-                                format!("{}…", &first_line[..idx])
-                            } else if first_line.len() < t.len() {
-                                format!("{}…", first_line)
-                            } else {
-                                first_line.to_string()
+                            let mut lines: Vec<String> = t.lines()
+                                .take(4)
+                                .map(|line| {
+                                    if let Some((idx, _)) = line.char_indices().nth(80) {
+                                        format!("{}…", &line[..idx])
+                                    } else {
+                                        line.to_string()
+                                    }
+                                })
+                                .collect();
+                            if t.lines().count() > 4 {
+                                lines.push("…".to_string());
                             }
+                            lines.join("\n")
                         };
                         ui.label(
                             RichText::new(&preview)
@@ -1157,14 +1163,14 @@ impl PlexiApp {
         // Render
         let screen_rect = ctx.screen_rect();
         let sub_cursor = self.quick_note_sub_cursor;
-        egui::Area::new(egui::Id::new("quick_note_sub_scrim"))
+        egui::Area::new(egui::Id::new("quick_note_scrim"))
             .fixed_pos(screen_rect.min)
             .order(egui::Order::Middle)
             .show(ctx, |ui| {
                 ui.painter().rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(230));
             });
 
-        let modal_w = (screen_rect.width() * 0.5).min(560.0).max(340.0);
+        let modal_w = (screen_rect.width() * 0.6).min(672.0).max(408.0);
         egui::Area::new(egui::Id::new("quick_note_sub_modal"))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .order(egui::Order::Foreground)
