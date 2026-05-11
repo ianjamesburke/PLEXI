@@ -671,29 +671,29 @@ impl PlexiApp {
                 }
             }
         } else if dy != 0 {
-            // Vertical boundary: wrap within the current context rather than
-            // falling through to page navigation. Up wraps to the last pane
-            // (circular: above the top is the bottom); Down wraps to the first.
-            let root = self.windows[self.active_window].tree.root;
-            let wrap_target = if dy < 0 {
-                root.and_then(|r| self.windows[self.active_window].find_last_pane_in(r))
+            // Vertical boundary: jump to the first or last window in the current
+            // workspace (the minimap list). Down at bottom → last window;
+            // Up at top → first window. This is a list-end jump, not a one-step move.
+            let ws_id = self.router.active().context_id;
+            let jump_idx = if dy < 0 {
+                self.windows.iter().enumerate()
+                    .filter(|(_, w)| w.context_id == ws_id)
+                    .min_by_key(|(_, w)| (w.grid_y, w.grid_x))
+                    .map(|(i, _)| i)
             } else {
-                root.and_then(|r| self.windows[self.active_window].find_first_pane_in(r))
+                self.windows.iter().enumerate()
+                    .filter(|(_, w)| w.context_id == ws_id)
+                    .max_by_key(|(_, w)| (w.grid_y, w.grid_x))
+                    .map(|(i, _)| i)
             };
-            if let Some(target) = wrap_target {
-                log::info!("navigate({:?}): wrapping within context to pane {:?}", dir, target);
-                self.windows[self.active_window].focused_pane = Some(target);
-                if let Some(egui_tiles::Tile::Pane(pane_id)) =
-                    self.windows[self.active_window].tree.tiles.get(target)
-                {
-                    let pane_id = *pane_id;
-                    if let Some(pane) = self.windows[self.active_window].panes.get_mut(&pane_id) {
-                        if let Some(app) = pane.as_app_mut() {
-                            if let crate::pane::AppRuntime::Process(ref mut proc_app) = app.runtime {
-                                proc_app.pane_just_focused = true;
-                            }
-                        }
-                    }
+            if let Some(idx) = jump_idx {
+                if idx != self.active_window {
+                    log::info!("navigate({:?}): jumping to {} window in workspace", dir, if dy < 0 { "first" } else { "last" });
+                    self.active_window = idx;
+                    let w = &self.windows[idx];
+                    let wid = w.window_id;
+                    self.context_active_window.insert(ws_id, wid);
+                    self.record_context_visit(wid);
                 }
             }
         } else {

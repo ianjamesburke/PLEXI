@@ -96,23 +96,6 @@ impl Window {
         }
     }
 
-    pub(crate) fn find_last_pane_in(&self, tile_id: TileId) -> Option<TileId> {
-        match self.tree.tiles.get(tile_id)? {
-            Tile::Pane(_) => Some(tile_id),
-            Tile::Container(container) => {
-                if let Container::Tabs(tabs) = container {
-                    return self.find_last_pane_in(tabs.active?);
-                }
-                let children: Vec<_> = container.children().copied().collect();
-                for child in children.iter().rev() {
-                    if let Some(pane) = self.find_last_pane_in(*child) {
-                        return Some(pane);
-                    }
-                }
-                None
-            }
-        }
-    }
 
     pub(crate) fn find_next_focus(&self, excluding: TileId) -> Option<TileId> {
         for dir in [
