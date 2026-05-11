@@ -1,6 +1,13 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.2] — 2026-05-11
+
+### Changes
+- chore(skills): ship-issue skill update
+- feat(quick-note): backend — FocusLayer modal, config routing, submenu (#1105)
+- chore(skills): add bundle mode to ship-issue skill
+- fix(examples): normalize Enter/Escape key strings in mcp-renderer and descriptor-renderer (#1103)
 ## [3.6.1] — 2026-05-11
 
 ### Changes
