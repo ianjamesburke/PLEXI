@@ -142,10 +142,10 @@ if [ ! -f "$CONFIG" ]; then
   echo "config: created default config at $CONFIG — set OPENROUTER_API_KEY in your shell profile"
 fi
 
-# Ensure all required top-level config sections are present (additive-only migration).
-# Sections: [notifications] [theme] [ai] [beta]
+# Ensure required top-level config sections are present (additive-only migration).
+# [ai] is intentionally omitted — it's commented out in the template (coming soon).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-"$SCRIPT_DIR/migrate-config.sh" "$CONFIG" "[notifications]" "[theme]" "[ai]" "[beta]"
+"$SCRIPT_DIR/migrate-config.sh" "$CONFIG" "[notifications]" "[theme]" "[beta]"
 
 echo "Installed $app_dest"
 echo "CLI: $bin_dest"
