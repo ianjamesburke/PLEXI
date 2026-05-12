@@ -670,12 +670,17 @@ gh issue close <number> --comment "Closed by PR #<pr> — verified on alpha <ver
 git status   # must be clean
 ```
 
-**Unblock downstream issues:** Now that `#<number>` is closed, check for open `blocked` issues that listed it as a dependency:
+**Unblock downstream issues:** Now that `#<number>` is closed, check for open `blocked` issues that have a native GitHub blocking relationship on it:
 ```bash
-gh issue list --label "blocked" --state open --json number,body --limit 100 \
-  | jq --arg n "<number>" '.[] | select(.body | test("depends_on:.*\\b" + $n + "\\b"))'
+gh issue-ext blocking list <number> --json number,title,state 2>/dev/null \
+  | jq '.[] | select(.state == "OPEN") | {number, title}'
 ```
-For each match, re-check all its dependencies: `gh issue view N --json state --jq '.state'`. If all are `CLOSED`:
+For each match, re-check all of its own blockers:
+```bash
+gh issue-ext blocking list <blocking-issue-number> --json number,state 2>/dev/null \
+  | jq 'all(.state == "CLOSED")'
+```
+If `true` (all dependencies closed):
 ```bash
 gh issue edit <n> --remove-label "blocked" --add-label "ready"
 ```
