@@ -3258,6 +3258,7 @@ dependencies = [
  "tiny-skia",
  "toml",
  "ureq",
+ "url",
  "uuid",
  "wgpu",
  "zeroize",

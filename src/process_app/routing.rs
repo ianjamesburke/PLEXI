@@ -14,6 +14,7 @@ use std::io::Read;
 use std::process::Stdio;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use url::Url;
 
 use super::{ProcessApp, StreamHandle};
 
@@ -817,44 +818,169 @@ impl ProcessApp {
                         });
                     return;
                 }
-                // Check allowed_hosts if the list is non-empty.
+
+                // Validate and normalize the initial URL host.
+                let initial_host = match extract_host_normalized(&url) {
+                    Some(h) => h,
+                    None => {
+                        log::warn!(
+                            "ProcessApp[{}]: HttpRequest {request_id} denied — malformed URL or unsupported scheme '{url}'",
+                            self.type_id
+                        );
+                        self.outbound_events.push_back(PlexiEvent::HttpResponse {
+                            request_id,
+                            status: 400,
+                            body: String::new(),
+                            error: Some("invalid_url: malformed URL or unsupported scheme".to_string()),
+                        });
+                        return;
+                    }
+                };
+
+                // Check initial URL against allowed_hosts.
                 if !self.permissions.allowed_hosts.is_empty() {
-                    let host = extract_host(&url);
-                    let allowed = self.permissions.allowed_hosts.iter().any(|pattern| host_matches(host, pattern));
+                    let allowed = self.permissions.allowed_hosts.iter().any(|pattern| host_matches(&initial_host, pattern));
                     if !allowed {
                         log::warn!(
-                            "ProcessApp[{}]: HttpRequest {request_id} denied — host '{host}' not in allowed_hosts",
-                            self.type_id
+                            "ProcessApp[{}]: HttpRequest {request_id} denied — host '{}' not in allowed_hosts",
+                            self.type_id, initial_host
                         );
                         self.outbound_events.push_back(PlexiEvent::HttpResponse {
                             request_id,
                             status: 403,
                             body: String::new(),
-                            error: Some(format!("host_not_allowed: '{host}' is not in this app's allowed_hosts list")),
+                            error: Some(format!("host_not_allowed: '{}' is not in this app's allowed_hosts list", initial_host)),
                         });
                         return;
                     }
                 }
-                log::debug!(
+
+                log::info!(
                     "ProcessApp[{}]: HttpRequest {request_id} {method} {url}",
                     self.type_id
                 );
-                // Spawn a background thread so the HTTP call never blocks the UI thread.
+
+                // Snapshot the allowed_hosts list for use in the background thread.
+                let allowed_hosts = self.permissions.allowed_hosts.clone();
                 let net = std::sync::Arc::clone(&self.net);
                 let tx = self.http_tx.clone();
                 let type_id = self.type_id.clone();
+
                 std::thread::Builder::new()
                     .name(format!("http-{type_id}-{request_id}"))
                     .spawn(move || {
-                    let resp = net.http(&method, &url, &headers, body.as_deref());
-                    log::debug!("ProcessApp[{type_id}]: HttpRequest {request_id} → {}", resp.status);
-                    let _ = tx.send(PlexiEvent::HttpResponse {
-                        request_id,
-                        status: resp.status,
-                        body: resp.body,
-                        error: resp.error,
-                    });
-                }).expect("failed to spawn http thread");
+                        let mut current_url = url.clone();
+                        let mut current_method = method.clone();
+                        let mut current_body = body.clone();
+                        const MAX_REDIRECTS: u8 = 5;
+
+                        for hop in 0..=MAX_REDIRECTS {
+                            let resp = net.http(&current_method, &current_url, &headers, current_body.as_deref());
+
+                            // Check if this is a redirect (3xx)
+                            let is_redirect = resp.status >= 300 && resp.status < 400;
+                            if !is_redirect || hop == MAX_REDIRECTS {
+                                log::debug!(
+                                    "ProcessApp[{type_id}]: HttpRequest {request_id} → {} (hop {hop})",
+                                    resp.status
+                                );
+                                let _ = tx.send(PlexiEvent::HttpResponse {
+                                    request_id,
+                                    status: resp.status,
+                                    body: resp.body,
+                                    error: resp.error,
+                                });
+                                return;
+                            }
+
+                            // Extract Location header from redirect
+                            let location = resp.response_headers
+                                .get("location")
+                                .cloned();
+
+                            let Some(next_url) = location else {
+                                log::warn!(
+                                    "ProcessApp[{type_id}]: HttpRequest {request_id} — redirect {} with no Location header",
+                                    resp.status
+                                );
+                                let _ = tx.send(PlexiEvent::HttpResponse {
+                                    request_id,
+                                    status: resp.status,
+                                    body: resp.body,
+                                    error: resp.error,
+                                });
+                                return;
+                            };
+
+                            // Resolve relative redirects against the current URL base
+                            let next_url = if next_url.starts_with("http://") || next_url.starts_with("https://") {
+                                next_url
+                            } else {
+                                // Relative redirect: resolve against current URL base
+                                match Url::parse(&current_url).and_then(|base| base.join(&next_url)) {
+                                    Ok(resolved) => resolved.to_string(),
+                                    Err(_) => {
+                                        log::warn!(
+                                            "ProcessApp[{type_id}]: HttpRequest {request_id} — cannot resolve relative redirect '{next_url}'"
+                                        );
+                                        let _ = tx.send(PlexiEvent::HttpResponse {
+                                            request_id,
+                                            status: 400,
+                                            body: String::new(),
+                                            error: Some("invalid_redirect: cannot resolve relative Location URL".to_string()),
+                                        });
+                                        return;
+                                    }
+                                }
+                            };
+
+                            // Re-validate the redirect destination against allowed_hosts
+                            let redirect_host = match extract_host_normalized(&next_url) {
+                                Some(h) => h,
+                                None => {
+                                    log::warn!(
+                                        "ProcessApp[{type_id}]: HttpRequest {request_id} — redirect to malformed URL '{next_url}'"
+                                    );
+                                    let _ = tx.send(PlexiEvent::HttpResponse {
+                                        request_id,
+                                        status: 403,
+                                        body: String::new(),
+                                        error: Some("invalid_redirect: malformed redirect URL".to_string()),
+                                    });
+                                    return;
+                                }
+                            };
+
+                            if !allowed_hosts.is_empty() {
+                                let allowed = allowed_hosts.iter().any(|pattern| host_matches(&redirect_host, pattern));
+                                if !allowed {
+                                    log::warn!(
+                                        "ProcessApp[{type_id}]: HttpRequest {request_id} — redirect to '{}' denied, not in allowed_hosts",
+                                        redirect_host
+                                    );
+                                    let _ = tx.send(PlexiEvent::HttpResponse {
+                                        request_id,
+                                        status: 403,
+                                        body: String::new(),
+                                        error: Some(format!("host_not_allowed: redirect destination '{}' is not in allowed_hosts", redirect_host)),
+                                    });
+                                    return;
+                                }
+                            }
+
+                            log::info!(
+                                "ProcessApp[{type_id}]: HttpRequest {request_id} — redirect {}/{MAX_REDIRECTS} to '{next_url}' (hop {hop})",
+                                hop + 1
+                            );
+
+                            // For 303 See Other, always use GET with no body
+                            if resp.status == 303 {
+                                current_method = "GET".to_string();
+                                current_body = None;
+                            }
+                            current_url = next_url;
+                        }
+                    }).expect("failed to spawn http thread");
             }
             // ── ai.query broker (#284) ─────────────────────────────────────
             HostCommand::AiQuery {
@@ -1962,28 +2088,48 @@ impl ProcessApp {
     }
 }
 
-/// Extract the hostname from a URL string. Returns empty string on parse failure.
-fn extract_host(url: &str) -> &str {
-    if let Some(after_scheme) = url.find("://").map(|i| &url[i + 3..]) {
-        let end = after_scheme.find('/').unwrap_or(after_scheme.len());
-        let host_port = &after_scheme[..end];
-        if let Some(colon) = host_port.rfind(':') {
-            &host_port[..colon]
-        } else {
-            host_port
-        }
-    } else {
-        ""
+/// Extract and normalize the hostname from a URL string.
+/// Returns `None` if the URL is malformed, uses an unsupported scheme,
+/// or has no resolvable host.
+fn extract_host_normalized(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    // Only http and https are supported
+    match parsed.scheme() {
+        "http" | "https" => {}
+        _ => return None,
     }
+    // Use host() enum to get a bracket-free representation for IPv6 addresses.
+    // host_str() includes brackets for IPv6 in url 2.x.
+    let raw = match parsed.host()? {
+        url::Host::Domain(d) => d.to_string(),
+        url::Host::Ipv4(addr) => addr.to_string(),
+        url::Host::Ipv6(addr) => addr.to_string(),
+    };
+    if raw.is_empty() {
+        return None;
+    }
+    // Normalize: lowercase + strip trailing dot (DNS FQDN notation)
+    let normalized = raw.to_lowercase();
+    let normalized = normalized.trim_end_matches('.');
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(normalized.to_string())
 }
 
-/// Check if `host` matches `pattern`. Supports exact match and `*.domain.com` wildcards.
+/// Check if `host` matches `pattern`.
+/// `host` must already be normalized (lowercase, no trailing dot).
+/// Supports exact match and `*.domain.com` wildcards.
+/// `*.example.com` matches `sub.example.com` but NOT bare `example.com`.
 fn host_matches(host: &str, pattern: &str) -> bool {
-    if pattern.starts_with("*.") {
-        let suffix = &pattern[1..]; // ".domain.com"
-        host.ends_with(suffix) || host == &pattern[2..]
+    let pattern_norm = pattern.to_lowercase();
+    let pattern_norm = pattern_norm.trim_end_matches('.');
+    if let Some(suffix) = pattern_norm.strip_prefix("*.") {
+        // Wildcard: must have a dot-separated subdomain prefix
+        // e.g. "sub.example.com" ends_with ".example.com"
+        host.ends_with(&format!(".{suffix}"))
     } else {
-        host == pattern
+        host == pattern_norm
     }
 }
 
@@ -2041,5 +2187,90 @@ fn pick_files(filter: &[String], multiple: bool) -> Option<Vec<String>> {
     } else {
         let handle = block_on(dialog.pick_file())?;
         Some(vec![handle.path().to_string_lossy().into_owned()])
+    }
+}
+
+#[cfg(test)]
+mod allowed_hosts_tests {
+    use super::*;
+
+    #[test]
+    fn extract_host_basic() {
+        assert_eq!(extract_host_normalized("https://example.com/path"), Some("example.com".to_string()));
+        assert_eq!(extract_host_normalized("http://example.com:8080/"), Some("example.com".to_string()));
+    }
+
+    #[test]
+    fn extract_host_normalizes_case() {
+        assert_eq!(extract_host_normalized("https://EXAMPLE.COM/"), Some("example.com".to_string()));
+        assert_eq!(extract_host_normalized("https://Example.Com/path?q=1"), Some("example.com".to_string()));
+    }
+
+    #[test]
+    fn extract_host_strips_trailing_dot() {
+        assert_eq!(extract_host_normalized("https://example.com./"), Some("example.com".to_string()));
+    }
+
+    #[test]
+    fn extract_host_rejects_credentials() {
+        // Credential injection: http://user:pass@evil.com/ should still give evil.com
+        assert_eq!(extract_host_normalized("http://user:pass@evil.com/"), Some("evil.com".to_string()));
+    }
+
+    #[test]
+    fn extract_host_ipv6() {
+        assert_eq!(extract_host_normalized("http://[::1]:8080/"), Some("::1".to_string()));
+        assert_eq!(extract_host_normalized("https://[2001:db8::1]/path"), Some("2001:db8::1".to_string()));
+    }
+
+    #[test]
+    fn extract_host_rejects_unsupported_schemes() {
+        assert_eq!(extract_host_normalized("ftp://example.com/"), None);
+        assert_eq!(extract_host_normalized("file:///etc/passwd"), None);
+        assert_eq!(extract_host_normalized("javascript:alert(1)"), None);
+        assert_eq!(extract_host_normalized("data:text/html,<h1>hi</h1>"), None);
+    }
+
+    #[test]
+    fn extract_host_rejects_malformed() {
+        assert_eq!(extract_host_normalized("not-a-url"), None);
+        assert_eq!(extract_host_normalized(""), None);
+        assert_eq!(extract_host_normalized("https://"), None);
+    }
+
+    #[test]
+    fn host_matches_exact() {
+        assert!(host_matches("example.com", "example.com"));
+        assert!(!host_matches("evil.com", "example.com"));
+        assert!(!host_matches("sub.example.com", "example.com"));
+    }
+
+    #[test]
+    fn host_matches_wildcard() {
+        assert!(host_matches("sub.example.com", "*.example.com"));
+        assert!(host_matches("a.b.example.com", "*.example.com"));
+        // Wildcard must NOT match bare domain
+        assert!(!host_matches("example.com", "*.example.com"));
+        // Wildcard must NOT match adjacent domain
+        assert!(!host_matches("badexample.com", "*.example.com"));
+        assert!(!host_matches("notexample.com", "*.example.com"));
+    }
+
+    #[test]
+    fn host_matches_normalizes_pattern() {
+        // Pattern case folding
+        assert!(host_matches("example.com", "EXAMPLE.COM"));
+        assert!(host_matches("sub.example.com", "*.EXAMPLE.COM"));
+        // Pattern trailing dot
+        assert!(host_matches("example.com", "example.com."));
+    }
+
+    #[test]
+    fn host_matches_ip_literals() {
+        assert!(host_matches("127.0.0.1", "127.0.0.1"));
+        assert!(!host_matches("127.0.0.1", "example.com"));
+        // localhost must be explicit
+        assert!(!host_matches("localhost", "127.0.0.1"));
+        assert!(host_matches("localhost", "localhost"));
     }
 }

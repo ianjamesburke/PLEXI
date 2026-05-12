@@ -51,6 +51,8 @@ tiny-skia = "0.11"
 fontdue = "0.9"
 # HTTP broker (step 9a). Pure-Rust blocking client — no tokio.
 ureq = { version = "2", default-features = false, features = ["tls"] }
+# URL parsing for hardened allowed_hosts validation (#1179). Already transitive via ureq.
+url = "2"
 # FD CLOEXEC (step 9e). fcntl for close-on-exec on pipe sockets.
 libc = "0.2"
 # CoreAudio capture + device enumeration (#277). Cross-platform PCM I/O.
