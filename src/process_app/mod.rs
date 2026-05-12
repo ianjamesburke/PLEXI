@@ -674,6 +674,7 @@ impl ProcessApp {
                     id,
                     self.exposed_tools.clone(),
                     sender,
+                    self.workspace_root.clone(),
                 );
             }
         }

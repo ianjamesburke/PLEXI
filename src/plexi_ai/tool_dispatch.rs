@@ -12,8 +12,22 @@
 //!
 //! Pending-call state lives in `PENDING_CALLS`. `ProcessApp::routing` feeds
 //! `DrawCommand::ToolResult` back here to unblock the waiting broker thread.
+//!
+//! # Authorization model (#1182)
+//!
+//! Every registry entry records the `workspace_root` of the pane that exposed
+//! the tools. When building a `ToolDispatcher`, the caller supplies its own
+//! `workspace_root`. Only tools from panes in the **same workspace** are
+//! included in the snapshot. Cross-workspace tools are invisible to the caller
+//! and cannot be invoked — the model never sees them, so confused-deputy calls
+//! fail before they can be attempted.
+//!
+//! Every dispatched call is logged at `info` level with both the caller
+//! (app_id, pane_id) and provider (pane_id, tool name) so every invocation is
+//! attributable in the audit trail.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -40,13 +54,17 @@ impl AppEventSender {
 
 // ── ToolRegistry ────────────────────────────────────────────────────────────
 
-/// One registered app — its tool definitions and how to reach it.
+/// One registered app — its tool definitions, how to reach it, and the
+/// workspace it belongs to (used for authorization checks).
 struct RegistryEntry {
     tools: Vec<AiTool>,
     sender: AppEventSender,
+    /// Workspace root of the pane that exposed these tools. Used to restrict
+    /// cross-workspace tool invocation.
+    workspace_root: std::path::PathBuf,
 }
 
-/// Global map from `(pane_id)` → `RegistryEntry`.
+/// Global map from `pane_id` → `RegistryEntry`.
 struct ToolRegistry {
     entries: HashMap<u64, RegistryEntry>,
 }
@@ -58,29 +76,66 @@ impl ToolRegistry {
         }
     }
 
-    fn register(&mut self, pane_id: u64, tools: Vec<AiTool>, sender: AppEventSender) {
-        self.entries.insert(pane_id, RegistryEntry { tools, sender });
+    fn register(
+        &mut self,
+        pane_id: u64,
+        tools: Vec<AiTool>,
+        sender: AppEventSender,
+        workspace_root: std::path::PathBuf,
+    ) {
+        self.entries.insert(
+            pane_id,
+            RegistryEntry {
+                tools,
+                sender,
+                workspace_root,
+            },
+        );
     }
 
     fn unregister(&mut self, pane_id: u64) {
         self.entries.remove(&pane_id);
     }
 
-    /// Snapshot of all tools visible right now, keyed by tool name.
+    /// Snapshot of tools visible to a caller in `caller_workspace`, keyed by
+    /// tool name. Only panes in the same workspace are included.
     ///
-    /// Duplicate names are resolved deterministically: highest pane_id wins
-    /// (typically the most recently opened pane). This avoids hash-iteration
+    /// Duplicate names (within the same workspace) are resolved
+    /// deterministically: highest pane_id wins. This avoids hash-iteration
     /// nondeterminism when multiple panes expose the same tool name.
-    fn snapshot(&self) -> HashMap<String, (u64, AiTool)> {
+    fn snapshot_for_caller(&self, caller_workspace: &Path) -> HashMap<String, (u64, AiTool)> {
         let mut map = HashMap::new();
-        let mut pane_ids: Vec<u64> = self.entries.keys().copied().collect();
+        // Use component-by-component comparison to avoid false mismatches from
+        // trailing separators or platform path normalization differences.
+        let mut pane_ids: Vec<u64> = self
+            .entries
+            .iter()
+            .filter(|(_, e)| e.workspace_root.components().eq(caller_workspace.components()))
+            .map(|(&id, _)| id)
+            .collect();
         pane_ids.sort_unstable();
-        for pane_id in pane_ids {
+
+        let mut owners_by_name: HashMap<String, Vec<u64>> = HashMap::new();
+        for &pane_id in &pane_ids {
             let Some(entry) = self.entries.get(&pane_id) else {
                 continue;
             };
             for tool in &entry.tools {
+                owners_by_name
+                    .entry(tool.name.clone())
+                    .or_default()
+                    .push(pane_id);
                 map.insert(tool.name.clone(), (pane_id, tool.clone()));
+            }
+        }
+        for (name, mut owners) in owners_by_name {
+            if owners.len() > 1 {
+                owners.sort_unstable();
+                log::warn!(
+                    "tool_dispatch: duplicate tool name {:?} exposed by panes {:?}; dispatch will target highest pane_id",
+                    name,
+                    owners
+                );
             }
         }
         map
@@ -100,13 +155,18 @@ fn global_registry() -> &'static Arc<Mutex<ToolRegistry>> {
 
 /// Register (or replace) the tools for `pane_id`. Called by routing when
 /// `DrawCommand::ExposeTools` arrives.
-pub(crate) fn register(pane_id: u64, tools: Vec<AiTool>, sender: AppEventSender) {
+pub(crate) fn register(
+    pane_id: u64,
+    tools: Vec<AiTool>,
+    sender: AppEventSender,
+    workspace_root: std::path::PathBuf,
+) {
     let count = tools.len();
     global_registry()
         .lock()
         .unwrap()
-        .register(pane_id, tools, sender);
-    log::debug!("tool_dispatch: registered {count} tool(s) for pane {pane_id}");
+        .register(pane_id, tools, sender, workspace_root);
+    log::info!("tool_dispatch: registered {count} tool(s) for pane {pane_id}");
 }
 
 /// Remove all tools for `pane_id`. Called when a pane is closed.
@@ -151,37 +211,42 @@ pub(crate) fn resolve_pending(call_id: &str, result: ToolCallResult) {
 /// Snapshot of the tool registry for one broker invocation. Created by the
 /// routing layer before spawning the broker thread. Passed into the broker
 /// via `AiBrokerRequest::tool_dispatcher`.
+///
+/// Only contains tools from panes in the same workspace as the caller — cross-
+/// workspace tools are excluded at construction time and never visible to the
+/// dispatching app or the model it drives.
 #[derive(Debug)]
 pub struct ToolDispatcher {
-    /// Snapshot: tool_name → (pane_id, AiTool)
+    /// Snapshot: tool_name → (provider_pane_id, AiTool).
+    /// Already filtered to the caller's workspace.
     tools: HashMap<String, (u64, AiTool)>,
+    /// Caller identity for audit logging.
+    caller_app_id: String,
+    /// Caller pane id for audit logging.
+    caller_pane_id: u64,
 }
 
 impl ToolDispatcher {
-    /// Build a dispatcher from the current global registry state.
-    pub fn from_registry() -> Self {
+    /// Build a dispatcher scoped to `caller_workspace`. Only tools from panes
+    /// in that workspace are included in the snapshot.
+    pub fn from_registry(
+        caller_pane_id: u64,
+        caller_app_id: String,
+        caller_workspace: std::path::PathBuf,
+    ) -> Self {
         let registry = global_registry().lock().unwrap();
-        let tools = registry.snapshot();
-        let mut owners_by_name: HashMap<String, Vec<u64>> = HashMap::new();
-        for (&pane_id, entry) in &registry.entries {
-            for tool in &entry.tools {
-                owners_by_name
-                    .entry(tool.name.clone())
-                    .or_default()
-                    .push(pane_id);
-            }
+        let tools = registry.snapshot_for_caller(&caller_workspace);
+        let visible: Vec<&str> = tools.keys().map(|s| s.as_str()).collect();
+        log::info!(
+            "tool_dispatch: dispatcher for caller={caller_app_id} pane={caller_pane_id} workspace={} — {} tool(s) visible: {visible:?}",
+            caller_workspace.display(),
+            tools.len(),
+        );
+        Self {
+            tools,
+            caller_app_id,
+            caller_pane_id,
         }
-        for (name, mut owners) in owners_by_name {
-            if owners.len() > 1 {
-                owners.sort_unstable();
-                log::warn!(
-                    "tool_dispatch: duplicate tool name {:?} exposed by panes {:?}; dispatch will target highest pane_id",
-                    name,
-                    owners
-                );
-            }
-        }
-        Self { tools }
     }
 
     /// All tools visible at snapshot time, for injection into the LLM request.
@@ -199,6 +264,10 @@ impl ToolDispatcher {
         let (pane_id, tool) = match self.tools.get(name) {
             Some(entry) => entry,
             None => {
+                log::warn!(
+                    "tool_dispatch: caller={} pane={} requested unknown tool {name:?} call_id={call_id:?}",
+                    self.caller_app_id, self.caller_pane_id,
+                );
                 return ToolCallResult {
                     output_json: None,
                     error: Some(format!("tool_not_found: no tool named {name:?} in registry")),
@@ -207,6 +276,11 @@ impl ToolDispatcher {
         };
 
         let timeout_ms = tool.timeout_ms.unwrap_or(30_000);
+
+        log::info!(
+            "tool_dispatch: caller={} caller_pane={} → tool={name:?} provider_pane={pane_id} call_id={call_id:?}",
+            self.caller_app_id, self.caller_pane_id,
+        );
 
         // Register the pending call before sending the event to avoid a race.
         let (result_tx, result_rx) = std::sync::mpsc::sync_channel::<ToolCallResult>(1);
@@ -233,6 +307,9 @@ impl ToolDispatcher {
         if !sent {
             // Pane went away after we built the snapshot — clean up and return error.
             pending_calls().lock().unwrap().remove(&call_id);
+            log::warn!(
+                "tool_dispatch: provider pane {pane_id} gone for tool {name:?} call_id={call_id:?}"
+            );
             return ToolCallResult {
                 output_json: None,
                 error: Some(format!(
@@ -243,7 +320,13 @@ impl ToolDispatcher {
 
         // Block until the app sends ToolResult or the timeout fires.
         match result_rx.recv_timeout(Duration::from_millis(timeout_ms)) {
-            Ok(result) => result,
+            Ok(result) => {
+                log::info!(
+                    "tool_dispatch: tool={name:?} call_id={call_id:?} result={}",
+                    if result.error.is_none() { "ok" } else { "error" }
+                );
+                result
+            }
             Err(_) => {
                 // Clean up the stale pending entry.
                 pending_calls().lock().unwrap().remove(&call_id);
@@ -258,5 +341,143 @@ impl ToolDispatcher {
                 }
             }
         }
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_protocol::AiTool;
+    use std::path::PathBuf;
+
+    fn make_tool(name: &str) -> AiTool {
+        AiTool {
+            name: name.to_string(),
+            description: format!("test tool {name}"),
+            input_schema: serde_json::json!({"type": "object", "properties": {}}),
+            timeout_ms: Some(100),
+        }
+    }
+
+    // ── ToolRegistry unit tests (private access via same-module #[cfg(test)]) ──
+
+    #[test]
+    fn same_workspace_tools_are_visible() {
+        let mut reg = ToolRegistry::new();
+        let ws = PathBuf::from("/workspace/a");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        reg.register(
+            1,
+            vec![make_tool("search")],
+            AppEventSender {
+                tx: tx.clone(),
+            },
+            ws.clone(),
+        );
+
+        let snap = reg.snapshot_for_caller(&ws);
+        assert!(snap.contains_key("search"), "same-workspace tool must be visible");
+        assert_eq!(snap["search"].0, 1, "provider pane id must be 1");
+    }
+
+    #[test]
+    fn cross_workspace_tools_are_hidden() {
+        let mut reg = ToolRegistry::new();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        reg.register(
+            10,
+            vec![make_tool("dangerous_tool")],
+            AppEventSender { tx: tx.clone() },
+            PathBuf::from("/workspace/attacker"),
+        );
+        reg.register(
+            20,
+            vec![make_tool("safe_tool")],
+            AppEventSender { tx: tx.clone() },
+            PathBuf::from("/workspace/victim"),
+        );
+
+        // Snapshot from attacker workspace must NOT see victim's tools.
+        let snap_attacker = reg.snapshot_for_caller(Path::new("/workspace/attacker"));
+        assert!(snap_attacker.contains_key("dangerous_tool"));
+        assert!(
+            !snap_attacker.contains_key("safe_tool"),
+            "cross-workspace tool must be hidden from attacker"
+        );
+
+        // Snapshot from victim workspace must NOT see attacker's tools.
+        let snap_victim = reg.snapshot_for_caller(Path::new("/workspace/victim"));
+        assert!(snap_victim.contains_key("safe_tool"));
+        assert!(
+            !snap_victim.contains_key("dangerous_tool"),
+            "cross-workspace tool must be hidden from victim"
+        );
+    }
+
+    #[test]
+    fn unregistered_pane_tools_disappear() {
+        let mut reg = ToolRegistry::new();
+        let ws = PathBuf::from("/workspace/x");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        reg.register(5, vec![make_tool("tool_a")], AppEventSender { tx }, ws.clone());
+
+        assert!(reg.snapshot_for_caller(&ws).contains_key("tool_a"));
+        reg.unregister(5);
+        assert!(
+            reg.snapshot_for_caller(&ws).is_empty(),
+            "tools must disappear after pane unregisters"
+        );
+    }
+
+    #[test]
+    fn empty_workspace_snapshot_for_unknown_workspace() {
+        let reg = ToolRegistry::new();
+        let snap = reg.snapshot_for_caller(Path::new("/workspace/unknown"));
+        assert!(snap.is_empty());
+    }
+
+    // ── ToolDispatcher: unauthorized call returns tool_not_found ──────────────
+    //
+    // The authorization boundary is: cross-workspace tools are excluded from the
+    // snapshot, so `dispatch_call` returns `tool_not_found` for them — the model
+    // never learns they exist.
+
+    #[test]
+    fn dispatcher_excludes_cross_workspace_tools() {
+        // Register a tool in workspace B.
+        let (tx_b, _rx_b) = std::sync::mpsc::channel();
+        register(
+            999,
+            vec![make_tool("secret_tool")],
+            AppEventSender { tx: tx_b },
+            PathBuf::from("/workspace/b"),
+        );
+
+        // Build a dispatcher for a caller in workspace A.
+        let dispatcher = ToolDispatcher::from_registry(
+            1,
+            "app_a".to_string(),
+            PathBuf::from("/workspace/a"),
+        );
+
+        // The tool must not appear in the visible set.
+        let visible: Vec<String> = dispatcher.all_tools().into_iter().map(|t| t.name).collect();
+        assert!(
+            !visible.contains(&"secret_tool".to_string()),
+            "cross-workspace tool must not appear in dispatcher: {visible:?}"
+        );
+
+        // A direct dispatch attempt must return tool_not_found.
+        let result = dispatcher.dispatch_call("call-x".to_string(), "secret_tool", "{}".to_string());
+        assert!(result.error.is_some());
+        assert!(
+            result.error.as_deref().unwrap_or("").contains("tool_not_found"),
+            "unauthorized call must return tool_not_found: {:?}", result.error
+        );
+
+        // Clean up global registry.
+        unregister(999);
     }
 }
