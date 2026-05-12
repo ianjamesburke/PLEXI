@@ -642,7 +642,8 @@ class __CLASS_NAME__(App):
                 x=PAD + 10, y=text_y,
                 children=[
                     ctx.text_child(key,   size=CAPTION, color=GREEN, monospace=True),
-                    ctx.text_child(value, size=CAPTION, color=FG,    monospace=True),
+                    ctx.text_child(value, size=CAPTION, color=FG,    monospace=True,
+                                   max_width=ctx.w - PAD * 2 - 10 - 90, elide=True),
                 ],
                 gap=90.0,
             )
