@@ -3602,7 +3602,7 @@ _plexi() {
           ;;
         terminal)
           _arguments \
-            '--ephemeral[Close the pane when the process exits]' \
+            '(-e --ephemeral)'{-e,--ephemeral}'[Close the pane when the process exits]' \
             '--layout[Layout hint]:layout:(split_v split_h split_above)' \
             '--from-pane-id[Split relative to this pane ID]:pane_id:'
           ;;
@@ -3691,7 +3691,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       if [[ $prev == "--layout" ]]; then
         COMPREPLY=($(compgen -W "split_v split_h split_above" -- "$cur"))
       else
-        COMPREPLY=($(compgen -W "--ephemeral --layout --from-pane-id" -- "$cur"))
+        COMPREPLY=($(compgen -W "-e --ephemeral --layout --from-pane-id" -- "$cur"))
       fi
       ;;
     open)
@@ -3810,7 +3810,7 @@ complete -c plexi -n "__fish_seen_subcommand_from uninstall" -l yes -d "Skip con
 complete -c plexi -f -n "__fish_seen_subcommand_from completions" -a "zsh bash fish"
 
 # terminal flags
-complete -c plexi -n "__fish_seen_subcommand_from terminal" -l ephemeral -d "Close the pane when the process exits"
+complete -c plexi -n "__fish_seen_subcommand_from terminal" -s e -l ephemeral -d "Close the pane when the process exits"
 complete -c plexi -n "__fish_seen_subcommand_from terminal" -l layout -d "Layout hint" -a "split_v split_h split_above"
 complete -c plexi -n "__fish_seen_subcommand_from terminal" -l from-pane-id -d "Split relative to this pane ID"
 # open flags
