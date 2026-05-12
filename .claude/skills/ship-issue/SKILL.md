@@ -121,6 +121,8 @@ Mark the issue in progress, capture the origin pane ID, and update the pane titl
 gh issue edit <number> --add-label "in progress"
 SHIP_PANE=$PLEXI_PANE_ID
 plexi pane name "#<number> — <short-title>"
+_PROJ_ITEM=$(gh api graphql -f query='query($n:Int!){repository(owner:"ianjamesburke",name:"PLEXI"){issue(number:$n){projectItems(first:5){nodes{id project{id}}}}}}' -F n=<number> --jq '.data.repository.issue.projectItems.nodes[]|select(.project.id=="PVT_kwHOAkOgys4BXaQY")|.id')
+[ -n "$_PROJ_ITEM" ] && gh api graphql -f query='mutation($i:ID!,$v:String!){updateProjectV2ItemFieldValue(input:{projectId:"PVT_kwHOAkOgys4BXaQY",itemId:$i,fieldId:"PVTSSF_lAHOAkOgys4BXaQYzhSnRw8",value:{singleSelectOptionId:$v}}){projectV2Item{id}}}' -f i="$_PROJ_ITEM" -f v="47fc9ee4" > /dev/null
 ```
 
 Hold `$SHIP_PANE` for the rest of the cycle — every decision-point and end-of-run notification uses it as the `pane_focus` target so the user can route back to this conversation from the notification UI.
@@ -265,6 +267,7 @@ When done, open a PR targeting `alpha` and update the pane title with the PR num
 PR_URL=$(gh pr create --base alpha --head feature/<issue-number>-short-description --title "<title>" --body "...")
 PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
 plexi pane name "#<issue-number> / PR #${PR_NUMBER} — <short-title>"
+[ -n "$_PROJ_ITEM" ] && gh api graphql -f query='mutation($i:ID!,$v:String!){updateProjectV2ItemFieldValue(input:{projectId:"PVT_kwHOAkOgys4BXaQY",itemId:$i,fieldId:"PVTSSF_lAHOAkOgys4BXaQYzhSnRw8",value:{singleSelectOptionId:$v}}){projectV2Item{id}}}' -f i="$_PROJ_ITEM" -f v="f1399a59" > /dev/null
 ```
 
 ---
@@ -663,6 +666,7 @@ git push
 
 ```bash
 gh issue close <number> --comment "Closed by PR #<pr> — verified on alpha <version>"
+[ -n "$_PROJ_ITEM" ] && gh api graphql -f query='mutation($i:ID!,$v:String!){updateProjectV2ItemFieldValue(input:{projectId:"PVT_kwHOAkOgys4BXaQY",itemId:$i,fieldId:"PVTSSF_lAHOAkOgys4BXaQYzhSnRw8",value:{singleSelectOptionId:$v}}){projectV2Item{id}}}' -f i="$_PROJ_ITEM" -f v="98236657" > /dev/null
 git status   # must be clean
 ```
 
