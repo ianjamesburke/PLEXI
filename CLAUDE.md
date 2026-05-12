@@ -7,6 +7,7 @@ Always confirm best practices by researching the docs.
 - **What shipped and why** → `git log --oneline -20` and `GOTCHAS.md` for non-obvious discoveries
 - **What's currently in flight** → `git status`
 - **What's planned** → GitHub issues
+- **What to dispatch next** → GitHub Project board #7 "Up Next" column (query: `gh project item-list 7 --owner ianjamesburke --format json | jq '.items[] | select(.status == "Up Next")'`)
 
 Before reporting anything as "done" or "missing", verify against `git log`. Never trust a status list in this file.
 
@@ -39,6 +40,19 @@ Every issue gets one **type**, one **priority**.
 - `P2` — Important but not blocking a release. Should happen in the near term.
 - `P3` — Nice to have. Polish, ergonomics, or low-urgency improvements.
 - `P4` — Backlog. Good ideas that aren't a current priority.
+
+## Dispatch Orchestration (GitHub Project Board #7)
+
+The PLEXI project board has a **Status** field with these columns: `Idea → Backlog → Up Next → In Progress → In Review → Done`.
+
+**"Up Next"** is the dispatch staging area — issues staged here are ready for parallel agent dispatch. At session start, query the board to see what's queued. Dispatch command: `plexi-beta terminal "c '/ship-issue <num>'" --layout split_v`.
+
+**Status transitions:**
+- Triage → **Up Next**: issue is ready, unblocked, and parallelizable (doesn't conflict with other Up Next issues)
+- **Up Next** → **In Progress**: agent dispatched
+- **In Progress** → **Done**: PR merged and issue closed
+
+**Parallelizability rule:** Two issues are parallelizable if they don't touch the same source files. Check `area:*` labels as a proxy — same area = potential conflict.
 
 ## Milestones
 
