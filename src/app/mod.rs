@@ -1141,10 +1141,27 @@ impl PlexiApp {
 
                     if type_id == "terminal" {
                         let layout_str = layout.as_deref().unwrap_or("split_v");
-                        let vertical = matches!(layout_str, "split_h" | "split_above");
-                        let initial_cmd = cmd_from_args(args);
-                        log::info!("pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
-                        self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral);
+                        if layout_str == "new_window" {
+                            // Create a new spatial grid window to the right of the
+                            // current context row instead of splitting the active pane.
+                            let ws_id = self.router.active().context_id;
+                            let active_y = self.windows[self.active_window].grid_y;
+                            let max_x = self.windows.iter()
+                                .filter(|w| w.context_id == ws_id && w.grid_y == active_y)
+                                .map(|w| w.grid_x)
+                                .max();
+                            let new_x = max_x.map(|x| x + 1).unwrap_or(1);
+                            log::info!("pane_ipc: spawn_pane terminal layout=new_window grid=({new_x},{active_y})");
+                            self.create_page_at(new_x, active_y);
+                        } else if layout_str == "tab" {
+                            log::info!("pane_ipc: spawn_pane terminal layout=tab");
+                            self.new_tab();
+                        } else {
+                            let vertical = matches!(layout_str, "split_h" | "split_above");
+                            let initial_cmd = cmd_from_args(args);
+                            log::info!("pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
+                            self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral);
+                        }
                     } else {
                         self.launch_app_by_id_with_layout(type_id, layout.clone(), args);
                     }

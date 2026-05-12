@@ -184,12 +184,12 @@ BEFORE_IDS=$(plexi pane list | python3 -c \
 
 ---
 
-## Step 4 — Open lane panes (horizontal)
+## Step 4 — Open lane panes (new windows)
 
-For each active lane, open a terminal to the right of the current layout:
+For each active lane, open a new window to the right of the current context grid:
 
 ```bash
-plexi terminal --layout split_h
+plexi terminal --layout new_window
 ```
 
 After each `plexi terminal` call, find the new pane ID:
@@ -223,13 +223,14 @@ Update `BEFORE_IDS` with the new ID before opening the next lane.
 
 ---
 
-## Step 5 — Open queue panes (vertical)
+## Step 5 — Open queue panes (as tabs within each lane window)
 
-For each lane that has a non-empty queue, focus the lane pane and open a split below it:
+For each lane that has a non-empty queue, focus the lane pane (switches active_window
+to the lane's window), then open a tab alongside it:
 
 ```bash
 plexi pane focus $LANE_<X>_ID
-plexi terminal --layout split_v
+plexi terminal --layout tab
 ```
 
 Find the new pane ID (same pattern as Step 4).
@@ -258,7 +259,7 @@ Leave the user's cursor in the first active lane.
 ## Notes
 
 - `plexi terminal` does not return a pane ID — always diff `plexi pane list` before/after to get it.
-- `split_h` adds to the right of the focused pane. `split_v` adds below.
+- `new_window` creates a new spatial grid page to the right. `tab` adds a tab within the active window (run `pane focus` first to target the right window). `split_h` splits below.
 - For queue panes, omit `\n` from `plexi pane send` so the command is staged but not executed.
 - `c` is a personal zsh alias (login shell) — available in all interactive panes opened by Plexi.
 - If a lane's lead issue has a feature branch already in progress (`wtp list` or `git worktree list`), note it in the pane title: `"Lane A: #934 (branch exists)"`.

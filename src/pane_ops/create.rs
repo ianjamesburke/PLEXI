@@ -1049,6 +1049,130 @@ mod tests {
         );
     }
 
+    /// `plexi terminal --layout tab` must create a new tab pane alongside the
+    /// focused pane (wrapping both in a Tabs container) rather than splitting.
+    #[test]
+    fn spawn_pane_tab_creates_tab_not_split() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        h.app.windows[0].focused_pane = Some(root);
+
+        let before_panes = h.app.windows[0].panes.len();
+        let before_windows = h.app.windows.len();
+
+        h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("tab".to_string()),
+            args: vec![],
+            pipe_id: None,
+            from_pane_id: None,
+            request_id: None,
+            response_file: None,
+            ephemeral: false,
+        });
+        h.run_frames(2);
+
+        // No new window — tab stays in the same window.
+        assert_eq!(
+            h.app.windows.len(),
+            before_windows,
+            "tab layout must not create a new window"
+        );
+        // One new pane added to the window.
+        assert_eq!(
+            h.app.windows[0].panes.len(),
+            before_panes + 1,
+            "tab layout must add exactly one new pane"
+        );
+        // The tile tree root must now be a Tabs container.
+        let root_tile = h.app.windows[0].tree.root.expect("root tile must exist");
+        let root_tile_ref = h.app.windows[0].tree.tiles.get(root_tile);
+        assert!(
+            matches!(
+                root_tile_ref,
+                Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(_)))
+            ),
+            "root tile must be a Tabs container after tab spawn, got: {root_tile_ref:?}"
+        );
+    }
+
+    /// `plexi terminal --layout new_window` must create a new spatial grid window
+    /// in the current context rather than splitting the active pane.
+    #[test]
+    fn spawn_pane_new_window_creates_separate_window() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        h.app.windows[0].focused_pane = Some(root);
+
+        let before_windows = h.app.windows.len();
+
+        h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("new_window".to_string()),
+            args: vec![],
+            pipe_id: None,
+            from_pane_id: None,
+            request_id: None,
+            response_file: None,
+            ephemeral: false,
+        });
+        h.run_frames(2);
+
+        assert_eq!(
+            h.app.windows.len(),
+            before_windows + 1,
+            "new_window layout must create a new window (not a split)"
+        );
+        // Original window must still have the same pane count (no split occurred).
+        assert_eq!(
+            h.app.windows[0].panes.len(),
+            1,
+            "original window pane count must be unchanged after new_window spawn"
+        );
+        // New window must be placed to the right of the original at the same grid row.
+        let new_win = h.app.windows.last().unwrap();
+        assert_eq!(new_win.grid_x, 1, "new window must be at grid_x=1");
+        assert_eq!(new_win.grid_y, 0, "new window must be at grid_y=0");
+        // New window must contain exactly one Terminal pane.
+        assert_eq!(new_win.panes.len(), 1, "new window must have one pane");
+        assert!(
+            new_win.panes.values().any(|p| matches!(p, crate::pane::Pane::Terminal(_))),
+            "new window pane must be a Terminal"
+        );
+    }
+
+    /// A second `new_window` spawn places the next window at grid_x=2, not grid_x=1.
+    #[test]
+    fn spawn_pane_new_window_stacks_right() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        let root = h.app.windows[0].tree.root.expect("root tile");
+        h.app.windows[0].focused_pane = Some(root);
+
+        // Spawn two new windows in sequence.
+        for _ in 0..2 {
+            h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
+                type_id: "terminal".to_string(),
+                layout: Some("new_window".to_string()),
+                args: vec![],
+                pipe_id: None,
+                from_pane_id: None,
+                request_id: None,
+                response_file: None,
+                ephemeral: false,
+            });
+            h.run_frames(2);
+        }
+
+        assert_eq!(h.app.windows.len(), 3, "two new_window spawns must create two windows");
+        let xs: Vec<u32> = h.app.windows.iter().map(|w| w.grid_x).collect();
+        assert!(xs.contains(&0), "original at grid_x=0");
+        assert!(xs.contains(&1), "first new_window at grid_x=1");
+        assert!(xs.contains(&2), "second new_window at grid_x=2");
+    }
+
     #[test]
     fn cli_binary_in_path_finds_real_binary() {
         // `/bin/sh` is guaranteed to exist on macOS/Linux.
