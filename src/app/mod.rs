@@ -74,6 +74,9 @@ pub(crate) enum FocusLayer {
     QuickNoteDestination,
     /// Quick note sub-destination picker. Inner u8 = parent key.
     QuickNoteSubDestination(u8),
+    /// First-launch CLI setup prompt. No text input — intercepts keys so they
+    /// don't fall through to the active terminal while the modal is visible.
+    CliSetupPrompt,
 }
 
 #[derive(Clone)]
@@ -1638,6 +1641,7 @@ impl eframe::App for PlexiApp {
         self.sync_command_palette_focus();
         self.sync_rename_pane_focus();
         self.sync_context_rename_focus();
+        self.sync_cli_setup_prompt_focus();
 
         // If an overlay owns input, render it FIRST so its widgets (the
         // notification modal's TextEdit for the `input` kind, the palette's
@@ -1673,6 +1677,9 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::QuickNoteSubDestination(_)) => {
                     self.draw_quick_note_subdestination(ctx);
                 }
+                Some(FocusLayer::CliSetupPrompt) => {
+                    self.draw_cli_setup_modal(ctx);
+                }
                 None => {}
             }
             self.drain_captured_keyboard_input(ctx);
@@ -1685,6 +1692,7 @@ impl eframe::App for PlexiApp {
             self.sync_command_palette_focus();
             self.sync_rename_pane_focus();
             self.sync_context_rename_focus();
+            self.sync_cli_setup_prompt_focus();
         }
 
         // Apps only receive key input if nothing is capturing above them.
@@ -3122,11 +3130,6 @@ impl eframe::App for PlexiApp {
         // Changelog overlay
         self.draw_changelog_overlay(ctx);
 
-        // First-launch CLI setup prompt
-        if self.show_cli_setup_prompt {
-            self.draw_cli_setup_modal(ctx);
-        }
-
         // Minimap overlay — auto-hidden when current workspace has <2 windows.
         let ws_id = self.router.active().context_id;
         let window_count = self.windows.iter().filter(|c| c.context_id == ws_id).count();
@@ -3197,6 +3200,7 @@ impl PlexiApp {
                 | Some(FocusLayer::QuickNote)
                 | Some(FocusLayer::QuickNoteDestination)
                 | Some(FocusLayer::QuickNoteSubDestination(_))
+                | Some(FocusLayer::CliSetupPrompt)
         )
     }
 
@@ -3442,6 +3446,23 @@ impl PlexiApp {
             self.push_focus_layer(FocusLayer::NotificationModal);
         } else if !should_own && has_layer {
             self.pop_focus_layer(&FocusLayer::NotificationModal);
+        }
+    }
+
+    pub(crate) fn sync_cli_setup_prompt_focus(&mut self) {
+        let should_own = self.show_cli_setup_prompt;
+        let has_layer = self
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::CliSetupPrompt);
+        if should_own && !has_layer {
+            log::info!("cli_setup: focus captured by CliSetupPrompt layer");
+            self.push_focus_layer(FocusLayer::CliSetupPrompt);
+        } else if !should_own && has_layer {
+            log::info!("cli_setup: CliSetupPrompt focus layer released");
+            // Use retain rather than pop_focus_layer so stale entries are removed
+            // even if another layer was pushed on top (e.g. via rapid state change).
+            self.focus_stack.retain(|l| *l != FocusLayer::CliSetupPrompt);
         }
     }
 
