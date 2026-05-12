@@ -1591,6 +1591,10 @@ impl PlexiApp {
             i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
         });
 
+        // For NotifyKind::Input, bare Enter must reach the TextEdit (newline).
+        // For all other kinds, consume it so it cannot bleed into panes behind.
+        let consume_bare_enter = !matches!(notif.kind, NotifyKind::Input);
+
         let (
             enter_pressed,
             space_pressed,
@@ -1599,26 +1603,41 @@ impl PlexiApp {
             down_pressed,
             digit_pressed,
             shortcut_pressed,
-        ) = ctx.input(|i| {
+        ) = ctx.input_mut(|i| {
             // Bare Enter (no modifiers) — used for message/choice submit.
-            let enter = i.key_pressed(egui::Key::Enter)
-                && !i.modifiers.command
-                && !i.modifiers.shift
-                && !i.modifiers.alt
-                && !i.modifiers.ctrl;
-            let space = i.key_pressed(egui::Key::Space);
-            let esc = i.key_pressed(egui::Key::Escape);
-            let up = i.key_pressed(egui::Key::ArrowUp)
-                || i.key_pressed(egui::Key::K);
-            let down = i.key_pressed(egui::Key::ArrowDown)
-                || i.key_pressed(egui::Key::J);
+            let enter = if consume_bare_enter {
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+            } else {
+                i.key_pressed(egui::Key::Enter)
+                    && !i.modifiers.command
+                    && !i.modifiers.shift
+                    && !i.modifiers.alt
+                    && !i.modifiers.ctrl
+            };
+            // Space and arrows are also gated — they must reach TextEdit for
+            // cursor navigation and space insertion in NotifyKind::Input.
+            let space = if consume_bare_enter {
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Space)
+            } else {
+                false
+            };
+            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            let (up, down) = if consume_bare_enter {
+                let up = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::K);
+                let down = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::J);
+                (up, down)
+            } else {
+                (false, false)
+            };
             let mut digit: Option<usize> = None;
             for (n, key) in [
                 (1, egui::Key::Num1), (2, egui::Key::Num2), (3, egui::Key::Num3),
                 (4, egui::Key::Num4), (5, egui::Key::Num5), (6, egui::Key::Num6),
                 (7, egui::Key::Num7), (8, egui::Key::Num8), (9, egui::Key::Num9),
             ] {
-                if i.key_pressed(key) {
+                if i.consume_key(egui::Modifiers::NONE, key) {
                     digit = Some(n - 1);
                     break;
                 }
