@@ -618,9 +618,10 @@ class __CLASS_NAME__(App):
         ctx.text(PAD, subtitle_y, "Edit main.py to build your app",
                  size=CAPTION, color=MUTED)
 
-        # ── Info rows ─────────────────────────────────────────────────────────────
-        # ctx.row with two text_child nodes lays out key + value side-by-side.
-        # gap drives spacing between them — no hardcoded x-offsets needed.
+        # ── Info table ────────────────────────────────────────────────────────────
+        # Two-column table: keys at a fixed indent, values at KEY_COL offset.
+        # Use ctx.row() for flex items (badges, chips); use fixed x for aligned
+        # table columns where values must line up vertically.
         rows = [
             ("app_id",     self.app_id),
             ("workspace",  ctx.workspace_root or "(none)"),
@@ -628,6 +629,7 @@ class __CLASS_NAME__(App):
             ("caps",       ", ".join(ctx.capabilities) or "none"),
         ]
         ROW_H   = 30
+        KEY_COL = 100
         table_y = subtitle_y + CAPTION + PAD
         table_h = ROW_H * len(rows)
 
@@ -638,15 +640,9 @@ class __CLASS_NAME__(App):
             if i > 0:
                 ctx.rect(PAD, row_y, ctx.w - PAD * 2, 1, fill=BG)
             text_y = row_y + (ROW_H - CAPTION) / 2
-            ctx.row(
-                x=PAD + 10, y=text_y,
-                children=[
-                    ctx.text_child(key,   size=CAPTION, color=GREEN, monospace=True),
-                    ctx.text_child(value, size=CAPTION, color=FG,    monospace=True,
-                                   max_width=ctx.w - PAD * 2 - 10 - 90, elide=True),
-                ],
-                gap=90.0,
-            )
+            ctx.text(PAD + 10,            text_y, key,   size=CAPTION, color=GREEN, monospace=True)
+            ctx.text(PAD + 10 + KEY_COL, text_y, value, size=CAPTION, color=FG,    monospace=True,
+                     max_width=ctx.w - PAD * 2 - 10 - KEY_COL, elide=True)
 
         # ── Button + state ────────────────────────────────────────────────────────
         self._btn.y = table_y + table_h + PAD
