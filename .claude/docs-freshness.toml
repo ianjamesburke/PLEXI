@@ -1,0 +1,18 @@
+# Tracks the last CHANGELOG version at which each user-facing surface was reviewed
+# and verified to be current. Updated manually after a /daily-check review pass.
+#
+# To mark a surface as reviewed: update the version string to the current version
+# (from Cargo.toml) and commit this file.
+
+[docs]
+# PLEXI/README.md
+readme = "3.6.19"
+# ~/.agents/skills/plexi-cli/SKILL.md
+plexi_cli_skill = "3.6.19"
+# plexi-webapp/src/pages/docs.astro (holding page — no real docs yet)
+webapp = "3.6.19"
+
+[meta]
+# ISO date of the last improve triage scan.
+# Logs newer than this date will be included in the next /daily-check improve report.
+improve_last_scanned = "2026-05-12"
