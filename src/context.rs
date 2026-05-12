@@ -99,10 +99,10 @@ impl Window {
 
     pub(crate) fn find_next_focus(&self, excluding: TileId) -> Option<TileId> {
         for dir in [
-            Direction::Left,
-            Direction::Up,
             Direction::Right,
             Direction::Down,
+            Direction::Left,
+            Direction::Up,
         ] {
             if let Some(target) = self.find_pane_in_direction_from(excluding, dir) {
                 return Some(target);

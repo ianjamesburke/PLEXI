@@ -110,27 +110,62 @@ impl PlexiApp {
         }
     }
 
-    /// After a context is deleted, find the nearest remaining context by grid
-    /// proximity (smallest Manhattan distance to the removed page's
-    /// coordinates). Returns the `active_context` index to switch to.
+    /// After a context is deleted, find the best remaining context to focus.
+    /// Returns the `active_context` index to switch to.
     pub(crate) fn nearest_context_after_delete(
         &self,
         removed_x: u32,
         removed_y: u32,
     ) -> usize {
         let ws_id = self.router.active().context_id;
-        self.windows
+        let pages: Vec<(u32, u32, usize)> = self
+            .windows
             .iter()
             .enumerate()
             .filter(|(_, c)| c.context_id == ws_id)
-            .min_by_key(|(_, c)| {
-                let dx = (c.grid_x as i64 - removed_x as i64).unsigned_abs();
-                let dy = (c.grid_y as i64 - removed_y as i64).unsigned_abs();
-                dx + dy
-            })
-            .map(|(i, _)| i)
-            .unwrap_or(0)
+            .map(|(i, c)| (c.grid_x, c.grid_y, i))
+            .collect();
+        next_context_after_delete(&pages, removed_x, removed_y)
     }
+}
+
+/// Select the best replacement context index after a page at `(removed_x, removed_y)` is deleted.
+///
+/// Priority:
+/// 1. Same row, next column — `(removed_x + 1, removed_y)`
+/// 2. Same column, next row — `(removed_x, removed_y + 1)`
+/// 3. Nearest by Manhattan distance; tie-break: forward direction (non-negative dx and dy) wins
+fn next_context_after_delete(
+    pages: &[(u32, u32, usize)],
+    removed_x: u32,
+    removed_y: u32,
+) -> usize {
+    // 1. Same row, next column
+    if let Some(&(_, _, i)) = pages
+        .iter()
+        .find(|&&(x, y, _)| y == removed_y && Some(x) == removed_x.checked_add(1))
+    {
+        return i;
+    }
+    // 2. Same column, next row
+    if let Some(&(_, _, i)) = pages
+        .iter()
+        .find(|&&(x, y, _)| x == removed_x && Some(y) == removed_y.checked_add(1))
+    {
+        return i;
+    }
+    // 3. Nearest by Manhattan distance; prefer forward (non-negative delta) on tie
+    pages
+        .iter()
+        .min_by_key(|&&(x, y, _)| {
+            let dx = x as i64 - removed_x as i64;
+            let dy = y as i64 - removed_y as i64;
+            let dist = dx.unsigned_abs() + dy.unsigned_abs();
+            let backward = if dx >= 0 && dy >= 0 { 0u64 } else { 1u64 };
+            (dist, backward)
+        })
+        .map(|&(_, _, i)| i)
+        .unwrap_or(0)
 }
 
 // ── Unit tests ───────────────────────────────────────────────────────────────
@@ -265,6 +300,38 @@ mod tests {
             find_navigation_target(&ps, 1, 0, 0, 1, 0, &HashMap::new()),
             None
         );
+    }
+
+    // ── next_context_after_delete ─────────────────────────────────────────
+
+    #[test]
+    fn delete_prefers_next_column_same_row() {
+        // Removed at (0,0). Candidates: (1,0) and (0,1). Same-row next col wins.
+        let candidates = vec![(1u32, 0u32, 0usize), (0u32, 1u32, 1usize)];
+        assert_eq!(next_context_after_delete(&candidates, 0, 0), 0); // (1,0)
+    }
+
+    #[test]
+    fn delete_falls_back_to_next_row_when_no_next_col() {
+        // Removed at (1,0). No candidate at (2,0). Candidate at (1,1) wins via priority 2.
+        let candidates = vec![(0u32, 0u32, 0usize), (1u32, 1u32, 1usize)];
+        assert_eq!(next_context_after_delete(&candidates, 1, 0), 1); // (1,1)
+    }
+
+    #[test]
+    fn delete_tie_prefers_forward_over_backward() {
+        // Removed at (1,1). Candidates: (0,0) and (2,2) — equidistant (Manhattan 2).
+        // Neither matches priority 1 (would need (2,1)) nor priority 2 (would need (1,2)).
+        // (2,2) has dx=1,dy=1 (forward) vs (0,0) dx=-1,dy=-1 (backward) — (2,2) wins.
+        let candidates = vec![(0u32, 0u32, 0usize), (2u32, 2u32, 1usize)];
+        assert_eq!(next_context_after_delete(&candidates, 1, 1), 1); // (2,2)
+    }
+
+    #[test]
+    fn delete_falls_back_to_prev_when_last_in_row() {
+        // Removed at (2,0). No candidate to the right. Falls back to (1,0) as nearest.
+        let candidates = vec![(0u32, 0u32, 0usize), (1u32, 0u32, 1usize)];
+        assert_eq!(next_context_after_delete(&candidates, 2, 0), 1); // (1,0) is nearest
     }
 
     // ── Workspace isolation ───────────────────────────────────────────────
