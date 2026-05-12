@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Usage: scripts/pr-clean-merged.sh
 # Removes app bundle, CLI binary, and profile directory for any PR build
-# whose GitHub PR is no longer open. Requires gh CLI.
+# whose GitHub PR is no longer open. Reports orphaned worktrees. Requires gh CLI.
 set -euo pipefail
+
+REPO_ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 
 found=0
 for profile in "$HOME"/.plexi-pr-*/; do
@@ -23,4 +25,23 @@ done
 
 if [[ $found -eq 0 ]]; then
     echo "Nothing to clean"
+fi
+
+# Check for orphaned feature/fix worktrees with no open PR
+echo ""
+echo "Checking for orphaned worktrees..."
+orphans=0
+for wt_dir in "$REPO_ROOT"/worktrees/feature/* "$REPO_ROOT"/worktrees/fix/* "$REPO_ROOT"/worktrees/temp-*; do
+    [[ -d "$wt_dir" ]] || continue
+    branch=$(git -C "$wt_dir" branch --show-current 2>/dev/null) || continue
+    [[ -n "$branch" ]] || continue
+    open_count=$(gh pr list --head "$branch" --state open --json number -q 'length' 2>/dev/null || echo "0")
+    if [[ "$open_count" == "0" ]]; then
+        orphans=1
+        echo "  ORPHAN: worktrees/$(basename "$(dirname "$wt_dir")")/$(basename "$wt_dir") (branch: $branch) — no open PR"
+        echo "          remove with: wtp remove $branch"
+    fi
+done
+if [[ $orphans -eq 0 ]]; then
+    echo "No orphaned worktrees found"
 fi
