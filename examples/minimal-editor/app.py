@@ -6,7 +6,7 @@ Cmd+S saves the current content back via ctx.emit.write_file().
 Shows a status line: bytes written on save, char count while editing.
 """
 
-from plexi_sdk import App, RenderContext, FG, MUTED, SURFACE, GREEN, ACCENT, BG, BODY, CAPTION, HINT  # type: ignore[attr-defined]
+from plexi_sdk import App, RenderContext, FG, MUTED, GREEN, ACCENT, BG, BODY  # type: ignore[attr-defined]
 
 NOTES_FILE = "notes.txt"
 
@@ -74,42 +74,34 @@ class MinimalEditorApp(App):
             self._status_color = MUTED
 
     def on_render(self, ctx: RenderContext) -> None:
-        from plexi_sdk.ui import Column, AppBar, FooterKeys, Footer, Spacer
-
         ctx.clear(BG)
+        pad = 16.0
+        y = pad
 
-        _app = self
+        ctx.text(pad, y, "Minimal Editor", size=16.0, color=FG, bold=True)
+        y += 28.0
+        ctx.text(pad, y, NOTES_FILE, size=BODY, color=MUTED)
+        y += 24.0
+        ctx.rect(pad, y, ctx.w - pad * 2, 1.0, fill=MUTED, radius=0.0)
+        y += 12.0
 
-        class _Body:
-            def measure(self, avail_w: float) -> float:
-                return 0.0
+        if self._loading:
+            ctx.text(pad, y, "Loading…", size=BODY, color=MUTED)
+        else:
+            for i, line in enumerate(self._lines):
+                is_cursor = i == self._cursor_line
+                text = line + ("▌" if is_cursor else "")
+                ctx.text(pad, y, text if text else ("▌" if is_cursor else " "), size=BODY, color=FG if is_cursor else MUTED)
+                y += BODY + 4.0
+                if y > ctx.h - 60:
+                    remaining = len(self._lines) - i - 1
+                    if remaining > 0:
+                        ctx.text(pad, y, f"… {remaining} more line(s)", size=BODY, color=MUTED)
+                    break
 
-            def is_grow(self) -> bool:
-                return True
-
-            def render(self, ctx2, x: float, y: float, w: float, h: float) -> None:
-                if _app._loading:
-                    ctx2.text(x, y + 16, "Loading…", size=BODY, color=MUTED)
-                    return
-                cy = y
-                for i, line in enumerate(_app._lines):
-                    is_cursor = i == _app._cursor_line
-                    cursor = "▌" if is_cursor else ""
-                    color = FG if is_cursor else MUTED
-                    ctx2.text(x, cy, line + cursor, size=BODY, color=color)
-                    cy += BODY + 6
-                    if cy > y + h - 4:
-                        break
-
-        children = [
-            AppBar(title="Minimal Editor", subtitle=NOTES_FILE),
-            _Body(),
-            Spacer(size=HINT),
-        ]
         if self._status:
-            children.append(Footer(self._status, color=self._status_color))
-        children.append(FooterKeys([(["⌘", "s"], "save")]))
-        ctx.render(Column(children))
+            ctx.text(pad, ctx.h - 36.0, self._status, size=BODY, color=self._status_color)
+        ctx.text(pad, ctx.h - 18.0, "⌘S  save", size=BODY, color=MUTED)
 
 
 if __name__ == "__main__":
