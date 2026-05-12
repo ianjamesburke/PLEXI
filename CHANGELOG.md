@@ -1,6 +1,15 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.20] — 2026-05-12
+
+### Changes
+- feat(website): adopt Tailwind v4 + shadcn tokens + typography (#1172) (#1174)
+- fix(install): avoid mutating Cargo manifest for channel bundles
+- chore(justfile): add web recipe for website dev server
+- feat(docs): scaffold docs system with content collection, layout, and seed pages
+- chore(website): remove MIT license and built-in-public from footer
+- chore(scripts): report orphaned worktrees in pr-clean-merged (#1166)
 ## [3.6.19] — 2026-05-12
 
 ### Changes
