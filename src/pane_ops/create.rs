@@ -521,7 +521,7 @@ impl PlexiApp {
             log::info!(
                 "SpawnPane: terminal layout='{layout_str}' vertical={vertical} initial_cmd={initial_cmd:?}"
             );
-            self.split_focused(vertical, initial_cmd.as_deref(), false);
+            self.split_focused(vertical, initial_cmd.as_deref(), false, None);
             return;
         }
 
@@ -739,7 +739,7 @@ impl PlexiApp {
                 match position {
                     "context-end" => self.open_at_context_end(&cmd),
                     "context-start" => self.open_at_context_start(&cmd),
-                    _ => self.split_focused(false, Some(&cmd), true),
+                    _ => self.split_focused(false, Some(&cmd), true, None),
                 }
                 true
             }
@@ -810,7 +810,7 @@ impl PlexiApp {
     pub(crate) fn open_at_context_end(&mut self, cmd: &str) {
         let did_insert = self.try_insert_at_root(cmd, false);
         if !did_insert {
-            self.split_focused(false, Some(cmd), true);
+            self.split_focused(false, Some(cmd), true, None);
         }
     }
 
@@ -818,7 +818,7 @@ impl PlexiApp {
     pub(crate) fn open_at_context_start(&mut self, cmd: &str) {
         let did_insert = self.try_insert_at_root(cmd, true);
         if !did_insert {
-            self.split_focused(false, Some(cmd), true);
+            self.split_focused(false, Some(cmd), true, None);
         }
     }
 
@@ -967,6 +967,7 @@ mod tests {
             request_id: None,
             response_file: None,
             ephemeral: false,
+            cwd: None,
         });
         h.run_frames(2);
 
@@ -1002,6 +1003,7 @@ mod tests {
             request_id: None,
             response_file: None,
             ephemeral: false,
+            cwd: None,
         });
         h.run_frames(2);
 
@@ -1040,6 +1042,7 @@ mod tests {
             request_id: None,
             response_file: None,
             ephemeral: false,
+            cwd: None,
         });
         h.run_frames(2);
 
@@ -1077,6 +1080,7 @@ mod tests {
             request_id: None,
             response_file: None,
             ephemeral: false,
+            cwd: None,
         });
         h.run_frames(2);
 
@@ -1124,6 +1128,7 @@ mod tests {
             request_id: None,
             response_file: None,
             ephemeral: false,
+            cwd: None,
         });
         h.run_frames(2);
 
@@ -1169,6 +1174,7 @@ mod tests {
                 request_id: None,
                 response_file: None,
                 ephemeral: false,
+                cwd: None,
             });
             h.run_frames(2);
         }

@@ -115,6 +115,9 @@ pub enum Commands {
         /// Split relative to this pane ID instead of the focused pane
         #[arg(long)]
         from_pane_id: Option<u64>,
+        /// Working directory for the new terminal pane
+        #[arg(long)]
+        cwd: Option<String>,
     },
     /// Open an app pane
     Open {

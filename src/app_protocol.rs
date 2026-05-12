@@ -990,6 +990,8 @@ pub enum HostCommand {
         response_file: Option<String>,
         #[serde(default, skip_serializing_if = "is_false")]
         ephemeral: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`

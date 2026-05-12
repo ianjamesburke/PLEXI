@@ -1125,8 +1125,8 @@ impl PlexiApp {
                         log::warn!("pane_ipc: close_pane: pane_id={pane_id} not found");
                     }
                 }
-                crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, ephemeral, response_file, from_pane_id, .. } => {
-                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id} layout={layout:?} ephemeral={ephemeral} from_pane_id={from_pane_id:?} response_file={response_file:?}");
+                crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, ephemeral, response_file, from_pane_id, cwd, .. } => {
+                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id} layout={layout:?} ephemeral={ephemeral} from_pane_id={from_pane_id:?} cwd={cwd:?} response_file={response_file:?}");
                     let new_pane_id = self.host.next_pane_id();
 
                     // Override focused_pane for the split if from_pane_id is specified,
@@ -1145,6 +1145,7 @@ impl PlexiApp {
                     if type_id == "terminal" {
                         let layout_str = layout.as_deref().unwrap_or("split_v");
                         let initial_cmd = cmd_from_args(args);
+                        let cwd_override: Option<std::path::PathBuf> = cwd.as_deref().map(std::path::PathBuf::from);
                         if layout_str == "new_window" {
                             // Create a new spatial grid window to the right of the
                             // current context row instead of splitting the active pane.
@@ -1163,7 +1164,7 @@ impl PlexiApp {
                         } else {
                             let vertical = matches!(layout_str, "split_h" | "split_above");
                             log::info!("pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
-                            self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral);
+                            self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral, cwd_override);
                         }
                     } else {
                         self.launch_app_by_id_with_layout(type_id, layout.clone(), args);
@@ -1358,12 +1359,13 @@ impl PlexiApp {
                         .collect()
                 })
                 .unwrap_or_default();
-            log::info!("spawn-queue: launching '{type_id}' layout={layout:?} ephemeral={ephemeral}");
+            let cwd_override: Option<std::path::PathBuf> = val["cwd"].as_str().map(std::path::PathBuf::from);
+            log::info!("spawn-queue: launching '{type_id}' layout={layout:?} ephemeral={ephemeral} cwd={cwd_override:?}");
             if type_id == "terminal" {
                 let layout_str = layout.as_deref().unwrap_or("split_v");
                 let vertical = matches!(layout_str, "split_h" | "split_above");
                 let initial_cmd = cmd_from_args(&args);
-                self.split_focused(vertical, initial_cmd.as_deref(), ephemeral);
+                self.split_focused(vertical, initial_cmd.as_deref(), ephemeral, cwd_override);
             } else {
                 self.launch_app_by_id_with_layout(&type_id, layout, &args);
             }
@@ -1834,7 +1836,7 @@ impl eframe::App for PlexiApp {
                         );
                         // SDK-spawned terminal with a cmd closes on exit (matches historical behavior).
                         // CLI terminal uses the ephemeral flag exclusively — cmd alone does not close.
-                        self.split_focused(vertical, initial_cmd.as_deref(), initial_cmd.is_some());
+                        self.split_focused(vertical, initial_cmd.as_deref(), initial_cmd.is_some(), None);
                     } else {
                         self.launch_app_by_id_with_layout(&type_id, Some(layout), &effective_args);
                         log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
@@ -2303,13 +2305,13 @@ impl eframe::App for PlexiApp {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].zoomed_pane = None;
                     self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
-                    self.split_focused(false, None, false);
+                    self.split_focused(false, None, false, None);
                     self.save_workspace();
                 }
                 Action::SplitVertical => {
                     self.windows[self.active_window].zoomed_pane = None;
                     self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
-                    self.split_focused(true, None, false);
+                    self.split_focused(true, None, false, None);
                     self.save_workspace();
                 }
                 Action::SplitRight => {

@@ -1143,7 +1143,7 @@ impl PlexiApp {
                 match position.as_str() {
                     "context-end" => self.open_at_context_end(&cmd),
                     "context-start" => self.open_at_context_start(&cmd),
-                    _ => self.split_focused(false, Some(&cmd), true),
+                    _ => self.split_focused(false, Some(&cmd), true, None),
                 }
                 self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteSubDestination(parent_key));
                 self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
@@ -1171,7 +1171,7 @@ impl PlexiApp {
                 match position.as_str() {
                     "context-end" => self.open_at_context_end(&cmd),
                     "context-start" => self.open_at_context_start(&cmd),
-                    _ => self.split_focused(false, Some(&cmd), true),
+                    _ => self.split_focused(false, Some(&cmd), true, None),
                 }
                 self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteSubDestination(parent_key));
                 self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);

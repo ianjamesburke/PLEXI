@@ -186,7 +186,7 @@ impl PlexiApp {
         match kind {
             Kind::Terminal => {
                 // Reuse the existing terminal split path.
-                self.split_focused(vertical, None, false);
+                self.split_focused(vertical, None, false, None);
             }
             Kind::App(manifest_id) => {
                 // Fresh instance of the same app at the requested placement.
@@ -203,7 +203,7 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn split_focused(&mut self, vertical: bool, initial_cmd: Option<&str>, close_on_exit: bool) {
+    pub(crate) fn split_focused(&mut self, vertical: bool, initial_cmd: Option<&str>, close_on_exit: bool, cwd_override: Option<std::path::PathBuf>) {
         let Some(focused) = self.windows[self.active_window].focused_pane else {
             return;
         };
@@ -225,7 +225,7 @@ impl PlexiApp {
             })
             .unwrap_or_else(|| (self.host.alloc_pane_id(), vertical));
 
-        let cwd = self.windows[self.active_window].get_focused_pane_cwd(focused);
+        let cwd = cwd_override.or_else(|| self.windows[self.active_window].get_focused_pane_cwd(focused));
         let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);
         let ctx_name = self.context_name_for(ctx_id);
         let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
