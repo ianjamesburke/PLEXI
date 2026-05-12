@@ -320,9 +320,11 @@ mod tests {
 
     #[test]
     fn delete_tie_prefers_forward_over_backward() {
-        // Removed at (1,0). (0,0) and (2,0) are equidistant. (2,0) is forward — it wins.
-        let candidates = vec![(0u32, 0u32, 0usize), (2u32, 0u32, 1usize)];
-        assert_eq!(next_context_after_delete(&candidates, 1, 0), 1); // (2,0)
+        // Removed at (1,1). Candidates: (0,0) and (2,2) — equidistant (Manhattan 2).
+        // Neither matches priority 1 (would need (2,1)) nor priority 2 (would need (1,2)).
+        // (2,2) has dx=1,dy=1 (forward) vs (0,0) dx=-1,dy=-1 (backward) — (2,2) wins.
+        let candidates = vec![(0u32, 0u32, 0usize), (2u32, 2u32, 1usize)];
+        assert_eq!(next_context_after_delete(&candidates, 1, 1), 1); // (2,2)
     }
 
     #[test]
