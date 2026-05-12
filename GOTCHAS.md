@@ -1,8 +1,13 @@
 <!-- GOTCHAS.md — Non-obvious discoveries, failed approaches, and environment quirks specific to PLEXI. Only write an entry when something genuinely surprised you. For universal behavioral rules see ~/.claude/CLAUDE.md; for language/framework API gotchas see the coding-conventions skill. Review weekly: if the same area tag appears 3+ times, fix the root cause rather than adding another entry. -->
 
-## Area tags: git · ship · macos · rust · egui · sdk · cargo · python · cli
+## Area tags: git · ship · macos · rust · egui · sdk · cargo · python · cli · quick-note
 
 ---
+
+## [quick-note] shell injection surface for pane destination token substitution
+`substitute_note_tokens_static` applies `shell_quote` to both `{note}` and `{cwd}` before substituting into the command template. `shell_quote` uses POSIX single-quote wrapping (`'...'`) with `'` escaped as `'\''` — this blocks all expansion inside the quoted region including `$(...)`, backticks, `\`, newlines, and semicolons. Audit (issue #1113) confirmed no gaps: all three call sites (pane_ops/create.rs and two in overlays.rs) route through the same function.
+
+Key constraint: the command *template* comes from `config.toml` (user-controlled, not free-form input). Only the values substituted at `{note}` and `{cwd}` are escaped — the template structure itself is trusted. Do not add new substitution tokens that expand arbitrary strings without routing them through `shell_quote`.
 
 ## shell_join over-quotes single-arg terminal commands
 `shell_join(["echo hello"])` produces `'echo hello'` — zsh then tries to execute a command
