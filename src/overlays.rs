@@ -826,6 +826,7 @@ impl PlexiApp {
         if back {
             self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
             log::info!("QuickNote: destination picker dismissed, back to composing");
+            self.draw_quick_note_modal(ctx); // same-frame draw to avoid flash
             return;
         }
 
@@ -1098,6 +1099,7 @@ impl PlexiApp {
             self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteSubDestination(parent_key));
             self.quick_note_pending_parent = None;
             log::info!("QuickNote: submenu dismissed, back to destination picker");
+            self.draw_quick_note_destination(ctx); // same-frame draw to avoid flash
             return;
         }
 
