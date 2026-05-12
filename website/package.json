@@ -17,8 +17,11 @@
     "@astrojs/node": "^10.0.6",
     "@astrojs/rss": "^4.0.18",
     "@astrojs/sitemap": "^3.7.2",
+    "@tailwindcss/typography": "^0.5.19",
+    "@tailwindcss/vite": "^4.3.0",
     "astro": "^6.1.10",
     "better-sqlite3": "^12.9.0",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "tailwindcss": "^4.3.0"
   }
 }

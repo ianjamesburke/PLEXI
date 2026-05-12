@@ -1,3 +1,6 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
 :root {
   --bg: #07080a;
   --bg-2: #0e1013;
@@ -19,6 +22,80 @@
   --good: #34d399;
   --mono: "Berkeley Mono", "JetBrains Mono", "Fira Code", "SF Mono", ui-monospace, Menlo, monospace;
 }
+
+/* shadcn-style token aliases consumed by Tailwind utilities */
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --color-muted: var(--bg-3);
+  --color-muted-foreground: var(--fg-3);
+  --color-border: var(--border);
+  --color-input: var(--border-2);
+  --color-ring: var(--accent);
+  --color-primary: var(--accent);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--bg-4);
+  --color-secondary-foreground: var(--fg-2);
+  --color-accent: var(--accent-light);
+  --color-accent-foreground: #ffffff;
+  --color-card: var(--bg-2);
+  --color-card-foreground: var(--fg);
+  --color-popover: var(--bg-3);
+  --color-popover-foreground: var(--fg);
+  --color-destructive: oklch(0.577 0.245 27.325);
+  --font-mono: var(--mono);
+}
+
+/* Tailwind Typography — map prose to our palette */
+.prose {
+  --tw-prose-invert-body: var(--fg-2);
+  --tw-prose-invert-headings: var(--fg);
+  --tw-prose-invert-lead: var(--fg-3);
+  --tw-prose-invert-links: var(--accent-light);
+  --tw-prose-invert-bold: var(--fg);
+  --tw-prose-invert-counters: var(--fg-3);
+  --tw-prose-invert-bullets: var(--fg-4);
+  --tw-prose-invert-hr: var(--border);
+  --tw-prose-invert-quotes: var(--fg-2);
+  --tw-prose-invert-quote-borders: var(--accent);
+  --tw-prose-invert-captions: var(--fg-3);
+  --tw-prose-invert-code: var(--accent-light);
+  --tw-prose-invert-pre-code: var(--fg-2);
+  --tw-prose-invert-pre-bg: var(--bg-2);
+  --tw-prose-invert-th-borders: var(--border-2);
+  --tw-prose-invert-td-borders: var(--border);
+  font-family: var(--mono);
+  font-size: 14px !important;
+}
+/* Inline code — styled chip */
+.prose :not(pre) > code {
+  background: var(--bg-3) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: 4px !important;
+  padding: 2px 6px !important;
+  font-size: 12.5px !important;
+  color: var(--accent-light) !important;
+  font-weight: normal !important;
+}
+/* Code block shell */
+.prose pre {
+  background: var(--bg-2) !important;
+  border: 1px solid var(--border-2) !important;
+  border-radius: 8px !important;
+  padding: 16px 18px !important;
+  font-size: 12.5px !important;
+  line-height: 1.7 !important;
+}
+/* Callout component used in MDX */
+.prose .callout {
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  background: var(--bg-2);
+  font-size: 13px;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { background: var(--bg); color: var(--fg); font-family: var(--mono); -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
 body { line-height: 1.65; font-size: 14px; overflow-x: hidden; }
