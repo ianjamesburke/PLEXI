@@ -751,9 +751,9 @@ impl PlexiApp {
                 );
             });
 
-        // Modal — grows with content up to (screen_height - 96px insets) then scrolls.
+        // Modal — fixed height: text area fills ~80% of screen height from the moment it opens.
         let modal_w = (screen_rect.width() * 0.72).min(864.0).max(480.0);
-        let max_text_h = (screen_rect.height() * 0.8).max(80.0);
+        let max_text_h = (screen_rect.height() * 0.8 - 60.0).max(80.0);
         egui::Area::new(egui::Id::new("quick_note_modal"))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .order(egui::Order::Foreground)
@@ -775,29 +775,25 @@ impl PlexiApp {
                         );
                         ui.add_space(style::SPACE_SM);
 
-                        // Text input — expands line-by-line; scrolls once full.
-                        egui::ScrollArea::vertical()
-                            .max_height(max_text_h)
-                            .show(ui, |ui| {
-                                ui.scope(|ui| {
-                                    ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                                    ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
-                                    ui.add(
-                                        egui::TextEdit::multiline(&mut self.quick_note_text)
-                                            .id(egui::Id::new("quick_note_text"))
-                                            .font(egui::FontId::monospace(style::TEXT_BODY))
-                                            .text_color(self.colors.text_primary)
-                                            .desired_width(f32::INFINITY)
-                                            .desired_rows(1)
-                                            .frame(false)
-                                            .hint_text(
-                                                RichText::new("What's on your mind?")
-                                                    .color(self.colors.text_dim.linear_multiply(0.3))
-                                                    .size(style::TEXT_BODY),
-                                            ),
-                                    );
-                                });
-                            });
+                        // Text input — fixed tall area; TextEdit handles internal scrolling.
+                        ui.scope(|ui| {
+                            ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                            ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                            ui.add_sized(
+                                [modal_w, max_text_h],
+                                egui::TextEdit::multiline(&mut self.quick_note_text)
+                                    .id(egui::Id::new("quick_note_text"))
+                                    .font(egui::FontId::monospace(style::TEXT_BODY))
+                                    .text_color(self.colors.text_primary)
+                                    .desired_width(f32::INFINITY)
+                                    .frame(false)
+                                    .hint_text(
+                                        RichText::new("What's on your mind?")
+                                            .color(self.colors.text_dim.linear_multiply(0.3))
+                                            .size(style::TEXT_BODY),
+                                    ),
+                            );
+                        });
                     });
             });
     }
