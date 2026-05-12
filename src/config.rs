@@ -589,6 +589,8 @@ confirm_close = false
 # available regardless of config.
 #
 # {note} = your note text (shell-escaped)   {cwd} = focused pane dir
+# Security: only {note} and {cwd} are shell-escaped. Do not add other user-supplied
+# values to the template — they will not be escaped and are a shell injection risk.
 
 [[quick_note.destinations]]
 key   = 1

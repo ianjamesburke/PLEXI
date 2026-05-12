@@ -1122,22 +1122,96 @@ mod quick_note_tests {
     use super::*;
     use crate::app::QuickNoteCtx;
 
-    #[test]
-    fn substitute_tokens_escapes_shell_special_chars() {
-        let ctx = QuickNoteCtx {
-            cwd: std::path::PathBuf::from("/tmp/test dir"),
+    fn ctx(cwd: &str) -> QuickNoteCtx {
+        QuickNoteCtx {
+            cwd: std::path::PathBuf::from(cwd),
             workspace_root: None,
             context: "test".to_string(),
-        };
-        let cmd = "gh issue create --title {note} --body ''";
+        }
+    }
+
+    /// Run `sh -c <cmd>` and return trimmed stdout.
+    fn sh(cmd: &str) -> String {
+        let out = std::process::Command::new("sh")
+            .args(["-c", cmd])
+            .output()
+            .expect("sh -c failed");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn substitute_tokens_escapes_shell_special_chars() {
         let result = PlexiApp::substitute_note_tokens_static(
-            cmd,
+            "gh issue create --title {note} --body ''",
             "it's a note \"with quotes\"",
-            &ctx,
+            &ctx("/tmp/test dir"),
         );
-        // Verify it's valid shell (no unquoted single quote)
         assert!(!result.contains("it's"), "unescaped single quote found: {result}");
-        // The note should appear in escaped form
         assert!(result.contains("it"), "note text missing from: {result}");
+    }
+
+    /// `$(...)` in a note must not be evaluated by the shell.
+    #[test]
+    fn no_command_substitution_dollar_paren() {
+        let note = "$(printf INJECTED)";
+        let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {note}", note, &ctx("/tmp"));
+        let out = sh(&cmd);
+        assert_eq!(out, note, "dollar-paren injection executed: got {out:?}");
+    }
+
+    /// Backtick command substitution in a note must not execute.
+    #[test]
+    fn no_command_substitution_backtick() {
+        let note = "`printf INJECTED`";
+        let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {note}", note, &ctx("/tmp"));
+        let out = sh(&cmd);
+        assert_eq!(out, note, "backtick injection executed: got {out:?}");
+    }
+
+    /// A note containing `'; <command>; echo '` must not break out of the substitution context.
+    #[test]
+    fn no_injection_via_single_quote_break() {
+        let note = "'; printf INJECTED; printf '";
+        let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {note}", note, &ctx("/tmp"));
+        let out = sh(&cmd);
+        assert_eq!(out, note, "single-quote break injection executed: got {out:?}");
+    }
+
+    /// Backslash in a note is passed through as a literal character.
+    #[test]
+    fn backslash_in_note_is_literal() {
+        let note = r"a\b";
+        let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {note}", note, &ctx("/tmp"));
+        let out = sh(&cmd);
+        assert_eq!(out, note, "backslash mangled: got {out:?}");
+    }
+
+    /// Newlines in a note are preserved literally (not treated as command separators).
+    #[test]
+    fn newline_in_note_is_literal() {
+        let note = "first\nsecond";
+        let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {note}", note, &ctx("/tmp"));
+        let out = sh(&cmd);
+        // printf '%s' strips the trailing newline; we check both lines appear in order.
+        assert!(out.contains("first") && out.contains("second"), "newline dropped: got {out:?}");
+        assert!(!out.contains("INJECTED"), "unexpected injection: got {out:?}");
+    }
+
+    /// `{cwd}` with a directory name containing a single quote expands safely.
+    #[test]
+    fn cwd_with_apostrophe_expands_safely() {
+        let path = "/tmp/it's a dir";
+        let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {cwd}", "note", &ctx(path));
+        let out = sh(&cmd);
+        assert_eq!(out, path, "cwd apostrophe mangled: got {out:?}");
+    }
+
+    /// A note consisting entirely of apostrophes must survive the round-trip.
+    #[test]
+    fn note_all_apostrophes_round_trips() {
+        let note = "'''";
+        let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {note}", note, &ctx("/tmp"));
+        let out = sh(&cmd);
+        assert_eq!(out, note, "all-apostrophe note mangled: got {out:?}");
     }
 }
