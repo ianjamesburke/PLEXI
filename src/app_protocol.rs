@@ -964,7 +964,9 @@ pub enum HostCommand {
 
     /// Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps.
     /// Requires `panes.spawn` capability.
-    /// `layout`: one of "split_v", "split_h", "split_above", "split_left", "overlay".
+    /// `layout`: one of "split_v", "split_h", "split_above", "split_left", "overlay",
+    ///   "new_window" (terminal only — creates a new spatial grid window to the right
+    ///   of the current context row instead of splitting the active pane).
     ///   "overlay_pane" and "background" are reserved but not yet implemented.
     /// `pipe_id`: when set, the host appends `--pipe=<pipe_id>` to args before launch
     ///   so the spawned app can reply via PipeSend on completion.
