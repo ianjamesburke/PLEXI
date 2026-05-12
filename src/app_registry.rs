@@ -428,7 +428,10 @@ impl AppRegistry {
         // Profile dir — linked paths must not point inside it. A path inside
         // the global config dir would silently override a managed install with
         // arbitrary code from a local workspace's links.toml.
-        let profile_dir = crate::config::config_dir();
+        // Canonicalize so symlinks (e.g. macOS /var → /private/var) don't
+        // allow a bypass via the real resolved path.
+        let raw_profile = crate::config::config_dir();
+        let profile_dir = raw_profile.canonicalize().unwrap_or(raw_profile);
 
         for raw_path in &parsed.links {
             let app_dir = PathBuf::from(raw_path);
