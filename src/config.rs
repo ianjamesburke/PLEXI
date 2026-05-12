@@ -617,6 +617,12 @@ options = [
   { key = 2, label = "Enhancement", command = "cd {cwd} && gh issue create --label enhancement --title {note} --body {note}" },
   { key = 3, label = "No label",    command = "cd {cwd} && gh issue create --title {note} --body {note}" },
 ]
+
+[[quick_note.destinations]]
+key     = 4
+label   = "Copy to clipboard"
+type    = "pane"
+command = "printf '%s' {note} | pbcopy"
 "##;
 
 pub fn open_config_file() {
