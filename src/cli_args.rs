@@ -107,7 +107,7 @@ pub enum Commands {
         /// Optional command to run in the terminal
         cmd: Option<String>,
         /// Close the pane when the process exits
-        #[arg(long)]
+        #[arg(long, short = 'e')]
         ephemeral: bool,
         /// Layout hint (split_v, split_h, split_above)
         #[arg(long)]
