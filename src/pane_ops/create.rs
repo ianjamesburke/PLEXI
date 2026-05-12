@@ -731,15 +731,16 @@ impl PlexiApp {
                 };
                 let cmd = Self::substitute_note_tokens_static(&cmd_template, text, &ctx);
                 let position = dest.position.as_deref().unwrap_or("split");
+                let stay_alive = dest.stay_alive.unwrap_or(false);
                 log::info!(
-                    "QuickNote: committed via '{}' position={:?}",
+                    "QuickNote: committed via '{}' position={:?} stay_alive={stay_alive}",
                     dest.label,
                     position
                 );
                 match position {
-                    "context-end" => self.open_at_context_end(&cmd),
-                    "context-start" => self.open_at_context_start(&cmd),
-                    _ => self.split_focused(false, Some(&cmd), true, None),
+                    "context-end" => self.open_at_context_end(&cmd, stay_alive),
+                    "context-start" => self.open_at_context_start(&cmd, stay_alive),
+                    _ => self.split_focused(false, Some(&cmd), !stay_alive, None),
                 }
                 true
             }
@@ -807,22 +808,22 @@ impl PlexiApp {
     }
 
     /// Spawn a terminal pane as the last child of the root container.
-    pub(crate) fn open_at_context_end(&mut self, cmd: &str) {
-        let did_insert = self.try_insert_at_root(cmd, false);
+    pub(crate) fn open_at_context_end(&mut self, cmd: &str, stay_alive: bool) {
+        let did_insert = self.try_insert_at_root(cmd, false, stay_alive);
         if !did_insert {
-            self.split_focused(false, Some(cmd), true, None);
+            self.split_focused(false, Some(cmd), !stay_alive, None);
         }
     }
 
     /// Spawn a terminal pane as the first child of the root container.
-    pub(crate) fn open_at_context_start(&mut self, cmd: &str) {
-        let did_insert = self.try_insert_at_root(cmd, true);
+    pub(crate) fn open_at_context_start(&mut self, cmd: &str, stay_alive: bool) {
+        let did_insert = self.try_insert_at_root(cmd, true, stay_alive);
         if !did_insert {
-            self.split_focused(false, Some(cmd), true, None);
+            self.split_focused(false, Some(cmd), !stay_alive, None);
         }
     }
 
-    fn try_insert_at_root(&mut self, cmd: &str, prepend: bool) -> bool {
+    fn try_insert_at_root(&mut self, cmd: &str, prepend: bool, stay_alive: bool) -> bool {
         use egui_tiles::{Container, Tile};
         let new_id = self.host.alloc_pane_id();
         let active = self.active_window;
@@ -833,16 +834,7 @@ impl PlexiApp {
         let ctx_name = self.context_name_for(ctx_id);
         let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
 
-        let shell_name = std::path::Path::new(&settings.shell)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        let trimmed = cmd.trim().trim_end_matches([';', ' ']);
-        settings.args = match shell_name {
-            "zsh" | "bash" => vec!["-i".to_string(), "-l".to_string(), "-c".to_string(), trimmed.to_string()],
-            "fish" => vec!["--login".to_string(), "-c".to_string(), trimmed.to_string()],
-            _ => vec!["-l".to_string(), "-c".to_string(), trimmed.to_string()],
-        };
+        super::apply_initial_cmd(&mut settings, cmd, !stay_alive);
 
         let Some(mut pane) = crate::pane::TerminalPane::new(
             new_id,
@@ -853,7 +845,7 @@ impl PlexiApp {
         ) else {
             return false;
         };
-        pane.ephemeral = true;
+        pane.ephemeral = !stay_alive;
         self.windows[active].panes.insert(new_id, crate::pane::Pane::Terminal(Box::new(pane)));
 
         let ctx = &mut self.windows[active];
