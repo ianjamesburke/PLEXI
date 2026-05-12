@@ -1,6 +1,20 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.18] — 2026-05-12
+
+### Changes
+- docs(readme): fix swap-pane shortcut — Cmd+Ctrl+K sends to front, not H
+- docs(readme): add Cmd+Ctrl+H/J pane send-to-front/back shortcuts
+- chore: remove plexi-orchestrator skill
+- feat(cli): add -e short flag for --ephemeral on terminal command (#1162)
+- fix(overlays): cli setup modal captures keyboard input via FocusLayer (#1142) (#1147)
+- feat(swap-pane): Cmd+Ctrl+J at bottom boundary pops pane to new window (#1161)
+- docs(readme): overhaul — add Quick Note, Notifications, App init, PGAP, Secrets, CLI reference sections; keep under-construction header with pre-v1 note (#1154) (#1159)
+- feat(terminal): new_window layout — parallel dispatch spawns windows not splits (#1158)
+- fix(close): advance focus to next sibling on pane/page close (#1152) (#1155)
+- feat(quick-note): add clipboard destination to default config
+- ux(quick-note): compose TextEdit fills 80% screen height on open (#1127) (#1151)
 ## [3.6.17] — 2026-05-12
 
 ### Changes
