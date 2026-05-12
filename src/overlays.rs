@@ -751,9 +751,12 @@ impl PlexiApp {
                 );
             });
 
-        // Modal — grows with content up to (screen_height - 96px insets) then scrolls.
+        // Modal — grows from ~25% to ~80% of screen height as the user types.
         let modal_w = (screen_rect.width() * 0.72).min(864.0).max(480.0);
         let max_text_h = (screen_rect.height() * 0.8).max(80.0);
+        let line_h = style::TEXT_BODY + 4.0;
+        let initial_rows = ((screen_rect.height() * 0.25) / line_h).round() as usize;
+        let initial_rows = initial_rows.max(3);
         egui::Area::new(egui::Id::new("quick_note_modal"))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .order(egui::Order::Foreground)
@@ -775,7 +778,7 @@ impl PlexiApp {
                         );
                         ui.add_space(style::SPACE_SM);
 
-                        // Text input — expands line-by-line; scrolls once full.
+                        // Text input — starts at ~25% screen height, grows with content, caps at ~80%.
                         egui::ScrollArea::vertical()
                             .max_height(max_text_h)
                             .show(ui, |ui| {
@@ -788,7 +791,7 @@ impl PlexiApp {
                                             .font(egui::FontId::monospace(style::TEXT_BODY))
                                             .text_color(self.colors.text_primary)
                                             .desired_width(f32::INFINITY)
-                                            .desired_rows(1)
+                                            .desired_rows(initial_rows)
                                             .frame(false)
                                             .hint_text(
                                                 RichText::new("What's on your mind?")
