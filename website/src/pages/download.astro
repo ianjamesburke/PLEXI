@@ -1,0 +1,133 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Newsletter from '../components/Newsletter.astro';
+
+const RELEASES_LATEST = 'https://github.com/ianjamesburke/PLEXI/releases/latest';
+const RELEASES_ALL = 'https://github.com/ianjamesburke/PLEXI/releases';
+
+const platforms = [
+  { id: 'mac',     name: 'macOS',   note: '.dmg installer · Apple Silicon & Intel', comingSoon: false },
+  { id: 'windows', name: 'Windows', note: '.exe installer · Windows 10+',           comingSoon: true  },
+  { id: 'linux',   name: 'Linux',   note: '.AppImage · most distros',               comingSoon: true  },
+];
+---
+<Layout title="Download Plexi" description="Download the latest release of Plexi for macOS.">
+  <header class="dl-hero">
+    <div class="wrap">
+      <h1>Download Plexi</h1>
+      <p class="tagline">macOS only for now. Latest release, straight from GitHub.</p>
+    </div>
+  </header>
+
+  <section class="dl-section">
+    <div class="wrap">
+      <div class="dl-grid">
+        {platforms.map((p) => (
+          <div class={`dl-card${p.comingSoon ? ' is-soon' : ''}`} data-os={p.id}>
+            <div class="dl-os">
+              {p.name}
+              {p.comingSoon && <span class="dl-badge">Coming soon</span>}
+            </div>
+            <div class="dl-note">{p.note}</div>
+            {p.comingSoon
+              ? <span class="btn btn-disabled">Download <span class="arrow">→</span></span>
+              : <a class="btn" href={RELEASES_LATEST}>Download <span class="arrow">→</span></a>
+            }
+          </div>
+        ))}
+      </div>
+      <p class="dl-foot">
+        Looking for an older version? <a href={RELEASES_ALL}>Browse all releases →</a>
+      </p>
+    </div>
+  </section>
+
+  <Newsletter compact />
+</Layout>
+
+<script is:inline>
+  (function () {
+    var ua = navigator.userAgent || '';
+    var os = null;
+    if (/Mac/i.test(ua)) os = 'mac';
+    else if (/Win/i.test(ua)) os = 'windows';
+    else if (/Linux/i.test(ua)) os = 'linux';
+    if (!os) return;
+    var card = document.querySelector('.dl-card[data-os="' + os + '"]');
+    if (card) card.classList.add('is-detected');
+  })();
+</script>
+
+<style>
+  .dl-hero { padding: 120px 0 40px; }
+  .dl-hero h1 {
+    font-size: 56px; line-height: 1.05; letter-spacing: -0.02em;
+    font-weight: 600; margin: 0 0 16px;
+  }
+  .dl-hero .tagline { font-size: 16px; color: var(--fg-2); max-width: 560px; }
+
+  .dl-section { padding: 32px 0 120px; }
+  .dl-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 20px; margin-bottom: 32px;
+  }
+  .dl-card {
+    border: 1px solid var(--border-2);
+    background: var(--bg-2);
+    border-radius: 10px;
+    padding: 28px 24px;
+    display: flex; flex-direction: column; gap: 10px;
+    transition: border-color 150ms, background 150ms;
+  }
+  .dl-card:hover { border-color: var(--border-3); }
+  .dl-card.is-detected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent), 0 0 32px var(--accent-dim);
+    background: linear-gradient(180deg, var(--accent-dim), var(--bg-2));
+  }
+  .dl-card .dl-os {
+    font-size: 18px; font-weight: 600; letter-spacing: -0.01em; color: var(--fg);
+  }
+  .dl-card .dl-note {
+    font-size: 12px; color: var(--fg-3); margin-bottom: 14px;
+  }
+  .dl-card .btn { align-self: flex-start; }
+
+  .dl-card.is-soon {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+  .dl-badge {
+    display: inline-block;
+    margin-left: 10px;
+    font-size: 10px; font-weight: 500; letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--fg-3);
+    border: 1px solid var(--border-2);
+    border-radius: 4px;
+    padding: 1px 6px;
+    vertical-align: middle;
+  }
+  .btn-disabled {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--border-2);
+    color: var(--fg-3);
+    font-size: 13px; font-weight: 500;
+    cursor: not-allowed;
+    user-select: none;
+  }
+
+  .dl-foot {
+    font-size: 12px; color: var(--fg-3); text-align: center;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .dl-foot a { color: var(--fg-2); }
+  .dl-foot a:hover { color: var(--fg); }
+
+  @media (max-width: 720px) {
+    .dl-hero h1 { font-size: 40px; }
+    .dl-grid { grid-template-columns: 1fr; }
+  }
+</style>

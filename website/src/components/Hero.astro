@@ -1,0 +1,53 @@
+---
+---
+<header class="hero">
+  <div class="wrap">
+    <div class="inner">
+      <h1>The last app you'll ever need.</h1>
+      <p class="tagline">A terminal multiplexer that hosts sandboxed apps. One protocol, one process tree, one place to live. Your shells, your tools, and the agent that builds them — side by side.</p>
+      <a class="btn lg" href="/download">Download the App <span class="arrow">→</span></a>
+      <div class="meta-under">macOS · open source · MIT</div>
+    </div>
+  </div>
+
+  <div class="wrap preview-stage">
+    <div class="preview-halo">
+      <div class="preview" aria-label="Plexi three-pane preview">
+        <div class="titlebar">
+          <div class="dots"><span></span><span></span><span></span></div>
+          <div class="crumbs mono">~/code/plexi · alpha · 3 panes</div>
+          <div class="right-meta">14:22 · build 07</div>
+        </div>
+        <div class="panes">
+          <div class="pane terminal">
+            <div class="pane-label">Pane 01<span class="tag">/ terminal</span></div>
+<pre><span class="dim">~/code/plexi $</span> <span class="pr">just install-alpha</span>
+   Compiling plexi v3.0.0-alpha
+    <span class="ok">Finished</span> release [optimized] target(s) in 18.4s
+    <span class="ok">Installed</span> /Applications/Plexi.app
+<span class="dim">~/code/plexi $</span> <span class="pr">plexi --version</span>
+plexi 3.0.0-alpha (build 07)
+<span class="dim">~/code/plexi $</span> <span class="pr">plexi launch spotify</span>
+<span class="dim">  capability:</span> <span class="ok">media-control</span> <span class="dim">→ granted</span>
+<span class="dim">  capability:</span> <span class="ok">global-hotkey</span> <span class="dim">→ granted</span>
+<span class="dim">~/code/plexi $</span> <span class="pr">_</span><span class="cursor"></span></pre>
+          </div>
+          <div class="right">
+            <div class="pane app">
+              <div class="pane-label">Pane 02<span class="tag">/ app · spotify</span></div>
+              <div class="row"><span class="k">Now playing</span><span class="v">Bloodbuzz Ohio</span></div>
+              <div class="row"><span class="k">Artist</span><span class="v">The National</span></div>
+              <div class="row"><span class="k">Device</span><span class="v good">Studio Monitors</span></div>
+              <div class="row"><span class="k">Volume</span><span class="v">62%</span></div>
+            </div>
+            <div class="pane agent">
+              <div class="pane-label">Pane 03<span class="tag">/ agent · plexi iq</span></div>
+              <p class="msg"><span class="you">you ›</span> wire the play button to a global hotkey</p>
+              <p class="msg">Adding a CapabilityRequest for global-hotkey, then a binding in manifest.toml. Scoping to ⌘⌥P — confirm?<span class="typing"></span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>

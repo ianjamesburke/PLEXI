@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://plexiapp.com/sitemap-index.xml

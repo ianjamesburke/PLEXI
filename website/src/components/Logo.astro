@@ -1,0 +1,14 @@
+---
+interface Props {
+  size?: number;
+  stroke?: string;
+  fill?: string;
+  ariaLabel?: string;
+}
+const { size = 30, stroke = '#e4e4e7', fill = '#9333ea', ariaLabel = 'plexi pane logo' } = Astro.props;
+---
+<svg width={size} height={size} viewBox="0 0 30 30" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label={ariaLabel}>
+  <rect x="1.25" y="1.25" width="12" height="26.5" rx="0.5" fill="none" stroke={stroke} stroke-width="1.5" />
+  <rect x="16.75" y="1.25" width="12" height="12" rx="0.5" fill="none" stroke={stroke} stroke-width="1.5" />
+  <rect x="16.75" y="15.75" width="12" height="12" rx="0.5" fill={fill} />
+</svg>

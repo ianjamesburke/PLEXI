@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SLUG="${1:?Usage: scripts/publish-draft <slug> [version]}"
+DIR="drafts/$SLUG"
+
+if [[ ! -d "$DIR" ]]; then
+  echo "error: drafts/$SLUG does not exist" >&2
+  exit 1
+fi
+
+# pick version: explicit arg or highest vN.md
+if [[ -n "${2:-}" ]]; then
+  SRC="$DIR/v${2}.md"
+else
+  SRC=$(ls "$DIR"/v*.md | sort -t v -k2 -n | tail -1)
+fi
+
+if [[ ! -f "$SRC" ]]; then
+  echo "error: $SRC not found" >&2
+  exit 1
+fi
+
+# extract date from frontmatter, fall back to today
+DATE=$(grep '^date:' "$SRC" | head -1 | awk '{print $2}')
+if [[ -z "$DATE" || "$DATE" == "YYYY-MM-DD" ]]; then
+  DATE=$(date +%Y-%m-%d)
+fi
+
+DEST="src/content/blog/${DATE}-${SLUG}.md"
+
+# strip _-prefixed version fields from frontmatter
+awk '
+  /^---$/ { count++; print; next }
+  count == 1 && /^_/ { next }
+  { print }
+' "$SRC" > "$DEST"
+
+echo "Published $SRC → $DEST"

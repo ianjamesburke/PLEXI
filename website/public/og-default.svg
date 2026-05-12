@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#0a0a0b"/>
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#9333ea" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#9333ea" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <circle cx="600" cy="280" r="380" fill="url(#glow)"/>
+
+  <!-- 3-pane logo: tall left, top-right, filled bottom-right -->
+  <rect x="470" y="102" width="110" height="260" rx="5" fill="none" stroke="#e4e4e7" stroke-width="5"/>
+  <rect x="600" y="102" width="130" height="120" rx="5" fill="none" stroke="#e4e4e7" stroke-width="5"/>
+  <rect x="600" y="242" width="130" height="120" rx="5" fill="#9333ea"/>
+
+  <text x="600" y="462" text-anchor="middle"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+        font-size="72" font-weight="600" fill="#e4e4e7" letter-spacing="-2">plexi</text>
+
+  <text x="600" y="510" text-anchor="middle"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace"
+        font-size="28" font-weight="400" fill="#a1a1aa" letter-spacing="-0.5">The last app you'll ever need.</text>
+</svg>

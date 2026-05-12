@@ -1,0 +1,159 @@
+---
+interface Props {
+  compact?: boolean;
+  blog?: boolean;
+}
+const { compact = false, blog = false } = Astro.props;
+const headline = blog
+  ? 'want to know when i write something?'
+  : compact
+  ? 'want a heads-up when a new version ships?'
+  : 'want to stay in the loop?';
+const sub = blog
+  ? "one email per post. that's it."
+  : "new versions, the occasional rant. that's it.";
+const showSub = !compact;
+const formId = blog ? 'newsletter-form-blog' : compact ? 'newsletter-form-compact' : 'newsletter-form';
+---
+<section class={`newsletter ${compact ? 'compact' : ''} ${blog ? 'blog' : ''}`}>
+  <div class="wrap">
+    <div class="nl-inner">
+      <h2 class="nl-headline">{headline}</h2>
+      {showSub && (
+        <p class="nl-sub">{sub}</p>
+      )}
+      <form id={formId} class="nl-form" novalidate>
+        <input
+          type="email"
+          name="email"
+          placeholder="you@example.com"
+          required
+          autocomplete="email"
+          class="nl-input"
+        />
+        <button type="submit" class="btn nl-btn">Subscribe <span class="arrow">→</span></button>
+      </form>
+      <div class="nl-message" data-form-id={formId} aria-live="polite"></div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .newsletter {
+    padding: 80px 0;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, transparent, rgba(107, 33, 168, 0.10), transparent);
+  }
+  .newsletter.compact {
+    padding: 48px 0;
+  }
+  .newsletter.blog {
+    padding: 64px 0 80px;
+  }
+  .nl-inner {
+    max-width: 560px;
+    margin: 0 auto;
+    text-align: center;
+  }
+  .nl-headline {
+    font-family: var(--mono);
+    font-size: 28px;
+    line-height: 1.25;
+    letter-spacing: -0.015em;
+    font-weight: 600;
+    color: var(--fg);
+    margin-bottom: 14px;
+  }
+  .newsletter.compact .nl-headline {
+    font-size: 20px;
+    margin-bottom: 18px;
+  }
+  .nl-sub {
+    color: var(--fg-3);
+    font-size: 14px;
+    margin-bottom: 26px;
+    line-height: 1.6;
+  }
+  .nl-form {
+    display: flex;
+    gap: 10px;
+    align-items: stretch;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+  .nl-input {
+    flex: 1;
+    min-width: 240px;
+    max-width: 340px;
+    padding: 12px 14px;
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--fg);
+    background: var(--bg-2);
+    border: 1px solid var(--border-2);
+    border-radius: 6px;
+    outline: none;
+    transition: border-color 150ms, box-shadow 150ms;
+  }
+  .nl-input::placeholder { color: var(--fg-4); }
+  .nl-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(147, 51, 234, 0.35);
+  }
+  .nl-btn { white-space: nowrap; }
+  .nl-message {
+    margin-top: 14px;
+    font-size: 13px;
+    min-height: 16px;
+    color: var(--fg-3);
+  }
+  .nl-message.success { color: var(--good); }
+  .nl-message.error { color: var(--warn); }
+  .nl-form.hidden { display: none; }
+
+  @media (max-width: 480px) {
+    .nl-headline { font-size: 22px; }
+    .nl-form { flex-direction: column; }
+    .nl-input { max-width: none; min-width: 0; width: 100%; }
+  }
+</style>
+
+<script is:inline define:vars={{ formId }}>
+  (function () {
+    const form = document.getElementById(formId);
+    if (!form) return;
+    const message = document.querySelector(`[data-form-id="${formId}"]`);
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      message.textContent = '';
+      message.className = 'nl-message';
+
+      const data = new FormData(form);
+      const email = (data.get('email') || '').toString().trim();
+      if (!email || !email.includes('@')) {
+        message.textContent = 'Please enter a valid email address.';
+        message.className = 'nl-message error';
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email }),
+        });
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        form.classList.add('hidden');
+        message.textContent = "Thanks — you're in.";
+        message.className = 'nl-message success';
+      } catch (err) {
+        message.textContent = "Couldn't reach the server. Please try again in a moment.";
+        message.className = 'nl-message error';
+      }
+    });
+  })();
+</script>

@@ -1,0 +1,612 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Plexi — The last app you'll ever need.</title>
+<style>
+  :root {
+    --bg: #07080a;
+    --bg-2: #0e1013;
+    --bg-3: #14171b;
+    --bg-4: #181c21;
+    --border: #1c2026;
+    --border-2: #262b32;
+    --border-3: #323843;
+    --fg: #f0f3f6;
+    --fg-2: #9aa3ad;
+    --fg-3: #6a727c;
+    --fg-4: #4a5159;
+    --accent: #9333ea;
+    --accent-2: #7e22ce;
+    --accent-3: #6b21a8;
+    --accent-light: #a855f7;
+    --accent-dim: rgba(147, 51, 234, 0.14);
+    --warn: #f59e0b;
+    --good: #34d399;
+    --mono: "Berkeley Mono", "JetBrains Mono", "Fira Code", "SF Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); color: var(--fg); font-family: var(--mono); -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  body { line-height: 1.65; font-size: 14px; overflow-x: hidden; }
+  a { color: inherit; text-decoration: none; }
+  code, .mono { font-family: var(--mono); }
+
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 2px,
+      rgba(255, 255, 255, 0.025) 2px,
+      rgba(255, 255, 255, 0.025) 3px
+    );
+    pointer-events: none;
+    z-index: 1000;
+    mix-blend-mode: overlay;
+  }
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.5) 100%);
+    pointer-events: none;
+    z-index: 999;
+  }
+
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 0 32px; position: relative; }
+
+  .atmosphere { position: absolute; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+  .atmosphere .glow-hero {
+    position: absolute; top: -260px; left: 18%;
+    width: 1100px; height: 760px;
+    background: radial-gradient(ellipse at center, rgba(107, 33, 168, 0.22), rgba(107, 33, 168, 0.06) 38%, transparent 68%);
+    filter: blur(30px);
+  }
+  .atmosphere .glow-funding {
+    position: absolute; top: 1180px; left: 50%; transform: translateX(-50%);
+    width: 900px; height: 320px;
+    background: radial-gradient(ellipse at center, rgba(107, 33, 168, 0.14), transparent 70%);
+    filter: blur(40px);
+  }
+  .atmosphere .glow-mission {
+    position: absolute; top: 2900px; left: 50%; transform: translateX(-50%);
+    width: 1000px; height: 480px;
+    background: radial-gradient(ellipse at center, rgba(107, 33, 168, 0.12), transparent 70%);
+    filter: blur(50px);
+  }
+  .atmosphere .grain {
+    position: absolute; inset: 0;
+    background-image: radial-gradient(circle at 1px 1px, rgba(255,255,255,0.012) 1px, transparent 0);
+    background-size: 3px 3px;
+    opacity: 0.6;
+  }
+
+  main, header, nav, section, footer { position: relative; z-index: 1; }
+
+  nav.top {
+    position: sticky; top: 0; z-index: 50;
+    background: rgba(10, 10, 11, 0.96); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+    border-bottom: 1px solid var(--border);
+  }
+  nav.top .row { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+  nav.top .brand { display: flex; align-items: center; gap: 11px; font-weight: 600; letter-spacing: 0; font-size: 14px; text-transform: lowercase; }
+  nav.top .brand svg { display: block; }
+  nav.top .links { display: flex; gap: 28px; color: var(--fg-2); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+  nav.top .links a { transition: color 150ms; }
+  nav.top .links a:hover { color: var(--fg); }
+  nav.top .cta { display: flex; gap: 10px; align-items: center; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 10px;
+    padding: 10px 18px; font-size: 13px; font-weight: 500; line-height: 1;
+    border-radius: 6px; cursor: pointer; font-family: var(--mono);
+    color: #ffffff; letter-spacing: 0;
+    background: var(--accent);
+    border: none;
+    transition: background-color 150ms ease, box-shadow 150ms ease;
+  }
+  .btn:hover {
+    background: var(--accent-light);
+    box-shadow: 0 0 0 1px rgba(168, 85, 247, 0.35);
+  }
+  .btn:active {
+    background: var(--accent-2);
+    box-shadow: none;
+  }
+  .btn.lg {
+    padding: 14px 22px; font-size: 13px; border-radius: 6px;
+  }
+  .btn .arrow { font-weight: 400; opacity: 0.85; }
+
+  .hero { padding: 120px 0 60px; }
+  .hero .inner { max-width: 720px; display: flex; flex-direction: column; align-items: flex-start; }
+  .hero h1 {
+    font-size: 64px; line-height: 1.05; letter-spacing: -0.025em; font-weight: 600;
+    margin-bottom: 28px;
+    text-align: left;
+  }
+  .hero p.tagline {
+    font-size: 16px; color: var(--fg-2); max-width: 580px;
+    margin-bottom: 40px; line-height: 1.65; letter-spacing: 0;
+    text-align: left;
+  }
+  .hero .meta-under { margin-top: 18px; color: var(--fg-3); font-size: 12px; text-align: left; }
+
+  .preview-stage { padding: 64px 0 0; perspective: 2000px; }
+  .preview-halo { position: relative; }
+  .preview-halo::before {
+    content: ''; position: absolute; inset: 30px 60px -40px 60px;
+    background: radial-gradient(ellipse at center, rgba(147, 51, 234, 0.20), transparent 60%);
+    filter: blur(55px); z-index: 0; pointer-events: none;
+  }
+  .preview {
+    position: relative; z-index: 1;
+    border: 1px solid var(--border-2);
+    border-radius: 12px;
+    background: var(--bg-2);
+    overflow: hidden;
+    transform: rotateX(2deg);
+    transform-origin: center bottom;
+    box-shadow:
+      0 1px 0 rgba(255,255,255,0.04) inset,
+      0 30px 80px -20px rgba(0,0,0,0.75),
+      0 0 1px rgba(147, 51, 234, 0.25);
+  }
+  .preview .titlebar { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--border); background: var(--bg-3); }
+  .preview .titlebar .dots { display: flex; gap: 6px; }
+  .preview .titlebar .dots span { width: 11px; height: 11px; border-radius: 999px; background: #2a2f36; }
+  .preview .titlebar .crumbs { color: var(--fg-3); font-size: 12px; margin-left: 8px; }
+  .preview .titlebar .right-meta { margin-left: auto; color: var(--fg-4); font-size: 11px; }
+  .preview .panes { display: grid; grid-template-columns: 1.5fr 1fr; min-height: 380px; }
+  .preview .pane { padding: 18px 22px; border-right: 1px solid var(--border); position: relative; text-align: left; }
+  .preview .pane:last-child { border-right: none; }
+  .preview .pane .pane-label { font-size: 10.5px; color: var(--fg-4); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 14px; font-weight: 500; }
+  .preview .pane .pane-label .tag { color: var(--accent-light); margin-left: 6px; }
+
+  .preview .pane.terminal pre { font-size: 12.5px; color: var(--fg-2); line-height: 1.75; font-family: var(--mono); }
+  .preview .pane.terminal .pr { color: var(--accent-light); }
+  .preview .pane.terminal .ok { color: var(--good); }
+  .preview .pane.terminal .dim { color: var(--fg-4); }
+  .preview .pane.terminal .cursor { display: inline-block; width: 7px; height: 13px; background: var(--accent-light); margin-left: 2px; vertical-align: -2px; animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .preview .right { display: grid; grid-template-rows: 1fr 1fr; }
+  .preview .pane.app { border-bottom: 1px solid var(--border); }
+  .preview .pane.app .row { display: flex; align-items: center; justify-content: space-between; padding: 7px 0; border-bottom: 1px dashed var(--border); font-size: 13px; }
+  .preview .pane.app .row:last-child { border-bottom: none; }
+  .preview .pane.app .row .k { color: var(--fg-3); }
+  .preview .pane.app .row .v { color: var(--fg); font-size: 12px; }
+  .preview .pane.app .row .v.good { color: var(--good); }
+
+  .preview .pane.agent .msg { font-size: 13px; line-height: 1.6; color: var(--fg-2); }
+  .preview .pane.agent .msg + .msg { margin-top: 10px; }
+  .preview .pane.agent .msg .you { color: var(--fg-4); font-size: 11px; }
+  .preview .pane.agent .typing { display: inline-block; width: 7px; height: 13px; background: var(--accent-light); margin-left: 3px; vertical-align: -2px; animation: blink 1s infinite; }
+
+  .funding {
+    margin-top: 96px;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, transparent, rgba(107, 33, 168, 0.06), transparent);
+    padding: 28px 0;
+  }
+  .funding .row {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    gap: 28px; align-items: center;
+  }
+  .funding .label { font-size: 11px; color: var(--fg-3); letter-spacing: 0.12em; text-transform: uppercase; font-weight: 500; }
+  .funding .progress { display: flex; align-items: center; gap: 16px; }
+  .funding .bar { flex: 1; min-width: 200px; height: 6px; background: var(--bg-3); border-radius: 999px; overflow: hidden; border: 1px solid var(--border); position: relative; }
+  .funding .fill { width: 28.2%; height: 100%; background: linear-gradient(90deg, var(--accent-light), var(--accent-2)); box-shadow: 0 0 10px rgba(147, 51, 234, 0.55); }
+  .funding .num { font-size: 12px; color: var(--fg-2); white-space: nowrap; }
+  .funding .num strong { color: var(--accent-light); font-weight: 600; }
+  .funding .recent { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--fg-2); white-space: nowrap; }
+  .funding .recent .av { width: 22px; height: 22px; border-radius: 999px; background: var(--bg-4); border: 1px solid var(--border-2); display: grid; place-items: center; font-size: 10px; color: var(--fg-2); font-weight: 600; }
+  .funding .recent .who { color: var(--fg); }
+  .funding .recent .when { color: var(--fg-4); font-size: 11px; }
+
+  section { padding: 140px 0; }
+  section + section { border-top: 1px solid var(--border); }
+  .section-head { margin-bottom: 64px; }
+  .section-head h2 { font-size: 44px; letter-spacing: -0.02em; font-weight: 600; max-width: 18ch; margin-bottom: 16px; line-height: 1.1; }
+  .section-head h2 .quiet { color: var(--fg-3); }
+  .section-head p { color: var(--fg-2); font-size: 15px; max-width: 64ch; line-height: 1.6; }
+
+  .three-col { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .feat { background: var(--bg-2); padding: 36px 30px; }
+  .feat .tag { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--accent-light); margin-bottom: 20px; letter-spacing: 0.05em; }
+  .feat .tag .sq { width: 6px; height: 6px; background: var(--accent); }
+  .feat h3 { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 10px; }
+  .feat p { color: var(--fg-2); font-size: 13px; line-height: 1.65; }
+
+  .code-block { background: var(--bg-2); border: 1px solid var(--border-2); border-radius: 12px; overflow: hidden; max-width: 880px; margin: 0 auto; }
+  .code-block .head { padding: 11px 16px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--fg-3); display: flex; justify-content: space-between; }
+  .code-block pre { padding: 22px 24px; font-size: 13px; line-height: 1.75; color: var(--fg-2); overflow-x: auto; font-family: var(--mono); }
+  .code-block .kw { color: var(--accent-light); }
+  .code-block .str { color: #86efac; }
+  .code-block .com { color: var(--fg-4); }
+  .code-block .fn { color: #fbbf24; }
+
+  .mission { text-align: center; }
+  .mission .quote {
+    font-size: 36px;
+    line-height: 1.35;
+    letter-spacing: -0.015em;
+    font-weight: 500;
+    max-width: 28ch;
+    margin: 0 auto 40px;
+    color: var(--fg);
+    font-family: var(--mono);
+  }
+  .mission .quote .glow { color: var(--accent-light); }
+  .mission .sub {
+    color: var(--fg-3);
+    font-size: 14px;
+    max-width: 58ch;
+    margin: 0 auto 28px;
+    line-height: 1.7;
+  }
+  .mission .sponsor-link {
+    display: inline-flex; align-items: center; gap: 8px;
+    color: var(--accent-light); font-size: 13px;
+    border-bottom: 1px solid rgba(147, 51, 234, 0.35);
+    padding-bottom: 2px;
+    transition: color 150ms, border-color 150ms;
+  }
+  .mission .sponsor-link:hover { color: var(--fg); border-bottom-color: var(--fg); }
+
+  .blog-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+  .post { background: var(--bg-2); padding: 32px 30px; transition: background 150ms; cursor: pointer; }
+  .post:hover { background: var(--bg-3); }
+  .post .post-meta { display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--fg-4); margin-bottom: 18px; }
+  .post .post-meta .dot { width: 3px; height: 3px; background: var(--fg-4); border-radius: 999px; }
+  .post .post-meta .cat { color: var(--accent-light); }
+  .post h3 { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.35; margin-bottom: 10px; }
+  .post p { color: var(--fg-2); font-size: 13px; line-height: 1.6; }
+
+  .roadmap-list { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--bg-2); }
+  .road-item { display: grid; grid-template-columns: 90px 1fr auto; gap: 24px; align-items: center; padding: 22px 28px; border-bottom: 1px solid var(--border); }
+  .road-item:last-child { border-bottom: none; }
+  .road-item .num { font-size: 12px; color: var(--fg-4); }
+  .road-item .body h4 { font-size: 15px; font-weight: 600; letter-spacing: -0.005em; margin-bottom: 4px; }
+  .road-item .body p { font-size: 13px; color: var(--fg-3); line-height: 1.55; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 6px; font-size: 10.5px; font-weight: 500; letter-spacing: 0.04em; border: 1px solid; white-space: nowrap; }
+  .pill.shipped { color: var(--good); border-color: rgba(52, 211, 153, 0.3); background: rgba(52, 211, 153, 0.06); }
+  .pill.progress { color: var(--accent-light); border-color: rgba(147, 51, 234, 0.35); background: rgba(147, 51, 234, 0.08); }
+  .pill.gated { color: var(--warn); border-color: rgba(245, 158, 11, 0.3); background: rgba(245, 158, 11, 0.06); }
+  .pill .sq { width: 5px; height: 5px; background: currentColor; }
+
+  .sponsor-wall .wall-head { display: flex; justify-content: space-between; align-items: end; margin-bottom: 40px; gap: 32px; }
+  .sponsor-wall .wall-head .lhs h2 { font-size: 40px; letter-spacing: -0.02em; font-weight: 600; line-height: 1.15; max-width: 18ch; margin-bottom: 12px; }
+  .sponsor-wall .wall-head .lhs p { color: var(--fg-2); font-size: 14px; max-width: 56ch; line-height: 1.6; }
+  .sponsor-wall .wall-head .stat { font-size: 12px; color: var(--fg-3); text-align: right; line-height: 1.7; }
+  .sponsor-wall .wall-head .stat strong { color: var(--accent-light); font-weight: 600; }
+  .avatars { display: grid; grid-template-columns: repeat(12, 1fr); gap: 12px; }
+  .av { aspect-ratio: 1; border-radius: 999px; background: var(--bg-3); border: 1px solid var(--border-2); display: grid; place-items: center; color: var(--fg-2); font-size: 11px; font-weight: 600; transition: border-color 150ms; }
+  .av:hover { border-color: var(--accent); color: var(--fg); }
+  .av.more { background: transparent; color: var(--fg-3); border-style: dashed; }
+  .sponsor-wall .footer-line { margin-top: 36px; display: flex; align-items: center; gap: 18px; }
+  .sponsor-wall .footer-line .micro { color: var(--fg-3); font-size: 12px; }
+
+  footer { padding: 56px 0 64px; border-top: 1px solid var(--border); color: var(--fg-3); font-size: 12px; }
+  footer .row { display: flex; justify-content: space-between; align-items: center; gap: 24px; flex-wrap: wrap; }
+  footer .foot-brand { display: flex; align-items: center; gap: 14px; }
+  footer .foot-brand .copy { font-size: 11px; }
+  footer .links { display: flex; gap: 28px; text-transform: uppercase; letter-spacing: 0.05em; font-size: 11px; }
+  footer .links a { transition: color 150ms; }
+  footer .links a:hover { color: var(--fg); }
+
+  @media (max-width: 980px) {
+    .hero { padding: 72px 0 40px; }
+    .hero h1 { font-size: 40px; letter-spacing: -0.02em; }
+    .hero p.tagline { font-size: 15px; }
+    .preview .panes { grid-template-columns: 1fr; }
+    .preview .pane { border-right: none; border-bottom: 1px solid var(--border); }
+    .preview { transform: none; }
+    .three-col, .blog-grid { grid-template-columns: 1fr; }
+    .funding .row { grid-template-columns: 1fr; gap: 16px; }
+    .road-item { grid-template-columns: 1fr; gap: 12px; }
+    .road-item .num { display: none; }
+    .sponsor-wall .wall-head { flex-direction: column; align-items: start; }
+    .sponsor-wall .wall-head .stat { text-align: left; }
+    .avatars { grid-template-columns: repeat(8, 1fr); }
+    section { padding: 80px 0; }
+    .section-head h2 { font-size: 30px; }
+    .mission .quote { font-size: 26px; }
+    nav.top .links { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="atmosphere">
+  <div class="glow-hero"></div>
+  <div class="glow-funding"></div>
+  <div class="glow-mission"></div>
+  <div class="grain"></div>
+</div>
+
+<nav class="top">
+  <div class="wrap row">
+    <div class="brand">
+      <svg width="30" height="30" viewBox="0 0 30 30" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="plexi pane logo">
+        <rect x="1.25" y="1.25" width="12" height="26.5" rx="0.5" fill="none" stroke="#e4e4e7" stroke-width="1.5"/>
+        <rect x="16.75" y="1.25" width="12" height="12" rx="0.5" fill="none" stroke="#e4e4e7" stroke-width="1.5"/>
+        <rect x="16.75" y="15.75" width="12" height="12" rx="0.5" fill="#9333ea"/>
+      </svg>
+      plexi
+    </div>
+    <div class="links">
+      <a href="#product">Product</a>
+      <a href="#blog">Blog</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="/docs">Docs</a>
+    </div>
+    <div class="cta">
+      <a class="btn" href="#sponsor">Sponsor <span class="arrow">→</span></a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="inner">
+      <h1>The last app you'll ever need.</h1>
+      <p class="tagline">A terminal multiplexer that hosts sandboxed apps. One protocol, one process tree, one place to live. Your shells, your tools, and the agent that builds them — side by side.</p>
+      <a class="btn lg" href="#download">Download the App <span class="arrow">→</span></a>
+      <div class="meta-under">macOS · open source · MIT</div>
+    </div>
+  </div>
+
+  <div class="wrap preview-stage">
+    <div class="preview-halo">
+      <div class="preview" aria-label="Plexi three-pane preview">
+        <div class="titlebar">
+          <div class="dots"><span></span><span></span><span></span></div>
+          <div class="crumbs mono">~/code/plexi · alpha · 3 panes</div>
+          <div class="right-meta">14:22 · build 07</div>
+        </div>
+        <div class="panes">
+          <div class="pane terminal">
+            <div class="pane-label">Pane 01<span class="tag">/ terminal</span></div>
+<pre><span class="dim">~/code/plexi $</span> <span class="pr">just install-alpha</span>
+   Compiling plexi v3.0.0-alpha
+    <span class="ok">Finished</span> release [optimized] target(s) in 18.4s
+    <span class="ok">Installed</span> /Applications/Plexi.app
+<span class="dim">~/code/plexi $</span> <span class="pr">plexi --version</span>
+plexi 3.0.0-alpha (build 07)
+<span class="dim">~/code/plexi $</span> <span class="pr">plexi launch spotify</span>
+<span class="dim">  capability:</span> <span class="ok">media-control</span> <span class="dim">→ granted</span>
+<span class="dim">  capability:</span> <span class="ok">global-hotkey</span> <span class="dim">→ granted</span>
+<span class="dim">~/code/plexi $</span> <span class="pr">_</span><span class="cursor"></span></pre>
+          </div>
+          <div class="right">
+            <div class="pane app">
+              <div class="pane-label">Pane 02<span class="tag">/ app · spotify</span></div>
+              <div class="row"><span class="k">Now playing</span><span class="v">Bloodbuzz Ohio</span></div>
+              <div class="row"><span class="k">Artist</span><span class="v">The National</span></div>
+              <div class="row"><span class="k">Device</span><span class="v good">Studio Monitors</span></div>
+              <div class="row"><span class="k">Volume</span><span class="v">62%</span></div>
+            </div>
+            <div class="pane agent">
+              <div class="pane-label">Pane 03<span class="tag">/ agent · plexi iq</span></div>
+              <p class="msg"><span class="you">you ›</span> wire the play button to a global hotkey</p>
+              <p class="msg">Adding a CapabilityRequest for global-hotkey, then a binding in manifest.toml. Scoping to ⌘⌥P — confirm?<span class="typing"></span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="funding">
+  <div class="wrap row">
+    <div class="label">Sustainability</div>
+    <div class="progress">
+      <div class="bar"><div class="fill"></div></div>
+      <div class="num"><strong>$847</strong> / $3,000 monthly</div>
+    </div>
+    <div class="recent">
+      <div class="av">MH</div>
+      <span><span class="who">@markh</span> sponsored $25</span>
+      <span class="when">14:22 today</span>
+    </div>
+    <a class="btn" href="#sponsor">Sponsor <span class="arrow">→</span></a>
+  </div>
+</div>
+
+<section id="product">
+  <div class="wrap">
+    <div class="section-head">
+      <h2>Three pane types. <span class="quiet">One protocol.</span></h2>
+      <p>Apps run as isolated processes that speak PGAP — newline-delimited JSON over stdio. No shared memory, no inherited file descriptors, no escape hatches. Sandboxed by default, capable by declaration.</p>
+    </div>
+    <div class="three-col">
+      <div class="feat">
+        <div class="tag"><span class="sq"></span> 01 / terminal</div>
+        <h3>Terminal panes</h3>
+        <p>PTY-backed, vt100-compliant. Every shell you already use. Split horizontal, vertical, zoom, focus — same muscle memory as tmux, faster boot.</p>
+      </div>
+      <div class="feat">
+        <div class="tag"><span class="sq"></span> 02 / app</div>
+        <h3>App panes</h3>
+        <p>External processes speaking PGAP. Python, Rust, anything that can write a JSON line. Capabilities declared in manifest.toml, prompted at runtime, persisted per-workspace.</p>
+      </div>
+      <div class="feat">
+        <div class="tag"><span class="sq"></span> 03 / agent</div>
+        <h3>Agent panes</h3>
+        <p>Plexi IQ — Claude or Codex backends, ledgered turns, full transcript, streams to channel. The agent that builds your apps lives in the next pane over.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="protocol">
+  <div class="wrap">
+    <div class="section-head" style="text-align:center;">
+      <h2 style="margin: 0 auto 16px;">An app is fifteen lines of Python.</h2>
+      <p style="margin: 0 auto;">PGAP is the boundary. Apps emit DrawCommand, receive PlexiEvent. Capabilities up front, secrets scoped to the workspace, no GUI framework to learn — just stdio.</p>
+    </div>
+    <div class="code-block">
+      <div class="head"><span>spotify_controller.py</span><span>plexi-sdk · python</span></div>
+<pre><span class="kw">from</span> __future__ <span class="kw">import</span> annotations
+<span class="kw">from</span> plexi_sdk <span class="kw">import</span> App, Frame, Key
+
+<span class="kw">def</span> <span class="fn">render</span>(frame: Frame, state: dict) -> <span class="kw">None</span>:
+    frame.title(<span class="str">"Spotify"</span>)
+    frame.row(<span class="str">"Now playing"</span>, state[<span class="str">"track"</span>])
+    frame.row(<span class="str">"Volume"</span>, <span class="kw">f</span><span class="str">"{state['vol']}%"</span>)
+    frame.hint(<span class="str">"⌘P play · ⌘N next · ⌘← prev"</span>)
+
+<span class="kw">def</span> <span class="fn">on_key</span>(key: Key, state: dict) -> <span class="kw">None</span>:
+    <span class="kw">if</span> key == <span class="str">"cmd+p"</span>: state[<span class="str">"action"</span>] = <span class="str">"toggle"</span>
+    <span class="kw">if</span> key == <span class="str">"cmd+n"</span>: state[<span class="str">"action"</span>] = <span class="str">"next"</span>
+
+App(render=render, on_key=on_key).run()</pre>
+    </div>
+  </div>
+</section>
+
+<section id="mission" class="mission">
+  <div class="wrap">
+    <p class="quote">My dream is to fund this project purely on donations so it can be <span class="glow">free forever</span> and <span class="glow">community-owned</span>.</p>
+    <p class="sub">If you can spare a few dollars a month, it goes directly to the work. Every sponsor is listed on this page — no tiers, no perks, just the work.</p>
+    <a class="sponsor-link" href="#sponsor">Sponsor on GitHub →</a>
+  </div>
+</section>
+
+<section id="blog">
+  <div class="wrap">
+    <div class="section-head">
+      <h2>Recent writing.</h2>
+      <p>Notes from the build. New posts ship alongside features, sometimes faster.</p>
+    </div>
+    <div class="blog-grid">
+      <article class="post">
+        <div class="post-meta"><span class="cat">essay</span><span class="dot"></span><span>Apr 24, 2026</span><span class="dot"></span><span>6 min</span></div>
+        <h3>Why I gave up on tmux</h3>
+        <p>Twelve years of tmux.conf, three years of nagging suspicion, one weekend of writing the thing it should have been. The pane abstraction was always a hack — here's the version that isn't.</p>
+      </article>
+      <article class="post">
+        <div class="post-meta"><span class="cat">build</span><span class="dot"></span><span>Apr 19, 2026</span><span class="dot"></span><span>9 min</span></div>
+        <h3>The agent dev loop, explained</h3>
+        <p>Edit a file, send to agent, agent edits, you review, commit. Inside Plexi, this loop is one keystroke. Outside, it's a swivel-chair UI of four windows. Walking through how Plexi IQ collapses it.</p>
+      </article>
+      <article class="post">
+        <div class="post-meta"><span class="cat">commission</span><span class="dot"></span><span>Apr 14, 2026</span><span class="dot"></span><span>14 min watch</span></div>
+        <h3>Built a Spotify controller for @markh in 14 minutes</h3>
+        <p>Commission #07. Spec arrived Tuesday morning, built and shipped Tuesday afternoon. The full screen recording, the manifest.toml, and the seven things I'd do differently next time.</p>
+      </article>
+      <article class="post">
+        <div class="post-meta"><span class="cat">release</span><span class="dot"></span><span>Apr 09, 2026</span><span class="dot"></span><span>4 min</span></div>
+        <h3>Plexi v3.0 alpha is shipping daily</h3>
+        <p>The protocol is stable, the host is fast, and the install pipeline lets me cut a build before lunch. What "shipping daily" actually looks like when the audience is twenty-three sponsors deep.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<section id="roadmap">
+  <div class="wrap">
+    <div class="section-head">
+      <h2>What's next.</h2>
+      <p>Funding moves the gated items into in-progress. The shipped ones are already in your alpha build — nothing here is vaporware.</p>
+    </div>
+    <div class="roadmap-list">
+      <div class="road-item">
+        <div class="num">/ 01</div>
+        <div class="body">
+          <h4>PGAP v3 protocol freeze</h4>
+          <p>Newline-delimited JSON, capability declaration, draw commands. App authors can target a stable spec.</p>
+        </div>
+        <div class="pill shipped"><span class="sq"></span> SHIPPED</div>
+      </div>
+      <div class="road-item">
+        <div class="num">/ 02</div>
+        <div class="body">
+          <h4>Plexi IQ agent panes</h4>
+          <p>Claude and Codex backends with ledgered turns, full transcript, channel streaming.</p>
+        </div>
+        <div class="pill shipped"><span class="sq"></span> SHIPPED</div>
+      </div>
+      <div class="road-item">
+        <div class="num">/ 03</div>
+        <div class="body">
+          <h4>Workspace persistence + multi-window</h4>
+          <p>Layouts survive restarts. Multiple Plexi windows on the same machine sharing one app registry.</p>
+        </div>
+        <div class="pill progress"><span class="sq"></span> IN PROGRESS</div>
+      </div>
+      <div class="road-item">
+        <div class="num">/ 04</div>
+        <div class="body">
+          <h4>Linux build + WASM app sandbox</h4>
+          <p>Apps as WASM modules with a deterministic capability surface. Removes the "trust the binary" problem.</p>
+        </div>
+        <div class="pill gated"><span class="sq"></span> FUNDING-GATED</div>
+      </div>
+      <div class="road-item">
+        <div class="num">/ 05</div>
+        <div class="body">
+          <h4>Plexi Teams — shared workspaces</h4>
+          <p>SpacetimeDB sync for shared layouts, secrets, and agent context across machines and collaborators.</p>
+        </div>
+        <div class="pill gated"><span class="sq"></span> FUNDING-GATED</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="sponsor" class="sponsor-wall">
+  <div class="wrap">
+    <div class="wall-head">
+      <div class="lhs">
+        <h2>23 people fund Plexi every month.</h2>
+        <p>Hosting, hardware, and the focused time it takes to ship daily. Every dollar moves the bar. At $3K/mo, Plexi becomes the only thing I work on.</p>
+      </div>
+      <div class="stat">
+        <div><strong>$847</strong> raised this month</div>
+        <div><strong>23</strong> active sponsors</div>
+        <div><strong>+4</strong> last 30 days</div>
+      </div>
+    </div>
+    <div class="avatars">
+      <div class="av">MH</div><div class="av">JK</div><div class="av">MR</div><div class="av">AT</div><div class="av">SP</div><div class="av">DV</div>
+      <div class="av">LO</div><div class="av">PM</div><div class="av">CH</div><div class="av">RN</div><div class="av">TY</div><div class="av">EG</div>
+      <div class="av">BW</div><div class="av">FN</div><div class="av">QZ</div><div class="av">UI</div><div class="av">VC</div><div class="av">XY</div>
+      <div class="av">KP</div><div class="av">NT</div><div class="av">RS</div><div class="av">WD</div><div class="av">ZL</div><div class="av more">+0</div>
+    </div>
+    <div class="footer-line">
+      <a class="btn lg" href="#">Sponsor on GitHub <span class="arrow">→</span></a>
+      <span class="micro">$3 / $5 / $10 / $25 / custom · cancel anytime</span>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap row">
+    <div class="foot-brand">
+      <svg width="22" height="22" viewBox="0 0 30 30" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <rect x="1.25" y="1.25" width="12" height="26.5" rx="0.5" fill="none" stroke="#6a727c" stroke-width="1.5"/>
+        <rect x="16.75" y="1.25" width="12" height="12" rx="0.5" fill="none" stroke="#6a727c" stroke-width="1.5"/>
+        <rect x="16.75" y="15.75" width="12" height="12" rx="0.5" fill="#9333ea"/>
+      </svg>
+      <span class="copy">© 2026 Plexi · MIT licensed · built in public</span>
+    </div>
+    <div class="links">
+      <a href="#">GitHub</a>
+      <a href="#">YouTube</a>
+      <a href="/docs">Docs</a>
+      <a href="#">Open Collective</a>
+      <a href="#">RSS</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

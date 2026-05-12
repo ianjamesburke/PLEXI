@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SLUG="${1:?Usage: scripts/new-draft <slug>}"
+DIR="drafts/$SLUG"
+
+if [[ -d "$DIR" ]]; then
+  echo "error: drafts/$SLUG already exists" >&2
+  exit 1
+fi
+
+mkdir -p "$DIR"
+cp drafts/_template/v1.md "$DIR/v1.md"
+echo "Created $DIR/v1.md — open it and start writing."
+open "$DIR/v1.md"

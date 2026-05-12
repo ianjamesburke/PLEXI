@@ -1,0 +1,106 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import Newsletter from '../../components/Newsletter.astro';
+import { getCollection } from 'astro:content';
+
+const posts = (await getCollection('blog'))
+  .filter((p) => !p.data.draft)
+  .sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
+
+const fmt = (d: Date) =>
+  d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit' });
+---
+<Layout title="Blog — Plexi" description="Updates from building Plexi in public.">
+  <section class="blog-list">
+    <div class="wrap">
+      <div class="section-head">
+        <h2>Recent writing.</h2>
+        <p>Notes from the build. New posts ship alongside features, sometimes faster.</p>
+      </div>
+
+      {posts.length === 0 ? (
+        <div class="coming-soon">
+          <div class="coming-label">First post</div>
+          <div class="coming-date">Sunday, May 3</div>
+          <p class="coming-sub">drop your email below and i'll send you a heads up when it's live.</p>
+        </div>
+      ) : (
+        <div class="posts-list">
+          {posts.map((post) => (
+            <a class="post-row" href={`/blog/${post.id}/`}>
+              <div class="date">{fmt(post.data.date)}</div>
+              <div>
+                <h3>{post.data.title}</h3>
+                <p>{post.data.description}</p>
+              </div>
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  </section>
+
+  <Newsletter blog />
+</Layout>
+
+<style>
+  .section-head { margin-bottom: 48px; }
+  .section-head h2 {
+    font-size: 40px; line-height: 1.1; letter-spacing: -0.02em;
+    font-weight: 600; margin: 0 0 12px;
+  }
+  .section-head p { font-size: 15px; color: var(--fg-2); max-width: 480px; margin: 0; }
+
+  .blog-list { padding: 120px 0 80px; }
+
+  .coming-soon {
+    padding: 64px 0 48px;
+    text-align: center;
+  }
+  .coming-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--fg-4);
+    margin-bottom: 12px;
+  }
+  .coming-date {
+    font-size: 48px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    color: var(--fg);
+    margin-bottom: 20px;
+  }
+  .coming-sub {
+    font-size: 14px;
+    color: var(--fg-3);
+    margin: 0;
+  }
+
+  .posts-list { display: flex; flex-direction: column; gap: 0; }
+  .post-row {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    gap: 24px;
+    padding: 24px 0;
+    border-top: 1px solid var(--border);
+    text-decoration: none;
+    color: inherit;
+    transition: opacity 150ms;
+  }
+  .post-row:hover { opacity: 0.7; }
+  .post-row:last-child { border-bottom: 1px solid var(--border); }
+  .date { font-size: 12px; color: var(--fg-3); padding-top: 4px; }
+  .post-row h3 {
+    font-size: 18px; font-weight: 600; margin: 0 0 6px;
+    letter-spacing: -0.01em;
+  }
+  .post-row p { font-size: 13px; color: var(--fg-2); margin: 0; }
+
+  @media (max-width: 640px) {
+    .section-head h2 { font-size: 28px; }
+    .coming-date { font-size: 36px; }
+    .post-row { grid-template-columns: 1fr; gap: 8px; }
+    .date { padding-top: 0; }
+  }
+</style>
