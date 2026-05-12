@@ -1614,12 +1614,23 @@ impl PlexiApp {
                     && !i.modifiers.alt
                     && !i.modifiers.ctrl
             };
-            let space = i.consume_key(egui::Modifiers::NONE, egui::Key::Space);
+            // Space and arrows are also gated — they must reach TextEdit for
+            // cursor navigation and space insertion in NotifyKind::Input.
+            let space = if consume_bare_enter {
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Space)
+            } else {
+                false
+            };
             let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-            let up = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::K);
-            let down = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::J);
+            let (up, down) = if consume_bare_enter {
+                let up = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::K);
+                let down = i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::J);
+                (up, down)
+            } else {
+                (false, false)
+            };
             let mut digit: Option<usize> = None;
             for (n, key) in [
                 (1, egui::Key::Num1), (2, egui::Key::Num2), (3, egui::Key::Num3),
