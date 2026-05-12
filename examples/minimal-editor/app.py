@@ -12,7 +12,7 @@ NOTES_FILE = "notes.txt"
 
 
 class MinimalEditorApp(App):
-    def on_init(self, ctx: RenderContext) -> None:
+    async def on_init(self, ctx: RenderContext) -> None:
         self._lines: list[str] = [""]
         self._cursor_line = 0
         self._status = ""
@@ -20,7 +20,7 @@ class MinimalEditorApp(App):
         self._loading = True
         # Attempt to load existing file.
         try:
-            content = self.emit.run_sync(self.emit.read_file(NOTES_FILE))  # type: ignore[attr-defined]
+            content = await self.emit.read_file(NOTES_FILE)  # type: ignore[attr-defined]
             self._lines = content.split("\n") if content else [""]
             self._cursor_line = max(0, len(self._lines) - 1)
             self._status = f"Loaded {len(content)} chars from {NOTES_FILE}"
@@ -28,7 +28,6 @@ class MinimalEditorApp(App):
         except RuntimeError as e:
             err = str(e)
             if "file not found" in err or "inaccessible" in err:
-                # New file — start blank.
                 self._lines = [""]
                 self._status = f"New file: {NOTES_FILE}"
                 self._status_color = MUTED
@@ -41,20 +40,20 @@ class MinimalEditorApp(App):
     def _char_count(self) -> int:
         return sum(len(ln) for ln in self._lines) + max(0, len(self._lines) - 1)
 
-    def _save(self, ctx: RenderContext) -> None:
+    async def _save(self, ctx: RenderContext) -> None:
         content = "\n".join(self._lines)
         try:
-            n = self.emit.run_sync(self.emit.write_file(NOTES_FILE, content))  # type: ignore[attr-defined]
+            n = await self.emit.write_file(NOTES_FILE, content)  # type: ignore[attr-defined]
             self._status = f"Saved {n} bytes to {NOTES_FILE}"
             self._status_color = GREEN
         except RuntimeError as e:
             self._status = f"Save error: {e}"
             self._status_color = ACCENT
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    async def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
         cmd = mods.get("cmd", False)
         if cmd and key == "s":
-            self._save(ctx)
+            await self._save(ctx)
             return
         if key == "Enter":
             self._lines.insert(self._cursor_line + 1, "")
