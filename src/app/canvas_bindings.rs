@@ -134,11 +134,24 @@ impl PlexiApp {
     /// and is out of scope for v3.5.
     pub(super) fn dispatch_run_in_linked_terminal(
         &mut self,
+        sender_pane_id: PaneId,
         terminal_pane_id: PaneId,
         command: String,
         echo: bool,
     ) {
         let active = self.active_window;
+        let linked = self.windows[active]
+            .panes
+            .get(&sender_pane_id)
+            .and_then(|p| p.as_app())
+            .and_then(|a| a.linked_pane_id);
+        if linked != Some(terminal_pane_id) {
+            log::warn!(
+                "RunInLinkedTerminal: pane {sender_pane_id} rejected — terminal {terminal_pane_id} \
+                 not linked (linked={linked:?})"
+            );
+            return;
+        }
         let Some(term) = self.windows[active]
             .panes
             .get_mut(&terminal_pane_id)
@@ -162,11 +175,24 @@ impl PlexiApp {
     /// shell's readline removes the partial token.
     pub(super) fn dispatch_insert_path_token(
         &mut self,
+        sender_pane_id: PaneId,
         terminal_pane_id: PaneId,
         path: String,
         mode: PathTokenMode,
     ) {
         let active = self.active_window;
+        let linked = self.windows[active]
+            .panes
+            .get(&sender_pane_id)
+            .and_then(|p| p.as_app())
+            .and_then(|a| a.linked_pane_id);
+        if linked != Some(terminal_pane_id) {
+            log::warn!(
+                "InsertPathToken: pane {sender_pane_id} rejected — terminal {terminal_pane_id} \
+                 not linked (linked={linked:?})"
+            );
+            return;
+        }
         let Some(term) = self.windows[active]
             .panes
             .get_mut(&terminal_pane_id)
@@ -201,6 +227,26 @@ impl PlexiApp {
         command: String,
     ) {
         let active = self.active_window;
+        let linked = self.windows[active]
+            .panes
+            .get(&sender_pane_id)
+            .and_then(|p| p.as_app())
+            .and_then(|a| a.linked_pane_id);
+        if linked != Some(terminal_pane_id) {
+            log::warn!(
+                "RequestCommandPreview: pane {sender_pane_id} rejected — terminal {terminal_pane_id} \
+                 not linked (linked={linked:?})"
+            );
+            self.queue_event_to_pane(
+                sender_pane_id,
+                PlexiEvent::CommandPreview {
+                    request_id,
+                    command,
+                    would_run_in_cwd: String::new(),
+                },
+            );
+            return;
+        }
         let cwd = self.windows[active]
             .panes
             .get(&terminal_pane_id)
@@ -227,7 +273,34 @@ impl PlexiApp {
     /// On non-macOS platforms `open` is unavailable; the host logs a
     /// warning and the request becomes a no-op rather than failing the
     /// frame.
-    pub(super) fn dispatch_open_artifact(&mut self, path: String, mode: ArtifactOpenMode) {
+    pub(super) fn dispatch_open_artifact(
+        &mut self,
+        sender_pane_id: PaneId,
+        path: String,
+        mode: ArtifactOpenMode,
+    ) {
+        let active = self.active_window;
+        let workspace_root = self.windows[active]
+            .panes
+            .get(&sender_pane_id)
+            .and_then(|p| p.as_app())
+            .map(|a| a.workspace_root.clone());
+        if let Some(ref root) = workspace_root {
+            let p = std::path::Path::new(&path);
+            let absolute = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                root.join(p)
+            };
+            let normalized = normalize_path(&absolute);
+            if !normalized.starts_with(root) {
+                log::warn!(
+                    "OpenArtifact: pane {sender_pane_id} rejected — path {path:?} outside \
+                     workspace {root:?}"
+                );
+                return;
+            }
+        }
         log::info!("OpenArtifact: path={path:?} mode={mode:?}");
         match mode {
             ArtifactOpenMode::OpenInPane => {
@@ -365,6 +438,21 @@ fn shell_open(path: &str, reveal: bool) {
              dropping reveal={reveal} path={path}"
         );
     }
+}
+
+fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut result = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::CurDir => {}
+            c => result.push(c),
+        }
+    }
+    result
 }
 
 #[cfg(test)]

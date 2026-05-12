@@ -2140,18 +2140,25 @@ impl eframe::App for PlexiApp {
                     self.dispatch_request_linked_terminal(sender_pane_id, request_id, cwd);
                 }
                 AppCommand::RunInLinkedTerminal {
+                    sender_pane_id,
                     terminal_pane_id,
                     command,
                     echo,
                 } => {
-                    self.dispatch_run_in_linked_terminal(terminal_pane_id, command, echo);
+                    self.dispatch_run_in_linked_terminal(
+                        sender_pane_id,
+                        terminal_pane_id,
+                        command,
+                        echo,
+                    );
                 }
                 AppCommand::InsertPathToken {
+                    sender_pane_id,
                     terminal_pane_id,
                     path,
                     mode,
                 } => {
-                    self.dispatch_insert_path_token(terminal_pane_id, path, mode);
+                    self.dispatch_insert_path_token(sender_pane_id, terminal_pane_id, path, mode);
                 }
                 AppCommand::RequestCommandPreview {
                     sender_pane_id,
@@ -2166,8 +2173,8 @@ impl eframe::App for PlexiApp {
                         command,
                     );
                 }
-                AppCommand::OpenArtifact { path, mode } => {
-                    self.dispatch_open_artifact(path, mode);
+                AppCommand::OpenArtifact { sender_pane_id, path, mode } => {
+                    self.dispatch_open_artifact(sender_pane_id, path, mode);
                 }
                 AppCommand::DeliverRunUpdate { originator_type_id, event } => {
                     let active = self.active_window;

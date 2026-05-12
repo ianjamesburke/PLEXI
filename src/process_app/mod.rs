@@ -3322,6 +3322,7 @@ mod canvas_bindings_tests {
                     terminal_pane_id,
                     command,
                     echo,
+                    ..
                 } = c
                 {
                     Some((*terminal_pane_id, command.clone(), *echo))

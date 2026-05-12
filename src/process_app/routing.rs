@@ -1310,6 +1310,7 @@ impl ProcessApp {
                     return;
                 }
                 self.pending_commands.push(AppCommand::RunInLinkedTerminal {
+                    sender_pane_id: self.pane_id,
                     terminal_pane_id,
                     command,
                     echo,
@@ -1326,6 +1327,7 @@ impl ProcessApp {
                     return;
                 }
                 self.pending_commands.push(AppCommand::InsertPathToken {
+                    sender_pane_id: self.pane_id,
                     terminal_pane_id,
                     path,
                     mode,
@@ -1363,7 +1365,11 @@ impl ProcessApp {
                     );
                     return;
                 }
-                self.pending_commands.push(AppCommand::OpenArtifact { path, mode });
+                self.pending_commands.push(AppCommand::OpenArtifact {
+                    sender_pane_id: self.pane_id,
+                    path,
+                    mode,
+                });
             }
 
             // ── Tool protocol (#398, #399) ─────────────────────────────────

@@ -117,6 +117,7 @@ pub enum AppCommand {
     /// suppress it from the host side; the flag is preserved on the wire
     /// so a future revision can wire shell-aware silent-execute).
     RunInLinkedTerminal {
+        sender_pane_id: u64,
         terminal_pane_id: u64,
         command: String,
         echo: bool,
@@ -127,6 +128,7 @@ pub enum AppCommand {
     /// word before the path is written. Paths containing shell
     /// metacharacters are POSIX-quoted by the host before injection.
     InsertPathToken {
+        sender_pane_id: u64,
         terminal_pane_id: u64,
         path: String,
         mode: crate::app_protocol::PathTokenMode,
@@ -147,6 +149,7 @@ pub enum AppCommand {
     /// for dirs, Launch Services for files), or shell out to `open`
     /// with `-R` (RevealInFinder) / no flag (OpenWithDefault) on macOS.
     OpenArtifact {
+        sender_pane_id: u64,
         path: String,
         mode: crate::app_protocol::ArtifactOpenMode,
     },
