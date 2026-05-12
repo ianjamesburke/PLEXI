@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "minimal-editor"
+type = "app"
+name = "Minimal Editor"
+version = "0.1.0"
+description = "POC for fs.read/fs.write capability — load and save a text file (#1196)."
+entry = "app.py"
+
+[app.capabilities]
+capabilities = ["fs.read", "fs.write"]
+
+[launch]
+layout_hint = { side = "right", split = 0.5 }

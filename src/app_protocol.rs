@@ -335,6 +335,25 @@ pub enum PlexiEvent {
     /// dialog without selecting a file, or the app lacks `fs.pick` capability.
     FilePickCancelled { request_id: String },
 
+    /// Response to `HostCommand::FileRead`. `content` is present on success;
+    /// `error` is present on failure (permission denied, file not found, I/O error).
+    FileReadResult {
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Response to `HostCommand::FileWrite`. `bytes_written` is present on success;
+    /// `error` is present on failure.
+    FileWriteResult {
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bytes_written: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+
     /// Chunk of stdout/stderr bytes from an active `DrawCommand::StreamProcess`
     /// child. `bytes` is a raw byte array (values 0–255); decode with
     /// `bytes(event['bytes'])` in Python. Delivered at up to ~30 Hz.
@@ -1375,6 +1394,30 @@ pub enum HostCommand {
         request_id: String,
         filter: Vec<String>,
         multiple: bool,
+    },
+
+    // ── File I/O (#1196) ──────────────────────────────────────────────────────
+    /// Read a file within workspace_root. Requires `fs.read` capability.
+    ///
+    /// `path` must be relative to workspace_root or an absolute path within it.
+    /// Host resolves and validates the path, then replies with
+    /// `PlexiEvent::FileReadResult { request_id, content, error }`.
+    FileRead {
+        request_id: String,
+        /// Path relative to workspace_root, or absolute path within it.
+        path: String,
+    },
+    /// Write content to a file within workspace_root. Requires `fs.write` capability.
+    ///
+    /// If `append` is true, content is appended; otherwise the file is overwritten.
+    /// Host validates the path, writes atomically (write to temp then rename for overwrite),
+    /// and replies with `PlexiEvent::FileWriteResult { request_id, bytes_written, error }`.
+    FileWrite {
+        request_id: String,
+        path: String,
+        content: String,
+        #[serde(default)]
+        append: bool,
     },
 }
 

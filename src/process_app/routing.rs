@@ -727,6 +727,232 @@ impl ProcessApp {
                 }).expect("failed to spawn file-picker thread");
             }
 
+            // ── File read (#1196) ──────────────────────────────────────────
+            HostCommand::FileRead { request_id, path } => {
+                log::info!(
+                    "ProcessApp[{}]: FileRead request_id={request_id} path={path:?}",
+                    self.type_id
+                );
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::FsRead)
+                {
+                    log::warn!("ProcessApp[{}]: FileRead denied — {reason}", self.type_id);
+                    event_log::emit(HostEvent::FileReadDenied {
+                        app_id: self.type_id.clone(),
+                        path: path.clone(),
+                        reason: format!("capability_denied: {reason}"),
+                        timestamp: event_log::now_timestamp(),
+                    });
+                    self.outbound_events.push_back(PlexiEvent::FileReadResult {
+                        request_id,
+                        content: None,
+                        error: Some(format!("permission denied: {reason}")),
+                    });
+                    return;
+                }
+
+                // Resolve and validate path stays within workspace_root.
+                let target = if std::path::Path::new(&path).is_absolute() {
+                    std::path::PathBuf::from(&path)
+                } else {
+                    self.workspace_root.join(&path)
+                };
+                let canonical = match std::fs::canonicalize(&target) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        log::warn!(
+                            "ProcessApp[{}]: FileRead path={path:?} canonicalize failed: {e}",
+                            self.type_id
+                        );
+                        event_log::emit(HostEvent::FileReadDenied {
+                            app_id: self.type_id.clone(),
+                            path: path.clone(),
+                            reason: format!("path_error: {e}"),
+                            timestamp: event_log::now_timestamp(),
+                        });
+                        self.outbound_events.push_back(PlexiEvent::FileReadResult {
+                            request_id,
+                            content: None,
+                            error: Some(format!("file not found or inaccessible: {e}")),
+                        });
+                        return;
+                    }
+                };
+                let ws_canonical = self.workspace_root.canonicalize().unwrap_or_else(|_| self.workspace_root.clone());
+                if !canonical.starts_with(&ws_canonical) {
+                    log::warn!(
+                        "ProcessApp[{}]: FileRead path={path:?} escapes workspace_root",
+                        self.type_id
+                    );
+                    event_log::emit(HostEvent::FileReadDenied {
+                        app_id: self.type_id.clone(),
+                        path: path.clone(),
+                        reason: "path_escape: outside workspace_root".to_string(),
+                        timestamp: event_log::now_timestamp(),
+                    });
+                    self.outbound_events.push_back(PlexiEvent::FileReadResult {
+                        request_id,
+                        content: None,
+                        error: Some("access denied: path outside workspace root".to_string()),
+                    });
+                    return;
+                }
+
+                match std::fs::read_to_string(&canonical) {
+                    Ok(content) => {
+                        let bytes = content.len() as u64;
+                        log::info!(
+                            "ProcessApp[{}]: FileRead ok path={} bytes={bytes}",
+                            self.type_id,
+                            canonical.display()
+                        );
+                        event_log::emit(HostEvent::FileOpCompleted {
+                            app_id: self.type_id.clone(),
+                            path: canonical.display().to_string(),
+                            op: "read".to_string(),
+                            bytes,
+                            timestamp: event_log::now_timestamp(),
+                        });
+                        self.outbound_events.push_back(PlexiEvent::FileReadResult {
+                            request_id,
+                            content: Some(content),
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "ProcessApp[{}]: FileRead read_to_string failed: {e}",
+                            self.type_id
+                        );
+                        event_log::emit(HostEvent::FileReadDenied {
+                            app_id: self.type_id.clone(),
+                            path: path.clone(),
+                            reason: format!("io_error: {e}"),
+                            timestamp: event_log::now_timestamp(),
+                        });
+                        self.outbound_events.push_back(PlexiEvent::FileReadResult {
+                            request_id,
+                            content: None,
+                            error: Some(format!("read failed: {e}")),
+                        });
+                    }
+                }
+            }
+
+            // ── File write (#1196) ────────────────────────────────────────
+            HostCommand::FileWrite { request_id, path, content, append } => {
+                log::info!(
+                    "ProcessApp[{}]: FileWrite request_id={request_id} path={path:?} append={append}",
+                    self.type_id
+                );
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::FsWrite)
+                {
+                    log::warn!("ProcessApp[{}]: FileWrite denied — {reason}", self.type_id);
+                    event_log::emit(HostEvent::FileWriteDenied {
+                        app_id: self.type_id.clone(),
+                        path: path.clone(),
+                        reason: format!("capability_denied: {reason}"),
+                        timestamp: event_log::now_timestamp(),
+                    });
+                    self.outbound_events.push_back(PlexiEvent::FileWriteResult {
+                        request_id,
+                        bytes_written: None,
+                        error: Some(format!("permission denied: {reason}")),
+                    });
+                    return;
+                }
+
+                // Resolve target path.
+                let target = if std::path::Path::new(&path).is_absolute() {
+                    std::path::PathBuf::from(&path)
+                } else {
+                    self.workspace_root.join(&path)
+                };
+
+                // Validate parent dir stays within workspace_root.
+                let parent = target.parent().unwrap_or(&target);
+                let parent_canonical = std::fs::canonicalize(parent)
+                    .or_else(|_| {
+                        // Parent dir may not exist yet — canonicalize what we can.
+                        std::fs::canonicalize(self.workspace_root.as_path())
+                    })
+                    .unwrap_or_else(|_| self.workspace_root.clone());
+                let ws_canonical = self.workspace_root.canonicalize().unwrap_or_else(|_| self.workspace_root.clone());
+                if !parent_canonical.starts_with(&ws_canonical) {
+                    log::warn!(
+                        "ProcessApp[{}]: FileWrite path={path:?} escapes workspace_root",
+                        self.type_id
+                    );
+                    event_log::emit(HostEvent::FileWriteDenied {
+                        app_id: self.type_id.clone(),
+                        path: path.clone(),
+                        reason: "path_escape: outside workspace_root".to_string(),
+                        timestamp: event_log::now_timestamp(),
+                    });
+                    self.outbound_events.push_back(PlexiEvent::FileWriteResult {
+                        request_id,
+                        bytes_written: None,
+                        error: Some("access denied: path outside workspace root".to_string()),
+                    });
+                    return;
+                }
+
+                let write_result: std::io::Result<u64> = if append {
+                    use std::io::Write;
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&target)
+                        .and_then(|mut f| f.write_all(content.as_bytes()).map(|_| content.len() as u64))
+                } else {
+                    // Atomic overwrite: write to temp file in same dir, then rename.
+                    let tmp_path = target.with_extension("plexi_tmp");
+                    std::fs::write(&tmp_path, content.as_bytes())
+                        .and_then(|_| std::fs::rename(&tmp_path, &target))
+                        .map(|_| content.len() as u64)
+                };
+
+                match write_result {
+                    Ok(bytes_written) => {
+                        log::info!(
+                            "ProcessApp[{}]: FileWrite ok path={} bytes={bytes_written}",
+                            self.type_id,
+                            target.display()
+                        );
+                        event_log::emit(HostEvent::FileOpCompleted {
+                            app_id: self.type_id.clone(),
+                            path: target.display().to_string(),
+                            op: "write".to_string(),
+                            bytes: bytes_written,
+                            timestamp: event_log::now_timestamp(),
+                        });
+                        self.outbound_events.push_back(PlexiEvent::FileWriteResult {
+                            request_id,
+                            bytes_written: Some(bytes_written),
+                            error: None,
+                        });
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "ProcessApp[{}]: FileWrite failed: {e}",
+                            self.type_id
+                        );
+                        event_log::emit(HostEvent::FileWriteDenied {
+                            app_id: self.type_id.clone(),
+                            path: path.clone(),
+                            reason: format!("io_error: {e}"),
+                            timestamp: event_log::now_timestamp(),
+                        });
+                        self.outbound_events.push_back(PlexiEvent::FileWriteResult {
+                            request_id,
+                            bytes_written: None,
+                            error: Some(format!("write failed: {e}")),
+                        });
+                    }
+                }
+            }
+
             // ── Mouse tracking toggle ──────────────────────────────────────
             HostCommand::SetMouseTracking { enabled } => {
                 self.mouse_tracking_enabled = enabled;
@@ -2189,6 +2415,90 @@ fn pick_files(filter: &[String], multiple: bool) -> Option<Vec<String>> {
     } else {
         let handle = block_on(dialog.pick_file())?;
         Some(vec![handle.path().to_string_lossy().into_owned()])
+    }
+}
+
+#[cfg(test)]
+mod file_io_tests {
+    use super::*;
+    use crate::app_permissions::AppPermissions;
+    use crate::app_protocol::HostCommand;
+
+    fn make_app(caps: &[&str]) -> crate::process_app::ProcessApp {
+        let strings: Vec<String> = caps.iter().map(|s| s.to_string()).collect();
+        let perms = AppPermissions::from_capability_strings(&strings);
+        let (mut app, _draw_tx) = crate::process_app::ProcessApp::new_for_test(1, perms);
+        // Use a real temp dir as workspace_root so canonicalize works.
+        app.workspace_root = std::env::temp_dir().canonicalize().unwrap();
+        app
+    }
+
+    #[test]
+    fn file_read_denied_without_capability() {
+        let mut app = make_app(&[]);
+        app.route_command(HostCommand::FileRead {
+            request_id: "r1".to_string(),
+            path: "foo.txt".to_string(),
+        });
+        let ev = app.outbound_events.pop_front().expect("expected FileReadResult event");
+        match ev {
+            PlexiEvent::FileReadResult { request_id, content, error } => {
+                assert_eq!(request_id, "r1");
+                assert!(content.is_none(), "content should be None on denial");
+                assert!(error.is_some(), "error should be set on denial");
+                let err = error.unwrap();
+                assert!(err.contains("permission denied"), "unexpected error: {err}");
+            }
+            other => panic!("expected FileReadResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn file_write_denied_without_capability() {
+        let mut app = make_app(&[]);
+        app.route_command(HostCommand::FileWrite {
+            request_id: "w1".to_string(),
+            path: "out.txt".to_string(),
+            content: "hello".to_string(),
+            append: false,
+        });
+        let ev = app.outbound_events.pop_front().expect("expected FileWriteResult event");
+        match ev {
+            PlexiEvent::FileWriteResult { request_id, bytes_written, error } => {
+                assert_eq!(request_id, "w1");
+                assert!(bytes_written.is_none(), "bytes_written should be None on denial");
+                assert!(error.is_some(), "error should be set on denial");
+                let err = error.unwrap();
+                assert!(err.contains("permission denied"), "unexpected error: {err}");
+            }
+            other => panic!("expected FileWriteResult, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn file_read_outside_workspace_root_blocked() {
+        let mut app = make_app(&["fs.read"]);
+        // Path traversal using absolute path outside workspace_root.
+        // /etc/passwd is guaranteed to be outside temp_dir().
+        app.route_command(HostCommand::FileRead {
+            request_id: "r2".to_string(),
+            path: "/etc/passwd".to_string(),
+        });
+        let ev = app.outbound_events.pop_front().expect("expected FileReadResult event");
+        match ev {
+            PlexiEvent::FileReadResult { request_id, content, error } => {
+                assert_eq!(request_id, "r2");
+                assert!(content.is_none(), "content should be None for path escape");
+                let err = error.unwrap_or_default();
+                // Should be either "access denied" (path escape) or "file not found"
+                // depending on whether /etc/passwd exists; both are correct rejections.
+                assert!(
+                    err.contains("access denied") || err.contains("file not found") || err.contains("not found"),
+                    "unexpected error: {err}"
+                );
+            }
+            other => panic!("expected FileReadResult, got {other:?}"),
+        }
     }
 }
 

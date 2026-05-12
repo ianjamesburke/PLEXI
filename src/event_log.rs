@@ -116,6 +116,28 @@ pub enum HostEvent {
         channel: String,
         timestamp: String,
     },
+    /// A file read was denied (capability check) or failed.
+    FileReadDenied {
+        app_id: String,
+        path: String,
+        reason: String,
+        timestamp: String,
+    },
+    /// A file write was denied (capability check) or failed.
+    FileWriteDenied {
+        app_id: String,
+        path: String,
+        reason: String,
+        timestamp: String,
+    },
+    /// A file operation completed successfully.
+    FileOpCompleted {
+        app_id: String,
+        path: String,
+        op: String, // "read" or "write"
+        bytes: u64,
+        timestamp: String,
+    },
 }
 
 // ── Wire envelope ─────────────────────────────────────────────────────────────

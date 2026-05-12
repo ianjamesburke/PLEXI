@@ -94,6 +94,8 @@ class App:
         self._pending_secret: "dict[str, asyncio.Queue]" = {}
         self._app_state: dict = {}
         self._pending_http: "dict[str, asyncio.Queue]" = {}
+        self._pending_file_read: "dict[str, asyncio.Queue]" = {}
+        self._pending_file_write: "dict[str, asyncio.Queue]" = {}
         # v3.3 ai.query broker (#284): awaits PlexiEvent::AiResponse keyed
         # on request_id. Each entry is consumed by a single ai_query() call.
         self._pending_ai: "dict[str, asyncio.Queue]" = {}
@@ -464,6 +466,24 @@ class App:
                             q.put_nowait(("error", ev["error"]))
                         else:
                             q.put_nowait(("ok", ev.get("body", "")))
+
+                elif t == "file_read_result":
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_file_read.pop(req_id, None)
+                    if q:
+                        if ev.get("error"):
+                            q.put_nowait(("error", ev["error"]))
+                        else:
+                            q.put_nowait(("ok", ev.get("content", "")))
+
+                elif t == "file_write_result":
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_file_write.pop(req_id, None)
+                    if q:
+                        if ev.get("error"):
+                            q.put_nowait(("error", ev["error"], 0))
+                        else:
+                            q.put_nowait(("ok", "", ev.get("bytes_written", 0)))
 
                 elif t == "ai_response":
                     # v3.3 ai.query broker (#284). Hand the whole event dict to

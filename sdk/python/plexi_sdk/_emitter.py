@@ -651,6 +651,45 @@ class Emitter:
         return await self.secret_get(key)
 
     @_blocking_emit_method
+    async def read_file(self, path: str) -> str:
+        """Read a file within workspace_root. Requires fs.read capability.
+
+        Returns the file content as a UTF-8 string.
+        Raises RuntimeError if denied or the file cannot be read.
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.read_file(path))``.
+        """
+        req_id = str(uuid.uuid4())
+        q: asyncio.Queue[tuple[str, str]] = _make_async_queue()
+        self._app._pending_file_read[req_id] = q
+        _emit({"type": "file_read", "request_id": req_id, "path": path})
+        status, value = await q.get()
+        if status == "error":
+            raise RuntimeError(f"read_file {path!r}: {value}")
+        return value
+
+    @_blocking_emit_method
+    async def write_file(self, path: str, content: str, append: bool = False) -> int:
+        """Write content to a file within workspace_root. Requires fs.write capability.
+
+        Returns the number of bytes written.
+        Raises RuntimeError if denied or the file cannot be written.
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.write_file(path, content))``.
+        """
+        req_id = str(uuid.uuid4())
+        q: asyncio.Queue[tuple[str, str, int]] = _make_async_queue()
+        self._app._pending_file_write[req_id] = q
+        _emit({"type": "file_write", "request_id": req_id, "path": path,
+               "content": content, "append": append})
+        status, err, bytes_written = await q.get()
+        if status == "error":
+            raise RuntimeError(f"write_file {path!r}: {err}")
+        return bytes_written
+
+    @_blocking_emit_method
     async def http_get(self, url: str) -> str:
         """HTTP GET brokered through the host. Requires net.http capability.
         Raises RuntimeError on failure.
