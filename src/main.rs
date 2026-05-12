@@ -374,8 +374,8 @@ fn main() -> eframe::Result {
                         PaneCmd::Key { pane_id, key } => std::process::exit(cli::pane_key_cli(pane_id, &key)),
                         PaneCmd::Info => std::process::exit(cli::pane_info_cli()),
                     },
-                    Commands::Terminal { cmd, ephemeral, layout, from_pane_id } => {
-                        std::process::exit(cli::terminal_cli(cmd.as_deref(), ephemeral, layout.as_deref(), from_pane_id));
+                    Commands::Terminal { cmd, ephemeral, layout, from_pane_id, cwd } => {
+                        std::process::exit(cli::terminal_cli(cmd.as_deref(), ephemeral, layout.as_deref(), from_pane_id, cwd.as_deref()));
                     }
                     Commands::Open { type_id, mcp, cli: cli_flag, layout, from_pane_id, extra_args } => {
                         let mode_count = type_id.is_some() as u8

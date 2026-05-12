@@ -2473,7 +2473,7 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_
 ///
 /// Opens a terminal pane. Supports the --ephemeral flag which closes the pane when the
 /// process exits.
-pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>, from_pane_id: Option<u64>) -> i32 {
+pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>, from_pane_id: Option<u64>, cwd: Option<&str>) -> i32 {
     let layout_str = layout.unwrap_or("split_v");
     let args: Vec<String> = cmd.map(|c| vec![c.to_string()]).unwrap_or_default();
 
@@ -2496,7 +2496,10 @@ pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>, fr
         if let Some(pid) = from_pane_id {
             payload["from_pane_id"] = serde_json::Value::Number(pid.into());
         }
-        log::info!("terminal:cli: sending via socket ephemeral={ephemeral} from_pane_id={from_pane_id:?} response_file={response_file:?}");
+        if let Some(cwd) = cwd {
+            payload["cwd"] = serde_json::Value::String(cwd.to_string());
+        }
+        log::info!("terminal:cli: sending via socket ephemeral={ephemeral} from_pane_id={from_pane_id:?} cwd={cwd:?} response_file={response_file:?}");
         let code = send_to_socket(payload);
         if code != 0 {
             return code;
@@ -2554,12 +2557,15 @@ pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>, fr
     if ephemeral {
         queue_payload["ephemeral"] = serde_json::Value::Bool(true);
     }
+    if let Some(cwd) = cwd {
+        queue_payload["cwd"] = serde_json::Value::String(cwd.to_string());
+    }
     let file = queue_dir.join(format!("{id}.json"));
     if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {
         eprintln!("error: could not write spawn request: {e}");
         return 1;
     }
-    log::info!("terminal:cli: queued ephemeral={ephemeral}");
+    log::info!("terminal:cli: queued ephemeral={ephemeral} cwd={cwd:?}");
     println!("queued: open terminal");
     println!("(running outside a Plexi pane — Plexi will pick this up within a second)");
     0
@@ -3604,7 +3610,8 @@ _plexi() {
           _arguments \
             '(-e --ephemeral)'{-e,--ephemeral}'[Close the pane when the process exits]' \
             '--layout[Layout hint]:layout:(split_v split_h split_above)' \
-            '--from-pane-id[Split relative to this pane ID]:pane_id:'
+            '--from-pane-id[Split relative to this pane ID]:pane_id:' \
+            '--cwd[Working directory for the new terminal pane]:directory:_directories'
           ;;
         descriptor)
           local subcmds
@@ -3690,8 +3697,10 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
     terminal)
       if [[ $prev == "--layout" ]]; then
         COMPREPLY=($(compgen -W "split_v split_h split_above" -- "$cur"))
+      elif [[ $prev == "--cwd" ]]; then
+        COMPREPLY=($(compgen -d -- "$cur"))
       else
-        COMPREPLY=($(compgen -W "-e --ephemeral --layout --from-pane-id" -- "$cur"))
+        COMPREPLY=($(compgen -W "-e --ephemeral --layout --from-pane-id --cwd" -- "$cur"))
       fi
       ;;
     open)
@@ -3813,6 +3822,7 @@ complete -c plexi -f -n "__fish_seen_subcommand_from completions" -a "zsh bash f
 complete -c plexi -n "__fish_seen_subcommand_from terminal" -s e -l ephemeral -d "Close the pane when the process exits"
 complete -c plexi -n "__fish_seen_subcommand_from terminal" -l layout -d "Layout hint" -a "split_v split_h split_above"
 complete -c plexi -n "__fish_seen_subcommand_from terminal" -l from-pane-id -d "Split relative to this pane ID"
+complete -c plexi -n "__fish_seen_subcommand_from terminal" -l cwd -d "Working directory for the new terminal pane" -a "(__fish_complete_directories)"
 # open flags
 complete -c plexi -n "__fish_seen_subcommand_from open" -l layout -d "Layout hint" -a "split_v split_h split_above overlay"
 complete -c plexi -n "__fish_seen_subcommand_from open" -l from-pane-id -d "Split relative to this pane ID"
