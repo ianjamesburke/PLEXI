@@ -329,6 +329,20 @@ impl ProcessApp {
             );
         }
 
+        // Canonicalize to resolve symlinks and platform aliases (e.g. macOS /var → /private/var).
+        // This ensures permission keys are stable across equivalent path spellings.
+        let workspace_root = match workspace_root.canonicalize() {
+            Ok(canonical) if canonical != workspace_root => {
+                log::info!(
+                    "ProcessApp: workspace_root canonicalized '{}' → '{}'",
+                    workspace_root.display(),
+                    canonical.display()
+                );
+                canonical
+            }
+            _ => workspace_root,
+        };
+
         // STEP-9: environment isolation (spec invariant I-6).
         // Clear the inherited environment and whitelist only vars the app
         // legitimately needs. Strips OPENROUTER_API_KEY and every other

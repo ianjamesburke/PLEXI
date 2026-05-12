@@ -290,8 +290,46 @@ impl Default for PermissionStore {
 }
 
 impl PermissionStore {
+    /// Resolve symlinks and platform path aliases (e.g. macOS /var → /private/var).
+    /// Falls back to the original path if canonicalization fails (path doesn't exist yet).
+    fn canonical_workspace(path: &Path) -> PathBuf {
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    }
+
     fn entry_key(app_id: &str, workspace_root: &Path, cap: Capability) -> String {
-        format!("{}::{}::{}", app_id, workspace_root.display(), cap.as_str())
+        let canonical = Self::canonical_workspace(workspace_root);
+        format!("{}::{}::{}", app_id, canonical.display(), cap.as_str())
+    }
+
+    /// Re-key any entries whose workspace path component resolves to a different canonical path.
+    /// Returns the number of entries migrated.
+    fn migrate_raw_path_keys(data: &mut PermissionStoreData) -> usize {
+        let mut to_rekey: Vec<(String, String, PermissionState)> = Vec::new();
+        for (key, &state) in &data.entries {
+            // key format: "app_id::workspace_path::cap_str"
+            // Use rsplitn to correctly handle workspace paths that contain "::".
+            let mut right = key.rsplitn(2, "::");
+            let cap_str = match right.next() { Some(s) => s, None => continue };
+            let left = match right.next() { Some(s) => s, None => continue };
+            let mut left_parts = left.splitn(2, "::");
+            let app_id = match left_parts.next() { Some(s) => s, None => continue };
+            let workspace_raw = match left_parts.next() { Some(s) => s, None => continue };
+
+            let raw_path = Path::new(workspace_raw);
+            let Ok(canonical) = raw_path.canonicalize() else { continue };
+            if canonical.as_os_str() == raw_path.as_os_str() { continue; }
+
+            let new_key = format!("{}::{}::{}", app_id, canonical.display(), cap_str);
+            if new_key != *key {
+                to_rekey.push((key.clone(), new_key, state));
+            }
+        }
+        let count = to_rekey.len();
+        for (old_key, new_key, state) in to_rekey {
+            data.entries.remove(&old_key);
+            data.entries.entry(new_key).or_insert(state);
+        }
+        count
     }
 
     /// Load from `config_dir/permissions.toml`. Returns empty store on missing file.
@@ -307,12 +345,18 @@ impl PermissionStore {
             Ok(s) => s,
         };
         match toml::from_str::<PermissionStoreData>(&raw) {
-            Ok(data) => {
+            Ok(mut data) => {
                 log::info!(
                     "permission_store: loaded {} entries from {}",
                     data.entries.len(),
                     path.display()
                 );
+                let migrated = Self::migrate_raw_path_keys(&mut data);
+                if migrated > 0 {
+                    log::info!(
+                        "permission_store: migrated {migrated} entries to canonical workspace paths"
+                    );
+                }
                 Self { data, path }
             }
             Err(e) => {
@@ -389,10 +433,12 @@ impl PermissionStore {
             }
         }
 
-        // Also restore any runtime-granted capabilities from previous sessions
-        let prefix_green = format!("{}::{}::", app_id, workspace_root.display());
+        // Also restore any runtime-granted capabilities from previous sessions.
+        // Entries stored before this fix are migrated to canonical keys by load_or_default.
+        let canonical_root = Self::canonical_workspace(workspace_root);
+        let prefix = format!("{}::{}::", app_id, canonical_root.display());
         for (key, &state) in &self.data.entries {
-            if !key.starts_with(&prefix_green) { continue; }
+            if !key.starts_with(&prefix) { continue; }
             let cap_str = match key.split("::").nth(2) {
                 Some(s) => s,
                 None => continue,
@@ -571,6 +617,83 @@ mod tests {
 
         // Returned store must be empty.
         assert!(store.data.entries.is_empty(), "store must be empty after corrupt-file recovery");
+    }
+
+    #[test]
+    fn entry_key_uses_canonical_path() {
+        // Verify that entry_key canonicalizes paths that exist on disk.
+        // On macOS, /var is a symlink to /private/var.
+        // If /var exists and resolves to /private/var, the key must use /private/var.
+        let tmp = tempfile::tempdir().unwrap();
+        let raw_path = tmp.path().to_path_buf();
+        let canonical_path = raw_path.canonicalize().unwrap_or_else(|_| raw_path.clone());
+
+        let key_raw = PermissionStore::entry_key("app", &raw_path, Capability::FsRead);
+        let key_canonical = PermissionStore::entry_key("app", &canonical_path, Capability::FsRead);
+        assert_eq!(
+            key_raw, key_canonical,
+            "entry_key must produce the same key for equivalent paths: raw={raw_path:?}, canonical={canonical_path:?}"
+        );
+    }
+
+    #[test]
+    fn set_with_raw_path_and_get_with_canonical_match() {
+        // Both set() and get() canonicalize internally via entry_key, so a permission
+        // stored with a raw path is retrievable with the canonical path and vice versa.
+        let config_tmp = tempfile::tempdir().unwrap();
+        let workspace_tmp = tempfile::tempdir().unwrap();
+        let raw_path = workspace_tmp.path().to_path_buf();
+        let canonical = raw_path.canonicalize().unwrap_or_else(|_| raw_path.clone());
+
+        let mut store = PermissionStore::load_or_default(config_tmp.path());
+        // Store via raw path.
+        store.set("my-app", &raw_path, Capability::FsRead, PermissionState::Green);
+        // Retrieve via canonical path — must match.
+        assert_eq!(
+            store.get("my-app", &canonical, Capability::FsRead),
+            Some(PermissionState::Green),
+            "permission stored via raw path must be retrievable via canonical path"
+        );
+        // Retrieve via raw path — must also match.
+        assert_eq!(
+            store.get("my-app", &raw_path, Capability::FsRead),
+            Some(PermissionState::Green),
+            "permission stored via raw path must be retrievable via the same raw path"
+        );
+    }
+
+    #[test]
+    fn migrate_raw_path_keys_rekeys_existing_entries() {
+        // Write a permissions file with entries under a raw (non-canonical) workspace path.
+        // load_or_default must migrate those entries to canonical keys.
+        let config_tmp = tempfile::tempdir().unwrap();
+        let workspace_tmp = tempfile::tempdir().unwrap();
+        let raw_path = workspace_tmp.path().to_path_buf();
+        let canonical = raw_path.canonicalize().unwrap_or_else(|_| raw_path.clone());
+
+        // If raw == canonical (no symlinks in this tmp path), migration is a no-op;
+        // skip the assertion to avoid false failures on CI.
+        if raw_path == canonical {
+            return;
+        }
+
+        // Write entry with raw key directly to the TOML file.
+        let raw_key = format!("my-app::{}::fs.read", raw_path.display());
+        let toml_content = format!("[entries]\n\"{raw_key}\" = \"green\"\n");
+        std::fs::write(config_tmp.path().join("permissions.toml"), toml_content).unwrap();
+
+        let store = PermissionStore::load_or_default(config_tmp.path());
+
+        // Entry must now be under the canonical key.
+        let canonical_key = format!("my-app::{}::fs.read", canonical.display());
+        assert!(
+            store.data.entries.contains_key(&canonical_key),
+            "migrated entry must be stored under canonical key"
+        );
+        assert!(
+            !store.data.entries.contains_key(&raw_key),
+            "raw-path key must be removed after migration"
+        );
     }
 
     #[test]
