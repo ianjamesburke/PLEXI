@@ -684,7 +684,7 @@ impl PlexiApp {
                 if let Some(pane) = self.windows[self.active_window].panes.get_mut(&pane_id) {
                     if let Some(app) = pane.as_app_mut() {
                         if let crate::pane::AppRuntime::Process(ref mut proc_app) = app.runtime {
-                            proc_app.pane_just_focused = true;
+                            proc_app.render_session.pane_just_focused = true;
                         }
                     }
                 }
