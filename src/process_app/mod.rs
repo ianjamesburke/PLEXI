@@ -1285,6 +1285,7 @@ impl App for ProcessApp {
                 &mut secret_input_buf,
                 &config_dir,
                 &mut permission_store,
+                ctx.colors,
             );
             self.pending_prompts = pending_prompts;
             self.outbound_events = outbound_events;
