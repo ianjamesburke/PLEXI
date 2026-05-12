@@ -285,6 +285,15 @@ impl PlexiApp {
             .get(&sender_pane_id)
             .and_then(|p| p.as_app())
             .map(|a| a.workspace_root.clone());
+        // workspace_root is None for builtin apps (which run with trusted
+        // AppPermissions::builtin()) — they bypass the path check intentionally.
+        // For process apps the root is always set; None here means the pane was
+        // already removed (race between close and dispatch), so we allow through
+        // rather than silently dropping a legitimate late-arriving command.
+        //
+        // Note: validation is lexical (normalize_path collapses ".." without I/O).
+        // Symlinks inside the workspace root that point outside are treated as
+        // trusted, consistent with OS-level file permission semantics.
         if let Some(ref root) = workspace_root {
             let p = std::path::Path::new(&path);
             let absolute = if p.is_absolute() {
@@ -457,7 +466,28 @@ fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::quote_for_shell;
+    use super::{normalize_path, quote_for_shell};
+    use std::path::PathBuf;
+
+    #[test]
+    fn normalize_path_collapses_parent_dirs() {
+        assert_eq!(normalize_path(&PathBuf::from("/a/b/../c")), PathBuf::from("/a/c"));
+        assert_eq!(normalize_path(&PathBuf::from("/a/b/c/../../d")), PathBuf::from("/a/d"));
+        assert_eq!(normalize_path(&PathBuf::from("/a/./b/../c/.")), PathBuf::from("/a/c"));
+    }
+
+    #[test]
+    fn normalize_path_cannot_escape_above_root() {
+        // Pop at the root component is a no-op — result stays at /etc.
+        assert_eq!(normalize_path(&PathBuf::from("/../etc")), PathBuf::from("/etc"));
+    }
+
+    #[test]
+    fn normalize_path_traversal_is_blocked_by_workspace_check() {
+        let root = PathBuf::from("/workspace");
+        let escaped = normalize_path(&PathBuf::from("/workspace/../../etc/passwd"));
+        assert!(!escaped.starts_with(&root), "traversal should escape workspace: {escaped:?}");
+    }
 
     #[test]
     fn quote_for_shell_safe_paths_pass_through() {
