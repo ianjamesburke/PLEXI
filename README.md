@@ -311,6 +311,8 @@ Split panes, navigate, and zoom with keyboard shortcuts. Press `Cmd+/` for the f
 | `Cmd+D` | Split horizontally |
 | `Cmd+Shift+D` | Split vertically |
 | `Cmd+H/J/K/L` | Navigate between panes |
+| `Cmd+Ctrl+H` | Send pane to the front |
+| `Cmd+Ctrl+J` | Send pane to the back |
 | `Cmd+Enter` | Zoom focused pane full-screen |
 | `Cmd+W` | Close focused pane |
 | `Cmd+P` | Command palette |
