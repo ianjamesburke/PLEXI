@@ -1116,7 +1116,7 @@ pub(crate) fn render_layout_node(
                 log::warn!("render_layout_node: nested nodes inside root Stack not yet supported");
             }
         }
-        log::info!("render_layout_node: painted stack at pane ({pane_x}, {pane_y})");
+        log::debug!("render_layout_node: painted stack at pane ({pane_x}, {pane_y})");
         return;
     }
 
@@ -1158,7 +1158,7 @@ pub(crate) fn render_layout_node(
     let screen_origin = pane_rect.min;
     paint_node(&taffy, root, 0.0, 0.0, ui, screen_origin, pane_x, pane_y, clip, colors);
 
-    log::info!("render_layout_node: painted layout tree at pane ({pane_x}, {pane_y})");
+    log::debug!("render_layout_node: painted layout tree at pane ({pane_x}, {pane_y})");
 }
 
 /// Parse a hex color string like `"#1e1e2e"` into Color32.
