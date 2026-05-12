@@ -352,12 +352,14 @@ impl PermissionStore {
                     path.display()
                 );
                 let migrated = Self::migrate_raw_path_keys(&mut data);
+                let store = Self { data, path };
                 if migrated > 0 {
                     log::info!(
                         "permission_store: migrated {migrated} entries to canonical workspace paths"
                     );
+                    store.save();
                 }
-                Self { data, path }
+                store
             }
             Err(e) => {
                 let ts = std::time::SystemTime::now()
