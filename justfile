@@ -14,6 +14,10 @@ fetch-python-runtime:
 dev:
     cargo run
 
+# Run the website dev server at http://localhost:4321
+web:
+    npm --prefix website run dev
+
 # Run the full test suite — HostHarness regression tests + unit tests.
 test:
     cargo test
