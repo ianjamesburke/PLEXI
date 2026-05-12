@@ -1049,6 +1049,54 @@ mod tests {
         );
     }
 
+    /// `plexi terminal --layout tab` must create a new tab pane alongside the
+    /// focused pane (wrapping both in a Tabs container) rather than splitting.
+    #[test]
+    fn spawn_pane_tab_creates_tab_not_split() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        h.app.windows[0].focused_pane = Some(root);
+
+        let before_panes = h.app.windows[0].panes.len();
+        let before_windows = h.app.windows.len();
+
+        h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("tab".to_string()),
+            args: vec![],
+            pipe_id: None,
+            from_pane_id: None,
+            request_id: None,
+            response_file: None,
+            ephemeral: false,
+        });
+        h.run_frames(2);
+
+        // No new window — tab stays in the same window.
+        assert_eq!(
+            h.app.windows.len(),
+            before_windows,
+            "tab layout must not create a new window"
+        );
+        // One new pane added to the window.
+        assert_eq!(
+            h.app.windows[0].panes.len(),
+            before_panes + 1,
+            "tab layout must add exactly one new pane"
+        );
+        // The tile tree root must now be a Tabs container.
+        let root_tile = h.app.windows[0].tree.root.expect("root tile must exist");
+        let root_tile_ref = h.app.windows[0].tree.tiles.get(root_tile);
+        assert!(
+            matches!(
+                root_tile_ref,
+                Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(_)))
+            ),
+            "root tile must be a Tabs container after tab spawn, got: {root_tile_ref:?}"
+        );
+    }
+
     /// `plexi terminal --layout new_window` must create a new spatial grid window
     /// in the current context rather than splitting the active pane.
     #[test]

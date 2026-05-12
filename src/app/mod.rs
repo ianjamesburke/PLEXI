@@ -1153,6 +1153,9 @@ impl PlexiApp {
                             let new_x = max_x.map(|x| x + 1).unwrap_or(1);
                             log::info!("pane_ipc: spawn_pane terminal layout=new_window grid=({new_x},{active_y})");
                             self.create_page_at(new_x, active_y);
+                        } else if layout_str == "tab" {
+                            log::info!("pane_ipc: spawn_pane terminal layout=tab");
+                            self.new_tab();
                         } else {
                             let vertical = matches!(layout_str, "split_h" | "split_above");
                             let initial_cmd = cmd_from_args(args);
