@@ -703,17 +703,21 @@ pub fn apps_dir() -> PathBuf {
 /// contains a `.plexi/` itself — `~/.plexi-<channel>/` is the global config
 /// dir, which lives next to `~`, not inside it.
 pub fn resolve_workspace_root(start: &Path) -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok().map(PathBuf::from);
+    let home = dirs::home_dir();
     let mut current = start.to_path_buf();
     loop {
-        if current.join(".plexi").is_dir() {
-            return Some(current);
-        }
-        // Stop at home dir — never walk above it
+        // Home dir is never a workspace root. Check this BEFORE .plexi so that
+        // ~/.plexi/ (the stable global config dir) doesn't trigger a false positive
+        // when the focused pane is at ~/. Without this guard ordering, PR/alpha builds
+        // would silently load stable app code from ~/.plexi/apps/ instead of their own
+        // channel's apps whenever the terminal cwd is ~/. (issue #1064)
         if let Some(ref h) = home {
             if current == *h {
                 return None;
             }
+        }
+        if current.join(".plexi").is_dir() {
+            return Some(current);
         }
         if !current.pop() {
             return None;
@@ -821,6 +825,28 @@ mod tests {
     fn workspace_root_returns_none_when_no_dot_plexi() {
         let bare = tempfile::tempdir().unwrap();
         assert!(resolve_workspace_root(bare.path()).is_none());
+    }
+
+    #[test]
+    fn home_with_dot_plexi_is_not_a_workspace_root() {
+        // Regression for issue #1064: ~/.plexi/ (stable profile dir) must NOT cause
+        // home to be returned as a workspace root. The home-dir stop must fire before
+        // the .plexi check, not after.
+        use std::sync::Mutex;
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        let fake_home = tempfile::tempdir().unwrap();
+        fs::create_dir_all(fake_home.path().join(".plexi")).unwrap();
+        let original = std::env::var("HOME").ok();
+        // SAFETY: serialised via ENV_LOCK
+        unsafe { std::env::set_var("HOME", fake_home.path()) };
+        let result = resolve_workspace_root(fake_home.path());
+        match original {
+            Some(h) => unsafe { std::env::set_var("HOME", h) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+        assert!(result.is_none(), "home dir must not be a workspace root even when .plexi exists");
     }
 
     #[test]
