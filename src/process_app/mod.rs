@@ -137,6 +137,9 @@ pub struct ProcessApp {
     features_used: Vec<String>,
     /// workspace_root sent in Init — scopes all SecretGet calls.
     pub(crate) workspace_root: PathBuf,
+    /// Directory containing the app's entry file — used to resolve relative
+    /// asset paths such as image srcs in RenderCommand::Image.
+    pub(crate) app_dir: PathBuf,
     /// Granted capabilities for this app instance.
     pub(crate) permissions: AppPermissions,
     /// Persisted three-state permission store. Updated on grant/deny decisions.
@@ -613,6 +616,7 @@ impl ProcessApp {
             sdk: None,
             features_used: Vec::new(),
             workspace_root,
+            app_dir: bin_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::env::temp_dir()),
             permissions,
             permission_store: store,
             pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new(
@@ -737,6 +741,7 @@ impl ProcessApp {
             sdk: None,
             features_used: Vec::new(),
             workspace_root: std::env::temp_dir(),
+            app_dir: std::env::temp_dir(),
             permissions,
             permission_store: crate::app_permissions::PermissionStore::default(),
             pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new(
@@ -1320,7 +1325,7 @@ impl App for ProcessApp {
             .map(|g| g.clone())
             .unwrap_or_default();
         self.image_cache.poll(ui.ctx());
-        self.render_session.render(ui, pane_rect, &self.frame, ctx.colors, &mut self.commonmark_cache, &audio_peaks, self.pane_id, &mut self.image_cache, &self.workspace_root);
+        self.render_session.render(ui, pane_rect, &self.frame, ctx.colors, &mut self.commonmark_cache, &audio_peaks, self.pane_id, &mut self.image_cache, &self.app_dir);
         self.outbound_events.extend(self.render_session.drain_events());
 
         // ── Error fallback ──────────────────────────────────────────────────
