@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.12] — 2026-05-12
+
+### Changes
+- feat(quick-note): add clipboard destination to default config
+- ux(quick-note): compose TextEdit fills 80% screen height on open (#1127) (#1151)
 ## [3.6.11] — 2026-05-12
 
 ### Changes
