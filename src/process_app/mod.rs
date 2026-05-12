@@ -3639,14 +3639,17 @@ mod env_isolation_tests {
     //! injected into app subprocess environments. The only path to a secret
     //! is `HostCommand::SecretGet` through the brokered capability check.
     //!
-    //! Strategy: set a canary env var in the host process, spawn a subprocess
-    //! using the same env-clear + whitelist logic that ProcessApp::launch uses,
-    //! and assert the canary is absent from the subprocess environment.
+    //! Strategy: add a canary directly to the Command (simulating what the old
+    //! unconditional list_user_secrets() injection did), then apply env_clear()
+    //! + whitelist (what ProcessApp::launch now does), and assert the canary
+    //! is absent from the subprocess. Rust's Command builder strips explicit
+    //! .env() additions that precede .env_clear(), so no host-process env
+    //! mutation is needed — no thread-safety concerns.
 
     use std::process::Command;
 
     const WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
-    const CANARY_KEY: &str = "PLEXI_TEST_SECRET_CANARY_1167";
+    const CANARY_KEY: &str = "PLEXI_SECRET_CANARY";
     const CANARY_VAL: &str = "secret_must_not_leak";
 
     #[test]
@@ -3660,14 +3663,13 @@ mod env_isolation_tests {
             return;
         };
 
-        // Place a canary in the host env as if it were a user-global secret.
-        // Safety: single-threaded test process; env mutation is visible only
-        // within this process and is cleaned up before returning.
-        unsafe { std::env::set_var(CANARY_KEY, CANARY_VAL) };
-
+        // Add the canary first (models what the old injection loop wrote),
+        // then env_clear() which strips it. env(k,v) before env_clear() is
+        // removed by env_clear() — verified empirically via Rust std behavior.
         let output = Command::new(sh)
             .arg("-c")
             .arg(format!("echo \"${{{}:-ABSENT}}\"", CANARY_KEY))
+            .env(CANARY_KEY, CANARY_VAL)
             .env_clear()
             .envs(
                 WHITELIST
@@ -3676,8 +3678,6 @@ mod env_isolation_tests {
             )
             .output()
             .expect("sh spawn failed");
-
-        unsafe { std::env::remove_var(CANARY_KEY) };
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert_eq!(
