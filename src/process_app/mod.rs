@@ -1008,6 +1008,7 @@ impl ProcessApp {
     /// UX is "field clears on submit" — the next TextInput emit with the
     /// same id starts empty. Public to the crate for unit tests that
     /// don't go through egui rendering.
+    #[cfg(test)]
     pub(crate) fn submit_text_input(&mut self, id: &str) {
         let ev = self.render_session.submit_text_input(id);
         self.outbound_events.push_back(ev);

@@ -276,7 +276,8 @@ impl RenderSession {
 
     /// Remove the buffer for `id` (or use empty string) and return a
     /// `PlexiEvent::TextSubmitted` event. Called by `ProcessApp::submit_text_input`
-    /// so external callers (e.g. unit tests) don't bypass the session.
+    /// in tests — production submit goes through `push_submit_event` inside `render`.
+    #[cfg(test)]
     pub(crate) fn submit_text_input(&mut self, id: &str) -> PlexiEvent {
         let value = self.text_input_buffers.remove(id).unwrap_or_default();
         PlexiEvent::TextSubmitted {
