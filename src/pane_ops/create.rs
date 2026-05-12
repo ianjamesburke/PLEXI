@@ -1130,13 +1130,20 @@ mod quick_note_tests {
         }
     }
 
-    /// Run `sh -c <cmd>` and return trimmed stdout.
+    /// Run `sh -c <cmd>` and return stdout. Panics if the command exits non-zero.
     fn sh(cmd: &str) -> String {
         let out = std::process::Command::new("sh")
             .args(["-c", cmd])
             .output()
             .expect("sh -c failed");
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
+        if !out.status.success() {
+            panic!(
+                "sh command failed (exit {}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        String::from_utf8_lossy(&out.stdout).to_string()
     }
 
     #[test]
@@ -1192,9 +1199,7 @@ mod quick_note_tests {
         let note = "first\nsecond";
         let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {note}", note, &ctx("/tmp"));
         let out = sh(&cmd);
-        // printf '%s' strips the trailing newline; we check both lines appear in order.
-        assert!(out.contains("first") && out.contains("second"), "newline dropped: got {out:?}");
-        assert!(!out.contains("INJECTED"), "unexpected injection: got {out:?}");
+        assert_eq!(out, note, "newline not preserved literally: got {out:?}");
     }
 
     /// `{cwd}` with a directory name containing a single quote expands safely.
