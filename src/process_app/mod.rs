@@ -386,6 +386,7 @@ impl ProcessApp {
             match mcp_server::start_mcp_server(section.tools.clone()) {
                 Ok(handle) => {
                     cmd.env("PLEXI_MCP_PORT", handle.port.to_string());
+                    cmd.env("PLEXI_MCP_TOKEN", &handle.token);
                     Some(handle)
                 }
                 Err(e) => {
