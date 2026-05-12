@@ -2227,7 +2227,6 @@ mod render_session_tests {
     use super::*;
     use std::collections::HashSet;
     use std::path::PathBuf;
-    use std::process::Command;
 
     fn make_app() -> Option<ProcessApp> {
         let sh = ["/bin/sh", "/usr/bin/sh"]

@@ -54,7 +54,7 @@ impl RenderSession {
         audio_peaks: &HashMap<String, f32>,
         pane_id: u64,
     ) {
-        log::info!("render_session: render pane_id={} cmds={}", pane_id, frame.len());
+        log::debug!("render_session: render pane_id={} cmds={}", pane_id, frame.len());
 
         // ── Pass 1: draw commands ────────────────────────────────────────────
         crate::process_app::render::render_draw_commands(
