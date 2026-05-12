@@ -571,13 +571,21 @@ impl PlexiApp {
                         ui.add_space(6.0);
 
                         let te_id = egui::Id::new("rename_pane_input");
-                        let te = ui.add(
-                            egui::TextEdit::singleline(&mut self.rename_buffer)
-                                .id(te_id)
-                                .desired_width(MODAL_WIDTH)
-                                .hint_text("Pane name...")
-                                .font(egui::TextStyle::Body),
-                        );
+                        let te = ui.scope(|ui| {
+                            ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                            ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                            ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
+                            ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, self.colors.accent);
+                            ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.colors.border);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.rename_buffer)
+                                    .id(te_id)
+                                    .desired_width(MODAL_WIDTH)
+                                    .hint_text("Pane name...")
+                                    .font(egui::TextStyle::Body)
+                                    .margin(egui::Margin::symmetric(8, 5)),
+                            )
+                        }).inner;
 
                         // One-shot focus: only request on the first render frame.
                         // Re-requesting every frame (guarded by `!te.has_focus()`) lets
@@ -658,13 +666,21 @@ impl PlexiApp {
                         ui.add_space(6.0);
 
                         let te_id = egui::Id::new("rename_context_input");
-                        let te = ui.add(
-                            egui::TextEdit::singleline(&mut self.rename_buffer)
-                                .id(te_id)
-                                .desired_width(MODAL_WIDTH)
-                                .hint_text("Context name...")
-                                .font(egui::TextStyle::Body),
-                        );
+                        let te = ui.scope(|ui| {
+                            ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                            ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                            ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
+                            ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, self.colors.accent);
+                            ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.colors.border);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.rename_buffer)
+                                    .id(te_id)
+                                    .desired_width(MODAL_WIDTH)
+                                    .hint_text("Context name...")
+                                    .font(egui::TextStyle::Body)
+                                    .margin(egui::Margin::symmetric(8, 5)),
+                            )
+                        }).inner;
 
                         if !te.has_focus() {
                             te.request_focus();
@@ -763,20 +779,24 @@ impl PlexiApp {
                         egui::ScrollArea::vertical()
                             .max_height(max_text_h)
                             .show(ui, |ui| {
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut self.quick_note_text)
-                                        .id(egui::Id::new("quick_note_text"))
-                                        .font(egui::FontId::monospace(style::TEXT_BODY))
-                                        .text_color(self.colors.text_primary)
-                                        .desired_width(f32::INFINITY)
-                                        .desired_rows(1)
-                                        .frame(false)
-                                        .hint_text(
-                                            RichText::new("What's on your mind?")
-                                                .color(self.colors.text_dim.linear_multiply(0.3))
-                                                .size(style::TEXT_BODY),
-                                        ),
-                                );
+                                ui.scope(|ui| {
+                                    ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                                    ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut self.quick_note_text)
+                                            .id(egui::Id::new("quick_note_text"))
+                                            .font(egui::FontId::monospace(style::TEXT_BODY))
+                                            .text_color(self.colors.text_primary)
+                                            .desired_width(f32::INFINITY)
+                                            .desired_rows(1)
+                                            .frame(false)
+                                            .hint_text(
+                                                RichText::new("What's on your mind?")
+                                                    .color(self.colors.text_dim.linear_multiply(0.3))
+                                                    .size(style::TEXT_BODY),
+                                            ),
+                                    );
+                                });
                             });
                     });
             });
@@ -1838,15 +1858,19 @@ impl PlexiApp {
                                 // Cmd+Enter submits (handled in the keyboard
                                 // pre-pass below). Scrolls vertically once it
                                 // exceeds the visible row count.
-                                let te = egui::TextEdit::multiline(
-                                    &mut self.modal_input_buffer,
-                                )
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(6)
-                                .font(egui::FontId::proportional(16.0))
-                                .margin(egui::Margin::symmetric(12, 10))
-                                .hint_text("Type. Enter for newline, \u{2318}\u{21B5} to submit.");
-                                let resp = ui.add(te);
+                                let resp = ui.scope(|ui| {
+                                    ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                                    ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                                    ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
+                                    ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, self.colors.accent);
+                                    ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.colors.border);
+                                    ui.add(egui::TextEdit::multiline(&mut self.modal_input_buffer)
+                                        .desired_width(f32::INFINITY)
+                                        .desired_rows(6)
+                                        .font(egui::FontId::proportional(16.0))
+                                        .margin(egui::Margin::symmetric(12, 10))
+                                        .hint_text("Type. Enter for newline, \u{2318}\u{21B5} to submit."))
+                                }).inner;
                                 resp.request_focus();
                             }
                         }
