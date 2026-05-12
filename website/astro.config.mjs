@@ -3,6 +3,7 @@ import { defineConfig } from 'astro/config';
 import mdx from '@astrojs/mdx';
 import node from '@astrojs/node';
 import sitemap from '@astrojs/sitemap';
+import tailwindcss from '@tailwindcss/vite';
 
 // https://astro.build/config
 // Note: Astro v6 removed `output: 'hybrid'`. `output: 'static'` (the default)
@@ -17,6 +18,7 @@ export default defineConfig({
     service: { entrypoint: 'astro/assets/services/sharp' },
   },
   vite: {
+    plugins: [tailwindcss()],
     // better-sqlite3 is a native module; keep it external from the SSR bundle.
     ssr: { external: ['better-sqlite3'] },
   },

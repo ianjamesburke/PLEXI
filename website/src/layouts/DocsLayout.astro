@@ -67,7 +67,7 @@ const isStale = verified_version && verified_version !== CURRENT_VERSION;
             </span>
           )}
         </header>
-        <div class="prose">
+        <div class="prose prose-invert max-w-none">
           <slot />
         </div>
       </div>
@@ -183,34 +183,6 @@ const isStale = verified_version && verified_version !== CURRENT_VERSION;
     border-color: rgba(245, 158, 11, 0.25);
   }
   .current-hint { opacity: 0.7; }
-
-  /* Prose */
-  .prose { color: var(--fg-2); font-size: 14px; line-height: 1.8; }
-  .prose h2 { font-size: 20px; letter-spacing: -0.01em; font-weight: 600; margin: 40px 0 14px; color: var(--fg); }
-  .prose h3 { font-size: 15px; font-weight: 600; margin: 28px 0 10px; color: var(--fg); }
-  .prose p { margin-bottom: 16px; }
-  .prose a { color: var(--accent-light); border-bottom: 1px solid rgba(147, 51, 234, 0.35); transition: color 150ms, border-color 150ms; }
-  .prose a:hover { color: var(--fg); border-bottom-color: var(--fg); }
-  .prose ul, .prose ol { margin: 0 0 16px 22px; }
-  .prose li { margin-bottom: 5px; }
-  .prose li p { margin-bottom: 0; }
-  .prose code { background: var(--bg-3); padding: 2px 6px; border-radius: 4px; font-size: 12.5px; color: var(--accent-light); border: 1px solid var(--border); }
-  .prose pre { background: var(--bg-2); border: 1px solid var(--border-2); border-radius: 8px; padding: 16px 18px; overflow-x: auto; margin-bottom: 18px; font-size: 12.5px; line-height: 1.7; }
-  .prose pre code { background: transparent; border: none; padding: 0; color: var(--fg-2); }
-  .prose blockquote { border-left: 2px solid var(--accent); padding-left: 16px; color: var(--fg-3); margin: 0 0 16px; }
-  .prose table { width: 100%; border-collapse: collapse; margin-bottom: 18px; font-size: 13px; }
-  .prose th { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border-2); color: var(--fg-3); font-weight: 500; letter-spacing: 0.04em; font-size: 11px; text-transform: uppercase; }
-  .prose td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
-  .prose tr:last-child td { border-bottom: none; }
-
-  .prose .callout {
-    border: 1px solid var(--border-2);
-    border-radius: 8px;
-    padding: 14px 16px;
-    margin-bottom: 18px;
-    background: var(--bg-2);
-    font-size: 13px;
-  }
 
   @media (max-width: 980px) {
     .docs-shell { flex-direction: column; padding: 0 20px; gap: 0; }
