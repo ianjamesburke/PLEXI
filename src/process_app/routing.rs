@@ -893,9 +893,10 @@ impl ProcessApp {
                                 return;
                             }
 
-                            // Extract Location header from redirect
+                            // Extract Location header from redirect (take first value)
                             let location = resp.response_headers
                                 .get("location")
+                                .and_then(|v| v.first())
                                 .cloned();
 
                             let Some(next_url) = location else {

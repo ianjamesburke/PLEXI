@@ -728,7 +728,7 @@ impl ProcessApp {
                     status: 0,
                     body: String::new(),
                     error: Some("no network in tests".to_string()),
-                    response_headers: std::collections::HashMap::new(),
+                    response_headers: std::collections::HashMap::<String, Vec<String>>::new(),
                 }
             }
         }
