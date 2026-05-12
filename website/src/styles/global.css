@@ -105,16 +105,18 @@
  * wins over Tailwind Typography's @layer base margins regardless of specificity.
  * Class selectors here are unlayered and more specific than `*`, so they take effect.
  */
-.prose h2 { margin: 40px 0 14px; }
-.prose h3 { margin: 28px 0 10px; }
+.prose h2 { margin: 48px 0 16px; }
+.prose h3 { margin: 32px 0 12px; }
 .prose p { margin-bottom: 16px; }
 .prose ul, .prose ol { margin-bottom: 16px; padding-left: 22px; }
 .prose li { margin-bottom: 5px; }
 .prose li > p { margin-bottom: 0; }
-.prose blockquote { margin: 0 0 16px; }
-.prose table { margin-bottom: 18px; }
+.prose blockquote { margin: 0 0 16px; padding-left: 16px; }
+.prose table { margin-bottom: 18px; width: 100%; border-collapse: collapse; }
+.prose th { padding: 10px 14px; }
+.prose td { padding: 10px 14px; }
 .prose pre { margin-bottom: 18px; }
-.prose hr { margin: 32px 0; }
+.prose hr { margin: 40px 0; }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { background: var(--bg); color: var(--fg); font-family: var(--mono); -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
