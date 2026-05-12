@@ -837,9 +837,14 @@ impl ProcessApp {
                     }
                 };
 
+                // Pre-normalize allowed_hosts patterns once for initial check and all redirect hops.
+                let normalized_allowed_hosts: Vec<String> = self.permissions.allowed_hosts.iter()
+                    .map(|p| p.to_lowercase().trim_end_matches('.').to_string())
+                    .collect();
+
                 // Check initial URL against allowed_hosts.
-                if !self.permissions.allowed_hosts.is_empty() {
-                    let allowed = self.permissions.allowed_hosts.iter().any(|pattern| host_matches(&initial_host, pattern));
+                if !normalized_allowed_hosts.is_empty() {
+                    let allowed = normalized_allowed_hosts.iter().any(|pattern| host_matches(&initial_host, pattern));
                     if !allowed {
                         log::warn!(
                             "ProcessApp[{}]: HttpRequest {request_id} denied — host '{}' not in allowed_hosts",
@@ -860,8 +865,7 @@ impl ProcessApp {
                     self.type_id
                 );
 
-                // Snapshot the allowed_hosts list for use in the background thread.
-                let allowed_hosts = self.permissions.allowed_hosts.clone();
+                let allowed_hosts = normalized_allowed_hosts;
                 let net = std::sync::Arc::clone(&self.net);
                 let tx = self.http_tx.clone();
                 let type_id = self.type_id.clone();
@@ -913,25 +917,21 @@ impl ProcessApp {
                                 return;
                             };
 
-                            // Resolve relative redirects against the current URL base
-                            let next_url = if next_url.starts_with("http://") || next_url.starts_with("https://") {
-                                next_url
-                            } else {
-                                // Relative redirect: resolve against current URL base
-                                match Url::parse(&current_url).and_then(|base| base.join(&next_url)) {
-                                    Ok(resolved) => resolved.to_string(),
-                                    Err(_) => {
-                                        log::warn!(
-                                            "ProcessApp[{type_id}]: HttpRequest {request_id} — cannot resolve relative redirect '{next_url}'"
-                                        );
-                                        let _ = tx.send(PlexiEvent::HttpResponse {
-                                            request_id,
-                                            status: 400,
-                                            body: String::new(),
-                                            error: Some("invalid_redirect: cannot resolve relative Location URL".to_string()),
-                                        });
-                                        return;
-                                    }
+                            // Resolve the redirect URL (handles both absolute and relative)
+                            // Url::join handles absolute URLs correctly too, so no special-casing needed.
+                            let next_url = match Url::parse(&current_url).and_then(|base| base.join(&next_url)) {
+                                Ok(resolved) => resolved.to_string(),
+                                Err(_) => {
+                                    log::warn!(
+                                        "ProcessApp[{type_id}]: HttpRequest {request_id} — cannot resolve redirect URL '{next_url}'"
+                                    );
+                                    let _ = tx.send(PlexiEvent::HttpResponse {
+                                        request_id,
+                                        status: 400,
+                                        body: String::new(),
+                                        error: Some("invalid_redirect: cannot resolve redirect URL".to_string()),
+                                    });
+                                    return;
                                 }
                             };
 

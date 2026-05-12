@@ -123,6 +123,18 @@ impl Default for UreqNetService {
     }
 }
 
+impl UreqNetService {
+    fn collect_headers(resp: &ureq::Response) -> HashMap<String, Vec<String>> {
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for name in resp.headers_names() {
+            if let Some(value) = resp.header(&name) {
+                map.entry(name.to_lowercase()).or_default().push(value.to_string());
+            }
+        }
+        map
+    }
+}
+
 impl NetService for UreqNetService {
     fn http(
         &self,
@@ -142,12 +154,7 @@ impl NetService for UreqNetService {
         match response {
             Ok(resp) => {
                 let status = resp.status();
-                let mut response_headers: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-                for name in resp.headers_names() {
-                    if let Some(value) = resp.header(&name) {
-                        response_headers.entry(name.to_lowercase()).or_default().push(value.to_string());
-                    }
-                }
+                let response_headers = Self::collect_headers(&resp);
                 let body_text = resp.into_string().unwrap_or_default();
                 HttpResponse {
                     status,
@@ -160,12 +167,7 @@ impl NetService for UreqNetService {
                 // Non-2xx — ureq returns this as Err, but the caller still
                 // wants the body + status for real diagnostics (e.g. 429
                 // Retry-After bodies or GitHub's JSON error payloads).
-                let mut response_headers: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-                for name in resp.headers_names() {
-                    if let Some(value) = resp.header(&name) {
-                        response_headers.entry(name.to_lowercase()).or_default().push(value.to_string());
-                    }
-                }
+                let response_headers = Self::collect_headers(&resp);
                 let body_text = resp.into_string().unwrap_or_default();
                 HttpResponse {
                     status,
@@ -182,7 +184,7 @@ impl NetService for UreqNetService {
                     status: 0,
                     body: String::new(),
                     error: Some(format!("transport: {t}")),
-                    response_headers: std::collections::HashMap::<String, Vec<String>>::new(),
+                    response_headers: HashMap::new(),
                 }
             }
         }
