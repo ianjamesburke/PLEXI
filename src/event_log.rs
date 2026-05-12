@@ -20,6 +20,16 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, OnceLock};
 
+// ── Supporting types ──────────────────────────────────────────────────────────
+
+/// File operation kind — compile-time safe alternative to a freeform String.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileOperation {
+    Read,
+    Write,
+}
+
 // ── HostEvent enum ────────────────────────────────────────────────────────────
 
 /// All events the host can emit to the event log.
@@ -134,7 +144,7 @@ pub enum HostEvent {
     FileOpCompleted {
         app_id: String,
         path: String,
-        op: String, // "read" or "write"
+        op: FileOperation,
         bytes: u64,
         timestamp: String,
     },

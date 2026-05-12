@@ -809,7 +809,7 @@ impl ProcessApp {
                         event_log::emit(HostEvent::FileOpCompleted {
                             app_id: self.type_id.clone(),
                             path: canonical.display().to_string(),
-                            op: "read".to_string(),
+                            op: event_log::FileOperation::Read,
                             bytes,
                             timestamp: event_log::now_timestamp(),
                         });
@@ -923,7 +923,7 @@ impl ProcessApp {
                         event_log::emit(HostEvent::FileOpCompleted {
                             app_id: self.type_id.clone(),
                             path: target.display().to_string(),
-                            op: "write".to_string(),
+                            op: event_log::FileOperation::Write,
                             bytes: bytes_written,
                             timestamp: event_log::now_timestamp(),
                         });
