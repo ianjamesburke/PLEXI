@@ -1,6 +1,13 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.21] — 2026-05-12
+
+### Changes
+- security(shell): inventory all sh -c paths, add StreamProcess denial test (#1177) (#1187)
+- security(app-env): stop injecting user-global secrets into app envs (#1167) (#1185)
+- fix(ship-issue): use native gh-issue-ext blocking check in Phase 6 unblock step
+- chore(skills): add GitHub project board status updates to ship cycle
 ## [3.6.20] — 2026-05-12
 
 ### Changes
