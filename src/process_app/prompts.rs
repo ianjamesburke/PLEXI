@@ -89,6 +89,7 @@ pub(super) fn show_prompt_modal(
     secret_input_buf: &mut String,
     _config_dir: &Path,
     permission_store: &mut crate::app_permissions::PermissionStore,
+    colors: &crate::theme::Colors,
 ) {
     let Some(prompt) = pending_prompts.front() else {
         return;
@@ -119,7 +120,18 @@ pub(super) fn show_prompt_modal(
                     ui.label(egui::RichText::new(key).monospace().strong());
                     ui.add_space(8.0);
                     ui.label("Enter value:");
-                    ui.text_edit_singleline(secret_input_buf);
+                    ui.scope(|ui| {
+                        ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                        ui.visuals_mut().text_cursor.stroke.color = colors.accent;
+                        ui.visuals_mut().extreme_bg_color = colors.bg_active;
+                        ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
+                        ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+                        ui.add(
+                            egui::TextEdit::singleline(secret_input_buf)
+                                .password(true)
+                                .margin(egui::Margin::symmetric(8, 5)),
+                        );
+                    });
                 }
             }
             ui.add_space(12.0);

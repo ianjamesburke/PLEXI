@@ -74,12 +74,16 @@ impl PlexiApp {
                         .max_rect(text_rect)
                         .layout(Layout::left_to_right(Align::Center)),
                     |ui| {
-                        let te = ui.add(
-                            egui::TextEdit::singleline(&mut self.rename_buffer)
-                                .id(te_id)
-                                .desired_width(sidebar_width - 56.0)
-                                .font(egui::TextStyle::Body),
-                        );
+                        let te = ui.scope(|ui| {
+                            ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                            ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.rename_buffer)
+                                    .id(te_id)
+                                    .desired_width(sidebar_width - 56.0)
+                                    .font(egui::TextStyle::Body),
+                            )
+                        }).inner;
                         if te.lost_focus() {
                             if ui.input(|inp| inp.key_pressed(egui::Key::Escape)) {
                                 self.renaming_window = None;

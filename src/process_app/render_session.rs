@@ -71,7 +71,7 @@ impl RenderSession {
         );
 
         // ── Pass 2: TextInput widgets ────────────────────────────────────────
-        self.render_text_inputs(ui, pane_rect, frame, pane_id);
+        self.render_text_inputs(ui, pane_rect, frame, pane_id, colors);
 
         // ── Pass 3: scroll region scan ───────────────────────────────────────
         self.render_scroll_regions(ui, pane_rect, frame);
@@ -84,6 +84,7 @@ impl RenderSession {
         pane_rect: egui::Rect,
         frame: &[RenderCommand],
         pane_id: u64,
+        colors: &crate::theme::Colors,
     ) {
         let origin = pane_rect.min;
         let mut submitted: Vec<String> = Vec::new();
@@ -131,6 +132,11 @@ impl RenderSession {
                         .max_rect(widget_rect)
                         .id_salt(widget_id),
                 );
+                child.visuals_mut().text_cursor.stroke.width = 1.5;
+                child.visuals_mut().text_cursor.stroke.color = colors.accent;
+                child.visuals_mut().extreme_bg_color = colors.bg_active;
+                child.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
+                child.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
                 let output = if *multiline {
                     let edit = egui::TextEdit::multiline(buffer)
                         .id(widget_id)
