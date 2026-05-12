@@ -6,6 +6,11 @@ Newest releases appear first.
 ### Changes
 - fix(render): downgrade render_layout_node per-frame logs to debug (#1215)
 - fix(quick-note): same-frame draw on H/Esc exit to eliminate scrim flicker (#1214)
+## [3.6.37] — 2026-05-12
+
+### Changes
+- fix(render): downgrade render_layout_node per-frame logs to debug (#1215)
+- fix(quick-note): same-frame draw on H/Esc exit to eliminate scrim flicker (#1214)
 ## [3.6.36] — 2026-05-12
 
 ### Changes
