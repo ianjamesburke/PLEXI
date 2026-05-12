@@ -990,6 +990,7 @@ impl PlexiApp {
                         if let Some(pane) = win.panes.get_mut(pane_id) {
                             if let Some(t) = pane.as_terminal_mut() {
                                 t.name = Some(name.clone());
+                                t.name_locked = true;
                                 found = true;
                                 break;
                             }
@@ -1396,6 +1397,26 @@ impl PlexiApp {
                         match cmd {
                             "close" => panes_to_close.push(id),
                             _ => log::debug!("unknown plexi command: {}", cmd),
+                        }
+                    } else {
+                        let osc_enabled = self.config.beta.as_ref()
+                            .and_then(|b| b.osc_pane_title)
+                            .unwrap_or(false);
+                        if osc_enabled {
+                            let title_str = title.trim().to_string();
+                            for win in &mut self.windows {
+                                if let Some(pane) = win.panes.get_mut(&id) {
+                                    if let Some(t) = pane.as_terminal_mut() {
+                                        if t.name_locked {
+                                            log::debug!("osc_title: pane {id} name locked, skipping");
+                                        } else {
+                                            t.name = if title_str.is_empty() { None } else { Some(title_str.clone()) };
+                                            log::info!("osc_title: pane {id} name set to {:?}", t.name);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
                         }
                     }
                 }

@@ -618,9 +618,11 @@ impl PlexiApp {
                 self.windows[self.active_window].panes.get_mut(&pane_id)
             {
                 if let Some(t) = pane.as_terminal_mut() {
+                    t.name_locked = !new_name.is_empty();
                     t.name = if new_name.is_empty() {
                         None
                     } else {
+                        log::info!("rename_pane: pane {pane_id} name locked to {:?}", new_name);
                         Some(new_name)
                     };
                 }

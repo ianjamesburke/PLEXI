@@ -260,6 +260,7 @@ impl LogConfig {
 pub struct BetaConfig {
     pub crt: Option<bool>,
     pub ghost: Option<bool>,
+    pub osc_pane_title: Option<bool>,
 }
 
 #[derive(Deserialize, Default, Clone)]
@@ -523,8 +524,9 @@ confirm_close = false
 # ── Experimental Features ──────────────────────────────────────
 # Flip any flag to true and restart to enable.
 [beta]
-# crt   = false    # Retro CRT scanlines + green phosphor tint
-# ghost = false    # Unfocused panes render at reduced opacity
+# crt           = false    # Retro CRT scanlines + green phosphor tint
+# ghost         = false    # Unfocused panes render at reduced opacity
+# osc_pane_title = false   # Apply OSC 0/1/2 title sequences from running processes as pane names
 
 # ── Logging ────────────────────────────────────────────────────
 # [log]
@@ -797,6 +799,9 @@ impl BetaConfig {
         }
         if other.ghost.is_some() {
             self.ghost = other.ghost;
+        }
+        if other.osc_pane_title.is_some() {
+            self.osc_pane_title = other.osc_pane_title;
         }
     }
 }
