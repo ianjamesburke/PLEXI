@@ -82,6 +82,7 @@ pub struct HttpResponse {
     pub status: u16,
     pub body: String,
     pub error: Option<String>,
+    pub response_headers: std::collections::HashMap<String, Vec<String>>,
 }
 
 /// Host-side HTTP broker. `Send + Sync` so a single handle can be shared across
@@ -110,6 +111,7 @@ impl UreqNetService {
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(std::time::Duration::from_secs(10))
             .timeout(std::time::Duration::from_secs(30))
+            .redirects(0)
             .build();
         Self { agent }
     }
@@ -118,6 +120,18 @@ impl UreqNetService {
 impl Default for UreqNetService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl UreqNetService {
+    fn collect_headers(resp: &ureq::Response) -> HashMap<String, Vec<String>> {
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for name in resp.headers_names() {
+            if let Some(value) = resp.header(&name) {
+                map.entry(name.to_lowercase()).or_default().push(value.to_string());
+            }
+        }
+        map
     }
 }
 
@@ -140,22 +154,26 @@ impl NetService for UreqNetService {
         match response {
             Ok(resp) => {
                 let status = resp.status();
+                let response_headers = Self::collect_headers(&resp);
                 let body_text = resp.into_string().unwrap_or_default();
                 HttpResponse {
                     status,
                     body: body_text,
                     error: None,
+                    response_headers,
                 }
             }
             Err(ureq::Error::Status(status, resp)) => {
                 // Non-2xx — ureq returns this as Err, but the caller still
                 // wants the body + status for real diagnostics (e.g. 429
                 // Retry-After bodies or GitHub's JSON error payloads).
+                let response_headers = Self::collect_headers(&resp);
                 let body_text = resp.into_string().unwrap_or_default();
                 HttpResponse {
                     status,
                     body: body_text,
                     error: None,
+                    response_headers,
                 }
             }
             Err(ureq::Error::Transport(t)) => {
@@ -166,6 +184,7 @@ impl NetService for UreqNetService {
                     status: 0,
                     body: String::new(),
                     error: Some(format!("transport: {t}")),
+                    response_headers: HashMap::new(),
                 }
             }
         }

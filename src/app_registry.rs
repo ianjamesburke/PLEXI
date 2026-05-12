@@ -665,12 +665,14 @@ impl AppRegistry {
             keyboard_capture,
             installed.manifest.mcp.as_ref(),
         ) {
-            Ok(app) => {
+            Ok(mut app) => {
+                app.permissions.allowed_hosts = perms.allowed_hosts;
                 log::info!(
-                    "AppRegistry: launched '{}' from {:?} (notification_scope={:?})",
+                    "AppRegistry: launched '{}' from {:?} (notification_scope={:?}, allowed_hosts={:?})",
                     id,
                     installed.bin_path,
                     default_scope,
+                    app.permissions.allowed_hosts,
                 );
                 Some(app)
             }
