@@ -897,7 +897,11 @@ impl ProcessApp {
                 let workspace_root = self.workspace_root.clone();
                 let open_panes = crate::plexi_ai::broker::get_pane_snapshot();
                 let tool_dispatcher = std::sync::Arc::new(
-                    crate::plexi_ai::tool_dispatch::ToolDispatcher::from_registry(),
+                    crate::plexi_ai::tool_dispatch::ToolDispatcher::from_registry(
+                        self.pane_id,
+                        self.type_id.clone(),
+                        workspace_root.clone(),
+                    ),
                 );
                 std::thread::Builder::new()
                     .name(format!("ai-query-{app_id}-{request_id}"))
@@ -1387,7 +1391,12 @@ impl ProcessApp {
                 // causes a race when multiple apps launch simultaneously.
                 if self.pane_id != 0 {
                     if let Some(sender) = self.make_app_event_sender() {
-                        crate::plexi_ai::tool_dispatch::register(self.pane_id, tools, sender);
+                        crate::plexi_ai::tool_dispatch::register(
+                            self.pane_id,
+                            tools,
+                            sender,
+                            self.workspace_root.clone(),
+                        );
                     } else {
                         log::warn!(
                             "ProcessApp[{}]: ExposeTools — stdin writer gone, skipping registration",
