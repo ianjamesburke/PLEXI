@@ -428,26 +428,7 @@ impl PlexiApp {
         let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
         if let Some(cmd) = initial_cmd {
             log::info!("create_single_pane_tree: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
-            let shell_name = std::path::Path::new(&settings.shell)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            let effective_cmd: String = if !close_on_exit {
-                let shell_path = &settings.shell;
-                let trimmed = cmd.trim().trim_end_matches([';', ' ']);
-                let sep = if trimmed.is_empty() { "" } else { "; " };
-                match shell_name {
-                    "fish" => format!("{trimmed}{sep}exec \"{shell_path}\" --login -i"),
-                    _ => format!("{trimmed}{sep}exec \"{shell_path}\" -i -l"),
-                }
-            } else {
-                cmd.to_string()
-            };
-            settings.args = match shell_name {
-                "zsh" | "bash" => vec!["-i".to_string(), "-l".to_string(), "-c".to_string(), effective_cmd],
-                "fish" => vec!["--login".to_string(), "-c".to_string(), effective_cmd],
-                _ => vec!["-l".to_string(), "-c".to_string(), effective_cmd],
-            };
+            super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
         let mut pane = TerminalPane::new(
             new_id,

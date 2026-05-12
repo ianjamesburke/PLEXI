@@ -231,33 +231,7 @@ impl PlexiApp {
         let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
         if let Some(cmd) = initial_cmd {
             log::info!("split_focused: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
-            let shell_name = std::path::Path::new(&settings.shell)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-            // When staying alive (not ephemeral), append `; exec <shell> -i -l` so the pane
-            // drops into an interactive shell after the command completes instead of dying.
-            // Use the absolute shell path from settings (already resolved) rather than $SHELL
-            // to guarantee the right shell. Trim trailing semicolons to avoid `;;` syntax errors.
-            // `-i` sources ~/.zshrc so PATH additions (Homebrew, nvm, etc.) are
-            // visible. Fish uses different flags; for other POSIX shells we use
-            // the safe no-interactive fallback.
-            let effective_cmd: String = if !close_on_exit {
-                let shell_path = &settings.shell;
-                let trimmed = cmd.trim().trim_end_matches([';', ' ']);
-                let sep = if trimmed.is_empty() { "" } else { "; " };
-                match shell_name {
-                    "fish" => format!("{trimmed}{sep}exec \"{shell_path}\" --login -i"),
-                    _ => format!("{trimmed}{sep}exec \"{shell_path}\" -i -l"),
-                }
-            } else {
-                cmd.to_string()
-            };
-            settings.args = match shell_name {
-                "zsh" | "bash" => vec!["-i".to_string(), "-l".to_string(), "-c".to_string(), effective_cmd],
-                "fish" => vec!["--login".to_string(), "-c".to_string(), effective_cmd],
-                _ => vec!["-l".to_string(), "-c".to_string(), effective_cmd],
-            };
+            super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
         let Some(mut pane) = TerminalPane::new(
             new_id,
@@ -346,26 +320,7 @@ impl PlexiApp {
             let mut settings = Self::make_backend_settings(new_id, None, &self.colors, ctx_id, &ctx_name);
             if let Some(cmd) = initial_cmd {
                 log::info!("new_tab (empty context): initial_cmd={cmd:?} close_on_exit={close_on_exit}");
-                let shell_name = std::path::Path::new(&settings.shell)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
-                let effective_cmd: String = if !close_on_exit {
-                    let shell_path = &settings.shell;
-                    let trimmed = cmd.trim().trim_end_matches([';', ' ']);
-                    let sep = if trimmed.is_empty() { "" } else { "; " };
-                    match shell_name {
-                        "fish" => format!("{trimmed}{sep}exec \"{shell_path}\" --login -i"),
-                        _ => format!("{trimmed}{sep}exec \"{shell_path}\" -i -l"),
-                    }
-                } else {
-                    cmd.to_string()
-                };
-                settings.args = match shell_name {
-                    "zsh" | "bash" => vec!["-i".to_string(), "-l".to_string(), "-c".to_string(), effective_cmd],
-                    "fish" => vec!["--login".to_string(), "-c".to_string(), effective_cmd],
-                    _ => vec!["-l".to_string(), "-c".to_string(), effective_cmd],
-                };
+                super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
             }
             let Some(mut pane) = TerminalPane::new(
                 new_id,
@@ -398,27 +353,8 @@ impl PlexiApp {
         let ctx_name = self.context_name_for(ctx_id);
         let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
         if let Some(cmd) = initial_cmd {
-            let shell_name = std::path::Path::new(&settings.shell)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
             log::info!("new_tab: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
-            let effective_cmd: String = if !close_on_exit {
-                let shell_path = &settings.shell;
-                let trimmed = cmd.trim().trim_end_matches([';', ' ']);
-                let sep = if trimmed.is_empty() { "" } else { "; " };
-                match shell_name {
-                    "fish" => format!("{trimmed}{sep}exec \"{shell_path}\" --login -i"),
-                    _ => format!("{trimmed}{sep}exec \"{shell_path}\" -i -l"),
-                }
-            } else {
-                cmd.to_string()
-            };
-            settings.args = match shell_name {
-                "zsh" | "bash" => vec!["-i".to_string(), "-l".to_string(), "-c".to_string(), effective_cmd],
-                "fish" => vec!["--login".to_string(), "-c".to_string(), effective_cmd],
-                _ => vec!["-l".to_string(), "-c".to_string(), effective_cmd],
-            };
+            super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
         let Some(mut pane) = TerminalPane::new(
             new_id,
