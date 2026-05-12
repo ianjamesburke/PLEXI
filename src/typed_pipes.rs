@@ -130,12 +130,11 @@ impl TypedPipeRegistry {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if let Err(e) = std::fs::set_permissions(
+            std::fs::set_permissions(
                 &self.pipes_dir,
                 std::fs::Permissions::from_mode(0o700),
-            ) {
-                log::warn!("typed_pipes: could not set pipes dir permissions: {e}");
-            }
+            )
+            .map_err(|e| PipeError::BindFailed(format!("secure pipes dir: {e}")))?;
         }
         let socket_name = format!("{}.sock", uuid::Uuid::new_v4());
         let socket_path = self
@@ -144,9 +143,6 @@ impl TypedPipeRegistry {
             .to_string_lossy()
             .into_owned();
         log::info!("typed_pipes: opening binary pipe {pipe_id} at {socket_path}");
-
-        // Remove stale socket file if present.
-        let _ = std::fs::remove_file(&socket_path);
 
         let listener = UnixListener::bind(&socket_path)
             .map_err(|e| PipeError::BindFailed(format!("{socket_path}: {e}")))?;
