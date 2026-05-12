@@ -112,6 +112,6 @@ uninstall channel="all":
 # is validated — if this comment still exists, that replacement never happened.
 ship +issues:
     for issue in {{issues}}; do \
-        gh issue edit $issue --add-label "in progress" --remove-label "ready" && \
+        gh issue edit "$issue" --add-label "in progress" --remove-label "ready" && \
         plexi terminal "c '/ship-issue $issue'" --layout tab; \
     done

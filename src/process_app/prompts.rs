@@ -128,6 +128,7 @@ pub(super) fn show_prompt_modal(
                         ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
                         ui.add(
                             egui::TextEdit::singleline(secret_input_buf)
+                                .password(true)
                                 .margin(egui::Margin::symmetric(8, 5)),
                         );
                     });
