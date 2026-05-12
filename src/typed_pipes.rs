@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::Write;
+use std::path::PathBuf;
 extern crate libc;
 /// Typed pipe registry for Plexi v3 — binary side channel and JSON metadata pipes.
 ///
@@ -94,12 +95,15 @@ enum PipeEntry {
 
 pub struct TypedPipeRegistry {
     pipes: HashMap<String, PipeEntry>,
+    /// Private directory where binary pipe sockets are created (mode 0700).
+    pipes_dir: PathBuf,
 }
 
 impl TypedPipeRegistry {
-    pub fn new() -> Self {
+    pub fn new(pipes_dir: PathBuf) -> Self {
         Self {
             pipes: HashMap::new(),
+            pipes_dir,
         }
     }
 
@@ -119,17 +123,26 @@ impl TypedPipeRegistry {
             return Err(PipeError::AlreadyOpen(pipe_id));
         }
 
-        let rand_suffix = {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.subsec_nanos())
-                .unwrap_or(0)
-        };
-        let socket_path = format!("/tmp/plexi-pipe-{rand_suffix}-{pipe_id}.sock");
-
-        // Remove stale socket file if present.
-        let _ = std::fs::remove_file(&socket_path);
+        // Create a private per-user pipes directory with restrictive permissions.
+        // Sockets are named by UUID — pipe_id is never embedded in the filesystem path.
+        std::fs::create_dir_all(&self.pipes_dir)
+            .map_err(|e| PipeError::BindFailed(format!("create pipes dir: {e}")))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                &self.pipes_dir,
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .map_err(|e| PipeError::BindFailed(format!("secure pipes dir: {e}")))?;
+        }
+        let socket_name = format!("{}.sock", uuid::Uuid::new_v4());
+        let socket_path = self
+            .pipes_dir
+            .join(&socket_name)
+            .to_string_lossy()
+            .into_owned();
+        log::info!("typed_pipes: opening binary pipe {pipe_id} at {socket_path}");
 
         let listener = UnixListener::bind(&socket_path)
             .map_err(|e| PipeError::BindFailed(format!("{socket_path}: {e}")))?;
@@ -336,6 +349,12 @@ mod tests {
     //! inter-agent pipe routing (#286) builds on.
     use super::*;
 
+    fn test_registry() -> (TypedPipeRegistry, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let reg = TypedPipeRegistry::new(dir.path().to_path_buf());
+        (reg, dir)
+    }
+
     #[test]
     fn directed_pipe_routes_to_target_pane_only() {
         // Two panes' registries are independent. The sender pane registers
@@ -349,8 +368,8 @@ mod tests {
         // ONLY to the target — never broadcasting to other panes that
         // coincidentally opened the same id. The registry's job is simply
         // to track per-pane subscription state; the scoping is upstream.
-        let mut sender_reg = TypedPipeRegistry::new();
-        let mut target_reg = TypedPipeRegistry::new();
+        let (mut sender_reg, _d1) = test_registry();
+        let (mut target_reg, _d2) = test_registry();
 
         sender_reg
             .open_json("coord-to-worker".to_string(), PipeDirection::Duplex)
@@ -369,7 +388,7 @@ mod tests {
         );
 
         // A third bystander registry without the pipe must NOT read.
-        let bystander_reg = TypedPipeRegistry::new();
+        let (bystander_reg, _d3) = test_registry();
         assert!(
             !bystander_reg.has_reader("coord-to-worker"),
             "bystander pane never opted in — has_reader must be false"
@@ -382,7 +401,7 @@ mod tests {
         // simulate the app-side socket closing unexpectedly (Broken pipe).
         // After the drain thread attempts a write and fails, drain_failed()
         // must return true.
-        let mut reg = TypedPipeRegistry::new();
+        let (mut reg, _dir) = test_registry();
         let alloc = reg
             .open_binary("test-broken-pipe".to_string(), PipeDirection::In)
             .expect("open_binary");
@@ -413,7 +432,7 @@ mod tests {
 
     #[test]
     fn drain_failed_false_for_healthy_pipe() {
-        let mut reg = TypedPipeRegistry::new();
+        let (mut reg, _dir) = test_registry();
         reg.open_binary("test-healthy".to_string(), PipeDirection::In)
             .expect("open_binary");
         assert!(
@@ -432,11 +451,64 @@ mod tests {
         // this is what the host's `register_directed_pipe_on_target`
         // helper has to handle gracefully when the target pane has
         // independently opened the pipe (treats AlreadyOpen as success).
-        let mut reg = TypedPipeRegistry::new();
+        let (mut reg, _dir) = test_registry();
         reg.open_json("dup".to_string(), PipeDirection::Duplex).unwrap();
         let err = reg
             .open_json("dup".to_string(), PipeDirection::Duplex)
             .unwrap_err();
         assert!(matches!(err, PipeError::AlreadyOpen(_)));
+    }
+
+    #[test]
+    fn malicious_pipe_id_not_in_socket_path() {
+        // App-controlled pipe_id values with path traversal sequences, slashes,
+        // and shell metacharacters must NOT appear in the generated socket path.
+        let (mut reg, dir) = test_registry();
+        let long_id = "a".repeat(300);
+        let malicious_ids = [
+            "../../etc/passwd",
+            "../secret",
+            "foo/bar/baz",
+            "id;rm -rf /",
+            long_id.as_str(),
+        ];
+        for id in malicious_ids {
+            let alloc = reg
+                .open_binary(id.to_string(), PipeDirection::In)
+                .expect("open_binary should succeed regardless of pipe_id content");
+            assert!(
+                !alloc.socket_path.contains(id),
+                "socket path must not contain raw pipe_id {:?}: got {}",
+                id,
+                alloc.socket_path
+            );
+            // Socket must be inside the private pipes_dir, not /tmp.
+            assert!(
+                alloc.socket_path.starts_with(dir.path().to_str().unwrap()),
+                "socket path must be inside pipes_dir: got {}",
+                alloc.socket_path
+            );
+            reg.close(id);
+        }
+    }
+
+    #[test]
+    fn socket_allocated_inside_private_pipes_dir() {
+        let (mut reg, dir) = test_registry();
+        let alloc = reg
+            .open_binary("normal-id".to_string(), PipeDirection::In)
+            .expect("open_binary");
+        assert!(
+            alloc
+                .socket_path
+                .starts_with(dir.path().to_str().unwrap()),
+            "socket must be inside pipes_dir, not in /tmp or elsewhere: got {}",
+            alloc.socket_path
+        );
+        assert!(
+            alloc.socket_path.ends_with(".sock"),
+            "socket path must end with .sock: got {}",
+            alloc.socket_path
+        );
     }
 }

@@ -630,7 +630,9 @@ impl ProcessApp {
             workspace_root,
             permissions,
             permission_store: store,
-            pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new())),
+            pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new(
+                crate::config::config_dir().join("pipes"),
+            ))),
             run_registry: RunRegistry::new(),
             pending_prompts: VecDeque::new(),
             status_summary: None,
@@ -754,7 +756,9 @@ impl ProcessApp {
             workspace_root: std::env::temp_dir(),
             permissions,
             permission_store: crate::app_permissions::PermissionStore::default(),
-            pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new())),
+            pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new(
+                std::env::temp_dir().join(format!("plexi-pipes-{}", uuid::Uuid::new_v4())),
+            ))),
             run_registry: RunRegistry::new(),
             pending_prompts: VecDeque::new(),
             status_summary: None,
