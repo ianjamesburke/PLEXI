@@ -345,6 +345,7 @@ impl PlexiApp {
             let ctx_name = self.context_name_for(ctx_id);
             let mut settings = Self::make_backend_settings(new_id, None, &self.colors, ctx_id, &ctx_name);
             if let Some(cmd) = initial_cmd {
+                log::info!("new_tab (empty context): initial_cmd={cmd:?} close_on_exit={close_on_exit}");
                 let shell_name = std::path::Path::new(&settings.shell)
                     .file_name()
                     .and_then(|n| n.to_str())
