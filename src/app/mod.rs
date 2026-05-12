@@ -1144,6 +1144,7 @@ impl PlexiApp {
 
                     if type_id == "terminal" {
                         let layout_str = layout.as_deref().unwrap_or("split_v");
+                        let initial_cmd = cmd_from_args(args);
                         if layout_str == "new_window" {
                             // Create a new spatial grid window to the right of the
                             // current context row instead of splitting the active pane.
@@ -1154,14 +1155,13 @@ impl PlexiApp {
                                 .map(|w| w.grid_x)
                                 .max();
                             let new_x = max_x.map(|x| x + 1).unwrap_or(1);
-                            log::info!("pane_ipc: spawn_pane terminal layout=new_window grid=({new_x},{active_y})");
-                            self.create_page_at(new_x, active_y);
+                            log::info!("pane_ipc: spawn_pane terminal layout=new_window grid=({new_x},{active_y}) initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
+                            self.create_page_at(new_x, active_y, initial_cmd.as_deref(), *ephemeral);
                         } else if layout_str == "tab" {
-                            log::info!("pane_ipc: spawn_pane terminal layout=tab");
-                            self.new_tab();
+                            log::info!("pane_ipc: spawn_pane terminal layout=tab initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
+                            self.new_tab(initial_cmd.as_deref(), *ephemeral);
                         } else {
                             let vertical = matches!(layout_str, "split_h" | "split_above");
-                            let initial_cmd = cmd_from_args(args);
                             log::info!("pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
                             self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral);
                         }
@@ -2412,7 +2412,7 @@ impl eframe::App for PlexiApp {
                     self.step_focus_history_forward();
                 }
                 Action::NewTab => {
-                    self.new_tab();
+                    self.new_tab(None, false);
                     self.save_workspace();
                 }
                 Action::ToggleZoom => {

@@ -16,3 +16,32 @@ mod layout;
 mod workspace;
 
 pub(crate) use layout::SwapResult;
+
+/// Apply `initial_cmd` to `settings`, using the same shell-suffix injection
+/// logic as `split_focused`. Call before `TerminalPane::new`.
+pub(super) fn apply_initial_cmd(
+    settings: &mut egui_term::BackendSettings,
+    cmd: &str,
+    close_on_exit: bool,
+) {
+    let shell_name = std::path::Path::new(&settings.shell)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    let effective_cmd: String = if !close_on_exit {
+        let shell_path = &settings.shell;
+        let trimmed = cmd.trim().trim_end_matches([';', ' ']);
+        let sep = if trimmed.is_empty() { "" } else { "; " };
+        match shell_name {
+            "fish" => format!("{trimmed}{sep}exec \"{shell_path}\" --login -i"),
+            _ => format!("{trimmed}{sep}exec \"{shell_path}\" -i -l"),
+        }
+    } else {
+        cmd.to_string()
+    };
+    settings.args = match shell_name {
+        "zsh" | "bash" => vec!["-i".to_string(), "-l".to_string(), "-c".to_string(), effective_cmd],
+        "fish" => vec!["--login".to_string(), "-c".to_string(), effective_cmd],
+        _ => vec!["-l".to_string(), "-c".to_string(), effective_cmd],
+    };
+}

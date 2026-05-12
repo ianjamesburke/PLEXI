@@ -15,7 +15,7 @@ impl PlexiApp {
             .and_then(|t| self.windows[self.active_window].get_focused_pane_cwd(t))
             .unwrap_or_else(|| home.clone());
         log::info!("new_context: cwd={}", cwd.display());
-        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd.clone()))
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd.clone()), None, false)
         else {
             log::error!("Failed to create terminal for new context");
             return;
@@ -69,20 +69,20 @@ impl PlexiApp {
             Some(x) => x + 1,
             None => 1,
         };
-        self.create_page_at(new_x, active_y);
+        self.create_page_at(new_x, active_y, None, false);
     }
 
     /// Shared creation helper: create a single-pane context at `(grid_x, grid_y)`
     /// and make it the active context.
-    pub(crate) fn create_page_at(&mut self, grid_x: u32, grid_y: u32) {
+    pub(crate) fn create_page_at(&mut self, grid_x: u32, grid_y: u32, initial_cmd: Option<&str>, close_on_exit: bool) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let cwd = self.windows[self.active_window]
             .focused_pane
             .and_then(|t| self.windows[self.active_window].get_focused_pane_cwd(t))
             .or_else(|| self.router.active().root.clone())
             .unwrap_or(home);
-        log::info!("create_page_at({grid_x},{grid_y}): cwd={}", cwd.display());
-        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd.clone()))
+        log::info!("create_page_at({grid_x},{grid_y}): cwd={} initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}", cwd.display());
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd.clone()), initial_cmd, close_on_exit)
         else {
             log::error!("Failed to create terminal for new page at ({grid_x}, {grid_y})");
             return;
@@ -110,7 +110,7 @@ impl PlexiApp {
 
     pub(crate) fn reset_active_context(&mut self) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(home.clone()))
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(home.clone()), None, false)
         else {
             log::error!("Failed to create terminal for reset context");
             return;
