@@ -143,6 +143,16 @@ Grep alpha `src/` for the key identifiers from the issue's **Done When** criteri
 
 ## Phase 2 — Worktree Setup
 
+**First — check for remote branch ownership before creating anything:**
+```bash
+EXISTING=$(git ls-remote origin "refs/heads/feature/<issue-number>-*" | head -1)
+```
+If `$EXISTING` is non-empty: another agent has already claimed this issue. Surface the branch name and any existing PR, then stop:
+```bash
+gh pr list --search "head:feature/<issue-number>" --json number,title,state,url
+```
+Tell the user: "Issue #<n> already has a remote branch — another agent claimed it. PR: <url if found>." Remove the `in progress` label if you added it, and abort. Do not create a worktree.
+
 Run from the repo root:
 ```bash
 wtp add -b feature/<issue-number>-short-description

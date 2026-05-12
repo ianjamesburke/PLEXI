@@ -105,3 +105,10 @@ promote to="":
 #   just uninstall pr-123       — remove a specific PR build
 uninstall channel="all":
     bash scripts/uninstall.sh {{channel}}
+
+# Claim a GitHub issue and dispatch a Claude agent to ship it.
+# Labels the issue "in progress" first (before the agent starts) to prevent
+# double-claiming when multiple dispatches run close together.
+ship issue:
+    gh issue edit {{issue}} --add-label "in progress" --remove-label "ready"
+    plexi terminal "claude --dangerously-skip-permissions" --layout tab
