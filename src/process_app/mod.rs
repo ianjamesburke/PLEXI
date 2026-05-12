@@ -1750,6 +1750,7 @@ impl App for ProcessApp {
                         y: pos.y - origin.y,
                         button: crate::app_protocol::MouseButton::Primary,
                     });
+                    needs_click_repaint = true;
                 }
                 if is_secondary_down {
                     self.send_event(&PlexiEvent::MouseDown {
@@ -1757,6 +1758,7 @@ impl App for ProcessApp {
                         y: pos.y - origin.y,
                         button: crate::app_protocol::MouseButton::Secondary,
                     });
+                    needs_click_repaint = true;
                 }
             }
 
