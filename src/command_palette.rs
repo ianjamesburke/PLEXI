@@ -319,13 +319,21 @@ impl PlexiApp {
                         ui.set_width(MODAL_WIDTH);
 
                         let te_id = egui::Id::new("palette_search");
-                        let te = ui.add(
-                            egui::TextEdit::singleline(&mut self.palette_query)
-                                .id(te_id)
-                                .desired_width(MODAL_WIDTH)
-                                .hint_text("Jump to context or launch app...")
-                                .font(egui::TextStyle::Body),
-                        );
+                        let te = ui.scope(|ui| {
+                            ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                            ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                            ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
+                            ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, self.colors.accent);
+                            ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.colors.border);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.palette_query)
+                                    .id(te_id)
+                                    .desired_width(MODAL_WIDTH)
+                                    .hint_text("Jump to context or launch app...")
+                                    .font(egui::TextStyle::Body)
+                                    .margin(egui::Margin::symmetric(8, 5)),
+                            )
+                        }).inner;
                         if !te.has_focus() {
                             te.request_focus();
                         }
