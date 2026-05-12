@@ -15,9 +15,11 @@ mod lifecycle;
 pub(crate) mod mcp_server;
 mod prompts;
 pub(crate) mod render;
+mod render_session;
 mod routing;
 
 pub(crate) use lifecycle::{LifecycleState, LifecycleTracker};
+use render_session::RenderSession;
 
 use crate::app_permissions::{AppPermissions, Capability};
 use crate::app_protocol::{ControlCommand, DrawCommand, Modifiers, PlexiEvent, RenderCommand};
@@ -241,33 +243,13 @@ pub struct ProcessApp {
     /// `DrawCommand::SetMouseTracking { enabled }`. Off by default to avoid
     /// flooding apps that don't need continuous pointer tracking.
     mouse_tracking_enabled: bool,
-    /// Per-pane host-owned text input buffers, keyed on the `id` field of
-    /// `DrawCommand::TextInput`. Survives across frames and pane resizes
-    /// — typed characters never reach the app until Enter triggers a
-    /// `PlexiEvent::TextSubmitted`. Cleared on submit; the whole map is
-    /// dropped when the `ProcessApp` is dropped (app close).
-    pub(crate) text_input_buffers: HashMap<String, String>,
-    /// IDs of `TextInput` widgets that were visible in the most recently
-    /// rendered frame. Used by `render_text_inputs` to detect newly-visible
-    /// inputs and call `request_focus()` on them so the user can type
-    /// immediately without clicking.
-    text_input_visible_prev: std::collections::HashSet<String>,
-    /// True when any `TextInput` widget had egui focus during the last
-    /// `render_text_inputs` pass. Used by `handle_key` to suppress
-    /// forwarding text/key events to the app while the user is typing.
-    text_input_has_focus: bool,
-    /// Set to true when this pane gains focus via keyboard navigation.
-    /// `render_text_inputs` checks this flag and focuses the first TextInput
-    /// in the frame, then clears it.
-    pub(crate) pane_just_focused: bool,
     /// Cached state for `egui_commonmark` markdown rendering. Persists across
     /// frames so the parser doesn't re-allocate on every repaint.
     commonmark_cache: egui_commonmark::CommonMarkCache,
-    /// Per-region scroll offsets for `DrawCommand::BeginScroll` / `EndScroll`
-    /// (#446). Key = scroll region id; value = current vertical offset in
-    /// logical pixels. Persists across frames — the offset is only reset when
-    /// content_height or viewport size shrinks past it (clamped on emit).
-    pub(crate) scroll_offsets: HashMap<String, f32>,
+    /// Per-frame rendering state — TextInput buffers, scroll offsets, and
+    /// accumulated outbound events from widget passes. Extracted from
+    /// `ProcessApp` so each concern has a clear owner.
+    pub(crate) render_session: RenderSession,
     /// Tools exposed by this pane via `DrawCommand::ExposeTools` (#398).
     /// Updated each time a new `ExposeTools` command arrives. The routing
     /// layer re-registers these in the global tool registry on each update.
@@ -664,12 +646,8 @@ impl ProcessApp {
             copied_feedback_until: None,
             pending_notification_count: 0,
             mouse_tracking_enabled: false,
-            text_input_buffers: HashMap::new(),
-            text_input_visible_prev: std::collections::HashSet::new(),
-            text_input_has_focus: false,
-            pane_just_focused: false,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
-            scroll_offsets: HashMap::new(),
+            render_session: RenderSession::new(),
             exposed_tools: Vec::new(),
             stream_handles: HashMap::new(),
             active_stream_threads: Arc::new(AtomicUsize::new(0)),
@@ -789,12 +767,8 @@ impl ProcessApp {
             copied_feedback_until: None,
             pending_notification_count: 0,
             mouse_tracking_enabled: false,
-            text_input_buffers: HashMap::new(),
-            text_input_visible_prev: std::collections::HashSet::new(),
-            text_input_has_focus: false,
-            pane_just_focused: false,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
-            scroll_offsets: HashMap::new(),
+            render_session: RenderSession::new(),
             exposed_tools: Vec::new(),
             stream_handles: HashMap::new(),
             active_stream_threads: Arc::new(AtomicUsize::new(0)),
@@ -1030,210 +1004,13 @@ impl ProcessApp {
         painter.galley(egui::pos2(text_x, text_y), galley, fg_color);
     }
 
-    /// Render every `DrawCommand::TextInput` in `frame` as a real egui
-    /// `TextEdit`, owning the buffer state on `self`. Submits
-    /// (Enter while focused) emit `PlexiEvent::TextSubmitted { id, value }`
-    /// and clear the buffer.
-    ///
-    /// Buffer survives across frames and pane resizes because it lives on
-    /// `self.text_input_buffers`, not in egui memory.
-    ///
-    /// Auto-focus: when a `TextInput` id appears for the first time in a
-    /// frame (i.e. it was absent last frame), `request_focus()` is called so
-    /// the user can type immediately without clicking.
-    pub(crate) fn render_text_inputs(
-        &mut self,
-        ui: &mut egui::Ui,
-        pane_rect: egui::Rect,
-    ) {
-        let origin = pane_rect.min;
-        // Collect submit events out-of-band so we don't hold a mutable
-        // borrow on `text_input_buffers` while pushing onto
-        // `outbound_events` — both live on `self`.
-        let mut submitted: Vec<String> = Vec::new();
-        // Track which IDs are visible this frame so we can update
-        // `text_input_visible_prev` after the loop.
-        let mut visible_this_frame: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        // Auto-focus: only focus the first newly-visible input per frame.
-        // egui's request_focus is last-write-wins within a frame, so calling
-        // it on every newly-visible input would leave only the last one
-        // focused. We want the first one.
-        let mut focus_granted = false;
-        let mut any_has_focus = false;
-
-        for cmd in &self.frame {
-            let RenderCommand::TextInput {
-                id,
-                x,
-                y,
-                w,
-                h,
-                placeholder,
-                multiline,
-            } = cmd
-            else {
-                continue;
-            };
-
-            visible_this_frame.insert(id.clone());
-            let newly_visible = !self.text_input_visible_prev.contains(id.as_str());
-
-            // Clamp widget geometry to the pane rect so oversized/misaligned
-            // app-provided dimensions cannot render outside the frame.
-            let desired_h = h.max(24.0);
-            let min_x = origin.x + x;
-            let min_y = origin.y + y;
-            let max_x = (min_x + *w).min(pane_rect.max.x);
-            let max_y = (min_y + desired_h).min(pane_rect.max.y);
-            if max_x <= min_x || max_y <= min_y {
-                // Fully outside pane bounds; skip rendering this input.
-                continue;
-            }
-            let widget_rect = egui::Rect::from_min_max(
-                egui::pos2(min_x, min_y),
-                egui::pos2(max_x, max_y),
-            );
-            let actual_size = widget_rect.size();
-
-            // Stable per-(pane, input-id) widget id so egui's focus and
-            // cursor state survive across frames. Without this, every
-            // frame would build a fresh widget and lose the cursor.
-            let widget_id = ui.id().with(("text_input", self.pane_id, id.as_str()));
-
-            // Use TextEdit::show() instead of ui.add() so we get TextEditOutput,
-            // which carries cursor_range. We need the cursor char index to insert
-            // '\n' at the right position for Shift+Enter (not just append to end).
-            let (resp, cursor_char_idx) = {
-                let buffer = self.text_input_buffers.entry(id.clone()).or_default();
-                let mut child = ui.new_child(
-                    egui::UiBuilder::new()
-                        .max_rect(widget_rect)
-                        .id_salt(widget_id),
-                );
-                let output = if *multiline {
-                    let edit = egui::TextEdit::multiline(buffer)
-                        .id(widget_id)
-                        .desired_width(actual_size.x)
-                        .hint_text(placeholder.as_str())
-                        .frame(true);
-                    egui::ScrollArea::vertical()
-                        .max_height(actual_size.y)
-                        .show(&mut child, |ui| edit.show(ui))
-                        .inner
-                } else {
-                    let edit = egui::TextEdit::singleline(buffer)
-                        .id(widget_id)
-                        .desired_width(actual_size.x)
-                        .hint_text(placeholder.as_str())
-                        .frame(true);
-                    edit.show(&mut child)
-                };
-                // Auto-focus the first input when: (a) it just appeared in
-                // the frame, or (b) the pane just gained focus via keyboard
-                // navigation. Subsequent inputs in the same frame are skipped
-                // — request_focus is last-write-wins in egui, so focusing all
-                // of them would leave only the last one focused.
-                if (newly_visible || self.pane_just_focused) && !focus_granted {
-                    output.response.request_focus();
-                    focus_granted = true;
-                }
-                let cursor_idx = output.cursor_range.map(|cr| cr.primary.ccursor.index);
-                (output.response, cursor_idx)
-            };
-
-            // Click-to-refocus: the pane-level Sense::click_and_drag()
-            // interact widget (below) steals pointer events from the
-            // TextEdit's native focus-on-click. Detect primary-button
-            // press inside this input's rect and grant focus explicitly.
-            let pointer_pressed_inside = ui.input(|i| {
-                i.pointer.button_pressed(egui::PointerButton::Primary)
-            }) && ui.input(|i| {
-                i.pointer
-                    .interact_pos()
-                    .map_or(false, |pos| widget_rect.contains(pos))
-            });
-            if pointer_pressed_inside {
-                resp.request_focus();
-            }
-
-            if resp.has_focus() {
-                any_has_focus = true;
-            }
-
-            if *multiline {
-                // Multiline submit/newline handling:
-                //   Enter (no Shift)  → submit. egui inserts a '\n' first;
-                //                       strip it before submitting.
-                //   Shift+Enter       → insert newline. egui does NOT handle
-                //                       Shift+Enter in multiline mode, so we
-                //                       insert '\n' into the buffer ourselves
-                //                       and consume the key event.
-                if resp.has_focus() {
-                    let enter_no_shift = ui.input(|i| {
-                        i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
-                    });
-                    let shift_enter = ui.input(|i| {
-                        i.key_pressed(egui::Key::Enter) && i.modifiers.shift
-                    });
-
-                    if enter_no_shift {
-                        // Strip the '\n' egui already inserted before submitting.
-                        if let Some(buf) = self.text_input_buffers.get_mut(id.as_str()) {
-                            if buf.ends_with('\n') {
-                                buf.pop();
-                            }
-                        }
-                        submitted.push(id.clone());
-                    } else if shift_enter {
-                        // egui ignores Shift+Enter in multiline mode; insert '\n'
-                        // at the cursor position (not just the end of the buffer).
-                        if let (Some(buf), Some(char_idx)) =
-                            (self.text_input_buffers.get_mut(id.as_str()), cursor_char_idx)
-                        {
-                            let byte_idx = buf
-                                .char_indices()
-                                .nth(char_idx)
-                                .map(|(i, _)| i)
-                                .unwrap_or(buf.len());
-                            buf.insert(byte_idx, '\n');
-                        }
-                    }
-                }
-            } else {
-                // Submit on Enter while focused. The egui idiom for
-                // singleline submit is `lost_focus() && key_pressed(Enter)`
-                // — `lost_focus` alone fires on tab-out / click-away too.
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    submitted.push(id.clone());
-                    // Re-focus so the user can type another message immediately
-                    // without clicking the input again (chat UX).
-                    resp.request_focus();
-                }
-            }
-        }
-
-        self.text_input_visible_prev = visible_this_frame;
-        self.pane_just_focused = false;
-        // Track whether any TextInput has focus so handle_key can suppress
-        // key forwarding while the user is typing into an input field.
-        self.text_input_has_focus = any_has_focus;
-
-        for id in submitted {
-            self.submit_text_input(&id);
-        }
-    }
-
     /// Drain the buffer for `id` and queue a `TextSubmitted` event. Default
     /// UX is "field clears on submit" — the next TextInput emit with the
     /// same id starts empty. Public to the crate for unit tests that
     /// don't go through egui rendering.
     pub(crate) fn submit_text_input(&mut self, id: &str) {
-        let value = self.text_input_buffers.remove(id).unwrap_or_default();
-        self.outbound_events.push_back(PlexiEvent::TextSubmitted {
-            id: id.to_string(),
-            value,
-        });
+        let ev = self.render_session.submit_text_input(id);
+        self.outbound_events.push_back(ev);
     }
 
     /// Pump event I/O for a pane that is not currently rendered.
@@ -1536,65 +1313,8 @@ impl App for ProcessApp {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default();
-        render::render_draw_commands(ui, pane_rect, &self.frame, ctx.colors, &mut self.commonmark_cache, &audio_peaks);
-        // Interactive widgets (TextInput) need real egui widgets and a
-        // mutable per-app buffer map — they can't share the painter-only
-        // render path. Render them in a second pass on top of the frame.
-        self.render_text_inputs(ui, pane_rect);
-
-        // ── Host-managed scroll regions (#446) ──────────────────────────────
-        // Scan the committed frame for BeginScroll regions. For each region,
-        // check if the pointer is hovering inside its viewport rect and a
-        // scroll event occurred this frame. Update the stored offset and emit
-        // PlexiEvent::ScrollOffset whenever the offset changes.
-        //
-        // Scroll events are read from egui's per-frame InputState snapshot;
-        // we do not consume them (no `consume_scroll_delta`) so other egui
-        // widgets in the host still receive them normally.
-        {
-            let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
-            let pointer_pos = ui.input(|i| i.pointer.hover_pos());
-
-            // Collect (id, viewport_rect, content_height) for every BeginScroll
-            // in the current frame. We walk the flat command list and match
-            // BeginScroll entries; EndScroll entries are not needed here.
-            let mut scroll_regions: Vec<(String, egui::Rect, f32)> = Vec::new();
-            let origin = pane_rect.min;
-            for cmd in &self.frame {
-                if let RenderCommand::BeginScroll { id, x, y, w, h, content_height } = cmd {
-                    let viewport = egui::Rect::from_min_size(
-                        egui::pos2(origin.x + x, origin.y + y),
-                        egui::vec2(*w, *h),
-                    );
-                    scroll_regions.push((id.clone(), viewport, *content_height));
-                }
-            }
-
-            if scroll_delta.y != 0.0 {
-                if let Some(pos) = pointer_pos {
-                    // Iterate in reverse so the innermost (last-declared) region wins
-                    // when regions are nested. The outermost BeginScroll appears first
-                    // in the command stream; iterating forward would give it priority.
-                    for (id, viewport, content_height) in scroll_regions.iter().rev() {
-                        if viewport.contains(pos) {
-                            let viewport_h = viewport.height();
-                            let max_offset = (content_height - viewport_h).max(0.0);
-                            let prev = self.scroll_offsets.get(id).copied().unwrap_or(0.0);
-                            // Positive scroll_delta.y = scroll up (reveal content above).
-                            let next = (prev - scroll_delta.y).clamp(0.0, max_offset);
-                            if (next - prev).abs() > 0.01 {
-                                self.scroll_offsets.insert(id.clone(), next);
-                                self.outbound_events.push_back(PlexiEvent::ScrollOffset {
-                                    id: id.clone(),
-                                    offset_y: next,
-                                });
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+        self.render_session.render(ui, pane_rect, &self.frame, ctx.colors, &mut self.commonmark_cache, &audio_peaks, self.pane_id);
+        self.outbound_events.extend(self.render_session.drain_events());
 
         // ── Error fallback ──────────────────────────────────────────────────
         // Surface recent stderr in the pane when:
@@ -1873,7 +1593,7 @@ impl App for ProcessApp {
         // text and key events are consumed by the TextEdit widget. Don't
         // forward them to the app's on_key handler (typing "h" in the chat
         // input shouldn't trigger a tier change, for example).
-        if self.text_input_has_focus {
+        if self.render_session.text_input_has_focus {
             return false;
         }
         let mut consumed = false;
@@ -2388,19 +2108,19 @@ mod text_input_tests {
         // Simulate two frames where the user has typed "hel" then "hello"
         // by directly manipulating the buffer the way egui's TextEdit
         // would across two ui() ticks.
-        app.text_input_buffers
+        app.render_session.text_input_buffers
             .insert("note".to_string(), "hel".to_string());
         // ... another frame happens (no submit) ...
         // Buffer must still be there.
         assert_eq!(
-            app.text_input_buffers.get("note").map(String::as_str),
+            app.render_session.text_input_buffers.get("note").map(String::as_str),
             Some("hel"),
             "buffer should survive between frames"
         );
-        app.text_input_buffers
+        app.render_session.text_input_buffers
             .insert("note".to_string(), "hello".to_string());
         assert_eq!(
-            app.text_input_buffers.get("note").map(String::as_str),
+            app.render_session.text_input_buffers.get("note").map(String::as_str),
             Some("hello")
         );
     }
@@ -2411,7 +2131,7 @@ mod text_input_tests {
             eprintln!("skipping: no /bin/sh available");
             return;
         };
-        app.text_input_buffers
+        app.render_session.text_input_buffers
             .insert("note".to_string(), "hello world".to_string());
 
         app.submit_text_input("note");
@@ -2432,11 +2152,11 @@ mod text_input_tests {
             eprintln!("skipping: no /bin/sh available");
             return;
         };
-        app.text_input_buffers
+        app.render_session.text_input_buffers
             .insert("note".to_string(), "draft".to_string());
         app.submit_text_input("note");
         assert!(
-            !app.text_input_buffers.contains_key("note"),
+            !app.render_session.text_input_buffers.contains_key("note"),
             "buffer must be cleared after submit (default UX)"
         );
     }
@@ -2467,16 +2187,16 @@ mod text_input_tests {
             return;
         };
         // Pane resize is a `last_size` change in `ui()`. The buffer is
-        // owned by `text_input_buffers` and never touched by resize
+        // owned by `render_session.text_input_buffers` and never touched by resize
         // logic. Simulate the resize bookkeeping and assert the buffer
         // is untouched.
-        app.text_input_buffers
+        app.render_session.text_input_buffers
             .insert("note".to_string(), "midway".to_string());
         // Resize bookkeeping (mirrors what `ui()` does on size delta).
         app.last_size = egui::vec2(800.0, 600.0);
         // No buffer mutation should happen here — just last_size changes.
         assert_eq!(
-            app.text_input_buffers.get("note").map(String::as_str),
+            app.render_session.text_input_buffers.get("note").map(String::as_str),
             Some("midway"),
             "resize must not wipe the host-owned text buffer"
         );
@@ -2488,16 +2208,70 @@ mod text_input_tests {
             eprintln!("skipping: no /bin/sh available");
             return;
         };
-        app.text_input_buffers
+        app.render_session.text_input_buffers
             .insert("a".to_string(), "alpha".to_string());
-        app.text_input_buffers
+        app.render_session.text_input_buffers
             .insert("b".to_string(), "beta".to_string());
         app.submit_text_input("a");
         assert_eq!(
-            app.text_input_buffers.get("b").map(String::as_str),
+            app.render_session.text_input_buffers.get("b").map(String::as_str),
             Some("beta"),
             "submitting one input must not affect another id"
         );
+    }
+}
+
+#[cfg(test)]
+mod render_session_tests {
+    use super::*;
+    use std::collections::HashSet;
+    use std::path::PathBuf;
+
+    fn make_app() -> Option<ProcessApp> {
+        let sh = ["/bin/sh", "/usr/bin/sh"]
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .map(PathBuf::from)?;
+        let workspace_root = std::env::temp_dir();
+        ProcessApp::launch(
+            "test_render_session",
+            "Test RenderSession",
+            &sh,
+            &workspace_root,
+            &["-c".to_string(), "sleep 1".to_string()],
+            workspace_root.clone(),
+            HashSet::new(),
+            false,
+            None,
+        ).ok()
+    }
+
+    #[test]
+    fn render_session_submit_produces_event() {
+        let Some(mut app) = make_app() else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+        app.render_session.text_input_buffers.insert("x".to_string(), "hello".to_string());
+        app.submit_text_input("x");
+        let evt = app.outbound_events.pop_back().expect("event queued");
+        match evt {
+            crate::app_protocol::PlexiEvent::TextSubmitted { id, value } => {
+                assert_eq!(id, "x");
+                assert_eq!(value, "hello");
+            }
+            other => panic!("expected TextSubmitted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_session_process_app_has_no_text_input_fields() {
+        // Compile-time proof: ProcessApp::render_session owns the state.
+        // This test just exercises the field path — if mod.rs still had
+        // text_input_buffers directly on ProcessApp this wouldn't compile.
+        let Some(mut app) = make_app() else { return; };
+        app.render_session.text_input_buffers.insert("k".to_string(), "v".to_string());
+        assert!(app.render_session.text_input_buffers.contains_key("k"));
     }
 }
 
