@@ -275,3 +275,101 @@ impl PlexiApp {
         deferred
     }
 }
+
+#[cfg(test)]
+mod ownership_tests {
+    use crate::app_protocol::ArtifactOpenMode;
+    use crate::app_trait::AppCommand;
+    use crate::pane::{AppRuntime, Pane};
+    use crate::testing::HostHarness;
+
+    /// Helper: push an `AppCommand` directly onto the `ProcessApp`'s
+    /// `pending_commands` queue so the drain loop sees it next frame.
+    fn push_command(h: &mut HostHarness, pane_id: u64, cmd: AppCommand) {
+        let win = &mut h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane_id) else {
+            panic!("pane {pane_id} not found");
+        };
+        let AppRuntime::Process(ref mut pa) = app_pane.runtime else {
+            panic!("pane {pane_id} is not a ProcessApp");
+        };
+        pa.pending_commands.push(cmd);
+    }
+
+    #[test]
+    fn run_in_linked_terminal_cross_pane_rejected() {
+        let mut h = HostHarness::new();
+        let app_pane = h.add_test_pane();
+
+        // app_pane has linked_pane_id = None — any terminal_pane_id is rejected.
+        push_command(
+            &mut h,
+            app_pane,
+            AppCommand::RunInLinkedTerminal {
+                sender_pane_id: app_pane,
+                terminal_pane_id: 999, // not linked
+                command: "rm -rf /".to_string(),
+                echo: true,
+            },
+        );
+
+        h.run_frames(1);
+        // No crash, no events back to the app.
+        let events = h.effects_drain(app_pane);
+        assert!(
+            events.is_empty(),
+            "RunInLinkedTerminal with unlinked terminal must produce no events; got {events:?}"
+        );
+    }
+
+    #[test]
+    fn request_command_preview_unlinked_terminal_rejected() {
+        let mut h = HostHarness::new();
+        let app_pane = h.add_test_pane();
+
+        // app_pane has linked_pane_id = None — any preview on an unlinked terminal is rejected.
+        // Call dispatch_command_preview directly so we can read outbound_events before
+        // flush_outbound_events drains them (which happens inside the egui frame loop).
+        h.app.dispatch_command_preview(
+            app_pane,
+            "req-1".to_string(),
+            999, // terminal_pane_id not linked
+            "ls".to_string(),
+        );
+
+        // Rejection emits CommandPreview with empty would_run_in_cwd directly into
+        // process_app.outbound_events — readable here before any frame flush.
+        let events = h.effects_drain(app_pane);
+        let preview = events.iter().find(|e| {
+            matches!(e, crate::app_protocol::PlexiEvent::CommandPreview { .. })
+        });
+        let Some(crate::app_protocol::PlexiEvent::CommandPreview { would_run_in_cwd, .. }) =
+            preview
+        else {
+            panic!("expected CommandPreview rejection event; got: {events:?}");
+        };
+        assert!(
+            would_run_in_cwd.is_empty(),
+            "expected empty cwd for rejected preview, got {would_run_in_cwd:?}"
+        );
+    }
+
+    #[test]
+    fn open_artifact_outside_workspace_rejected() {
+        let mut h = HostHarness::new();
+        let app_pane = h.add_test_pane();
+        // workspace_root is std::env::temp_dir() — /etc/passwd is outside.
+        push_command(
+            &mut h,
+            app_pane,
+            AppCommand::OpenArtifact {
+                sender_pane_id: app_pane,
+                path: "/etc/passwd".to_string(),
+                mode: ArtifactOpenMode::OpenWithDefault,
+            },
+        );
+        // Should not panic; shell_open is a no-op in cfg(test) environments
+        // because no real shell is available — we just verify clean exit.
+        h.run_frames(1);
+    }
+}

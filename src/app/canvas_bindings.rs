@@ -134,11 +134,24 @@ impl PlexiApp {
     /// and is out of scope for v3.5.
     pub(super) fn dispatch_run_in_linked_terminal(
         &mut self,
+        sender_pane_id: PaneId,
         terminal_pane_id: PaneId,
         command: String,
         echo: bool,
     ) {
         let active = self.active_window;
+        let linked = self.windows[active]
+            .panes
+            .get(&sender_pane_id)
+            .and_then(|p| p.as_app())
+            .and_then(|a| a.linked_pane_id);
+        if linked != Some(terminal_pane_id) {
+            log::warn!(
+                "RunInLinkedTerminal: pane {sender_pane_id} rejected — terminal {terminal_pane_id} \
+                 not linked (linked={linked:?})"
+            );
+            return;
+        }
         let Some(term) = self.windows[active]
             .panes
             .get_mut(&terminal_pane_id)
@@ -162,11 +175,24 @@ impl PlexiApp {
     /// shell's readline removes the partial token.
     pub(super) fn dispatch_insert_path_token(
         &mut self,
+        sender_pane_id: PaneId,
         terminal_pane_id: PaneId,
         path: String,
         mode: PathTokenMode,
     ) {
         let active = self.active_window;
+        let linked = self.windows[active]
+            .panes
+            .get(&sender_pane_id)
+            .and_then(|p| p.as_app())
+            .and_then(|a| a.linked_pane_id);
+        if linked != Some(terminal_pane_id) {
+            log::warn!(
+                "InsertPathToken: pane {sender_pane_id} rejected — terminal {terminal_pane_id} \
+                 not linked (linked={linked:?})"
+            );
+            return;
+        }
         let Some(term) = self.windows[active]
             .panes
             .get_mut(&terminal_pane_id)
@@ -201,6 +227,26 @@ impl PlexiApp {
         command: String,
     ) {
         let active = self.active_window;
+        let linked = self.windows[active]
+            .panes
+            .get(&sender_pane_id)
+            .and_then(|p| p.as_app())
+            .and_then(|a| a.linked_pane_id);
+        if linked != Some(terminal_pane_id) {
+            log::warn!(
+                "RequestCommandPreview: pane {sender_pane_id} rejected — terminal {terminal_pane_id} \
+                 not linked (linked={linked:?})"
+            );
+            self.queue_event_to_pane(
+                sender_pane_id,
+                PlexiEvent::CommandPreview {
+                    request_id,
+                    command,
+                    would_run_in_cwd: String::new(),
+                },
+            );
+            return;
+        }
         let cwd = self.windows[active]
             .panes
             .get(&terminal_pane_id)
@@ -227,7 +273,43 @@ impl PlexiApp {
     /// On non-macOS platforms `open` is unavailable; the host logs a
     /// warning and the request becomes a no-op rather than failing the
     /// frame.
-    pub(super) fn dispatch_open_artifact(&mut self, path: String, mode: ArtifactOpenMode) {
+    pub(super) fn dispatch_open_artifact(
+        &mut self,
+        sender_pane_id: PaneId,
+        path: String,
+        mode: ArtifactOpenMode,
+    ) {
+        let active = self.active_window;
+        let workspace_root = self.windows[active]
+            .panes
+            .get(&sender_pane_id)
+            .and_then(|p| p.as_app())
+            .map(|a| a.workspace_root.clone());
+        // workspace_root is None for builtin apps (which run with trusted
+        // AppPermissions::builtin()) — they bypass the path check intentionally.
+        // For process apps the root is always set; None here means the pane was
+        // already removed (race between close and dispatch), so we allow through
+        // rather than silently dropping a legitimate late-arriving command.
+        //
+        // Note: validation is lexical (normalize_path collapses ".." without I/O).
+        // Symlinks inside the workspace root that point outside are treated as
+        // trusted, consistent with OS-level file permission semantics.
+        if let Some(ref root) = workspace_root {
+            let p = std::path::Path::new(&path);
+            let absolute = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                root.join(p)
+            };
+            let normalized = normalize_path(&absolute);
+            if !normalized.starts_with(root) {
+                log::warn!(
+                    "OpenArtifact: pane {sender_pane_id} rejected — path {path:?} outside \
+                     workspace {root:?}"
+                );
+                return;
+            }
+        }
         log::info!("OpenArtifact: path={path:?} mode={mode:?}");
         match mode {
             ArtifactOpenMode::OpenInPane => {
@@ -367,9 +449,45 @@ fn shell_open(path: &str, reveal: bool) {
     }
 }
 
+fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut result = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                result.pop();
+            }
+            Component::CurDir => {}
+            c => result.push(c),
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
-    use super::quote_for_shell;
+    use super::{normalize_path, quote_for_shell};
+    use std::path::PathBuf;
+
+    #[test]
+    fn normalize_path_collapses_parent_dirs() {
+        assert_eq!(normalize_path(&PathBuf::from("/a/b/../c")), PathBuf::from("/a/c"));
+        assert_eq!(normalize_path(&PathBuf::from("/a/b/c/../../d")), PathBuf::from("/a/d"));
+        assert_eq!(normalize_path(&PathBuf::from("/a/./b/../c/.")), PathBuf::from("/a/c"));
+    }
+
+    #[test]
+    fn normalize_path_cannot_escape_above_root() {
+        // Pop at the root component is a no-op — result stays at /etc.
+        assert_eq!(normalize_path(&PathBuf::from("/../etc")), PathBuf::from("/etc"));
+    }
+
+    #[test]
+    fn normalize_path_traversal_is_blocked_by_workspace_check() {
+        let root = PathBuf::from("/workspace");
+        let escaped = normalize_path(&PathBuf::from("/workspace/../../etc/passwd"));
+        assert!(!escaped.starts_with(&root), "traversal should escape workspace: {escaped:?}");
+    }
 
     #[test]
     fn quote_for_shell_safe_paths_pass_through() {
