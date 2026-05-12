@@ -37,6 +37,8 @@ pub(crate) fn render_draw_commands(
     colors: &Colors,
     commonmark_cache: &mut egui_commonmark::CommonMarkCache,
     audio_peaks: &HashMap<String, f32>,
+    image_cache: &mut super::image_cache::ImageCache,
+    workspace_root: &std::path::Path,
 ) {
     let origin = pane_rect.min;
 
@@ -418,9 +420,42 @@ pub(crate) fn render_draw_commands(
             // mutable buffer + focus tracking. See `render_text_inputs`.
             RenderCommand::TextInput { .. } => {}
 
-            // Image rendering is not yet implemented; no-op until the
-            // image-loading pipeline lands.
-            RenderCommand::Image { .. } => {}
+            RenderCommand::Image { src, x, y, w, h, fit } => {
+                image_cache.request(src, workspace_root);
+                let target_rect = egui::Rect::from_min_size(
+                    egui::pos2(origin.x + x, origin.y + y),
+                    egui::vec2(*w, *h),
+                );
+                let painter = ui.painter().with_clip_rect(clip);
+                if let Some(handle) = image_cache.get(src) {
+                    let tex_size = handle.size_vec2();
+                    let (dest_rect, uv) = fit_image(target_rect, tex_size, fit);
+                    painter.image(handle.id(), dest_rect, uv, egui::Color32::WHITE);
+                } else {
+                    painter.rect_filled(
+                        target_rect,
+                        egui::CornerRadius::same(4),
+                        egui::Color32::from_rgb(0x2a, 0x2a, 0x35),
+                    );
+                    let error_buf;
+                    let state_text: &str = match image_cache.state(src) {
+                        Some(super::image_cache::CachedImage::Error(msg)) => {
+                            error_buf = format!("⚠ {msg}");
+                            &error_buf
+                        }
+                        _ => "⏳ loading…",
+                    };
+                    let font = egui::FontId::proportional(crate::style::TEXT_HINT);
+                    let galley = ui.fonts(|f| {
+                        f.layout_no_wrap(state_text.to_string(), font, colors.text_dim)
+                    });
+                    let text_pos = egui::pos2(
+                        target_rect.center().x - galley.size().x / 2.0,
+                        target_rect.center().y - galley.size().y / 2.0,
+                    );
+                    painter.galley(text_pos, galley, colors.text_dim);
+                }
+            }
 
             // AudioMeter (#341): renders a live peak-amplitude bar driven by
             // the cpal capture callback writing into `audio_peak_meters`.
@@ -1142,5 +1177,44 @@ pub(super) fn parse_color(hex: &str) -> Option<Color32> {
         Some(Color32::from_rgba_premultiplied(r, g, b, a))
     } else {
         None
+    }
+}
+
+/// Compute destination rect and UV coordinates for an image given a fit mode.
+///
+/// - `"contain"` (default): scale to fit inside target, preserving aspect ratio (letterbox).
+/// - `"cover"`: fill target entirely, preserving aspect ratio (crop edges).
+/// - `"fill"`: stretch to fill target exactly (no aspect ratio preservation).
+fn fit_image(
+    target: egui::Rect,
+    tex_size: egui::Vec2,
+    fit: &str,
+) -> (egui::Rect, egui::Rect) {
+    let full_uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    if tex_size.x <= 0.0 || tex_size.y <= 0.0 {
+        return (target, full_uv);
+    }
+    match fit {
+        "cover" => {
+            let scale = (target.width() / tex_size.x).max(target.height() / tex_size.y);
+            let scaled = tex_size * scale;
+            // Crop UV to show only the centered portion.
+            let u_offset = (scaled.x - target.width()) / 2.0 / scaled.x;
+            let v_offset = (scaled.y - target.height()) / 2.0 / scaled.y;
+            let uv = egui::Rect::from_min_max(
+                egui::pos2(u_offset, v_offset),
+                egui::pos2(1.0 - u_offset, 1.0 - v_offset),
+            );
+            (target, uv)
+        }
+        "fill" => (target, full_uv),
+        _ => {
+            // "contain" — letterbox
+            let scale = (target.width() / tex_size.x).min(target.height() / tex_size.y);
+            let dest_size = tex_size * scale;
+            let offset = (target.size() - dest_size) * 0.5;
+            let dest = egui::Rect::from_min_size(target.min + offset, dest_size);
+            (dest, full_uv)
+        }
     }
 }

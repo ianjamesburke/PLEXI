@@ -11,6 +11,7 @@
 //! - `render.rs`   — `render_draw_commands()`: paint committed frames into egui
 //! - `prompts.rs`  — `show_prompt_modal()`: capability/secret grant UI
 
+pub(crate) mod image_cache;
 mod lifecycle;
 pub(crate) mod mcp_server;
 mod prompts;
@@ -246,6 +247,8 @@ pub struct ProcessApp {
     /// Cached state for `egui_commonmark` markdown rendering. Persists across
     /// frames so the parser doesn't re-allocate on every repaint.
     commonmark_cache: egui_commonmark::CommonMarkCache,
+    /// Image load cache for `RenderCommand::Image` (#1144).
+    pub(crate) image_cache: image_cache::ImageCache,
     /// Per-frame rendering state — TextInput buffers, scroll offsets, and
     /// accumulated outbound events from widget passes. Extracted from
     /// `ProcessApp` so each concern has a clear owner.
@@ -647,6 +650,7 @@ impl ProcessApp {
             pending_notification_count: 0,
             mouse_tracking_enabled: false,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
+            image_cache: image_cache::ImageCache::new(),
             render_session: RenderSession::new(),
             exposed_tools: Vec::new(),
             stream_handles: HashMap::new(),
@@ -768,6 +772,7 @@ impl ProcessApp {
             pending_notification_count: 0,
             mouse_tracking_enabled: false,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
+            image_cache: image_cache::ImageCache::new(),
             render_session: RenderSession::new(),
             exposed_tools: Vec::new(),
             stream_handles: HashMap::new(),
@@ -1314,7 +1319,8 @@ impl App for ProcessApp {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default();
-        self.render_session.render(ui, pane_rect, &self.frame, ctx.colors, &mut self.commonmark_cache, &audio_peaks, self.pane_id);
+        self.image_cache.poll(ui.ctx());
+        self.render_session.render(ui, pane_rect, &self.frame, ctx.colors, &mut self.commonmark_cache, &audio_peaks, self.pane_id, &mut self.image_cache, &self.workspace_root);
         self.outbound_events.extend(self.render_session.drain_events());
 
         // ── Error fallback ──────────────────────────────────────────────────
@@ -3481,6 +3487,52 @@ mod env_isolation_tests {
             stdout.trim(),
             "ABSENT",
             "user-global secret must not appear in subprocess env; got: {stdout:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod image_cache_tests {
+    use super::*;
+
+    #[test]
+    fn image_cache_loads_png() {
+        // Write a 1×1 red PNG to a temp dir using the `image` crate (avoids
+        // embedding raw bytes that could be subtly invalid).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let png_path = dir.path().join("test.png");
+        let mut img = image::RgbaImage::new(1, 1);
+        img.put_pixel(0, 0, image::Rgba([255, 0, 0, 255]));
+        img.save(&png_path).expect("save png");
+
+        let mut cache = image_cache::ImageCache::new();
+        cache.request("test.png", dir.path());
+
+        // Give the background thread time to load.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        cache.poll(&egui::Context::default());
+
+        assert!(
+            cache.get("test.png").is_some(),
+            "expected image to be loaded"
+        );
+    }
+
+    #[test]
+    fn image_cache_missing_file_is_error() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut cache = image_cache::ImageCache::new();
+        cache.request("nonexistent.png", dir.path());
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        cache.poll(&egui::Context::default());
+
+        assert!(
+            matches!(
+                cache.state("nonexistent.png"),
+                Some(image_cache::CachedImage::Error(_))
+            ),
+            "expected Error state for missing file"
         );
     }
 }

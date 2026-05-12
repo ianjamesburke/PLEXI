@@ -175,6 +175,7 @@ fn render_commands_to_png(commands: &[RenderCommand], width: u32, height: u32) -
     let colors = default_colors();
     let mut cm_cache = egui_commonmark::CommonMarkCache::default();
     let peaks: HashMap<String, f32> = HashMap::new();
+    let mut img_cache = crate::process_app::image_cache::ImageCache::new();
 
     let full_output = ctx.run(raw_input, |ctx| {
         egui::CentralPanel::default()
@@ -182,6 +183,7 @@ fn render_commands_to_png(commands: &[RenderCommand], width: u32, height: u32) -
             .show(ctx, |ui| {
                 crate::process_app::render::render_draw_commands(
                     ui, rect, commands, &colors, &mut cm_cache, &peaks,
+                    &mut img_cache, &std::env::temp_dir(),
                 );
             });
     });

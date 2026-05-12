@@ -53,6 +53,8 @@ impl RenderSession {
         commonmark_cache: &mut egui_commonmark::CommonMarkCache,
         audio_peaks: &HashMap<String, f32>,
         pane_id: u64,
+        image_cache: &mut super::image_cache::ImageCache,
+        app_dir: &std::path::Path,
     ) {
         log::debug!("render_session: render pane_id={} cmds={}", pane_id, frame.len());
 
@@ -64,6 +66,8 @@ impl RenderSession {
             colors,
             commonmark_cache,
             audio_peaks,
+            image_cache,
+            app_dir,
         );
 
         // ── Pass 2: TextInput widgets ────────────────────────────────────────
