@@ -604,7 +604,6 @@ impl PlexiApp {
                                 state.store(ui.ctx(), te_id);
                             }
                             self.rename_pane_focus_requested = true;
-                            log::info!("modal_text_polish: styled TextEdit rendered (rename_pane)");
                             log::info!("rename_pane: focus requested for TextEdit");
                         }
                     });
