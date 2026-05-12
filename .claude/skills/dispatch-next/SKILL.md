@@ -223,13 +223,13 @@ Update `BEFORE_IDS` with the new ID before opening the next lane.
 
 ---
 
-## Step 5 — Open queue panes (vertical)
+## Step 5 — Open queue panes (below each lane)
 
 For each lane that has a non-empty queue, focus the lane pane and open a split below it:
 
 ```bash
 plexi pane focus $LANE_<X>_ID
-plexi terminal --layout split_v
+plexi terminal --layout split_h
 ```
 
 Find the new pane ID (same pattern as Step 4).
