@@ -1730,6 +1730,7 @@ impl App for ProcessApp {
         // fires on button-release and does not track press or motion.
         let mouse_response = ui.interact(pane_rect, ui.id(), egui::Sense::click_and_drag());
         let mut needs_tracking_repaint = false;
+        let mut needs_click_repaint = false;
         if !pill_consumed_click {
             let origin = pane_rect.min;
 
@@ -1781,6 +1782,7 @@ impl App for ProcessApp {
                         y,
                         button: crate::app_protocol::MouseButton::Primary,
                     });
+                    needs_click_repaint = true;
                 }
                 if secondary_up {
                     self.send_event(&PlexiEvent::MouseUp {
@@ -1793,6 +1795,7 @@ impl App for ProcessApp {
                         y,
                         button: crate::app_protocol::MouseButton::Secondary,
                     });
+                    needs_click_repaint = true;
                 }
             }
 
@@ -1837,7 +1840,9 @@ impl App for ProcessApp {
         // Pointer-tracking apps are a special case: while the pointer is actively
         // moving we keep the repaint cadence near 60 FPS so host->app hover state
         // does not feel sticky.
-        if needs_tracking_repaint {
+        if needs_click_repaint {
+            ui.ctx().request_repaint();
+        } else if needs_tracking_repaint {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
         } else {
