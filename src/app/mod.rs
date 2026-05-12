@@ -3430,7 +3430,9 @@ impl PlexiApp {
             self.push_focus_layer(FocusLayer::CliSetupPrompt);
         } else if !should_own && has_layer {
             log::info!("cli_setup: CliSetupPrompt focus layer released");
-            self.pop_focus_layer(&FocusLayer::CliSetupPrompt);
+            // Use retain rather than pop_focus_layer so stale entries are removed
+            // even if another layer was pushed on top (e.g. via rapid state change).
+            self.focus_stack.retain(|l| *l != FocusLayer::CliSetupPrompt);
         }
     }
 
