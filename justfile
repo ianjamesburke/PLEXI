@@ -106,9 +106,12 @@ promote to="":
 uninstall channel="all":
     bash scripts/uninstall.sh {{channel}}
 
-# Claim a GitHub issue and dispatch a Claude agent to ship it.
-# Labels the issue "in progress" first (before the agent starts) to prevent
-# double-claiming when multiple dispatches run close together.
-ship issue:
-    gh issue edit {{issue}} --add-label "in progress" --remove-label "ready"
-    plexi terminal "claude --dangerously-skip-permissions" --layout tab
+# Dispatch Claude agents at one or more issues. Labels each "in progress" first
+# to prevent double-claiming when multiple dispatches run close together.
+# TODO: replace `c` with `claude --dangerously-skip-permissions` once this flow
+# is validated — if this comment still exists, that replacement never happened.
+ship +issues:
+    for issue in {{issues}}; do \
+        gh issue edit $issue --add-label "in progress" --remove-label "ready" && \
+        plexi terminal "c '/ship-issue $issue'" --layout tab; \
+    done
