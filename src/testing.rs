@@ -456,4 +456,58 @@ mod tests {
         h.run_frames(1);
     }
 
+    // -- Shell execution security (issue #1177) ───────────────────────────────
+
+    /// Regression guard: an app without `terminal.bindings` must never reach
+    /// the `sh -c` spawn in `StreamProcess`. The host must return
+    /// `StreamEnd { exit_code: 1 }` immediately and never spawn a subprocess.
+    ///
+    /// This is the only app-reachable `sh -c` path in the codebase. Any future
+    /// app-reachable shell execution path must add a matching denial test here.
+    /// See `docs/security/shell-execution-inventory.md` for the full audit.
+    #[test]
+    fn stream_process_denied_without_terminal_bindings() {
+        use crate::app_protocol::{DrawCommand, HostCommand, PlexiEvent, StreamChannel};
+
+        let mut h = HostHarness::new();
+        let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
+
+        h.inject(
+            pane,
+            DrawCommand::Host(HostCommand::StreamProcess {
+                correlation_id: "sec-test-1".to_string(),
+                terminal_pane_id: 0,
+                command: "echo SHOULD_NOT_RUN".to_string(),
+                channel: StreamChannel::Stdout,
+            }),
+        );
+
+        {
+            let win = &mut h.app.windows[0];
+            let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+                panic!("expected App pane");
+            };
+            let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+                panic!("expected Process runtime");
+            };
+            proc.background_tick();
+        }
+
+        let effects = h.effects_drain(pane);
+        assert!(
+            !effects.is_empty(),
+            "StreamProcess must produce an outbound event — got none. \
+             This means the denial path was not reached."
+        );
+        let stream_end = effects.iter().find(|e| {
+            matches!(e, PlexiEvent::StreamEnd { correlation_id, exit_code: 1 }
+                if correlation_id == "sec-test-1")
+        });
+        assert!(
+            stream_end.is_some(),
+            "expected StreamEnd {{ exit_code: 1 }} for denied StreamProcess, got: {:?}",
+            effects
+        );
+    }
+
 }
