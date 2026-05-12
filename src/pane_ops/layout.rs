@@ -149,7 +149,7 @@ impl PlexiApp {
             // the tree. If it has panes but none focused (rare), drop into the
             // standard terminal split path which will no-op for now.
             if self.windows[active].panes.is_empty() {
-                if let Some((tree, panes, root_tile)) = self.create_single_pane_tree(None) {
+                if let Some((tree, panes, root_tile)) = self.create_single_pane_tree(None, None, false) {
                     self.windows[active].tree = tree;
                     self.windows[active].panes = panes;
                     self.windows[active].focused_pane = Some(root_tile);
@@ -337,14 +337,36 @@ impl PlexiApp {
         ctx.focused_pane = Some(new_tile);
     }
 
-    pub(crate) fn new_tab(&mut self) {
+    pub(crate) fn new_tab(&mut self, initial_cmd: Option<&str>, close_on_exit: bool) {
         // Empty context (welcome screen): create the first pane as tree root.
         if self.windows[self.active_window].panes.is_empty() {
             let new_id = self.host.alloc_pane_id();
             let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);
             let ctx_name = self.context_name_for(ctx_id);
-            let settings = Self::make_backend_settings(new_id, None, &self.colors, ctx_id, &ctx_name);
-            let Some(pane) = TerminalPane::new(
+            let mut settings = Self::make_backend_settings(new_id, None, &self.colors, ctx_id, &ctx_name);
+            if let Some(cmd) = initial_cmd {
+                let shell_name = std::path::Path::new(&settings.shell)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+                let effective_cmd: String = if !close_on_exit {
+                    let shell_path = &settings.shell;
+                    let trimmed = cmd.trim().trim_end_matches([';', ' ']);
+                    let sep = if trimmed.is_empty() { "" } else { "; " };
+                    match shell_name {
+                        "fish" => format!("{trimmed}{sep}exec \"{shell_path}\" --login -i"),
+                        _ => format!("{trimmed}{sep}exec \"{shell_path}\" -i -l"),
+                    }
+                } else {
+                    cmd.to_string()
+                };
+                settings.args = match shell_name {
+                    "zsh" | "bash" => vec!["-i".to_string(), "-l".to_string(), "-c".to_string(), effective_cmd],
+                    "fish" => vec!["--login".to_string(), "-c".to_string(), effective_cmd],
+                    _ => vec!["-l".to_string(), "-c".to_string(), effective_cmd],
+                };
+            }
+            let Some(mut pane) = TerminalPane::new(
                 new_id,
                 self.ctx.clone(),
                 self.pty_event_tx.clone(),
@@ -354,6 +376,7 @@ impl PlexiApp {
                 log::error!("Failed to create first terminal pane in empty context");
                 return;
             };
+            pane.ephemeral = close_on_exit;
             let ctx = &mut self.windows[self.active_window];
             ctx.panes.insert(new_id, Pane::Terminal(Box::new(pane)));
             let pane_tile = ctx.tree.tiles.insert_pane(new_id);
@@ -372,8 +395,31 @@ impl PlexiApp {
         let cwd = self.windows[self.active_window].get_focused_pane_cwd(focused);
         let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);
         let ctx_name = self.context_name_for(ctx_id);
-        let settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
-        let Some(pane) = TerminalPane::new(
+        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
+        if let Some(cmd) = initial_cmd {
+            let shell_name = std::path::Path::new(&settings.shell)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            log::info!("new_tab: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
+            let effective_cmd: String = if !close_on_exit {
+                let shell_path = &settings.shell;
+                let trimmed = cmd.trim().trim_end_matches([';', ' ']);
+                let sep = if trimmed.is_empty() { "" } else { "; " };
+                match shell_name {
+                    "fish" => format!("{trimmed}{sep}exec \"{shell_path}\" --login -i"),
+                    _ => format!("{trimmed}{sep}exec \"{shell_path}\" -i -l"),
+                }
+            } else {
+                cmd.to_string()
+            };
+            settings.args = match shell_name {
+                "zsh" | "bash" => vec!["-i".to_string(), "-l".to_string(), "-c".to_string(), effective_cmd],
+                "fish" => vec!["--login".to_string(), "-c".to_string(), effective_cmd],
+                _ => vec!["-l".to_string(), "-c".to_string(), effective_cmd],
+            };
+        }
+        let Some(mut pane) = TerminalPane::new(
             new_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
@@ -383,6 +429,7 @@ impl PlexiApp {
             log::error!("Failed to create new terminal pane");
             return;
         };
+        pane.ephemeral = close_on_exit;
         self.windows[self.active_window]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)));
