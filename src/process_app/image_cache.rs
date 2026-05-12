@@ -34,17 +34,23 @@ impl ImageCache {
     }
 
     /// Request an image load. No-op if already loading/loaded/errored.
+    ///
+    /// Only relative paths (resolved under `ctx_dir`) are allowed. Absolute
+    /// paths and any `src` containing `..` are rejected to prevent path
+    /// traversal outside the app's workspace.
     pub(crate) fn request(&mut self, src: &str, ctx_dir: &Path) {
         if self.cache.contains_key(src) {
             return;
         }
+        if src.contains("..") || Path::new(src).is_absolute() {
+            log::warn!("ImageCache: blocked disallowed image path '{src}'");
+            self.cache
+                .insert(src.to_string(), CachedImage::Error("Access denied".to_string()));
+            return;
+        }
+        let path: PathBuf = ctx_dir.join(src);
         self.cache.insert(src.to_string(), CachedImage::Loading);
         log::info!("ImageCache: requesting image '{src}'");
-        let path: PathBuf = if Path::new(src).is_absolute() {
-            Path::new(src).to_path_buf()
-        } else {
-            ctx_dir.join(src)
-        };
         let src_key = src.to_string();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
@@ -52,11 +58,7 @@ impl ImageCache {
                 .map(|img| {
                     let rgba = img.to_rgba8();
                     let size = [rgba.width() as usize, rgba.height() as usize];
-                    let pixels: Vec<egui::Color32> = rgba
-                        .pixels()
-                        .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
-                        .collect();
-                    egui::ColorImage { size, pixels }
+                    egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw())
                 })
                 .map_err(|e| e.to_string());
             let _ = tx.send((src_key, result));

@@ -1191,7 +1191,7 @@ fn fit_image(
     fit: &str,
 ) -> (egui::Rect, egui::Rect) {
     let full_uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-    if tex_size.x <= 0.0 || tex_size.y <= 0.0 {
+    if tex_size.x <= 0.0 || tex_size.y <= 0.0 || target.width() <= 0.0 || target.height() <= 0.0 {
         return (target, full_uv);
     }
     match fit {
