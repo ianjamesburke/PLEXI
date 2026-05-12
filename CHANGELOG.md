@@ -1,6 +1,22 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.28] — 2026-05-12
+
+### Changes
+- fix(notifications): consume modal keys so they don't bleed into panes (#1197) (#1198)
+- security(typed-pipes): sanitize pipe IDs and harden socket allocation (#1180) (#1193)
+- security(permissions): canonicalize workspace roots before keying permission decisions (#1176) (#1194)
+- fix(terminal): pass initial_cmd to new_window and tab layouts (#1184) (#1191)
+- security(mcp): harden per-app MCP server binding and caller authentication (#1190)
+- feat(skills): add /daily-check skill and docs-freshness tracker (#1173)
+- security(ai-tools): enforce workspace-scoped tool authorization (#1182) (#1188)
+- security(app-registry): harden app shadowing and linked app provenance (#1178) (#1186)
+- security(terminal-bindings): enforce linked-terminal ownership and cwd boundaries (#1175) (#1189)
+- security(shell): inventory all sh -c paths, add StreamProcess denial test (#1177) (#1187)
+- security(app-env): stop injecting user-global secrets into app envs (#1167) (#1185)
+- fix(ship-issue): use native gh-issue-ext blocking check in Phase 6 unblock step
+- chore(skills): add GitHub project board status updates to ship cycle
 ## [3.6.27] — 2026-05-12
 
 ### Changes
