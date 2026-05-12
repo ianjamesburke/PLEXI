@@ -360,14 +360,25 @@ impl AppRegistry {
                 Ok(installed) => {
                     let id = installed.manifest.id.clone();
                     if let Some(existing) = self.apps.get(&id) {
-                        log::debug!(
-                            "AppRegistry: {} entry '{}' (from {:?}) shadows {} entry from {:?}",
-                            source.label(),
-                            id,
-                            entry_dir,
-                            existing.source.label(),
-                            existing.bin_path.parent().unwrap_or(&existing.bin_path),
-                        );
+                        if source != existing.source {
+                            log::warn!(
+                                "AppRegistry: '{}' — {} entry (from {:?}) shadows {} entry (from {:?})",
+                                id,
+                                source.label(),
+                                entry_dir,
+                                existing.source.label(),
+                                existing.bin_path.parent().unwrap_or(&existing.bin_path),
+                            );
+                        } else {
+                            log::debug!(
+                                "AppRegistry: {} entry '{}' (from {:?}) shadows {} entry from {:?}",
+                                source.label(),
+                                id,
+                                entry_dir,
+                                existing.source.label(),
+                                existing.bin_path.parent().unwrap_or(&existing.bin_path),
+                            );
+                        }
                     } else {
                         log::debug!(
                             "AppRegistry: loaded {} entry '{}' from {:?}",
@@ -414,28 +425,52 @@ impl AppRegistry {
                 return;
             }
         };
+        // Profile dir — linked paths must not point inside it. A path inside
+        // the global config dir would silently override a managed install with
+        // arbitrary code from a local workspace's links.toml.
+        // Canonicalize so symlinks (e.g. macOS /var → /private/var) don't
+        // allow a bypass via the real resolved path.
+        let raw_profile = crate::config::config_dir();
+        let profile_dir = raw_profile.canonicalize().unwrap_or(raw_profile);
+
         for raw_path in &parsed.links {
             let app_dir = PathBuf::from(raw_path);
             if !app_dir.is_absolute() {
                 log::warn!("AppRegistry: skipping relative path in links.toml: {:?} (must be absolute)", raw_path);
                 continue;
             }
-            match self.load_app(&app_dir) {
+            // Canonicalize to resolve symlinks before the profile-dir check.
+            let canonical = match app_dir.canonicalize() {
+                Ok(p) => p,
+                Err(e) => {
+                    log::warn!("AppRegistry: skipping linked path {:?}: cannot canonicalize: {e}", raw_path);
+                    continue;
+                }
+            };
+            if canonical.starts_with(&profile_dir) {
+                log::warn!(
+                    "AppRegistry: skipping linked path {:?}: resolves inside profile dir {:?} — use global install instead",
+                    raw_path,
+                    profile_dir,
+                );
+                continue;
+            }
+            match self.load_app(&canonical) {
                 Ok(installed) => {
                     let id = installed.manifest.id.clone();
                     if let Some(existing) = self.apps.get(&id) {
-                        log::debug!(
-                            "AppRegistry: linked entry '{}' (from {:?}) shadows {} entry from {:?}",
+                        log::warn!(
+                            "AppRegistry: '{}' — linked entry (from {:?}) shadows {} entry (from {:?})",
                             id,
-                            app_dir,
+                            canonical,
                             existing.source.label(),
                             existing.bin_path.parent().unwrap_or(&existing.bin_path),
                         );
                     } else {
-                        log::debug!(
+                        log::info!(
                             "AppRegistry: loaded linked entry '{}' from {:?}",
                             id,
-                            app_dir,
+                            canonical,
                         );
                     }
                     for ext in &installed.manifest.capabilities.file_types {
@@ -444,7 +479,7 @@ impl AppRegistry {
                     self.apps.insert(id, InstalledApp { source: RegistrySource::Linked, ..installed });
                 }
                 Err(e) => {
-                    log::warn!("AppRegistry: skipping linked path {:?}: {e}", app_dir);
+                    log::warn!("AppRegistry: skipping linked path {:?}: {e}", canonical);
                 }
             }
         }
@@ -596,7 +631,12 @@ impl AppRegistry {
         let keyboard_capture = installed.launch.keyboard_capture;
         let default_scope = self.default_notification_scope_for(id);
 
-        log::info!("AppRegistry: launching '{id}' as type={:?}", installed.manifest.manifest_type);
+        log::info!(
+            "AppRegistry: launching '{}' as type={:?} source={}",
+            id,
+            installed.manifest.manifest_type,
+            installed.source.label(),
+        );
 
         // Issue #322: log declared-but-routed status for visibility. The
         // missing-secret prompt fires lazily on first `ctx.secret(...)` call —
@@ -1096,6 +1136,52 @@ notification_scope = \"global\"
         let app = registry.get("my-app").expect("my-app must be in registry");
         assert_eq!(app.source, RegistrySource::Linked, "linked must shadow global");
         assert_eq!(app.manifest.name, "Linked My App");
+    }
+
+    #[test]
+    fn local_agent_shadows_local_app_with_same_id() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let local_apps = workspace.path().join(".plexi").join("apps");
+        let local_agents = workspace.path().join(".plexi").join("agents");
+        fs::create_dir_all(&local_apps).unwrap();
+        fs::create_dir_all(&local_agents).unwrap();
+
+        write_app(&local_apps, "tool", "Tool (app)");
+        write_app(&local_agents, "tool", "Tool (agent)");
+
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let entry = registry.get("tool").expect("tool must be discovered");
+        assert_eq!(entry.source, RegistrySource::LocalAgent, "agent must shadow local app");
+        assert_eq!(entry.manifest.name, "Tool (agent)");
+    }
+
+    #[test]
+    fn linked_app_relative_path_rejected() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
+
+        // A relative path in links.toml must be skipped — only absolute paths allowed.
+        let bad_links = "links = [\"relative/path/to/app\"]\n";
+        fs::write(workspace.path().join(".plexi").join("links.toml"), bad_links).unwrap();
+
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        assert!(registry.get("anything").is_none(), "relative linked path must be rejected");
+    }
+
+    #[test]
+    fn linked_app_with_nonexistent_path_skipped() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
+
+        let bad_links = "links = [\"/nonexistent/path/to/app\"]\n";
+        fs::write(workspace.path().join(".plexi").join("links.toml"), bad_links).unwrap();
+
+        // Must not panic — skips with a warn
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        assert!(registry.get("anything").is_none());
     }
 
     #[test]
