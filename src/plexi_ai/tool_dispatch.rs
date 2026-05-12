@@ -105,10 +105,12 @@ impl ToolRegistry {
     /// nondeterminism when multiple panes expose the same tool name.
     fn snapshot_for_caller(&self, caller_workspace: &Path) -> HashMap<String, (u64, AiTool)> {
         let mut map = HashMap::new();
+        // Use component-by-component comparison to avoid false mismatches from
+        // trailing separators or platform path normalization differences.
         let mut pane_ids: Vec<u64> = self
             .entries
             .iter()
-            .filter(|(_, e)| e.workspace_root == caller_workspace)
+            .filter(|(_, e)| e.workspace_root.components().eq(caller_workspace.components()))
             .map(|(&id, _)| id)
             .collect();
         pane_ids.sort_unstable();
