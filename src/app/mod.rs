@@ -2344,7 +2344,20 @@ impl eframe::App for PlexiApp {
                             self.ctx.request_repaint();
                         }
                         crate::pane_ops::SwapResult::AtBoundary => {
-                            if !self.move_focused_pane_to_adjacent_window(dir) {
+                            if dir == crate::keys::Direction::Down {
+                                // Bottom boundary: pop focused pane into a new window
+                                // appended to the right of the current context row.
+                                if self.pop_focused_pane_to_new_window() {
+                                    self.ctx.request_repaint();
+                                } else if let Some(focused) = self.windows[self.active_window].focused_pane {
+                                    self.edge_pulse = Some(EdgePulse {
+                                        tile: focused,
+                                        dir,
+                                        started_at: std::time::Instant::now(),
+                                    });
+                                    self.ctx.request_repaint();
+                                }
+                            } else if !self.move_focused_pane_to_adjacent_window(dir) {
                                 if let Some(focused) = self.windows[self.active_window].focused_pane {
                                     self.edge_pulse = Some(EdgePulse {
                                         tile: focused,
