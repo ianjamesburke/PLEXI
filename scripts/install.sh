@@ -35,22 +35,10 @@ fi
 
 display="Plexi${cap}"
 bundle_id="com.ianjamesburke.plexi${suffix}"
-app_src="target/release/bundle/osx/${display}.app"
+app_src="target/release/bundle/osx/Plexi.app"
 app_dest="/Applications/${display}.app"
 bin_dest="/usr/local/bin/plexi${suffix}"
 profile_dir="$HOME/.plexi${suffix}"
-
-# HACK: cargo-bundle reads bundle metadata from Cargo.toml directly with no
-# env-var or CLI override. Patch the two bundle fields, build, then restore.
-# Package `name` is left as "plexi" so Cargo.lock stays identical across branches.
-if [[ -n "$suffix" ]]; then
-  backup_dir="$(mktemp -d)"
-  cp Cargo.toml "$backup_dir/Cargo.toml"
-  cleanup() { cp "$backup_dir/Cargo.toml" Cargo.toml; rm -rf "$backup_dir"; }
-  trap cleanup EXIT
-  sed -i '' "s/name = \"Plexi[^\"]*\"/name = \"${display}\"/" Cargo.toml
-  sed -i '' "s/identifier = \"com.ianjamesburke.plexi[^\"]*\"/identifier = \"${bundle_id}\"/" Cargo.toml
-fi
 
 cargo bundle --release
 
@@ -62,6 +50,14 @@ fi
 rm -rf "$app_dest"
 cp -R "$app_src" "$app_dest"
 
+# cargo-bundle reads bundle metadata from Cargo.toml and has no per-run
+# override for app name or bundle ID. Keep the manifest canonical, then patch
+# the copied bundle so installs never dirty tracked source files.
+/usr/bin/plutil -replace CFBundleName -string "$display" "$app_dest/Contents/Info.plist"
+/usr/bin/plutil -replace CFBundleDisplayName -string "$display" "$app_dest/Contents/Info.plist"
+/usr/bin/plutil -replace CFBundleIdentifier -string "$bundle_id" "$app_dest/Contents/Info.plist"
+/usr/bin/plutil -replace CFBundleExecutable -string "plexi${suffix}" "$app_dest/Contents/Info.plist"
+
 # For non-stable channels, rename the binary inside the installed bundle from
 # "plexi" to "plexi-<channel>" and update CFBundleExecutable to match.
 # config_dir_name() detects the channel from current_exe() file_name(), so the
@@ -69,7 +65,6 @@ cp -R "$app_src" "$app_dest"
 # silently reads ~/.plexi/apps/ instead of ~/.plexi-<channel>/apps/.
 if [[ -n "$suffix" ]]; then
   mv "$app_dest/Contents/MacOS/plexi" "$app_dest/Contents/MacOS/plexi${suffix}"
-  /usr/bin/plutil -replace CFBundleExecutable -string "plexi${suffix}" "$app_dest/Contents/Info.plist"
 fi
 
 ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
