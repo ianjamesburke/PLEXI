@@ -2,8 +2,8 @@
 //!
 //! When an app manifest declares `[app.mcp]`, the host calls `start_mcp_server`
 //! which binds a TCP listener on `127.0.0.1:0` (OS-assigned port), spawns a
-//! background accept thread, and returns a `McpServerHandle` carrying the port
-//! and a shared call queue.
+//! background accept thread, and returns a `McpServerHandle` carrying the port,
+//! a per-app auth token, and a shared call queue.
 //!
 //! Each frame, `ProcessApp::poll_mcp_calls` drains the queue, serialises
 //! `PlexiEvent::McpToolCall` events to the app's stdin, and stores the
@@ -11,6 +11,11 @@
 //! `HostCommand::McpToolResult`, the routing layer looks up the call_id,
 //! sends the result, and the blocked HTTP handler thread unblocks and writes
 //! the JSON-RPC response to the client.
+//!
+//! ## Authentication
+//! Every request must carry `Authorization: Bearer <token>` where `<token>` is
+//! injected as `PLEXI_MCP_TOKEN` into the app environment at launch. Requests
+//! without a matching token are rejected with HTTP 401 before any body is read.
 
 use crate::app_registry::McpTool;
 use std::collections::VecDeque;
@@ -42,6 +47,9 @@ pub struct McpToolResponse {
 pub struct McpServerHandle {
     /// The OS-assigned port. Injected as `PLEXI_MCP_PORT` into the app process.
     pub port: u16,
+    /// Per-app bearer token. Injected as `PLEXI_MCP_TOKEN` into the app process.
+    /// Every incoming request must present this token in `Authorization: Bearer <token>`.
+    pub token: String,
     /// Pending tool-call requests from external MCP clients, drained each frame
     /// by `ProcessApp::poll_mcp_calls`.
     pub call_queue: Arc<Mutex<VecDeque<McpCallRequest>>>,
@@ -52,14 +60,16 @@ pub struct McpServerHandle {
 // ---------------------------------------------------------------------------
 
 /// Start the HTTP/SSE MCP server for `tools`. Returns the handle with the
-/// bound port and the shared call queue.
+/// bound port, per-app auth token, and the shared call queue.
 pub fn start_mcp_server(tools: Vec<McpTool>) -> std::io::Result<McpServerHandle> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
+    let token = uuid::Uuid::new_v4().to_string();
     let call_queue: Arc<Mutex<VecDeque<McpCallRequest>>> =
         Arc::new(Mutex::new(VecDeque::new()));
     let queue_clone = Arc::clone(&call_queue);
     let tools = Arc::new(tools);
+    let token_arc: Arc<String> = Arc::new(token.clone());
 
     std::thread::Builder::new()
         .name(format!("mcp-accept-{port}"))
@@ -69,10 +79,11 @@ pub fn start_mcp_server(tools: Vec<McpTool>) -> std::io::Result<McpServerHandle>
                     Ok(stream) => {
                         let tools = Arc::clone(&tools);
                         let queue = Arc::clone(&queue_clone);
+                        let token = Arc::clone(&token_arc);
                         std::thread::Builder::new()
                             .name("mcp-conn".to_string())
                             .spawn(move || {
-                                if let Err(e) = handle_connection(stream, &tools, &queue) {
+                                if let Err(e) = handle_connection(stream, &tools, &queue, &token) {
                                     log::warn!("mcp_server: connection error: {e}");
                                 }
                             })
@@ -87,8 +98,8 @@ pub fn start_mcp_server(tools: Vec<McpTool>) -> std::io::Result<McpServerHandle>
         })
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
-    log::info!("mcp_server: started on port {port}");
-    Ok(McpServerHandle { port, call_queue })
+    log::info!("mcp_server: started on 127.0.0.1:{port}");
+    Ok(McpServerHandle { port, token, call_queue })
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +110,9 @@ fn handle_connection(
     stream: std::net::TcpStream,
     tools: &[McpTool],
     queue: &Arc<Mutex<VecDeque<McpCallRequest>>>,
+    token: &str,
 ) -> std::io::Result<()> {
+    let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".to_string());
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut write_stream = stream;
 
@@ -111,10 +124,14 @@ fn handle_connection(
 
     // Only handle POST /mcp (exact path match)
     let mut req_parts = request_line.split_whitespace();
-    let is_post_mcp = req_parts.next() == Some("POST") && req_parts.next() == Some("/mcp");
+    let method = req_parts.next().unwrap_or("").to_string();
+    let path = req_parts.next().unwrap_or("").to_string();
+    let is_post_mcp = method == "POST" && path == "/mcp";
 
-    // Read headers, find Content-Length
+    // Read headers — collect Content-Length and Authorization.
     let mut content_length: usize = 0;
+    let mut auth_ok = false;
+    let expected_auth = format!("bearer {}", token.to_lowercase());
     loop {
         let mut header = String::new();
         match reader.read_line(&mut header)? {
@@ -128,8 +145,18 @@ fn handle_connection(
                 if let Some(rest) = lower.strip_prefix("content-length:") {
                     content_length = rest.trim().parse().unwrap_or(0);
                 }
+                if let Some(rest) = lower.strip_prefix("authorization:") {
+                    auth_ok = rest.trim() == expected_auth;
+                }
             }
         }
+    }
+
+    // Reject unauthenticated requests before reading the body.
+    if !auth_ok {
+        log::warn!("mcp_server: auth rejected peer={peer} method={method} path={path}");
+        write_http_response(&mut write_stream, 401, b"{\"error\":\"unauthorized\"}")?;
+        return Ok(());
     }
 
     if !is_post_mcp || content_length == 0 {
@@ -161,9 +188,9 @@ fn handle_connection(
     };
 
     let id = json.get("id").cloned().unwrap_or(serde_json::Value::Null);
-    let method = json.get("method").and_then(|m| m.as_str()).unwrap_or("");
+    let method_name = json.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
-    let response_body = match method {
+    let response_body = match method_name {
         "initialize" => serde_json::json!({
             "jsonrpc": "2.0",
             "id": id,
@@ -224,7 +251,7 @@ fn handle_connection(
                 });
             }
 
-            log::info!("mcp_server: tool_call call_id={call_id} tool={tool_name}");
+            log::info!("mcp_server: tool_call call_id={call_id} tool={tool_name} peer={peer}");
 
             match response_rx.recv_timeout(Duration::from_secs(30)) {
                 Ok(resp) => {
@@ -275,27 +302,132 @@ fn write_http_response(
     status: u16,
     body: &[u8],
 ) -> std::io::Result<()> {
-    let status_text = if status == 200 { "OK" } else { "Error" };
+    let status_text = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        405 => "Method Not Allowed",
+        413 => "Payload Too Large",
+        _ => "Error",
+    };
     write!(
         stream,
-        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)?;
     stream.flush()
 }
 
-/// Generate a unique call ID using time + thread ID as entropy (no uuid crate dependency).
 fn generate_call_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    // Use time + thread id as entropy source — no uuid crate dependency needed.
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos();
-    let tid = std::thread::current().id();
-    format!("{t:08x}-{tid:?}-mcp")
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-')
-        .collect()
+    uuid::Uuid::new_v4().to_string().replace('-', "")
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    fn post_mcp(port: u16, token: Option<&str>, body: &[u8]) -> (u16, Vec<u8>) {
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+        let auth_header = match token {
+            Some(t) => format!("Authorization: Bearer {t}\r\n"),
+            None => String::new(),
+        };
+        let req = format!(
+            "POST /mcp HTTP/1.1\r\nHost: localhost\r\n{auth_header}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        stream.write_all(body).unwrap();
+        stream.flush().unwrap();
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        let response_str = String::from_utf8_lossy(&response);
+        let status: u16 = response_str
+            .lines()
+            .next()
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let body_start = response_str.find("\r\n\r\n").map(|i| i + 4).unwrap_or(response.len());
+        (status, response[body_start..].to_vec())
+    }
+
+    #[test]
+    fn test_no_auth_returns_401() {
+        let handle = start_mcp_server(vec![]).unwrap();
+        let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let (status, _) = post_mcp(handle.port, None, body);
+        assert_eq!(status, 401);
+    }
+
+    #[test]
+    fn test_wrong_token_returns_401() {
+        let handle = start_mcp_server(vec![]).unwrap();
+        let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let (status, _) = post_mcp(handle.port, Some("wrong-token"), body);
+        assert_eq!(status, 401);
+    }
+
+    #[test]
+    fn test_correct_token_tools_list_returns_200() {
+        let handle = start_mcp_server(vec![]).unwrap();
+        let token = handle.token.clone();
+        let body = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
+        let (status, resp_body) = post_mcp(handle.port, Some(&token), body);
+        assert_eq!(status, 200);
+        let json: serde_json::Value = serde_json::from_slice(&resp_body).unwrap();
+        assert_eq!(json["result"]["tools"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn test_correct_token_initialize_returns_200() {
+        let handle = start_mcp_server(vec![]).unwrap();
+        let token = handle.token.clone();
+        let body = br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{}}}"#;
+        let (status, resp_body) = post_mcp(handle.port, Some(&token), body);
+        assert_eq!(status, 200);
+        let json: serde_json::Value = serde_json::from_slice(&resp_body).unwrap();
+        assert_eq!(json["result"]["protocolVersion"], "2024-11-05");
+    }
+
+    #[test]
+    fn test_oversized_body_returns_413() {
+        let handle = start_mcp_server(vec![]).unwrap();
+        let token = handle.token.clone();
+        // Send a legitimate-looking request but with a content-length exceeding MAX_BODY.
+        // We only send the headers — the server checks content_length before reading.
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{}", handle.port)).unwrap();
+        let huge_len = 10 * 1024 * 1024 + 1; // 1 byte over the 10 MB cap
+        let req = format!(
+            "POST /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {huge_len}\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+        stream.flush().unwrap();
+
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).unwrap();
+        let response_str = String::from_utf8_lossy(&response);
+        let status: u16 = response_str
+            .lines()
+            .next()
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        assert_eq!(status, 413);
+    }
+
+    #[test]
+    fn test_each_server_has_unique_token() {
+        let h1 = start_mcp_server(vec![]).unwrap();
+        let h2 = start_mcp_server(vec![]).unwrap();
+        assert_ne!(h1.token, h2.token);
+    }
 }
