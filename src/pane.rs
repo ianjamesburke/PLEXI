@@ -61,6 +61,8 @@ pub struct TerminalPane {
     pub backend: TerminalBackend,
     pub exited: bool,
     pub name: Option<String>,
+    /// When true, the name was set explicitly by the user and OSC title sequences must not overwrite it.
+    pub name_locked: bool,
     pub font_size: f32,
     /// When true, the pane closes automatically when its process exits (no "[process exited]" prompt).
     /// Set by `plexi terminal --ephemeral`.
@@ -87,6 +89,7 @@ impl TerminalPane {
             backend,
             exited: false,
             name: None,
+            name_locked: false,
             font_size: default_font_size,
             ephemeral: false,
         })
