@@ -307,13 +307,20 @@ impl App for SecretsApp {
                             .size(11.0)
                             .family(egui::FontFamily::Monospace),
                     );
-                    let key_te = egui::TextEdit::singleline(&mut self.new_key)
-                        .desired_width(f32::INFINITY)
-                        .font(egui::FontId::monospace(12.0))
-                        .text_color(colors.text_primary)
-                        .frame(true)
-                        .hint_text("e.g. OPENAI_API_KEY");
-                    let key_resp = ui.add(key_te);
+                    let key_resp = ui.scope(|ui| {
+                        ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                        ui.visuals_mut().text_cursor.stroke.color = colors.accent;
+                        ui.visuals_mut().extreme_bg_color = colors.bg_active;
+                        ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
+                        ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+                        ui.add(egui::TextEdit::singleline(&mut self.new_key)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::FontId::monospace(12.0))
+                            .text_color(colors.text_primary)
+                            .frame(true)
+                            .margin(egui::Margin::symmetric(8, 5))
+                            .hint_text("e.g. OPENAI_API_KEY"))
+                    }).inner;
                     // Request focus on the key field when form opens
                     if !self.focus_requested {
                         key_resp.request_focus();
@@ -338,14 +345,21 @@ impl App for SecretsApp {
                             .size(11.0)
                             .family(egui::FontFamily::Monospace),
                     );
-                    let val_te = egui::TextEdit::singleline(&mut self.new_value)
-                        .desired_width(f32::INFINITY)
-                        .font(egui::FontId::monospace(12.0))
-                        .text_color(colors.text_primary)
-                        .password(true)
-                        .frame(true)
-                        .hint_text("secret value");
-                    let val_resp = ui.add(val_te);
+                    let val_resp = ui.scope(|ui| {
+                        ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                        ui.visuals_mut().text_cursor.stroke.color = colors.accent;
+                        ui.visuals_mut().extreme_bg_color = colors.bg_active;
+                        ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
+                        ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+                        ui.add(egui::TextEdit::singleline(&mut self.new_value)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::FontId::monospace(12.0))
+                            .text_color(colors.text_primary)
+                            .password(true)
+                            .frame(true)
+                            .margin(egui::Margin::symmetric(8, 5))
+                            .hint_text("secret value"))
+                    }).inner;
                     if self.form_focus == FormField::Value && !val_resp.has_focus() {
                         val_resp.request_focus();
                     }
@@ -367,13 +381,20 @@ impl App for SecretsApp {
                             .size(11.0)
                             .family(egui::FontFamily::Monospace),
                     );
-                    let dir_te = egui::TextEdit::singleline(&mut self.new_dir)
-                        .desired_width(f32::INFINITY)
-                        .font(egui::FontId::monospace(12.0))
-                        .text_color(colors.text_primary)
-                        .frame(true)
-                        .hint_text("/path/to/project");
-                    let dir_resp = ui.add(dir_te);
+                    let dir_resp = ui.scope(|ui| {
+                        ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                        ui.visuals_mut().text_cursor.stroke.color = colors.accent;
+                        ui.visuals_mut().extreme_bg_color = colors.bg_active;
+                        ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
+                        ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+                        ui.add(egui::TextEdit::singleline(&mut self.new_dir)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::FontId::monospace(12.0))
+                            .text_color(colors.text_primary)
+                            .frame(true)
+                            .margin(egui::Margin::symmetric(8, 5))
+                            .hint_text("/path/to/project"))
+                    }).inner;
                     if self.form_focus == FormField::Dir && !dir_resp.has_focus() {
                         dir_resp.request_focus();
                     }
