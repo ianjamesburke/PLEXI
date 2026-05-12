@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.13] — 2026-05-12
+
+### Changes
+- fix(close): advance focus to next sibling on pane/page close (#1152) (#1155)
+- feat(quick-note): add clipboard destination to default config
+- ux(quick-note): compose TextEdit fills 80% screen height on open (#1127) (#1151)
 ## [3.6.12] — 2026-05-12
 
 ### Changes
