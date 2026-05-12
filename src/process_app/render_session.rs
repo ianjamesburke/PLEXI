@@ -3,7 +3,7 @@
 //! Owns all widget passes (draw commands, TextInput, scroll regions) so that
 //! `ProcessApp` itself only holds persistent app lifecycle state.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use crate::app_protocol::{PlexiEvent, RenderCommand};
 
 pub(crate) struct RenderSession {
@@ -224,7 +224,7 @@ impl RenderSession {
         let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
         let pointer_pos = ui.input(|i| i.pointer.hover_pos());
 
-        let mut scroll_regions: Vec<(String, egui::Rect, f32)> = Vec::new();
+        let mut scroll_regions: Vec<(&String, egui::Rect, f32)> = Vec::new();
         let origin = pane_rect.min;
         for cmd in frame {
             if let RenderCommand::BeginScroll { id, x, y, w, h, content_height } = cmd {
@@ -232,7 +232,7 @@ impl RenderSession {
                     egui::pos2(origin.x + x, origin.y + y),
                     egui::vec2(*w, *h),
                 );
-                scroll_regions.push((id.clone(), viewport, *content_height));
+                scroll_regions.push((id, viewport, *content_height));
             }
         }
 
@@ -242,12 +242,12 @@ impl RenderSession {
                     if viewport.contains(pos) {
                         let viewport_h = viewport.height();
                         let max_offset = (content_height - viewport_h).max(0.0);
-                        let prev = self.scroll_offsets.get(id).copied().unwrap_or(0.0);
+                        let prev = self.scroll_offsets.get(*id).copied().unwrap_or(0.0);
                         let next = (prev - scroll_delta.y).clamp(0.0, max_offset);
                         if (next - prev).abs() > 0.01 {
-                            self.scroll_offsets.insert(id.clone(), next);
+                            self.scroll_offsets.insert((*id).clone(), next);
                             self.outbound_events.push(PlexiEvent::ScrollOffset {
-                                id: id.clone(),
+                                id: (*id).clone(),
                                 offset_y: next,
                             });
                         }
@@ -268,10 +268,10 @@ impl RenderSession {
         });
     }
 
-    /// Drain accumulated events into a `VecDeque` for the caller to merge into
+    /// Drain accumulated events. Returns an iterator the caller extends into
     /// `ProcessApp::outbound_events`.
-    pub(crate) fn drain_events(&mut self) -> VecDeque<PlexiEvent> {
-        self.outbound_events.drain(..).collect()
+    pub(crate) fn drain_events(&mut self) -> std::vec::Drain<'_, PlexiEvent> {
+        self.outbound_events.drain(..)
     }
 
     /// Remove the buffer for `id` (or use empty string) and return a

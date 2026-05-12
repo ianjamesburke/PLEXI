@@ -1314,8 +1314,7 @@ impl App for ProcessApp {
             .map(|g| g.clone())
             .unwrap_or_default();
         self.render_session.render(ui, pane_rect, &self.frame, ctx.colors, &mut self.commonmark_cache, &audio_peaks, self.pane_id);
-        let events = self.render_session.drain_events();
-        for ev in events { self.outbound_events.push_back(ev); }
+        self.outbound_events.extend(self.render_session.drain_events());
 
         // ── Error fallback ──────────────────────────────────────────────────
         // Surface recent stderr in the pane when:
