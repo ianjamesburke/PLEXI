@@ -989,8 +989,8 @@ impl PlexiApp {
                     for win in &mut self.windows {
                         if let Some(pane) = win.panes.get_mut(pane_id) {
                             if let Some(t) = pane.as_terminal_mut() {
-                                t.name = Some(name.clone());
-                                t.name_locked = true;
+                                t.name_locked = !name.is_empty();
+                                t.name = if name.is_empty() { None } else { Some(name.clone()) };
                                 found = true;
                                 break;
                             }
@@ -1403,18 +1403,25 @@ impl PlexiApp {
                             .and_then(|b| b.osc_pane_title)
                             .unwrap_or(false);
                         if osc_enabled {
-                            let title_str = title.trim().to_string();
+                            let title_trimmed = title.trim();
                             for win in &mut self.windows {
                                 if let Some(pane) = win.panes.get_mut(&id) {
                                     if let Some(t) = pane.as_terminal_mut() {
                                         if t.name_locked {
                                             log::debug!("osc_title: pane {id} name locked, skipping");
                                         } else {
-                                            t.name = if title_str.is_empty() { None } else { Some(title_str.clone()) };
-                                            log::info!("osc_title: pane {id} name set to {:?}", t.name);
+                                            let is_empty = title_trimmed.is_empty();
+                                            let already_matches = match &t.name {
+                                                None => is_empty,
+                                                Some(curr) => !is_empty && curr == title_trimmed,
+                                            };
+                                            if !already_matches {
+                                                t.name = if is_empty { None } else { Some(title_trimmed.to_string()) };
+                                                log::debug!("osc_title: pane {id} name set to {:?}", t.name);
+                                            }
                                         }
-                                        break;
                                     }
+                                    break;
                                 }
                             }
                         }
