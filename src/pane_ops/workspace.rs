@@ -76,11 +76,11 @@ impl PlexiApp {
     /// and make it the active context.
     pub(crate) fn create_page_at(&mut self, grid_x: u32, grid_y: u32) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let pane_cwd = self.windows[self.active_window]
+        let cwd = self.windows[self.active_window]
             .focused_pane
             .and_then(|t| self.windows[self.active_window].get_focused_pane_cwd(t))
-            .unwrap_or_else(|| home.clone());
-        let cwd = self.router.active().root.clone().unwrap_or(pane_cwd);
+            .or_else(|| self.router.active().root.clone())
+            .unwrap_or(home);
         log::info!("create_page_at({grid_x},{grid_y}): cwd={}", cwd.display());
         let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd.clone()))
         else {
