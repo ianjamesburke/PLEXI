@@ -136,13 +136,13 @@ fn main() -> eframe::Result {
         .unwrap_or_default();
     let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
     let retention_days = log_config.retention_days.unwrap_or(30);
-    let cli_mode = raw_args.get(1).is_some_and(|a| {
+    let cli_mode = raw_args.iter().skip(1).any(|a| {
         const CLI_SUBCOMMANDS: &[&str] = &[
             "run", "secret", "app", "workspace", "notify", "pane", "terminal",
             "open", "install", "uninstall", "update", "list", "pack",
             "descriptor", "registry", "validate", "context", "completions", "config",
         ];
-        CLI_SUBCOMMANDS.contains(&a.as_str())
+        !a.starts_with('-') && CLI_SUBCOMMANDS.contains(&a.as_str())
     });
     crate::logging::init(log_level, retention_days, cli_mode);
     let frame_tick = crate::logging::new_frame_tick();
