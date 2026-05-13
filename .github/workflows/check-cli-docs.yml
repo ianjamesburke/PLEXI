@@ -1,0 +1,36 @@
+name: check CLI docs
+
+on:
+  push:
+    branches: [alpha]
+    paths:
+      - 'src/cli_args.rs'
+      - 'tools/gen_cli_docs/**'
+      - 'website/src/content/docs/cli.md'
+  pull_request:
+    branches: [alpha]
+    paths:
+      - 'src/cli_args.rs'
+      - 'tools/gen_cli_docs/**'
+      - 'website/src/content/docs/cli.md'
+
+jobs:
+  check-cli-docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check CLI docs are up to date
+        run: |
+          cargo run -p gen_cli_docs > /tmp/fresh_cli.md
+          if ! diff -q website/src/content/docs/cli.md /tmp/fresh_cli.md; then
+            echo "website/src/content/docs/cli.md is stale. Run 'just gen-cli-docs' and commit the result."
+            diff website/src/content/docs/cli.md /tmp/fresh_cli.md
+            exit 1
+          fi
+          echo "CLI docs are up to date."

@@ -1,9 +1,11 @@
-//! Plexi library target — exposes `app_protocol` for the `gen_schema` binary.
+//! Plexi library target — exposes `app_protocol` for the `gen_schema` binary
+//! and `cli_args` for the `gen_cli_docs` binary.
 //! This lib.rs is intentionally minimal: it only declares the modules that
-//! `app_protocol` references via `crate::`, using stub types that satisfy
-//! the type system without pulling in the full GUI/audio dependency tree.
+//! these tools reference, using stub types that satisfy the type system
+//! without pulling in the full GUI/audio dependency tree.
 
 pub mod app_protocol;
+pub mod cli_args;
 
 // Stub modules: only the types used by app_protocol via crate:: references.
 // The real implementations live in the binary target (src/main.rs).
