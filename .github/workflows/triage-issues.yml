@@ -43,24 +43,28 @@ jobs:
             - Outcome: is the expected behaviour concrete enough to test?
             - Blockers: are there unresolved design questions or external dependencies?
 
-            Step 4 — Pick exactly one label from each group (use only labels that exist in the repo):
+            Step 4 — Enumerate era labels. Run this command and list the results:
+            gh label list --json name --jq '[.[] | select(.name | startswith("v") or . == "future") | .name] | sort'
+            You MUST use one of the labels returned by this command. Do NOT default to any era label without checking the list first.
+
+            Step 5 — Pick exactly one label from each group (use only labels that exist in the repo):
             - type:     bug | enhancement | idea
             - priority: P0 | P1 | P2 | P3 | P4
-            - era:      (use whatever v* era labels exist — check with `gh label list`)
+            - era:      pick from the era labels found in Step 4. Match the issue's scope to the right era based on the North Star phases.
             - status:   ready (all axes satisfied, North Star aligned, no open deps)
                         blocked (depends on another open issue that must land first)
                         needs-info (any axis incomplete or ambiguous — requires questions posted to issue)
 
             If the issue diverges from the North Star, note it and apply idea + P4 + future era.
 
-            Step 5 — Apply the labels:
+            Step 6 — Apply the labels:
             gh issue edit ${{ github.event.issue.number }} --add-label "<type>,<priority>,<era>,<status>"
 
-            Step 6 — If status is blocked, add native GitHub blocking relations using a single gh command per blocker:
+            Step 7 — If status is blocked, add native GitHub blocking relations using a single gh command per blocker:
             gh api graphql -f query='mutation($blockedId:ID!,$blockerId:ID!){addBlockedBy(input:{issueId:$blockedId,blockingIssueId:$blockerId}){issue{number}}}' -f blockedId="$(gh issue view ${{ github.event.issue.number }} --json id --jq '.id')" -f blockerId="$(gh issue view <blocker-number> --json id --jq '.id')"
             Repeat for each blocker. Only do this when the blocking issue number is explicitly clear from the issue body. Each call is one gh api graphql command with the IDs inlined — no shell variable assignments.
 
-            Step 7 — If status is needs-info, post explicit answerable questions:
+            Step 8 — If status is needs-info, post explicit answerable questions:
             Each question must be specific enough that a yes/no or one-sentence answer fully resolves it.
             gh issue comment ${{ github.event.issue.number }} --body "**Triage**
 
@@ -73,7 +77,7 @@ jobs:
               - <question 1?>
               - <question 2?>"
 
-            Step 8 — Otherwise post one triage summary comment:
+            Step 9 — Otherwise post one triage summary comment:
             gh issue comment ${{ github.event.issue.number }} --body "**Triage**
 
             - **Type:** <type>
@@ -83,7 +87,7 @@ jobs:
             - **North Star alignment:** <aligned / diverges — one sentence>
             - **Recommended next step:** <one concrete action>"
 
-            Step 9 — Remove the untriaged label now that triage is complete:
+            Step 10 — Remove the untriaged label now that triage is complete:
             gh issue edit ${{ github.event.issue.number }} --remove-label "untriaged"
 
             Do nothing else. No PRs, no code changes, no additional comments.
