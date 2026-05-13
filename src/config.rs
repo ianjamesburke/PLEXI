@@ -63,6 +63,7 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "scroll_up", "scroll_down", "increase_font_size", "decrease_font_size",
     "open_file_browser", "open_quick_note", "open_config", "reload_config",
     "open_secrets_manager", "force_reload_app", "toggle_notification_modal",
+    "context_inspector",
 ];
 
 pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
