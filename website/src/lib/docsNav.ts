@@ -26,6 +26,16 @@ export const docsNav: DocNavSection[] = [
     ],
   },
   {
+    section: 'SDK Reference',
+    items: [
+      { slug: 'sdk', title: 'Overview' },
+      { slug: 'sdk-app', title: 'App' },
+      { slug: 'sdk-render-context', title: 'RenderContext' },
+      { slug: 'sdk-emitter', title: 'Emitter' },
+      { slug: 'sdk-widgets', title: 'Widgets' },
+    ],
+  },
+  {
     section: 'CLI Reference',
     items: [
       { slug: 'cli', title: 'CLI Overview' },

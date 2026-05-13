@@ -71,11 +71,28 @@ class RenderContext:
 
     def rect(self, x: float, y: float, w: float, h: float, fill: str,
              radius: float = 0.0) -> None:
+        """Draw a filled rectangle.
+
+        Args:
+            x: Left edge in logical pixels
+            y: Top edge in logical pixels
+            w: Width in logical pixels
+            h: Height in logical pixels
+            fill: Fill color as hex string (e.g., "#ff0000" or "#ff0000aa" with alpha)
+            radius: Corner radius in pixels (0.0 = sharp corners, default)
+        """
         self._queue({"type": "rect", "x": x, "y": y, "w": w, "h": h,
                      "fill": fill, "radius": radius})
 
     def circle(self, cx: float, cy: float, r: float, fill: str) -> None:
-        """Draw a filled circle. Alpha supported via 8-digit hex (#rrggbbaa) or dim()."""
+        """Draw a filled circle.
+
+        Args:
+            cx: Center X in logical pixels
+            cy: Center Y in logical pixels
+            r: Radius in logical pixels
+            fill: Fill color as hex string; supports 8-digit hex (#rrggbbaa) for alpha
+        """
         self._queue({"type": "circle", "cx": cx, "cy": cy, "r": r, "fill": fill})
 
     def arc(self, cx: float, cy: float, r: float,
@@ -343,6 +360,16 @@ class RenderContext:
 
     def line(self, x1: float, y1: float, x2: float, y2: float,
              color: str, width: float = 1.0) -> None:
+        """Draw a line segment.
+
+        Args:
+            x1: Start X in logical pixels
+            y1: Start Y in logical pixels
+            x2: End X in logical pixels
+            y2: End Y in logical pixels
+            color: Line color as hex string
+            width: Line width in logical pixels (default: 1.0)
+        """
         self._queue({"type": "line", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
                      "color": color, "width": width})
 
@@ -367,6 +394,17 @@ class RenderContext:
     def list_view(self, items: "list[dict]", selected: int = 0,
              item_height: float = 40.0, x: float = 0.0, y: float = 0.0,
              w: "float | None" = None, h: "float | None" = None) -> None:
+        """Draw a scrollable list of items with optional selection highlight.
+
+        Args:
+            items: List of item dicts, each with keys "text" (required) and optional "disabled"
+            selected: Index of the highlighted item (0-indexed)
+            item_height: Height of each item in logical pixels
+            x: Left edge of the list
+            y: Top edge of the list
+            w: Width of the list (defaults to full pane width)
+            h: Height of the list (defaults to remaining pane height below y)
+        """
         self._queue({"type": "list", "x": x, "y": y,
                      "w": self.w if w is None else w,
                      "h": self.h - y if h is None else h,
@@ -682,6 +720,11 @@ class RenderContext:
         })
 
     def frame_done(self) -> None:
+        """Flush all buffered draw commands for this frame.
+
+        Called automatically after on_render returns. Only call this manually
+        if you're rendering in multiple phases and need intermediate updates.
+        """
         self._buf.append(json.dumps({"type": "frame_done", "frame_id": self.frame_id}) + "\n")
         with _LOCK:
             sys.stdout.write("".join(self._buf))
