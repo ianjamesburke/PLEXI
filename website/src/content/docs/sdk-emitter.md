@@ -82,7 +82,7 @@ def run_sync(coro: 'Any') -> Any
 Run a coroutine from a background thread and return its result.
 
 Use this when calling async Emitter methods from a non-async context
-(e.g. inside a ``threading.Thread`` callback)::
+(e.g. inside a ``threading.Thread`` callback):
 
     def _worker(self) -> None:
         result = self.emit.run_sync(self.emit.http_get(url))
@@ -318,10 +318,8 @@ Ask the host to open a fresh terminal pane next to this app and
 return its `terminal_pane_id` (an integer). Awaits until the host
 emits `LinkedTerminalReady`.
 
-Returns 0 if the host denied the request — this happens when the
-manifest doesn't declare `terminal.bindings`. Apps should treat 0
-as a hard error (no terminal to drive). Raises `CapabilityDeniedError`
-in that case so the failure is loud.
+Raises `CapabilityDeniedError` if the manifest doesn't declare
+`terminal.bindings`.
 
 Await this from async hooks. From background threads use
 ``self.emit.run_sync(self.emit.request_linked_terminal(...))``.
@@ -743,7 +741,7 @@ next ``AudioCapture`` for the same ``pipe_id``. No host command is
 needed — closing the socket is sufficient.
 
 Apps should join any reader thread after calling this to avoid
-reading from a closed socket::
+reading from a closed socket:
 
     self.emit.stop_audio_capture("mic")
     self._reader_thread.join(timeout=2.0)
@@ -763,8 +761,8 @@ Play an audio file via the host (rodio). Requires audio.playback capability.
 source: absolute path to audio file (mp3, wav, ogg, etc.)
 volume: playback volume 0.0–1.0 (default 1.0)
 
-Fire-and-forget — no response event. Stop playback by calling
-audio_play(source, state="stopped") or closing the pane.
+Fire-and-forget — no response event. Playback stops when the pane
+closes; there is no explicit stop API yet.
 
 ---
 

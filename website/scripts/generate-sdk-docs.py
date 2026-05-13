@@ -101,13 +101,24 @@ class DocExtractor:
         return f"{prefix} {node.name}({', '.join(parts)}){ret}"
 
 
+def _clean_docstring(doc: str) -> str:
+    """Convert rST artifacts to markdown-friendly equivalents."""
+    lines = doc.split("\n")
+    cleaned = []
+    for line in lines:
+        if line.rstrip().endswith("::"):
+            line = line.rstrip()[:-1]
+        cleaned.append(line)
+    return "\n".join(cleaned)
+
+
 def fmt_methods(methods: list[dict]) -> str:
     out = ""
     for m in methods:
         out += f"### `{m['name']}`\n\n"
         out += f"```python\n{m['signature']}\n```\n\n"
         if m["docstring"]:
-            out += f"{m['docstring']}\n\n"
+            out += f"{_clean_docstring(m['docstring'])}\n\n"
         out += "---\n\n"
     return out
 
@@ -239,7 +250,7 @@ def generate_widgets_docs(sdk_source: Path) -> str:
         for cls in classes:
             sections += f"## {cls['name']}\n\n"
             if cls["docstring"]:
-                sections += f"{cls['docstring']}\n\n"
+                sections += f"{_clean_docstring(cls['docstring'])}\n\n"
             if cls["methods"]:
                 sections += fmt_methods(cls["methods"])
 

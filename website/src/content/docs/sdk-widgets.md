@@ -26,7 +26,7 @@ from plexi_sdk.widgets import (
 
 Stateful button widget. Tracks its own hover/click state across frames.
 
-Usage::
+Usage:
 
     btn = Button("ok", x=20, y=40, w=80, h=32, label="OK")
 
@@ -48,7 +48,7 @@ Draw the button and return True if clicked this frame.
 
 Declarative keyboard shortcut registry.
 
-Usage::
+Usage:
 
     km = KeyMap()
     km.bind("s", mod="cmd", action="save")
@@ -92,7 +92,7 @@ Return the action name for this key+mods, or None if unbound.
 
 Stateful scrollable list widget with fixed item height.
 
-Usage::
+Usage:
 
     class MyApp(App):
         def on_init(self, ctx):

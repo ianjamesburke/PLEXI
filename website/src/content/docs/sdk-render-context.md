@@ -250,7 +250,7 @@ them left-to-right — no Python width math.
 `align`     — vertical alignment; use "left_center" to center items
               on the y-axis at their midline (default: "left_center").
 
-Example::
+Example:
 
     ctx.text_row(
         x=24.0, y=200.0,
@@ -279,7 +279,7 @@ no truncation, no overflow.
 
 `pairs` is a list of `(keys, description)` tuples where `keys`
 is either a single string or a list of strings (multi-key
-chord). Example::
+chord). Example:
 
     ctx.shortcuts(
         x=24.0, y=12.0, max_width=ctx.w - 48.0,
@@ -421,7 +421,7 @@ in logical pixels — the host uses this to size the scrollbar thumb.
 Pass the full height of all items even if most are off-screen.
 
 `id` must be stable across frames — use a descriptive string rather
-than a counter. Typical pattern::
+than a counter. Typical pattern:
 
     def on_scroll(self, ctx, id, offset_y):
         if id == "main-list":
@@ -469,7 +469,7 @@ When `multiline=True`, Enter submits and Shift+Enter inserts a
 newline. When `multiline=False` (default), Enter submits
 immediately.
 
-Pattern (poll on every frame)::
+Pattern (poll on every frame):
 
     submitted = ctx.text_input("note", x=12, y=12, w=300,
                                placeholder="Type a note…")
@@ -747,7 +747,7 @@ text_child(), key_chip_child(), or layout_node().
 `children`  — list of layout child dicts.
 `gap`       — space between children in pixels (default 6.0).
 
-Example::
+Example:
 
     ctx.row(
         x=24.0, y=40.0,
