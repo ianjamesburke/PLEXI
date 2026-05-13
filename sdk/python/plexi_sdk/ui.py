@@ -940,6 +940,7 @@ class Card(Component):
     radius: float = RADIUS_MD
 
     def __post_init__(self):
+        self.children = list(self.children)
         for child in self.children:
             if not isinstance(child, Component):
                 raise TypeError(
@@ -1258,6 +1259,7 @@ class Column(Component):
     gap: float = SPACE_MD
 
     def __post_init__(self):
+        self.children = list(self.children)
         for child in self.children:
             if not isinstance(child, Component):
                 raise TypeError(
