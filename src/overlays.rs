@@ -1190,6 +1190,7 @@ impl PlexiApp {
                     });
                     log::info!("QuickNote: children_cmd spawned for key={}", key);
                     self.quick_note_children_rx = Some((key, rx));
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
                 }
             }
         }

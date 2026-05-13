@@ -722,9 +722,12 @@ impl PlexiApp {
             if node.hidden {
                 log::info!("QuickNote: committed via '{}' (hidden background spawn)", node.label);
                 std::thread::spawn(move || {
-                    let _ = std::process::Command::new("sh")
+                    if let Err(e) = std::process::Command::new("sh")
                         .args(["-c", &cmd])
-                        .spawn();
+                        .spawn()
+                    {
+                        log::warn!("QuickNote: hidden spawn failed for '{}': {e}", cmd);
+                    }
                 });
             } else {
                 // Legacy position support during migration period
