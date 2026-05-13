@@ -324,6 +324,12 @@ pub struct PlexiApp {
     /// Receiver for HostCommands sent over the PLEXI_SOCKET Unix socket listener.
     /// Drained each frame in `drain_pane_cmd_channel`.
     pane_ipc_rx: std::sync::mpsc::Receiver<crate::app_protocol::HostCommand>,
+    /// Last (window_id, tile_id) pair that was logged as a FocusChanged event.
+    /// Uses stable window_id (u64) not a vector index so removals don't corrupt it.
+    /// Compared at end of each frame to detect genuine focus transitions.
+    pub(crate) last_logged_focus: Option<(u64, egui_tiles::TileId)>,
+    /// When the current focus session started. Reset on each FocusChanged emit.
+    pub(crate) focus_started_at: Option<std::time::Instant>,
 }
 
 #[cfg(test)]
@@ -679,6 +685,8 @@ impl PlexiApp {
                     update_rx: Some(update_rx),
                     update_available: None,
                     pane_ipc_rx,
+                    last_logged_focus: None,
+                    focus_started_at: None,
                 };
             }
         }
@@ -781,6 +789,8 @@ impl PlexiApp {
             update_rx: Some(update_rx),
             update_available: None,
             pane_ipc_rx,
+            last_logged_focus: None,
+            focus_started_at: None,
         }
     }
 
@@ -897,6 +907,8 @@ impl PlexiApp {
             update_rx: None,
             update_available: None,
             pane_ipc_rx,
+            last_logged_focus: None,
+            focus_started_at: None,
         }, pane_ipc_tx)
     }
 
@@ -1399,14 +1411,17 @@ impl PlexiApp {
                             _ => log::debug!("unknown plexi command: {}", cmd),
                         }
                     } else {
+                        let title_trimmed = title.trim();
                         let osc_enabled = self.config.beta.as_ref()
                             .and_then(|b| b.osc_pane_title)
                             .unwrap_or(false);
-                        if osc_enabled {
-                            let title_trimmed = title.trim();
-                            for win in &mut self.windows {
-                                if let Some(pane) = win.panes.get_mut(&id) {
-                                    if let Some(t) = pane.as_terminal_mut() {
+                        for win in &mut self.windows {
+                            if let Some(pane) = win.panes.get_mut(&id) {
+                                if let Some(t) = pane.as_terminal_mut() {
+                                    // Always track the raw OSC 2 title for event logging,
+                                    // independent of osc_enabled and name_locked.
+                                    t.pty_title = if title_trimmed.is_empty() { None } else { Some(title_trimmed.to_string()) };
+                                    if osc_enabled {
                                         if t.name_locked {
                                             log::debug!("osc_title: pane {id} name locked, skipping");
                                         } else {
@@ -1421,8 +1436,8 @@ impl PlexiApp {
                                             }
                                         }
                                     }
-                                    break;
                                 }
+                                break;
                             }
                         }
                     }
@@ -3215,14 +3230,83 @@ impl eframe::App for PlexiApp {
             ctx.memory_mut(|m| m.request_focus(egui::Id::new("quick_note_text")));
         }
 
+        // Detect genuine pane focus transitions and emit FocusChanged events.
+        // Comparing at frame-end means temporary save/restore patterns in
+        // canvas_bindings are invisible — focused_pane holds the settled value here.
+        // Uses stable window_id (not the vector index) so the key survives window removal.
+        let current_focus = self.windows
+            .get(self.active_window)
+            .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)));
+        if current_focus != self.last_logged_focus {
+            if let Some((window_id, tile_id)) = self.last_logged_focus {
+                let duration_secs = self.focus_started_at
+                    .map(|t| t.elapsed().as_secs())
+                    .unwrap_or(0);
+                self.emit_focus_changed_for_tile(window_id, tile_id, duration_secs);
+            }
+            self.last_logged_focus = current_focus;
+            self.focus_started_at = Some(std::time::Instant::now());
+        }
+
         let frame_ms = _frame_start.elapsed().as_millis();
         if frame_ms > 50 {
             log::warn!("slow frame: {}ms", frame_ms);
         }
     }
+
+    fn on_exit(&mut self) {
+        if let Some((window_id, tile_id)) = self.last_logged_focus {
+            let duration_secs = self.focus_started_at
+                .map(|t| t.elapsed().as_secs())
+                .unwrap_or(0);
+            log::info!("focus_changed: shutdown — banking final session duration_secs={duration_secs}");
+            self.emit_focus_changed_for_tile(window_id, tile_id, duration_secs);
+        }
+    }
 }
 
 impl PlexiApp {
+    /// Collect metadata for the pane at `tile_id` in the window identified by
+    /// stable `window_id` and emit a `FocusChanged` event. Called when the
+    /// focused pane changes and on shutdown.
+    fn emit_focus_changed_for_tile(&self, window_id: u64, tile_id: egui_tiles::TileId, duration_secs: u64) {
+        use egui_tiles::Tile;
+        let Some(win) = self.windows.iter().find(|w| w.window_id == window_id) else { return };
+        let pane_id = match win.tree.tiles.get(tile_id) {
+            Some(Tile::Pane(id)) => *id,
+            _ => return,
+        };
+        let Some(pane) = win.panes.get(&pane_id) else { return };
+        let context_name = self.context_name_for(win.context_id);
+
+        let (cwd, pty_title, pane_name, app_type_id) = match pane {
+            crate::pane::Pane::Terminal(t) => {
+                let cwd = crate::shell::get_pid_cwd(t.backend.child_pid())
+                    .map(|p| p.to_string_lossy().into_owned());
+                (cwd, t.pty_title.clone(), t.name.clone(), None)
+            }
+            crate::pane::Pane::App(a) => {
+                let cwd = Some(a.workspace_root.to_string_lossy().into_owned());
+                let type_id = Some(a.manifest_id.clone());
+                (cwd, None, None, type_id)
+            }
+        };
+
+        log::info!(
+            "focus_changed: pane_id={pane_id} context={context_name:?} duration_secs={duration_secs} pty_title={pty_title:?} pane_name={pane_name:?} app_type_id={app_type_id:?}"
+        );
+        crate::event_log::emit(crate::event_log::HostEvent::FocusChanged {
+            pane_id,
+            context_name,
+            cwd,
+            pty_title,
+            pane_name,
+            app_type_id,
+            duration_secs,
+            timestamp: crate::event_log::now_timestamp(),
+        });
+    }
+
     /// True when a modal overlay owns keyboard input. Used by `update()` to
     /// drain remaining key events after the overlay has rendered so panes see
     /// an empty input buffer this frame.
@@ -4358,5 +4442,61 @@ mod tests {
         app.step_focus_history_back();
 
         assert_eq!(app.windows[0].focused_pane, Some(tile_a));
+    }
+
+    #[test]
+    fn focus_changed_detected_on_pane_switch() {
+        let ctx = egui::Context::default();
+        let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
+        let (tile_a, _) = app.add_test_pane();
+        let (tile_b, _) = app.add_test_pane();
+        let win_id = app.windows[0].window_id;
+
+        // Simulate first focus on tile_a
+        app.windows[0].focused_pane = Some(tile_a);
+        app.last_logged_focus = None;
+        app.focus_started_at = None;
+
+        // Mirrors the frame-end detection in update()
+        let current_focus = app.windows
+            .get(app.active_window)
+            .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)));
+        assert_ne!(current_focus, app.last_logged_focus);
+        app.last_logged_focus = current_focus;
+        app.focus_started_at = Some(std::time::Instant::now());
+
+        assert_eq!(app.last_logged_focus, Some((win_id, tile_a)));
+
+        // Switch to tile_b
+        app.windows[0].focused_pane = Some(tile_b);
+
+        let current_focus = app.windows
+            .get(app.active_window)
+            .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)));
+        assert_ne!(current_focus, app.last_logged_focus);
+
+        app.last_logged_focus = current_focus;
+        app.focus_started_at = Some(std::time::Instant::now());
+
+        assert_eq!(app.last_logged_focus, Some((win_id, tile_b)));
+    }
+
+    #[test]
+    fn focus_changed_not_emitted_for_same_pane() {
+        let ctx = egui::Context::default();
+        let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
+        let (tile_a, _) = app.add_test_pane();
+        let win_id = app.windows[0].window_id;
+
+        app.windows[0].focused_pane = Some(tile_a);
+        app.last_logged_focus = Some((win_id, tile_a));
+
+        // Same focus — current_focus == last_logged_focus, no emission expected.
+        let current_focus = app.windows
+            .get(app.active_window)
+            .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)));
+        assert_eq!(current_focus, app.last_logged_focus);
     }
 }
