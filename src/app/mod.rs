@@ -1779,6 +1779,7 @@ impl eframe::App for PlexiApp {
         self.sync_rename_pane_focus();
         self.sync_context_rename_focus();
         self.sync_cli_setup_prompt_focus();
+        self.sync_context_inspector_focus();
 
         // If an overlay owns input, render it FIRST so its widgets (the
         // notification modal's TextEdit for the `input` kind, the palette's
