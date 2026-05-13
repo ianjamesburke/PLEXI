@@ -119,7 +119,7 @@ def _fetch_board(project: Project) -> tuple[list[Column], str]:
 
     for raw in cast(list[dict[str, object]], items_data.get("items") or []):
         content = cast(dict[str, object], raw.get("content") or {})
-        itype = str(raw.get("type") or "DraftIssue")
+        itype = str(content.get("type") or raw.get("type") or "DraftIssue")
         status = str(raw.get("status") or "").strip()
 
         number_raw = content.get("number")
@@ -130,7 +130,7 @@ def _fetch_board(project: Project) -> tuple[list[Column], str]:
         title  = str(raw.get("title") or content.get("title") or "(no title)")
         url    = str(content.get("url") or "")
         labels: list[str] = []
-        for lbl in cast(list[object], content.get("labels") or []):
+        for lbl in cast(list[object], raw.get("labels") or []):
             name = lbl.get("name") if isinstance(lbl, dict) else lbl  # type: ignore[union-attr]
             if isinstance(name, str) and name:
                 labels.append(name)
