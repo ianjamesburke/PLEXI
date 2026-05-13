@@ -178,7 +178,7 @@ def _markdown_measure_lines(text: str, avail_px: float, font_size: float,
 class Component:
     """Base class. Subclasses implement `measure` and `render`."""
 
-    def measure(self, avail_w: float) -> float:
+    def measure(self, _avail_w: float) -> float:
         """Return pixel height this component needs within `avail_w`."""
         return 0.0
 
@@ -186,7 +186,7 @@ class Component:
         """True if the component grows to fill remaining space."""
         return False
 
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+    def render(self, _ctx, _x: float, _y: float, _w: float, _h: float) -> None:
         """Emit draw commands. Implementations should stay within (x, y, w, h)."""
         raise NotImplementedError
 
@@ -230,10 +230,10 @@ class Heading(Component):
             3: TEXT_HEADING,
         }.get(self.level, TEXT_TITLE)
 
-    def measure(self, avail_w: float) -> float:
+    def measure(self, _avail_w: float) -> float:
         return self._font_size() + self.DESCENDER_PAD
 
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+    def render(self, ctx, x: float, y: float, w: float, _h: float) -> None:
         fs = self._font_size()
         ctx.text(x, y, self.text, size=fs, color=self.color, bold=self.bold,
                  max_width=w, elide=True)
@@ -288,7 +288,7 @@ class Label(Component):
         # Add descender padding so the last line's descenders aren't clipped.
         return len(lines) * self._line_h() - self.LINE_LEADING + self.DESCENDER_PAD
 
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+    def render(self, ctx, x: float, y: float, w: float, _h: float) -> None:
         fs = self._font_size()
         color = self._color()
         line_h = self._line_h()
@@ -306,7 +306,7 @@ class Spacer(Component):
     def is_grow(self) -> bool:
         return self.grow
 
-    def measure(self, avail_w: float) -> float:
+    def measure(self, _avail_w: float) -> float:
         return 0.0 if self.grow else self.size
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
