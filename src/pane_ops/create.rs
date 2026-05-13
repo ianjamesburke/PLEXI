@@ -675,6 +675,45 @@ impl PlexiApp {
         self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"), None);
     }
 
+    /// Open the scratchpad as a full-pane overlay on the focused terminal.
+    pub(crate) fn open_scratchpad(&mut self) {
+        // Toggle: if already open, close it.
+        let ctx = &self.windows[self.active_window];
+        if let Some(focused) = ctx.focused_pane {
+            if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
+                if let Some(pane) = ctx.panes.get(pane_id) {
+                    if let Some(a) = pane.as_app() {
+                        if a.runtime.type_id() == "scratchpad" {
+                            log::info!("scratchpad: already open — closing");
+                            self.close_focused_app();
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        let cwd = {
+            let ctx = &self.windows[self.active_window];
+            ctx.focused_pane
+                .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+        };
+
+        let workspace_root = crate::config::active_workspace_root()
+            .unwrap_or_else(|| cwd.clone());
+
+        log::info!(
+            "scratchpad: opening — cwd={} workspace_root={}",
+            cwd.display(),
+            workspace_root.display()
+        );
+
+        let app = Box::new(crate::scratchpad::ScratchpadApp::new(workspace_root.clone()));
+        let perms = crate::app_permissions::AppPermissions::builtin();
+        self.open_builtin_app_pane(app, perms, workspace_root, None, Some("overlay"), None);
+    }
+
     /// Open the quick note modal: capture context and push FocusLayer::QuickNote.
     pub(crate) fn open_quick_note_modal(&mut self) {
         let active = self.active_window;
