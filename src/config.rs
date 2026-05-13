@@ -271,6 +271,7 @@ pub struct PlexiConfig {
     pub confirm_close: Option<bool>,
     pub keybindings: Option<KeybindingsConfig>,
     pub quick_note: Option<QuickNoteConfig>,
+    pub focus_history_depth: Option<usize>,
 }
 
 /// Plexi AI broker configuration (`ai.query` capability).
@@ -600,6 +601,10 @@ theme_preset = "catppuccin-mocha"
 # confirm_close shows a dialog before Cmd+W closes a pane.
 confirm_quit  = true
 confirm_close = false
+
+# ── Navigation ─────────────────────────────────────────────────
+# Maximum depth of pane focus history (Cmd+[ / Cmd+]).
+# focus_history_depth = 100
 
 # ── Notifications ──────────────────────────────────────────────
 # The work-area modal is the one and only notification surface.

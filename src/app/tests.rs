@@ -578,3 +578,54 @@ fn focus_changed_not_emitted_for_same_pane() {
         .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)));
     assert_eq!(current_focus, app.last_logged_focus);
 }
+
+#[test]
+fn focus_history_depth_caps_at_configured_limit() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+    app.focus_history_depth = 1;
+
+    let (tile_a, _) = app.add_test_pane();
+    let (tile_b, _) = app.add_test_pane();
+    let (tile_c, _) = app.add_test_pane();
+    let win_id = app.windows[0].window_id;
+
+    app.windows[0].focused_pane = Some(tile_a);
+    app.push_focus_history(win_id, Some(tile_a));
+    assert_eq!(app.pane_focus_history.len(), 1);
+
+    app.windows[0].focused_pane = Some(tile_b);
+    app.push_focus_history(win_id, Some(tile_b));
+    assert_eq!(app.pane_focus_history.len(), 1, "history should stay capped at depth 1");
+
+    app.windows[0].focused_pane = Some(tile_c);
+    app.push_focus_history(win_id, Some(tile_c));
+    assert_eq!(app.pane_focus_history.len(), 1);
+    assert_eq!(app.pane_focus_history[0], (win_id, tile_c));
+}
+
+#[test]
+fn focus_future_caps_at_configured_depth() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+    app.focus_history_depth = 2;
+
+    let (tile_a, _) = app.add_test_pane();
+    let (tile_b, _) = app.add_test_pane();
+    let (tile_c, _) = app.add_test_pane();
+    let win_id = app.windows[0].window_id;
+
+    app.windows[0].focused_pane = Some(tile_a);
+    app.push_focus_history(win_id, Some(tile_a));
+    app.windows[0].focused_pane = Some(tile_b);
+    app.push_focus_history(win_id, Some(tile_b));
+    app.windows[0].focused_pane = Some(tile_c);
+    app.push_focus_history(win_id, Some(tile_c));
+
+    app.step_focus_history_back();
+    app.step_focus_history_back();
+    app.step_focus_history_back();
+    assert!(app.pane_focus_future.len() <= 2, "future stack should be capped at depth");
+}

@@ -265,6 +265,7 @@ pub struct PlexiApp {
     pub(crate) focus_stack: Vec<FocusLayer>,
     /// Pane focus history for Cmd+[ time-travel. Each entry is (window_id, tile_id)
     /// captured just before a focus change. Capped at 100; oldest evicted from front.
+    pub(crate) focus_history_depth: usize,
     pub(crate) pane_focus_history: Vec<(u64, egui_tiles::TileId)>,
     /// Pane focus future — entries undone by back-navigation; cleared on any
     /// organic focus change.
@@ -446,6 +447,8 @@ impl PlexiApp {
             .as_ref()
             .and_then(|n| n.interrupt_threshold)
             .unwrap_or(100); // PRIORITY_HIGH — only HIGH/CRITICAL interrupt by default
+        let focus_history_depth = config.focus_history_depth.unwrap_or(100);
+        log::info!("config: focus_history_depth={focus_history_depth}");
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
@@ -683,6 +686,7 @@ impl PlexiApp {
                     notifications_focus_mode,
                     notifications_interrupt_threshold,
                     focus_stack: Vec::new(),
+                    focus_history_depth,
                     pane_focus_history: Vec::new(),
                     pane_focus_future: Vec::new(),
                     navigating_history: false,
@@ -791,6 +795,7 @@ impl PlexiApp {
             notifications_focus_mode,
             notifications_interrupt_threshold,
             focus_stack: Vec::new(),
+            focus_history_depth,
             pane_focus_history: Vec::new(),
             pane_focus_future: Vec::new(),
             navigating_history: false,
@@ -912,6 +917,7 @@ impl PlexiApp {
             notifications_focus_mode: false,
             notifications_interrupt_threshold: 100,
             focus_stack: Vec::new(),
+            focus_history_depth: 100,
             pane_focus_history: Vec::new(),
             pane_focus_future: Vec::new(),
             navigating_history: false,
@@ -3519,15 +3525,13 @@ impl PlexiApp {
         }
     }
 
-    /// Push `old_focus` onto `pane_focus_history` for `window_id`, clear `pane_focus_future`,
-    /// and cap history at 100. No-op if `navigating_history` is true or `old_focus` is None.
     pub(crate) fn push_focus_history(&mut self, window_id: u64, old_focus: Option<egui_tiles::TileId>) {
         if self.navigating_history {
             return;
         }
         let Some(tile_id) = old_focus else { return };
         self.pane_focus_history.push((window_id, tile_id));
-        if self.pane_focus_history.len() > 100 {
+        if self.pane_focus_history.len() > self.focus_history_depth {
             self.pane_focus_history.remove(0);
         }
         self.pane_focus_future.clear();
@@ -3557,6 +3561,9 @@ impl PlexiApp {
             let current_window_id = self.windows[self.active_window].window_id;
             if let Some(current_tile) = self.windows[self.active_window].focused_pane {
                 self.pane_focus_future.push((current_window_id, current_tile));
+                if self.pane_focus_future.len() > self.focus_history_depth {
+                    self.pane_focus_future.remove(0);
+                }
             }
             self.windows[idx].focused_pane = Some(tile_id);
             self.active_window = idx;
@@ -3589,7 +3596,7 @@ impl PlexiApp {
             let current_window_id = self.windows[self.active_window].window_id;
             if let Some(current_tile) = self.windows[self.active_window].focused_pane {
                 self.pane_focus_history.push((current_window_id, current_tile));
-                if self.pane_focus_history.len() > 100 {
+                if self.pane_focus_history.len() > self.focus_history_depth {
                     self.pane_focus_history.remove(0);
                 }
             }
@@ -3703,6 +3710,8 @@ impl PlexiApp {
             .as_ref()
             .and_then(|n| n.interrupt_threshold)
             .unwrap_or(100);
+
+        self.focus_history_depth = fresh.focus_history_depth.unwrap_or(100);
 
         // Feature flags
         self.features = crate::features::FeatureFlags::from_config(&fresh);
