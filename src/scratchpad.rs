@@ -38,20 +38,24 @@ impl ScratchpadApp {
         }
     }
 
-    fn save_file(&mut self) {
+    fn save_file(&mut self) -> bool {
         let notes_dir = self.workspace_root.join(".plexi").join("notes");
         if let Err(e) = std::fs::create_dir_all(&notes_dir) {
             log::error!("scratchpad: failed to create notes dir {:?}: {e}", notes_dir);
-            self.wants_close = true;
-            return;
+            return false;
         }
-        let path = notes_dir.join(&self.filename);
+        let safe_name = std::path::Path::new(&self.filename)
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "note.md".to_string());
+        let path = notes_dir.join(&safe_name);
         if let Err(e) = std::fs::write(&path, &self.text) {
             log::error!("scratchpad: failed to write {:?}: {e}", path);
+            false
         } else {
             log::info!("scratchpad: saved to {:?}", path);
+            true
         }
-        self.wants_close = true;
     }
 }
 
@@ -209,7 +213,9 @@ impl App for ScratchpadApp {
 
                             if enter_pressed && !self.filename.trim().is_empty() {
                                 log::info!("scratchpad: saving as '{}'", self.filename);
-                                self.save_file();
+                                if self.save_file() {
+                                    self.wants_close = true;
+                                }
                                 return;
                             }
 
