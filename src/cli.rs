@@ -3788,7 +3788,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
   local cur prev words cword
   _init_completion || return
 
-  local commands="run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config config"
+  local commands="run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config"
 
   if [[ $cword -eq 1 ]]; then
     COMPREPLY=($(compgen -W "$commands" -- "$cur"))

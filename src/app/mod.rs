@@ -3629,14 +3629,15 @@ impl PlexiApp {
                 .collect::<Vec<_>>()
                 .join("\n");
             log::warn!("config: parse error, keeping current config:\n{error_msg}");
+            let notify_id = format!(
+                "config-error-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            );
             self.pending_notifications.push(PendingNotification {
-                notify_id: format!(
-                    "config-error-{}",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis())
-                        .unwrap_or(0)
-                ),
+                notify_id: notify_id.clone(),
                 sender_pane_id: 0,
                 source_context_id: 0,
                 level: "error".to_string(),
@@ -3657,6 +3658,12 @@ impl PlexiApp {
                 tombstoned: false,
                 deliver_after: None,
             });
+            if !self.notifications_focus_mode {
+                self.show_notification_modal = true;
+                if self.current_notify_id.is_none() {
+                    self.current_notify_id = Some(notify_id);
+                }
+            }
             return;
         }
 
