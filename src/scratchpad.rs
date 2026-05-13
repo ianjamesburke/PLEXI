@@ -84,15 +84,7 @@ impl App for ScratchpadApp {
         std::mem::take(&mut self.pending_cmds)
     }
 
-    fn handle_key(&mut self, input: &egui::InputState) -> bool {
-        if self.mode == Mode::Editing
-            && input.modifiers.command
-            && input.key_pressed(egui::Key::X)
-        {
-            log::info!("scratchpad: Cmd+X — discarding (handle_key)");
-            self.wants_close = true;
-            return true;
-        }
+    fn handle_key(&mut self, _input: &egui::InputState) -> bool {
         false
     }
 
@@ -160,8 +152,8 @@ impl App for ScratchpadApp {
                     ui.add_space(style::SPACE_SM);
                     crate::widgets::key_combo_list(
                         ui,
-                        &[&["⌘", "S"], &["⌘", "X"], &["Esc"]],
-                        Some("save · discard · discard"),
+                        &[&["⌘", "S"], &["Esc"]],
+                        Some("save · discard"),
                         colors,
                     );
                 });
