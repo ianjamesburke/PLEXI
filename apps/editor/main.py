@@ -2,7 +2,7 @@
 """Editor — minimal native text editor PGAP app.
 
 Opens via `plexi open editor [file]`. Full-page TextArea + TextBuffer.
-Cmd+S to save, Cmd+W to close.
+Cmd+S to save. Cmd+W (close) is handled by the host.
 """
 import sys
 from pathlib import Path
@@ -17,7 +17,7 @@ FOOTER_H = 24.0
 
 class EditorApp(App):
     def on_init(self, ctx: RenderContext) -> None:
-        path_arg = sys.argv[1] if len(sys.argv) > 1 else None
+        path_arg = sys.argv[1].strip() if len(sys.argv) > 1 else None
         self._path: Path | None = Path(path_arg).expanduser().resolve() if path_arg else None
         self._dirty = False
         self._status = ""
