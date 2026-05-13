@@ -332,6 +332,7 @@ fn default_colors() -> Colors {
         bg_toolbar: Color32::from_rgb(0x18, 0x18, 0x25),
         terminal_bg: Color32::from_rgb(0x29, 0x2a, 0x44),
         bg_hover: Color32::from_rgb(0x2a, 0x2a, 0x3c),
+        bg_sidebar_hover: Color32::from_rgb(0x2e, 0x2e, 0x48),
         bg_active: Color32::from_rgb(0x31, 0x31, 0x44),
         text_primary: Color32::from_rgb(0xcd, 0xd6, 0xf4),
         text_dim: Color32::from_rgb(0x6c, 0x70, 0x86),

@@ -120,7 +120,7 @@ impl SidebarRow {
         let fill = if self.is_active {
             with_alpha(colors.bg_active, row_alpha)
         } else if hovered && !self.is_this_dragging {
-            with_alpha(colors.bg_hover, row_alpha)
+            with_alpha(colors.bg_sidebar_hover, row_alpha)
         } else {
             Color32::TRANSPARENT
         };

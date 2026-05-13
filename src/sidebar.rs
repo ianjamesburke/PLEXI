@@ -57,7 +57,7 @@ impl PlexiApp {
                 row_rects.push(row_rect);
                 ui.allocate_space(Vec2::new(sidebar_width, ROW_HEIGHT));
 
-                let fill = if is_active { self.colors.bg_active } else { self.colors.bg_hover };
+                let fill = if is_active { self.colors.bg_active } else { self.colors.bg_sidebar_hover };
                 ui.painter().rect_filled(row_rect, CornerRadius::ZERO, fill);
                 if is_active {
                     ui.painter().rect_filled(

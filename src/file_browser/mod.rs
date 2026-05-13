@@ -481,7 +481,7 @@ impl FileBrowserApp {
             let fill = if is_selected {
                 colors.bg_active
             } else if resp.hovered() {
-                colors.bg_hover
+                colors.bg_sidebar_hover
             } else {
                 colors.bg_sidebar
             };
