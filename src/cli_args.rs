@@ -118,6 +118,9 @@ pub enum Commands {
         /// Working directory for the new terminal pane
         #[arg(long)]
         cwd: Option<String>,
+        /// Keep focus on the originating pane; do not move focus to the new pane
+        #[arg(long)]
+        no_focus: bool,
     },
     /// Open an app pane
     Open {

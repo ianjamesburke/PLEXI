@@ -976,6 +976,7 @@ mod tests {
             response_file: None,
             ephemeral: false,
             cwd: None,
+            no_focus: false,
         });
         h.run_frames(2);
 
@@ -1012,6 +1013,7 @@ mod tests {
             response_file: None,
             ephemeral: false,
             cwd: None,
+            no_focus: false,
         });
         h.run_frames(2);
 
@@ -1051,6 +1053,7 @@ mod tests {
             response_file: None,
             ephemeral: false,
             cwd: None,
+            no_focus: false,
         });
         h.run_frames(2);
 
@@ -1089,6 +1092,7 @@ mod tests {
             response_file: None,
             ephemeral: false,
             cwd: None,
+            no_focus: false,
         });
         h.run_frames(2);
 
@@ -1137,6 +1141,7 @@ mod tests {
             response_file: None,
             ephemeral: false,
             cwd: None,
+            no_focus: false,
         });
         h.run_frames(2);
 
@@ -1183,6 +1188,7 @@ mod tests {
                 response_file: None,
                 ephemeral: false,
                 cwd: None,
+                no_focus: false,
             });
             h.run_frames(2);
         }
