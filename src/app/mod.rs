@@ -3277,6 +3277,7 @@ impl PlexiApp {
             _ => return,
         };
         let Some(pane) = win.panes.get(&pane_id) else { return };
+        let context_name = self.context_name_for(win.context_id);
 
         let (cwd, pty_title, pane_name, app_type_id) = match pane {
             crate::pane::Pane::Terminal(t) => {
@@ -3292,10 +3293,11 @@ impl PlexiApp {
         };
 
         log::info!(
-            "focus_changed: pane_id={pane_id} duration_secs={duration_secs} pty_title={pty_title:?} pane_name={pane_name:?} app_type_id={app_type_id:?}"
+            "focus_changed: pane_id={pane_id} context={context_name:?} duration_secs={duration_secs} pty_title={pty_title:?} pane_name={pane_name:?} app_type_id={app_type_id:?}"
         );
         crate::event_log::emit(crate::event_log::HostEvent::FocusChanged {
             pane_id,
+            context_name,
             cwd,
             pty_title,
             pane_name,
