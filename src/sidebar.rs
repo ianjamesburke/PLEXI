@@ -44,6 +44,10 @@ impl PlexiApp {
         let mut row_rects: Vec<Rect> = Vec::with_capacity(num_contexts);
         let mut drag_released = false;
 
+        let focused_cwd = self.windows.get(self.active_window)
+            .and_then(|w| w.focused_pane)
+            .and_then(|tile| self.windows[self.active_window].get_focused_pane_cwd(tile));
+
         for i in 0..num_contexts {
             let is_active = i == self.router.active_idx();
             let is_renaming = self.renaming_window == Some(i);
@@ -172,6 +176,8 @@ impl PlexiApp {
 
             if delete_context.is_none() {
                 let num_ctxs = num_contexts;
+                let cwd_for_menu = focused_cwd.clone();
+                let has_root = self.router.get(i).root.is_some();
                 response.context_menu(|ui| {
                     if ui.button("Rename").clicked() {
                         menu_action = Some((i, WindowMenuAction::Rename));
@@ -186,8 +192,21 @@ impl PlexiApp {
                         if ui.button("Move Down").clicked() { menu_action = Some((i, WindowMenuAction::MoveDown)); ui.close_menu(); }
                         if ui.button("Move to Bottom").clicked() { menu_action = Some((i, WindowMenuAction::MoveToBottom)); ui.close_menu(); }
                     }
+                    ui.separator();
+                    if let Some(cwd) = &cwd_for_menu {
+                        if ui.button("Set root to current path").clicked() {
+                            menu_action = Some((i, WindowMenuAction::SetRoot(cwd.clone())));
+                            ui.close_menu();
+                        }
+                    }
+                    if has_root {
+                        if ui.button("Clear root").clicked() {
+                            menu_action = Some((i, WindowMenuAction::ClearRoot));
+                            ui.close_menu();
+                        }
+                    }
                     if num_ctxs > 1 {
-                        if i > 0 || i < num_ctxs - 1 { ui.separator(); }
+                        ui.separator();
                         if ui.button("Delete").clicked() { menu_action = Some((i, WindowMenuAction::Delete)); ui.close_menu(); }
                     }
                 });
@@ -261,6 +280,16 @@ impl PlexiApp {
                 WindowMenuAction::MoveToBottom => {
                     self.renaming_window = None;
                     self.router.move_to_back_tracking_active(i);
+                }
+                WindowMenuAction::SetRoot(path) => {
+                    log::info!("sidebar: set context root ctx_idx={i} root={}", path.display());
+                    self.router.get_mut(i).root = Some(path);
+                    self.save_workspace();
+                }
+                WindowMenuAction::ClearRoot => {
+                    log::info!("sidebar: clear context root ctx_idx={i}");
+                    self.router.get_mut(i).root = None;
+                    self.save_workspace();
                 }
                 WindowMenuAction::Delete => {
                     self.delete_context(i);
