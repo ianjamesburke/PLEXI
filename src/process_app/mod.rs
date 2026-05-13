@@ -1406,11 +1406,6 @@ impl App for ProcessApp {
                     }
                 }
 
-                log::info!(
-                    "crash_overlay: rendered stderr with text wrapping (available_width={:.0})",
-                    available_width
-                );
-
                 // C key: copy crash report to clipboard
                 if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::C)) {
                     let state_label = match lifecycle_state {
