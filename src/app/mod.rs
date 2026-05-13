@@ -292,6 +292,10 @@ pub struct PlexiApp {
     /// existing `AppPane` envelope.
     pub(crate) hot_reload: crate::hot_reload::HotReloadWatcher,
     pub(crate) hot_reload_rx: std::sync::mpsc::Receiver<crate::hot_reload::ReloadRequest>,
+    /// Config file watcher (#1115). Watches `config.toml` for saves and fires
+    /// a signal so `reload_config()` runs automatically.
+    pub(crate) _config_watcher: Option<crate::config_watcher::ConfigWatcher>,
+    pub(crate) config_reload_rx: Option<std::sync::mpsc::Receiver<()>>,
     /// Watched panes scheduled for crash-restart. Value is the earliest `Instant` at
     /// which the restart fires — giving the developer ~2s to read the crash overlay.
     pub(crate) pending_crash_restarts: HashMap<PaneId, std::time::Instant>,
@@ -405,6 +409,14 @@ impl PlexiApp {
         // names — kept on stack until consumed by `Self {..}`.
         let (hr_watcher, hr_rx) = crate::hot_reload::HotReloadWatcher::new();
         let (hr_watcher2, hr_rx2) = crate::hot_reload::HotReloadWatcher::new();
+
+        // Config file watcher (#1115). Watches config.toml for saves so the
+        // host can hot-reload theme/font/notification settings automatically.
+        let (mut cfg_watcher, mut cfg_reload_rx) =
+            match crate::config_watcher::start(crate::config::config_path()) {
+                Some((w, rx)) => (Some(w), Some(rx)),
+                None => (None, None),
+            };
 
         // Resolve the active workspace (explicit `plexi <path>` arg, then
         // CWD-walk fallback) and overlay its `.plexi/config.toml` on top of
@@ -681,6 +693,8 @@ impl PlexiApp {
                     directed_pipes: HashMap::new(),
                     hot_reload: hr_watcher,
                     hot_reload_rx: hr_rx,
+                    _config_watcher: cfg_watcher.take(),
+                    config_reload_rx: cfg_reload_rx.take(),
                     pending_crash_restarts: HashMap::new(),
                     minimap: crate::minimap::MinimapState::with_visible(window_count >= 2),
                     last_page_x_per_row: HashMap::new(),
@@ -787,6 +801,8 @@ impl PlexiApp {
             directed_pipes: HashMap::new(),
             hot_reload: hr_watcher2,
             hot_reload_rx: hr_rx2,
+            _config_watcher: cfg_watcher.take(),
+            config_reload_rx: cfg_reload_rx.take(),
             pending_crash_restarts: HashMap::new(),
             minimap: crate::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
@@ -905,6 +921,8 @@ impl PlexiApp {
             directed_pipes: HashMap::new(),
             hot_reload: hr_watcher,
             hot_reload_rx: hr_rx,
+            _config_watcher: None,
+            config_reload_rx: None,
             pending_crash_restarts: HashMap::new(),
             minimap: crate::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
@@ -2745,6 +2763,21 @@ impl eframe::App for PlexiApp {
         // "Reload Configuration" in the app menu.
         crate::macos_menu::apply_version_title_once();
         if crate::macos_menu::take_reload_config_flag() {
+            self.reload_config();
+        }
+
+        // Config hot-reload (#1115): drain filesystem watcher signals.
+        let config_changed = self
+            .config_reload_rx
+            .as_ref()
+            .map_or(false, |rx| {
+                let hit = rx.try_recv().is_ok();
+                if hit {
+                    while rx.try_recv().is_ok() {}
+                }
+                hit
+            });
+        if config_changed {
             self.reload_config();
         }
 
