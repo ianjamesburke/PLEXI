@@ -194,7 +194,7 @@ fn main() -> eframe::Result {
             Some(a.clone())
         })
         .collect();
-    use crate::cli_args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PackCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd};
+    use crate::cli_args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PackCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd, ConfigCmd};
     use clap::Parser;
 
     match Cli::try_parse_from(&args) {
@@ -450,6 +450,11 @@ fn main() -> eframe::Result {
                         let s = shell.as_deref().unwrap_or("zsh");
                         std::process::exit(cli::completions_cli(s));
                     }
+                    Commands::Config { cmd: config_cmd } => match config_cmd {
+                        ConfigCmd::Check => {
+                            std::process::exit(cli::config_check());
+                        }
+                    },
                 }
             }
             // No subcommand — fall through to workspace path check, then GUI
@@ -552,6 +557,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         // #680 — context root and shell integration.
         "context",
         "completions",
+        "config",
     ];
     let mut iter = args.iter().enumerate();
     // Skip argv[0] (binary name).

@@ -3606,6 +3606,60 @@ impl PlexiApp {
     /// confirmation toggles). Logs the reload so the user knows it worked.
     pub(crate) fn reload_config(&mut self) {
         let active_workspace = crate::config::active_workspace_root();
+
+        let mut all_diags = crate::config::validate_from_path(&crate::config::config_path());
+        if let Some(root) = active_workspace.as_ref() {
+            let project_path = root.join(".plexi").join("config.toml");
+            all_diags.extend(crate::config::validate_from_path(&project_path));
+        }
+
+        let has_errors = all_diags.iter().any(|d| d.is_error());
+
+        let warnings: Vec<_> = all_diags.iter().filter(|d| !d.is_error()).collect();
+        if !warnings.is_empty() {
+            let body = warnings.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n");
+            log::warn!("config: unknown keys found:\n{body}");
+        }
+
+        if has_errors {
+            let error_msg = all_diags
+                .iter()
+                .filter(|d| d.is_error())
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            log::warn!("config: parse error, keeping current config:\n{error_msg}");
+            self.pending_notifications.push(PendingNotification {
+                notify_id: format!(
+                    "config-error-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0)
+                ),
+                sender_pane_id: 0,
+                source_context_id: 0,
+                level: "error".to_string(),
+                title: "Config Error".to_string(),
+                body: error_msg,
+                kind: crate::app_protocol::NotifyKind::Message,
+                options: vec![],
+                input_prompt: None,
+                required: false,
+                priority: 100,
+                scope: crate::app_protocol::NotifyScope::Global,
+                image_inline: None,
+                image_pipe_id: None,
+                response_file: None,
+                timeout_secs: None,
+                on_dismiss: None,
+                enqueued_at: std::time::Instant::now(),
+                tombstoned: false,
+                deliver_after: None,
+            });
+            return;
+        }
+
         let fresh = crate::config::PlexiConfig::load_with_workspace(active_workspace.as_deref());
 
         // Theme

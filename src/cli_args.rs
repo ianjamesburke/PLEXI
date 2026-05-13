@@ -168,6 +168,11 @@ pub enum Commands {
         /// Shell name (zsh, bash, fish)
         shell: Option<String>,
     },
+    /// Configuration management
+    Config {
+        #[command(subcommand)]
+        cmd: ConfigCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -399,4 +404,10 @@ pub enum ContextCmd {
     },
     /// Print the context ID and name for the current pane as JSON
     Current,
+}
+
+#[derive(Subcommand)]
+pub enum ConfigCmd {
+    /// Validate config.toml and report errors
+    Check,
 }

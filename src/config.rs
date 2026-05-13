@@ -1,6 +1,155 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+// ── Config validation (#1116) ───────────────────────────────────────────────
+
+#[derive(Debug)]
+pub enum ConfigDiagnostic {
+    ReadError { path: String, error: String },
+    ParseError { path: String, error: String },
+    UnknownKey { path: String, table: String, key: String },
+}
+
+impl ConfigDiagnostic {
+    pub fn is_error(&self) -> bool {
+        matches!(self, Self::ReadError { .. } | Self::ParseError { .. })
+    }
+}
+
+impl std::fmt::Display for ConfigDiagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ReadError { path, error } => write!(f, "{path}: read error: {error}"),
+            Self::ParseError { path, error } => write!(f, "{path}: {error}"),
+            Self::UnknownKey { path, table, key } => {
+                if table.is_empty() {
+                    write!(f, "{path}: unknown key `{key}`")
+                } else {
+                    write!(f, "{path}: unknown key `{key}` in [{table}]")
+                }
+            }
+        }
+    }
+}
+
+const KNOWN_TOP_LEVEL: &[&str] = &[
+    "font_size", "theme_preset", "theme", "beta", "log",
+    "notifications", "ai", "confirm_quit", "confirm_close",
+    "keybindings", "quick_note",
+];
+const KNOWN_THEME: &[&str] = &[
+    "bg_darkest", "bg_sidebar", "bg_toolbar", "terminal_bg", "bg_hover",
+    "bg_sidebar_hover", "bg_active", "text_primary", "text_dim",
+    "text_section", "accent", "border", "foreground", "background",
+    "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+    "bright_black", "bright_red", "bright_green", "bright_yellow",
+    "bright_blue", "bright_magenta", "bright_cyan", "bright_white",
+    "bright_foreground",
+];
+const KNOWN_BETA: &[&str] = &["crt", "ghost", "osc_pane_title"];
+const KNOWN_LOG: &[&str] = &["level", "retention_days"];
+const KNOWN_NOTIFICATIONS: &[&str] = &["enabled", "focus_mode", "interrupt_threshold"];
+const KNOWN_AI: &[&str] = &["backend", "openrouter", "ollama"];
+const KNOWN_AI_OPENROUTER: &[&str] = &["api_key_env", "model_low", "model_medium", "model_high"];
+const KNOWN_AI_OLLAMA: &[&str] = &["host", "model_low", "model_medium", "model_high"];
+const KNOWN_KEYBINDINGS: &[&str] = &[
+    "quit", "close_pane", "toggle_command_palette", "split_horizontal",
+    "split_vertical", "split_right", "split_down", "swap_pane_left",
+    "swap_pane_down", "swap_pane_up", "swap_pane_right", "navigate_left",
+    "navigate_down", "navigate_up", "navigate_right", "new_tab", "next_tab",
+    "prev_tab", "first_tab", "last_tab", "nav_back", "focus_history_forward",
+    "toggle_sidebar", "toggle_zoom", "toggle_shortcuts", "rename_context",
+    "rename_pane", "new_context", "new_page_right", "toggle_minimap",
+    "scroll_up", "scroll_down", "increase_font_size", "decrease_font_size",
+    "open_file_browser", "open_quick_note", "open_config", "reload_config",
+    "open_secrets_manager", "force_reload_app", "toggle_notification_modal",
+];
+
+pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
+    let mut diags = Vec::new();
+    let path_str = path.display().to_string();
+
+    let data = match std::fs::read_to_string(path) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return diags,
+        Err(e) => {
+            diags.push(ConfigDiagnostic::ReadError {
+                path: path_str,
+                error: e.to_string(),
+            });
+            return diags;
+        }
+    };
+
+    if let Err(e) = toml::from_str::<PlexiConfig>(&data) {
+        diags.push(ConfigDiagnostic::ParseError {
+            path: path_str,
+            error: e.to_string(),
+        });
+        return diags;
+    }
+
+    if let Ok(value) = toml::from_str::<toml::Value>(&data) {
+        if let Some(table) = value.as_table() {
+            check_unknown_keys(table, "", KNOWN_TOP_LEVEL, &path_str, &mut diags);
+
+            if let Some(toml::Value::Table(t)) = table.get("theme") {
+                check_unknown_keys(t, "theme", KNOWN_THEME, &path_str, &mut diags);
+            }
+            if let Some(toml::Value::Table(t)) = table.get("beta") {
+                check_unknown_keys(t, "beta", KNOWN_BETA, &path_str, &mut diags);
+            }
+            if let Some(toml::Value::Table(t)) = table.get("log") {
+                check_unknown_keys(t, "log", KNOWN_LOG, &path_str, &mut diags);
+            }
+            if let Some(toml::Value::Table(t)) = table.get("notifications") {
+                check_unknown_keys(t, "notifications", KNOWN_NOTIFICATIONS, &path_str, &mut diags);
+            }
+            if let Some(toml::Value::Table(t)) = table.get("ai") {
+                check_unknown_keys(t, "ai", KNOWN_AI, &path_str, &mut diags);
+                if let Some(toml::Value::Table(or)) = t.get("openrouter") {
+                    check_unknown_keys(or, "ai.openrouter", KNOWN_AI_OPENROUTER, &path_str, &mut diags);
+                }
+                if let Some(toml::Value::Table(ol)) = t.get("ollama") {
+                    check_unknown_keys(ol, "ai.ollama", KNOWN_AI_OLLAMA, &path_str, &mut diags);
+                }
+            }
+            if let Some(toml::Value::Table(t)) = table.get("keybindings") {
+                check_unknown_keys(t, "keybindings", KNOWN_KEYBINDINGS, &path_str, &mut diags);
+            }
+        }
+    }
+
+    diags
+}
+
+fn check_unknown_keys(
+    table: &toml::map::Map<String, toml::Value>,
+    section: &str,
+    known: &[&str],
+    path: &str,
+    diags: &mut Vec<ConfigDiagnostic>,
+) {
+    for key in table.keys() {
+        if !known.contains(&key.as_str()) {
+            diags.push(ConfigDiagnostic::UnknownKey {
+                path: path.to_string(),
+                table: section.to_string(),
+                key: key.clone(),
+            });
+        }
+    }
+}
+
+pub fn validate_all() -> Vec<ConfigDiagnostic> {
+    let mut diags = validate_from_path(&config_path());
+    if let Some(root) = active_workspace_root() {
+        let project_path = root.join(".plexi").join("config.toml");
+        diags.extend(validate_from_path(&project_path));
+    }
+    diags
+}
+
 /// Per-action keybinding overrides. Each field is the name of an action;
 /// the value is a key combo string like `"cmd+d"` or `"cmd+shift+d"`.
 /// Omitting a field preserves the default binding for that action.
@@ -1090,6 +1239,56 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn validate_valid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "font_size = 14.0\ntheme_preset = \"dracula\"\n").unwrap();
+        let diags = validate_from_path(&path);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+    }
+
+    #[test]
+    fn validate_parse_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "font_size = not_a_number\n").unwrap();
+        let diags = validate_from_path(&path);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].is_error());
+        assert!(diags[0].to_string().contains("config.toml"));
+    }
+
+    #[test]
+    fn validate_unknown_key_top_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "font_size = 14.0\nfoobar = true\n").unwrap();
+        let diags = validate_from_path(&path);
+        assert_eq!(diags.len(), 1);
+        assert!(!diags[0].is_error());
+        assert!(diags[0].to_string().contains("foobar"));
+    }
+
+    #[test]
+    fn validate_unknown_key_in_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "[beta]\ncrt = true\nfake_flag = true\n").unwrap();
+        let diags = validate_from_path(&path);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].to_string().contains("fake_flag"));
+        assert!(diags[0].to_string().contains("[beta]"));
+    }
+
+    #[test]
+    fn validate_missing_file_no_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nonexistent.toml");
+        let diags = validate_from_path(&path);
+        assert!(diags.is_empty());
     }
 
     #[test]
