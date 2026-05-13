@@ -652,8 +652,8 @@ if [ "${STASHED:-0}" = 1 ]; then
   # Discard any restored file that wasn't in the PR — it's unrelated WIP and must not corrupt alpha.
   PR_FILES=$(git show origin/alpha --name-only --format="" | grep .)
   while IFS= read -r f; do
-    if ! echo "$PR_FILES" | grep -qF "$f"; then
-      echo "WARNING: $f from stash is unrelated to this PR — discarding to keep alpha clean"
+    if ! printf '%s\n' "$PR_FILES" | grep -qxF "$f"; then
+      printf 'WARNING: %s from stash is unrelated to this PR — discarding to keep alpha clean\n' "$f"
       git restore "$f"
     fi
   done < <(git diff --name-only)
