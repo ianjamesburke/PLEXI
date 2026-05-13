@@ -25,7 +25,9 @@ HOME = str(Path.home())
 
 
 def _shorten(path: str) -> str:
-    if path.startswith(HOME):
+    if path == HOME:
+        return "~"
+    if path.startswith(HOME + "/"):
         return "~" + path[len(HOME):]
     return path
 
@@ -68,6 +70,8 @@ def _parse_events(path: Path, hours: int = 24) -> list[dict]:
                 ts_str = ev.get("timestamp", "")
                 try:
                     ts = datetime.fromisoformat(ts_str)
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
                 except ValueError:
                     continue
                 if ts >= cutoff:
@@ -336,9 +340,9 @@ class StatsApp(App):
 
         stats_text_y = stats_y + (STATS_BAR_H - CAPTION) / 2
         third = w / 3
-        ctx.text(third * 0.5 - 40, stats_text_y, f"{_fmt_duration(self.total_time)} active", size=CAPTION, color=ACCENT, bold=True)
-        ctx.text(third * 1.5 - 30, stats_text_y, f"{self.total_visits} visits", size=CAPTION, color="#a6e3a1", bold=True)
-        ctx.text(third * 2.5 - 35, stats_text_y, f"{self.total_projects} projects", size=CAPTION, color="#f9e2af", bold=True)
+        ctx.text(third * 0.5, stats_text_y, f"{_fmt_duration(self.total_time)} active", size=CAPTION, color=ACCENT, bold=True, align="center")
+        ctx.text(third * 1.5, stats_text_y, f"{self.total_visits} visits", size=CAPTION, color="#a6e3a1", bold=True, align="center")
+        ctx.text(third * 2.5, stats_text_y, f"{self.total_projects} projects", size=CAPTION, color="#f9e2af", bold=True, align="center")
 
         # timeline strip
         tl_y = stats_y + STATS_BAR_H
@@ -370,7 +374,7 @@ class StatsApp(App):
             labels.append((frac, lbl))
         for frac, lbl in labels:
             mx = frac * w
-            ctx.text(mx - 8, marker_y, lbl, size=HINT, color=dim(MUTED, 120))
+            ctx.text(mx, marker_y, lbl, size=HINT, color=dim(MUTED, 120), align="center")
 
         self.highlight_path = None
 
@@ -378,10 +382,12 @@ class StatsApp(App):
         if key == "r":
             self._load(ctx)
             self.emit.info("stats: refreshed")
+            ctx.emit.schedule_render(0)
         elif key in ("escape", "backspace"):
             if self.view_stack:
                 self.view_root = self.view_stack.pop()
                 self.emit.info(f"stats: navigated up to {self.view_root.path}")
+                ctx.emit.schedule_render(0)
 
     def on_click(self, ctx: RenderContext, x: float, y: float, button: str) -> None:
         w, h = ctx.w, ctx.h
@@ -396,6 +402,7 @@ class StatsApp(App):
                     if start_frac <= frac <= end_frac:
                         self.highlight_path = cwd
                         self.emit.info(f"stats: highlighted {cwd}")
+                        ctx.emit.schedule_render(0)
                         break
             return
 
@@ -405,6 +412,7 @@ class StatsApp(App):
                     self.view_stack.append(self.view_root)
                     self.view_root = node
                     self.emit.info(f"stats: drilled into {node.path}")
+                    ctx.emit.schedule_render(0)
                 break
 
 
