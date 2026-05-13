@@ -25,6 +25,7 @@ mod event_log;
 mod features;
 mod file_browser;
 mod host;
+mod input_intent;
 mod keys;
 mod logging;
 #[cfg(target_os = "macos")]
