@@ -267,7 +267,7 @@ Args:
 Returns:
     A decorator function that registers the method as a tool.
 
-Example::
+Example:
 
     @app.tool("increment", description="Increment counter", schema={
         "type": "object",

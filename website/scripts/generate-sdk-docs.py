@@ -29,7 +29,7 @@ class DocExtractor:
 
     def __init__(self, file_path: Path):
         self.file_path = file_path
-        with open(file_path) as f:
+        with open(file_path, encoding="utf-8") as f:
             self.source = f.read()
         self.tree = ast.parse(self.source)
 
@@ -57,6 +57,13 @@ class DocExtractor:
         for node in class_node.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 if node.name.startswith("_"):
+                    continue
+                is_prop = any(
+                    (isinstance(d, ast.Name) and d.id == "property")
+                    or (isinstance(d, ast.Attribute) and d.attr == "setter")
+                    for d in node.decorator_list
+                )
+                if is_prop:
                     continue
                 methods.append(self._extract_method(node))
         return methods
@@ -92,6 +99,17 @@ class DocExtractor:
                 s += f" = {default_str}"
 
             parts.append(s)
+
+        if node.args.vararg:
+            v = f"*{node.args.vararg.arg}"
+            if node.args.vararg.annotation:
+                v += f": {ast.unparse(node.args.vararg.annotation)}"
+            parts.append(v)
+        if node.args.kwarg:
+            kw = f"**{node.args.kwarg.arg}"
+            if node.args.kwarg.annotation:
+                kw += f": {ast.unparse(node.args.kwarg.annotation)}"
+            parts.append(kw)
 
         ret = ""
         if node.returns:

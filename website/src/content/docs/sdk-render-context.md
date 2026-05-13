@@ -27,22 +27,6 @@ Passed to on_render. Accumulate draw commands; FrameDone is auto-emitted.
 
 ## Methods
 
-### `width`
-
-```python
-def width() -> float
-```
-
----
-
-### `height`
-
-```python
-def height() -> float
-```
-
----
-
 ### `clear`
 
 ```python

@@ -116,14 +116,6 @@ Usage:
             if idx is not None:
                 self._list.set_selected(idx)
 
-### `selected_index`
-
-```python
-def selected_index() -> int
-```
-
----
-
 ### `set_selected`
 
 ```python
@@ -173,54 +165,6 @@ Offset is always clamped to [0, max_offset] after any mutation.
 Negative inputs for content_height and viewport_height are clamped to 0
 with a warning rather than raising, so callers with stale layout data
 degrade gracefully.
-
-### `content_height`
-
-```python
-def content_height() -> float
-```
-
----
-
-### `content_height`
-
-```python
-def content_height(value: float) -> None
-```
-
----
-
-### `viewport_height`
-
-```python
-def viewport_height() -> float
-```
-
----
-
-### `viewport_height`
-
-```python
-def viewport_height(value: float) -> None
-```
-
----
-
-### `offset`
-
-```python
-def offset() -> float
-```
-
----
-
-### `max_offset`
-
-```python
-def max_offset() -> float
-```
-
----
 
 ### `scroll_by`
 
@@ -332,32 +276,6 @@ Pure text model: lines, cursor, and optional selection.
 
 Internal representation: list of strings, no trailing newlines per line.
 An empty buffer contains exactly one empty string.
-
-### `lines`
-
-```python
-def lines() -> list[str]
-```
-
-Read-only view of the line list.
-
----
-
-### `cursor`
-
-```python
-def cursor() -> Cursor
-```
-
----
-
-### `selection`
-
-```python
-def selection() -> Selection | None
-```
-
----
 
 ### `text`
 
