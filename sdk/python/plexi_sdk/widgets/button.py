@@ -13,6 +13,7 @@ _ACTIVE = "#585b70"
 
 @dataclass
 class ButtonStyle:
+    """Visual style for Button widgets — fill, hover, active colors and font size."""
     fill: str = _BG
     hover_fill: str = _HOVER
     active_fill: str = _ACTIVE

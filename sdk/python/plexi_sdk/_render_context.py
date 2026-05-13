@@ -499,8 +499,8 @@ class RenderContext:
     def error(self, message: str) -> None: self.log("error", message)
     def debug(self, message: str) -> None: self.log("debug", message)
 
-    def notify(self, title: str, body: str = "", level: str = "info",
-               priority: "int | None" = None,
+    def notify(self, title: str, priority: int, body: str = "",
+               level: str = "info",
                actions: "list | None" = None,
                image_inline: "dict | None" = None,
                image_pipe_id: "str | None" = None,
@@ -510,14 +510,14 @@ class RenderContext:
         `priority` is required (int, higher = more urgent).
         `image_inline` / `image_pipe_id` (#74) optionally attach an image.
         Scope is resolved from the app's manifest — not an argument."""
-        self.emit.notify(title=title, body=body, level=level,
-                         priority=priority, actions=actions,
+        self.emit.notify(title=title, priority=priority, body=body, level=level,
+                         actions=actions,
                          image_inline=image_inline, image_pipe_id=image_pipe_id,
                          timeout_secs=timeout_secs, on_dismiss=on_dismiss)
 
-    async def notify_choice(self, title: str, options: list, body: str = "",
+    async def notify_choice(self, title: str, options: list, priority: int,
+                            body: str = "",
                             level: str = "info", required: bool = False,
-                            priority: "int | None" = None,
                             image_inline: "dict | None" = None,
                             image_pipe_id: "str | None" = None,
                             timeout_secs: "int | None" = None,
@@ -527,49 +527,50 @@ class RenderContext:
         `image_inline` / `image_pipe_id` (#74) optionally attach an image.
         Returns the chosen option's value (or label if no value set),
         or "__cancel__" if the user dismissed. Use with ``await``."""
-        return await self.emit.notify_choice(title=title, options=options, body=body,
+        return await self.emit.notify_choice(title=title, options=options,
+                                             priority=priority, body=body,
                                              level=level, required=required,
-                                             priority=priority,
                                              image_inline=image_inline,
                                              image_pipe_id=image_pipe_id,
                                              timeout_secs=timeout_secs,
                                              on_dismiss=on_dismiss)
 
     async def notify_with_image(self, title: str, body: str, image_bytes: bytes,
-                                mime: str, level: str = "info",
-                                priority: "int | None" = None,
+                                mime: str, priority: int,
+                                level: str = "info",
                                 choices: "list | None" = None) -> "str | None":
         """Convenience: post a notification with an inline base64 image.
         See Emitter.notify_with_image — handles base64 + 50KB cap. Use with ``await``."""
         return await self.emit.notify_with_image(title=title, body=body,
                                                  image_bytes=image_bytes, mime=mime,
-                                                 level=level, priority=priority,
+                                                 priority=priority, level=level,
                                                  choices=choices)
 
-    async def notify_input(self, title: str, prompt: str = "", body: str = "",
+    async def notify_input(self, title: str, priority: int,
+                           prompt: str = "", body: str = "",
                            level: str = "info", required: bool = False,
-                           priority: "int | None" = None,
                            timeout_secs: "int | None" = None,
                            on_dismiss: "str | None" = None) -> str:
         """Post an input notification and await until the user submits.
         `priority` is required (int, higher = more urgent).
         Returns the typed text, or "__cancel__" if dismissed. Use with ``await``."""
-        return await self.emit.notify_input(title=title, prompt=prompt, body=body,
+        return await self.emit.notify_input(title=title, priority=priority,
+                                            prompt=prompt, body=body,
                                             level=level, required=required,
-                                            priority=priority,
                                             timeout_secs=timeout_secs,
                                             on_dismiss=on_dismiss)
 
-    async def notify_and_wait(self, title: str, body: str = "", level: str = "info",
+    async def notify_and_wait(self, title: str, priority: int,
+                              body: str = "", level: str = "info",
                               actions: "list | None" = None,
-                              priority: "int | None" = None,
                               timeout_secs: "int | None" = None,
                               on_dismiss: "str | None" = None) -> str:
         """Post a message notification and await for acknowledge/cancel.
         `priority` is required (int, higher = more urgent).
         See Emitter.notify_and_wait. Use with ``await``."""
-        return await self.emit.notify_and_wait(title=title, body=body, level=level,
-                                               actions=actions, priority=priority,
+        return await self.emit.notify_and_wait(title=title, priority=priority,
+                                               body=body, level=level,
+                                               actions=actions,
                                                timeout_secs=timeout_secs,
                                                on_dismiss=on_dismiss)
 

@@ -15,6 +15,7 @@ from plexi_sdk.widgets.text_buffer import TextBuffer
 
 @dataclass
 class TextAreaTheme:
+    """Color and spacing theme for TextArea widgets."""
     background: str = "#1e1e2e"
     foreground: str = "#cdd6f4"
     cursor: str = "#cdd6f4"

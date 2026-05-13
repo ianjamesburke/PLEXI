@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class Cursor:
+    """Row/column position in a TextBuffer."""
     row: int = 0
     col: int = 0
 
