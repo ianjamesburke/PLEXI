@@ -201,6 +201,7 @@ pub struct KeybindingsConfig {
     pub open_secrets_manager: Option<String>,
     pub force_reload_app: Option<String>,
     pub toggle_notification_modal: Option<String>,
+    pub context_inspector: Option<String>,
 }
 
 impl KeybindingsConfig {
@@ -253,6 +254,7 @@ impl KeybindingsConfig {
         overlay_field!(open_secrets_manager);
         overlay_field!(force_reload_app);
         overlay_field!(toggle_notification_modal);
+        overlay_field!(context_inspector);
     }
 }
 
