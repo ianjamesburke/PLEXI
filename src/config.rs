@@ -271,6 +271,7 @@ pub struct ThemeConfig {
     pub bg_toolbar: Option<String>,
     pub terminal_bg: Option<String>,
     pub bg_hover: Option<String>,
+    pub bg_sidebar_hover: Option<String>,
     pub bg_active: Option<String>,
     pub text_primary: Option<String>,
     pub text_dim: Option<String>,
@@ -788,6 +789,7 @@ impl ThemeConfig {
         overlay_field!(bg_toolbar);
         overlay_field!(terminal_bg);
         overlay_field!(bg_hover);
+        overlay_field!(bg_sidebar_hover);
         overlay_field!(bg_active);
         overlay_field!(text_primary);
         overlay_field!(text_dim);
