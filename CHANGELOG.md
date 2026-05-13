@@ -1,6 +1,14 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.60] — 2026-05-13
+
+### Changes
+- fix(terminal): remove 8px inner padding that caused background color fringe (#1265)
+- feat(cli): add `plexi pane self` and suppress CLI stderr log noise (#1266)
+- fix(website): move railway.json back to website/ where Railway expects it
+- feat(welcome): add ⌘P to shortcuts, remove right-click tip (#698) (#1267)
+- fix(website): move railway.json to repo root for new build context
 ## [3.6.59] — 2026-05-13
 
 ### Changes
