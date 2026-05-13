@@ -1,6 +1,36 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.56] — 2026-05-13
+
+### Changes
+- feat(config): validate config.toml and surface errors (#1116) (#1259)
+- docs: add DEV_LOG entry for SDK doc generator (#1258)
+- feat(sdk): self-documenting SDK — typed surface + auto-generated docs website (#1248) (#1258)
+- fix(ship): ship-cycle hygiene — delete stale docs, fix smoke test, remove agent waste (#1250, #1251, #1252, #1253) (#1257)
+- feat(config): hot-reload config.toml on save without restart (#1115) (#1249)
+- feat(sidebar): set/clear context root from right-click menu (#1133) (#1247)
+- fix(host): bind ArrowRight/ArrowLeft in quick-note destination pickers (#1153) (#1246)
+- fix(host): paste leaks through overlays to terminal behind modal (#1236) (#1242)
+- fix(scratchpad): leading space on open, Cmd+X broken, save path fallback (#1231) (#1241)
+- fix(cli): sync shell completion scripts with current CLI surface (#1240) (#1243)
+- Revert "feat(apps): minimal native text editor — TextArea + TextBuffer, plexi open editor [file] (#1099) (#1232)" (#1237)
+- feat(cli): plexi pane capture — read PTY scrollback from any pane (#978) (#1234)
+- feat(apps): minimal native text editor — TextArea + TextBuffer, plexi open editor [file] (#1099) (#1232)
+- feat(theme): add bg_sidebar_hover surface token for sidebar hover contrast (#1233)
+- feat(host): double-spacebar scratchpad — instant capture-to-file text editor (#1213) (#1230)
+- feat(apps): gh-projects read-only GitHub Projects Kanban board (#1225) (#1226)
+- feat(terminal): add --no-focus flag to prevent new pane from stealing focus (#1192) (#1224)
+- chore: update ship-issue skill
+- feat(quick-note): recursive menus, bare-command leaves, and dynamic children (#1212) (#1222)
+- feat(pane-ops): Cmd+Ctrl+J/K sends pane to first/last column (#1079) (#1221)
+- feat(event-log): FocusChanged event — pane attention trace (#1150) (#1220)
+- fix(ship-issue): verify stash-pop files are PR-related before auto-committing (#1006) (#1218)
+- chore: restore session edits carried through merge
+- feat(docs): generate CLI reference from clap via gen_cli_docs tool (#1219)
+- feat(quick-note): add stay_alive option for pane destinations (#1216)
+- fix(render): downgrade render_layout_node per-frame logs to debug (#1215)
+- fix(quick-note): same-frame draw on H/Esc exit to eliminate scrim flicker (#1214)
 ## [3.6.55] — 2026-05-13
 
 ### Changes
