@@ -109,7 +109,7 @@ pub enum Commands {
         /// Close the pane when the process exits
         #[arg(long, short = 'e')]
         ephemeral: bool,
-        /// Layout hint (split_v, split_h, split_above)
+        /// Layout hint (split_v, split_h, split_above, tab, new_window)
         #[arg(long)]
         layout: Option<String>,
         /// Split relative to this pane ID instead of the focused pane

@@ -132,5 +132,5 @@ uninstall channel="all":
 ship +issues:
     for issue in {{issues}}; do \
         gh issue edit "$issue" --add-label "in progress" --remove-label "ready" && \
-        plexi terminal "c '/ship-issue $issue'" --layout tab; \
+        plexi terminal "c '/ship-issue $issue'" --layout new_window; \
     done

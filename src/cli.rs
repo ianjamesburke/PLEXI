@@ -3738,7 +3738,7 @@ _plexi() {
         terminal)
           _arguments \
             '(-e --ephemeral)'{-e,--ephemeral}'[Close the pane when the process exits]' \
-            '--layout[Layout hint]:layout:(split_v split_h split_above)' \
+            '--layout[Layout hint]:layout:(split_v split_h split_above tab new_window)' \
             '--from-pane-id[Split relative to this pane ID]:pane_id:' \
             '--cwd[Working directory for the new terminal pane]:directory:_directories' \
             '--no-focus[Keep focus on the originating pane]'
@@ -3780,7 +3780,7 @@ _plexi() {
           ;;
         open)
           _arguments \
-            '--layout[Layout hint]:layout:(split_v split_h split_above overlay)' \
+            '--layout[Layout hint]:layout:(split_v split_h split_above tab new_window overlay)' \
             '--from-pane-id[Split relative to this pane ID]:pane_id:' \
             '--mcp[Wrap stdio MCP server command in mcp-renderer]:cmd:' \
             '--cli[Wrap CLI binary in descriptor-renderer]:binary:_command_names'
@@ -3872,7 +3872,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       ;;
     terminal)
       if [[ $prev == "--layout" ]]; then
-        COMPREPLY=($(compgen -W "split_v split_h split_above" -- "$cur"))
+        COMPREPLY=($(compgen -W "split_v split_h split_above tab new_window" -- "$cur"))
       elif [[ $prev == "--cwd" ]]; then
         COMPREPLY=($(compgen -d -- "$cur"))
       else
@@ -3881,7 +3881,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       ;;
     open)
       if [[ $prev == "--layout" ]]; then
-        COMPREPLY=($(compgen -W "split_v split_h split_above overlay" -- "$cur"))
+        COMPREPLY=($(compgen -W "split_v split_h split_above tab new_window overlay" -- "$cur"))
       else
         COMPREPLY=($(compgen -W "--layout --from-pane-id --mcp --cli" -- "$cur"))
       fi
@@ -4047,12 +4047,12 @@ complete -c plexi -f -n "__fish_seen_subcommand_from completions" -a "zsh bash f
 
 # terminal flags
 complete -c plexi -n "__fish_seen_subcommand_from terminal" -s e -l ephemeral -d "Close the pane when the process exits"
-complete -c plexi -n "__fish_seen_subcommand_from terminal" -l layout -d "Layout hint" -a "split_v split_h split_above"
+complete -c plexi -n "__fish_seen_subcommand_from terminal" -l layout -d "Layout hint" -a "split_v split_h split_above tab new_window"
 complete -c plexi -n "__fish_seen_subcommand_from terminal" -l from-pane-id -d "Split relative to this pane ID"
 complete -c plexi -n "__fish_seen_subcommand_from terminal" -l cwd -d "Working directory for the new terminal pane" -a "(__fish_complete_directories)"
 complete -c plexi -n "__fish_seen_subcommand_from terminal" -l no-focus -d "Keep focus on the originating pane"
 # open flags
-complete -c plexi -n "__fish_seen_subcommand_from open" -l layout -d "Layout hint" -a "split_v split_h split_above overlay"
+complete -c plexi -n "__fish_seen_subcommand_from open" -l layout -d "Layout hint" -a "split_v split_h split_above tab new_window overlay"
 complete -c plexi -n "__fish_seen_subcommand_from open" -l from-pane-id -d "Split relative to this pane ID"
 complete -c plexi -n "__fish_seen_subcommand_from open" -l mcp -d "Wrap stdio MCP server command in mcp-renderer"
 complete -c plexi -n "__fish_seen_subcommand_from open" -l cli -d "Wrap CLI binary in descriptor-renderer" -a "(__fish_complete_command)"
