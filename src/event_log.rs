@@ -122,7 +122,7 @@ pub enum HostEvent {
         pane_id: u64,
         /// Name of the context (sidebar project) this pane belongs to.
         context_name: String,
-        /// Optional description of the context.
+        /// Description of the context.
         context_description: String,
         /// CWD of the departing pane (terminals via proc_info; apps via workspace_root).
         cwd: Option<String>,
