@@ -765,13 +765,12 @@ impl PlexiApp {
         SwapResult::Swapped { rect_a, rect_b }
     }
 
-    /// Pop the focused pane out of its current window and into a new window
-    /// appended to the right of the current context row (`max_grid_x + 1`, same
-    /// `grid_y`). Used by `SwapPane(Down)` at the bottom boundary.
-    ///
-    /// Returns `true` if the pop succeeded; `false` if there is no focused pane
-    /// or the pane data is missing (caller should show the edge pulse).
-    pub(crate) fn pop_focused_pane_to_new_window(&mut self) -> bool {
+    /// Move the focused pane to the first (`end=false`, Cmd+Ctrl+K) or last
+    /// (`end=true`, Cmd+Ctrl+J) column position in the current context row by
+    /// creating a new window at that boundary. Returns `true` if the move
+    /// happened; `false` if the pane is already alone at the target boundary
+    /// (caller should show the edge pulse).
+    pub(crate) fn move_focused_pane_to_row_boundary(&mut self, end: bool) -> bool {
         use egui_tiles::Tile;
 
         let src_idx = self.active_window;
@@ -786,7 +785,26 @@ impl PlexiApp {
         };
 
         let src_grid_y = self.windows[src_idx].grid_y;
+        let src_grid_x = self.windows[src_idx].grid_x;
         let ws_id = self.windows[src_idx].context_id;
+
+        // Edge pulse if pane is already alone at the target boundary.
+        if self.windows[src_idx].panes.len() == 1 {
+            let boundary_x = self
+                .windows
+                .iter()
+                .filter(|w| w.context_id == ws_id && w.grid_y == src_grid_y)
+                .map(|w| w.grid_x)
+                .reduce(if end { u32::max } else { u32::min });
+            let at_boundary = boundary_x == Some(src_grid_x);
+            if at_boundary {
+                log::info!(
+                    "move_focused_pane_to_row_boundary(end={end}): \
+                     pane {src_pane_id} already at boundary — edge pulse"
+                );
+                return false;
+            }
+        }
 
         let cwd = self.windows[src_idx]
             .get_focused_pane_cwd(focused_tile)
@@ -795,7 +813,7 @@ impl PlexiApp {
 
         let next_src_focus = self.windows[src_idx].find_next_focus(focused_tile);
 
-        // Detach the pane from the source window's tile tree.
+        // Detach pane from source window's tile tree.
         let extracted_pane = {
             let ctx = &mut self.windows[src_idx];
             if let Some(parent_id) = ctx.tree.tiles.parent_of(focused_tile) {
@@ -817,31 +835,43 @@ impl PlexiApp {
             return false;
         };
 
-        // Delete the source window if it became empty (compact_workspace_grid
-        // runs inside delete_window, reassigning grid_x values).
+        // Delete source window if empty (compact_workspace_grid runs inside
+        // delete_window, reassigning grid_x values).
         if self.windows[src_idx].panes.is_empty() && self.windows.len() > 1 {
             log::info!(
-                "pop_pane_to_new_window: source window ({},{}) empty after extraction — deleting",
+                "move_focused_pane_to_row_boundary(end={end}): \
+                 source window ({},{src_grid_y}) empty — deleting",
                 self.windows[src_idx].grid_x,
-                src_grid_y,
             );
             self.delete_window(src_idx);
         }
 
-        // After any compaction, append the new window at max_x + 1 in the same row.
-        let max_x = self
-            .windows
-            .iter()
-            .filter(|w| w.context_id == ws_id && w.grid_y == src_grid_y)
-            .map(|w| w.grid_x)
-            .max();
-        let new_x = max_x.map(|x| x + 1).unwrap_or(0);
+        // Compute the target grid_x after any compaction from delete_window.
+        let new_x = if end {
+            let max_x = self
+                .windows
+                .iter()
+                .filter(|w| w.context_id == ws_id && w.grid_y == src_grid_y)
+                .map(|w| w.grid_x)
+                .max();
+            max_x.map(|x| x + 1).unwrap_or(0)
+        } else {
+            // Shift all same-row windows right to open grid_x=0.
+            for w in self.windows.iter_mut() {
+                if w.context_id == ws_id && w.grid_y == src_grid_y {
+                    w.grid_x += 1;
+                }
+            }
+            0
+        };
 
         log::info!(
-            "pop_pane_to_new_window: pane {src_pane_id} → new window ({new_x},{src_grid_y})"
+            "move_focused_pane_to_row_boundary(end={end}): \
+             pane {src_pane_id} → new window ({new_x},{src_grid_y})"
         );
 
-        let mut new_tree = egui_tiles::Tree::empty(format!("tree_pop_{}", self.next_window_id));
+        let mut new_tree =
+            egui_tiles::Tree::empty(format!("tree_boundary_{}", self.next_window_id));
         let new_tile = new_tree.tiles.insert_pane(src_pane_id);
         new_tree.root = Some(new_tile);
         let mut new_panes = HashMap::new();
@@ -1144,6 +1174,98 @@ impl PlexiApp {
             }
         }
         false
+    }
+}
+
+/// Test-only helper: pop focused pane unconditionally to a new window at max_x+1,
+/// without the boundary check. Used by pop_pane_to_new_window_tests only.
+#[cfg(test)]
+impl PlexiApp {
+    pub(crate) fn pop_focused_pane_to_new_window(&mut self) -> bool {
+        use egui_tiles::Tile;
+
+        let src_idx = self.active_window;
+
+        let Some(focused_tile) = self.windows[src_idx].focused_pane else {
+            return false;
+        };
+
+        let src_pane_id = match self.windows[src_idx].tree.tiles.get(focused_tile) {
+            Some(Tile::Pane(id)) => *id,
+            _ => return false,
+        };
+
+        let src_grid_y = self.windows[src_idx].grid_y;
+        let ws_id = self.windows[src_idx].context_id;
+
+        let cwd = self.windows[src_idx]
+            .get_focused_pane_cwd(focused_tile)
+            .or_else(|| self.router.active().root.clone())
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")));
+
+        let next_src_focus = self.windows[src_idx].find_next_focus(focused_tile);
+
+        let extracted_pane = {
+            let ctx = &mut self.windows[src_idx];
+            if let Some(parent_id) = ctx.tree.tiles.parent_of(focused_tile) {
+                if let Some(Tile::Container(parent)) = ctx.tree.tiles.get_mut(parent_id) {
+                    parent.remove_child(focused_tile);
+                }
+            }
+            ctx.tree.tiles.remove(focused_tile);
+            let pane = ctx.panes.remove(&src_pane_id);
+            ctx.tree.simplify(&SimplificationOptions {
+                all_panes_must_have_tabs: true,
+                ..SimplificationOptions::default()
+            });
+            ctx.focused_pane = next_src_focus;
+            pane
+        };
+
+        let Some(pane) = extracted_pane else {
+            return false;
+        };
+
+        if self.windows[src_idx].panes.is_empty() && self.windows.len() > 1 {
+            self.delete_window(src_idx);
+        }
+
+        let max_x = self
+            .windows
+            .iter()
+            .filter(|w| w.context_id == ws_id && w.grid_y == src_grid_y)
+            .map(|w| w.grid_x)
+            .max();
+        let new_x = max_x.map(|x| x + 1).unwrap_or(0);
+
+        let mut new_tree = egui_tiles::Tree::empty(format!("tree_pop_{}", self.next_window_id));
+        let new_tile = new_tree.tiles.insert_pane(src_pane_id);
+        new_tree.root = Some(new_tile);
+        let mut new_panes = HashMap::new();
+        new_panes.insert(src_pane_id, pane);
+
+        let win_id = self.next_window_id;
+        self.next_window_id += 1;
+
+        self.windows.push(crate::context::Window {
+            name: String::new(),
+            path: cwd,
+            tree: new_tree,
+            panes: new_panes,
+            focused_pane: Some(new_tile),
+            zoomed_pane: None,
+            grid_x: new_x,
+            grid_y: src_grid_y,
+            window_id: win_id,
+            context_id: ws_id,
+        });
+
+        self.active_window = self.windows.len() - 1;
+        self.context_active_window.insert(ws_id, win_id);
+        self.record_context_visit(win_id);
+        self.minimap.visible = true;
+
+        true
     }
 }
 
@@ -1505,5 +1627,166 @@ mod pop_pane_to_new_window_tests {
         // focused_pane is None by default in the initial window.
         assert!(!app.pop_focused_pane_to_new_window());
         assert_eq!(app.windows.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod move_to_row_boundary_tests {
+    use super::*;
+
+    fn test_app() -> PlexiApp {
+        let ctx = egui::Context::default();
+        let ft = crate::logging::new_frame_tick();
+        PlexiApp::new_for_test(ctx, ft).0
+    }
+
+    fn make_app_pane(id: u64) -> crate::pane::Pane {
+        use crate::app_permissions::AppPermissions;
+        use crate::pane::{AppPane, AppRuntime};
+        use crate::process_app::ProcessApp;
+        let (process_app, _draw_tx) = ProcessApp::new_for_test(id, AppPermissions::builtin());
+        crate::pane::Pane::App(Box::new(AppPane {
+            id,
+            runtime: AppRuntime::Process(Box::new(process_app)),
+            workspace_root: std::env::temp_dir(),
+            permissions: AppPermissions::builtin(),
+            manifest_id: "test".to_string(),
+            name: "Test".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: None,
+        }))
+    }
+
+    fn window_at(context_id: u64, window_id: u64, grid_x: u32, grid_y: u32) -> crate::context::Window {
+        crate::context::Window {
+            name: String::new(),
+            path: std::env::temp_dir(),
+            tree: egui_tiles::Tree::empty(format!("tree_{window_id}")),
+            panes: HashMap::new(),
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x,
+            grid_y,
+            window_id,
+            context_id,
+        }
+    }
+
+    fn app_with_two_pane_window() -> (PlexiApp, u64, u64) {
+        let mut app = test_app();
+        let pane_a: u64 = 10;
+        let pane_b: u64 = 20;
+        let tile_a = app.windows[0].tree.tiles.insert_pane(pane_a);
+        let tile_b = app.windows[0].tree.tiles.insert_pane(pane_b);
+        let container = app.windows[0].tree.tiles.insert_horizontal_tile(vec![tile_a, tile_b]);
+        app.windows[0].tree.root = Some(container);
+        app.windows[0].focused_pane = Some(tile_a);
+        app.windows[0].panes.insert(pane_a, make_app_pane(pane_a));
+        app.windows[0].panes.insert(pane_b, make_app_pane(pane_b));
+        (app, pane_a, pane_b)
+    }
+
+    /// Cmd+Ctrl+J (end=true): pane with siblings moves to new window at max_x+1.
+    #[test]
+    fn end_true_moves_pane_to_rightmost() {
+        let (mut app, pane_a, _) = app_with_two_pane_window();
+        // Add sibling window at x=1 so there's a clear max.
+        app.windows.push(window_at(1, 99, 1, 0));
+
+        let moved = app.move_focused_pane_to_row_boundary(true);
+        assert!(moved);
+        let new_win = &app.windows[app.active_window];
+        assert!(new_win.panes.contains_key(&pane_a));
+        assert_eq!(new_win.grid_x, 2, "new window at max_x+1");
+    }
+
+    /// Cmd+Ctrl+J (end=true): pane alone at rightmost position → edge pulse (returns false).
+    #[test]
+    fn end_true_already_alone_at_rightmost_returns_false() {
+        let mut app = test_app();
+        // Window 0 (active, grid_x=0) with one pane; window 1 at grid_x=1 with one pane.
+        let pane_a: u64 = 1;
+        let tile_a = app.windows[0].tree.tiles.insert_pane(pane_a);
+        app.windows[0].tree.root = Some(tile_a);
+        app.windows[0].focused_pane = Some(tile_a);
+        app.windows[0].panes.insert(pane_a, make_app_pane(pane_a));
+
+        let pane_b: u64 = 2;
+        app.windows.push(window_at(1, 99, 1, 0));
+        let tile_b = app.windows[1].tree.tiles.insert_pane(pane_b);
+        app.windows[1].tree.root = Some(tile_b);
+        app.windows[1].focused_pane = Some(tile_b);
+        app.windows[1].panes.insert(pane_b, make_app_pane(pane_b));
+
+        // Make window 1 (grid_x=1, the rightmost) the active window.
+        app.active_window = 1;
+
+        let moved = app.move_focused_pane_to_row_boundary(true);
+        assert!(!moved, "already alone at rightmost — should edge pulse");
+    }
+
+    /// Cmd+Ctrl+K (end=false): pane with siblings moves to new window at grid_x=0.
+    #[test]
+    fn end_false_moves_pane_to_leftmost() {
+        let (mut app, pane_a, _) = app_with_two_pane_window();
+        // Add sibling window at x=1.
+        app.windows.push(window_at(1, 99, 1, 0));
+
+        let moved = app.move_focused_pane_to_row_boundary(false);
+        assert!(moved);
+        let new_win = &app.windows[app.active_window];
+        assert!(new_win.panes.contains_key(&pane_a));
+        assert_eq!(new_win.grid_x, 0, "new window at grid_x=0");
+        // All other same-row windows must have shifted right by 1.
+        for w in &app.windows {
+            if !w.panes.contains_key(&pane_a) {
+                assert!(w.grid_x >= 1, "other windows shifted right");
+            }
+        }
+    }
+
+    /// Cmd+Ctrl+K (end=false): pane alone at grid_x=0 → edge pulse (returns false).
+    #[test]
+    fn end_false_already_alone_at_leftmost_returns_false() {
+        let mut app = test_app();
+        let pane_a: u64 = 1;
+        let tile_a = app.windows[0].tree.tiles.insert_pane(pane_a);
+        app.windows[0].tree.root = Some(tile_a);
+        app.windows[0].focused_pane = Some(tile_a);
+        app.windows[0].panes.insert(pane_a, make_app_pane(pane_a));
+        // Add sibling window at x=1.
+        app.windows.push(window_at(1, 99, 1, 0));
+        // Active is window 0 (grid_x=0) — already alone at leftmost.
+
+        let moved = app.move_focused_pane_to_row_boundary(false);
+        assert!(!moved, "already alone at leftmost — should edge pulse");
+    }
+
+    /// Source window with a single pane is deleted after the boundary jump.
+    #[test]
+    fn source_deleted_when_empty_after_jump() {
+        let mut app = test_app();
+        let pane_a: u64 = 1;
+        let tile_a = app.windows[0].tree.tiles.insert_pane(pane_a);
+        app.windows[0].tree.root = Some(tile_a);
+        app.windows[0].focused_pane = Some(tile_a);
+        app.windows[0].panes.insert(pane_a, make_app_pane(pane_a));
+        // Add a sibling with its own pane so we can distinguish source deletion.
+        let pane_b: u64 = 2;
+        app.windows.push(window_at(1, 99, 1, 0));
+        let tile_b = app.windows[1].tree.tiles.insert_pane(pane_b);
+        app.windows[1].tree.root = Some(tile_b);
+        app.windows[1].focused_pane = Some(tile_b);
+        app.windows[1].panes.insert(pane_b, make_app_pane(pane_b));
+        // Window 0 at x=0 is NOT rightmost (x=1 exists) and alone → move triggers.
+        let moved = app.move_focused_pane_to_row_boundary(true);
+        assert!(moved);
+        // Source (x=0, sole pane) was deleted; sibling + new window remain (2 windows).
+        assert_eq!(app.windows.len(), 2, "source deleted → 1 sibling + 1 new = 2 windows");
+        // No window should still hold pane_a at a non-rightmost position.
+        let new_win = app.windows.iter().find(|w| w.panes.contains_key(&pane_a)).unwrap();
+        let max_x = app.windows.iter().map(|w| w.grid_x).max().unwrap();
+        assert_eq!(new_win.grid_x, max_x, "pane_a must be in the rightmost window");
     }
 }
