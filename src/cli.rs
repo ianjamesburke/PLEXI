@@ -3620,14 +3620,39 @@ _plexi() {
     args)
       case $line[1] in
         secret)
-          local subcmds
-          subcmds=('set:Store a secret' 'list:List stored secrets' 'delete:Delete a secret')
-          _describe 'subcommand' subcmds
+          case $line[2] in
+            set)
+              _arguments \
+                '--from-env[Read value from the environment variable instead of prompting]' \
+                '--global[Store globally (cross-workspace)]'
+              ;;
+            get)
+              _arguments '--global[Read from global store only]'
+              ;;
+            *)
+              local subcmds
+              subcmds=('set:Store a secret' 'get:Read a secret value' 'list:List stored secrets' 'delete:Delete a secret')
+              _describe 'subcommand' subcmds
+              ;;
+          esac
           ;;
         app)
-          local subcmds
-          subcmds=('init:Scaffold a new app' 'install:Install a local app directory' 'uninstall:Uninstall an app' 'list:List installed apps' 'link:Register a local app directory' 'unlink:Remove a linked app directory')
-          _describe 'subcommand' subcmds
+          case $line[2] in
+            init)
+              _arguments '--lang[Language template]:lang:(python)'
+              ;;
+            render)
+              _arguments \
+                '--size[Dimensions as WxH]:size:' \
+                '--state[Pre-seed app state from a JSON file]:file:_files -g "*.json"' \
+                '--output[Output PNG path]:file:_files -g "*.png"'
+              ;;
+            *)
+              local subcmds
+              subcmds=('init:Scaffold a new app' 'install:Install a local app directory' 'uninstall:Uninstall an app' 'list:List installed apps' 'render:Render an app to PNG headlessly' 'info:Show app info' 'link:Register a local app directory' 'unlink:Remove a linked app directory')
+              _describe 'subcommand' subcmds
+              ;;
+          esac
           ;;
         workspace)
           local subcmds
@@ -3645,21 +3670,39 @@ _plexi() {
           _describe 'subcommand' subcmds
           ;;
         pane)
-          local subcmds
-          subcmds=('name:Set the name of a pane (current or by ID)' 'set-title:Set the name of a pane (deprecated: use name)' 'list:List all open panes as JSON' 'focus:Move focus to a pane' 'close:Close a pane' 'send:Send text to a pane PTY' 'info:Print current pane info as JSON' 'capture:Read PTY scrollback and print as JSON array' 'key:Inject a synthetic key event into a pane')
-          _describe 'subcommand' subcmds
+          case $line[2] in
+            capture)
+              _arguments '--lines[Number of lines to read]:lines:'
+              ;;
+            *)
+              local subcmds
+              subcmds=('name:Set the name of a pane (current or by ID)' 'set-title:Set the name of a pane (deprecated: use name)' 'list:List all open panes as JSON' 'focus:Move focus to a pane' 'close:Close a pane' 'send:Send text to a pane PTY' 'info:Print current pane info as JSON' 'capture:Read PTY scrollback and print as JSON array' 'key:Inject a synthetic key event into a pane')
+              _describe 'subcommand' subcmds
+              ;;
+          esac
           ;;
         terminal)
           _arguments \
             '(-e --ephemeral)'{-e,--ephemeral}'[Close the pane when the process exits]' \
             '--layout[Layout hint]:layout:(split_v split_h split_above)' \
             '--from-pane-id[Split relative to this pane ID]:pane_id:' \
-            '--cwd[Working directory for the new terminal pane]:directory:_directories'
+            '--cwd[Working directory for the new terminal pane]:directory:_directories' \
+            '--no-focus[Keep focus on the originating pane]'
           ;;
         descriptor)
-          local subcmds
-          subcmds=('probe:Probe a CLI for its Plexi descriptor')
-          _describe 'subcommand' subcmds
+          case $line[2] in
+            probe)
+              _arguments \
+                '--no-registry[Skip registry lookup]' \
+                '--no-crawl[Skip help crawling]' \
+                '--json[Output raw descriptor JSON]'
+              ;;
+            *)
+              local subcmds
+              subcmds=('probe:Probe a CLI for its Plexi descriptor')
+              _describe 'subcommand' subcmds
+              ;;
+          esac
           ;;
         registry)
           local subcmds
@@ -3678,7 +3721,8 @@ _plexi() {
             '--level[Level]:level:(info warn error)' \
             '--choice[Choice option (key:Label / Label:action:arg / key:Label:action:arg)]:choice:' \
             '--host-action[Host-side action for a choice key (key:action_type:action_arg)]:host_action:' \
-            '--timeout[Timeout in seconds]:seconds:'
+            '--timeout[Timeout in seconds]:seconds:' \
+            '--scope[Notification visibility scope]:scope:(window context global)'
           ;;
         open)
           _arguments \
@@ -3720,10 +3764,32 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
   local cmd="${words[1]}"
   case $cmd in
     secret)
-      COMPREPLY=($(compgen -W "set list delete" -- "$cur"))
+      if [[ $cword -eq 2 ]]; then
+        COMPREPLY=($(compgen -W "set get list delete" -- "$cur"))
+      else
+        case "${words[2]}" in
+          set)
+            COMPREPLY=($(compgen -W "--from-env --global" -- "$cur"))
+            ;;
+          get)
+            COMPREPLY=($(compgen -W "--global" -- "$cur"))
+            ;;
+        esac
+      fi
       ;;
     app)
-      COMPREPLY=($(compgen -W "init install uninstall list" -- "$cur"))
+      if [[ $cword -eq 2 ]]; then
+        COMPREPLY=($(compgen -W "init install uninstall list render info link unlink" -- "$cur"))
+      else
+        case "${words[2]}" in
+          init)
+            COMPREPLY=($(compgen -W "--lang" -- "$cur"))
+            ;;
+          render)
+            COMPREPLY=($(compgen -W "--size --state --output" -- "$cur"))
+            ;;
+        esac
+      fi
       ;;
     workspace)
       COMPREPLY=($(compgen -W "init" -- "$cur"))
@@ -3735,7 +3801,15 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       COMPREPLY=($(compgen -W "export" -- "$cur"))
       ;;
     pane)
-      COMPREPLY=($(compgen -W "name set-title list focus close send info capture key" -- "$cur"))
+      if [[ $cword -eq 2 ]]; then
+        COMPREPLY=($(compgen -W "name set-title list focus close send info capture key" -- "$cur"))
+      else
+        case "${words[2]}" in
+          capture)
+            COMPREPLY=($(compgen -W "--lines" -- "$cur"))
+            ;;
+        esac
+      fi
       ;;
     terminal)
       if [[ $prev == "--layout" ]]; then
@@ -3743,7 +3817,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       elif [[ $prev == "--cwd" ]]; then
         COMPREPLY=($(compgen -d -- "$cur"))
       else
-        COMPREPLY=($(compgen -W "-e --ephemeral --layout --from-pane-id --cwd" -- "$cur"))
+        COMPREPLY=($(compgen -W "-e --ephemeral --layout --from-pane-id --cwd --no-focus" -- "$cur"))
       fi
       ;;
     open)
@@ -3754,7 +3828,15 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       fi
       ;;
     descriptor)
-      COMPREPLY=($(compgen -W "probe" -- "$cur"))
+      if [[ $cword -eq 2 ]]; then
+        COMPREPLY=($(compgen -W "probe" -- "$cur"))
+      else
+        case "${words[2]}" in
+          probe)
+            COMPREPLY=($(compgen -W "--no-registry --no-crawl --json" -- "$cur"))
+            ;;
+        esac
+      fi
       ;;
     registry)
       COMPREPLY=($(compgen -W "watch" -- "$cur"))
@@ -3765,8 +3847,10 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
     notify)
       if [[ $prev == "--level" ]]; then
         COMPREPLY=($(compgen -W "info warn error" -- "$cur"))
+      elif [[ $prev == "--scope" ]]; then
+        COMPREPLY=($(compgen -W "window context global" -- "$cur"))
       else
-        COMPREPLY=($(compgen -W "--title --body --level --choice --host-action --timeout" -- "$cur"))
+        COMPREPLY=($(compgen -W "--title --body --level --choice --host-action --timeout --scope" -- "$cur"))
       fi
       ;;
     install)
@@ -3807,16 +3891,34 @@ complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret ap
 
 # secret subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from secret" -a set -d "Store a secret"
+complete -c plexi -f -n "__fish_seen_subcommand_from secret" -a get -d "Read a secret value"
 complete -c plexi -f -n "__fish_seen_subcommand_from secret" -a list -d "List stored secrets"
 complete -c plexi -f -n "__fish_seen_subcommand_from secret" -a delete -d "Delete a secret"
+
+# secret set flags
+complete -c plexi -n "__fish_seen_subcommand_from secret; and __fish_seen_subcommand_from set" -l from-env -d "Read value from the environment variable instead of prompting"
+complete -c plexi -n "__fish_seen_subcommand_from secret; and __fish_seen_subcommand_from set" -l global -d "Store globally (cross-workspace)"
+
+# secret get flags
+complete -c plexi -n "__fish_seen_subcommand_from secret; and __fish_seen_subcommand_from get" -l global -d "Read from global store only"
 
 # app subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a init -d "Scaffold a new app"
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a install -d "Install a local app directory"
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a uninstall -d "Uninstall an app"
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a list -d "List installed apps"
+complete -c plexi -f -n "__fish_seen_subcommand_from app" -a render -d "Render an app to PNG headlessly"
+complete -c plexi -f -n "__fish_seen_subcommand_from app" -a info -d "Show app info"
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a link -d "Register a local app directory with the workspace"
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a unlink -d "Remove a linked app directory from the workspace"
+
+# app init flags
+complete -c plexi -n "__fish_seen_subcommand_from app; and __fish_seen_subcommand_from init" -l lang -d "Language template" -a "python"
+
+# app render flags
+complete -c plexi -n "__fish_seen_subcommand_from app; and __fish_seen_subcommand_from render" -l size -d "Dimensions as WxH (e.g. 500x500)"
+complete -c plexi -n "__fish_seen_subcommand_from app; and __fish_seen_subcommand_from render" -l state -d "Pre-seed app state from a JSON file"
+complete -c plexi -n "__fish_seen_subcommand_from app; and __fish_seen_subcommand_from render" -l output -d "Output PNG path"
 
 # workspace subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from workspace" -a init -d "Initialise a .plexi/ workspace"
@@ -3838,8 +3940,16 @@ complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a info -d "Print cur
 complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a capture -d "Read PTY scrollback and print as JSON array"
 complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a key -d "Inject a synthetic key event into a pane"
 
+# pane capture flags
+complete -c plexi -n "__fish_seen_subcommand_from pane; and __fish_seen_subcommand_from capture" -l lines -d "Number of lines to read"
+
 # descriptor subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from descriptor" -a probe -d "Probe a CLI for its Plexi descriptor"
+
+# descriptor probe flags
+complete -c plexi -n "__fish_seen_subcommand_from descriptor; and __fish_seen_subcommand_from probe" -l no-registry -d "Skip registry lookup"
+complete -c plexi -n "__fish_seen_subcommand_from descriptor; and __fish_seen_subcommand_from probe" -l no-crawl -d "Skip help crawling"
+complete -c plexi -n "__fish_seen_subcommand_from descriptor; and __fish_seen_subcommand_from probe" -l json -d "Output raw descriptor JSON"
 
 # registry subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from registry" -a watch -d "Watch installed CLIs for descriptor drift"
@@ -3857,6 +3967,7 @@ complete -c plexi -n "__fish_seen_subcommand_from notify" -l level -d "Level" -a
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l choice -d "Choice option (key:Label / Label:action:arg / key:Label:action:arg)"
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l host-action -d "Host-side action for a choice key (key:action_type:action_arg)"
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l timeout -d "Timeout in seconds"
+complete -c plexi -n "__fish_seen_subcommand_from notify" -l scope -d "Notification visibility scope" -a "window context global"
 
 # install flags
 complete -c plexi -n "__fish_seen_subcommand_from install" -l pack -d "Install from a pack file or core"
