@@ -229,6 +229,7 @@ pub struct PlexiApp {
     pub(crate) rename_buffer: String,
     pub(crate) editing_description: Option<usize>,
     pub(crate) description_buffer: String,
+    pub(crate) description_focus_requested: bool,
     pub(crate) drag_context: Option<usize>,
     pub(crate) registry: AppRegistry,
     pub(crate) show_command_palette: bool,
@@ -715,6 +716,7 @@ impl PlexiApp {
                     rename_buffer: String::new(),
                     editing_description: None,
                     description_buffer: String::new(),
+                    description_focus_requested: false,
                     drag_context: None,
                     show_command_palette: false,
                     palette_query: String::new(),
@@ -836,6 +838,7 @@ impl PlexiApp {
             rename_buffer: String::new(),
             editing_description: None,
             description_buffer: String::new(),
+            description_focus_requested: false,
             drag_context: None,
             show_command_palette: false,
             palette_query: String::new(),
@@ -966,6 +969,7 @@ impl PlexiApp {
             rename_buffer: String::new(),
             editing_description: None,
             description_buffer: String::new(),
+            description_focus_requested: false,
             drag_context: None,
             show_command_palette: false,
             palette_query: String::new(),
@@ -1524,7 +1528,8 @@ impl PlexiApp {
                 crate::app_protocol::AppRequest::SetContextDescription { description } => {
                     log::info!("pane_ipc: kind=set_context_description");
                     let idx = self.router.active_idx();
-                    self.router.get_mut(idx).description = if description.is_empty() { None } else { Some(description.clone()) };
+                    let trimmed = description.trim().to_string();
+                    self.router.get_mut(idx).description = if trimmed.is_empty() { None } else { Some(trimmed) };
                     self.save_workspace();
                 }
                 crate::app_protocol::AppRequest::ZoomIntoContext { context_id } => {
