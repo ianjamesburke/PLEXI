@@ -196,6 +196,17 @@ pub fn render_minimap(
     // and act on any click that didn't land exactly on a cell.
     ui.allocate_rect(panel_rect, egui::Sense::hover());
 
+    // Spatial ordering: assign page numbers by (grid_y, grid_x) so they
+    // stay sequential after reorder operations.
+    let spatial_rank: std::collections::HashMap<usize, usize> = {
+        let mut sorted: Vec<(usize, u32, u32)> = visible
+            .iter()
+            .map(|(i, w)| (*i, w.grid_y, w.grid_x))
+            .collect();
+        sorted.sort_by_key(|&(_, gy, gx)| (gy, gx));
+        sorted.iter().enumerate().map(|(rank, &(i, _, _))| (i, rank)).collect()
+    };
+
     let mut clicked: Option<usize> = None;
 
     for (original_idx, ctx) in &visible {
@@ -228,8 +239,7 @@ pub fn render_minimap(
             egui::StrokeKind::Inside,
         );
 
-        // Small page number inside each cell (0-based, left-bottom)
-        let page_num = visible.iter().position(|(i, _)| *i == idx).unwrap_or(0);
+        let page_num = spatial_rank.get(&idx).copied().unwrap_or(0);
         ui.painter().text(
             egui::pos2(cell_rect.left() + 3.0, cell_rect.bottom() - 2.0),
             egui::Align2::LEFT_BOTTOM,
