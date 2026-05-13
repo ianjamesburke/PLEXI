@@ -1117,6 +1117,84 @@ impl PlexiApp {
         }
     }
 
+    /// Modal for editing a context's description. Multiline text input with
+    /// Cmd+Enter to save, Esc to cancel.
+    pub(crate) fn draw_edit_description_overlay(&mut self, ctx: &egui::Context) {
+        let ctx_idx = match self.editing_description {
+            Some(idx) => idx,
+            None => return,
+        };
+
+        let (commit, cancel) = ctx.input_mut(|i| {
+            let cmd_enter = i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter);
+            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            (cmd_enter, esc)
+        });
+
+        egui::Area::new(egui::Id::new("edit_description_overlay"))
+            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, self.colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(16, 12))
+                    .show(ui, |ui| {
+                        ui.set_width(MODAL_WIDTH);
+                        let ctx_name = self.router.get(ctx_idx).name.clone();
+                        ui.label(
+                            RichText::new(format!("Description for \"{}\"", ctx_name))
+                                .size(13.0)
+                                .color(self.colors.text_primary)
+                                .strong(),
+                        );
+                        ui.add_space(6.0);
+
+                        let te_id = egui::Id::new("edit_description_input");
+                        let te = ui.scope(|ui| {
+                            ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                            ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                            ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
+                            ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, self.colors.accent);
+                            ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.colors.border);
+                            ui.add(
+                                egui::TextEdit::multiline(&mut self.description_buffer)
+                                    .id(te_id)
+                                    .desired_width(MODAL_WIDTH)
+                                    .desired_rows(3)
+                                    .hint_text("What are you working on in this context?")
+                                    .font(egui::TextStyle::Body)
+                                    .margin(egui::Margin::symmetric(8, 5)),
+                            )
+                        }).inner;
+
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new("Cmd+Enter to save  ·  Esc to cancel")
+                                .size(11.0)
+                                .color(self.colors.text_dim),
+                        );
+
+                        if !te.has_focus() {
+                            te.request_focus();
+                        }
+                    });
+            });
+
+        if cancel {
+            self.editing_description = None;
+            self.pop_focus_layer(&crate::app::FocusLayer::ContextDescription);
+        } else if commit {
+            let new_desc = self.description_buffer.trim().to_string();
+            self.router.get_mut(ctx_idx).description = if new_desc.is_empty() { None } else { Some(new_desc) };
+            self.editing_description = None;
+            self.pop_focus_layer(&crate::app::FocusLayer::ContextDescription);
+            self.save_workspace();
+            log::info!("context_description: updated ctx_idx={ctx_idx}");
+        }
+    }
+
     /// Quick note compose phase: full-screen scrim + centered text input.
     pub(crate) fn draw_quick_note_modal(&mut self, ctx: &egui::Context) {
         use crate::style;

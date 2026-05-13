@@ -1622,6 +1622,12 @@ impl ProcessApp {
                     self.type_id
                 );
             }
+            AppRequest::SetContextDescription { .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: received SetContextDescription over PGAP — ignored (use PLEXI_SOCKET instead)",
+                    self.type_id
+                );
+            }
             AppRequest::ZoomIntoContext { .. } => {
                 log::warn!(
                     "ProcessApp[{}]: received ZoomIntoContext over PGAP — ignored (use PLEXI_SOCKET instead)",

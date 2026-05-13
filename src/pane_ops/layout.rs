@@ -236,7 +236,8 @@ impl PlexiApp {
         log::info!("split_focused: cwd={cwd:?} context_root={:?}", self.router.active().root);
         let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);
         let ctx_name = self.context_name_for(ctx_id);
-        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
+        let ctx_desc = self.context_description_for(ctx_id);
+        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc);
         if let Some(cmd) = initial_cmd {
             log::info!("split_focused: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
@@ -328,9 +329,10 @@ impl PlexiApp {
             let new_id = self.host.alloc_pane_id();
             let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);
             let ctx_name = self.context_name_for(ctx_id);
+            let ctx_desc = self.context_description_for(ctx_id);
             let cwd = self.cwd_for_welcome_tab();
             log::info!("new_tab (empty context): cwd={cwd:?} context_root={:?}", self.router.active().root);
-            let mut settings = Self::make_backend_settings(new_id, Some(cwd), &self.colors, ctx_id, &ctx_name);
+            let mut settings = Self::make_backend_settings(new_id, Some(cwd), &self.colors, ctx_id, &ctx_name, &ctx_desc);
             if let Some(cmd) = initial_cmd {
                 log::info!("new_tab (empty context): initial_cmd={cmd:?} close_on_exit={close_on_exit}");
                 super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
@@ -367,7 +369,8 @@ impl PlexiApp {
         log::info!("new_tab: cwd={cwd:?} context_root={:?}", self.router.active().root);
         let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);
         let ctx_name = self.context_name_for(ctx_id);
-        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
+        let ctx_desc = self.context_description_for(ctx_id);
+        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc);
         if let Some(cmd) = initial_cmd {
             log::info!("new_tab: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);

@@ -476,7 +476,8 @@ impl PlexiApp {
 
         let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);
         let ctx_name = self.context_name_for(ctx_id);
-        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
+        let ctx_desc = self.context_description_for(ctx_id);
+        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc);
         if let Some(cmd) = initial_cmd {
             log::info!("create_single_pane_tree: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
@@ -855,8 +856,9 @@ impl PlexiApp {
         let context_id = self.windows.get(active).map(|w| w.context_id).unwrap_or(0);
         let context = self.context_name_for(context_id);
         let context_root = self.router.active().root.clone();
+        let context_description = self.router.active().description.clone();
         self.quick_note_text = String::new();
-        self.quick_note_ctx = crate::app::QuickNoteCtx { cwd, workspace_root, context, context_root };
+        self.quick_note_ctx = crate::app::QuickNoteCtx { cwd, workspace_root, context, context_root, context_description };
         self.quick_note_children_cache.clear();
         self.quick_note_children_rx = None;
         self.push_focus_layer(crate::app::FocusLayer::QuickNote);
@@ -954,9 +956,13 @@ impl PlexiApp {
                     p.strip_prefix(&home).ok().map(|rel| format!("~/{}", rel.display()))
                 })
                 .or_else(|| ctx.workspace_root.as_ref().map(|p| p.to_string_lossy().to_string()));
+            let name_and_desc = match &ctx.context_description {
+                Some(desc) if !desc.is_empty() => format!("{} — \"{}\"", ctx.context, desc),
+                _ => ctx.context.clone(),
+            };
             match ws {
-                Some(w) => format!("{} · {}", ctx.context, w),
-                None => ctx.context.clone(),
+                Some(w) => format!("{name_and_desc} · {w}"),
+                None => name_and_desc,
             }
         };
 
@@ -1017,7 +1023,8 @@ impl PlexiApp {
             .and_then(|t| self.windows[active].get_focused_pane_cwd(t));
         let ctx_id = self.windows.get(active).map(|w| w.context_id).unwrap_or(0);
         let ctx_name = self.context_name_for(ctx_id);
-        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
+        let ctx_desc = self.context_description_for(ctx_id);
+        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc);
 
         super::apply_initial_cmd(&mut settings, cmd, !stay_alive);
 
@@ -1454,6 +1461,7 @@ mod quick_note_tests {
             workspace_root: None,
             context: "test".to_string(),
             context_root: None,
+            context_description: None,
         }
     }
 

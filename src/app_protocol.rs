@@ -1115,6 +1115,10 @@ pub enum AppRequest {
     SetContextRoot {
         root: std::path::PathBuf,
     },
+    /// Set/update the description of the active context. Sent by `plexi context describe`.
+    SetContextDescription {
+        description: String,
+    },
     /// Zoom into a sub-context. Pushes depth stack. Sent by `plexi context zoom`.
     ZoomIntoContext {
         context_id: u64,
