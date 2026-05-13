@@ -2290,6 +2290,29 @@ mod render_session_tests {
 
 impl Drop for ProcessApp {
     fn drop(&mut self) {
+        // Cancel active StreamProcess children (#675) — same escalation as
+        // CancelProcess: SIGTERM, then SIGKILL after 1s on a background thread.
+        for (corr_id, handle) in self.stream_handles.drain() {
+            log::info!(
+                "ProcessApp[{}]: drop — cancelling stream {corr_id} pid={}",
+                self.type_id,
+                handle.pid
+            );
+            handle.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            unsafe {
+                libc::kill(handle.pid as libc::pid_t, libc::SIGTERM);
+            }
+            let pid = handle.pid;
+            let _ = std::thread::Builder::new()
+                .name(format!("drop-sigkill-{pid}"))
+                .spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    unsafe {
+                        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                        libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG);
+                    }
+                });
+        }
         // Unregister any tools this pane exposed so the global registry stays clean.
         crate::plexi_ai::tool_dispatch::unregister(self.pane_id);
         self.send_event(&PlexiEvent::Shutdown);
@@ -3316,6 +3339,58 @@ mod reload_tests {
             assert_eq!(
                 alive, -1,
                 "unresponsive child pid {pid} must be force-reaped after drop"
+            );
+        }
+    }
+
+    // ── stream child cleanup on drop (#675) ────────────────────────────────────
+
+    #[test]
+    fn drop_cancels_active_stream_children() {
+        let Some(mut app) = make_sh_app(&["-c", "sleep 5"]) else {
+            eprintln!("skipping: no /bin/sh available");
+            return;
+        };
+
+        // Spawn a long-running child to simulate a StreamProcess.
+        let mut stream_child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exec sleep 60"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn stream child");
+        let stream_pid = stream_child.id();
+
+        // Insert into stream_handles — mirrors what StreamProcess does.
+        app.stream_handles.insert(
+            "test-stream".to_string(),
+            StreamHandle {
+                cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                pid: stream_pid,
+            },
+        );
+
+        drop(app);
+
+        // The SIGKILL escalation thread may have already reaped via waitpid,
+        // so wait() can return ECHILD — both outcomes prove the child is gone.
+        match stream_child.wait() {
+            Ok(status) => assert!(
+                !status.success(),
+                "stream child should have been killed by signal, got: {status}"
+            ),
+            Err(e) if e.raw_os_error() == Some(libc::ECHILD) => {
+                // Already reaped by the SIGKILL escalation thread — expected.
+            }
+            Err(e) => panic!("unexpected wait error: {e}"),
+        }
+
+        #[cfg(unix)]
+        {
+            let alive = unsafe { libc::kill(stream_pid as libc::pid_t, 0) };
+            assert_eq!(
+                alive, -1,
+                "stream child pid {stream_pid} must be gone after drop"
             );
         }
     }
