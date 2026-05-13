@@ -25,21 +25,9 @@ Before making architectural decisions, read [`NORTH_STAR.md`](NORTH_STAR.md) for
 
 Feature branch naming: `feature/<issue-number>-short-description`. Never push directly to `main` or `beta`.
 
-## GitHub Issue Labels
+## GitHub Issues
 
-Every issue gets one **type**, one **priority**.
-
-- **type:** `bug` | `enhancement` | `idea`
-- **priority:** `P0` | `P1` → `P2` → `P3` → `P4`
-- **status** (optional): `in progress` | `testing` | `ready` | `blocked`
-- **bundle** (optional): marks an issue as a micro-change suitable for batching into a single maintenance PR with other `bundle` issues. Bundle issues must be verifiable by diff alone — no "install and test" step required. When several `bundle` + `ready` issues accumulate, ship them together in one PR rather than individually.
-
-**Priority definitions:**
-- `P0` — Drop everything. On-fire critical; fix before anything else.
-- `P1` — Shipping blocker or severe user-facing bug. Must be resolved before the next release.
-- `P2` — Important but not blocking a release. Should happen in the near term.
-- `P3` — Nice to have. Polish, ergonomics, or low-urgency improvements.
-- `P4` — Backlog. Good ideas that aren't a current priority.
+**Always use the `/create-issue` skill to create issues.** It owns the full labeling convention (type, priority, area, load, blocking relationships, triage state) and enforces North Star alignment. Never create issues manually or with ad-hoc labels.
 
 ## Dispatch Orchestration (GitHub Project Board #7)
 
