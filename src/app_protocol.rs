@@ -1048,6 +1048,15 @@ pub enum HostCommand {
         response_file: Option<String>,
     },
 
+    /// Read the last N lines from a terminal pane's PTY scrollback buffer.
+    /// Sent by `plexi pane capture`. Host writes a JSON array of strings to `response_file`.
+    CapturePane {
+        pane_id: u64,
+        /// Number of lines to capture from the end of the scrollback.
+        lines: usize,
+        response_file: String,
+    },
+
     /// Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.
     CreateContext {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2748,6 +2757,29 @@ mod tests {
         assert!(
             serde_json::from_str::<DrawCommand>(bad).is_err(),
             "must fail without required key field"
+        );
+    }
+
+    #[test]
+    fn capture_pane_command_round_trips_serde() {
+        let json = r#"{"type":"capture_pane","pane_id":7,"lines":20,"response_file":"capture.json"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Host(HostCommand::CapturePane { pane_id, lines, response_file }) => {
+                assert_eq!(*pane_id, 7);
+                assert_eq!(*lines, 20);
+                assert_eq!(response_file, "capture.json");
+            }
+            other => panic!("expected CapturePane, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""type":"capture_pane""#), "wire tag missing: {serialised}");
+
+        // Missing required fields must fail
+        let bad = r#"{"type":"capture_pane","pane_id":1}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without lines and response_file"
         );
     }
 

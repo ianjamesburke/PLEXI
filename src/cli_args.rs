@@ -327,6 +327,18 @@ pub enum PaneCmd {
     },
     /// Print JSON info for the current pane [requires PLEXI_PANE_ID]
     Info,
+    /// Read the last N lines from a pane's PTY scrollback and print as a JSON array [requires PLEXI_SOCKET]
+    ///
+    /// Defaults to the current pane (PLEXI_PANE_ID) when <pane_id> is omitted.
+    ///
+    /// Example: plexi pane capture --lines 50 42
+    Capture {
+        /// Pane ID to capture. Defaults to PLEXI_PANE_ID.
+        pane_id: Option<u64>,
+        /// Number of lines to read from the end of the scrollback
+        #[arg(long, default_value = "50")]
+        lines: usize,
+    },
     /// Deliver a synthetic key event to a pane [requires PLEXI_SOCKET — run inside a Plexi pane]
     ///
     /// For terminal panes, injects as PTY keystroke.

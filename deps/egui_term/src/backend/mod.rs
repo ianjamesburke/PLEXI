@@ -386,6 +386,45 @@ impl TerminalBackend {
         self.child_pid
     }
 
+    /// Read the last `n` lines from the PTY scrollback buffer.
+    ///
+    /// Returns a `Vec<String>` of at most `n` entries, ordered oldest → newest.
+    /// Each string has trailing whitespace stripped. Read-only — does not affect
+    /// PTY state or scrollback position.
+    pub fn capture_lines(&self, n: usize) -> Vec<String> {
+        use alacritty_terminal::index::{Column, Line};
+
+        if n == 0 {
+            return Vec::new();
+        }
+
+        let term = self.term.lock();
+        let grid = term.grid();
+        let screen_lines = grid.screen_lines();
+        let history_size = grid.history_size();
+        let total = screen_lines + history_size;
+        let take = n.min(total);
+        let columns = grid.columns();
+
+        // Line(0)..Line(screen_lines-1) are the visible rows (bottommost = screen_lines-1).
+        // Line(-1)..Line(-(history_size)) are scrollback (most recent = -1).
+        // We want the last `take` lines in order, ending at Line(screen_lines-1).
+        let first = screen_lines as i32 - take as i32;
+        let last = screen_lines as i32 - 1;
+
+        let mut result = Vec::with_capacity(take);
+        for line_idx in first..=last {
+            let row = &grid[Line(line_idx)];
+            let mut s: String = (0..columns)
+                .map(|col_idx| row[Column(col_idx)].c)
+                .collect();
+            let trimmed_len = s.trim_end().len();
+            s.truncate(trimmed_len);
+            result.push(s);
+        }
+        result
+    }
+
     fn process_link_action(
         &mut self,
         terminal: &Term<EventProxy>,
