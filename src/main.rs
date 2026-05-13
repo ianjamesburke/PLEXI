@@ -136,7 +136,8 @@ fn main() -> eframe::Result {
         .unwrap_or_default();
     let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
     let retention_days = log_config.retention_days.unwrap_or(30);
-    crate::logging::init(log_level, retention_days);
+    let cli_mode = raw_args.get(1).is_some_and(|a| !a.starts_with('-'));
+    crate::logging::init(log_level, retention_days, cli_mode);
     let frame_tick = crate::logging::new_frame_tick();
     // Note: spawn_heartbeat is deferred to just before eframe::run_native so
     // the shell probes below don't trigger false FREEZE alerts. The heartbeat
@@ -375,6 +376,7 @@ fn main() -> eframe::Result {
                         }
                         PaneCmd::Send { pane_id, text } => std::process::exit(cli::pane_send_cli(pane_id, &text)),
                         PaneCmd::Key { pane_id, key } => std::process::exit(cli::pane_key_cli(pane_id, &key)),
+                        PaneCmd::Self_ => std::process::exit(cli::pane_self_cli()),
                         PaneCmd::Info => std::process::exit(cli::pane_info_cli()),
                         PaneCmd::Capture { pane_id, lines } => std::process::exit(cli::pane_capture_cli(pane_id, lines)),
                     },

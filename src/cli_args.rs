@@ -330,6 +330,12 @@ pub enum PaneCmd {
         /// Text to inject (use \n for Enter)
         text: String,
     },
+    /// Print the current pane ID to stdout [requires PLEXI_PANE_ID]
+    ///
+    /// Reads PLEXI_PANE_ID and prints just the numeric ID — no JSON, no parsing.
+    /// Designed for agent callers who need `MY_PANE=$(plexi pane self)`.
+    #[command(name = "self")]
+    Self_,
     /// Print JSON info for the current pane [requires PLEXI_PANE_ID]
     Info,
     /// Read the last N lines from a pane's PTY scrollback and print as a JSON array [requires PLEXI_SOCKET]
