@@ -2,6 +2,14 @@
 
 Development log for PLEXI. Tracks root causes, non-obvious decisions, abandoned approaches, and environment quirks that git history won't capture. Entries are newest-first — most recent at the top.
 
+## 2026-05-13 — [CHANGED] Self-documenting SDK — AST-based doc generator (PR #1258 → alpha)
+
+Added `website/scripts/generate-sdk-docs.py` that parses SDK Python source via `ast` module and generates 5 Astro markdown pages (overview, App, RenderContext, Emitter, Widgets). Wired into `npm run build` so docs regenerate on every deploy. Docker build context moved from `website/` to repo root so Dockerfile can access both `website/` and `sdk/`.
+
+Process revealed several SDK-side inconsistencies (filed as #1260): stale handler overview listing 12 of 26+ handlers, notify priority signatures lying to type checkers (`int | None = None` but raises TypeError on None), spawn handler naming breaking underscore convention, three dataclasses with zero docstrings. Generator also needed to filter `@property` getters/setters and strip rST `::` artifacts.
+
+**Breaks if:** `npm run build` in `website/` fails (generator must run before Astro); or Railway deploy can't find SDK source (build context must be repo root, `SDK_SOURCE=/sdk/plexi_sdk`).
+
 ## 2026-05-11 — [CHANGED] Config template made fully self-documenting (PR #1117 → alpha)
 
 `CONFIG_TEMPLATE` in `src/config.rs` was a sparse file with minimal comments. Replaced with a fully documented template: notifications values commented-out with tier docs, `[theme]` compact block with docs link and catppuccin-mocha defaults, `[ai]` fully commented as "coming soon", keybindings all commented-out, and 3 active Quick Note defaults (Backlog, Ask Claude, GitHub issue submenu).
