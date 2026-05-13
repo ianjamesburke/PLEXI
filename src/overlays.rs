@@ -1114,36 +1114,38 @@ impl PlexiApp {
         let current_layer = crate::app::FocusLayer::QuickNoteSubDestination(key_path.to_vec());
 
         // ── Drain children_cmd receiver if pending ────────────────────────────────
-        let node_key = key_path.last().copied().unwrap_or(0);
+        // Cache key is the full key_path to avoid collisions when different submenus
+        // share child keys (e.g. both have a child with key=1).
+        let node_path = key_path.to_vec();
         {
             let mut received = None;
-            if let Some((pending_key, rx)) = &self.quick_note_children_rx {
-                if *pending_key == node_key {
+            if let Some((pending_path, rx)) = &self.quick_note_children_rx {
+                if pending_path == &node_path {
                     match rx.try_recv() {
                         Ok(Ok(children)) => {
                             log::info!(
-                                "QuickNote: children_cmd result received for key={} count={}",
-                                node_key, children.len()
+                                "QuickNote: children_cmd result received for path={:?} count={}",
+                                node_path, children.len()
                             );
-                            received = Some((node_key, Ok(children)));
+                            received = Some((node_path.clone(), Ok(children)));
                         }
                         Ok(Err(e)) => {
-                            log::error!("QuickNote: children_cmd failed for key={}: {e}", node_key);
-                            received = Some((node_key, Err(e)));
+                            log::error!("QuickNote: children_cmd failed for path={:?}: {e}", node_path);
+                            received = Some((node_path.clone(), Err(e)));
                         }
                         Err(std::sync::mpsc::TryRecvError::Empty) => {}
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            log::error!("QuickNote: children_cmd sender dropped for key={}", node_key);
-                            received = Some((node_key, Err("sender dropped".to_string())));
+                            log::error!("QuickNote: children_cmd sender dropped for path={:?}", node_path);
+                            received = Some((node_path.clone(), Err("sender dropped".to_string())));
                         }
                     }
                 }
             }
-            if let Some((k, result)) = received {
+            if let Some((path, result)) = received {
                 self.quick_note_children_rx = None;
                 match result {
-                    Ok(children) => { self.quick_note_children_cache.insert(k, children); }
-                    Err(_) => { self.quick_note_children_cache.insert(k, vec![]); }
+                    Ok(children) => { self.quick_note_children_cache.insert(path, children); }
+                    Err(_) => { self.quick_note_children_cache.insert(path, vec![]); }
                 }
                 self.quick_note_sub_cursor = 0;
             }
@@ -1153,13 +1155,13 @@ impl PlexiApp {
         // Priority: static options > dynamic children_cmd results.
         let static_options = node.as_ref().and_then(|n| n.options.as_ref());
         let dynamic_children = if static_options.is_none() {
-            self.quick_note_children_cache.get(&node_key).cloned()
+            self.quick_note_children_cache.get(&node_path).cloned()
         } else {
             None
         };
         let loading = static_options.is_none()
             && dynamic_children.is_none()
-            && self.quick_note_children_rx.as_ref().map(|(k, _)| *k == node_key).unwrap_or(false);
+            && self.quick_note_children_rx.as_ref().map(|(p, _)| p == &node_path).unwrap_or(false);
 
         // Kick off children_cmd loading if needed and not already in flight.
         if static_options.is_none() && dynamic_children.is_none() && !loading {
@@ -1171,7 +1173,7 @@ impl PlexiApp {
                         &self.quick_note_ctx,
                     );
                     let (tx, rx) = std::sync::mpsc::channel();
-                    let key = node_key;
+                    let path_for_log = node_path.clone();
                     std::thread::spawn(move || {
                         let result = std::process::Command::new("sh")
                             .args(["-c", &cmd])
@@ -1188,8 +1190,8 @@ impl PlexiApp {
                             });
                         let _ = tx.send(result);
                     });
-                    log::info!("QuickNote: children_cmd spawned for key={}", key);
-                    self.quick_note_children_rx = Some((key, rx));
+                    log::info!("QuickNote: children_cmd spawned for path={:?}", path_for_log);
+                    self.quick_note_children_rx = Some((node_path, rx));
                     ctx.request_repaint_after(std::time::Duration::from_millis(100));
                 }
             }

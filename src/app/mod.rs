@@ -238,10 +238,10 @@ pub struct PlexiApp {
     pub(crate) quick_note_dest_cursor: usize,
     /// Cursor row in the sub-destination picker.
     pub(crate) quick_note_sub_cursor: usize,
-    /// Cache of dynamically loaded children, keyed by node key. Cleared on modal open.
-    pub(crate) quick_note_children_cache: HashMap<u8, Vec<crate::config::QuickNoteNode>>,
-    /// Pending children_cmd receiver: (node_key, receiver).
-    pub(crate) quick_note_children_rx: Option<(u8, std::sync::mpsc::Receiver<Result<Vec<crate::config::QuickNoteNode>, String>>)>,
+    /// Cache of dynamically loaded children, keyed by full key path. Cleared on modal open.
+    pub(crate) quick_note_children_cache: HashMap<Vec<u8>, Vec<crate::config::QuickNoteNode>>,
+    /// Pending children_cmd receiver: (key_path, receiver).
+    pub(crate) quick_note_children_rx: Option<(Vec<u8>, std::sync::mpsc::Receiver<Result<Vec<crate::config::QuickNoteNode>, String>>)>,
     /// notify_id of the notification the modal currently has state for. Used to
     /// detect a front-of-queue change and reset focus/input buffer.
     pub(crate) modal_state_notify_id: String,
