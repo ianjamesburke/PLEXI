@@ -2309,6 +2309,7 @@ impl Drop for ProcessApp {
                     std::thread::sleep(std::time::Duration::from_secs(1));
                     unsafe {
                         libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                        libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG);
                     }
                 });
         }
@@ -3371,22 +3372,25 @@ mod reload_tests {
 
         drop(app);
 
-        // Reap the child — if SIGTERM landed, wait() returns quickly.
-        let status = stream_child
-            .wait()
-            .expect("wait on stream child");
-        assert!(
-            !status.success(),
-            "stream child should have been killed by signal, got: {status}"
-        );
+        // The SIGKILL escalation thread may have already reaped via waitpid,
+        // so wait() can return ECHILD — both outcomes prove the child is gone.
+        match stream_child.wait() {
+            Ok(status) => assert!(
+                !status.success(),
+                "stream child should have been killed by signal, got: {status}"
+            ),
+            Err(e) if e.raw_os_error() == Some(libc::ECHILD) => {
+                // Already reaped by the SIGKILL escalation thread — expected.
+            }
+            Err(e) => panic!("unexpected wait error: {e}"),
+        }
 
-        // After reaping, the PID must be gone.
         #[cfg(unix)]
         {
             let alive = unsafe { libc::kill(stream_pid as libc::pid_t, 0) };
             assert_eq!(
                 alive, -1,
-                "stream child pid {stream_pid} must be gone after reap"
+                "stream child pid {stream_pid} must be gone after drop"
             );
         }
     }
