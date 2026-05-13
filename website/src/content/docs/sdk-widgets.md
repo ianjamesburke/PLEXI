@@ -22,6 +22,8 @@ from plexi_sdk.widgets import (
 
 ## ButtonStyle
 
+Visual style for Button widgets — fill, hover, active colors and font size.
+
 ## Button
 
 Stateful button widget. Tracks its own hover/click state across frames.
@@ -204,6 +206,8 @@ Otherwise no-op. Result is always clamped.
 
 ## TextAreaTheme
 
+Color and spacing theme for TextArea widgets.
+
 ## TextArea
 
 TextBuffer + ScrollState + theme → DrawCommands.
@@ -244,6 +248,8 @@ All returned coordinates are absolute (include x, y offsets).
 ---
 
 ## Cursor
+
+Row/column position in a TextBuffer.
 
 ## Selection
 

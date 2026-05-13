@@ -108,8 +108,8 @@ class Emitter:
     # in manifest.toml under [launch] notification_scope and resolved by the
     # host at dispatch time. Apps just call notify(); the manifest controls
     # whether the notification crosses window or context boundaries.
-    def notify(self, title: str, body: str = "", level: str = "info",
-               priority: "int | None" = None,
+    def notify(self, title: str, priority: int, body: str = "",
+               level: str = "info",
                actions: "list | None" = None,
                image_inline: "dict | None" = None,
                image_pipe_id: "str | None" = None,
@@ -128,11 +128,9 @@ class Emitter:
         prefixed with width/height u32-LE. Mutually exclusive with
         `image_inline` — host warns + drops the pipe ref if both set.
         """
-        if priority is None:
-            raise TypeError("notify() requires 'priority' (int, higher = more urgent)")
         payload = {"type": "notify", "level": level, "title": title,
                    "body": body, "kind": "message",
-                   "priority": int(priority),
+                   "priority": priority,
                    "actions": actions or []}
         if image_inline is not None:
             payload["image_inline"] = image_inline
@@ -169,9 +167,9 @@ class Emitter:
 
     # kind = "choice"
     @_blocking_emit_method
-    async def notify_choice(self, title: str, options: list, body: str = "",
+    async def notify_choice(self, title: str, options: list, priority: int,
+                            body: str = "",
                             level: str = "info", required: bool = False,
-                            priority: "int | None" = None,
                             image_inline: "dict | None" = None,
                             image_pipe_id: "str | None" = None,
                             timeout_secs: "int | None" = None,
@@ -193,8 +191,6 @@ class Emitter:
         Await this from async hooks. From background threads use
         ``self.emit.run_sync(self.emit.notify_choice(...))``.
         """
-        if priority is None:
-            raise TypeError("notify_choice() requires 'priority' (int, higher = more urgent)")
         # Warn if any option uses a reserved shortcut key.
         import warnings
         for opt in options:
@@ -211,7 +207,7 @@ class Emitter:
         self._app._pending_notify[notify_id] = q
         payload = {"type": "notify", "level": level, "title": title, "body": body,
                    "kind": "choice", "options": options, "required": required,
-                   "priority": int(priority),
+                   "priority": priority,
                    "notify_id": notify_id}
         if image_inline is not None:
             payload["image_inline"] = image_inline
@@ -229,8 +225,8 @@ class Emitter:
     # bytes on payloads the host will only reject.
     @_blocking_emit_method
     async def notify_with_image(self, title: str, body: str, image_bytes: bytes,
-                                mime: str, level: str = "info",
-                                priority: "int | None" = None,
+                                mime: str, priority: int,
+                                level: str = "info",
                                 choices: "list | None" = None) -> "str | None":
         """Post a notification with an inline base64-encoded image attachment.
 
@@ -249,8 +245,6 @@ class Emitter:
         Await this from async hooks. From background threads use
         ``self.emit.run_sync(self.emit.notify_with_image(...))``.
         """
-        if priority is None:
-            raise TypeError("notify_with_image() requires 'priority' (int, higher = more urgent)")
         if mime not in ("image/png", "image/jpeg"):
             raise ValueError(f"notify_with_image() mime must be image/png or image/jpeg, got {mime!r}")
         # 50 KB cap: matches the host's `MAX_INLINE_IMAGE_BYTES`. Apps that
@@ -275,9 +269,9 @@ class Emitter:
 
     # kind = "input"
     @_blocking_emit_method
-    async def notify_input(self, title: str, prompt: str = "", body: str = "",
+    async def notify_input(self, title: str, priority: int,
+                           prompt: str = "", body: str = "",
                            level: str = "info", required: bool = False,
-                           priority: "int | None" = None,
                            timeout_secs: "int | None" = None,
                            on_dismiss: "str | None" = None) -> str:
         """Post an input notification and await until the user submits or
@@ -289,14 +283,12 @@ class Emitter:
         Await this from async hooks. From background threads use
         ``self.emit.run_sync(self.emit.notify_input(...))``.
         """
-        if priority is None:
-            raise TypeError("notify_input() requires 'priority' (int, higher = more urgent)")
         notify_id = str(uuid.uuid4())
         q: asyncio.Queue[str] = _make_async_queue()
         self._app._pending_notify[notify_id] = q
         payload = {"type": "notify", "level": level, "title": title, "body": body,
                    "kind": "input", "input_prompt": prompt, "required": required,
-                   "priority": int(priority),
+                   "priority": priority,
                    "notify_id": notify_id}
         if timeout_secs is not None:
             payload["timeout_secs"] = int(timeout_secs)
@@ -306,9 +298,9 @@ class Emitter:
         return await q.get()
 
     @_blocking_emit_method
-    async def notify_and_wait(self, title: str, body: str = "", level: str = "info",
+    async def notify_and_wait(self, title: str, priority: int,
+                              body: str = "", level: str = "info",
                               actions: "list | None" = None,
-                              priority: "int | None" = None,
                               timeout_secs: "int | None" = None,
                               on_dismiss: "str | None" = None) -> str:
         """Post a message notification and await until the user acknowledges
@@ -321,14 +313,12 @@ class Emitter:
         Await this from async hooks. From background threads use
         ``self.emit.run_sync(self.emit.notify_and_wait(...))``.
         """
-        if priority is None:
-            raise TypeError("notify_and_wait() requires 'priority' (int, higher = more urgent)")
         notify_id = str(uuid.uuid4())
         q: asyncio.Queue[str] = _make_async_queue()
         self._app._pending_notify[notify_id] = q
         payload = {"type": "notify", "level": level, "title": title, "body": body,
                    "kind": "message", "actions": actions or [],
-                   "priority": int(priority),
+                   "priority": priority,
                    "notify_id": notify_id}
         if timeout_secs is not None:
             payload["timeout_secs"] = int(timeout_secs)

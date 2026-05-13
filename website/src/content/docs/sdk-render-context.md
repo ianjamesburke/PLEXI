@@ -508,7 +508,7 @@ def debug(message: str) -> None
 ### `notify`
 
 ```python
-def notify(title: str, body: str = '', level: str = 'info', priority: 'int | None' = None, actions: 'list | None' = None, image_inline: 'dict | None' = None, image_pipe_id: 'str | None' = None, timeout_secs: 'int | None' = None, on_dismiss: 'str | None' = None) -> None
+def notify(title: str, priority: int, body: str = '', level: str = 'info', actions: 'list | None' = None, image_inline: 'dict | None' = None, image_pipe_id: 'str | None' = None, timeout_secs: 'int | None' = None, on_dismiss: 'str | None' = None) -> None
 ```
 
 Post a message notification. See Emitter.notify.
@@ -521,7 +521,7 @@ Scope is resolved from the app's manifest — not an argument.
 ### `notify_choice`
 
 ```python
-async def notify_choice(title: str, options: list, body: str = '', level: str = 'info', required: bool = False, priority: 'int | None' = None, image_inline: 'dict | None' = None, image_pipe_id: 'str | None' = None, timeout_secs: 'int | None' = None, on_dismiss: 'str | None' = None) -> str
+async def notify_choice(title: str, options: list, priority: int, body: str = '', level: str = 'info', required: bool = False, image_inline: 'dict | None' = None, image_pipe_id: 'str | None' = None, timeout_secs: 'int | None' = None, on_dismiss: 'str | None' = None) -> str
 ```
 
 Post a choice notification and await until the user picks.
@@ -535,7 +535,7 @@ or "__cancel__" if the user dismissed. Use with ``await``.
 ### `notify_with_image`
 
 ```python
-async def notify_with_image(title: str, body: str, image_bytes: bytes, mime: str, level: str = 'info', priority: 'int | None' = None, choices: 'list | None' = None) -> 'str | None'
+async def notify_with_image(title: str, body: str, image_bytes: bytes, mime: str, priority: int, level: str = 'info', choices: 'list | None' = None) -> 'str | None'
 ```
 
 Convenience: post a notification with an inline base64 image.
@@ -546,7 +546,7 @@ See Emitter.notify_with_image — handles base64 + 50KB cap. Use with ``await``.
 ### `notify_input`
 
 ```python
-async def notify_input(title: str, prompt: str = '', body: str = '', level: str = 'info', required: bool = False, priority: 'int | None' = None, timeout_secs: 'int | None' = None, on_dismiss: 'str | None' = None) -> str
+async def notify_input(title: str, priority: int, prompt: str = '', body: str = '', level: str = 'info', required: bool = False, timeout_secs: 'int | None' = None, on_dismiss: 'str | None' = None) -> str
 ```
 
 Post an input notification and await until the user submits.
@@ -558,7 +558,7 @@ Returns the typed text, or "__cancel__" if dismissed. Use with ``await``.
 ### `notify_and_wait`
 
 ```python
-async def notify_and_wait(title: str, body: str = '', level: str = 'info', actions: 'list | None' = None, priority: 'int | None' = None, timeout_secs: 'int | None' = None, on_dismiss: 'str | None' = None) -> str
+async def notify_and_wait(title: str, priority: int, body: str = '', level: str = 'info', actions: 'list | None' = None, timeout_secs: 'int | None' = None, on_dismiss: 'str | None' = None) -> str
 ```
 
 Post a message notification and await for acknowledge/cancel.

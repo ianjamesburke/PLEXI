@@ -48,7 +48,7 @@ QUICK START
         def on_click(self, ctx, x, y, button):
             # button: "primary" | "secondary" | "middle"
             # x, y are pixel coordinates within the pane
-            ctx.notify("Clicked", f"({x:.0f}, {y:.0f}) {button}")
+            ctx.notify("Clicked", priority=50, body=f"({x:.0f}, {y:.0f}) {button}")
 
     CounterApp().run()
 
@@ -156,22 +156,22 @@ notification modal (ctx.notify(...) returns immediately; the other three
 block the calling thread until the user responds — run them on a worker
 thread if the app needs to stay interactive).
 
-  ctx.notify(title, body="", level="info", priority=PRIORITY_NORMAL)
+  ctx.notify(title, priority, body="", level="info")
       Fire-and-forget message. Enter / Space acknowledge, Esc dismisses.
 
-  ctx.notify_and_wait(title, body="", priority=...)  -> str
+  ctx.notify_and_wait(title, priority, body="")  -> str
       Same as notify() but blocks. Returns "acknowledge" or "cancel".
 
-  ctx.notify_choice(title, options, body="", required=False, priority=...) -> str
+  ctx.notify_choice(title, options, priority, body="", required=False) -> str
       Blocking choice picker. options = [{"label":..., "value":...,
       "shortcut":...}]. Returns chosen value (or label if no value),
       or "__cancel__" if dismissed.
 
-  ctx.notify_input(title, prompt="", body="", required=False, priority=...) -> str
+  ctx.notify_input(title, priority, prompt="", body="", required=False) -> str
       Blocking text input. Returns the typed string, or "__cancel__".
 
-  ctx.notify_with_image(title, body, image_bytes, mime, priority=...,
-                        choices=None) -> str | None
+  ctx.notify_with_image(title, body, image_bytes, mime, priority,
+                        level="info", choices=None) -> str | None
       Convenience wrapper that handles base64 encoding + 50 KB cap.
       `image_bytes` > 50 KB raises ValueError locally. With `choices=None`
       this is fire-and-forget (returns None); with `choices` set it routes
@@ -292,7 +292,7 @@ Drawing methods:
       Each item is a dict — see ListItem shape below.
 
 Notification / logging (usable inside or outside a frame):
-  ctx.notify(title, body, level="info", actions=None)
+  ctx.notify(title, priority, body="", level="info", actions=None)
       Trigger a system notification. actions: list of NotifyAction dicts (see below).
 
   ctx.status_summary(text)
@@ -309,7 +309,7 @@ Emitter  (self.emit — available at all times, including background threads)
 
 All methods are thread-safe (protected by a global write lock).
 
-  emit.notify(title, body, level="info", actions=None)
+  emit.notify(title, priority, body="", level="info", actions=None)
       Trigger a system notification outside of a render frame.
 
   emit.log(level, message)  /  emit.info(msg)  /  emit.warn(msg)
