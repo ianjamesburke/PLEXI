@@ -1140,14 +1140,15 @@ impl PlexiApp {
                 let text = self.quick_note_text.clone();
                 let cmd_template = opt.command.clone();
                 let position = opt.position.clone().unwrap_or_else(|| "split".to_string());
+                let stay_alive = opt.stay_alive.unwrap_or(false);
                 let ctx_data = self.quick_note_ctx.clone();
                 let cmd = Self::substitute_note_tokens_static(&cmd_template, &text, &ctx_data);
                 log::info!("QuickNote: submenu selected via Enter: parent={parent_key} cursor={}", self.quick_note_sub_cursor);
-                log::info!("QuickNote: committed via '{}' position={position:?}", opt.label);
+                log::info!("QuickNote: committed via '{}' position={position:?} stay_alive={stay_alive}", opt.label);
                 match position.as_str() {
-                    "context-end" => self.open_at_context_end(&cmd),
-                    "context-start" => self.open_at_context_start(&cmd),
-                    _ => self.split_focused(false, Some(&cmd), true, None),
+                    "context-end" => self.open_at_context_end(&cmd, stay_alive),
+                    "context-start" => self.open_at_context_start(&cmd, stay_alive),
+                    _ => self.split_focused(false, Some(&cmd), !stay_alive, None),
                 }
                 self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteSubDestination(parent_key));
                 self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
@@ -1166,16 +1167,17 @@ impl PlexiApp {
                 let text = self.quick_note_text.clone();
                 let cmd_template = opt.command.clone();
                 let position = opt.position.clone().unwrap_or_else(|| "split".to_string());
+                let stay_alive = opt.stay_alive.unwrap_or(false);
                 let ctx_data = self.quick_note_ctx.clone();
                 let cmd = Self::substitute_note_tokens_static(
                     &cmd_template, &text, &ctx_data,
                 );
                 log::info!("QuickNote: submenu selected: parent={parent_key} key={key}");
-                log::info!("QuickNote: committed via '{}' position={position:?}", opt.label);
+                log::info!("QuickNote: committed via '{}' position={position:?} stay_alive={stay_alive}", opt.label);
                 match position.as_str() {
-                    "context-end" => self.open_at_context_end(&cmd),
-                    "context-start" => self.open_at_context_start(&cmd),
-                    _ => self.split_focused(false, Some(&cmd), true, None),
+                    "context-end" => self.open_at_context_end(&cmd, stay_alive),
+                    "context-start" => self.open_at_context_start(&cmd, stay_alive),
+                    _ => self.split_focused(false, Some(&cmd), !stay_alive, None),
                 }
                 self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteSubDestination(parent_key));
                 self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);

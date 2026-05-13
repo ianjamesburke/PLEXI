@@ -996,6 +996,9 @@ pub struct QuickNoteDestinationConfig {
     /// For `type = "pane"`: where to open the new pane.
     /// "split" (default) | "context-end" | "context-start"
     pub position: Option<String>,
+    /// For `type = "pane"`: keep the pane open after the command exits.
+    /// Defaults to `false` (pane closes when command exits).
+    pub stay_alive: Option<bool>,
     /// When set, this entry is a submenu. No `dest_type` needed at top level.
     pub options: Option<Vec<QuickNoteSubOptionConfig>>,
 }
@@ -1007,6 +1010,8 @@ pub struct QuickNoteSubOptionConfig {
     pub label: String,
     pub command: String,
     pub position: Option<String>,
+    /// Keep the pane open after the command exits. Defaults to `false`.
+    pub stay_alive: Option<bool>,
 }
 
 // ── Adopted workspace root (set once by main when an explicit path arg is
