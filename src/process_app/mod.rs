@@ -1376,20 +1376,40 @@ impl App for ProcessApp {
                     egui::Color32::from_rgb(0xff, 0x55, 0x55),
                 );
                 let mut y = title_pos.y + 24.0;
+                let available_width = pane_rect.max.x - title_pos.x - 16.0;
+                let font = egui::FontId::monospace(11.0);
+
                 for line in stderr_lines.iter().rev() {
-                    let trimmed: String = line.chars().take(160).collect();
-                    painter.text(
-                        egui::pos2(title_pos.x, y),
-                        egui::Align2::LEFT_TOP,
-                        &trimmed,
-                        egui::FontId::monospace(11.0),
-                        ctx.colors.text_dim,
+                    let mut layout_job = egui::text::LayoutJob::default();
+                    layout_job.append(
+                        line,
+                        0.0,
+                        egui::TextFormat {
+                            font_id: font.clone(),
+                            color: ctx.colors.text_dim,
+                            ..Default::default()
+                        },
                     );
-                    y += 14.0;
+                    layout_job.wrap = egui::text::TextWrapping {
+                        max_width: available_width,
+                        ..Default::default()
+                    };
+
+                    let galley = ui.ctx().fonts(|f| f.layout_job(layout_job));
+                    painter.galley(egui::pos2(title_pos.x, y), galley.clone(), ctx.colors.text_dim);
+
+                    let line_height = galley.rows.len() as f32 * 14.0;
+                    y += line_height;
+
                     if y > pane_rect.max.y - 16.0 {
                         break;
                     }
                 }
+
+                log::info!(
+                    "crash_overlay: rendered stderr with text wrapping (available_width={:.0})",
+                    available_width
+                );
 
                 // C key: copy crash report to clipboard
                 if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::C)) {
