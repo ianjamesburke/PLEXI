@@ -2718,9 +2718,9 @@ impl PlexiApp {
                     // Each entry: (chip groups for one combo, description).
                     // Every modifier/key is a separate chip — no combined strings.
                     let shortcuts: &[(&[&str], &str)] = &[
+                        (&["⌘", "P"], "command palette"),
                         (&["⌘", "N"], "new terminal"),
                         (&["⌘", "⇧", "N"], "new context"),
-                        (&["⌘", "H", "J", "K", "L"], "move focus (panes & windows)"),
                         (&["⌘", "/"], "keyboard shortcuts"),
                     ];
 
@@ -2747,8 +2747,7 @@ impl PlexiApp {
                     ui.add_space(style::SPACE_SM);
 
                     let tips: &[&str] = &[
-                        "Right-click a context → Move to Top to keep your most important projects first",
-                        "⌘P jumps to any pane across all contexts instantly",
+                        "⌘P opens the command palette — jump to any pane or launch an installed app",
                         "⌘⇧N opens a fresh context — use it like a virtual desktop",
                     ];
                     for tip in tips {
