@@ -66,7 +66,8 @@ impl PlexiApp {
         let new_id = self.host.alloc_pane_id();
         let ctx_id = self.windows[active].context_id;
         let ctx_name = self.context_name_for(ctx_id);
-        let settings = Self::make_backend_settings(new_id, resolved_cwd, &self.colors, ctx_id, &ctx_name);
+        let ctx_desc = self.context_description_for(ctx_id);
+        let settings = Self::make_backend_settings(new_id, resolved_cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc);
         let Some(term) = TerminalPane::new(
             new_id,
             self.ctx.clone(),
