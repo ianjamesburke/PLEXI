@@ -8,7 +8,7 @@ Added `website/scripts/generate-sdk-docs.py` that parses SDK Python source via `
 
 Process revealed several SDK-side inconsistencies (filed as #1260): stale handler overview listing 12 of 26+ handlers, notify priority signatures lying to type checkers (`int | None = None` but raises TypeError on None), spawn handler naming breaking underscore convention, three dataclasses with zero docstrings. Generator also needed to filter `@property` getters/setters and strip rST `::` artifacts.
 
-**Breaks if:** `npm run build` in `website/` fails (generator must run before Astro); or Railway deploy can't find SDK source (build context must be repo root, `SDK_SOURCE=/sdk/plexi_sdk`).
+**Breaks if:** `npm run build` in `website/` fails (generator must run before Astro); or Railway deploy can't find SDK source (build context must be repo root, `SDK_SOURCE=/sdk/plexi_sdk`). See GOTCHAS.md `[railway]` entry for the three Railway dashboard settings that must align.
 
 ## 2026-05-11 — [CHANGED] Config template made fully self-documenting (PR #1117 → alpha)
 

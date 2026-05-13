@@ -50,3 +50,7 @@ __pycache__/
 *.pyo
 sdk/python/**/__pycache__/
 sdk/python/*.egg-info/
+
+# Local config
+.plexi/
+.superpowers/

@@ -1,8 +1,23 @@
 <!-- GOTCHAS.md — Non-obvious discoveries, failed approaches, and environment quirks specific to PLEXI. Only write an entry when something genuinely surprised you. For universal behavioral rules see ~/.claude/CLAUDE.md; for language/framework API gotchas see the coding-conventions skill. Review weekly: if the same area tag appears 3+ times, fix the root cause rather than adding another entry. -->
 
-## Area tags: git · ship · macos · rust · egui · sdk · cargo · python · cli · quick-note
+## Area tags: git · ship · macos · rust · egui · sdk · cargo · python · cli · quick-note · railway
 
 ---
+
+## [railway] Build context must be repo root, builder must be Dockerfile
+
+The website Dockerfile (`website/Dockerfile`) uses `COPY website/ .` and `COPY sdk/python/plexi_sdk /sdk/plexi_sdk` — both paths are relative to the build context root. Three things must align in Railway dashboard for this to work:
+
+1. **Root Directory** = `/` (or blank) — so the build context includes the entire repo, not just `website/`
+2. **Builder** = `Dockerfile` (not Railpack) — Railpack auto-detects Rust from `Cargo.toml` at repo root and tries to build the host binary instead of the website
+3. **Dockerfile Path** = `website/Dockerfile`
+
+`railway.json` at repo root declares `"builder": "DOCKERFILE"` but Railway's dashboard setting takes precedence over `railway.json` when Railpack is explicitly selected. If the build log shows `railpack` or Rust edition errors, the builder override isn't active.
+
+**Symptoms by misconfiguration:**
+- Root Directory = `website/` → `"/website": not found` (COPY looks for `website/` inside `website/`)
+- Builder = Railpack → Rust `edition2024` errors (Railpack found `Cargo.toml`, ignoring Dockerfile)
+- Both wrong → either symptom depending on which fails first
 
 ## [quick-note] shell injection surface for pane destination token substitution
 `substitute_note_tokens_static` applies `shell_quote` to both `{note}` and `{cwd}` before substituting into the command template. `shell_quote` uses POSIX single-quote wrapping (`'...'`) with `'` escaped as `'\''` — this blocks all expansion inside the quoted region including `$(...)`, backticks, `\`, newlines, and semicolons. Audit (issue #1113) confirmed no gaps: all three call sites (pane_ops/create.rs and two in overlays.rs) route through the same function.
