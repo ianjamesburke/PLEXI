@@ -1744,7 +1744,7 @@ impl eframe::App for PlexiApp {
         // drain. Then drain the keyboard buffer so downstream readers —
         // focused app (`dispatch_app_key_events`), terminal backends,
         // `keys::poll_actions` — see only the global allowlist (Cmd+Q,
-        // Cmd+W, Cmd+Shift+A, Cmd+]/Cmd+[).
+        // Cmd+W, Cmd+Shift+A, Cmd+Shift+L/H).
         let mut early_modal_cmds: Vec<crate::app_trait::AppCommand> = Vec::new();
         if self.input_captured_by_overlay() {
             match self.focus_stack.last() {
