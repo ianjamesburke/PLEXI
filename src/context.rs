@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 pub(crate) enum WindowMenuAction {
     Rename,
+    EditDescription,
     MoveToTop,
     MoveUp,
     MoveDown,
@@ -26,6 +27,8 @@ pub struct Context {
     /// Optional project root. When set, new panes in this context open at
     /// this directory rather than inheriting the focused pane's CWD.
     pub root: Option<PathBuf>,
+    /// Optional description — ambient intent for what you're doing in this context.
+    pub description: Option<String>,
     /// Stable unique ID, assigned at creation and never reused.
     pub context_id: u64,
 }

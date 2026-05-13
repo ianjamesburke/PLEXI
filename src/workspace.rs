@@ -26,6 +26,9 @@ pub struct SavedContext {
     /// Optional project root — persisted so contexts restore their root on relaunch.
     #[serde(default)]
     pub root: Option<PathBuf>,
+    /// Optional description — ambient intent for what you're doing in this context.
+    #[serde(default)]
+    pub description: Option<String>,
     pub context_id: u64,
 }
 

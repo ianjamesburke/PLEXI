@@ -1608,6 +1608,12 @@ impl ProcessApp {
                     self.type_id
                 );
             }
+            HostCommand::SetContextDescription { .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: received SetContextDescription over PGAP — ignored (use PLEXI_SOCKET instead)",
+                    self.type_id
+                );
+            }
             HostCommand::ListPanes { .. } => {
                 log::warn!(
                     "ProcessApp[{}]: received ListPanes over PGAP — ignored (use PLEXI_SOCKET instead)",

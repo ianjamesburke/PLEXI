@@ -1072,6 +1072,10 @@ pub enum HostCommand {
     SetContextRoot {
         root: std::path::PathBuf,
     },
+    /// Set/update the description of the active context. Sent by `plexi context describe`.
+    SetContextDescription {
+        description: String,
+    },
 
     // ── Media + HTTP primitives ──────────────────────────────────────────
     /// Host-brokered HTTP request. Requires `net.http` capability.

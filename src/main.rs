@@ -454,6 +454,7 @@ fn main() -> eframe::Result {
                         ContextCmd::Open { path } => std::process::exit(cli::context_open_cli(path.as_deref())),
                         ContextCmd::SetRoot { path } => std::process::exit(cli::context_set_root_cli(path.as_deref())),
                         ContextCmd::Current => std::process::exit(cli::context_current_cli()),
+                        ContextCmd::Describe { text } => std::process::exit(cli::context_describe_cli(&text)),
                     },
                     Commands::Completions { shell } => {
                         let s = shell.as_deref().unwrap_or("zsh");

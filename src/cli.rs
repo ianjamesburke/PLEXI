@@ -3557,6 +3557,16 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
     }))
 }
 
+/// `plexi context describe "text"`
+///
+/// Sets the description of the active context.
+pub fn context_describe_cli(text: &str) -> i32 {
+    send_to_socket(serde_json::json!({
+        "type": "set_context_description",
+        "description": text,
+    }))
+}
+
 /// `plexi context current`
 ///
 /// Prints the context ID and name for the current pane as JSON.
@@ -3570,6 +3580,7 @@ pub fn context_current_cli() -> i32 {
         }
     };
     let context_name = std::env::var("PLEXI_CONTEXT_NAME").unwrap_or_default();
+    let context_description = std::env::var("PLEXI_CONTEXT_DESCRIPTION").unwrap_or_default();
     let id_num: u64 = match context_id.parse() {
         Ok(n) => n,
         Err(_) => {
@@ -3580,6 +3591,7 @@ pub fn context_current_cli() -> i32 {
     let json = serde_json::json!({
         "context_id": id_num,
         "context_name": context_name,
+        "context_description": context_description,
     });
     match serde_json::to_string_pretty(&json) {
         Ok(s) => println!("{s}"),
@@ -3765,7 +3777,7 @@ _plexi() {
           ;;
         context)
           local subcmds
-          subcmds=('new:Create a new context' 'open:Open a context at a path' 'set-root:Set the root directory' 'current:Print current context as JSON')
+          subcmds=('new:Create a new context' 'open:Open a context at a path' 'set-root:Set the root directory' 'current:Print current context as JSON' 'describe:Set context description')
           _describe 'subcommand' subcmds
           ;;
         notify)
@@ -4026,6 +4038,7 @@ complete -c plexi -f -n "__fish_seen_subcommand_from context" -a new -d "Create 
 complete -c plexi -f -n "__fish_seen_subcommand_from context" -a open -d "Open a context at a path"
 complete -c plexi -f -n "__fish_seen_subcommand_from context" -a set-root -d "Set the root directory"
 complete -c plexi -f -n "__fish_seen_subcommand_from context" -a current -d "Print current context as JSON"
+complete -c plexi -f -n "__fish_seen_subcommand_from context" -a describe -d "Set context description"
 
 # notify flags
 complete -c plexi -n "__fish_seen_subcommand_from notify" -l title -d "Notification title"

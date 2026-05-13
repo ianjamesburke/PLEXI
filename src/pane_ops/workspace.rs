@@ -31,6 +31,7 @@ impl PlexiApp {
             name: ctx_name,
             path: cwd.clone(),
             root: Some(cwd.clone()),
+            description: None,
             context_id: ctx_id,
         });
         self.windows.push(Window {
@@ -346,6 +347,7 @@ impl PlexiApp {
                 name: ctx.name.clone(),
                 path: ctx.path.clone(),
                 root: ctx.root.clone(),
+                description: ctx.description.clone(),
                 context_id: ctx.context_id,
             });
         }

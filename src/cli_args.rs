@@ -410,6 +410,11 @@ pub enum ContextCmd {
     },
     /// Print the context ID and name for the current pane as JSON
     Current,
+    /// Set the description for the active context
+    Describe {
+        /// Description text
+        text: String,
+    },
 }
 
 #[derive(Subcommand)]
