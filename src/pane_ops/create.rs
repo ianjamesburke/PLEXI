@@ -685,9 +685,11 @@ impl PlexiApp {
         let workspace_root = crate::config::active_workspace_root();
         let context_id = self.windows.get(active).map(|w| w.context_id).unwrap_or(0);
         let context = self.context_name_for(context_id);
+        let context_root = self.router.active().root.clone();
         self.quick_note_text = String::new();
-        self.quick_note_ctx = crate::app::QuickNoteCtx { cwd, workspace_root, context };
-        self.quick_note_pending_parent = None;
+        self.quick_note_ctx = crate::app::QuickNoteCtx { cwd, workspace_root, context, context_root };
+        self.quick_note_children_cache.clear();
+        self.quick_note_children_rx = None;
         self.push_focus_layer(crate::app::FocusLayer::QuickNote);
         log::info!(
             "QuickNote: modal opened — cwd={}, workspace={:?}",
@@ -701,53 +703,62 @@ impl PlexiApp {
     pub(crate) fn commit_quick_note(
         &mut self,
         text: &str,
-        dest: &crate::config::QuickNoteDestinationConfig,
+        node: &crate::config::QuickNoteNode,
     ) -> bool {
         let ctx = self.quick_note_ctx.clone();
-        match dest.dest_type.as_deref() {
-            Some("backlog") | None if dest.options.is_none() => {
-                let path = dest.path.as_deref().unwrap_or("");
-                let dir = if path.is_empty() {
-                    crate::config::config_dir().join("backlog")
-                } else {
-                    let expanded = if path.starts_with("~/") {
-                        dirs::home_dir()
-                            .unwrap_or_else(|| PathBuf::from("/"))
-                            .join(&path[2..])
-                    } else {
-                        PathBuf::from(path)
-                    };
-                    expanded
-                };
-                Self::write_backlog_note(text, &dir, &ctx)
-            }
-            Some("pane") => {
-                let cmd_template = match &dest.command {
-                    Some(c) => c.clone(),
-                    None => {
-                        log::warn!("QuickNote: pane destination '{}' has no command", dest.label);
-                        return false;
-                    }
-                };
-                let cmd = Self::substitute_note_tokens_static(&cmd_template, text, &ctx);
-                let position = dest.position.as_deref().unwrap_or("split");
-                let stay_alive = dest.stay_alive.unwrap_or(false);
+
+        // Deprecation warning for old-style fields
+        if node.dest_type.as_deref() == Some("pane") || node.position.is_some() {
+            log::warn!(
+                "QuickNote: '{}' uses deprecated 'type = \"pane\"' or 'position' — migrate to bare command",
+                node.label
+            );
+        }
+
+        if let Some(cmd_template) = &node.command {
+            let cmd = Self::substitute_note_tokens_static(cmd_template, text, &ctx);
+            let stay_alive = node.stay_alive.unwrap_or(false);
+
+            if node.hidden {
+                log::info!("QuickNote: committed via '{}' (hidden background spawn)", node.label);
+                if let Err(e) = std::process::Command::new("sh")
+                    .args(["-c", &cmd])
+                    .spawn()
+                {
+                    log::warn!("QuickNote: hidden spawn failed for '{}': {e}", cmd);
+                }
+            } else {
+                // Legacy position support during migration period
+                let position = node.position.as_deref().unwrap_or("split");
                 log::info!(
                     "QuickNote: committed via '{}' position={:?} stay_alive={stay_alive}",
-                    dest.label,
-                    position
+                    node.label, position
                 );
                 match position {
                     "context-end" => self.open_at_context_end(&cmd, stay_alive),
                     "context-start" => self.open_at_context_start(&cmd, stay_alive),
                     _ => self.split_focused(false, Some(&cmd), !stay_alive, None),
                 }
-                true
             }
-            _ => {
-                log::warn!("QuickNote: unknown dest_type for '{}'", dest.label);
-                false
-            }
+            true
+        } else if node.dest_type.as_deref() == Some("backlog") ||
+                  (node.dest_type.is_none() && node.command.is_none() &&
+                   node.options.is_none() && node.children_cmd.is_none()) {
+            // Backlog destination (type = "backlog" or bare with just path)
+            let path = node.path.as_deref().unwrap_or("");
+            let dir = if path.is_empty() {
+                crate::config::config_dir().join("backlog")
+            } else if path.starts_with("~/") {
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("/"))
+                    .join(&path[2..])
+            } else {
+                PathBuf::from(path)
+            };
+            Self::write_backlog_note(text, &dir, &ctx)
+        } else {
+            log::warn!("QuickNote: leaf '{}' has no command or recognized dest_type", node.label);
+            false
         }
     }
 
@@ -803,8 +814,13 @@ impl PlexiApp {
     ) -> String {
         let esc = |s: &str| -> String { crate::shell::shell_quote(s) };
         let cwd_str = ctx.cwd.to_string_lossy().to_string();
+        let context_root_str = ctx.context_root
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
         cmd.replace("{note}", &esc(note))
            .replace("{cwd}", &esc(&cwd_str))
+           .replace("{context_root}", &esc(&context_root_str))
     }
 
     /// Spawn a terminal pane as the last child of the root container.
@@ -1256,6 +1272,7 @@ mod quick_note_tests {
             cwd: std::path::PathBuf::from(cwd),
             workspace_root: None,
             context: "test".to_string(),
+            context_root: None,
         }
     }
 
@@ -1347,5 +1364,22 @@ mod quick_note_tests {
         let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {note}", note, &ctx("/tmp"));
         let out = sh(&cmd);
         assert_eq!(out, note, "all-apostrophe note mangled: got {out:?}");
+    }
+
+    #[test]
+    fn context_root_token_is_shell_escaped() {
+        let mut c = ctx("/tmp");
+        c.context_root = Some(std::path::PathBuf::from("/projects/it's a dir"));
+        let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {context_root}", "note", &c);
+        let out = sh(&cmd);
+        assert_eq!(out, "/projects/it's a dir", "context_root apostrophe mangled: got {out:?}");
+    }
+
+    #[test]
+    fn context_root_empty_when_unset() {
+        let c = ctx("/tmp");
+        let result = PlexiApp::substitute_note_tokens_static("echo {context_root}", "note", &c);
+        // When context_root is None, {context_root} substitutes to shell_quote("") = ''
+        assert!(result.contains("''") || result.ends_with("echo "), "unexpected result: {result}");
     }
 }

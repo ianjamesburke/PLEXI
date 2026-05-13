@@ -870,19 +870,22 @@ impl PlexiApp {
                 .and_then(|qn| qn.destinations.get(cursor - 1).cloned());
             if let Some(dest) = dest {
                 log::info!("QuickNote: destination selected via Enter: cursor={cursor} key={}", dest.key);
-                if dest.options.is_some() {
+                if dest.options.is_some() || dest.children_cmd.is_some() {
                     let key = dest.key;
-                    self.quick_note_pending_parent = Some(key);
                     self.quick_note_sub_cursor = 0;
-                    self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(key));
-                    log::info!("QuickNote: submenu opened: parent={key}");
-                    self.draw_quick_note_subdestination(ctx);
+                    self.quick_note_children_cache.clear();
+                    self.quick_note_children_rx = None;
+                    self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(vec![key]));
+                    log::info!("QuickNote: submenu opened: path=[{key}]");
+                    self.draw_quick_note_menu(ctx, &[key]);
                 } else {
                     let text = self.quick_note_text.clone();
                     if self.commit_quick_note(&text, &dest) {
                         self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
                         self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
                         self.quick_note_text.clear();
+                        self.quick_note_children_cache.clear();
+                        self.quick_note_children_rx = None;
                     }
                 }
             }
@@ -897,13 +900,14 @@ impl PlexiApp {
                 let dest = self.config.quick_note.as_ref()
                     .and_then(|qn| qn.destinations.get(cursor - 1).cloned());
                 if let Some(dest) = dest {
-                    if dest.options.is_some() {
+                    if dest.options.is_some() || dest.children_cmd.is_some() {
                         let key = dest.key;
-                        self.quick_note_pending_parent = Some(key);
                         self.quick_note_sub_cursor = 0;
-                        self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(key));
-                        log::info!("QuickNote: submenu opened via L: parent={key}");
-                        self.draw_quick_note_subdestination(ctx);
+                        self.quick_note_children_cache.clear();
+                        self.quick_note_children_rx = None;
+                        self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(vec![key]));
+                        log::info!("QuickNote: submenu opened via L: path=[{key}]");
+                        self.draw_quick_note_menu(ctx, &[key]);
                         return;
                     }
                 }
@@ -928,18 +932,21 @@ impl PlexiApp {
                 .and_then(|qn| qn.destinations.iter().find(|d| d.key == key).cloned());
             if let Some(dest) = dest {
                 log::info!("QuickNote: destination selected: key={key}");
-                if dest.options.is_some() {
-                    self.quick_note_pending_parent = Some(key);
+                if dest.options.is_some() || dest.children_cmd.is_some() {
                     self.quick_note_sub_cursor = 0;
-                    self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(key));
-                    log::info!("QuickNote: submenu opened: parent={key}");
-                    self.draw_quick_note_subdestination(ctx);
+                    self.quick_note_children_cache.clear();
+                    self.quick_note_children_rx = None;
+                    self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(vec![key]));
+                    log::info!("QuickNote: submenu opened: path=[{key}]");
+                    self.draw_quick_note_menu(ctx, &[key]);
                 } else {
                     let text = self.quick_note_text.clone();
                     if self.commit_quick_note(&text, &dest) {
                         self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
                         self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
                         self.quick_note_text.clear();
+                        self.quick_note_children_cache.clear();
+                        self.quick_note_children_rx = None;
                     }
                 }
             }
@@ -1036,7 +1043,7 @@ impl PlexiApp {
                         // Config destinations
                         for (idx, dest) in destinations.iter().enumerate() {
                             let row_idx = idx + 1;
-                            let label = if dest.options.is_some() {
+                            let label = if dest.options.is_some() || dest.children_cmd.is_some() {
                                 format!("{} ›", dest.label)
                             } else {
                                 dest.label.clone()
@@ -1075,123 +1082,213 @@ impl PlexiApp {
             });
     }
 
-    /// Quick note sub-destination picker.
-    pub(crate) fn draw_quick_note_subdestination(&mut self, ctx: &egui::Context) {
+    /// Recursive quick-note menu renderer. `key_path` is the sequence of keys from the
+    /// root destinations list to the current node. E.g. `&[3]` = children of destination 3.
+    pub(crate) fn draw_quick_note_menu(&mut self, ctx: &egui::Context, key_path: &[u8]) {
         use crate::style;
         use crate::widgets;
         use egui::{Align2, RichText, Vec2};
 
-        let parent_key = match self.focus_stack.last() {
-            Some(crate::app::FocusLayer::QuickNoteSubDestination(k)) => *k,
-            _ => {
-                // Shouldn't happen — defensive pop of whatever is on top.
-                self.focus_stack.pop();
-                return;
+        // Resolve the current node by walking key_path through the config tree.
+        let node: Option<crate::config::QuickNoteNode> = {
+            let mut current: Option<&Vec<crate::config::QuickNoteNode>> =
+                self.config.quick_note.as_ref().map(|qn| &qn.destinations);
+            let mut found = None;
+            for &key in key_path {
+                if let Some(nodes) = current {
+                    if let Some(n) = nodes.iter().find(|n| n.key == key) {
+                        found = Some(n.clone());
+                        current = n.options.as_ref();
+                    } else {
+                        found = None;
+                        break;
+                    }
+                } else {
+                    found = None;
+                    break;
+                }
             }
+            found
         };
 
-        // H or Esc → back to destination picker.
+        let current_layer = crate::app::FocusLayer::QuickNoteSubDestination(key_path.to_vec());
+
+        // ── Drain children_cmd receiver if pending ────────────────────────────────
+        // Cache key is the full key_path to avoid collisions when different submenus
+        // share child keys (e.g. both have a child with key=1).
+        let node_path = key_path.to_vec();
+        {
+            let mut received = None;
+            if let Some((pending_path, rx)) = &self.quick_note_children_rx {
+                if pending_path == &node_path {
+                    match rx.try_recv() {
+                        Ok(Ok(children)) => {
+                            log::info!(
+                                "QuickNote: children_cmd result received for path={:?} count={}",
+                                node_path, children.len()
+                            );
+                            received = Some((node_path.clone(), Ok(children)));
+                        }
+                        Ok(Err(e)) => {
+                            log::error!("QuickNote: children_cmd failed for path={:?}: {e}", node_path);
+                            received = Some((node_path.clone(), Err(e)));
+                        }
+                        Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            log::error!("QuickNote: children_cmd sender dropped for path={:?}", node_path);
+                            received = Some((node_path.clone(), Err("sender dropped".to_string())));
+                        }
+                    }
+                }
+            }
+            if let Some((path, result)) = received {
+                self.quick_note_children_rx = None;
+                match result {
+                    Ok(children) => { self.quick_note_children_cache.insert(path, children); }
+                    Err(_) => { self.quick_note_children_cache.insert(path, vec![]); }
+                }
+                self.quick_note_sub_cursor = 0;
+            }
+        }
+
+        // Determine the list of children to display.
+        // Priority: static options > dynamic children_cmd results.
+        let static_options = node.as_ref().and_then(|n| n.options.as_ref());
+        let dynamic_children = if static_options.is_none() {
+            self.quick_note_children_cache.get(&node_path).cloned()
+        } else {
+            None
+        };
+        let loading = static_options.is_none()
+            && dynamic_children.is_none()
+            && self.quick_note_children_rx.as_ref().map(|(p, _)| p == &node_path).unwrap_or(false);
+
+        // Kick off children_cmd loading if needed and not already in flight.
+        if static_options.is_none() && dynamic_children.is_none() && !loading {
+            if let Some(n) = &node {
+                if let Some(cmd_template) = &n.children_cmd {
+                    let cmd = Self::substitute_note_tokens_static(
+                        cmd_template,
+                        &self.quick_note_text,
+                        &self.quick_note_ctx,
+                    );
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let path_for_log = node_path.clone();
+                    std::thread::spawn(move || {
+                        let result = std::process::Command::new("sh")
+                            .args(["-c", &cmd])
+                            .output()
+                            .map_err(|e| e.to_string())
+                            .and_then(|out| {
+                                if out.status.success() {
+                                    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+                                    let children = parse_children_cmd_output(&stdout);
+                                    Ok(children)
+                                } else {
+                                    Err(String::from_utf8_lossy(&out.stderr).to_string())
+                                }
+                            });
+                        let _ = tx.send(result);
+                    });
+                    log::info!("QuickNote: children_cmd spawned for path={:?}", path_for_log);
+                    self.quick_note_children_rx = Some((node_path, rx));
+                    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                }
+            }
+        }
+
+        // Resolve effective children list (empty if loading or no children).
+        let children: Vec<crate::config::QuickNoteNode> = if let Some(opts) = static_options {
+            opts.clone()
+        } else if let Some(dyn_children) = dynamic_children {
+            dyn_children
+        } else {
+            vec![]
+        };
+
+        let total = children.len();
+
+        // ── Input handling ────────────────────────────────────────────────────────
+
+        // H or Esc → navigate up.
         let back = ctx.input_mut(|i| {
             i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::H)
         });
         if back {
-            self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteSubDestination(parent_key));
-            self.quick_note_pending_parent = None;
-            log::info!("QuickNote: submenu dismissed, back to destination picker");
-            self.draw_quick_note_destination(ctx); // same-frame draw to avoid flash
-            return;
-        }
-
-        // Find parent destination options.
-        let options: Vec<crate::config::QuickNoteSubOptionConfig> = self.config.quick_note.as_ref()
-            .and_then(|qn| qn.destinations.iter().find(|d| d.key == parent_key))
-            .and_then(|d| d.options.clone())
-            .unwrap_or_default();
-
-        let total = options.len();
-
-        // Arrow / vim navigation.
-        let up = ctx.input_mut(|i| {
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::K)
-        });
-        let down = ctx.input_mut(|i| {
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::J)
-        });
-        if up {
-            self.quick_note_sub_cursor = if self.quick_note_sub_cursor == 0 {
-                total.saturating_sub(1)
+            self.pop_focus_layer(&current_layer);
+            log::info!("QuickNote: menu back: path={key_path:?}");
+            if key_path.len() > 1 {
+                let parent_path = key_path[..key_path.len() - 1].to_vec();
+                self.draw_quick_note_menu(ctx, &parent_path);
             } else {
-                self.quick_note_sub_cursor - 1
-            };
-            log::info!("QuickNote: sub cursor → {}", self.quick_note_sub_cursor);
-        }
-        if down {
-            self.quick_note_sub_cursor = (self.quick_note_sub_cursor + 1) % total.max(1);
-            log::info!("QuickNote: sub cursor → {}", self.quick_note_sub_cursor);
-        }
-
-        // Enter → dispatch selected option.
-        let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-        if enter {
-            if let Some(opt) = options.get(self.quick_note_sub_cursor).cloned() {
-                let text = self.quick_note_text.clone();
-                let cmd_template = opt.command.clone();
-                let position = opt.position.clone().unwrap_or_else(|| "split".to_string());
-                let stay_alive = opt.stay_alive.unwrap_or(false);
-                let ctx_data = self.quick_note_ctx.clone();
-                let cmd = Self::substitute_note_tokens_static(&cmd_template, &text, &ctx_data);
-                log::info!("QuickNote: submenu selected via Enter: parent={parent_key} cursor={}", self.quick_note_sub_cursor);
-                log::info!("QuickNote: committed via '{}' position={position:?} stay_alive={stay_alive}", opt.label);
-                match position.as_str() {
-                    "context-end" => self.open_at_context_end(&cmd, stay_alive),
-                    "context-start" => self.open_at_context_start(&cmd, stay_alive),
-                    _ => self.split_focused(false, Some(&cmd), !stay_alive, None),
-                }
-                self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteSubDestination(parent_key));
-                self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
-                self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
-                self.quick_note_text.clear();
-                self.quick_note_pending_parent = None;
+                self.draw_quick_note_destination(ctx);
             }
             return;
+        }
+
+        // Arrow / vim navigation (only when children are available).
+        if !children.is_empty() {
+            let up = ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::K)
+            });
+            let down = ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::J)
+            });
+            if up {
+                self.quick_note_sub_cursor = if self.quick_note_sub_cursor == 0 {
+                    total.saturating_sub(1)
+                } else {
+                    self.quick_note_sub_cursor - 1
+                };
+                log::info!("QuickNote: menu cursor → {}", self.quick_note_sub_cursor);
+            }
+            if down {
+                self.quick_note_sub_cursor = (self.quick_note_sub_cursor + 1) % total.max(1);
+                log::info!("QuickNote: menu cursor → {}", self.quick_note_sub_cursor);
+            }
+        }
+
+        // Enter → dispatch selected child.
+        let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        if enter && !children.is_empty() {
+            if let Some(child) = children.get(self.quick_note_sub_cursor).cloned() {
+                let key_path_owned = key_path.to_vec();
+                self.dispatch_menu_child(ctx, &key_path_owned, &child);
+            }
+            return;
+        }
+
+        // L → enter submenu for selected child.
+        let enter_sub = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::L));
+        if enter_sub && !children.is_empty() {
+            if let Some(child) = children.get(self.quick_note_sub_cursor).cloned() {
+                if child.options.is_some() || child.children_cmd.is_some() {
+                    let mut new_path = key_path.to_vec();
+                    new_path.push(child.key);
+                    self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(new_path.clone()));
+                    self.quick_note_sub_cursor = 0;
+                    log::info!("QuickNote: menu enter via L: path={new_path:?}");
+                    self.draw_quick_note_menu(ctx, &new_path);
+                    return;
+                }
+            }
         }
 
         // Digit keys → fast-dispatch by number.
         let pressed = consume_digit_key(ctx);
-
         if let Some(key) = pressed {
-            if let Some(opt) = options.iter().find(|o| o.key == key).cloned() {
-                let text = self.quick_note_text.clone();
-                let cmd_template = opt.command.clone();
-                let position = opt.position.clone().unwrap_or_else(|| "split".to_string());
-                let stay_alive = opt.stay_alive.unwrap_or(false);
-                let ctx_data = self.quick_note_ctx.clone();
-                let cmd = Self::substitute_note_tokens_static(
-                    &cmd_template, &text, &ctx_data,
-                );
-                log::info!("QuickNote: submenu selected: parent={parent_key} key={key}");
-                log::info!("QuickNote: committed via '{}' position={position:?} stay_alive={stay_alive}", opt.label);
-                match position.as_str() {
-                    "context-end" => self.open_at_context_end(&cmd, stay_alive),
-                    "context-start" => self.open_at_context_start(&cmd, stay_alive),
-                    _ => self.split_focused(false, Some(&cmd), !stay_alive, None),
-                }
-                self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteSubDestination(parent_key));
-                self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
-                self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
-                self.quick_note_text.clear();
-                self.quick_note_pending_parent = None;
+            if let Some(child) = children.iter().find(|c| c.key == key).cloned() {
+                let key_path_owned = key_path.to_vec();
+                self.dispatch_menu_child(ctx, &key_path_owned, &child);
             }
-            // Unrecognised key — digit was consumed but no matching option; redraw.
             return;
         }
 
-        // Render
+        // ── Render ────────────────────────────────────────────────────────────────
         let screen_rect = ctx.screen_rect();
-        let sub_cursor = self.quick_note_sub_cursor;
         egui::Area::new(egui::Id::new("quick_note_scrim"))
             .fixed_pos(screen_rect.min)
             .order(egui::Order::Middle)
@@ -1200,6 +1297,9 @@ impl PlexiApp {
             });
 
         let modal_w = (screen_rect.width() * 0.6).min(672.0).max(408.0);
+        let sub_cursor = self.quick_note_sub_cursor;
+        let node_label = node.as_ref().map(|n| n.label.as_str()).unwrap_or("Menu");
+
         egui::Area::new(egui::Id::new("quick_note_sub_modal"))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .order(egui::Order::Foreground)
@@ -1212,52 +1312,106 @@ impl PlexiApp {
                     .show(ui, |ui| {
                         ui.set_width(modal_w);
 
-                        let parent_label = self.config.quick_note.as_ref()
-                            .and_then(|qn| qn.destinations.iter().find(|d| d.key == parent_key))
-                            .map(|d| d.label.as_str())
-                            .unwrap_or("Submenu");
-
                         ui.label(
-                            RichText::new(parent_label)
+                            RichText::new(node_label)
                                 .color(self.colors.text_primary)
                                 .size(style::TEXT_BODY)
                                 .strong(),
                         );
                         ui.add_space(style::SPACE_MD);
 
-                        for (idx, opt) in options.iter().enumerate() {
-                            let row_frame = if sub_cursor == idx {
-                                egui::Frame::new()
-                                    .fill(self.colors.bg_active)
-                                    .corner_radius(egui::CornerRadius::same(4))
-                                    .inner_margin(egui::Margin::symmetric(4, 2))
-                            } else {
-                                egui::Frame::new()
-                                    .inner_margin(egui::Margin::symmetric(4, 2))
-                            };
-                            row_frame.show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = style::SPACE_SM;
-                                    widgets::key_chip(ui, &opt.key.to_string(), &self.colors);
-                                    ui.label(
-                                        RichText::new(&opt.label)
-                                            .color(self.colors.text_dim)
-                                            .size(style::TEXT_BODY),
-                                    );
+                        if loading {
+                            ui.label(
+                                RichText::new("Loading…")
+                                    .color(self.colors.text_dim)
+                                    .size(style::TEXT_BODY),
+                            );
+                        } else if children.is_empty() {
+                            ui.label(
+                                RichText::new("No items")
+                                    .color(self.colors.text_dim.linear_multiply(0.5))
+                                    .size(style::TEXT_BODY),
+                            );
+                        } else {
+                            for (idx, child) in children.iter().enumerate() {
+                                let child_label = if child.options.is_some() || child.children_cmd.is_some() {
+                                    format!("{} ›", child.label)
+                                } else {
+                                    child.label.clone()
+                                };
+                                let row_frame = if sub_cursor == idx {
+                                    egui::Frame::new()
+                                        .fill(self.colors.bg_active)
+                                        .corner_radius(egui::CornerRadius::same(4))
+                                        .inner_margin(egui::Margin::symmetric(4, 2))
+                                } else {
+                                    egui::Frame::new()
+                                        .inner_margin(egui::Margin::symmetric(4, 2))
+                                };
+                                row_frame.show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = style::SPACE_SM;
+                                        widgets::key_chip(ui, &child.key.to_string(), &self.colors);
+                                        ui.label(
+                                            RichText::new(&child_label)
+                                                .color(self.colors.text_dim)
+                                                .size(style::TEXT_BODY),
+                                        );
+                                    });
                                 });
-                            });
-                            ui.add_space(style::SPACE_SM);
+                                ui.add_space(style::SPACE_SM);
+                            }
                         }
 
                         ui.add_space(style::SPACE_XL);
                         ui.label(
-                            RichText::new("↑↓/jk navigate  ·  Enter select  ·  H/Esc back")
+                            RichText::new("↑↓/jk navigate  ·  Enter select  ·  L enter  ·  H/Esc back")
                                 .color(self.colors.text_dim.linear_multiply(0.4))
                                 .size(style::TEXT_HINT)
                                 .family(egui::FontFamily::Monospace),
                         );
                     });
             });
+    }
+
+    /// Dispatch a child node selected from within a menu at `parent_path`.
+    /// Handles: entering deeper submenus, committing leaf commands.
+    fn dispatch_menu_child(
+        &mut self,
+        ctx: &egui::Context,
+        parent_path: &[u8],
+        child: &crate::config::QuickNoteNode,
+    ) {
+        if child.options.is_some() || child.children_cmd.is_some() {
+            // Submenu — navigate deeper.
+            let mut new_path = parent_path.to_vec();
+            new_path.push(child.key);
+            self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(new_path.clone()));
+            self.quick_note_sub_cursor = 0;
+            log::info!("QuickNote: menu enter: path={new_path:?}");
+            self.draw_quick_note_menu(ctx, &new_path);
+        } else {
+            // Leaf — commit.
+            let text = self.quick_note_text.clone();
+            log::info!(
+                "QuickNote: menu commit: path={:?} key={} label='{}'",
+                parent_path, child.key, child.label
+            );
+            if self.commit_quick_note(&text, child) {
+                // Pop all submenu layers + destination + compose layers.
+                while matches!(
+                    self.focus_stack.last(),
+                    Some(crate::app::FocusLayer::QuickNoteSubDestination(_))
+                ) {
+                    self.focus_stack.pop();
+                }
+                self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
+                self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+                self.quick_note_text.clear();
+                self.quick_note_children_cache.clear();
+                self.quick_note_children_rx = None;
+            }
+        }
     }
 
     pub(crate) fn draw_quit_confirm_overlay(&self, ctx: &egui::Context) {
@@ -2742,4 +2896,28 @@ impl PlexiApp {
             self.show_cli_setup_prompt = false;
         }
     }
+}
+
+fn parse_children_cmd_output(stdout: &str) -> Vec<crate::config::QuickNoteNode> {
+    stdout.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() { return None; }
+            let (key_str, rest) = line.split_once('|')?;
+            let (label, command) = rest.split_once('|')?;
+            let key: u8 = key_str.trim().parse().ok()?;
+            Some(crate::config::QuickNoteNode {
+                key,
+                label: label.trim().to_string(),
+                command: Some(command.trim().to_string()),
+                hidden: false,
+                stay_alive: None,
+                options: None,
+                children_cmd: None,
+                dest_type: None,
+                position: None,
+                path: None,
+            })
+        })
+        .collect()
 }

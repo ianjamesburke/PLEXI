@@ -590,9 +590,11 @@ confirm_close = false
 # Destination 0 (global backlog → ~/.plexi/backlog) is always
 # available regardless of config.
 #
-# {note} = your note text (shell-escaped)   {cwd} = focused pane dir
-# Security: only {note} and {cwd} are shell-escaped. Do not add other user-supplied
-# values to the template — they will not be escaped and are a shell injection risk.
+# Tokens: {note} = your note text (shell-escaped)
+#         {cwd}  = focused pane directory (shell-escaped)
+#         {context_root} = active context's project root (shell-escaped, empty if unset)
+# Security: only token values are shell-escaped. The command template itself is trusted
+# (comes from config.toml). Do not substitute arbitrary user input outside of these tokens.
 
 [[quick_note.destinations]]
 key   = 1
@@ -601,11 +603,33 @@ type  = "backlog"
 path  = "~/.plexi/backlog"
 
 [[quick_note.destinations]]
-key      = 2
-label    = "Ask Claude"
-type     = "pane"
-command  = "claude -p {note}"
-position = "context-end"
+key     = 2
+label   = "Ask Claude"
+command = "plexi terminal --layout context-end -- claude -p {note}"
+
+[[quick_note.destinations]]
+key   = 3
+label = "GitHub issue"
+# Submenu — each option runs a gh command in the background (hidden = true means no pane).
+options = [
+  { key = 1, label = "Bug",         command = "cd {cwd} && gh issue create --label bug --title {note} --body {note}",         hidden = true },
+  { key = 2, label = "Enhancement", command = "cd {cwd} && gh issue create --label enhancement --title {note} --body {note}", hidden = true },
+  { key = 3, label = "No label",    command = "cd {cwd} && gh issue create --title {note} --body {note}",                     hidden = true },
+]
+
+[[quick_note.destinations]]
+key     = 4
+label   = "Copy to clipboard"
+command = "printf '%s' {note} | pbcopy"
+hidden  = true
+
+# Dynamic branch example — uncomment and customize:
+# [[quick_note.destinations]]
+# key          = 5
+# label        = "Recent projects"
+# children_cmd = "~/.plexi/scripts/top-projects.sh"
+# # Script stdout format: one entry per line as  key|label|command
+# # Example line: 1|PLEXI|cd ~/Documents/GitHub/PLEXI && plexi terminal --layout context-end -- claude -p {note}
 
 [[quick_note.destinations]]
 key   = 3
@@ -970,48 +994,58 @@ impl VoiceAgentConfig {
 #[derive(Deserialize, Default, Clone)]
 pub struct QuickNoteConfig {
     #[serde(default)]
-    pub destinations: Vec<QuickNoteDestinationConfig>,
+    pub destinations: Vec<QuickNoteNode>,
 }
 
 impl QuickNoteConfig {
     fn overlay(&mut self, other: Self) {
         if !other.destinations.is_empty() {
             self.destinations = other.destinations;
+            warn_deprecated_quick_note_fields(&self.destinations);
         }
     }
 }
 
-/// A destination entry in `[[quick_note.destinations]]`.
-#[derive(Deserialize, Clone)]
-pub struct QuickNoteDestinationConfig {
-    pub key: u8,
-    pub label: String,
-    /// Destination type: "backlog" or "pane". Absent when `options` is set (submenu).
-    #[serde(rename = "type")]
-    pub dest_type: Option<String>,
-    /// For `type = "backlog"`: directory path (tilde-expanded) to write notes into.
-    pub path: Option<String>,
-    /// For `type = "pane"`: shell command template. Tokens: `{note}`, `{cwd}`.
-    pub command: Option<String>,
-    /// For `type = "pane"`: where to open the new pane.
-    /// "split" (default) | "context-end" | "context-start"
-    pub position: Option<String>,
-    /// For `type = "pane"`: keep the pane open after the command exits.
-    /// Defaults to `false` (pane closes when command exits).
-    pub stay_alive: Option<bool>,
-    /// When set, this entry is a submenu. No `dest_type` needed at top level.
-    pub options: Option<Vec<QuickNoteSubOptionConfig>>,
+fn warn_deprecated_quick_note_fields(nodes: &[QuickNoteNode]) {
+    for node in nodes {
+        if node.dest_type.as_deref() == Some("pane") || node.position.is_some() {
+            log::warn!(
+                "QuickNote: destination '{}' uses deprecated 'type = \"pane\"' or 'position'. \
+                 Migrate to a bare 'command' string. See config docs for the new schema.",
+                node.label
+            );
+        }
+        if let Some(opts) = &node.options {
+            warn_deprecated_quick_note_fields(opts);
+        }
+    }
 }
 
-/// A sub-option inside a submenu destination.
+/// A node in the quick-note destination tree. Used at every level — root destinations,
+/// static submenu children (`options`), and dynamic children (`children_cmd` output).
 #[derive(Deserialize, Clone)]
-pub struct QuickNoteSubOptionConfig {
+pub struct QuickNoteNode {
     pub key: u8,
     pub label: String,
-    pub command: String,
-    pub position: Option<String>,
-    /// Keep the pane open after the command exits. Defaults to `false`.
+    /// Shell command template. Tokens: {note}, {cwd}, {context_root}. Required on leaves.
+    pub command: Option<String>,
+    /// If true, run command without a visible terminal pane (fire-and-forget background spawn).
+    #[serde(default)]
+    pub hidden: bool,
+    /// Keep spawned pane alive after command exits. Defaults to false.
     pub stay_alive: Option<bool>,
+    /// Static child nodes (submenu). Mutually exclusive with `command` at this node.
+    pub options: Option<Vec<QuickNoteNode>>,
+    /// Shell command whose stdout populates children dynamically. Format: one entry per
+    /// line as `key|label|command`. {note} and {cwd} in output are substituted before execution.
+    pub children_cmd: Option<String>,
+    // ── Deprecated ────────────────────────────────────────────────────────────────────────
+    // These fields are parsed for backward compatibility and to emit a migration warning,
+    // but are no longer used for dispatch.
+    #[serde(rename = "type")]
+    pub dest_type: Option<String>,
+    pub position: Option<String>,
+    pub path: Option<String>,
 }
 
 // ── Adopted workspace root (set once by main when an explicit path arg is
