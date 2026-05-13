@@ -1,6 +1,25 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.48] — 2026-05-13
+
+### Changes
+- feat(cli): plexi pane capture — read PTY scrollback from any pane (#978) (#1234)
+- feat(apps): minimal native text editor — TextArea + TextBuffer, plexi open editor [file] (#1099) (#1232)
+- feat(theme): add bg_sidebar_hover surface token for sidebar hover contrast (#1233)
+- feat(host): double-spacebar scratchpad — instant capture-to-file text editor (#1213) (#1230)
+- feat(apps): gh-projects read-only GitHub Projects Kanban board (#1225) (#1226)
+- feat(terminal): add --no-focus flag to prevent new pane from stealing focus (#1192) (#1224)
+- chore: update ship-issue skill
+- feat(quick-note): recursive menus, bare-command leaves, and dynamic children (#1212) (#1222)
+- feat(pane-ops): Cmd+Ctrl+J/K sends pane to first/last column (#1079) (#1221)
+- feat(event-log): FocusChanged event — pane attention trace (#1150) (#1220)
+- fix(ship-issue): verify stash-pop files are PR-related before auto-committing (#1006) (#1218)
+- chore: restore session edits carried through merge
+- feat(docs): generate CLI reference from clap via gen_cli_docs tool (#1219)
+- feat(quick-note): add stay_alive option for pane destinations (#1216)
+- fix(render): downgrade render_layout_node per-frame logs to debug (#1215)
+- fix(quick-note): same-frame draw on H/Esc exit to eliminate scrim flicker (#1214)
 ## [3.6.47] — 2026-05-13
 
 ### Changes
