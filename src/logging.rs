@@ -123,7 +123,9 @@ fn rotate_and_prune(
 
 /// Initialise the logger. Must be called before any `log::` macro is used.
 /// If the log file cannot be opened, falls back to stderr-only and logs a warning.
-pub fn init(level: log::LevelFilter, retention_days: u32) {
+/// When `cli_mode` is true, INFO/DEBUG logs are suppressed on stderr (file-only)
+/// so CLI callers (especially agents) don't see noisy socket-level trace lines.
+pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
     let log_file_path = log_path();
     let config_dir = crate::config::config_dir();
 
@@ -166,7 +168,16 @@ pub fn init(level: log::LevelFilter, retention_days: u32) {
         .level_for("app", level);
 
     let dispatch = match file_result {
-        Ok(file) => dispatch.chain(std::io::stderr()).chain(file),
+        Ok(file) => {
+            if cli_mode {
+                let stderr_dispatch = fern::Dispatch::new()
+                    .level(log::LevelFilter::Warn)
+                    .chain(std::io::stderr());
+                dispatch.chain(stderr_dispatch).chain(file)
+            } else {
+                dispatch.chain(std::io::stderr()).chain(file)
+            }
+        }
         Err(e) => {
             eprintln!("[plexi::logging] could not open log file {log_file_path:?}: {e}; falling back to stderr only");
             dispatch.chain(std::io::stderr())

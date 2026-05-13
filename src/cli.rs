@@ -2114,6 +2114,31 @@ pub fn pane_list_cli() -> i32 {
     }
 }
 
+/// `plexi pane self`
+///
+/// Prints the current pane ID (just the number) to stdout. Reads PLEXI_PANE_ID.
+/// No JSON, no socket round-trip — pure env-var lookup for agent callers.
+pub fn pane_self_cli() -> i32 {
+    let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane");
+            return 1;
+        }
+    };
+    match pane_id_str.parse::<u64>() {
+        Ok(id) => {
+            log::info!("pane_self:cli: pane_id={id}");
+            println!("{id}");
+            0
+        }
+        Err(_) => {
+            eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
+            1
+        }
+    }
+}
+
 /// `plexi pane info`
 ///
 /// Sends a `get_pane_info` command to PLEXI_SOCKET for the current pane
@@ -3705,7 +3730,7 @@ _plexi() {
               ;;
             *)
               local subcmds
-              subcmds=('name:Set the name of a pane (current or by ID)' 'set-title:Set the name of a pane (deprecated: use name)' 'list:List all open panes as JSON' 'focus:Move focus to a pane' 'close:Close a pane' 'send:Send text to a pane PTY' 'info:Print current pane info as JSON' 'capture:Read PTY scrollback and print as JSON array' 'key:Inject a synthetic key event into a pane')
+              subcmds=('name:Set the name of a pane (current or by ID)' 'set-title:Set the name of a pane (deprecated: use name)' 'list:List all open panes as JSON' 'self:Print current pane ID' 'focus:Move focus to a pane' 'close:Close a pane' 'send:Send text to a pane PTY' 'info:Print current pane info as JSON' 'capture:Read PTY scrollback and print as JSON array' 'key:Inject a synthetic key event into a pane')
               _describe 'subcommand' subcmds
               ;;
           esac
@@ -3836,7 +3861,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       ;;
     pane)
       if [[ $cword -eq 2 ]]; then
-        COMPREPLY=($(compgen -W "name set-title list focus close send info capture key" -- "$cur"))
+        COMPREPLY=($(compgen -W "name set-title list self focus close send info capture key" -- "$cur"))
       else
         case "${words[2]}" in
           capture)
@@ -3977,6 +4002,7 @@ complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a list -d "List all 
 complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a focus -d "Move focus to a pane by ID"
 complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a close -d "Close a pane"
 complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a send -d "Send text to a pane PTY"
+complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a self -d "Print current pane ID"
 complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a info -d "Print current pane info as JSON"
 complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a capture -d "Read PTY scrollback and print as JSON array"
 complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a key -d "Inject a synthetic key event into a pane"
