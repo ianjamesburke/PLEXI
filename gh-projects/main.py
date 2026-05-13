@@ -123,7 +123,10 @@ def _fetch_board(project: Project) -> tuple[list[Column], str]:
         status = str(raw.get("status") or "").strip()
 
         number_raw = content.get("number")
-        number = int(number_raw) if isinstance(number_raw, (int, float, str)) else None  # type: ignore[arg-type]
+        try:
+            number = int(number_raw) if number_raw is not None else None  # type: ignore[arg-type]
+        except (ValueError, TypeError):
+            number = None
         title  = str(raw.get("title") or content.get("title") or "(no title)")
         url    = str(content.get("url") or "")
         labels: list[str] = []
