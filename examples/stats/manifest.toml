@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "stats"
+type = "app"
+name = "Plexi Stats"
+version = "0.1.0"
+description = "Gaming-style dashboard showing directory time, visits, and activity timeline from Plexi focus events."
+entry = "stats.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "right", split = 0.4 }
