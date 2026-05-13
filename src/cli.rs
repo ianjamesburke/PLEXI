@@ -2333,6 +2333,77 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
     }
 }
 
+/// `plexi pane capture [--lines N] [pane_id]`
+///
+/// Reads the last N lines from a pane's PTY scrollback buffer and prints a JSON array
+/// of strings to stdout. If `pane_id` is omitted, defaults to PLEXI_PANE_ID.
+/// Returns 0 on success, 1 on error.
+pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize) -> i32 {
+    let resolved_pane_id = match pane_id {
+        Some(id) => id,
+        None => match std::env::var("PLEXI_PANE_ID") {
+            Ok(v) => match v.parse::<u64>() {
+                Ok(id) => id,
+                Err(_) => {
+                    eprintln!("error: PLEXI_PANE_ID is not a valid number: {v}");
+                    return 1;
+                }
+            },
+            Err(_) => {
+                eprintln!("error: pane_id not provided and PLEXI_PANE_ID is not set — run inside a Plexi pane or pass a pane ID");
+                return 1;
+            }
+        },
+    };
+
+    let id = uuid::Uuid::new_v4();
+    let response_file = crate::config::config_dir()
+        .join(format!("pane-capture-response-{id}.json"))
+        .to_string_lossy()
+        .into_owned();
+
+    log::info!("pane_capture:cli: pane_id={resolved_pane_id} lines={lines} response_file={response_file:?}");
+
+    let code = send_to_socket(serde_json::json!({
+        "type": "capture_pane",
+        "pane_id": resolved_pane_id,
+        "lines": lines,
+        "response_file": response_file,
+    }));
+    if code != 0 {
+        return code;
+    }
+
+    let response_path = std::path::PathBuf::from(&response_file);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if response_path.exists() {
+            match std::fs::read_to_string(&response_path) {
+                Ok(content) => {
+                    let _ = std::fs::remove_file(&response_path);
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+                            eprintln!("error: {err}");
+                            return 1;
+                        }
+                    }
+                    return print_json_output(&content);
+                }
+                Err(e) => {
+                    log::warn!("pane_capture:cli: could not read response file: {e}");
+                    eprintln!("error: could not read response file: {e}");
+                    return 1;
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!("error: timed out waiting for pane capture response");
+            return 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// `plexi open <type_id> [args...] [--layout=X]`
 ///
 /// When called from inside a Plexi pane (PLEXI_SOCKET is set), sends a
@@ -3575,7 +3646,7 @@ _plexi() {
           ;;
         pane)
           local subcmds
-          subcmds=('name:Set the name of a pane (current or by ID)' 'set-title:Set the name of a pane (deprecated: use name)' 'key:Inject a synthetic key event into a pane')
+          subcmds=('name:Set the name of a pane (current or by ID)' 'set-title:Set the name of a pane (deprecated: use name)' 'list:List all open panes as JSON' 'focus:Move focus to a pane' 'close:Close a pane' 'send:Send text to a pane PTY' 'info:Print current pane info as JSON' 'capture:Read PTY scrollback and print as JSON array' 'key:Inject a synthetic key event into a pane')
           _describe 'subcommand' subcmds
           ;;
         terminal)
@@ -3664,7 +3735,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       COMPREPLY=($(compgen -W "export" -- "$cur"))
       ;;
     pane)
-      COMPREPLY=($(compgen -W "name set-title key" -- "$cur"))
+      COMPREPLY=($(compgen -W "name set-title list focus close send info capture key" -- "$cur"))
       ;;
     terminal)
       if [[ $prev == "--layout" ]]; then
@@ -3759,6 +3830,12 @@ complete -c plexi -f -n "__fish_seen_subcommand_from pack" -a export -d "Export 
 # pane subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a name -d "Set the name of a pane (current or by ID)"
 complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a set-title -d "Set the name of a pane (deprecated: use name)"
+complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a list -d "List all open panes as JSON"
+complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a focus -d "Move focus to a pane by ID"
+complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a close -d "Close a pane"
+complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a send -d "Send text to a pane PTY"
+complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a info -d "Print current pane info as JSON"
+complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a capture -d "Read PTY scrollback and print as JSON array"
 complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a key -d "Inject a synthetic key event into a pane"
 
 # descriptor subcommands

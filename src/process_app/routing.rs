@@ -1677,6 +1677,12 @@ impl ProcessApp {
                     self.type_id
                 );
             }
+            HostCommand::CapturePane { pane_id, .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: CapturePane pane_id={pane_id} received in app routing — ignored (use PLEXI_SOCKET instead)",
+                    self.type_id
+                );
+            }
         }
     }
 

@@ -1277,6 +1277,29 @@ impl PlexiApp {
                         }
                     }
                 }
+                crate::app_protocol::HostCommand::CapturePane { pane_id, lines, response_file } => {
+                    log::info!("pane_ipc: kind=capture_pane pane_id={pane_id} lines={lines} response_file={:?}", response_file);
+                    let result = match self.windows.iter().find_map(|win| win.panes.get(pane_id)) {
+                        None => {
+                            log::warn!("pane_ipc: capture_pane: pane_id={pane_id} not found");
+                            Err(format!("pane {pane_id} not found"))
+                        }
+                        Some(pane) => match pane.as_terminal() {
+                            None => {
+                                log::warn!("pane_ipc: capture_pane: pane_id={pane_id} is not a terminal pane");
+                                Err(format!("pane {pane_id} is not a terminal pane"))
+                            }
+                            Some(term) => Ok(term.backend.capture_lines(*lines)),
+                        },
+                    };
+                    let json_str = match result {
+                        Ok(captured) => serde_json::to_string(&captured).unwrap_or_else(|_| "[]".to_string()),
+                        Err(msg) => format!("{{\"error\":{}}}", serde_json::to_string(&msg).unwrap_or_else(|_| format!("\"{msg}\""))),
+                    };
+                    if let Err(e) = std::fs::write(response_file, &json_str) {
+                        log::error!("pane_ipc: capture_pane: could not write response file {response_file:?}: {e}");
+                    }
+                }
                 crate::app_protocol::HostCommand::Notify {
                     level, title, body, kind, options, input_prompt,
                     required, priority, image_inline, image_pipe_id,
