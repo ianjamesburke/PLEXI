@@ -54,7 +54,7 @@ def _parse_events(path: Path, hours: int = 24) -> list[dict]:
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     events = []
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -352,13 +352,25 @@ class StatsApp(App):
             color = PALETTE[color_idx % len(PALETTE)]
             ctx.rect(bx, bar_y, bw, bar_h, fill=dim(color, 200), radius=2.0)
 
-        # hour markers
+        # hour markers (dynamic, aligned to rolling 24h window)
         marker_y = tl_y + TIMELINE_H - 14
-        labels = ["12a", "4a", "8a", "12p", "4p", "8p", "now"]
-        for i, label in enumerate(labels):
-            frac = i / (len(labels) - 1)
+        now = datetime.now(timezone.utc)
+        start_time = now - timedelta(hours=24)
+        labels: list[tuple[float, str]] = []
+        for tick in range(7):
+            frac = tick / 6
+            t = start_time + timedelta(hours=24 * frac)
+            if tick == 6:
+                lbl = "now"
+            else:
+                h = t.astimezone().hour
+                suffix = "a" if h < 12 else "p"
+                h12 = h % 12 or 12
+                lbl = f"{h12}{suffix}"
+            labels.append((frac, lbl))
+        for frac, lbl in labels:
             mx = frac * w
-            ctx.text(mx - 8, marker_y, label, size=HINT, color=dim(MUTED, 120))
+            ctx.text(mx - 8, marker_y, lbl, size=HINT, color=dim(MUTED, 120))
 
         self.highlight_path = None
 
