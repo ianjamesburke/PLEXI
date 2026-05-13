@@ -1,6 +1,20 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.44] — 2026-05-13
+
+### Changes
+- feat(terminal): add --no-focus flag to prevent new pane from stealing focus (#1192) (#1224)
+- chore: update ship-issue skill
+- feat(quick-note): recursive menus, bare-command leaves, and dynamic children (#1212) (#1222)
+- feat(pane-ops): Cmd+Ctrl+J/K sends pane to first/last column (#1079) (#1221)
+- feat(event-log): FocusChanged event — pane attention trace (#1150) (#1220)
+- fix(ship-issue): verify stash-pop files are PR-related before auto-committing (#1006) (#1218)
+- chore: restore session edits carried through merge
+- feat(docs): generate CLI reference from clap via gen_cli_docs tool (#1219)
+- feat(quick-note): add stay_alive option for pane destinations (#1216)
+- fix(render): downgrade render_layout_node per-frame logs to debug (#1215)
+- fix(quick-note): same-frame draw on H/Esc exit to eliminate scrim flicker (#1214)
 ## [3.6.43] — 2026-05-13
 
 ### Changes
