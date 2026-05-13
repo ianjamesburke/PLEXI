@@ -492,6 +492,13 @@ class Scrollable(Component):
     # How many pixels j/k advances per keypress.
     key_step: float = 20.0
 
+    def __post_init__(self):
+        if not isinstance(self.child, Component):
+            raise TypeError(
+                f"Scrollable child must subclass Component, got {type(self.child).__name__}. "
+                "Ad-hoc widget classes missing _render_clipped will crash at render time."
+            )
+
     # Width of the scrollbar indicator drawn when content overflows.
     _SCROLLBAR_W: float = field(default=3.0, init=False, repr=False)
     # Stored child height from last measure (used for scrollbar sizing).
@@ -932,6 +939,14 @@ class Card(Component):
     border: Optional[str] = HIGHLIGHT  # set to None for a borderless card
     radius: float = RADIUS_MD
 
+    def __post_init__(self):
+        for child in self.children:
+            if not isinstance(child, Component):
+                raise TypeError(
+                    f"Card children must subclass Component, got {type(child).__name__}. "
+                    "Ad-hoc widget classes missing _render_clipped will crash at render time."
+                )
+
     def _inner_w(self, outer_w: float) -> float:
         return outer_w - 2 * self.padding
 
@@ -1241,6 +1256,14 @@ class Column(Component):
     padding: float = SPACE_XL
     padding_top: Optional[float] = None
     gap: float = SPACE_MD
+
+    def __post_init__(self):
+        for child in self.children:
+            if not isinstance(child, Component):
+                raise TypeError(
+                    f"Column children must subclass Component, got {type(child).__name__}. "
+                    "Ad-hoc widget classes missing _render_clipped will crash at render time."
+                )
 
     @property
     def _pad_top(self) -> float:
