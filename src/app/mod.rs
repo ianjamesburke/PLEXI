@@ -2412,9 +2412,10 @@ impl eframe::App for PlexiApp {
                     if now.duration_since(last) < std::time::Duration::from_millis(250) {
                         log::info!("scratchpad: double-spacebar detected — opening");
                         self.last_space_press = None;
-                        // Consume the triggering Space so it doesn't reach the terminal.
+                        // Consume ALL pending Space keydown events so none leak into
+                        // the TextEdit on its first frame.
                         ctx.input_mut(|i| {
-                            if let Some(pos) = i.events.iter().position(|e| matches!(
+                            i.events.retain(|e| !matches!(
                                 e,
                                 egui::Event::Key {
                                     key: egui::Key::Space,
@@ -2422,9 +2423,7 @@ impl eframe::App for PlexiApp {
                                     repeat: false,
                                     ..
                                 }
-                            )) {
-                                i.events.remove(pos);
-                            }
+                            ));
                         });
                         self.open_scratchpad();
                     } else {

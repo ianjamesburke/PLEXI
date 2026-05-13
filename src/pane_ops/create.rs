@@ -701,7 +701,7 @@ impl PlexiApp {
         };
 
         let workspace_root = crate::config::active_workspace_root()
-            .unwrap_or_else(|| cwd.clone());
+            .unwrap_or_else(|| crate::config::config_dir());
 
         log::info!(
             "scratchpad: opening — cwd={} workspace_root={}",

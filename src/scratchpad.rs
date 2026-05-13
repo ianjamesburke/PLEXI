@@ -38,8 +38,12 @@ impl ScratchpadApp {
         }
     }
 
+    fn notes_dir(&self) -> PathBuf {
+        self.workspace_root.join(".plexi").join("notes")
+    }
+
     fn save_file(&mut self) -> bool {
-        let notes_dir = self.workspace_root.join(".plexi").join("notes");
+        let notes_dir = self.notes_dir();
         if let Err(e) = std::fs::create_dir_all(&notes_dir) {
             log::error!("scratchpad: failed to create notes dir {:?}: {e}", notes_dir);
             return false;
@@ -91,9 +95,6 @@ impl App for ScratchpadApp {
             let save_pressed = ui.input_mut(|i| {
                 i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)
             });
-            let discard_pressed = ui.input_mut(|i| {
-                i.consume_key(egui::Modifiers::COMMAND, egui::Key::X)
-            });
             let esc_pressed = ui.input_mut(|i| {
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
             });
@@ -104,8 +105,8 @@ impl App for ScratchpadApp {
                 log::info!("scratchpad: Cmd+S — opening save modal");
                 return;
             }
-            if discard_pressed || esc_pressed {
-                log::info!("scratchpad: discarding");
+            if esc_pressed {
+                log::info!("scratchpad: Esc — discarding");
                 self.wants_close = true;
                 return;
             }
@@ -151,8 +152,8 @@ impl App for ScratchpadApp {
                     ui.add_space(style::SPACE_SM);
                     crate::widgets::key_combo_list(
                         ui,
-                        &[&["⌘", "S"], &["⌘", "X"], &["Esc"]],
-                        Some("save · discard · discard"),
+                        &[&["⌘", "S"], &["Esc"]],
+                        Some("save · discard"),
                         colors,
                     );
                 });
@@ -209,6 +210,14 @@ impl App for ScratchpadApp {
                                     .font(egui::FontId::monospace(style::TEXT_BODY))
                                     .text_color(colors.text_primary)
                                     .desired_width(f32::INFINITY),
+                            );
+
+                            let dir_display = self.notes_dir().display().to_string();
+                            ui.label(
+                                egui::RichText::new(dir_display)
+                                    .color(colors.text_dim)
+                                    .size(style::TEXT_HINT)
+                                    .family(egui::FontFamily::Monospace),
                             );
 
                             if enter_pressed && !self.filename.trim().is_empty() {
