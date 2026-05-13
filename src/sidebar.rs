@@ -45,8 +45,8 @@ impl PlexiApp {
         let mut drag_released = false;
 
         let focused_cwd = self.windows.get(self.active_window)
-            .and_then(|w| w.focused_pane)
-            .and_then(|tile| self.windows[self.active_window].get_focused_pane_cwd(tile));
+            .and_then(|w| w.focused_pane.map(|tile| (w, tile)))
+            .and_then(|(w, tile)| w.get_focused_pane_cwd(tile));
 
         for i in 0..num_contexts {
             let is_active = i == self.router.active_idx();
@@ -192,17 +192,19 @@ impl PlexiApp {
                         if ui.button("Move Down").clicked() { menu_action = Some((i, WindowMenuAction::MoveDown)); ui.close_menu(); }
                         if ui.button("Move to Bottom").clicked() { menu_action = Some((i, WindowMenuAction::MoveToBottom)); ui.close_menu(); }
                     }
-                    ui.separator();
-                    if let Some(cwd) = &cwd_for_menu {
-                        if ui.button("Set root to current path").clicked() {
-                            menu_action = Some((i, WindowMenuAction::SetRoot(cwd.clone())));
-                            ui.close_menu();
+                    if cwd_for_menu.is_some() || has_root {
+                        ui.separator();
+                        if let Some(cwd) = &cwd_for_menu {
+                            if ui.button("Set root to current path").clicked() {
+                                menu_action = Some((i, WindowMenuAction::SetRoot(cwd.clone())));
+                                ui.close_menu();
+                            }
                         }
-                    }
-                    if has_root {
-                        if ui.button("Clear root").clicked() {
-                            menu_action = Some((i, WindowMenuAction::ClearRoot));
-                            ui.close_menu();
+                        if has_root {
+                            if ui.button("Clear root").clicked() {
+                                menu_action = Some((i, WindowMenuAction::ClearRoot));
+                                ui.close_menu();
+                            }
                         }
                     }
                     if num_ctxs > 1 {
