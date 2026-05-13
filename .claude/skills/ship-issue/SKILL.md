@@ -109,6 +109,18 @@ gh pr list --search "head:feature/<number>" --json number,title,state,url
 ```
 Tell the user exactly what exists: existing worktree path (if any), existing PR (if any), and any commits on the branch (`git log --oneline -5` on the worktree). Then ask: "Issue #<n> is already in progress. Take over from here, or abort?" **Do not proceed until the user explicitly confirms takeover.** If aborting, remove the `in progress` label you added (if you added it — otherwise leave it alone) and stop.
 
+**Check if the work is already done — before touching any labels or state:**
+
+Read the issue's **Done When** criteria:
+```bash
+gh issue view <number> --json body --jq '.body'
+```
+Grep `src/` on alpha and scan `git log --oneline -20` for the key identifiers. This is a cheap check and avoids polluting the label state for issues that can just be closed.
+
+- **All criteria already met:** close the issue immediately (`gh issue close <number> --comment "Work already landed on alpha — closing."`) and stop. Do NOT add labels, create worktrees, or proceed further.
+- **Partial or ambiguous:** continue to pre-flight — surface what's done vs missing in the Phase 1b audit after labeling.
+- **Nothing done:** continue.
+
 ```bash
 git fetch origin && git status --porcelain
 ```
@@ -131,12 +143,11 @@ Hold `$SHIP_PANE` for the rest of the cycle — every decision-point and end-of-
 
 ## Phase 1b — Implementation Audit
 
-Before creating a worktree, check whether the work is already done or partially landed on alpha.
+Confirm scope before branching. The "all criteria already met" case was already handled in Phase 1 (before labeling). This step handles partial/ambiguous state.
 
-Grep alpha `src/` for the key identifiers from the issue's **Done When** criteria. Scan `git log --oneline -20` for related commits.
+Re-read the issue's **Done When** criteria against alpha `src/` and `git log --oneline -20`. Focus on what's genuinely missing.
 
-- **All criteria already met:** close the issue, remove `in progress`, skip to Phase 6.
-- **Partial or ambiguous:** surface what's done vs missing, state the plan, and ask any open design questions. Wait for confirmation before branching.
+- **Partial:** surface what's done vs missing, state the plan, and ask any open design questions. Wait for confirmation before branching.
 - **Nothing done and no questions:** proceed, but note "Audit: nothing on alpha yet."
 
 ---
