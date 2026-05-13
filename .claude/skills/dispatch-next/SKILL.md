@@ -26,6 +26,42 @@ Auto-computes lane assignments from live GitHub issue state, writes `NEXT.md`, t
 
 ---
 
+## Step -1 — Stabilize alpha
+
+Before computing lanes, dispatch a stabilizer agent in a dedicated pane. The stabilizer must complete before any lane panes open.
+
+### Open the stabilizer pane
+
+```bash
+BEFORE_IDS=$(plexi pane list | python3 -c "import json,sys; print(' '.join(str(p['id']) for p in json.load(sys.stdin)))")
+plexi terminal --layout new_window
+# diff pane list to get STABILIZER_ID
+```
+
+Name it and send the stabilization prompt:
+
+```bash
+plexi pane name $STABILIZER_ID "stabilizer"
+plexi pane send $STABILIZER_ID 'c "Stabilize alpha before dispatch. Do all of the following in order:
+
+1. git fetch origin
+2. Check git status — if alpha has uncommitted changes or unstaged diffs, STOP and report them; do not proceed.
+3. git pull --rebase origin alpha — if conflicts, STOP and report.
+4. List open PRs targeting alpha: gh pr list --base alpha --json number,title,mergeable,statusCheckRollup. For any PR that is mergeable and all checks pass: squash-merge it (gh pr merge <N> --squash), then pull again. Report each merge.
+5. List worktrees: wtp list. For any worktree whose branch has no open PR (gh pr list --head <branch> --json number), report it as stale — do NOT delete automatically, just flag it.
+6. Run: cargo check --quiet 2>&1 | tail -5 to confirm alpha compiles.
+7. Print ALPHA READY if all checks pass, or ALPHA BLOCKED with a summary if anything needs manual intervention.
+"\n'
+```
+
+### Wait for ALPHA READY
+
+Do not proceed to Step 0 until the stabilizer pane prints `ALPHA READY`. If it prints `ALPHA BLOCKED`, surface the summary to the user and stop — do not open lane panes.
+
+The stabilizer pane stays open as a reference during the dispatch session.
+
+---
+
 ## Step 0 — Compute lanes from issue state
 
 Skip this step only if a specific file path was passed as an argument.
@@ -176,6 +212,8 @@ If the whole lane is closed, drop it.
 ---
 
 ## Step 3 — Snapshot existing panes
+
+`BEFORE_IDS` was captured in Step -1 before the stabilizer pane was opened. Re-snapshot now to include the stabilizer pane so lane pane diffing is accurate:
 
 ```bash
 BEFORE_IDS=$(plexi pane list | python3 -c \
