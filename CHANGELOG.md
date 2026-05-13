@@ -1,6 +1,29 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.69] — 2026-05-13
+
+### Changes
+- fix(ui): wrap stderr text in crash overlay instead of truncating (#1292)
+- docs(dispatch-next): reference plexi-cli skill for CLI usage
+- fix(cli): add tab and new_window to --layout help + completions + ship recipe
+- feat(app): implement Plexi Stats dashboard app (#1291)
+- feat(context): keyboard-driven context close + context inspector modal (#1273) (#1283)
+- feat(config): expose pane focus history depth as configurable setting (#1164) (#1279)
+- fix(sdk): docstring and naming inconsistencies (#1260) (#1281)
+- refactor(host): extract test modules from app/mod.rs and process_app/mod.rs (#1261) (#1277)
+- docs: consolidate issue label convention into create-issue skill
+- fix(triage): add explicit era label enumeration step to prevent v3.1+ default (#1268)
+- fix(minimap): number cells by spatial position, not array index (#1275)
+- feat(sdk): runtime isinstance check in Column/Card/Scrollable (#1202) (#1269)
+- feat: cancel active StreamProcess children on ProcessApp drop (#675) (#1270)
+- docs: add Railway build configuration gotcha and ignore local config dirs
+- fix(docs): remove nonexistent `plexi note` CLI section from Quick Note page
+- fix(terminal): remove 8px inner padding that caused background color fringe (#1265)
+- feat(cli): add `plexi pane self` and suppress CLI stderr log noise (#1266)
+- fix(website): move railway.json back to website/ where Railway expects it
+- feat(welcome): add ⌘P to shortcuts, remove right-click tip (#698) (#1267)
+- fix(website): move railway.json to repo root for new build context
 ## [3.6.68] — 2026-05-13
 
 ### Changes
