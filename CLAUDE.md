@@ -83,36 +83,9 @@ Three channels, each more stable than the last:
 - `beta` — staging. Promoted from alpha when a batch of work is stable enough to share.
 - `main` — production. Promoted from beta when ready to release.
 
-Never commit directly to `beta` or `main`. All work flows through alpha.
+Never commit directly to `beta` or `main`. All work flows through alpha. Feature branch naming: `feature/<issue-number>-short-description`. Never pass `--delete-branch` to `gh pr merge`.
 
-### Feature branch → alpha
-
-All changes, no matter how small, follow this cycle:
-
-0. **Label the issue** `in progress`: `gh issue edit <number> --add-label "in progress"`
-1. **Create a worktree** from the repo root: `wtp add -b <branch-name>`
-2. **Implement** and commit inside that worktree
-3. **Open a PR** targeting `alpha`: `gh pr create --base alpha`
-4. **Wait for user approval** — do not merge unilaterally
-5. **Squash-merge**: `gh pr merge <number> --squash` — lands one clean commit on `origin/alpha`. **Never pass `--delete-branch`** — git refuses to delete a branch checked out by a worktree.
-6. **Sync alpha**: `git pull --rebase origin alpha` from the repo root
-7. **Close related issue(s)**: `gh issue close <number> --comment "Closed by PR #<pr>"`
-8. **Bump and install**: `just bump && just install` from the repo root
-9. **Remove the feature worktree**: `wtp remove <branch-name>`
-10. **Delete the remote branch**: `git push origin --delete <branch-name>`
-
-**Always run `wtp add` from the repo root.** This ensures the branch forks from alpha's current HEAD so PRs merge cleanly. Cutting from main silently orphans in-flight work.
-
-**Verify the base immediately after `wtp add`** — before delegating any work to a subagent or writing any code, confirm the new worktree is on the right commit:
-```bash
-git -C worktrees/<new-branch> log --oneline -1   # must match ↓
-git log --oneline -1
-```
-If they don't match, delete the worktree and branch immediately and redo from the repo root. Discovering the wrong base after a subagent has run wastes the entire run.
-
-**Before creating a worktree:** run `git status` AND `git diff --stat` in the repo root. Alpha must be clean (no uncommitted changes, no unstaged diffs) before branching. If it's dirty, stop and ask: commit first, or is this work meant to be carried into the new branch? Never silently proceed on a dirty base.
-
-**Small-changes batch PR:** Multiple small related fixes may land in one PR if they share a single commit message and a single `Breaks if:` line. Unrelated changes go in separate PRs.
+**Full ship cycle (label → worktree → PR → merge → install → cleanup) is defined in the `/ship-issue` skill.** Do not duplicate it here.
 
 ### alpha → beta → main (channel promotion)
 
@@ -195,7 +168,7 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 
 ## Implementation Discipline (no half-refactors)
 
-**Define done by the test, not the code.** Before writing any new module or refactoring an existing one, write the test that must pass when the work is complete. A PR is done when `cargo test` is green — not when the code looks right.
+**Define done by the test, not the code.** Before writing any new module or refactoring an existing one, write the test that must pass when the work is complete. A PR is done when `cargo test --bin plexi` is green — not when the code looks right.
 
 **Test-first for host logic.** Any new `HostCommand` or `HostEffect` gets a `HostHarness` test written before the implementation. The test failing is the starting state; making it pass is the work. This prevents stubs: a stub that makes the test pass is an implementation.
 
@@ -214,7 +187,7 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 - **Model ID verification:** Never guess versioned model IDs. Use only confirmed-current family IDs. A 400/404 surfaces only at call time.
 - **Platform behavior validation:** Before implementing any macOS-specific behavior (menu lifecycle, bundle naming, eframe/winit callback order), add a throwaway `log::info!()` to observe the actual runtime value on the first frame. Never assume which callback fires when or what a property returns — observe first, then code.
 - **Command self-containment:** Any data a command handler needs must be in the command's own fields — never looked up from ambient state (like a queue or map) at dispatch time. By dispatch, that state may have been mutated or cleared by an earlier step in the same frame.
-- **Test constructor sync:** When adding a field to any struct that has a `new_for_test()` constructor, update that constructor in the same commit. Before running `cargo test` on a fresh worktree, run it once on the base branch first to distinguish pre-existing failures from regressions.
+- **Test constructor sync:** When adding a field to any struct that has a `new_for_test()` constructor, update that constructor in the same commit. Before running `cargo test --bin plexi` on a fresh worktree, run it once on the base branch first to distinguish pre-existing failures from regressions.
 - **Issue-referenced code validation:** When an issue names specific functions or code paths, grep for them in alpha before implementing — the function may have been removed or moved since the issue was filed.
 - **git worktree operations:** Always use absolute paths with `git -C /absolute/worktree/path <command>` — relative paths (`git -C worktrees/<branch>`) fail when CWD is not the repo root. Applies to all operations: `add`, `rebase`, `push`, etc.
 - **HostHarness initial state:** `add_test_pane()` inserts a `ProcessApp` pane — not a Terminal. Terminal-count assertions in tests must not assume the initial pane is a Terminal; offset accordingly.

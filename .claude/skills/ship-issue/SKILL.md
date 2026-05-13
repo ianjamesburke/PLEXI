@@ -63,14 +63,7 @@ Sort by issue number ascending. For each issue:
    # → "538, 541"  (empty string means no dependencies declared)
    ```
    - For each number in the result: `gh issue view N --json state,labels --jq '{state: .state, labels: [.labels[].name]}'`
-   - If any dependency is `OPEN`:
-     - Check if that dependency is labeled `in progress`
-     - If **yes — dependency is in progress:** wait up to 3 × 5-minute intervals:
-       1. Announce: "Dependency #<n> is in progress — waiting up to 15 minutes for it to land (check 1/3)."
-       2. Wait 5 minutes, then re-check: `gh issue view <n> --json state --jq '.state'`
-       3. If `CLOSED`: proceed — re-evaluate all deps and continue to Phase 1
-       4. If still `OPEN`: repeat (checks 2/3 and 3/3). After 3 failed checks, skip this issue and move on.
-     - If **not in progress (just open and blocked):** skip this issue immediately
+   - If any dependency is `OPEN`: skip this issue immediately. Note: "Dependency #N is in progress in another lane — skipping to next candidate" (if labeled `in progress`) or "Dependency #N is open and blocked — skipping" (otherwise).
    - If **all** are `CLOSED`: strip `blocked`, add `ready`:
      ```bash
      gh issue edit <n> --remove-label "blocked" --add-label "ready"
