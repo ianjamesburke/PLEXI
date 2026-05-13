@@ -1192,9 +1192,8 @@ impl PlexiApp {
 
                     // Restore original focus when no_focus is requested or from_pane_id overrode it.
                     if *no_focus || from_pane_id.is_some() {
-                        if *no_focus {
-                            log::info!("pane_ipc: spawn_pane: no_focus=true, retaining focus on pane_id={original_focused:?}");
-                        }
+                        let reason = if *no_focus { "no_focus=true" } else { "from_pane_id override" };
+                        log::info!("pane_ipc: spawn_pane: {reason}, retaining focus on pane_id={original_focused:?}");
                         self.windows[active].focused_pane = original_focused;
                     }
                     if let Some(rf) = response_file {
