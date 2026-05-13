@@ -2435,11 +2435,11 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_
     0
 }
 
-/// `plexi terminal [cmd] [--ephemeral] [--layout=X]`
+/// `plexi terminal [cmd] [--ephemeral] [--layout=X] [--no-focus]`
 ///
 /// Opens a terminal pane. Supports the --ephemeral flag which closes the pane when the
-/// process exits.
-pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>, from_pane_id: Option<u64>, cwd: Option<&str>) -> i32 {
+/// process exits, and --no-focus to keep focus on the originating pane.
+pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>, from_pane_id: Option<u64>, cwd: Option<&str>, no_focus: bool) -> i32 {
     let layout_str = layout.unwrap_or("split_v");
     let args: Vec<String> = cmd.map(|c| vec![c.to_string()]).unwrap_or_default();
 
@@ -2465,7 +2465,10 @@ pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>, fr
         if let Some(cwd) = cwd {
             payload["cwd"] = serde_json::Value::String(cwd.to_string());
         }
-        log::info!("terminal:cli: sending via socket ephemeral={ephemeral} from_pane_id={from_pane_id:?} cwd={cwd:?} response_file={response_file:?}");
+        if no_focus {
+            payload["no_focus"] = serde_json::Value::Bool(true);
+        }
+        log::info!("terminal:cli: sending via socket ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} response_file={response_file:?}");
         let code = send_to_socket(payload);
         if code != 0 {
             return code;
@@ -2526,12 +2529,15 @@ pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>, fr
     if let Some(cwd) = cwd {
         queue_payload["cwd"] = serde_json::Value::String(cwd.to_string());
     }
+    if no_focus {
+        queue_payload["no_focus"] = serde_json::Value::Bool(true);
+    }
     let file = queue_dir.join(format!("{id}.json"));
     if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {
         eprintln!("error: could not write spawn request: {e}");
         return 1;
     }
-    log::info!("terminal:cli: queued ephemeral={ephemeral} cwd={cwd:?}");
+    log::info!("terminal:cli: queued ephemeral={ephemeral} no_focus={no_focus} cwd={cwd:?}");
     println!("queued: open terminal");
     println!("(running outside a Plexi pane — Plexi will pick this up within a second)");
     0
@@ -3789,6 +3795,7 @@ complete -c plexi -n "__fish_seen_subcommand_from terminal" -s e -l ephemeral -d
 complete -c plexi -n "__fish_seen_subcommand_from terminal" -l layout -d "Layout hint" -a "split_v split_h split_above"
 complete -c plexi -n "__fish_seen_subcommand_from terminal" -l from-pane-id -d "Split relative to this pane ID"
 complete -c plexi -n "__fish_seen_subcommand_from terminal" -l cwd -d "Working directory for the new terminal pane" -a "(__fish_complete_directories)"
+complete -c plexi -n "__fish_seen_subcommand_from terminal" -l no-focus -d "Keep focus on the originating pane"
 # open flags
 complete -c plexi -n "__fish_seen_subcommand_from open" -l layout -d "Layout hint" -a "split_v split_h split_above overlay"
 complete -c plexi -n "__fish_seen_subcommand_from open" -l from-pane-id -d "Split relative to this pane ID"

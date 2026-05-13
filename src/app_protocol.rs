@@ -992,6 +992,8 @@ pub enum HostCommand {
         ephemeral: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        no_focus: bool,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`
@@ -2629,6 +2631,32 @@ mod tests {
         let serialised = serde_json::to_string(&cmd).expect("serialise");
         assert!(serialised.contains(r#""from_pane_id":42"#), "from_pane_id missing: {serialised}");
         assert!(serialised.contains(r#""request_id":"req-1""#), "request_id missing: {serialised}");
+    }
+
+    #[test]
+    fn spawn_pane_no_focus_round_trips_serde() {
+        let json = r#"{"type":"spawn_pane","type_id":"terminal","no_focus":true}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Host(HostCommand::SpawnPane { no_focus, .. }) => {
+                assert!(*no_focus, "no_focus should be true");
+            }
+            other => panic!("expected SpawnPane, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""no_focus":true"#), "no_focus missing: {serialised}");
+
+        // default (false) should be omitted from serialised output
+        let json_default = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
+        let cmd_default: DrawCommand = serde_json::from_str(json_default).expect("deserialise default");
+        match &cmd_default {
+            DrawCommand::Host(HostCommand::SpawnPane { no_focus, .. }) => {
+                assert!(!*no_focus, "no_focus should default to false");
+            }
+            other => panic!("expected SpawnPane, got {other:?}"),
+        }
+        let serialised_default = serde_json::to_string(&cmd_default).expect("serialise default");
+        assert!(!serialised_default.contains("no_focus"), "no_focus should be omitted when false: {serialised_default}");
     }
 
     #[test]

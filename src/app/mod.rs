@@ -1145,8 +1145,8 @@ impl PlexiApp {
                         log::warn!("pane_ipc: close_pane: pane_id={pane_id} not found");
                     }
                 }
-                crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, ephemeral, response_file, from_pane_id, cwd, .. } => {
-                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id} layout={layout:?} ephemeral={ephemeral} from_pane_id={from_pane_id:?} cwd={cwd:?} response_file={response_file:?}");
+                crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, ephemeral, response_file, from_pane_id, cwd, no_focus, .. } => {
+                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id} layout={layout:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} response_file={response_file:?}");
                     let new_pane_id = self.host.next_pane_id();
 
                     // Override focused_pane for the split if from_pane_id is specified,
@@ -1190,8 +1190,14 @@ impl PlexiApp {
                         self.launch_app_by_id_with_layout(type_id, layout.clone(), args);
                     }
 
-                    // Only restore if we overrode focus; otherwise the new pane keeps focus.
-                    if from_pane_id.is_some() {
+                    // Restore original focus when no_focus is requested or from_pane_id overrode it.
+                    if *no_focus || from_pane_id.is_some() {
+                        let reason = if *no_focus { "no_focus=true" } else { "from_pane_id override" };
+                        log::info!("pane_ipc: spawn_pane: {reason}, retaining focus on pane_id={original_focused:?}");
+                        // Also restore active_window — new_window layout switches it to the new window.
+                        if *no_focus {
+                            self.active_window = active;
+                        }
                         self.windows[active].focused_pane = original_focused;
                     }
                     if let Some(rf) = response_file {
@@ -1380,7 +1386,10 @@ impl PlexiApp {
                 })
                 .unwrap_or_default();
             let cwd_override: Option<std::path::PathBuf> = val["cwd"].as_str().map(std::path::PathBuf::from);
-            log::info!("spawn-queue: launching '{type_id}' layout={layout:?} ephemeral={ephemeral} cwd={cwd_override:?}");
+            let no_focus = val["no_focus"].as_bool().unwrap_or(false);
+            log::info!("spawn-queue: launching '{type_id}' layout={layout:?} ephemeral={ephemeral} no_focus={no_focus} cwd={cwd_override:?}");
+            let active = self.active_window;
+            let original_focused = self.windows[active].focused_pane;
             if type_id == "terminal" {
                 let layout_str = layout.as_deref().unwrap_or("split_v");
                 let vertical = matches!(layout_str, "split_h" | "split_above");
@@ -1388,6 +1397,11 @@ impl PlexiApp {
                 self.split_focused(vertical, initial_cmd.as_deref(), ephemeral, cwd_override);
             } else {
                 self.launch_app_by_id_with_layout(&type_id, layout, &args);
+            }
+            if no_focus {
+                log::info!("spawn-queue: no_focus=true, retaining focus on pane_id={original_focused:?}");
+                self.active_window = active;
+                self.windows[active].focused_pane = original_focused;
             }
         }
     }
