@@ -116,6 +116,22 @@ pub enum HostEvent {
         channel: String,
         timestamp: String,
     },
+    /// The focused pane changed. Carries the *departing* pane's metadata and
+    /// how long it held focus, enabling a queryable attention timeline.
+    FocusChanged {
+        pane_id: u64,
+        /// CWD of the departing pane (terminals via proc_info; apps via workspace_root).
+        cwd: Option<String>,
+        /// Last OSC 2 title string the process wrote, if any.
+        pty_title: Option<String>,
+        /// User-assigned pane name, if any.
+        pane_name: Option<String>,
+        /// For App panes: the manifest type_id (e.g. "gh-issues"). Null for terminals.
+        app_type_id: Option<String>,
+        /// Seconds this pane held focus before the switch.
+        duration_secs: u64,
+        timestamp: String,
+    },
 }
 
 // ── Wire envelope ─────────────────────────────────────────────────────────────
