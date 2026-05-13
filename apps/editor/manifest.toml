@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "editor"
+type = "app"
+name = "Editor"
+entry = "main.py"
+version = "0.1.0"
+description = "Minimal native text editor. Opens via `plexi open editor [file]`."
+
+[app.capabilities]
+capabilities = ["fs.read", "fs.write"]
+
+[launch]
+layout_hint = { side = "right", split = 0.45 }
