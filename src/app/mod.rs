@@ -44,6 +44,7 @@ pub(crate) struct QuickNoteCtx {
     pub cwd: std::path::PathBuf,
     pub workspace_root: Option<std::path::PathBuf>,
     pub context: String,
+    pub context_root: Option<std::path::PathBuf>,
 }
 
 /// Which layer currently owns keyboard input.
@@ -72,8 +73,9 @@ pub(crate) enum FocusLayer {
     QuickNote,
     /// Quick note destination picker.
     QuickNoteDestination,
-    /// Quick note sub-destination picker. Inner u8 = parent key.
-    QuickNoteSubDestination(u8),
+    /// Quick note sub-destination picker. Inner Vec<u8> = key path from root to current node.
+    /// E.g. vec![3] = inside destination 3's children; vec![3,2] = destination 3 → child 2.
+    QuickNoteSubDestination(Vec<u8>),
     /// First-launch CLI setup prompt. No text input — intercepts keys so they
     /// don't fall through to the active terminal while the modal is visible.
     CliSetupPrompt,
@@ -232,12 +234,14 @@ pub struct PlexiApp {
     pub(crate) quick_note_text: String,
     /// Context captured at the time the quick note modal was opened.
     pub(crate) quick_note_ctx: QuickNoteCtx,
-    /// If in QuickNoteSubDestination phase, the key of the parent destination entry.
-    pub(crate) quick_note_pending_parent: Option<u8>,
     /// Cursor row in the destination picker (0 = global backlog, 1+ = config destinations).
     pub(crate) quick_note_dest_cursor: usize,
     /// Cursor row in the sub-destination picker.
     pub(crate) quick_note_sub_cursor: usize,
+    /// Cache of dynamically loaded children, keyed by node key. Cleared on modal open.
+    pub(crate) quick_note_children_cache: HashMap<u8, Vec<crate::config::QuickNoteNode>>,
+    /// Pending children_cmd receiver: (node_key, receiver).
+    pub(crate) quick_note_children_rx: Option<(u8, std::sync::mpsc::Receiver<Result<Vec<crate::config::QuickNoteNode>, String>>)>,
     /// notify_id of the notification the modal currently has state for. Used to
     /// detect a front-of-queue change and reset focus/input buffer.
     pub(crate) modal_state_notify_id: String,
@@ -654,9 +658,10 @@ impl PlexiApp {
                     modal_input_buffer: String::new(),
                     quick_note_text: String::new(),
                     quick_note_ctx: QuickNoteCtx::default(),
-                    quick_note_pending_parent: None,
                     quick_note_dest_cursor: 0,
                     quick_note_sub_cursor: 0,
+                    quick_note_children_cache: HashMap::new(),
+                    quick_note_children_rx: None,
                     modal_state_notify_id: String::new(),
                     notification_images: HashMap::new(),
                     notifications_enabled,
@@ -758,9 +763,10 @@ impl PlexiApp {
             modal_input_buffer: String::new(),
             quick_note_text: String::new(),
             quick_note_ctx: QuickNoteCtx::default(),
-            quick_note_pending_parent: None,
             quick_note_dest_cursor: 0,
             quick_note_sub_cursor: 0,
+            quick_note_children_cache: HashMap::new(),
+            quick_note_children_rx: None,
             modal_state_notify_id: String::new(),
             notification_images: HashMap::new(),
             notifications_enabled,
@@ -875,9 +881,10 @@ impl PlexiApp {
             modal_input_buffer: String::new(),
             quick_note_text: String::new(),
             quick_note_ctx: QuickNoteCtx::default(),
-            quick_note_pending_parent: None,
             quick_note_dest_cursor: 0,
             quick_note_sub_cursor: 0,
+            quick_note_children_cache: HashMap::new(),
+            quick_note_children_rx: None,
             modal_state_notify_id: String::new(),
             notification_images: HashMap::new(),
             notifications_enabled: false,
@@ -1719,8 +1726,9 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::QuickNoteDestination) => {
                     self.draw_quick_note_destination(ctx);
                 }
-                Some(FocusLayer::QuickNoteSubDestination(_)) => {
-                    self.draw_quick_note_subdestination(ctx);
+                Some(FocusLayer::QuickNoteSubDestination(path)) => {
+                    let path = path.clone();
+                    self.draw_quick_note_menu(ctx, &path);
                 }
                 Some(FocusLayer::CliSetupPrompt) => {
                     self.draw_cli_setup_modal(ctx);
