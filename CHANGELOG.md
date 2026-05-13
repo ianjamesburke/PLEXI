@@ -1,6 +1,15 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.40] — 2026-05-13
+
+### Changes
+- fix(ship-issue): verify stash-pop files are PR-related before auto-committing (#1006) (#1218)
+- chore: restore session edits carried through merge
+- feat(docs): generate CLI reference from clap via gen_cli_docs tool (#1219)
+- feat(quick-note): add stay_alive option for pane destinations (#1216)
+- fix(render): downgrade render_layout_node per-frame logs to debug (#1215)
+- fix(quick-note): same-frame draw on H/Esc exit to eliminate scrim flicker (#1214)
 ## [3.6.39] — 2026-05-13
 
 ### Changes
