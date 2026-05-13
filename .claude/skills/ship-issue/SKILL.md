@@ -648,8 +648,17 @@ Then restore the stash if one was created:
 ```bash
 if [ "${STASHED:-0}" = 1 ]; then
   git stash pop
-  RESTORED=$(git status --porcelain | grep "^ M\|^M ")
-  if [ -n "$RESTORED" ]; then
+  # Cross-reference restored files against the PR's files (top commit on origin/alpha after squash-merge).
+  # Discard any restored file that wasn't in the PR — it's unrelated WIP and must not corrupt alpha.
+  PR_FILES=$(git show origin/alpha --name-only --format="" | grep .)
+  while IFS= read -r f; do
+    if ! printf '%s\n' "$PR_FILES" | grep -qxF "$f"; then
+      printf 'WARNING: %s from stash is unrelated to this PR — discarding to keep alpha clean\n' "$f"
+      git restore "$f"
+    fi
+  done < <(git diff --name-only)
+  REMAINING=$(git diff --name-only)
+  if [ -n "$REMAINING" ]; then
     git add -u && git commit -m "chore: restore session edits carried through merge"
   fi
 fi
