@@ -166,7 +166,7 @@ def _fetch_projects(owner: str) -> list[Project]:
 
 def _detect_repo(workspace_root: str) -> tuple[str, str]:
     """Return (owner, name) or ("", "") on failure."""
-    data = _run_gh("repo", "view", "--json", "owner,name", cwd=workspace_root)
+    data = _run_gh("repo", "view", "--json", "owner,name", cwd=workspace_root or None)
     if not data:
         return "", ""
     owner_raw = data.get("owner")
