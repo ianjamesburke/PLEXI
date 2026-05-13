@@ -1108,8 +1108,12 @@ impl PlexiApp {
     /// Cmd+Enter to save, Esc to cancel.
     pub(crate) fn draw_edit_description_overlay(&mut self, ctx: &egui::Context) {
         let ctx_idx = match self.editing_description {
-            Some(idx) => idx,
-            None => return,
+            Some(idx) if idx < self.router.len() => idx,
+            _ => {
+                self.editing_description = None;
+                self.pop_focus_layer(&crate::app::FocusLayer::ContextDescription);
+                return;
+            }
         };
 
         let (commit, cancel) = ctx.input_mut(|i| {
@@ -1163,19 +1167,29 @@ impl PlexiApp {
                                 .color(self.colors.text_dim),
                         );
 
-                        if !te.has_focus() {
+                        if !self.description_focus_requested {
                             te.request_focus();
+                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
+                                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                                    egui::text::CCursor::new(0),
+                                    egui::text::CCursor::new(self.description_buffer.len()),
+                                )));
+                                state.store(ui.ctx(), te_id);
+                            }
+                            self.description_focus_requested = true;
                         }
                     });
             });
 
         if cancel {
             self.editing_description = None;
+            self.description_focus_requested = false;
             self.pop_focus_layer(&crate::app::FocusLayer::ContextDescription);
         } else if commit {
             let new_desc = self.description_buffer.trim().to_string();
             self.router.get_mut(ctx_idx).description = if new_desc.is_empty() { None } else { Some(new_desc) };
             self.editing_description = None;
+            self.description_focus_requested = false;
             self.pop_focus_layer(&crate::app::FocusLayer::ContextDescription);
             self.save_workspace();
             log::info!("context_description: updated ctx_idx={ctx_idx}");
