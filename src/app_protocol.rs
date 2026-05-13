@@ -2855,4 +2855,27 @@ mod tests {
         let serialised = serde_json::to_string(&cmd).expect("serialise");
         assert!(serialised.contains(r#""type":"layout""#), "wire tag missing: {serialised}");
     }
+
+    #[test]
+    fn set_context_description_round_trips_serde() {
+        let json = r#"{"type":"set_context_description","description":"Main project workspace"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Host(HostCommand::SetContextDescription { description }) => {
+                assert_eq!(description, "Main project workspace");
+            }
+            other => panic!("expected SetContextDescription, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"set_context_description""#),
+            "wire tag missing: {serialised}"
+        );
+
+        let bad = r#"{"type":"set_context_description"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required description field"
+        );
+    }
 }

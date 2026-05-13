@@ -4222,7 +4222,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       COMPREPLY=($(compgen -W "watch" -- "$cur"))
       ;;
     context)
-      COMPREPLY=($(compgen -W "new open set-root current" -- "$cur"))
+      COMPREPLY=($(compgen -W "new open set-root current describe" -- "$cur"))
       ;;
     notify)
       if [[ $prev == "--level" ]]; then
