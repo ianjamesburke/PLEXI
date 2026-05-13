@@ -1744,7 +1744,7 @@ impl eframe::App for PlexiApp {
         // drain. Then drain the keyboard buffer so downstream readers —
         // focused app (`dispatch_app_key_events`), terminal backends,
         // `keys::poll_actions` — see only the global allowlist (Cmd+Q,
-        // Cmd+W, Cmd+Shift+A, Cmd+]/Cmd+[).
+        // Cmd+W, Cmd+Shift+A, Cmd+Shift+L/H).
         let mut early_modal_cmds: Vec<crate::app_trait::AppCommand> = Vec::new();
         if self.input_captured_by_overlay() {
             match self.focus_stack.last() {
@@ -3766,42 +3766,40 @@ impl PlexiApp {
         }
     }
 
-    /// Drain keyboard events from `ctx.input` so downstream widgets (panes,
+    /// Drain input-intent events from `ctx.input` so downstream widgets (panes,
     /// terminal backends, `keys::poll_actions`) see only the global allowlist.
-    /// Called after the owning overlay has read what it needs. The allowlist
-    /// lets a small set of keybinds (Quit, Close, hide-modal, queue-cycle)
-    /// remain live even while an overlay owns focus — users always need a way
-    /// to quit or dismiss the overlay.
+    ///
+    /// Uses `input_intent::classify` to identify events that carry user input
+    /// (Key, Text, Paste, Ime, Copy, Cut). Non-input events (pointer, scroll,
+    /// window focus, etc.) pass through unconditionally. New egui::Event
+    /// variants are dropped by default — promoting one requires adding it to
+    /// `InputIntent`.
     pub(crate) fn drain_captured_keyboard_input(&self, ctx: &egui::Context) {
         ctx.input_mut(|i| {
-            i.events.retain(|e| match e {
-                egui::Event::Key { key, modifiers, .. } => {
-                    let cmd = modifiers.command;
-                    let shift = modifiers.shift;
-                    let alt = modifiers.alt;
-                    let ctrl_only = modifiers.ctrl;
-                    // Only pass modifier-bearing keys; drop bare key presses.
-                    if !cmd || alt || ctrl_only {
-                        return false;
-                    }
-                    // Cmd+Q (quit), Cmd+W (close pane / hide-modal fallback).
-                    if !shift && matches!(key, egui::Key::Q | egui::Key::W) {
-                        return true;
-                    }
-                    // Cmd+Shift+A — toggle notification modal (global escape
-                    // hatch, survives even required notifs).
-                    if shift && matches!(key, egui::Key::A) {
-                        return true;
-                    }
-                    // Cmd+Shift+L / Cmd+Shift+H — cycle the notification queue without
-                    // acknowledging. Only meaningful while the modal is open.
-                    if shift && matches!(key, egui::Key::L | egui::Key::H) {
-                        return true;
-                    }
-                    false
+            i.events.retain(|e| {
+                if crate::input_intent::classify(e).is_none() {
+                    return true;
                 }
-                egui::Event::Text(_) => false,
-                _ => true,
+                match e {
+                    egui::Event::Key { key, modifiers, .. } => {
+                        let cmd = modifiers.command;
+                        let shift = modifiers.shift;
+                        if !cmd || modifiers.alt || modifiers.ctrl {
+                            return false;
+                        }
+                        if !shift && matches!(key, egui::Key::Q | egui::Key::W) {
+                            return true;
+                        }
+                        if shift && matches!(key, egui::Key::A) {
+                            return true;
+                        }
+                        if shift && matches!(key, egui::Key::L | egui::Key::H) {
+                            return true;
+                        }
+                        false
+                    }
+                    _ => false,
+                }
             });
         });
     }
