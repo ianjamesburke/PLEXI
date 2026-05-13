@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.38] — 2026-05-13
+
+### Changes
+- feat(quick-note): add stay_alive option for pane destinations (#1216)
+- fix(render): downgrade render_layout_node per-frame logs to debug (#1215)
+- fix(quick-note): same-frame draw on H/Esc exit to eliminate scrim flicker (#1214)
 ## [3.6.37] — 2026-05-12
 
 ### Changes
