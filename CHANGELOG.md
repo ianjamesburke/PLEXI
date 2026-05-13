@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.58] — 2026-05-13
+
+### Changes
+- feat(welcome): add ⌘P to shortcuts, remove right-click tip (#698) (#1267)
+- fix(website): move railway.json to repo root for new build context
 ## [3.6.57] — 2026-05-13
 
 ### Changes
