@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "astro dev",
-    "build": "astro build",
+    "build": "python3 scripts/generate-sdk-docs.py && astro build",
     "preview": "astro preview",
     "astro": "astro",
     "og": "node scripts/generate-og.mjs"

@@ -478,10 +478,8 @@ class Emitter:
         return its `terminal_pane_id` (an integer). Awaits until the host
         emits `LinkedTerminalReady`.
 
-        Returns 0 if the host denied the request — this happens when the
-        manifest doesn't declare `terminal.bindings`. Apps should treat 0
-        as a hard error (no terminal to drive). Raises `CapabilityDeniedError`
-        in that case so the failure is loud.
+        Raises `CapabilityDeniedError` if the manifest doesn't declare
+        `terminal.bindings`.
 
         Await this from async hooks. From background threads use
         ``self.emit.run_sync(self.emit.request_linked_terminal(...))``.
@@ -1096,8 +1094,8 @@ class Emitter:
         source: absolute path to audio file (mp3, wav, ogg, etc.)
         volume: playback volume 0.0–1.0 (default 1.0)
 
-        Fire-and-forget — no response event. Stop playback by calling
-        audio_play(source, state="stopped") or closing the pane.
+        Fire-and-forget — no response event. Playback stops when the pane
+        closes; there is no explicit stop API yet.
         """
         _emit({
             "type": "audio_play",

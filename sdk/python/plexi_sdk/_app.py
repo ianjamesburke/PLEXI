@@ -237,24 +237,32 @@ class App:
              timeout_ms: "int | None" = None) -> Any:
         """Decorator — register a method as an AI-callable tool and expose it.
 
-        Usage::
+        Tools are functions that AI agents can invoke by name. Each tool has a description
+        and a JSON schema defining its parameters.
+
+        Args:
+            name: Tool identifier; used by agents to invoke this tool
+            description: Human-readable description of what the tool does
+            schema: JSON schema object for tool parameters (type: "object" with properties)
+            timeout_ms: Optional timeout in milliseconds; None = no timeout
+
+        Returns:
+            A decorator function that registers the method as a tool.
+
+        Example::
 
             @app.tool("increment", description="Increment counter", schema={
                 "type": "object",
-                "properties": {"n": {"type": "integer"}},
+                "properties": {"n": {"type": "integer", "description": "Amount to increment"}},
+                "required": ["n"],
             })
-            def handle_increment(self_or_args, args=None):
-                ...
+            async def handle_increment(self, args):
+                n = args.get("n", 0)
+                self.counter += n
+                return {"new_value": self.counter}
 
-        The decorated method is called with ``(args_dict)`` where
-        ``args_dict`` is the parsed JSON arguments from the LLM. The method
-        may be a plain function or a bound method; the decorator normalises
-        the call convention.
-
-        Returns are JSON-serialised and sent as ``DrawCommand::ToolResult``.
-        Exceptions are caught and sent as the ``error`` field.
-
-        ``expose_tools`` is called automatically when the decorator runs.
+        The decorated method receives a dict of parsed arguments and can return any JSON-serializable
+        value or raise an exception (which becomes the tool's error response).
         """
         def decorator(fn: Any) -> Any:
             self._tool_handlers[name] = fn
@@ -389,7 +397,14 @@ class App:
         )
 
     def run(self) -> None:
-        """Start the PGAP v3 asyncio event loop. Blocks until Shutdown."""
+        """Start the PGAP v3 asyncio event loop. Blocks until Shutdown.
+
+        This is the entry point for all Plexi apps. Call it from your main block:
+
+            if __name__ == '__main__':
+                app = MyApp()
+                app.run()
+        """
         sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
         asyncio.run(self._async_main())
 

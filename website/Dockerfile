@@ -8,10 +8,13 @@ RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+COPY website/package.json website/package-lock.json ./
 RUN npm ci
 
-COPY . .
+COPY sdk/python/plexi_sdk /sdk/plexi_sdk
+COPY website/ .
+
+ENV SDK_SOURCE=/sdk/plexi_sdk
 RUN npm run build
 
 # Drop dev deps for a lean runtime copy. Native binaries are already compiled.
