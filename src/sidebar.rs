@@ -274,6 +274,7 @@ impl PlexiApp {
                 WindowMenuAction::EditDescription => {
                     self.editing_description = Some(i);
                     self.description_buffer = self.router.get(i).description.clone().unwrap_or_default();
+                    self.description_focus_requested = false;
                     self.push_focus_layer(crate::app::FocusLayer::ContextDescription);
                 }
                 WindowMenuAction::MoveToTop => {
