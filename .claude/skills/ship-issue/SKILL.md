@@ -651,13 +651,13 @@ if [ "${STASHED:-0}" = 1 ]; then
   # Cross-reference restored files against the PR's files (top commit on origin/alpha after squash-merge).
   # Discard any restored file that wasn't in the PR — it's unrelated WIP and must not corrupt alpha.
   PR_FILES=$(git show origin/alpha --name-only --format="" | grep .)
-  for f in $(git status --porcelain | grep "^ M\|^M " | awk '{print $2}'); do
+  while IFS= read -r f; do
     if ! echo "$PR_FILES" | grep -qF "$f"; then
       echo "WARNING: $f from stash is unrelated to this PR — discarding to keep alpha clean"
       git restore "$f"
     fi
-  done
-  REMAINING=$(git status --porcelain | grep "^ M\|^M ")
+  done < <(git diff --name-only)
+  REMAINING=$(git diff --name-only)
   if [ -n "$REMAINING" ]; then
     git add -u && git commit -m "chore: restore session edits carried through merge"
   fi
