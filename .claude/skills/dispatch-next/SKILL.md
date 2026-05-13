@@ -296,8 +296,8 @@ Leave the user's cursor in the first active lane.
 
 ## Notes
 
-- `plexi terminal` does not return a pane ID — always diff `plexi pane list` before/after to get it.
-- `new_window` creates a new spatial grid page to the right. `tab` adds a tab within the active window (run `pane focus` first to target the right window). `split_h` splits below.
+- **CLI reference:** See the `/plexi-cli` skill for full `plexi terminal`, `plexi pane`, and `plexi open` usage — layout values (`split_v`, `split_h`, `tab`, `new_window`), flags, and patterns.
+- `plexi terminal` returns the pane ID on stdout. If that fails, diff `plexi pane list` before/after.
 - For queue panes, omit `\n` from `plexi pane send` so the command is staged but not executed.
 - `c` is a personal zsh alias (login shell) — available in all interactive panes opened by Plexi.
 - If a lane's lead issue has a feature branch already in progress (`wtp list` or `git worktree list`), note it in the pane title: `"Lane A: #934 (branch exists)"`.
