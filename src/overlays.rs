@@ -822,6 +822,7 @@ impl PlexiApp {
         let back = ctx.input_mut(|i| {
             i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::H)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)
         });
         if back {
             self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
@@ -893,7 +894,10 @@ impl PlexiApp {
         }
 
         // L → enter submenu for selected item (zero-flash).
-        let enter_sub = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::L));
+        let enter_sub = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::L)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
+        });
         if enter_sub {
             let cursor = self.quick_note_dest_cursor;
             if cursor > 0 {
@@ -1214,6 +1218,7 @@ impl PlexiApp {
         let back = ctx.input_mut(|i| {
             i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::H)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft)
         });
         if back {
             self.pop_focus_layer(&current_layer);
@@ -1262,7 +1267,10 @@ impl PlexiApp {
         }
 
         // L → enter submenu for selected child.
-        let enter_sub = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::L));
+        let enter_sub = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::L)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
+        });
         if enter_sub && !children.is_empty() {
             if let Some(child) = children.get(self.quick_note_sub_cursor).cloned() {
                 if child.options.is_some() || child.children_cmd.is_some() {
