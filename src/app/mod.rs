@@ -324,9 +324,10 @@ pub struct PlexiApp {
     /// Receiver for HostCommands sent over the PLEXI_SOCKET Unix socket listener.
     /// Drained each frame in `drain_pane_cmd_channel`.
     pane_ipc_rx: std::sync::mpsc::Receiver<crate::app_protocol::HostCommand>,
-    /// Last (window_idx, tile_id) pair that was logged as a FocusChanged event.
+    /// Last (window_id, tile_id) pair that was logged as a FocusChanged event.
+    /// Uses stable window_id (u64) not a vector index so removals don't corrupt it.
     /// Compared at end of each frame to detect genuine focus transitions.
-    pub(crate) last_logged_focus: Option<(usize, egui_tiles::TileId)>,
+    pub(crate) last_logged_focus: Option<(u64, egui_tiles::TileId)>,
     /// When the current focus session started. Reset on each FocusChanged emit.
     pub(crate) focus_started_at: Option<std::time::Instant>,
 }
@@ -3232,15 +3233,16 @@ impl eframe::App for PlexiApp {
         // Detect genuine pane focus transitions and emit FocusChanged events.
         // Comparing at frame-end means temporary save/restore patterns in
         // canvas_bindings are invisible — focused_pane holds the settled value here.
+        // Uses stable window_id (not the vector index) so the key survives window removal.
         let current_focus = self.windows
             .get(self.active_window)
-            .and_then(|win| win.focused_pane.map(|tile| (self.active_window, tile)));
+            .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)));
         if current_focus != self.last_logged_focus {
-            if let Some((win_idx, tile_id)) = self.last_logged_focus {
+            if let Some((window_id, tile_id)) = self.last_logged_focus {
                 let duration_secs = self.focus_started_at
                     .map(|t| t.elapsed().as_secs())
                     .unwrap_or(0);
-                self.emit_focus_changed_for_tile(win_idx, tile_id, duration_secs);
+                self.emit_focus_changed_for_tile(window_id, tile_id, duration_secs);
             }
             self.last_logged_focus = current_focus;
             self.focus_started_at = Some(std::time::Instant::now());
@@ -3253,22 +3255,23 @@ impl eframe::App for PlexiApp {
     }
 
     fn on_exit(&mut self) {
-        if let Some((win_idx, tile_id)) = self.last_logged_focus {
+        if let Some((window_id, tile_id)) = self.last_logged_focus {
             let duration_secs = self.focus_started_at
                 .map(|t| t.elapsed().as_secs())
                 .unwrap_or(0);
             log::info!("focus_changed: shutdown — banking final session duration_secs={duration_secs}");
-            self.emit_focus_changed_for_tile(win_idx, tile_id, duration_secs);
+            self.emit_focus_changed_for_tile(window_id, tile_id, duration_secs);
         }
     }
 }
 
 impl PlexiApp {
-    /// Collect metadata for the pane at `tile_id` in window `win_idx` and emit
-    /// a `FocusChanged` event. Called when the focused pane changes and on shutdown.
-    fn emit_focus_changed_for_tile(&self, win_idx: usize, tile_id: egui_tiles::TileId, duration_secs: u64) {
+    /// Collect metadata for the pane at `tile_id` in the window identified by
+    /// stable `window_id` and emit a `FocusChanged` event. Called when the
+    /// focused pane changes and on shutdown.
+    fn emit_focus_changed_for_tile(&self, window_id: u64, tile_id: egui_tiles::TileId, duration_secs: u64) {
         use egui_tiles::Tile;
-        let Some(win) = self.windows.get(win_idx) else { return };
+        let Some(win) = self.windows.iter().find(|w| w.window_id == window_id) else { return };
         let pane_id = match win.tree.tiles.get(tile_id) {
             Some(Tile::Pane(id)) => *id,
             _ => return,
@@ -3283,7 +3286,7 @@ impl PlexiApp {
             }
             crate::pane::Pane::App(a) => {
                 let cwd = Some(a.workspace_root.to_string_lossy().into_owned());
-                let type_id = Some(a.runtime.type_id().to_string());
+                let type_id = Some(a.manifest_id.clone());
                 (cwd, None, None, type_id)
             }
         };
@@ -4446,6 +4449,7 @@ mod tests {
         let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
         let (tile_a, _) = app.add_test_pane();
         let (tile_b, _) = app.add_test_pane();
+        let win_id = app.windows[0].window_id;
 
         // Simulate first focus on tile_a
         app.windows[0].focused_pane = Some(tile_a);
@@ -4455,25 +4459,25 @@ mod tests {
         // Mirrors the frame-end detection in update()
         let current_focus = app.windows
             .get(app.active_window)
-            .and_then(|win| win.focused_pane.map(|tile| (app.active_window, tile)));
+            .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)));
         assert_ne!(current_focus, app.last_logged_focus);
         app.last_logged_focus = current_focus;
         app.focus_started_at = Some(std::time::Instant::now());
 
-        assert_eq!(app.last_logged_focus, Some((0, tile_a)));
+        assert_eq!(app.last_logged_focus, Some((win_id, tile_a)));
 
         // Switch to tile_b
         app.windows[0].focused_pane = Some(tile_b);
 
         let current_focus = app.windows
             .get(app.active_window)
-            .and_then(|win| win.focused_pane.map(|tile| (app.active_window, tile)));
+            .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)));
         assert_ne!(current_focus, app.last_logged_focus);
 
         app.last_logged_focus = current_focus;
         app.focus_started_at = Some(std::time::Instant::now());
 
-        assert_eq!(app.last_logged_focus, Some((0, tile_b)));
+        assert_eq!(app.last_logged_focus, Some((win_id, tile_b)));
     }
 
     #[test]
@@ -4482,14 +4486,15 @@ mod tests {
         let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
         let (tile_a, _) = app.add_test_pane();
+        let win_id = app.windows[0].window_id;
 
         app.windows[0].focused_pane = Some(tile_a);
-        app.last_logged_focus = Some((0, tile_a));
+        app.last_logged_focus = Some((win_id, tile_a));
 
         // Same focus — current_focus == last_logged_focus, no emission expected.
         let current_focus = app.windows
             .get(app.active_window)
-            .and_then(|win| win.focused_pane.map(|tile| (app.active_window, tile)));
+            .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)));
         assert_eq!(current_focus, app.last_logged_focus);
     }
 }
