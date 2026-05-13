@@ -334,6 +334,9 @@ pub struct PlexiApp {
     pub(crate) last_logged_focus: Option<(u64, egui_tiles::TileId)>,
     /// When the current focus session started. Reset on each FocusChanged emit.
     pub(crate) focus_started_at: Option<std::time::Instant>,
+    /// Timestamp of the last Space keydown — used to detect double-spacebar
+    /// for scratchpad activation. Reset on trigger or when the interval expires.
+    pub(crate) last_space_press: Option<std::time::Instant>,
 }
 
 #[cfg(test)]
@@ -692,6 +695,7 @@ impl PlexiApp {
                     pane_ipc_rx,
                     last_logged_focus: None,
                     focus_started_at: None,
+                    last_space_press: None,
                 };
             }
         }
@@ -797,6 +801,7 @@ impl PlexiApp {
             pane_ipc_rx,
             last_logged_focus: None,
             focus_started_at: None,
+            last_space_press: None,
         }
     }
 
@@ -916,6 +921,7 @@ impl PlexiApp {
             pane_ipc_rx,
             last_logged_focus: None,
             focus_started_at: None,
+            last_space_press: None,
         }, pane_ipc_tx)
     }
 
@@ -2362,6 +2368,50 @@ impl eframe::App for PlexiApp {
             };
             (active, capture)
         };
+
+        // Double-spacebar scratchpad trigger — first Space passes through to the terminal;
+        // the second Space within 250ms is consumed and opens the scratchpad.
+        if !app_active && !keyboard_capture_active {
+            let space_pressed = ctx.input(|i| {
+                i.events.iter().any(|e| matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::Space,
+                        pressed: true,
+                        repeat: false,
+                        ..
+                    }
+                ))
+            });
+            if space_pressed {
+                let now = std::time::Instant::now();
+                if let Some(last) = self.last_space_press {
+                    if now.duration_since(last) < std::time::Duration::from_millis(250) {
+                        log::info!("scratchpad: double-spacebar detected — opening");
+                        self.last_space_press = None;
+                        // Consume the triggering Space so it doesn't reach the terminal.
+                        ctx.input_mut(|i| {
+                            if let Some(pos) = i.events.iter().position(|e| matches!(
+                                e,
+                                egui::Event::Key {
+                                    key: egui::Key::Space,
+                                    pressed: true,
+                                    repeat: false,
+                                    ..
+                                }
+                            )) {
+                                i.events.remove(pos);
+                            }
+                        });
+                        self.open_scratchpad();
+                    } else {
+                        self.last_space_press = Some(now);
+                    }
+                } else {
+                    self.last_space_press = Some(now);
+                }
+            }
+        }
 
         // Handle keyboard shortcuts
         let modal_open = self.input_captured_by_overlay();

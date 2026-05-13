@@ -44,6 +44,7 @@ mod install;
 mod protocol;
 mod runs;
 mod secrets;
+mod scratchpad;
 mod secrets_app;
 mod workspace_router;
 mod workspace_secrets;
