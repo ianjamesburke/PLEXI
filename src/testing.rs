@@ -533,6 +533,7 @@ mod tests {
             FocusLayer::QuickNoteDestination,
             FocusLayer::QuickNoteSubDestination(vec![0]),
             FocusLayer::CliSetupPrompt,
+            FocusLayer::ContextInspector,
         ];
 
         let input_events = vec![

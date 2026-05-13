@@ -79,6 +79,8 @@ pub(crate) enum FocusLayer {
     /// First-launch CLI setup prompt. No text input — intercepts keys so they
     /// don't fall through to the active terminal while the modal is visible.
     CliSetupPrompt,
+    /// Context inspector modal — shows pane list, allows close/delete.
+    ContextInspector,
 }
 
 #[derive(Clone)]
@@ -189,6 +191,10 @@ pub struct PlexiApp {
     pub(crate) quit_press_count: u8,
     pub(crate) quit_last_press: Option<std::time::Instant>,
     pub(crate) pending_close: bool,
+    pub(crate) show_context_inspector: bool,
+    pub(crate) inspector_selected_pane: usize,
+    pub(crate) welcome_delete_press_count: u8,
+    pub(crate) welcome_delete_last_press: Option<std::time::Instant>,
     pub(crate) frame_tick: crate::logging::FrameTick,
     /// Cached config so confirmation settings are read through the config
     /// tunnel rather than duplicated as individual bool fields.
@@ -653,6 +659,10 @@ impl PlexiApp {
                     quitting: false,
                     quit_press_count: 0,
                     quit_last_press: None,
+                    show_context_inspector: false,
+                    inspector_selected_pane: 0,
+                    welcome_delete_press_count: 0,
+                    welcome_delete_last_press: None,
                     config: config.clone(),
                     key_bindings: key_bindings.clone(),
                     voice_config: voice_config.clone(),
@@ -762,6 +772,10 @@ impl PlexiApp {
             quitting: false,
             quit_press_count: 0,
             quit_last_press: None,
+            show_context_inspector: false,
+            inspector_selected_pane: 0,
+            welcome_delete_press_count: 0,
+            welcome_delete_last_press: None,
             config,
             key_bindings,
             voice_config,
@@ -881,6 +895,10 @@ impl PlexiApp {
             quitting: false,
             quit_press_count: 0,
             quit_last_press: None,
+            show_context_inspector: false,
+            inspector_selected_pane: 0,
+            welcome_delete_press_count: 0,
+            welcome_delete_last_press: None,
             config,
             key_bindings,
             voice_config: config::VoiceConfig::default(),
@@ -1761,6 +1779,7 @@ impl eframe::App for PlexiApp {
         self.sync_rename_pane_focus();
         self.sync_context_rename_focus();
         self.sync_cli_setup_prompt_focus();
+        self.sync_context_inspector_focus();
 
         // If an overlay owns input, render it FIRST so its widgets (the
         // notification modal's TextEdit for the `input` kind, the palette's
@@ -1800,6 +1819,9 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::CliSetupPrompt) => {
                     self.draw_cli_setup_modal(ctx);
                 }
+                Some(FocusLayer::ContextInspector) => {
+                    self.draw_context_inspector(ctx);
+                }
                 None => {}
             }
             self.drain_captured_keyboard_input(ctx);
@@ -1813,6 +1835,7 @@ impl eframe::App for PlexiApp {
             self.sync_rename_pane_focus();
             self.sync_context_rename_focus();
             self.sync_cli_setup_prompt_focus();
+            self.sync_context_inspector_focus();
         }
 
         // Apps only receive key input if nothing is capturing above them.
@@ -2749,6 +2772,11 @@ impl eframe::App for PlexiApp {
                     self.new_context();
                     self.save_workspace();
                 }
+                Action::ContextInspector => {
+                    self.show_context_inspector = !self.show_context_inspector;
+                    self.inspector_selected_pane = 0;
+                    log::info!("ContextInspector: toggled to {}", self.show_context_inspector);
+                }
                 Action::ToggleMinimap => {
                     self.minimap.toggle();
                 }
@@ -2861,7 +2889,50 @@ impl eframe::App for PlexiApp {
             .show(ctx, |ui| {
                 let active = self.active_window;
                 if self.windows[active].panes.is_empty() || self.windows[active].tree.root.is_none() {
+                    if self.router.len() > 1 {
+                        let delete_pressed = ctx.input_mut(|input| {
+                            input.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
+                                || input.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+                        });
+                        if delete_pressed {
+                            let now = std::time::Instant::now();
+                            let elapsed = self
+                                .welcome_delete_last_press
+                                .map(|t| now.duration_since(t))
+                                .unwrap_or(std::time::Duration::MAX);
+                            if elapsed > std::time::Duration::from_millis(1500) {
+                                self.welcome_delete_press_count = 0;
+                            }
+                            self.welcome_delete_press_count += 1;
+                            self.welcome_delete_last_press = Some(now);
+                            if self.welcome_delete_press_count >= 3 {
+                                let ctx_idx = self.router.active_idx();
+                                log::info!(
+                                    "welcome_delete: triple-tap delete context idx={ctx_idx} name={:?}",
+                                    self.router.active().name
+                                );
+                                self.welcome_delete_press_count = 0;
+                                self.welcome_delete_last_press = None;
+                                self.delete_context(ctx_idx);
+                                self.save_workspace();
+                                return;
+                            }
+                        }
+                    }
                     self.draw_welcome_screen(ui);
+                    if self.welcome_delete_press_count > 0 {
+                        let timed_out = self
+                            .welcome_delete_last_press
+                            .map(|t| t.elapsed() > std::time::Duration::from_millis(1500))
+                            .unwrap_or(false);
+                        if timed_out {
+                            self.welcome_delete_press_count = 0;
+                            self.welcome_delete_last_press = None;
+                        } else {
+                            self.draw_welcome_delete_overlay(ctx);
+                            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                        }
+                    }
                     return;
                 }
 
@@ -3451,6 +3522,7 @@ impl PlexiApp {
                 | Some(FocusLayer::QuickNoteDestination)
                 | Some(FocusLayer::QuickNoteSubDestination(_))
                 | Some(FocusLayer::CliSetupPrompt)
+                | Some(FocusLayer::ContextInspector)
         )
     }
 
@@ -3777,6 +3849,20 @@ impl PlexiApp {
             // Use retain rather than pop_focus_layer so stale entries are removed
             // even if another layer was pushed on top (e.g. via rapid state change).
             self.focus_stack.retain(|l| *l != FocusLayer::CliSetupPrompt);
+        }
+    }
+
+    pub(crate) fn sync_context_inspector_focus(&mut self) {
+        let should_own = self.show_context_inspector;
+        let has_layer = self
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::ContextInspector);
+        if should_own && !has_layer {
+            self.push_focus_layer(FocusLayer::ContextInspector);
+        } else if !should_own && has_layer {
+            self.focus_stack
+                .retain(|l| *l != FocusLayer::ContextInspector);
         }
     }
 

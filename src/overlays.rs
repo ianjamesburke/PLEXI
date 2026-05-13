@@ -1422,6 +1422,325 @@ impl PlexiApp {
         }
     }
 
+    pub(crate) fn draw_context_inspector(&mut self, ctx: &egui::Context) {
+        let mut dismissed = false;
+        let mut close_pane: Option<PaneId> = None;
+        let mut delete_context = false;
+
+        let (nav_down, nav_up, enter_pressed) = ctx.input_mut(|i| {
+            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            let down = i.consume_key(egui::Modifiers::NONE, egui::Key::J)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
+            let up = i.consume_key(egui::Modifiers::NONE, egui::Key::K)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
+            let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            if esc {
+                dismissed = true;
+            }
+            (down, up, enter)
+        });
+
+        let active_ctx_id = self.router.active().context_id;
+        let ctx_name = self.router.active().name.clone();
+        let ctx_root = self.router.active().root.clone();
+        let num_contexts = self.router.len();
+
+        let mut pane_ids: Vec<PaneId> = Vec::new();
+        let mut pane_kinds: Vec<&'static str> = Vec::new();
+        let mut pane_names: Vec<String> = Vec::new();
+        let mut pane_statuses: Vec<&'static str> = Vec::new();
+
+        for win in self.windows.iter() {
+            if win.context_id != active_ctx_id {
+                continue;
+            }
+            for (_, pane) in &win.panes {
+                match pane {
+                    crate::pane::Pane::Terminal(t) => {
+                        pane_ids.push(t.id);
+                        pane_kinds.push("Terminal");
+                        pane_names.push(
+                            t.name
+                                .clone()
+                                .or_else(|| t.pty_title.clone())
+                                .unwrap_or_default(),
+                        );
+                        pane_statuses.push(if t.exited { "exited" } else { "running" });
+                    }
+                    crate::pane::Pane::App(a) => {
+                        pane_ids.push(a.id);
+                        pane_kinds.push("App");
+                        pane_names.push(a.name.clone());
+                        pane_statuses.push("running");
+                    }
+                }
+            }
+        }
+
+        let pane_count = pane_ids.len();
+        if nav_down && pane_count > 0 {
+            self.inspector_selected_pane = (self.inspector_selected_pane + 1) % pane_count;
+        }
+        if nav_up && pane_count > 0 {
+            self.inspector_selected_pane =
+                (self.inspector_selected_pane + pane_count - 1) % pane_count;
+        }
+        if self.inspector_selected_pane >= pane_count && pane_count > 0 {
+            self.inspector_selected_pane = pane_count - 1;
+        }
+        if enter_pressed && pane_count > 0 {
+            close_pane = Some(pane_ids[self.inspector_selected_pane]);
+        }
+
+        let colors = self.colors;
+        let selected = self.inspector_selected_pane;
+
+        let screen_rect = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("context_inspector_scrim"))
+            .fixed_pos(screen_rect.min)
+            .order(egui::Order::Middle)
+            .show(ctx, |ui| {
+                ui.painter().rect_filled(
+                    screen_rect,
+                    0.0,
+                    Color32::from_black_alpha(style::SCRIM_ALPHA),
+                );
+                if ui
+                    .allocate_rect(screen_rect, egui::Sense::click())
+                    .clicked()
+                {
+                    dismissed = true;
+                }
+            });
+
+        egui::Area::new(egui::Id::new("context_inspector_overlay"))
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, colors.border))
+                    .corner_radius(style::RADIUS_MD)
+                    .inner_margin(egui::Margin::symmetric(
+                        style::MODAL_PADDING_H,
+                        style::MODAL_PADDING_V,
+                    ))
+                    .show(ui, |ui| {
+                        ui.set_width(style::MODAL_WIDTH_MD);
+
+                        ui.label(
+                            RichText::new(&ctx_name)
+                                .size(style::TEXT_TITLE_XL)
+                                .color(colors.text_primary)
+                                .strong(),
+                        );
+
+                        if let Some(root) = &ctx_root {
+                            ui.add_space(style::SPACE_SM);
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(root.display().to_string())
+                                        .size(style::TEXT_CAPTION)
+                                        .color(colors.text_dim),
+                                );
+                                crate::widgets::copy_button(
+                                    ui,
+                                    egui::Id::new("inspector_copy_root"),
+                                    &root.display().to_string(),
+                                );
+                            });
+                        }
+
+                        ui.add_space(style::SPACE_XL);
+                        ui.label(
+                            RichText::new("Panes")
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.text_dim)
+                                .strong(),
+                        );
+                        ui.add_space(style::SPACE_SM);
+
+                        if pane_count == 0 {
+                            ui.label(
+                                RichText::new("No panes")
+                                    .size(style::TEXT_BODY)
+                                    .color(colors.text_dim),
+                            );
+                        } else {
+                            for i in 0..pane_count {
+                                let is_selected = i == selected;
+                                let (row_resp, _) = crate::widgets::selectable_row(
+                                    ui,
+                                    is_selected,
+                                    &colors,
+                                    |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(pane_kinds[i])
+                                                    .size(style::TEXT_CAPTION)
+                                                    .color(colors.text_dim),
+                                            );
+                                            let display_name = if pane_names[i].is_empty() {
+                                                pane_kinds[i].to_string()
+                                            } else {
+                                                pane_names[i].clone()
+                                            };
+                                            ui.label(
+                                                RichText::new(&display_name)
+                                                    .size(style::TEXT_BODY)
+                                                    .color(colors.text_primary),
+                                            );
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .add(
+                                                            egui::Button::new(
+                                                                RichText::new("✕")
+                                                                    .size(style::TEXT_CAPTION)
+                                                                    .color(colors.text_dim),
+                                                            )
+                                                            .frame(false),
+                                                        )
+                                                        .on_hover_cursor(
+                                                            egui::CursorIcon::PointingHand,
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        close_pane = Some(pane_ids[i]);
+                                                    }
+                                                    let status_color =
+                                                        if pane_statuses[i] == "running" {
+                                                            colors.accent
+                                                        } else {
+                                                            colors.text_dim
+                                                        };
+                                                    ui.label(
+                                                        RichText::new(pane_statuses[i])
+                                                            .size(style::TEXT_HINT)
+                                                            .color(status_color),
+                                                    );
+                                                },
+                                            );
+                                        });
+                                    },
+                                );
+                                if row_resp.clicked() {
+                                    close_pane = Some(pane_ids[i]);
+                                }
+                            }
+                        }
+
+                        ui.add_space(style::SPACE_XL);
+                        ui.separator();
+                        ui.add_space(style::SPACE_MD);
+
+                        ui.horizontal(|ui| {
+                            if num_contexts > 1 {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("Delete context")
+                                                .size(style::TEXT_CAPTION)
+                                                .color(colors.text_primary),
+                                        )
+                                        .fill(colors.bg_active),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    delete_context = true;
+                                }
+                                ui.add_space(style::SPACE_XL);
+                            }
+                            crate::widgets::key_combo_list(
+                                ui,
+                                &[&["Esc"]],
+                                Some("close"),
+                                &colors,
+                            );
+                            ui.add_space(style::SPACE_MD);
+                            crate::widgets::key_combo_list(
+                                ui,
+                                &[&["j"], &["k"]],
+                                Some("navigate"),
+                                &colors,
+                            );
+                            if pane_count > 0 {
+                                ui.add_space(style::SPACE_MD);
+                                crate::widgets::key_combo_list(
+                                    ui,
+                                    &[&["Enter"]],
+                                    Some("close pane"),
+                                    &colors,
+                                );
+                            }
+                        });
+                    });
+            });
+
+        if dismissed {
+            self.show_context_inspector = false;
+            log::info!("ContextInspector: closed");
+        }
+
+        if let Some(pid) = close_pane {
+            log::info!("ContextInspector: closing pane {pid}");
+            self.close_pane_by_id(pid);
+        }
+
+        if delete_context {
+            let ctx_idx = self.router.active_idx();
+            log::info!(
+                "ContextInspector: deleting context idx={ctx_idx} name={:?}",
+                self.router.active().name
+            );
+            self.show_context_inspector = false;
+            self.delete_context(ctx_idx);
+            self.save_workspace();
+        }
+    }
+
+    pub(crate) fn draw_welcome_delete_overlay(&self, ctx: &egui::Context) {
+        let count = self.welcome_delete_press_count;
+        egui::Area::new(egui::Id::new("welcome_delete_overlay"))
+            .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -40.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, self.colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(16, 10))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format!(
+                                    "⌫ pressed {} of 3 — press again to delete context",
+                                    count
+                                ))
+                                .size(12.0)
+                                .color(self.colors.text_dim),
+                            );
+                            ui.add_space(8.0);
+                            for i in 1u8..=3 {
+                                let color = if i <= count {
+                                    self.colors.accent
+                                } else {
+                                    self.colors.bg_active
+                                };
+                                let (rect, _) = ui.allocate_exact_size(
+                                    Vec2::new(8.0, 8.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter()
+                                    .circle_filled(rect.center(), 4.0, color);
+                            }
+                        });
+                    });
+            });
+    }
+
     pub(crate) fn draw_quit_confirm_overlay(&self, ctx: &egui::Context) {
         let count = self.quit_press_count;
         egui::Area::new(egui::Id::new("quit_confirm_overlay"))

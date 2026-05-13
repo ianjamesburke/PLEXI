@@ -26,6 +26,7 @@ use crate::config::KeybindingsConfig;
 // Cmd+Up / Cmd+Down           — scroll
 // Cmd+= / Cmd+-               — font size
 // Cmd+E                       — file browser
+// Cmd+I                       — context inspector
 // Cmd+0                       — quick note
 // Cmd+1–9                     — switch context (sidebar)
 // Escape (app active)         — close app
@@ -105,6 +106,8 @@ pub enum Action {
     /// Create a new context (sidebar item) and immediately open the rename modal.
     /// Bound to Cmd+Shift+N.
     NewContext,
+    /// Toggle the context inspector modal. Bound to Cmd+I.
+    ContextInspector,
     /// Toggle the minimap overlay. Bound to Cmd+Shift+M.
     ToggleMinimap,
     /// Reload configuration from disk. Bound to Cmd+Shift+,.
@@ -165,6 +168,7 @@ pub struct KeyBindings {
     pub open_secrets_manager: (egui::Modifiers, egui::Key),
     pub force_reload_app: (egui::Modifiers, egui::Key),
     pub toggle_notification_modal: (egui::Modifiers, egui::Key),
+    pub context_inspector: (egui::Modifiers, egui::Key),
 }
 
 fn cmd() -> egui::Modifiers { egui::Modifiers::COMMAND }
@@ -222,6 +226,7 @@ impl Default for KeyBindings {
             open_secrets_manager:      (cmd_shift(), egui::Key::S),
             force_reload_app:          (cmd_alt(),   egui::Key::R),
             toggle_notification_modal: (cmd_shift(), egui::Key::A),
+            context_inspector:         (cmd(),       egui::Key::I),
         }
     }
 }
@@ -369,6 +374,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(open_secrets_manager, "open_secrets_manager");
     apply_override!(force_reload_app, "force_reload_app");
     apply_override!(toggle_notification_modal, "toggle_notification_modal");
+    apply_override!(context_inspector, "context_inspector");
 
     // Conflict detection
     let named: &[(&str, (egui::Modifiers, egui::Key))] = &[
@@ -413,6 +419,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("open_secrets_manager",      bindings.open_secrets_manager),
         ("force_reload_app",          bindings.force_reload_app),
         ("toggle_notification_modal", bindings.toggle_notification_modal),
+        ("context_inspector",         bindings.context_inspector),
     ];
 
     let mut seen: std::collections::HashMap<u64, &str> = std::collections::HashMap::new();
@@ -623,6 +630,9 @@ pub fn poll_actions(
         }
         if input.consume_key(bindings.toggle_notification_modal.0, bindings.toggle_notification_modal.1) {
             actions.push(Action::ToggleNotificationModal);
+        }
+        if input.consume_key(bindings.context_inspector.0, bindings.context_inspector.1) {
+            actions.push(Action::ContextInspector);
         }
 
         // Switch context (Cmd+1 through Cmd+9) — these remain hardcoded for now.
