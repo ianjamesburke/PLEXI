@@ -1,0 +1,9 @@
+[package]
+name = "gen_cli_docs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+plexi = { path = "../.." }
+clap = { version = "4", features = ["derive"] }

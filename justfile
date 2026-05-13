@@ -32,6 +32,25 @@ gen-schema:
     python3 tools/gen_protocol_py.py
     @echo "Schema and Python protocol models regenerated."
 
+# Regenerate the CLI reference docs from the clap Command tree.
+# Run after any change to src/cli_args.rs.
+gen-cli-docs:
+    cargo run -p gen_cli_docs > website/src/content/docs/cli.md
+    @echo "CLI reference regenerated."
+
+# Verify the committed CLI docs are up to date with the current Rust source.
+# Fails if website/src/content/docs/cli.md is stale.
+check-cli-docs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo run -p gen_cli_docs > /tmp/plexi_check_cli.md
+    if ! diff -q website/src/content/docs/cli.md /tmp/plexi_check_cli.md > /dev/null; then
+        echo "ERROR: website/src/content/docs/cli.md is stale. Run 'just gen-cli-docs'."
+        diff website/src/content/docs/cli.md /tmp/plexi_check_cli.md || true
+        exit 1
+    fi
+    echo "CLI docs are up to date."
+
 # Verify the committed schema is up to date with the current Rust source.
 # Fails if sdk/protocol/pgap.schema.json is stale.
 check-schema:

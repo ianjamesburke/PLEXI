@@ -1549,6 +1549,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gen_cli_docs"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "plexi",
+]
+
+[[package]]
 name = "gen_schema"
 version = "0.1.0"
 dependencies = [
