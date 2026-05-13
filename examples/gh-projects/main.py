@@ -131,9 +131,9 @@ def _fetch_board(project: Project) -> tuple[list[Column], str]:
         url    = str(content.get("url") or "")
         labels: list[str] = []
         for lbl in cast(list[object], content.get("labels") or []):
-            name = lbl.get("name") if isinstance(lbl, dict) else str(lbl)  # type: ignore[union-attr]
-            if name:
-                labels.append(str(name))
+            name = lbl.get("name") if isinstance(lbl, dict) else lbl  # type: ignore[union-attr]
+            if isinstance(name, str) and name:
+                labels.append(name)
 
         item = Item(
             item_id=str(raw.get("id") or ""),
