@@ -101,7 +101,7 @@ def _fetch_board(project: Project) -> tuple[list[Column], str]:
 
     status_options: list[dict[str, object]] = []
     for f in cast(list[dict[str, object]], fields.get("fields") or []):
-        if f.get("name") == "Status" and f.get("type") == "SingleSelect":
+        if f.get("name") == "Status" and "SingleSelect" in str(f.get("type") or ""):
             status_options = cast(list[dict[str, object]], f.get("options") or [])
             break
 
