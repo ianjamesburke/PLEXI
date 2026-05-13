@@ -115,7 +115,7 @@ def _fetch_board(project: Project) -> tuple[list[Column], str]:
     if items_data is None:
         return [], "Failed to fetch project items"
 
-    col_map: dict[str, list[Item]] = {str(opt["name"]): [] for opt in status_options}
+    col_map: dict[str, list[Item]] = {str(opt.get("name", "")): [] for opt in status_options if opt.get("name")}
 
     for raw in cast(list[dict[str, object]], items_data.get("items") or []):
         content = cast(dict[str, object], raw.get("content") or {})
@@ -146,7 +146,10 @@ def _fetch_board(project: Project) -> tuple[list[Column], str]:
         if status in col_map:
             col_map[status].append(item)
 
-    columns = [Column(name=str(opt["name"]), items=col_map[str(opt["name"])]) for opt in status_options]
+    columns = [
+        Column(name=str(opt.get("name", "")), items=col_map.get(str(opt.get("name", "")), []))
+        for opt in status_options if opt.get("name")
+    ]
     return columns, ""
 
 
