@@ -1294,7 +1294,7 @@ impl PlexiApp {
                     };
                     let json_str = match result {
                         Ok(captured) => serde_json::to_string(&captured).unwrap_or_else(|_| "[]".to_string()),
-                        Err(msg) => format!("{{\"error\":{}}}", serde_json::to_string(&msg).unwrap_or_else(|_| format!("\"{msg}\""))),
+                        Err(msg) => serde_json::json!({"error": msg}).to_string(),
                     };
                     if let Err(e) = std::fs::write(response_file, &json_str) {
                         log::error!("pane_ipc: capture_pane: could not write response file {response_file:?}: {e}");

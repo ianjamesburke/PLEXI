@@ -415,11 +415,12 @@ impl TerminalBackend {
         let mut result = Vec::with_capacity(take);
         for line_idx in first..=last {
             let row = &grid[Line(line_idx)];
-            let mut s = String::with_capacity(columns);
-            for col_idx in 0..columns {
-                s.push(row[Column(col_idx)].c);
-            }
-            result.push(s.trim_end().to_string());
+            let mut s: String = (0..columns)
+                .map(|col_idx| row[Column(col_idx)].c)
+                .collect();
+            let trimmed_len = s.trim_end().len();
+            s.truncate(trimmed_len);
+            result.push(s);
         }
         result
     }
