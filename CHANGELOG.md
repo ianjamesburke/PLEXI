@@ -1,6 +1,18 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.62] — 2026-05-13
+
+### Changes
+- feat(sdk): runtime isinstance check in Column/Card/Scrollable (#1202) (#1269)
+- feat: cancel active StreamProcess children on ProcessApp drop (#675) (#1270)
+- docs: add Railway build configuration gotcha and ignore local config dirs
+- fix(docs): remove nonexistent `plexi note` CLI section from Quick Note page
+- fix(terminal): remove 8px inner padding that caused background color fringe (#1265)
+- feat(cli): add `plexi pane self` and suppress CLI stderr log noise (#1266)
+- fix(website): move railway.json back to website/ where Railway expects it
+- feat(welcome): add ⌘P to shortcuts, remove right-click tip (#698) (#1267)
+- fix(website): move railway.json to repo root for new build context
 ## [3.6.61] — 2026-05-13
 
 ### Changes
