@@ -7,9 +7,11 @@ Delete what you don't need.
 from plexi_sdk import App, RenderContext
 from plexi_sdk.ui import (
     AppBar,
+    ButtonRow,
     Card,
     Column,
     FooterKeys,
+    InfoTable,
     KeyRow,
     Label,
     Section,
@@ -20,27 +22,34 @@ from plexi_sdk.ui import (
 class __CLASS_NAME__(App):
     async def on_init(self, ctx: RenderContext) -> None:
         self.click_count = 0
+        self._btn = ButtonRow("action", "Click me")
         ctx.status_summary("Ready")
         self.emit.info("__DISPLAY_NAME__ initialized")
 
     def on_render(self, ctx: RenderContext) -> None:
-        info_rows = [
-            f"app_id: {self.app_id}",
-            f"workspace: {ctx.workspace_root or '(none)'}",
-            f"dimensions: {ctx.w:.0f} x {ctx.h:.0f}",
-            f"capabilities: {', '.join(ctx.capabilities) or 'none'}",
-        ]
+        if self._btn.clicked:
+            self.click_count += 1
+            ctx.status_summary(f"Clicked {self.click_count} time(s)")
 
         ctx.render(Column([
             AppBar(title="__DISPLAY_NAME__", subtitle="Edit main.py to build your app"),
-            Section("App Info"),
-            Card([Label(line, tone="caption") for line in info_rows]),
-            Section("Keyboard Shortcuts"),
+            Section("APP INFO"),
+            InfoTable([
+                ("app_id", self.app_id),
+                ("workspace", ctx.workspace_root or "(none)"),
+                ("dimensions", f"{ctx.w:.0f} × {ctx.h:.0f}"),
+                ("capabilities", ", ".join(ctx.capabilities) or "none"),
+            ]),
+            Section("ACTIONS"),
+            Card([
+                self._btn,
+                Label(f"Clicks: {self.click_count}", tone="caption"),
+            ]),
+            Section("KEYBOARD SHORTCUTS"),
             Card([
                 KeyRow("q", "quit"),
                 KeyRow("+", "increment counter"),
             ]),
-            Label(f"Clicks: {self.click_count}", tone="body"),
             Spacer(grow=True),
             FooterKeys([
                 ("q", "quit"),
@@ -52,9 +61,6 @@ class __CLASS_NAME__(App):
         if key == "+" or (key == "=" and mods.get("shift")):
             self.click_count += 1
             ctx.status_summary(f"Clicked {self.click_count} time(s)")
-
-    def on_click(self, ctx: RenderContext, x: float, y: float, button: str) -> None:
-        pass
 
 
 __CLASS_NAME__().run()
