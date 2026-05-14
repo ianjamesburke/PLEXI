@@ -1605,101 +1605,106 @@ impl PlexiApp {
                         );
                         ui.add_space(style::SPACE_SM);
 
-                        if pane_count == 0 {
-                            ui.label(
-                                RichText::new("No panes")
-                                    .size(style::TEXT_BODY)
-                                    .color(colors.text_dim),
-                            );
-                        } else {
-                            let mut global_idx: usize = 0;
-                            for (group_name, rows) in &groups {
-                                // Context section header (dim).
-                                ui.add_space(style::SPACE_SM);
-                                ui.label(
-                                    RichText::new(group_name.as_str())
-                                        .size(style::TEXT_CAPTION)
-                                        .color(colors.text_dim),
-                                );
-                                ui.add_space(style::SPACE_SM);
-
-                                for row in rows {
-                                    let i = global_idx;
-                                    global_idx += 1;
-                                    let is_selected = i == selected;
-                                    let row_id = row.id;
-                                    let (row_resp, _) = crate::widgets::selectable_row(
-                                        ui,
-                                        is_selected,
-                                        &colors,
-                                        |ui| {
-                                            ui.horizontal(|ui| {
-                                                ui.label(
-                                                    RichText::new(format!(
-                                                        "#{} {}",
-                                                        row_id, row.kind
-                                                    ))
-                                                    .size(style::TEXT_CAPTION)
-                                                    .color(colors.text_dim),
-                                                );
-                                                let display_name: &str = if row.name.is_empty() {
-                                                    row.kind
-                                                } else {
-                                                    &row.name
-                                                };
-                                                ui.label(
-                                                    RichText::new(display_name)
-                                                        .size(style::TEXT_BODY)
-                                                        .color(colors.text_primary),
-                                                );
-                                                ui.with_layout(
-                                                    Layout::right_to_left(Align::Center),
-                                                    |ui| {
-                                                        if ui
-                                                            .add(
-                                                                egui::Button::new(
-                                                                    RichText::new("✕")
-                                                                        .size(style::TEXT_CAPTION)
-                                                                        .color(colors.text_dim),
-                                                                )
-                                                                .frame(false),
-                                                            )
-                                                            .on_hover_cursor(
-                                                                egui::CursorIcon::PointingHand,
-                                                            )
-                                                            .clicked()
-                                                        {
-                                                            close_pane = Some(row_id);
-                                                        }
-                                                        let status_color =
-                                                            if row.status == "running" {
-                                                                colors.accent
-                                                            } else {
-                                                                colors.text_dim
-                                                            };
-                                                        ui.label(
-                                                            RichText::new(row.status)
-                                                                .size(style::TEXT_HINT)
-                                                                .color(status_color),
-                                                        );
-                                                        if !row.detail.is_empty() {
-                                                            ui.label(
-                                                                RichText::new(row.detail.as_str())
-                                                                    .size(style::TEXT_HINT)
-                                                                    .color(colors.text_dim),
-                                                            );
-                                                        }
-                                                    },
-                                                );
-                                            });
-                                        },
+                        let max_pane_height = ctx.available_rect().height() * 0.6;
+                        egui::ScrollArea::vertical()
+                            .max_height(max_pane_height)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                if pane_count == 0 {
+                                    ui.label(
+                                        RichText::new("No panes")
+                                            .size(style::TEXT_BODY)
+                                            .color(colors.text_dim),
                                     );
-                                    if row_resp.clicked() {
-                                        focus_pane = Some(row_id);
+                                } else {
+                                    let mut global_idx: usize = 0;
+                                    for (group_name, rows) in &groups {
+                                        ui.add_space(style::SPACE_SM);
+                                        ui.label(
+                                            RichText::new(group_name.as_str())
+                                                .size(style::TEXT_CAPTION)
+                                                .color(colors.text_dim),
+                                        );
+                                        ui.add_space(style::SPACE_SM);
+
+                                        for row in rows {
+                                            let i = global_idx;
+                                            global_idx += 1;
+                                            let is_selected = i == selected;
+                                            let row_id = row.id;
+                                            let (row_resp, _) = crate::widgets::selectable_row(
+                                                ui,
+                                                is_selected,
+                                                &colors,
+                                                |ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(
+                                                            RichText::new(format!(
+                                                                "#{} {}",
+                                                                row_id, row.kind
+                                                            ))
+                                                            .size(style::TEXT_CAPTION)
+                                                            .color(colors.text_dim),
+                                                        );
+                                                        let display_name: &str = if row.name.is_empty() {
+                                                            row.kind
+                                                        } else {
+                                                            &row.name
+                                                        };
+                                                        ui.label(
+                                                            RichText::new(display_name)
+                                                                .size(style::TEXT_BODY)
+                                                                .color(colors.text_primary),
+                                                        );
+                                                        ui.with_layout(
+                                                            Layout::right_to_left(Align::Center),
+                                                            |ui| {
+                                                                if ui
+                                                                    .add(
+                                                                        egui::Button::new(
+                                                                            RichText::new("✕")
+                                                                                .size(style::TEXT_CAPTION)
+                                                                                .color(colors.text_dim),
+                                                                        )
+                                                                        .frame(false),
+                                                                    )
+                                                                    .on_hover_cursor(
+                                                                        egui::CursorIcon::PointingHand,
+                                                                    )
+                                                                    .clicked()
+                                                                {
+                                                                    close_pane = Some(row_id);
+                                                                }
+                                                                let status_color =
+                                                                    if row.status == "running" {
+                                                                        colors.accent
+                                                                    } else {
+                                                                        colors.text_dim
+                                                                    };
+                                                                ui.label(
+                                                                    RichText::new(row.status)
+                                                                        .size(style::TEXT_HINT)
+                                                                        .color(status_color),
+                                                                );
+                                                                if !row.detail.is_empty() {
+                                                                    ui.label(
+                                                                        RichText::new(row.detail.as_str())
+                                                                            .size(style::TEXT_HINT)
+                                                                            .color(colors.text_dim),
+                                                                    );
+                                                                }
+                                                            },
+                                                        );
+                                                    });
+                                                },
+                                            );
+                                            if row_resp.clicked() {
+                                                focus_pane = Some(row_id);
+                                            }
+                                        }
                                     }
                                 }
-                            }
-                        }
+                            });
 
                         ui.add_space(style::SPACE_XL);
                         ui.separator();
