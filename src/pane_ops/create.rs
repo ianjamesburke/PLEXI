@@ -241,6 +241,11 @@ impl PlexiApp {
         let ctx_mut = &mut self.windows[active];
         if let Some(pane) = ctx_mut.panes.get_mut(&pane_id) {
             if let Some(app_pane) = pane.as_app_mut() {
+                // Transfer the last committed frame so the pane doesn't flicker
+                // blank during hot-reload of a crashed app (#1298).
+                if let crate::pane::AppRuntime::Process(ref old_proc) = app_pane.runtime {
+                    new_process.transfer_frame_from(old_proc);
+                }
                 let new_perms = new_process.permissions.clone();
                 let old_runtime = std::mem::replace(
                     &mut app_pane.runtime,

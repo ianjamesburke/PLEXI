@@ -1425,6 +1425,7 @@ impl PlexiApp {
     pub(crate) fn draw_context_inspector(&mut self, ctx: &egui::Context) {
         let mut dismissed = false;
         let mut close_pane: Option<PaneId> = None;
+        let mut focus_pane: Option<PaneId> = None;
         let mut delete_context = false;
 
         let (nav_down, nav_up, enter_pressed) = ctx.input_mut(|i| {
@@ -1440,44 +1441,87 @@ impl PlexiApp {
             (down, up, enter)
         });
 
-        let active_ctx_id = self.router.active().context_id;
         let ctx_name = self.router.active().name.clone();
         let ctx_root = self.router.active().root.clone();
         let num_contexts = self.router.len();
 
-        let mut pane_ids: Vec<PaneId> = Vec::new();
-        let mut pane_kinds: Vec<&'static str> = Vec::new();
-        let mut pane_names: Vec<String> = Vec::new();
-        let mut pane_statuses: Vec<&'static str> = Vec::new();
+        // Collect all panes across all contexts, grouped by context.
+        struct PaneRow {
+            id: PaneId,
+            kind: &'static str,
+            name: String,
+            detail: String,
+            status: &'static str,
+        }
 
-        for win in self.windows.iter() {
-            if win.context_id != active_ctx_id {
-                continue;
-            }
-            for (_, pane) in &win.panes {
-                match pane {
-                    crate::pane::Pane::Terminal(t) => {
-                        pane_ids.push(t.id);
-                        pane_kinds.push("Terminal");
-                        pane_names.push(
-                            t.name
-                                .clone()
-                                .or_else(|| t.pty_title.clone())
-                                .unwrap_or_default(),
-                        );
-                        pane_statuses.push(if t.exited { "exited" } else { "running" });
-                    }
-                    crate::pane::Pane::App(a) => {
-                        pane_ids.push(a.id);
-                        pane_kinds.push("App");
-                        pane_names.push(a.name.clone());
-                        pane_statuses.push("running");
+        let mut groups: Vec<(String, Vec<PaneRow>)> = Vec::new();
+        let mut all_pane_ids: Vec<PaneId> = Vec::new();
+
+        for ctx_entry in self.router.iter() {
+            let cname = ctx_entry.name.clone();
+            let cid = ctx_entry.context_id;
+            let mut rows: Vec<PaneRow> = Vec::new();
+            for win in self.windows.iter() {
+                if win.context_id != cid {
+                    continue;
+                }
+                for (_, pane) in &win.panes {
+                    match pane {
+                        crate::pane::Pane::Terminal(t) => {
+                            rows.push(PaneRow {
+                                id: t.id,
+                                kind: "Terminal",
+                                name: t
+                                    .name
+                                    .clone()
+                                    .or_else(|| t.pty_title.clone())
+                                    .unwrap_or_default(),
+                                detail: String::new(),
+                                status: if t.exited { "exited" } else { "running" },
+                            });
+                        }
+                        crate::pane::Pane::App(a) => {
+                            let status = if let crate::pane::AppRuntime::Process(ref proc) =
+                                a.runtime
+                            {
+                                match proc.lifecycle.state() {
+                                    crate::process_app::LifecycleState::Running => {
+                                        "running"
+                                    }
+                                    crate::process_app::LifecycleState::Booting => {
+                                        "booting"
+                                    }
+                                    crate::process_app::LifecycleState::Crashed => {
+                                        "crashed"
+                                    }
+                                    crate::process_app::LifecycleState::Hung => "hung",
+                                    crate::process_app::LifecycleState::ProtocolError => {
+                                        "error"
+                                    }
+                                }
+                            } else {
+                                "running"
+                            };
+                            rows.push(PaneRow {
+                                id: a.id,
+                                kind: "App",
+                                name: a.name.clone(),
+                                detail: a.manifest_id.clone(),
+                                status,
+                            });
+                        }
                     }
                 }
             }
+            if !rows.is_empty() {
+                for r in &rows {
+                    all_pane_ids.push(r.id);
+                }
+                groups.push((cname, rows));
+            }
         }
 
-        let pane_count = pane_ids.len();
+        let pane_count = all_pane_ids.len();
         if nav_down && pane_count > 0 {
             self.inspector_selected_pane = (self.inspector_selected_pane + 1) % pane_count;
         }
@@ -1489,7 +1533,7 @@ impl PlexiApp {
             self.inspector_selected_pane = pane_count - 1;
         }
         if enter_pressed && pane_count > 0 {
-            close_pane = Some(pane_ids[self.inspector_selected_pane]);
+            focus_pane = Some(all_pane_ids[self.inspector_selected_pane]);
         }
 
         let colors = self.colors;
@@ -1567,66 +1611,100 @@ impl PlexiApp {
                                     .color(colors.text_dim),
                             );
                         } else {
-                            for i in 0..pane_count {
-                                let is_selected = i == selected;
-                                let (row_resp, _) = crate::widgets::selectable_row(
-                                    ui,
-                                    is_selected,
-                                    &colors,
-                                    |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                RichText::new(pane_kinds[i])
+                            let mut global_idx: usize = 0;
+                            for (group_name, rows) in &groups {
+                                // Context section header (dim).
+                                ui.add_space(style::SPACE_SM);
+                                ui.label(
+                                    RichText::new(group_name.as_str())
+                                        .size(style::TEXT_CAPTION)
+                                        .color(colors.text_dim),
+                                );
+                                ui.add_space(style::SPACE_SM);
+
+                                for row in rows {
+                                    let i = global_idx;
+                                    global_idx += 1;
+                                    let is_selected = i == selected;
+                                    let row_id = row.id;
+                                    let row_kind = row.kind;
+                                    let row_name = row.name.clone();
+                                    let row_detail = row.detail.clone();
+                                    let row_status = row.status;
+                                    let (row_resp, _) = crate::widgets::selectable_row(
+                                        ui,
+                                        is_selected,
+                                        &colors,
+                                        |ui| {
+                                            ui.horizontal(|ui| {
+                                                // Pane ID + type (dim caption).
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "#{} {}",
+                                                        row_id, row_kind
+                                                    ))
                                                     .size(style::TEXT_CAPTION)
                                                     .color(colors.text_dim),
-                                            );
-                                            let display_name = if pane_names[i].is_empty() {
-                                                pane_kinds[i].to_string()
-                                            } else {
-                                                pane_names[i].clone()
-                                            };
-                                            ui.label(
-                                                RichText::new(&display_name)
-                                                    .size(style::TEXT_BODY)
-                                                    .color(colors.text_primary),
-                                            );
-                                            ui.with_layout(
-                                                Layout::right_to_left(Align::Center),
-                                                |ui| {
-                                                    if ui
-                                                        .add(
-                                                            egui::Button::new(
-                                                                RichText::new("✕")
-                                                                    .size(style::TEXT_CAPTION)
-                                                                    .color(colors.text_dim),
+                                                );
+                                                // Name (body).
+                                                let display_name = if row_name.is_empty() {
+                                                    row_kind.to_string()
+                                                } else {
+                                                    row_name.clone()
+                                                };
+                                                ui.label(
+                                                    RichText::new(&display_name)
+                                                        .size(style::TEXT_BODY)
+                                                        .color(colors.text_primary),
+                                                );
+                                                ui.with_layout(
+                                                    Layout::right_to_left(Align::Center),
+                                                    |ui| {
+                                                        // Close button (secondary action).
+                                                        if ui
+                                                            .add(
+                                                                egui::Button::new(
+                                                                    RichText::new("✕")
+                                                                        .size(style::TEXT_CAPTION)
+                                                                        .color(colors.text_dim),
+                                                                )
+                                                                .frame(false),
                                                             )
-                                                            .frame(false),
-                                                        )
-                                                        .on_hover_cursor(
-                                                            egui::CursorIcon::PointingHand,
-                                                        )
-                                                        .clicked()
-                                                    {
-                                                        close_pane = Some(pane_ids[i]);
-                                                    }
-                                                    let status_color =
-                                                        if pane_statuses[i] == "running" {
-                                                            colors.accent
-                                                        } else {
-                                                            colors.text_dim
-                                                        };
-                                                    ui.label(
-                                                        RichText::new(pane_statuses[i])
-                                                            .size(style::TEXT_HINT)
-                                                            .color(status_color),
-                                                    );
-                                                },
-                                            );
-                                        });
-                                    },
-                                );
-                                if row_resp.clicked() {
-                                    close_pane = Some(pane_ids[i]);
+                                                            .on_hover_cursor(
+                                                                egui::CursorIcon::PointingHand,
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            close_pane = Some(row_id);
+                                                        }
+                                                        // Status.
+                                                        let status_color =
+                                                            if row_status == "running" {
+                                                                colors.accent
+                                                            } else {
+                                                                colors.text_dim
+                                                            };
+                                                        ui.label(
+                                                            RichText::new(row_status)
+                                                                .size(style::TEXT_HINT)
+                                                                .color(status_color),
+                                                        );
+                                                        // manifest_id / detail (hint).
+                                                        if !row_detail.is_empty() {
+                                                            ui.label(
+                                                                RichText::new(&row_detail)
+                                                                    .size(style::TEXT_HINT)
+                                                                    .color(colors.text_dim),
+                                                            );
+                                                        }
+                                                    },
+                                                );
+                                            });
+                                        },
+                                    );
+                                    if row_resp.clicked() {
+                                        focus_pane = Some(row_id);
+                                    }
                                 }
                             }
                         }
@@ -1671,7 +1749,7 @@ impl PlexiApp {
                                 crate::widgets::key_combo_list(
                                     ui,
                                     &[&["Enter"]],
-                                    Some("close pane"),
+                                    Some("focus pane"),
                                     &colors,
                                 );
                             }
@@ -1682,6 +1760,12 @@ impl PlexiApp {
         if dismissed {
             self.show_context_inspector = false;
             log::info!("ContextInspector: closed");
+        }
+
+        if let Some(pid) = focus_pane {
+            log::info!("ContextInspector: focusing pane {pid}");
+            self.pane_navigate(pid);
+            self.show_context_inspector = false;
         }
 
         if let Some(pid) = close_pane {

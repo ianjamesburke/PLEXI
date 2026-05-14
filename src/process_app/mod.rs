@@ -664,6 +664,19 @@ impl ProcessApp {
         })
     }
 
+    /// Transfer the last committed frame from a previous instance so the pane
+    /// doesn't flicker blank during a hot-reload cycle. The transferred frame
+    /// is displayed until the new subprocess sends its own FrameDone.
+    pub fn transfer_frame_from(&mut self, old: &Self) {
+        if !old.frame.is_empty() {
+            self.frame = old.frame.clone();
+            log::info!(
+                "ProcessApp[{}]: transferred {} draw commands from previous instance",
+                self.type_id, self.frame.len()
+            );
+        }
+    }
+
     /// Set the pane ID for this app instance. Called by `open_process_app_pane`
     /// before the process is moved into the pane so that pipe peer routing can
     /// exclude the sending pane.
