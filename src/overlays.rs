@@ -1426,18 +1426,39 @@ impl PlexiApp {
         let mut dismissed = false;
         let mut close_pane: Option<PaneId> = None;
         let mut delete_context = false;
+        let mut commit_rename = false;
+        let mut cancel_rename = false;
+        let mut start_rename = false;
+
+        let renaming = self.inspector_renaming;
 
         let (nav_down, nav_up, enter_pressed) = ctx.input_mut(|i| {
-            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-            let down = i.consume_key(egui::Modifiers::NONE, egui::Key::J)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
-            let up = i.consume_key(egui::Modifiers::NONE, egui::Key::K)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
-            let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-            if esc {
-                dismissed = true;
+            if renaming {
+                let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                if enter {
+                    commit_rename = true;
+                }
+                if esc {
+                    cancel_rename = true;
+                }
+                (false, false, false)
+            } else {
+                let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                let down = i.consume_key(egui::Modifiers::NONE, egui::Key::J)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
+                let up = i.consume_key(egui::Modifiers::NONE, egui::Key::K)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
+                let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                let r = i.consume_key(egui::Modifiers::NONE, egui::Key::R);
+                if esc {
+                    dismissed = true;
+                }
+                if r {
+                    start_rename = true;
+                }
+                (down, up, enter)
             }
-            (down, up, enter)
         });
 
         let active_ctx_id = self.router.active().context_id;
@@ -1528,12 +1549,57 @@ impl PlexiApp {
                     .show(ui, |ui| {
                         ui.set_width(style::MODAL_WIDTH_MD);
 
-                        ui.label(
-                            RichText::new(&ctx_name)
-                                .size(style::TEXT_TITLE_XL)
-                                .color(colors.text_primary)
-                                .strong(),
-                        );
+                        if renaming {
+                            let te_id = egui::Id::new("inspector_rename_input");
+                            let te = ui.scope(|ui| {
+                                ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                                ui.visuals_mut().text_cursor.stroke.color = colors.accent;
+                                ui.visuals_mut().extreme_bg_color = colors.bg_active;
+                                ui.visuals_mut().widgets.active.bg_stroke =
+                                    egui::Stroke::new(1.0, colors.accent);
+                                ui.visuals_mut().widgets.inactive.bg_stroke =
+                                    egui::Stroke::new(1.0, colors.border);
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.rename_buffer)
+                                        .id(te_id)
+                                        .desired_width(style::MODAL_WIDTH_MD)
+                                        .hint_text("Context name...")
+                                        .font(egui::TextStyle::Body)
+                                        .margin(egui::Margin::symmetric(8, 5)),
+                                )
+                            }).inner;
+
+                            if !te.has_focus() {
+                                te.request_focus();
+                                if let Some(mut state) =
+                                    egui::TextEdit::load_state(ui.ctx(), te_id)
+                                {
+                                    state
+                                        .cursor
+                                        .set_char_range(Some(egui::text::CCursorRange::two(
+                                            egui::text::CCursor::new(0),
+                                            egui::text::CCursor::new(
+                                                self.rename_buffer.len(),
+                                            ),
+                                        )));
+                                    state.store(ui.ctx(), te_id);
+                                }
+                            }
+                        } else {
+                            let name_resp = ui.add(
+                                egui::Label::new(
+                                    RichText::new(&ctx_name)
+                                        .size(style::TEXT_TITLE_XL)
+                                        .color(colors.text_primary)
+                                        .strong(),
+                                )
+                                .sense(egui::Sense::click()),
+                            );
+                            if name_resp.clicked() {
+                                start_rename = true;
+                            }
+                            name_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+                        }
 
                         if let Some(root) = &ctx_root {
                             ui.add_space(style::SPACE_SM);
@@ -1653,33 +1719,79 @@ impl PlexiApp {
                                 }
                                 ui.add_space(style::SPACE_XL);
                             }
-                            crate::widgets::key_combo_list(
-                                ui,
-                                &[&["Esc"]],
-                                Some("close"),
-                                &colors,
-                            );
-                            ui.add_space(style::SPACE_MD);
-                            crate::widgets::key_combo_list(
-                                ui,
-                                &[&["j"], &["k"]],
-                                Some("navigate"),
-                                &colors,
-                            );
-                            if pane_count > 0 {
-                                ui.add_space(style::SPACE_MD);
+                            if renaming {
                                 crate::widgets::key_combo_list(
                                     ui,
                                     &[&["Enter"]],
-                                    Some("close pane"),
+                                    Some("save"),
                                     &colors,
                                 );
+                                ui.add_space(style::SPACE_MD);
+                                crate::widgets::key_combo_list(
+                                    ui,
+                                    &[&["Esc"]],
+                                    Some("cancel"),
+                                    &colors,
+                                );
+                            } else {
+                                crate::widgets::key_combo_list(
+                                    ui,
+                                    &[&["Esc"]],
+                                    Some("close"),
+                                    &colors,
+                                );
+                                ui.add_space(style::SPACE_MD);
+                                crate::widgets::key_combo_list(
+                                    ui,
+                                    &[&["r"]],
+                                    Some("rename"),
+                                    &colors,
+                                );
+                                ui.add_space(style::SPACE_MD);
+                                crate::widgets::key_combo_list(
+                                    ui,
+                                    &[&["j"], &["k"]],
+                                    Some("navigate"),
+                                    &colors,
+                                );
+                                if pane_count > 0 {
+                                    ui.add_space(style::SPACE_MD);
+                                    crate::widgets::key_combo_list(
+                                        ui,
+                                        &[&["Enter"]],
+                                        Some("close pane"),
+                                        &colors,
+                                    );
+                                }
                             }
                         });
                     });
             });
 
+        if start_rename && !self.inspector_renaming {
+            self.rename_buffer = self.router.active().name.clone();
+            self.inspector_renaming = true;
+            log::info!("ContextInspector: started inline rename");
+        }
+
+        if commit_rename {
+            let new_name = self.rename_buffer.trim().to_string();
+            if !new_name.is_empty() {
+                let idx = self.router.active_idx();
+                log::info!("ContextInspector: renamed context to {:?}", new_name);
+                self.router.get_mut(idx).name = new_name;
+                self.save_workspace();
+            }
+            self.inspector_renaming = false;
+        }
+
+        if cancel_rename {
+            self.inspector_renaming = false;
+            log::info!("ContextInspector: cancelled inline rename");
+        }
+
         if dismissed {
+            self.inspector_renaming = false;
             self.show_context_inspector = false;
             log::info!("ContextInspector: closed");
         }
@@ -1695,6 +1807,7 @@ impl PlexiApp {
                 "ContextInspector: deleting context idx={ctx_idx} name={:?}",
                 self.router.active().name
             );
+            self.inspector_renaming = false;
             self.show_context_inspector = false;
             self.delete_context(ctx_idx);
             self.save_workspace();

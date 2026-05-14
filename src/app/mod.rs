@@ -193,6 +193,7 @@ pub struct PlexiApp {
     pub(crate) pending_close: bool,
     pub(crate) show_context_inspector: bool,
     pub(crate) inspector_selected_pane: usize,
+    pub(crate) inspector_renaming: bool,
     pub(crate) welcome_delete_press_count: u8,
     pub(crate) welcome_delete_last_press: Option<std::time::Instant>,
     pub(crate) frame_tick: crate::logging::FrameTick,
@@ -663,6 +664,7 @@ impl PlexiApp {
                     quit_last_press: None,
                     show_context_inspector: false,
                     inspector_selected_pane: 0,
+                    inspector_renaming: false,
                     welcome_delete_press_count: 0,
                     welcome_delete_last_press: None,
                     config: config.clone(),
@@ -776,6 +778,7 @@ impl PlexiApp {
             quit_last_press: None,
             show_context_inspector: false,
             inspector_selected_pane: 0,
+            inspector_renaming: false,
             welcome_delete_press_count: 0,
             welcome_delete_last_press: None,
             config,
@@ -899,6 +902,7 @@ impl PlexiApp {
             quit_last_press: None,
             show_context_inspector: false,
             inspector_selected_pane: 0,
+            inspector_renaming: false,
             welcome_delete_press_count: 0,
             welcome_delete_last_press: None,
             config,
@@ -2793,6 +2797,7 @@ impl eframe::App for PlexiApp {
                 Action::ContextInspector => {
                     self.show_context_inspector = !self.show_context_inspector;
                     self.inspector_selected_pane = 0;
+                    self.inspector_renaming = false;
                     log::info!("ContextInspector: toggled to {}", self.show_context_inspector);
                 }
                 Action::ToggleMinimap => {
