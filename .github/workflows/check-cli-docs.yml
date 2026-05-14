@@ -25,6 +25,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
       - name: Check CLI docs are up to date
         run: |
           cargo run -p gen_cli_docs > /tmp/fresh_cli.md
