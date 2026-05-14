@@ -629,3 +629,30 @@ fn focus_future_caps_at_configured_depth() {
     app.step_focus_history_back();
     assert!(app.pane_focus_future.len() <= 2, "future stack should be capped at depth");
 }
+
+#[test]
+fn split_with_new_pane_pushes_focus_history() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let (tile_a, _pane_a) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_a);
+
+    // Split — this should record tile_a in focus history before moving focus.
+    let new_pane_id = 50000;
+    let share = crate::host::command::ShareRatio { numerator: 1.0, denominator: 1.0 };
+    let new_tile = app.split_with_new_pane(new_pane_id, true, share, false);
+    assert!(new_tile.is_some(), "split_with_new_pane should succeed");
+
+    // Focus should now be on the new tile.
+    assert_eq!(app.windows[0].focused_pane, new_tile);
+
+    // History should contain tile_a so Cmd+[ works.
+    assert!(!app.pane_focus_history.is_empty(), "focus history should be non-empty after split");
+    assert_eq!(app.pane_focus_history.last().unwrap().1, tile_a);
+
+    // Step back should restore focus to tile_a.
+    app.step_focus_history_back();
+    assert_eq!(app.windows[0].focused_pane, Some(tile_a));
+}
