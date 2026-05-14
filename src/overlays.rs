@@ -1427,17 +1427,17 @@ impl PlexiApp {
         let mut close_pane: Option<PaneId> = None;
         let mut delete_context = false;
 
-        let (nav_down, nav_up, enter_pressed) = ctx.input_mut(|i| {
+        let (nav_down, nav_up, close_selected) = ctx.input_mut(|i| {
             let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
             let down = i.consume_key(egui::Modifiers::NONE, egui::Key::J)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
             let up = i.consume_key(egui::Modifiers::NONE, egui::Key::K)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
-            let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            let close = i.consume_key(egui::Modifiers::COMMAND, egui::Key::X);
             if esc {
                 dismissed = true;
             }
-            (down, up, enter)
+            (down, up, close)
         });
 
         let active_ctx_id = self.router.active().context_id;
@@ -1488,7 +1488,7 @@ impl PlexiApp {
         if self.inspector_selected_pane >= pane_count && pane_count > 0 {
             self.inspector_selected_pane = pane_count - 1;
         }
-        if enter_pressed && pane_count > 0 {
+        if close_selected && pane_count > 0 {
             close_pane = Some(pane_ids[self.inspector_selected_pane]);
         }
 
@@ -1593,22 +1593,6 @@ impl PlexiApp {
                                             ui.with_layout(
                                                 Layout::right_to_left(Align::Center),
                                                 |ui| {
-                                                    if ui
-                                                        .add(
-                                                            egui::Button::new(
-                                                                RichText::new("✕")
-                                                                    .size(style::TEXT_CAPTION)
-                                                                    .color(colors.text_dim),
-                                                            )
-                                                            .frame(false),
-                                                        )
-                                                        .on_hover_cursor(
-                                                            egui::CursorIcon::PointingHand,
-                                                        )
-                                                        .clicked()
-                                                    {
-                                                        close_pane = Some(pane_ids[i]);
-                                                    }
                                                     let status_color =
                                                         if pane_statuses[i] == "running" {
                                                             colors.accent
@@ -1670,7 +1654,7 @@ impl PlexiApp {
                                 ui.add_space(style::SPACE_MD);
                                 crate::widgets::key_combo_list(
                                     ui,
-                                    &[&["Enter"]],
+                                    &[&["⌘", "X"]],
                                     Some("close pane"),
                                     &colors,
                                 );

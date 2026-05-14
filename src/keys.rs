@@ -27,6 +27,7 @@ use crate::config::KeybindingsConfig;
 // Cmd+= / Cmd+-               — font size
 // Cmd+E                       — file browser
 // Cmd+I                       — context inspector
+// Cmd+X                       — close pane (inspector context only)
 // Cmd+0                       — quick note
 // Cmd+1–9                     — switch context (sidebar)
 // Escape (app active)         — close app
