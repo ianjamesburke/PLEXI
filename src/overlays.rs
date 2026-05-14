@@ -1574,55 +1574,61 @@ impl PlexiApp {
                                     is_selected,
                                     &colors,
                                     |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                RichText::new(pane_kinds[i])
-                                                    .size(style::TEXT_CAPTION)
-                                                    .color(colors.text_dim),
-                                            );
-                                            let display_name = if pane_names[i].is_empty() {
-                                                pane_kinds[i].to_string()
-                                            } else {
-                                                pane_names[i].clone()
-                                            };
-                                            ui.label(
-                                                RichText::new(&display_name)
-                                                    .size(style::TEXT_BODY)
-                                                    .color(colors.text_primary),
-                                            );
-                                            ui.with_layout(
-                                                Layout::right_to_left(Align::Center),
-                                                |ui| {
-                                                    if ui
-                                                        .add(
-                                                            egui::Button::new(
-                                                                RichText::new("✕")
-                                                                    .size(style::TEXT_CAPTION)
-                                                                    .color(colors.text_dim),
+                                        ui.with_layout(
+                                            Layout::left_to_right(Align::Center),
+                                            |ui| {
+                                                ui.label(
+                                                    RichText::new(pane_kinds[i])
+                                                        .size(style::TEXT_CAPTION)
+                                                        .color(colors.text_dim),
+                                                );
+                                                let display_name =
+                                                    if pane_names[i].is_empty() {
+                                                        pane_kinds[i].to_string()
+                                                    } else {
+                                                        pane_names[i].clone()
+                                                    };
+                                                ui.label(
+                                                    RichText::new(&display_name)
+                                                        .size(style::TEXT_BODY)
+                                                        .color(colors.text_primary),
+                                                );
+                                                ui.with_layout(
+                                                    Layout::right_to_left(Align::Center),
+                                                    |ui| {
+                                                        if ui
+                                                            .add(
+                                                                egui::Button::new(
+                                                                    RichText::new("✕")
+                                                                        .size(
+                                                                            style::TEXT_CAPTION,
+                                                                        )
+                                                                        .color(colors.text_dim),
+                                                                )
+                                                                .frame(false),
                                                             )
-                                                            .frame(false),
-                                                        )
-                                                        .on_hover_cursor(
-                                                            egui::CursorIcon::PointingHand,
-                                                        )
-                                                        .clicked()
-                                                    {
-                                                        close_pane = Some(pane_ids[i]);
-                                                    }
-                                                    let status_color =
-                                                        if pane_statuses[i] == "running" {
-                                                            colors.accent
-                                                        } else {
-                                                            colors.text_dim
-                                                        };
-                                                    ui.label(
-                                                        RichText::new(pane_statuses[i])
-                                                            .size(style::TEXT_HINT)
-                                                            .color(status_color),
-                                                    );
-                                                },
-                                            );
-                                        });
+                                                            .on_hover_cursor(
+                                                                egui::CursorIcon::PointingHand,
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            close_pane = Some(pane_ids[i]);
+                                                        }
+                                                        let status_color =
+                                                            if pane_statuses[i] == "running" {
+                                                                colors.accent
+                                                            } else {
+                                                                colors.text_dim
+                                                            };
+                                                        ui.label(
+                                                            RichText::new(pane_statuses[i])
+                                                                .size(style::TEXT_HINT)
+                                                                .color(status_color),
+                                                        );
+                                                    },
+                                                );
+                                            },
+                                        );
                                     },
                                 );
                                 if row_resp.clicked() {
