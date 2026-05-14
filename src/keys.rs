@@ -121,6 +121,8 @@ pub enum Action {
     /// Swap the focused pane with its neighbor in the given direction.
     /// Bound to Cmd+Ctrl+H/J/K/L.
     SwapPane(Direction),
+    /// Open the scratchpad overlay. Bound to Ctrl+Space.
+    OpenScratchpad,
 }
 
 /// Resolved keybindings — one `(Modifiers, Key)` pair per named action.
@@ -169,6 +171,7 @@ pub struct KeyBindings {
     pub force_reload_app: (egui::Modifiers, egui::Key),
     pub toggle_notification_modal: (egui::Modifiers, egui::Key),
     pub context_inspector: (egui::Modifiers, egui::Key),
+    pub open_scratchpad: (egui::Modifiers, egui::Key),
 }
 
 fn cmd() -> egui::Modifiers { egui::Modifiers::COMMAND }
@@ -180,6 +183,9 @@ fn cmd_ctrl() -> egui::Modifiers {
 }
 fn cmd_alt() -> egui::Modifiers {
     egui::Modifiers { alt: true, ..egui::Modifiers::COMMAND }
+}
+fn ctrl() -> egui::Modifiers {
+    egui::Modifiers { ctrl: true, ..egui::Modifiers::NONE }
 }
 
 impl Default for KeyBindings {
@@ -227,6 +233,7 @@ impl Default for KeyBindings {
             force_reload_app:          (cmd_alt(),   egui::Key::R),
             toggle_notification_modal: (cmd_shift(), egui::Key::A),
             context_inspector:         (cmd(),       egui::Key::I),
+            open_scratchpad:           (ctrl(),      egui::Key::Space),
         }
     }
 }
@@ -375,6 +382,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(force_reload_app, "force_reload_app");
     apply_override!(toggle_notification_modal, "toggle_notification_modal");
     apply_override!(context_inspector, "context_inspector");
+    apply_override!(open_scratchpad, "open_scratchpad");
 
     // Conflict detection
     let named: &[(&str, (egui::Modifiers, egui::Key))] = &[
@@ -420,6 +428,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("force_reload_app",          bindings.force_reload_app),
         ("toggle_notification_modal", bindings.toggle_notification_modal),
         ("context_inspector",         bindings.context_inspector),
+        ("open_scratchpad",           bindings.open_scratchpad),
     ];
 
     let mut seen: std::collections::HashMap<u64, &str> = std::collections::HashMap::new();
@@ -633,6 +642,9 @@ pub fn poll_actions(
         }
         if input.consume_key(bindings.context_inspector.0, bindings.context_inspector.1) {
             actions.push(Action::ContextInspector);
+        }
+        if input.consume_key(bindings.open_scratchpad.0, bindings.open_scratchpad.1) {
+            actions.push(Action::OpenScratchpad);
         }
 
         // Switch context (Cmd+1 through Cmd+9) — these remain hardcoded for now.
