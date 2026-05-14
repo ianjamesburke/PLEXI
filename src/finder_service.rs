@@ -9,7 +9,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, Sel};
 use objc2::{sel, ClassType};
 use objc2_app_kit::NSApplication;
-use objc2_foundation::MainThreadMarker;
+use objc2_foundation::{MainThreadMarker, NSString};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
@@ -33,11 +33,9 @@ fn register_provider_class() -> &'static objc2::runtime::AnyClass {
                 log::warn!("finder_service: pasteboard is null");
                 return;
             }
-            let type_str: *const AnyObject = objc2::msg_send![
-                objc2::runtime::AnyClass::get("NSString").unwrap(),
-                stringWithUTF8String: b"NSFilenamesPboardType\0".as_ptr()
-            ];
-            let plist: *const AnyObject = objc2::msg_send![&*pboard, propertyListForType: type_str];
+            let type_str = NSString::from_str("NSFilenamesPboardType");
+            let plist: *const AnyObject =
+                objc2::msg_send![&*pboard, propertyListForType: &*type_str];
             if plist.is_null() {
                 log::warn!("finder_service: no NSFilenamesPboardType on pasteboard");
                 return;

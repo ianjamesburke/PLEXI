@@ -1755,25 +1755,25 @@ impl eframe::App for PlexiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_tick.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _frame_start = std::time::Instant::now();
+        if let Some(ctx_path) = crate::config::take_adopted_context_path() {
+            log::info!("adopted context path: {}", ctx_path.display());
+            self.new_context_at_path(ctx_path);
+            self.save_workspace();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let finder_paths = crate::finder_service::drain();
+            if !finder_paths.is_empty() {
+                for path in finder_paths {
+                    log::info!("finder_service: opening context for {}", path.display());
+                    self.new_context_at_path(path);
+                }
+                self.save_workspace();
+            }
+        }
         if self.last_notify_poll.elapsed() >= std::time::Duration::from_secs(1) {
             self.last_notify_poll = std::time::Instant::now();
             self.drain_spawn_queue();
-            if let Some(ctx_path) = crate::config::take_adopted_context_path() {
-                log::info!("adopted context path: {}", ctx_path.display());
-                self.new_context_at_path(ctx_path);
-                self.save_workspace();
-            }
-            #[cfg(target_os = "macos")]
-            {
-                let finder_paths = crate::finder_service::drain();
-                if !finder_paths.is_empty() {
-                    for path in finder_paths {
-                        log::info!("finder_service: opening context for {}", path.display());
-                        self.new_context_at_path(path);
-                    }
-                    self.save_workspace();
-                }
-            }
             self.tick_notification_timeouts();
         }
         self.drain_pane_cmd_channel();
