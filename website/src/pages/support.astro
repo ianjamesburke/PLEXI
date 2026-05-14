@@ -1,0 +1,54 @@
+---
+import Layout from '../layouts/Layout.astro';
+
+const SPONSOR_URL = 'https://buymeacoffee.com/ianjamesbu8';
+---
+<Layout
+  title="Support Plexi"
+  description="Plexi is free, open source, and community-funded. Here's where we're headed and how you can help."
+>
+  <section class="support-page">
+    <div class="wrap">
+      <h1>Support the project</h1>
+      <p class="lead">Plexi is free, open source, and MIT licensed. No venture capital, no ads, no data harvesting. Just the work.</p>
+
+      <div class="vision">
+        <h2>The vision</h2>
+        <p>AI is changing how we build software. But right now, your tools are scattered — terminals, editors, agents, dashboards — all in separate windows fighting for your attention.</p>
+        <p>Plexi puts everything in one place. Your terminal, your apps, and the AI agents that help you build them — running side by side in a single workspace. You own what you make. You keep your data. And every tool you build works with every agent you choose.</p>
+        <p>We believe the best AI tools won't be locked inside someone else's platform. They'll be yours — built, trained, and shared by a community of people who care about doing good work.</p>
+      </div>
+
+      <div class="how-to-help">
+        <h2>How to help</h2>
+        <ul>
+          <li><strong>Use it.</strong> Download Plexi, build something, and tell us what broke.</li>
+          <li><strong>Share it.</strong> If Plexi helped you, tell someone who'd benefit.</li>
+          <li><strong>Fund it.</strong> Donations go directly to development. No tiers, no perks — just the work.</li>
+        </ul>
+        <a class="btn lg" href={SPONSOR_URL}>Donate <span class="arrow">→</span></a>
+      </div>
+    </div>
+  </section>
+</Layout>
+
+<style>
+  .support-page { padding: 120px 0 80px; }
+  .support-page h1 { font-size: 48px; font-weight: 700; letter-spacing: -0.03em; margin-bottom: 16px; }
+  .support-page .lead { color: var(--fg-2); font-size: 17px; line-height: 1.6; max-width: 580px; margin-bottom: 56px; }
+  .vision, .how-to-help { margin-bottom: 56px; }
+  .vision h2, .how-to-help h2 { font-size: 24px; font-weight: 600; margin-bottom: 16px; letter-spacing: -0.01em; }
+  .vision p { color: var(--fg-2); font-size: 15px; line-height: 1.7; max-width: 620px; margin-bottom: 16px; }
+  .how-to-help ul { list-style: none; padding: 0; margin: 0 0 32px; }
+  .how-to-help li { color: var(--fg-2); font-size: 15px; line-height: 1.7; margin-bottom: 12px; max-width: 620px; }
+  .how-to-help li strong { color: var(--fg-1); }
+
+  @media (max-width: 980px) {
+    .support-page { padding: 88px 0 60px; }
+    .support-page h1 { font-size: 36px; }
+  }
+  @media (max-width: 480px) {
+    .support-page h1 { font-size: 28px; }
+    .support-page .lead { font-size: 15px; }
+  }
+</style>
