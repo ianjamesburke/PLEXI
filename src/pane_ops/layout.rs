@@ -1835,13 +1835,32 @@ mod context_root_cwd_tests {
 
     #[test]
     fn context_root_beats_focused_pane_cwd() {
+        use crate::app_permissions::AppPermissions;
+        use crate::pane::{AppPane, AppRuntime};
+        use crate::process_app::ProcessApp;
+
         let mut app = test_app();
         let root = std::path::PathBuf::from("/projects/myapp");
         app.router.get_mut(0).root = Some(root.clone());
         let pane_id: u64 = 42;
+        let (process_app, _tx) = ProcessApp::new_for_test(pane_id, AppPermissions::builtin());
+        let app_pane = AppPane {
+            id: pane_id,
+            runtime: AppRuntime::Process(Box::new(process_app)),
+            workspace_root: std::path::PathBuf::from("/other/workspace"),
+            permissions: AppPermissions::builtin(),
+            manifest_id: "test".to_string(),
+            name: "Test".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: None,
+        };
         let tile = app.windows[0].tree.tiles.insert_pane(pane_id);
         app.windows[0].tree.root = Some(tile);
         app.windows[0].focused_pane = Some(tile);
+        app.windows[0].panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+        let pane_cwd = app.windows[0].get_focused_pane_cwd(tile);
+        assert_eq!(pane_cwd, Some(std::path::PathBuf::from("/other/workspace")), "pane has its own CWD");
         let cwd = app.resolve_new_pane_cwd(None, Some(tile));
         assert_eq!(cwd, Some(root), "context root must take priority over focused pane CWD");
     }
