@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.73] — 2026-05-14
+
+### Changes
+- fix(scratchpad): replace double-space trigger with Ctrl+Space (#1310) (#1313)
+- feat(website): add narrative story sections to landing page
+- feat(website): refresh hero copy, add mobile nav, move support to own page
 ## [3.6.72] — 2026-05-14
 
 ### Changes
