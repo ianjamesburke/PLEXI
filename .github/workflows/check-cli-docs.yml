@@ -1,6 +1,7 @@
 name: check CLI docs
 
 on:
+  workflow_dispatch:
   push:
     branches: [alpha]
     paths:

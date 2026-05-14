@@ -1,6 +1,7 @@
 name: check protocol schema
 
 on:
+  workflow_dispatch:
   push:
     branches: [alpha]
     paths:
