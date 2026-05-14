@@ -82,8 +82,8 @@ security-framework = "3"
 # stays available under `cfg(test)`).
 coremidi = "0.9"
 objc2 = "0.5"
-objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSRunningApplication", "NSWindow"] }
-objc2-foundation = { version = "0.2.2", features = ["NSThread", "NSString"] }
+objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSPasteboard", "NSRunningApplication", "NSWindow"] }
+objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSThread", "NSString"] }
 # AVFoundation video decoder (#346). The 0.3.x family is on objc2 0.6 (already
 # transitive via arboard / cpal / eframe), so this introduces no new obj-c
 # stack — just a direct dep on what's already in the tree. Path of least

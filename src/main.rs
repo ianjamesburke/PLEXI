@@ -30,6 +30,8 @@ mod input_intent;
 mod keys;
 mod logging;
 #[cfg(target_os = "macos")]
+mod finder_service;
+#[cfg(target_os = "macos")]
 mod macos_menu;
 mod midi;
 mod overlays;
@@ -100,9 +102,9 @@ fn main() -> eframe::Result {
     }
 
     // Adopt an explicit workspace root from `plexi <path>` if one was given.
-    // Errors out if the path exists but has no `.plexi/` ancestor — the user
-    // can run `plexi workspace init` to create one. Bare `plexi` continues to
-    // resolve via CWD-walk later in `PlexiApp::new`.
+    // If the path has no `.plexi/` ancestor, an adopted context path is set
+    // instead — the directory opens as a new context on first frame.
+    // Bare `plexi` continues to resolve via CWD-walk later in `PlexiApp::new`.
     let adopted_root = match parse_workspace_path_arg(&raw_args) {
         Ok(root) => root,
         Err(e) => {
@@ -533,8 +535,9 @@ fn main() -> eframe::Result {
 /// Scan argv for the first positional that points at an existing directory
 /// — the `plexi <path>` "open folder" arg, modelled on VS Code. Returns
 /// `Ok(Some(workspace_root))` when an ancestor `.plexi/` is found,
-/// `Ok(None)` when no path arg was given, and `Err(_)` when the user passed
-/// a path that has no `.plexi/` workspace anywhere up the tree.
+/// `Ok(None)` when no path arg was given or the directory has no `.plexi/`
+/// ancestor (in which case an adopted context path is set via
+/// `config::set_adopted_context_path`), and `Err(_)` only for invalid paths.
 ///
 /// Anything starting with `--` is skipped (flags) and so are values that
 /// follow a known value-bearing flag (`--profile`). Recognized CLI
@@ -605,11 +608,8 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         match crate::app_registry::resolve_workspace_root(&canonical) {
             Some(root) => return Ok(Some(root)),
             None => {
-                return Err(format!(
-                    "no .plexi/ workspace found at or above {}.\n\
-                     Run `plexi workspace init` in that directory first.",
-                    canonical.display()
-                ));
+                crate::config::set_adopted_context_path(canonical);
+                return Ok(None);
             }
         }
     }
@@ -705,15 +705,20 @@ mod cli_tests {
     }
 
     #[test]
-    fn plexi_path_arg_with_no_dotplexi_errors() {
+    fn plexi_path_arg_with_no_dotplexi_sets_context_path() {
         let bare = tempfile::tempdir().unwrap();
         let path_str = bare.path().to_string_lossy().to_string();
 
-        let err = parse_workspace_path_arg(&argv(&[path_str.as_str()]))
-            .expect_err("missing .plexi/ should error");
+        let resolved = parse_workspace_path_arg(&argv(&[path_str.as_str()]))
+            .expect("non-workspace dir should not error");
         assert!(
-            err.contains("no .plexi/ workspace found"),
-            "expected workspace-not-found error, got: {err}"
+            resolved.is_none(),
+            "non-workspace dir should return None for workspace root"
+        );
+        let ctx_path = crate::config::take_adopted_context_path();
+        assert!(
+            ctx_path.is_some(),
+            "adopted context path should be set for non-workspace dir"
         );
     }
 

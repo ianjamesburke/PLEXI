@@ -404,6 +404,8 @@ impl PlexiApp {
     pub fn new(cc: &eframe::CreationContext<'_>, frame_tick: crate::logging::FrameTick) -> Self {
         #[cfg(target_os = "macos")]
         crate::macos_menu::customize_app_menu();
+        #[cfg(target_os = "macos")]
+        crate::finder_service::register();
 
         theme::setup_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
@@ -1395,10 +1397,10 @@ impl PlexiApp {
                 }
                 crate::app_protocol::HostCommand::CreateContext { root, name } => {
                     log::info!("pane_ipc: kind=create_context root={:?} name={:?}", root, name);
-                    self.new_context();
                     if let Some(r) = root {
-                        let idx = self.router.len() - 1;
-                        self.router.get_mut(idx).root = Some(r.clone());
+                        self.new_context_at_path(r.clone());
+                    } else {
+                        self.new_context();
                     }
                     if let Some(n) = name {
                         let idx = self.router.len() - 1;
@@ -1753,6 +1755,22 @@ impl eframe::App for PlexiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_tick.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _frame_start = std::time::Instant::now();
+        if let Some(ctx_path) = crate::config::take_adopted_context_path() {
+            log::info!("adopted context path: {}", ctx_path.display());
+            self.new_context_at_path(ctx_path);
+            self.save_workspace();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let finder_paths = crate::finder_service::drain();
+            if !finder_paths.is_empty() {
+                for path in finder_paths {
+                    log::info!("finder_service: opening context for {}", path.display());
+                    self.new_context_at_path(path);
+                }
+                self.save_workspace();
+            }
+        }
         if self.last_notify_poll.elapsed() >= std::time::Duration::from_secs(1) {
             self.last_notify_poll = std::time::Instant::now();
             self.drain_spawn_queue();

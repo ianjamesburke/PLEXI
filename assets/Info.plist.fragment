@@ -1,2 +1,25 @@
 <key>NSMicrophoneUsageDescription</key>
 <string>Plexi needs access to the microphone for audio-capture apps you choose to run.</string>
+<key>NSServices</key>
+<array>
+  <dict>
+    <key>NSMenuItem</key>
+    <dict>
+      <key>default</key>
+      <string>Open in Plexi</string>
+    </dict>
+    <key>NSMessage</key>
+    <string>openInPlexi</string>
+    <key>NSPortName</key>
+    <string>Plexi</string>
+    <key>NSSendTypes</key>
+    <array>
+      <string>NSFilenamesPboardType</string>
+    </array>
+    <key>NSRequiredContext</key>
+    <dict>
+      <key>NSTextContent</key>
+      <string>FilePath</string>
+    </dict>
+  </dict>
+</array>
