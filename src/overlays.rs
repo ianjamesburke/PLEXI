@@ -1514,6 +1514,7 @@ impl PlexiApp {
                 }
             }
             if !rows.is_empty() {
+                rows.sort_by_key(|r| r.id);
                 for r in &rows {
                     all_pane_ids.push(r.id);
                 }
@@ -1627,40 +1628,33 @@ impl PlexiApp {
                                     global_idx += 1;
                                     let is_selected = i == selected;
                                     let row_id = row.id;
-                                    let row_kind = row.kind;
-                                    let row_name = row.name.clone();
-                                    let row_detail = row.detail.clone();
-                                    let row_status = row.status;
                                     let (row_resp, _) = crate::widgets::selectable_row(
                                         ui,
                                         is_selected,
                                         &colors,
                                         |ui| {
                                             ui.horizontal(|ui| {
-                                                // Pane ID + type (dim caption).
                                                 ui.label(
                                                     RichText::new(format!(
                                                         "#{} {}",
-                                                        row_id, row_kind
+                                                        row_id, row.kind
                                                     ))
                                                     .size(style::TEXT_CAPTION)
                                                     .color(colors.text_dim),
                                                 );
-                                                // Name (body).
-                                                let display_name = if row_name.is_empty() {
-                                                    row_kind.to_string()
+                                                let display_name: &str = if row.name.is_empty() {
+                                                    row.kind
                                                 } else {
-                                                    row_name.clone()
+                                                    &row.name
                                                 };
                                                 ui.label(
-                                                    RichText::new(&display_name)
+                                                    RichText::new(display_name)
                                                         .size(style::TEXT_BODY)
                                                         .color(colors.text_primary),
                                                 );
                                                 ui.with_layout(
                                                     Layout::right_to_left(Align::Center),
                                                     |ui| {
-                                                        // Close button (secondary action).
                                                         if ui
                                                             .add(
                                                                 egui::Button::new(
@@ -1677,22 +1671,20 @@ impl PlexiApp {
                                                         {
                                                             close_pane = Some(row_id);
                                                         }
-                                                        // Status.
                                                         let status_color =
-                                                            if row_status == "running" {
+                                                            if row.status == "running" {
                                                                 colors.accent
                                                             } else {
                                                                 colors.text_dim
                                                             };
                                                         ui.label(
-                                                            RichText::new(row_status)
+                                                            RichText::new(row.status)
                                                                 .size(style::TEXT_HINT)
                                                                 .color(status_color),
                                                         );
-                                                        // manifest_id / detail (hint).
-                                                        if !row_detail.is_empty() {
+                                                        if !row.detail.is_empty() {
                                                             ui.label(
-                                                                RichText::new(&row_detail)
+                                                                RichText::new(row.detail.as_str())
                                                                     .size(style::TEXT_HINT)
                                                                     .color(colors.text_dim),
                                                             );
