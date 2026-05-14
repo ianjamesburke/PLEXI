@@ -1,166 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
-    "ControlCommand": {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Inline-handled commands (processed directly in `ui()` or `background_tick()`).",
-      "oneOf": [
-        {
-          "description": "SDK ready handshake. Sent once by the app after receiving Init.\nHost captures sdk and features_used; the message is otherwise a no-op.",
-          "properties": {
-            "features_used": {
-              "default": [],
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "sdk": {
-              "default": "",
-              "type": "string"
-            },
-            "type": {
-              "const": "ready",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "End of frame. Host renders everything queued since last FrameDone.",
-          "properties": {
-            "frame_id": {
-              "description": "Must match the frame_id from the triggering Render event.",
-              "format": "uint64",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "type": {
-              "const": "frame_done",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "frame_id"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Forward a log message into Plexi's logger (tagged with app_id).",
-          "properties": {
-            "level": {
-              "description": "One of: \"error\" | \"warn\" | \"info\" | \"debug\"",
-              "type": "string"
-            },
-            "message": {
-              "type": "string"
-            },
-            "type": {
-              "const": "log",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "level",
-            "message"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Ask the host to trigger a new Render event after `after_ms` milliseconds.\nIntended for game loops and animations — emit once per frame to sustain a\ntick rate without relying on egui's unconditional repaint cadence.\nApps that do not emit this will still repaint on keyboard/inject events.",
-          "properties": {
-            "after_ms": {
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            },
-            "type": {
-              "const": "schedule_render",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "after_ms"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Write `text` to the OS clipboard.\n\nRouted through `egui::Context::copy_text`, which handles platform-\nspecific clipboard backends (NSPasteboard / X11 / Wayland / Win32).\nSynchronous from the app's perspective — no acknowledgement event.\nNo capability flag required: clipboard write is low-risk and the\napp already controls when it fires (key handler, button, etc.).",
-          "properties": {
-            "text": {
-              "type": "string"
-            },
-            "type": {
-              "const": "copy_to_clipboard",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "text"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Request a one-shot text measurement. The host measures `text` at\n`font_size` with the proportional font and replies immediately with\n`PlexiEvent::TextMeasured { request_id, width, height }`.\n\nUse this only when layout genuinely depends on measured text width\n(e.g. flowing multiple badges horizontally). Avoid on hot render paths.",
-          "properties": {
-            "font_size": {
-              "format": "float",
-              "type": "number"
-            },
-            "monospace": {
-              "default": false,
-              "type": "boolean"
-            },
-            "request_id": {
-              "type": "string"
-            },
-            "text": {
-              "type": "string"
-            },
-            "type": {
-              "const": "measure_text",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "request_id",
-            "text",
-            "font_size"
-          ],
-          "type": "object"
-        },
-        {
-          "description": "Append a row to the host-owned conversation history of an agent pane.\n\nOnly meaningful for panes whose manifest declares `[app] type = \"agent\"`.\nThe host renders the conversation history as the pane's primary surface;\nthe agent emits one of these per logical turn boundary (user echo,\nassistant reply, tool result, system note).\n\n`role` is one of `\"user\"` | `\"assistant\"` | `\"tool\"` | `\"system\"`. Other\nvalues are accepted at the wire level (forward-compatibility) but the\nhost renders unknown roles as plain text. Required field — no\n`serde(default)`.\n\n`content` is the plain-text body of the row. Required field. Empty\nstrings are valid (e.g. a placeholder turn while a stream is in flight)\nbut discouraged — emit on completion, not on dispatch.",
-          "properties": {
-            "content": {
-              "type": "string"
-            },
-            "role": {
-              "type": "string"
-            },
-            "type": {
-              "const": "append_conversation",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "role",
-            "content"
-          ],
-          "type": "object"
-        }
-      ],
-      "title": "ControlCommand"
-    },
     "AppRequest": {
       "$defs": {
         "AiMessage": {
@@ -282,13 +122,20 @@
         "NotifyOption": {
           "description": "One option in a `kind = \"choice\"` notification.",
           "properties": {
+            "host_action": {
+              "description": "Optional host-side action to execute synchronously at click time.\nFormat: `\"action_type:action_arg\"` (e.g. `\"pane_focus:123\"`).\nIf set, the host executes the action before writing the response file.\nIf not set, behavior is unchanged from before this field existed.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "label": {
               "description": "Visible label on the button.",
               "type": "string"
             },
             "shortcut": {
               "default": null,
-              "description": "Optional single-char hotkey (e.g. \"y\", \"n\"). Case-insensitive.",
+              "description": "Optional single-char hotkey (e.g. \"y\", \"n\"). Case-insensitive.\nReserved keys that conflict with navigation are stripped at ingestion:\n`j`, `k`, `h`, `l` (navigation), `1`–`9` (digit-select).\nRecommended safe set: letters excluding navigation keys; `y`/`n` for yes/no.",
               "type": [
                 "string",
                 "null"
@@ -305,6 +152,26 @@
           ],
           "type": "object"
         },
+        "NotifyScope": {
+          "description": "Visibility scope for a notification.\n\n- `Context` — visible only when the source context is the active context.\n- `Global`  — always visible, regardless of which context is active.\n\nHost-side enum. Apps do NOT emit this on the wire — scope is a per-app\nuser-facing policy declared in `manifest.toml::[launch] notification_scope`,\nresolved by the host at dispatch time. Apps never think about it.",
+          "oneOf": [
+            {
+              "const": "window",
+              "description": "Only visible when the source window is the active window. Default.\nIn the current single-window-per-context model this is equivalent to\n`Context`; the distinction matters when multi-window contexts land.",
+              "type": "string"
+            },
+            {
+              "const": "context",
+              "description": "Visible whenever the source context is the active context (sidebar\nitem), regardless of which window page is showing.",
+              "type": "string"
+            },
+            {
+              "const": "global",
+              "description": "Always visible regardless of which context is active.",
+              "type": "string"
+            }
+          ]
+        },
         "PathTokenMode": {
           "description": "Replace-vs-append behaviour for `DrawCommand::InsertPathToken`.",
           "oneOf": [
@@ -316,6 +183,23 @@
             {
               "const": "append",
               "description": "Write the path verbatim at the cursor position.",
+              "type": "string"
+            }
+          ]
+        },
+        "StreamChannel": {
+          "description": "Output channel selector for `DrawCommand::StreamProcess`.\nv1: `structured` emits the same bytes as `stdout`.",
+          "oneOf": [
+            {
+              "enum": [
+                "stdout",
+                "stderr"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "structured",
+              "description": "Reserved for future structured-progress framing. v1: identical to `stdout`.",
               "type": "string"
             }
           ]
@@ -370,7 +254,7 @@
         }
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "description": "Side-effectful commands — go to `route_command`.",
+      "description": "App-to-host requests — go to `route_command`.",
       "oneOf": [
         {
           "description": "Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.",
@@ -408,6 +292,21 @@
           "required": [
             "type",
             "key"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Save app state. Host writes to workspace or global JSON file.",
+          "properties": {
+            "payload": true,
+            "type": {
+              "const": "save_app_state",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
           ],
           "type": "object"
         },
@@ -505,6 +404,14 @@
                 "null"
               ]
             },
+            "on_dismiss": {
+              "default": null,
+              "description": "Payload delivered to the app when the notification is dismissed without\nan explicit choice (timeout, Esc, or tombstone dismiss). Defaults to\n\"timeout\" when omitted.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "options": {
               "default": [],
               "description": "Choice options (only meaningful for `kind = \"choice\"`). The host shows\nthese as keyboard-navigable buttons; Enter selects the focused one.",
@@ -523,6 +430,34 @@
               "default": false,
               "description": "If true, the user cannot dismiss with Esc — they must pick an option\nor submit input. Intended for decisions the app depends on.",
               "type": "boolean"
+            },
+            "response_file": {
+              "description": "CLI-only: path to a file the host writes the chosen key into when\nthe user responds. Used by `plexi notify --choice` to return the\nresult to the blocking CLI process. Never set by app SDK.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scope": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/NotifyScope"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "CLI-only: notification visibility scope. Apps never set this — their\nscope comes from `manifest.toml::[launch] notification_scope`.\nOmit for backwards-compatible global behaviour."
+            },
+            "timeout_secs": {
+              "default": null,
+              "description": "Auto-dismiss after this many seconds. On expiry, host delivers\n`PlexiEvent::NotifyAction` with `value = on_dismiss` (or \"timeout\" if\n`on_dismiss` is None). Omit for notifications that should persist.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
             },
             "title": {
               "type": "string"
@@ -659,7 +594,7 @@
           "type": "object"
         },
         {
-          "description": "Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps.\nRequires `panes.spawn` capability.\n`layout`: one of \"split_v\", \"split_h\", \"split_above\", \"split_left\", \"overlay\".\n  \"overlay_pane\" and \"background\" are reserved but not yet implemented.\n`pipe_id`: when set, the host appends `--pipe=<pipe_id>` to args before launch\n  so the spawned app can reply via PipeSend on completion.\nHost responds: `PlexiEvent::PaneSpawned { pane_id }` on success,\n              `PlexiEvent::PaneSpawnError { reason }` on failure.",
+          "description": "Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps.\nRequires `panes.spawn` capability.\n`layout`: one of \"split_v\", \"split_h\", \"split_above\", \"split_left\", \"overlay\",\n  \"new_window\" (terminal only — creates a new spatial grid window to the right\n  of the current context row instead of splitting the active pane),\n  \"tab\" (terminal only — adds a new tab alongside the focused pane, wrapping\n  both in a Tabs container if needed; use after `pane focus` to target a window).\n  \"overlay_pane\" and \"background\" are reserved but not yet implemented.\n`pipe_id`: when set, the host appends `--pipe=<pipe_id>` to args before launch\n  so the spawned app can reply via PipeSend on completion.\nHost responds: `PlexiEvent::PaneSpawned { pane_id }` on success,\n              `PlexiEvent::PaneSpawnError { reason }` on failure.",
           "properties": {
             "args": {
               "default": [],
@@ -668,11 +603,45 @@
               },
               "type": "array"
             },
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ephemeral": {
+              "type": "boolean"
+            },
+            "from_pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "layout": {
-              "default": "split_v",
-              "type": "string"
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "no_focus": {
+              "type": "boolean"
             },
             "pipe_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "response_file": {
               "type": [
                 "string",
                 "null"
@@ -689,6 +658,255 @@
           "required": [
             "type",
             "type_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`\nover PLEXI_SOCKET.",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "set_pane_title",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "name"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "List all open panes. Host writes a JSON array to `response_file`. Sent by `plexi pane list`.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "list_panes",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Query info for a specific pane by ID. Host writes JSON object to `response_file`.\nSent by `plexi pane info`.",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "get_pane_info",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "focus_pane",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Close a pane by PaneId. Sent by `plexi pane close`. Fire-and-forget.",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "close_pane",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Write text to a running pane's PTY stdin. Sent by `plexi pane send`.\n`\\n` in text (literal backslash-n) is interpreted as Enter.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file` when set.",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "send_to_pane",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Deliver a synthetic key event to any pane. Sent by `plexi pane key`.\nFor terminal panes, the key is translated to PTY bytes.\nFor PGAP app panes, a `PlexiEvent::Key` is delivered.\nHost writes `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file` when set.",
+          "properties": {
+            "key": {
+              "description": "Key string: single char (\"h\"), named key (\"enter\", \"escape\", \"up\", \"down\",\n\"left\", \"right\", \"space\", \"backspace\"), or chord (\"ctrl+c\", \"ctrl+d\").",
+              "type": "string"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "key_pane",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "key"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Read the last N lines from a terminal pane's PTY scrollback buffer.\nSent by `plexi pane capture`. Host writes a JSON array of strings to `response_file`.",
+          "properties": {
+            "lines": {
+              "description": "Number of lines to capture from the end of the scrollback.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "capture_pane",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "lines",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.",
+          "properties": {
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "root": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "create_context",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Focus existing context by root, or create one. Sent by `plexi context open`.",
+          "properties": {
+            "root": {
+              "type": "string"
+            },
+            "type": {
+              "const": "focus_context",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "root"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Set/update the root of the active context. Sent by `plexi context set-root`.",
+          "properties": {
+            "root": {
+              "type": "string"
+            },
+            "type": {
+              "const": "set_context_root",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "root"
           ],
           "type": "object"
         },
@@ -810,6 +1028,30 @@
             },
             "type": {
               "const": "tool_result",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "call_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "App returns the result of a `PlexiEvent::McpToolCall` invocation.\n`call_id` must match the `call_id` from the `McpToolCall` event.\nEither `result` or `error` must be set.",
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "result": true,
+            "type": {
+              "const": "mcp_tool_result",
               "type": "string"
             }
           },
@@ -1298,6 +1540,54 @@
           "type": "object"
         },
         {
+          "description": "Spawn `command` via `sh -c` and stream its output back to the app.\n\nThe host pipes stdout and stderr, batches available bytes at ~30 Hz,\nand delivers each batch as `PlexiEvent::StreamChunk`. When the child\nexits (or the app calls `CancelProcess`) the host sends\n`PlexiEvent::StreamEnd`. `channel` selects which output stream to\nforward; v1 treats `structured` identically to `stdout`.\n\n`terminal_pane_id` links the stream to an existing linked terminal\nfor capability gating and future display contexts.\n\nCapability: `terminal.bindings`. All fields required.",
+          "properties": {
+            "channel": {
+              "$ref": "#/$defs/StreamChannel"
+            },
+            "command": {
+              "type": "string"
+            },
+            "correlation_id": {
+              "type": "string"
+            },
+            "terminal_pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "stream_process",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "correlation_id",
+            "terminal_pane_id",
+            "command",
+            "channel"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Cancel an in-flight `StreamProcess`. The host sends SIGTERM to the\nchild, waits up to 1s, then SIGKILL. A `PlexiEvent::StreamEnd` is\nalways delivered after cancellation.\n\nCancelling an already-exited stream is a no-op.\n\nCapability: `terminal.bindings`. All fields required.",
+          "properties": {
+            "correlation_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "cancel_process",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "correlation_id"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Show a native macOS file picker dialog. Requires `fs.pick` capability.\n\n`filter` is a list of file extensions without leading dots\n(e.g. `[\"mp4\", \"mov\"]`). Empty list = accept all files.\n\n`multiple` allows selecting more than one file.\n\nHost responds with `PlexiEvent::FilePicked` (paths) or\n`PlexiEvent::FilePickCancelled` (user dismissed / capability denied).",
           "properties": {
             "filter": {
@@ -1327,6 +1617,145 @@
         }
       ],
       "title": "AppRequest"
+    },
+    "ControlCommand": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "Inline-handled commands (processed directly in `ui()` or `background_tick()`).",
+      "oneOf": [
+        {
+          "description": "SDK ready handshake. Sent once by the app after receiving Init.\nHost captures sdk and features_used; the message is otherwise a no-op.",
+          "properties": {
+            "features_used": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "sdk": {
+              "default": "",
+              "type": "string"
+            },
+            "type": {
+              "const": "ready",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "End of frame. Host renders everything queued since last FrameDone.",
+          "properties": {
+            "frame_id": {
+              "description": "Must match the frame_id from the triggering Render event.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "frame_done",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "frame_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Forward a log message into Plexi's logger (tagged with app_id).",
+          "properties": {
+            "level": {
+              "description": "One of: \"error\" | \"warn\" | \"info\" | \"debug\"",
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "type": {
+              "const": "log",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "level",
+            "message"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Ask the host to trigger a new Render event after `after_ms` milliseconds.\nIntended for game loops and animations — emit once per frame to sustain a\ntick rate without relying on egui's unconditional repaint cadence.\nApps that do not emit this will still repaint on keyboard/inject events.",
+          "properties": {
+            "after_ms": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "schedule_render",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "after_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Write `text` to the OS clipboard.\n\nRouted through `egui::Context::copy_text`, which handles platform-\nspecific clipboard backends (NSPasteboard / X11 / Wayland / Win32).\nSynchronous from the app's perspective — no acknowledgement event.\nNo capability flag required: clipboard write is low-risk and the\napp already controls when it fires (key handler, button, etc.).",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "copy_to_clipboard",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Request a one-shot text measurement. The host measures `text` at\n`font_size` with the proportional font and replies immediately with\n`PlexiEvent::TextMeasured { request_id, width, height }`.\n\nUse this only when layout genuinely depends on measured text width\n(e.g. flowing multiple badges horizontally). Avoid on hot render paths.",
+          "properties": {
+            "font_size": {
+              "format": "float",
+              "type": "number"
+            },
+            "monospace": {
+              "default": false,
+              "type": "boolean"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "measure_text",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "text",
+            "font_size"
+          ],
+          "type": "object"
+        }
+      ],
+      "title": "ControlCommand"
     },
     "PlexiEvent": {
       "$defs": {
@@ -1427,6 +1856,23 @@
             "h"
           ],
           "type": "object"
+        },
+        "StreamChannel": {
+          "description": "Output channel selector for `DrawCommand::StreamProcess`.\nv1: `structured` emits the same bytes as `stdout`.",
+          "oneOf": [
+            {
+              "enum": [
+                "stdout",
+                "stderr"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "structured",
+              "description": "Reserved for future structured-progress framing. v1: identical to `stdout`.",
+              "type": "string"
+            }
+          ]
         }
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1846,6 +2292,12 @@
               "minimum": 0,
               "type": "integer"
             },
+            "request_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "const": "pane_spawned",
               "type": "string"
@@ -1862,6 +2314,12 @@
           "properties": {
             "reason": {
               "type": "string"
+            },
+            "request_id": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "type": {
               "const": "pane_spawn_error",
@@ -1919,7 +2377,7 @@
           "type": "object"
         },
         {
-          "description": "Harness-only: drop a JSON payload into the app's `on_inject` hook.\nUsed by `pgap_test_harness` to seed deterministic state without\nround-tripping through real inputs.",
+          "description": "Drop a JSON payload into the app's `on_inject` hook.\nSent at startup with persisted app state (workspace if available, else global).\nAlso usable from `pgap_test_harness` to seed deterministic state.",
           "properties": {
             "payload": true,
             "type": {
@@ -2061,23 +2519,6 @@
           "type": "object"
         },
         {
-          "description": "User submitted text in the focused app pane.",
-          "properties": {
-            "text": {
-              "type": "string"
-            },
-            "type": {
-              "const": "user_message",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "text"
-          ],
-          "type": "object"
-        },
-        {
           "description": "Clipboard paste forwarded into the focused app pane.\n\nEmitted whenever the host observes `egui::Event::Paste(text)` while an\napp pane has keyboard focus. The text is the OS clipboard contents at\npaste time, already decoded to UTF-8 by egui. Apps receive this both\nfor Cmd+V chords and for OS-menu / right-click → Paste actions.\n\nPre-#200 apps shelled out to `pbpaste` for this; that workaround is\nmacOS-only and races with focus changes. This event is the portable\npath.",
           "properties": {
             "text": {
@@ -2157,6 +2598,29 @@
             "call_id",
             "name",
             "input_json"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "External MCP client called a tool declared in `[app.mcp]`. The app must\nreply with `DrawCommand::Host(AppRequest::McpToolResult { call_id, … })`.",
+          "properties": {
+            "arguments": true,
+            "call_id": {
+              "type": "string"
+            },
+            "tool_name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "mcp_tool_call",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "call_id",
+            "tool_name",
+            "arguments"
           ],
           "type": "object"
         },
@@ -2536,6 +3000,59 @@
           "type": "object"
         },
         {
+          "description": "Chunk of stdout/stderr bytes from an active `DrawCommand::StreamProcess`\nchild. `bytes` is a raw byte array (values 0–255); decode with\n`bytes(event['bytes'])` in Python. Delivered at up to ~30 Hz.",
+          "properties": {
+            "bytes": {
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "channel": {
+              "$ref": "#/$defs/StreamChannel"
+            },
+            "correlation_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "stream_chunk",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "correlation_id",
+            "channel",
+            "bytes"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Terminal event for a `DrawCommand::StreamProcess` child. Sent when the\nchild exits, on `CancelProcess`, or on capability denial. The SDK\niterator unblocks after this event.",
+          "properties": {
+            "correlation_id": {
+              "type": "string"
+            },
+            "exit_code": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "type": {
+              "const": "stream_end",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "correlation_id",
+            "exit_code"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Emitted by the host when the scroll offset for a `BeginScroll` region\nchanges (mouse wheel, drag). The app should re-render using `offset_y`\nas the vertical translation applied to all content within that region.\n\n`id` matches the `id` from the `DrawCommand::BeginScroll` that declared\nthe region. `offset_y` is always >= 0 and clamped to\n`max(0, content_height - viewport_height)`.",
           "properties": {
             "id": {
@@ -2562,6 +3079,16 @@
     },
     "RenderCommand": {
       "$defs": {
+        "LayoutChild": {},
+        "LayoutDirection": {
+          "description": "Direction of a flex layout node.",
+          "enum": [
+            "row",
+            "column",
+            "stack"
+          ],
+          "type": "string"
+        },
         "ListItem": {
           "properties": {
             "icon": {
@@ -3385,6 +3912,45 @@
           },
           "required": [
             "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Declarative flex layout tree. The host resolves all positions using\ntaffy (flexbox) and real egui font metrics before painting.\n\n`x`, `y` — pane-relative top-left anchor of the layout tree.\n`direction` — flex direction of the root node.\n`children` — the layout tree children.\n`gap` — space between children in the root node (pixels).",
+          "properties": {
+            "children": {
+              "items": {
+                "$ref": "#/$defs/LayoutChild"
+              },
+              "type": "array"
+            },
+            "direction": {
+              "$ref": "#/$defs/LayoutDirection"
+            },
+            "gap": {
+              "default": 0.0,
+              "format": "float",
+              "type": "number"
+            },
+            "type": {
+              "const": "layout",
+              "type": "string"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x",
+            "y",
+            "direction",
+            "children"
           ],
           "type": "object"
         }
