@@ -102,9 +102,9 @@ fn main() -> eframe::Result {
     }
 
     // Adopt an explicit workspace root from `plexi <path>` if one was given.
-    // Errors out if the path exists but has no `.plexi/` ancestor — the user
-    // can run `plexi workspace init` to create one. Bare `plexi` continues to
-    // resolve via CWD-walk later in `PlexiApp::new`.
+    // If the path has no `.plexi/` ancestor, an adopted context path is set
+    // instead — the directory opens as a new context on first frame.
+    // Bare `plexi` continues to resolve via CWD-walk later in `PlexiApp::new`.
     let adopted_root = match parse_workspace_path_arg(&raw_args) {
         Ok(root) => root,
         Err(e) => {
@@ -535,8 +535,9 @@ fn main() -> eframe::Result {
 /// Scan argv for the first positional that points at an existing directory
 /// — the `plexi <path>` "open folder" arg, modelled on VS Code. Returns
 /// `Ok(Some(workspace_root))` when an ancestor `.plexi/` is found,
-/// `Ok(None)` when no path arg was given, and `Err(_)` when the user passed
-/// a path that has no `.plexi/` workspace anywhere up the tree.
+/// `Ok(None)` when no path arg was given or the directory has no `.plexi/`
+/// ancestor (in which case an adopted context path is set via
+/// `config::set_adopted_context_path`), and `Err(_)` only for invalid paths.
 ///
 /// Anything starting with `--` is skipped (flags) and so are values that
 /// follow a known value-bearing flag (`--profile`). Recognized CLI

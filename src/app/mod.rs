@@ -1401,13 +1401,12 @@ impl PlexiApp {
                         self.new_context_at_path(r.clone());
                     } else {
                         self.new_context();
-                        self.save_workspace();
                     }
                     if let Some(n) = name {
                         let idx = self.router.len() - 1;
                         self.router.get_mut(idx).name = n.clone();
-                        self.save_workspace();
                     }
+                    self.save_workspace();
                 }
                 crate::app_protocol::HostCommand::FocusContext { root } => {
                     log::warn!(
@@ -1762,11 +1761,18 @@ impl eframe::App for PlexiApp {
             if let Some(ctx_path) = crate::config::take_adopted_context_path() {
                 log::info!("adopted context path: {}", ctx_path.display());
                 self.new_context_at_path(ctx_path);
+                self.save_workspace();
             }
             #[cfg(target_os = "macos")]
-            for path in crate::finder_service::drain() {
-                log::info!("finder_service: opening context for {}", path.display());
-                self.new_context_at_path(path);
+            {
+                let finder_paths = crate::finder_service::drain();
+                if !finder_paths.is_empty() {
+                    for path in finder_paths {
+                        log::info!("finder_service: opening context for {}", path.display());
+                        self.new_context_at_path(path);
+                    }
+                    self.save_workspace();
+                }
             }
             self.tick_notification_timeouts();
         }

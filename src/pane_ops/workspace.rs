@@ -58,7 +58,7 @@ impl PlexiApp {
 
     /// Create a new context at a specific directory path. The terminal pane
     /// opens at `path` and the context root is set to it. Named after the
-    /// directory basename.
+    /// directory basename. Callers must call `save_workspace()` afterward.
     pub(crate) fn new_context_at_path(&mut self, path: PathBuf) {
         log::info!("new_context_at_path: path={}", path.display());
         let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(path.clone()), None, false)
@@ -98,7 +98,6 @@ impl PlexiApp {
         self.active_window = self.windows.len() - 1;
         self.context_active_window.insert(ctx_id, win_id);
         self.minimap.visible = false;
-        self.save_workspace();
     }
 
     /// Create a new page immediately to the right of the active page on the
