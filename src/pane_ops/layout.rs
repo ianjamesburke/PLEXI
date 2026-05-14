@@ -1183,9 +1183,8 @@ impl PlexiApp {
 
 impl PlexiApp {
     pub(crate) fn resolve_new_pane_cwd(&self, cwd_override: Option<std::path::PathBuf>, focused: Option<TileId>) -> Option<std::path::PathBuf> {
-        let context_root = self.router.active().root.clone();
         cwd_override
-            .or(context_root)
+            .or_else(|| self.router.active().root.clone())
             .or_else(|| focused.and_then(|f| self.windows[self.active_window].get_focused_pane_cwd(f)))
     }
 }
@@ -1866,7 +1865,7 @@ mod context_root_cwd_tests {
     }
 
     #[test]
-    fn no_context_root_falls_back_to_focused_pane() {
+    fn no_cwd_sources_returns_none() {
         let app = test_app();
         assert!(app.router.active().root.is_none());
         let cwd = app.resolve_new_pane_cwd(None, None);
