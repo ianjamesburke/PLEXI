@@ -58,14 +58,16 @@ def _new_ball(x: float, y: float, idx: int,
 class BallsApp(App):
 
     def on_init(self, ctx: RenderContext) -> None:
+        count = int(self.args[0]) if self.args else 10
+        count = max(1, min(count, MAX_BALLS))
         self.balls: list[Ball] = []
         w, h = ctx.w, ctx.h
-        for i in range(10):
+        for i in range(count):
             ball = _new_ball(0, 0, i)
             ball.x = random.uniform(ball.r, w - ball.r)
             ball.y = random.uniform(ball.r, h * 0.6)
             self.balls.append(ball)
-        ctx.emit.info("balls: init complete, spawned 10 balls")
+        ctx.emit.info(f"balls: init complete, spawned {count} balls")
 
     def on_render(self, ctx: RenderContext) -> None:
         dt = min(ctx.elapsed, MAX_DT)

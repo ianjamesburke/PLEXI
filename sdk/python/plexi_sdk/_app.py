@@ -104,6 +104,7 @@ class App:
     def __init__(self) -> None:
         self._sdk_initialized: bool = True
         self.app_id: str = ""
+        self.args: list[str] = sys.argv[1:]
         self.workspace_root: str = ""
         self.capabilities: list[str] = []
         self.feature_flags: list[str] = []
