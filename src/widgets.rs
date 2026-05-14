@@ -47,14 +47,10 @@ pub(crate) fn selectable_row<R>(
     });
 
     let row_rect = scope.response.rect;
-    // Inset highlight rect symmetrically so it doesn't extend beyond
-    // visible content bounds (the content already has ROW_PAD_H left
-    // indent, mirror that on the right).
-    let highlight_rect = row_rect.shrink2(Vec2::new(ROW_PAD_H, 0.0));
 
     ui.painter().set(
         bg_idx,
-        egui::Shape::rect_filled(highlight_rect, CornerRadius::same(4), fill),
+        egui::Shape::rect_filled(row_rect, CornerRadius::same(4), fill),
     );
 
     let response = ui.interact(
