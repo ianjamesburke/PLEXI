@@ -87,84 +87,157 @@ def _run_gh(*args: str, cwd: str | None = None) -> "dict[str, object] | None":
         return None
 
 
+def _run_graphql(query: str, variables: dict[str, object] | None = None) -> dict[str, object] | None:
+    """Run a gh api graphql query; return parsed data dict or None on error."""
+    cmd: list[str] = ["gh", "api", "graphql", "-f", f"query={query}"]
+    for k, v in (variables or {}).items():
+        cmd.extend(["-F" if isinstance(v, (int, float, bool)) else "-f", f"{k}={v}"])
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return None
+        parsed = json.loads(result.stdout)
+        return cast(dict[str, object], parsed.get("data")) if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+_FIELDS_QUERY = """
+query($owner: String!, $number: Int!) {
+  user(login: $owner) {
+    projectV2(number: $number) {
+      fields(first: 30) {
+        nodes {
+          ... on ProjectV2SingleSelectField {
+            name
+            options { name }
+          }
+        }
+      }
+    }
+  }
+}"""
+
+_ITEMS_QUERY = """
+query($owner: String!, $number: Int!, $cursor: String) {
+  user(login: $owner) {
+    projectV2(number: $number) {
+      items(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          fieldValueByName(name: "Status") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name }
+          }
+          content {
+            ... on Issue { number title url labels(first: 10) { nodes { name } } }
+            ... on PullRequest { number title url labels(first: 10) { nodes { name } } }
+            ... on DraftIssue { title }
+          }
+        }
+      }
+    }
+  }
+}"""
+
+
 def _fetch_board(project: Project) -> tuple[list[Column], str]:
     """
     Return (columns, error_msg). columns is empty on error.
-    Fetches field options to determine column order, then items.
+    Uses raw GraphQL — gh project CLI subcommands are broken in gh ≥2.92.
     """
-    fields = _run_gh(
-        "project", "field-list", str(project.number),
-        "--owner", project.owner, "--format", "json",
-    )
-    if fields is None:
+    data = _run_graphql(_FIELDS_QUERY, {"owner": project.owner, "number": project.number})
+    if not data:
         return [], "Failed to fetch project fields"
 
-    status_options: list[dict[str, object]] = []
-    for f in cast(list[dict[str, object]], fields.get("fields") or []):
-        if f.get("name") == "Status" and "SingleSelect" in str(f.get("type") or ""):
-            status_options = cast(list[dict[str, object]], f.get("options") or [])
+    proj = cast(dict[str, object], (cast(dict[str, object], data.get("user") or {}).get("projectV2") or {}))
+    fields_nodes = cast(list[dict[str, object]], cast(dict[str, object], proj.get("fields") or {}).get("nodes") or [])
+
+    status_options: list[str] = []
+    for f in fields_nodes:
+        if f.get("name") == "Status" and f.get("options"):
+            status_options = [str(o.get("name", "")) for o in cast(list[dict[str, object]], f["options"]) if o.get("name")]
             break
 
     if not status_options:
         return [], "No Status field found on project"
 
-    items_data = _run_gh(
-        "project", "item-list", str(project.number),
-        "--owner", project.owner, "--format", "json", "--limit", "500",
-    )
-    if items_data is None:
-        return [], "Failed to fetch project items"
+    col_map: dict[str, list[Item]] = {name: [] for name in status_options}
 
-    col_map: dict[str, list[Item]] = {str(opt.get("name", "")): [] for opt in status_options if opt.get("name")}
+    cursor: str | None = None
+    for _ in range(10):
+        variables: dict[str, object] = {"owner": project.owner, "number": project.number}
+        if cursor:
+            variables["cursor"] = cursor
+        data = _run_graphql(_ITEMS_QUERY, variables)
+        if not data:
+            return [], "Failed to fetch project items"
 
-    for raw in cast(list[dict[str, object]], items_data.get("items") or []):
-        content = cast(dict[str, object], raw.get("content") or {})
-        itype = str(content.get("type") or raw.get("type") or "DraftIssue")
-        status = str(raw.get("status") or "").strip()
+        proj = cast(dict[str, object], (cast(dict[str, object], data.get("user") or {}).get("projectV2") or {}))
+        items_obj = cast(dict[str, object], proj.get("items") or {})
+        page_info = cast(dict[str, object], items_obj.get("pageInfo") or {})
+        nodes = cast(list[dict[str, object]], items_obj.get("nodes") or [])
 
-        number_raw = content.get("number")
-        try:
-            number = int(number_raw) if number_raw is not None else None  # type: ignore[arg-type]
-        except (ValueError, TypeError):
-            number = None
-        title  = str(raw.get("title") or content.get("title") or "(no title)")
-        url    = str(content.get("url") or "")
-        labels: list[str] = []
-        for lbl in cast(list[object], raw.get("labels") or []):
-            name = lbl.get("name") if isinstance(lbl, dict) else lbl  # type: ignore[union-attr]
-            if isinstance(name, str) and name:
-                labels.append(name)
+        for node in nodes:
+            content = cast(dict[str, object], node.get("content") or {})
+            status_field = cast(dict[str, object], node.get("fieldValueByName") or {})
+            status = str(status_field.get("name") or "").strip()
 
-        item = Item(
-            item_id=str(raw.get("id") or ""),
-            title=title,
-            number=number,
-            itype=itype,
-            labels=labels,
-            url=url,
-        )
-        if status in col_map:
-            col_map[status].append(item)
+            number_raw = content.get("number")
+            try:
+                number = int(number_raw) if number_raw is not None else None  # type: ignore[arg-type]
+            except (ValueError, TypeError):
+                number = None
 
-    columns = [
-        Column(name=str(opt.get("name", "")), items=col_map.get(str(opt.get("name", "")), []))
-        for opt in status_options if opt.get("name")
-    ]
+            itype = "DraftIssue" if number is None else "Issue"
+            title = str(content.get("title") or "(no title)")
+            url = str(content.get("url") or "")
+            labels: list[str] = []
+            for lbl in cast(list[dict[str, object]], cast(dict[str, object], content.get("labels") or {}).get("nodes") or []):
+                name = str(lbl.get("name", ""))
+                if name:
+                    labels.append(name)
+
+            item = Item(
+                item_id=str(node.get("id") or ""),
+                title=title,
+                number=number,
+                itype=itype,
+                labels=labels,
+                url=url,
+            )
+            if status in col_map:
+                col_map[status].append(item)
+
+        if not page_info.get("hasNextPage"):
+            break
+        cursor = str(page_info.get("endCursor") or "")
+
+    columns = [Column(name=name, items=col_map.get(name, [])) for name in status_options]
     return columns, ""
 
 
+_PROJECTS_QUERY = """
+query($owner: String!) {
+  user(login: $owner) {
+    projectsV2(first: 50) {
+      nodes { number title }
+    }
+  }
+}"""
+
+
 def _fetch_projects(owner: str) -> list[Project]:
-    data = _run_gh("project", "list", "--owner", owner, "--format", "json", "--limit", "50")
-    if data is None:
+    data = _run_graphql(_PROJECTS_QUERY, {"owner": owner})
+    if not data:
         return []
-    projects = []
-    for p in cast(list[dict[str, object]], data.get("projects") or []):
-        projects.append(Project(
-            number=int(p.get("number") or 0),  # type: ignore[arg-type]
-            title=str(p.get("title") or ""),
-            owner=owner,
-        ))
-    return projects
+    nodes = cast(list[dict[str, object]],
+                 cast(dict[str, object],
+                      cast(dict[str, object], data.get("user") or {}).get("projectsV2") or {}).get("nodes") or [])
+    return [
+        Project(number=int(str(p.get("number") or 0)), title=str(p.get("title") or ""), owner=owner)
+        for p in nodes
+    ]
 
 
 def _detect_repo(workspace_root: str) -> tuple[str, str]:
