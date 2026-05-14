@@ -161,7 +161,7 @@
       ],
       "title": "ControlCommand"
     },
-    "HostCommand": {
+    "AppRequest": {
       "$defs": {
         "AiMessage": {
           "description": "One message in an `AiQuery` conversation. Wire shape mirrors Anthropic\nMessages API: `role` ∈ {\"user\", \"assistant\"}, `content` is plain text.\n(Multimodal content blocks are future-scope.)",
@@ -1326,7 +1326,7 @@
           "type": "object"
         }
       ],
-      "title": "HostCommand"
+      "title": "AppRequest"
     },
     "PlexiEvent": {
       "$defs": {

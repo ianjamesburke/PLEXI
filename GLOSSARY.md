@@ -20,7 +20,7 @@ Shared vocabulary for Plexi. When introducing or redefining terms, update this f
 
 **PlexiEvent** — Host → app message. Types: init, render, input (keyboard/mouse), capability decision, secret value, run update, pipe message, path changed, suspend/resume, shutdown.
 
-**DrawCommand** — App → host message. Three top-level variants: `Render(RenderCommand)` (frame primitives: rect, text, circle, line, etc.), `Host(HostCommand)` (capability requests, SecretGet, RunGet, Notify, PipeOpen, PipeSend, OpenVideo/SetVideoState/CloseVideo, AudioPlay, AudioCapture, StatusSummary), `Control(ControlCommand)` (clipboard, scheduling). Every frame ends with `FrameDone`.
+**DrawCommand** — App → host message. Three top-level variants: `Render(RenderCommand)` (frame primitives: rect, text, circle, line, etc.), `Host(AppRequest)` (capability requests, SecretGet, RunGet, Notify, PipeOpen, PipeSend, OpenVideo/SetVideoState/CloseVideo, AudioPlay, AudioCapture, StatusSummary), `Control(ControlCommand)` (clipboard, scheduling). Every frame ends with `FrameDone`.
 
 **Typed pipes** — Binary channels for audio, video, and custom data. Created by `PipeOpen`, messages routed by `PipeSend`. Each pipe has a declared type (audio, video, custom). Host enforces type safety; apps cannot send wrong data down a pipe.
 

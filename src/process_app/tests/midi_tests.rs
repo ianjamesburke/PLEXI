@@ -6,7 +6,7 @@
 //!   2. App with the capability — `MockMidiDevice` records the open and
 //!      the routing layer queues `MidiInputOpened` on success.
 use super::super::*;
-use crate::app_protocol::{HostCommand, PlexiEvent};
+use crate::app_protocol::{AppRequest, PlexiEvent};
 use crate::midi::MockMidiDevice;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -45,7 +45,7 @@ fn denied_app_gets_capability_denied_response() {
     let mock = Arc::new(MockMidiDevice::new());
     app.midi_device = Arc::clone(&mock) as Arc<dyn crate::midi::MidiDevice>;
 
-    app.route_command(HostCommand::OpenMidiInput {
+    app.route_command(AppRequest::OpenMidiInput {
         port_id: "mock-input-1".to_owned(),
         pipe_id: "midi-in-pipe".to_owned(),
     });
@@ -81,7 +81,7 @@ fn denied_app_gets_capability_denied_response() {
     );
 
     // SendMidi without `midi.out` is the same shape.
-    app.route_command(HostCommand::SendMidi {
+    app.route_command(AppRequest::SendMidi {
         port_id: "mock-output-1".to_owned(),
         bytes: vec![0x90, 0x3C, 0x64],
     });
@@ -123,7 +123,7 @@ fn granted_app_dispatches_open_input_to_device() {
     let mock = Arc::new(MockMidiDevice::new());
     app.midi_device = Arc::clone(&mock) as Arc<dyn crate::midi::MidiDevice>;
 
-    app.route_command(HostCommand::OpenMidiInput {
+    app.route_command(AppRequest::OpenMidiInput {
         port_id: "mock-input-1".to_owned(),
         pipe_id: "midi-in-pipe".to_owned(),
     });
@@ -155,7 +155,7 @@ fn granted_app_dispatches_open_input_to_device() {
     );
 
     // SendMidi path: dispatches one note-on to the mock output log.
-    app.route_command(HostCommand::SendMidi {
+    app.route_command(AppRequest::SendMidi {
         port_id: "mock-output-1".to_owned(),
         bytes: vec![0x90, 0x3C, 0x64],
     });

@@ -1,7 +1,7 @@
 //! Generates the canonical PGAP JSON Schema artifact.
 //! Usage: cargo run -p gen_schema > sdk/protocol/pgap.schema.json
 
-use plexi::app_protocol::{ControlCommand, HostCommand, PlexiEvent, RenderCommand};
+use plexi::app_protocol::{AppRequest, ControlCommand, PlexiEvent, RenderCommand};
 
 fn main() {
     let schema = serde_json::json!({
@@ -11,7 +11,7 @@ fn main() {
         "definitions": {
             "PlexiEvent": schemars::schema_for!(PlexiEvent),
             "RenderCommand": schemars::schema_for!(RenderCommand),
-            "HostCommand": schemars::schema_for!(HostCommand),
+            "AppRequest": schemars::schema_for!(AppRequest),
             "ControlCommand": schemars::schema_for!(ControlCommand),
         }
     });

@@ -336,9 +336,9 @@ pub struct PlexiApp {
     /// Latest available version string, set after the background check resolves.
     /// `None` means either the check hasn't completed or we're already current.
     pub(crate) update_available: Option<String>,
-    /// Receiver for HostCommands sent over the PLEXI_SOCKET Unix socket listener.
+    /// Receiver for AppRequests sent over the PLEXI_SOCKET Unix socket listener.
     /// Drained each frame in `drain_pane_cmd_channel`.
-    pane_ipc_rx: std::sync::mpsc::Receiver<crate::app_protocol::HostCommand>,
+    pane_ipc_rx: std::sync::mpsc::Receiver<crate::app_protocol::AppRequest>,
     /// Last (window_id, tile_id) pair that was logged as a FocusChanged event.
     /// Uses stable window_id (u64) not a vector index so removals don't corrupt it.
     /// Compared at end of each frame to detect genuine focus transitions.
@@ -356,7 +356,7 @@ fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
 }
 
 fn spawn_socket_listener(
-    tx: std::sync::mpsc::Sender<crate::app_protocol::HostCommand>,
+    tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
 ) {
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
@@ -383,7 +383,7 @@ fn spawn_socket_listener(
                     if line.is_empty() {
                         continue;
                     }
-                    match serde_json::from_str::<crate::app_protocol::HostCommand>(&line) {
+                    match serde_json::from_str::<crate::app_protocol::AppRequest>(&line) {
                         Ok(cmd) => {
                             let _ = tx.send(cmd);
                         }
@@ -476,7 +476,7 @@ impl PlexiApp {
         let (update_tx, update_rx) = std::sync::mpsc::channel::<String>();
         crate::updater::spawn_update_check(crate::config::config_dir(), update_tx);
 
-        let (pane_ipc_tx, pane_ipc_rx) = std::sync::mpsc::channel::<crate::app_protocol::HostCommand>();
+        let (pane_ipc_tx, pane_ipc_rx) = std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
         spawn_socket_listener(pane_ipc_tx);
 
         // One-time migration: remove the legacy file-queue directory if it
@@ -846,7 +846,7 @@ impl PlexiApp {
     pub fn new_for_test(
         ctx: egui::Context,
         frame_tick: crate::logging::FrameTick,
-    ) -> (Self, std::sync::mpsc::Sender<crate::app_protocol::HostCommand>) {
+    ) -> (Self, std::sync::mpsc::Sender<crate::app_protocol::AppRequest>) {
         let config = config::PlexiConfig::default();
         let key_bindings = crate::keys::build_key_bindings(config.keybindings.as_ref());
         let theme_cfg = Self::resolve_theme_config(&config);
@@ -856,7 +856,7 @@ impl PlexiApp {
         let (hr_watcher, hr_rx) = crate::hot_reload::HotReloadWatcher::new();
         let path = std::env::temp_dir();
         let features = crate::features::FeatureFlags::from_config(&config);
-        let (pane_ipc_tx, pane_ipc_rx) = std::sync::mpsc::channel::<crate::app_protocol::HostCommand>();
+        let (pane_ipc_tx, pane_ipc_rx) = std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
         (Self {
             pty_event_rx: rx,
             pty_event_tx: tx,
@@ -1047,7 +1047,7 @@ impl PlexiApp {
     fn drain_pane_cmd_channel(&mut self) {
         while let Ok(cmd) = self.pane_ipc_rx.try_recv() {
             match &cmd {
-                crate::app_protocol::HostCommand::SetPaneTitle { pane_id, name } => {
+                crate::app_protocol::AppRequest::SetPaneTitle { pane_id, name } => {
                     log::info!("pane_ipc: kind=set_pane_title pane_id={pane_id}");
                     let mut found = false;
                     for win in &mut self.windows {
@@ -1064,7 +1064,7 @@ impl PlexiApp {
                         log::warn!("pane_ipc: set_pane_title: pane_id={pane_id} not found");
                     }
                 }
-                crate::app_protocol::HostCommand::ListPanes { response_file } => {
+                crate::app_protocol::AppRequest::ListPanes { response_file } => {
                     log::info!("pane_ipc: kind=list_panes response_file={:?}", response_file);
                     let active_win = self.active_window;
                     let mut entries: Vec<serde_json::Value> = Vec::new();
@@ -1120,7 +1120,7 @@ impl PlexiApp {
                         log::error!("pane_ipc: list_panes: could not write response file {response_file:?}: {e}");
                     }
                 }
-                crate::app_protocol::HostCommand::GetPaneInfo { pane_id, response_file } => {
+                crate::app_protocol::AppRequest::GetPaneInfo { pane_id, response_file } => {
                     log::info!("pane_ipc: kind=get_pane_info pane_id={pane_id} response_file={:?}", response_file);
                     let active_win = self.active_window;
                     let mut found = false;
@@ -1175,13 +1175,13 @@ impl PlexiApp {
                         }
                     }
                 }
-                crate::app_protocol::HostCommand::FocusPane { pane_id } => {
+                crate::app_protocol::AppRequest::FocusPane { pane_id } => {
                     log::info!("pane_ipc: kind=focus_pane pane_id={pane_id}");
                     if !self.pane_navigate(*pane_id) {
                         log::warn!("pane_ipc: focus_pane: pane_id={pane_id} not found");
                     }
                 }
-                crate::app_protocol::HostCommand::ClosePane { pane_id } => {
+                crate::app_protocol::AppRequest::ClosePane { pane_id } => {
                     log::info!("pane_ipc: kind=close_pane pane_id={pane_id}");
                     let before: usize = self.windows.iter().map(|w| w.panes.len()).sum();
                     self.close_pane_by_id(*pane_id);
@@ -1190,7 +1190,7 @@ impl PlexiApp {
                         log::warn!("pane_ipc: close_pane: pane_id={pane_id} not found");
                     }
                 }
-                crate::app_protocol::HostCommand::SpawnPane { type_id, layout, args, ephemeral, response_file, from_pane_id, cwd, no_focus, .. } => {
+                crate::app_protocol::AppRequest::SpawnPane { type_id, layout, args, ephemeral, response_file, from_pane_id, cwd, no_focus, .. } => {
                     log::info!("pane_ipc: kind=spawn_pane type_id={type_id} layout={layout:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} response_file={response_file:?}");
                     let new_pane_id = self.host.next_pane_id();
 
@@ -1252,7 +1252,7 @@ impl PlexiApp {
                         }
                     }
                 }
-                crate::app_protocol::HostCommand::SendToPane { pane_id, text, response_file } => {
+                crate::app_protocol::AppRequest::SendToPane { pane_id, text, response_file } => {
                     log::info!("pane_ipc: kind=send_to_pane pane_id={pane_id} len={} windows={} response_file={response_file:?}", text.len(), self.windows.len());
                     let text_with_newlines = text.replace("\\n", "\n");
                     let result = match self.windows.iter_mut().find_map(|win| win.panes.get_mut(pane_id)) {
@@ -1283,7 +1283,7 @@ impl PlexiApp {
                         }
                     }
                 }
-                crate::app_protocol::HostCommand::KeyPane { pane_id, key, response_file } => {
+                crate::app_protocol::AppRequest::KeyPane { pane_id, key, response_file } => {
                     log::info!("pane_ipc: kind=key_pane pane_id={pane_id} key={key:?}");
                     let result = match self.windows.iter_mut().find_map(|win| win.panes.get_mut(pane_id)) {
                         None => {
@@ -1316,7 +1316,7 @@ impl PlexiApp {
                         }
                     }
                 }
-                crate::app_protocol::HostCommand::CapturePane { pane_id, lines, response_file } => {
+                crate::app_protocol::AppRequest::CapturePane { pane_id, lines, response_file } => {
                     log::info!("pane_ipc: kind=capture_pane pane_id={pane_id} lines={lines} response_file={:?}", response_file);
                     let result = match self.windows.iter().find_map(|win| win.panes.get(pane_id)) {
                         None => {
@@ -1339,7 +1339,7 @@ impl PlexiApp {
                         log::error!("pane_ipc: capture_pane: could not write response file {response_file:?}: {e}");
                     }
                 }
-                crate::app_protocol::HostCommand::Notify {
+                crate::app_protocol::AppRequest::Notify {
                     level, title, body, kind, options, input_prompt,
                     required, priority, image_inline, image_pipe_id,
                     timeout_secs, on_dismiss, response_file, scope, ..
@@ -1390,7 +1390,7 @@ impl PlexiApp {
                         }
                     }
                 }
-                crate::app_protocol::HostCommand::CreateContext { root, name } => {
+                crate::app_protocol::AppRequest::CreateContext { root, name } => {
                     log::info!("pane_ipc: kind=create_context root={:?} name={:?}", root, name);
                     if let Some(r) = root {
                         self.new_context_at_path(r.clone());
@@ -1403,13 +1403,13 @@ impl PlexiApp {
                     }
                     self.save_workspace();
                 }
-                crate::app_protocol::HostCommand::FocusContext { root } => {
+                crate::app_protocol::AppRequest::FocusContext { root } => {
                     log::warn!(
                         "pane_ipc: FocusContext ignored — CWD-based auto-switch removed (root={})",
                         root.display()
                     );
                 }
-                crate::app_protocol::HostCommand::SetContextRoot { root } => {
+                crate::app_protocol::AppRequest::SetContextRoot { root } => {
                     log::info!("pane_ipc: kind=set_context_root root={}", root.display());
                     self.set_active_context_root(root.clone());
                     self.save_workspace();

@@ -8,7 +8,7 @@
 //! Each frame, `ProcessApp::poll_mcp_calls` drains the queue, serialises
 //! `PlexiEvent::McpToolCall` events to the app's stdin, and stores the
 //! response channel in `mcp_pending`. When the app replies with
-//! `HostCommand::McpToolResult`, the routing layer looks up the call_id,
+//! `AppRequest::McpToolResult`, the routing layer looks up the call_id,
 //! sends the result, and the blocked HTTP handler thread unblocks and writes
 //! the JSON-RPC response to the client.
 //!

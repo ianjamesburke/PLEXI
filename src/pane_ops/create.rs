@@ -3,12 +3,12 @@
 //! These methods own the "make a new pane appear" side of the pane API —
 //! ProcessApp wiring, builtin app wiring, single-pane tree creation for new
 //! contexts, and the launch helpers called from the command palette and
-//! HostCommand routing. The actual tile-tree mutation is delegated to
+//! AppRequest routing. The actual tile-tree mutation is delegated to
 //! [`PlexiApp::split_with_new_pane`] in [`super::layout`].
 
 use crate::app::PlexiApp;
 use crate::app_trait::App;
-use crate::host::command::{HostCommand, OpenPaneRequest, PaneRuntimeKind, Placement, ShareRatio};
+use crate::host::command::{HostAction, OpenPaneRequest, PaneRuntimeKind, Placement, ShareRatio};
 use crate::host::effect::HostEffect;
 use crate::pane::{Pane, TerminalPane};
 use crate::tiling::PaneId;
@@ -75,7 +75,7 @@ impl PlexiApp {
             group,
             declared_capabilities: vec![],
         };
-        let effects = self.submit(HostCommand::OpenPane(req));
+        let effects = self.submit(HostAction::OpenPane(req));
         log::debug!("open_pane_layout({app_id}) effects: {:?}", effects);
         effects
             .iter()
@@ -1004,7 +1004,7 @@ mod tests {
         let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
         h.app.windows[0].focused_pane = Some(root);
 
-        h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
+        h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: Some("split_v".to_string()),
             args: vec![],
@@ -1041,7 +1041,7 @@ mod tests {
         let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
         h.app.windows[0].focused_pane = Some(root);
 
-        h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
+        h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: Some("split_v".to_string()),
             args: vec!["echo".to_string(), "hello".to_string()],
@@ -1081,7 +1081,7 @@ mod tests {
         let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
         h.app.windows[0].focused_pane = Some(root);
 
-        h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
+        h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: None,
             args: vec![],
@@ -1120,7 +1120,7 @@ mod tests {
         let before_panes = h.app.windows[0].panes.len();
         let before_windows = h.app.windows.len();
 
-        h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
+        h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: Some("tab".to_string()),
             args: vec![],
@@ -1169,7 +1169,7 @@ mod tests {
 
         let before_windows = h.app.windows.len();
 
-        h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
+        h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
             type_id: "terminal".to_string(),
             layout: Some("new_window".to_string()),
             args: vec![],
@@ -1216,7 +1216,7 @@ mod tests {
 
         // Spawn two new windows in sequence.
         for _ in 0..2 {
-            h.inject_ipc(crate::app_protocol::HostCommand::SpawnPane {
+            h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
                 type_id: "terminal".to_string(),
                 layout: Some("new_window".to_string()),
                 args: vec![],
