@@ -118,8 +118,14 @@ Grep `src/` on alpha and scan `git log --oneline -20` for the key identifiers. T
 git fetch origin && git status --porcelain
 ```
 
-- **Dirty (any output):** Stop immediately. Surface the dirty files to the user and ask how to proceed — never auto-commit on alpha.
-- **Clean:** `git pull --rebase origin alpha` to confirm up-to-date, then proceed.
+- **Dirty (any output):** Auto-stash before proceeding — never block the pipeline for uncommitted alpha state.
+  ```bash
+  git stash push -m "ship-issue auto-stash before #<number>"
+  SHIP_STASHED=true
+  ```
+- **Clean:** `SHIP_STASHED=false`
+
+Then: `git pull --rebase origin alpha` to confirm up-to-date, then proceed.
 
 Mark the issue in progress, capture the origin pane ID, and update the pane title:
 ```bash
@@ -155,7 +161,7 @@ If `$EXISTING` is non-empty: another agent has already claimed this issue. Surfa
 ```bash
 gh pr list --search "head:feature/<issue-number>" --json number,title,state,url
 ```
-Tell the user: "Issue #<n> already has a remote branch — another agent claimed it. PR: <url if found>." Remove the `in progress` label if you added it, and abort. Do not create a worktree.
+Tell the user: "Issue #<n> already has a remote branch — another agent claimed it. PR: <url if found>." Remove the `in progress` label if you added it. Restore stashed changes (`[ "$SHIP_STASHED" = "true" ] && git stash pop`) and abort. Do not create a worktree.
 
 Run from the repo root:
 ```bash
@@ -594,7 +600,10 @@ plexi notify --title "PR #<n> failed — ~<N> line diff" \
 ```
 The notify return value (`a`/`b`/`c`) drives the next action directly — no follow-up chat reply needed for `a` or `b`. `c` pulls the user back to this pane for the conversation.
 
-Regardless of option chosen: post the failure comment on the issue (same format as above). Remove `in progress` label. The issue stays open. Never close the issue on a fail.
+Regardless of option chosen: post the failure comment on the issue (same format as above). Remove `in progress` label. The issue stays open. Never close the issue on a fail. Restore stashed changes:
+```bash
+[ "$SHIP_STASHED" = "true" ] && git stash pop
+```
 
 ---
 
@@ -607,6 +616,11 @@ After user confirms pass. Run without stopping.
 cd /Users/ianburke/Documents/GitHub/PLEXI
 ```
 This is mandatory, not a suggestion. Shell CWD drifts during Phase 4 testing (feature worktree installs, log reads). A Phase 5 `git` or `just` command that runs from the wrong directory silently corrupts the alpha branch state.
+
+**Restore stashed changes:**
+```bash
+[ "$SHIP_STASHED" = "true" ] && git stash pop
+```
 
 **0. Check PR state:**
 ```bash
@@ -766,6 +780,7 @@ Pane stays alive; user can land back here via choice `c` to discuss.
 - **Cross-repo changes:** when the ship cycle modifies files outside this repo (dotfiles, global skills, etc.), commit those to their own repo as a separate step before marking [COMPLETE]
 - **Spawn-queue ≠ process down:** `PLEXI_SOCKET` unset means "outside a Plexi pane" — not that the host is absent; never write messaging implying Plexi is not running when taking the queue fallback path
 - Alpha must be clean when the cycle ends
+- **Auto-stash protocol:** if alpha was dirty at Phase 1, `$SHIP_STASHED` is `true` and the stash must be popped at every exit point (Phase 5 success, fail/abort, Phase 2 claim conflict). Never leave a ship-issue auto-stash behind.
 - Subagents stage only — orchestrator owns the commit and the PR
 - Never dispatch a subagent without first producing the Phase 3 implementation spec
 - Every implementation must include a logging plan — no feature ships without info-level traces and warn-level bail-outs
