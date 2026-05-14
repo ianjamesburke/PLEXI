@@ -1,6 +1,14 @@
 # Changelog
 
 Newest releases appear first.
+## [3.6.75] — 2026-05-14
+
+### Changes
+- refactor(protocol): rename HostCommand → AppRequest (#1311) (#1314)
+- feat(sdk): expose CLI arguments as self.args on App class (#1315)
+- fix(scratchpad): replace double-space trigger with Ctrl+Space (#1310) (#1313)
+- feat(website): add narrative story sections to landing page
+- feat(website): refresh hero copy, add mobile nav, move support to own page
 ## [3.6.74] — 2026-05-14
 
 ### Changes
