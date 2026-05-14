@@ -44,7 +44,9 @@ Plexi meets them where they are. Every feature that a power user would wire up m
 
 The secondary audience is **power users and agent builders** who need a programmable, auditable, agent-scriptable environment. They benefit from the same product abstractions — a command registry that agents can read, manifests that declare capabilities, structured metadata that tooling can index — even though they could wire the pieces themselves.
 
-**Design principle:** when a Plexi feature overlaps with a UNIX primitive (PATH, make, env), that overlap validates the abstraction — it means the concept is sound. The product layer on top (discoverability, scope labeling, secret injection, agent indexing) is the value. Never decline to build a feature because a power user could assemble it from parts. The target user can't, and the power user benefits from the structured version anyway.
+**Design principle — product over primitive:** when a Plexi feature overlaps with a UNIX primitive (PATH, make, env), that overlap validates the abstraction — it means the concept is sound. The product layer on top (discoverability, scope labeling, secret injection, agent indexing) is the value. Never decline to build a feature because a power user could assemble it from parts. The target user can't, and the power user benefits from the structured version anyway.
+
+**Design principle — the CLI is the product:** the CLI is not a developer escape hatch. It is the primary interface for both humans and agents. Every command must be self-documenting: help text written for someone who started coding last month, not someone who's read the POSIX spec. No jargon without explanation. No dead commands. No stubs. Every `--help` is a teaching moment — it explains not just what the command does but *why you'd use it* and *what it connects to*. Agents read the same help text to discover capabilities, so completeness and accuracy are load-bearing. A CLI tips system (like git's hints) can guide new users toward the next thing to try — togglable in config.toml for power users who don't need it.
 
 ---
 
