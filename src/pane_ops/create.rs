@@ -758,7 +758,7 @@ impl PlexiApp {
             let stay_alive = node.stay_alive.unwrap_or(false);
 
             if node.hidden {
-                log::info!("QuickNote: committed via '{}' (hidden background spawn)", node.label);
+                log::info!("QuickNote: committed via '{}' (hidden background spawn) cmd={cmd:?}", node.label);
                 if let Err(e) = std::process::Command::new("sh")
                     .args(["-c", &cmd])
                     .spawn()
@@ -769,7 +769,7 @@ impl PlexiApp {
                 // Legacy position support during migration period
                 let position = node.position.as_deref().unwrap_or("split");
                 log::info!(
-                    "QuickNote: committed via '{}' position={:?} stay_alive={stay_alive}",
+                    "QuickNote: committed via '{}' position={:?} stay_alive={stay_alive} cmd={cmd:?}",
                     node.label, position
                 );
                 match position {

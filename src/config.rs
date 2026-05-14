@@ -1174,6 +1174,33 @@ fn warn_deprecated_quick_note_fields(nodes: &[QuickNoteNode]) {
                 node.label
             );
         }
+        // Warn if command wraps tokens in quotes — tokens are already shell-escaped
+        if let Some(cmd) = &node.command {
+            for token in ["{note}", "{cwd}", "{context_root}"] {
+                let single = format!("'{token}'");
+                let double = format!("\"{token}\"");
+                if cmd.contains(&single) || cmd.contains(&double) {
+                    log::warn!(
+                        "QuickNote: destination '{}' wraps {token} in quotes — \
+                         tokens are already shell-escaped, extra quotes will break substitution",
+                        node.label
+                    );
+                }
+            }
+        }
+        if let Some(children) = &node.children_cmd {
+            for token in ["{note}", "{cwd}", "{context_root}"] {
+                let single = format!("'{token}'");
+                let double = format!("\"{token}\"");
+                if children.contains(&single) || children.contains(&double) {
+                    log::warn!(
+                        "QuickNote: destination '{}' children_cmd wraps {token} in quotes — \
+                         tokens are already shell-escaped, extra quotes will break substitution",
+                        node.label
+                    );
+                }
+            }
+        }
         if let Some(opts) = &node.options {
             warn_deprecated_quick_note_fields(opts);
         }
