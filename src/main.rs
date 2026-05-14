@@ -30,6 +30,8 @@ mod input_intent;
 mod keys;
 mod logging;
 #[cfg(target_os = "macos")]
+mod finder_service;
+#[cfg(target_os = "macos")]
 mod macos_menu;
 mod midi;
 mod overlays;
@@ -605,11 +607,8 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         match crate::app_registry::resolve_workspace_root(&canonical) {
             Some(root) => return Ok(Some(root)),
             None => {
-                return Err(format!(
-                    "no .plexi/ workspace found at or above {}.\n\
-                     Run `plexi workspace init` in that directory first.",
-                    canonical.display()
-                ));
+                crate::config::set_adopted_context_path(canonical);
+                return Ok(None);
             }
         }
     }
@@ -705,15 +704,20 @@ mod cli_tests {
     }
 
     #[test]
-    fn plexi_path_arg_with_no_dotplexi_errors() {
+    fn plexi_path_arg_with_no_dotplexi_sets_context_path() {
         let bare = tempfile::tempdir().unwrap();
         let path_str = bare.path().to_string_lossy().to_string();
 
-        let err = parse_workspace_path_arg(&argv(&[path_str.as_str()]))
-            .expect_err("missing .plexi/ should error");
+        let resolved = parse_workspace_path_arg(&argv(&[path_str.as_str()]))
+            .expect("non-workspace dir should not error");
         assert!(
-            err.contains("no .plexi/ workspace found"),
-            "expected workspace-not-found error, got: {err}"
+            resolved.is_none(),
+            "non-workspace dir should return None for workspace root"
+        );
+        let ctx_path = crate::config::take_adopted_context_path();
+        assert!(
+            ctx_path.is_some(),
+            "adopted context path should be set for non-workspace dir"
         );
     }
 

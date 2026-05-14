@@ -56,6 +56,51 @@ impl PlexiApp {
         self.rename_buffer = self.router.get(new_ctx_idx).name.clone();
     }
 
+    /// Create a new context at a specific directory path. The terminal pane
+    /// opens at `path` and the context root is set to it. Named after the
+    /// directory basename.
+    pub(crate) fn new_context_at_path(&mut self, path: PathBuf) {
+        log::info!("new_context_at_path: path={}", path.display());
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(path.clone()), None, false)
+        else {
+            log::error!("new_context_at_path: failed to create terminal for {}", path.display());
+            return;
+        };
+
+        let ctx_id = self.next_window_id;
+        self.next_window_id += 1;
+        let win_id = self.next_window_id;
+        self.next_window_id += 1;
+
+        let ctx_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("Context {}", self.router.len() + 1));
+        self.router.push(crate::context::Context {
+            name: ctx_name,
+            path: path.clone(),
+            root: Some(path.clone()),
+            context_id: ctx_id,
+        });
+        self.windows.push(Window {
+            name: String::new(),
+            path,
+            tree,
+            panes,
+            focused_pane: Some(root_tile),
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 0,
+            window_id: win_id,
+            context_id: ctx_id,
+        });
+        self.router.activate_last();
+        self.active_window = self.windows.len() - 1;
+        self.context_active_window.insert(ctx_id, win_id);
+        self.minimap.visible = false;
+        self.save_workspace();
+    }
+
     /// Create a new page immediately to the right of the active page on the
     /// same grid row, then switch to it.
     pub(crate) fn new_page_right(&mut self) {

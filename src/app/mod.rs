@@ -404,6 +404,8 @@ impl PlexiApp {
     pub fn new(cc: &eframe::CreationContext<'_>, frame_tick: crate::logging::FrameTick) -> Self {
         #[cfg(target_os = "macos")]
         crate::macos_menu::customize_app_menu();
+        #[cfg(target_os = "macos")]
+        crate::finder_service::register();
 
         theme::setup_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
@@ -1395,16 +1397,17 @@ impl PlexiApp {
                 }
                 crate::app_protocol::HostCommand::CreateContext { root, name } => {
                     log::info!("pane_ipc: kind=create_context root={:?} name={:?}", root, name);
-                    self.new_context();
                     if let Some(r) = root {
-                        let idx = self.router.len() - 1;
-                        self.router.get_mut(idx).root = Some(r.clone());
+                        self.new_context_at_path(r.clone());
+                    } else {
+                        self.new_context();
+                        self.save_workspace();
                     }
                     if let Some(n) = name {
                         let idx = self.router.len() - 1;
                         self.router.get_mut(idx).name = n.clone();
+                        self.save_workspace();
                     }
-                    self.save_workspace();
                 }
                 crate::app_protocol::HostCommand::FocusContext { root } => {
                     log::warn!(
@@ -1756,6 +1759,15 @@ impl eframe::App for PlexiApp {
         if self.last_notify_poll.elapsed() >= std::time::Duration::from_secs(1) {
             self.last_notify_poll = std::time::Instant::now();
             self.drain_spawn_queue();
+            if let Some(ctx_path) = crate::config::take_adopted_context_path() {
+                log::info!("adopted context path: {}", ctx_path.display());
+                self.new_context_at_path(ctx_path);
+            }
+            #[cfg(target_os = "macos")]
+            for path in crate::finder_service::drain() {
+                log::info!("finder_service: opening context for {}", path.display());
+                self.new_context_at_path(path);
+            }
             self.tick_notification_timeouts();
         }
         self.drain_pane_cmd_channel();

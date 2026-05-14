@@ -453,7 +453,7 @@ pub struct ThemeConfig {
     pub bright_foreground: Option<String>,
 }
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 static PROFILE_OVERRIDE: OnceLock<Option<String>> = OnceLock::new();
 
@@ -1224,6 +1224,24 @@ pub fn set_adopted_workspace_root(root: Option<PathBuf>) {
 /// [`crate::app_registry::resolve_workspace_root`].
 pub fn adopted_workspace_root() -> Option<PathBuf> {
     ADOPTED_WORKSPACE_ROOT.get().and_then(|opt| opt.clone())
+}
+
+// ── Adopted context path (set once by main when `plexi <path>` targets a
+// directory without a `.plexi/` workspace) ──────────────────────────────────
+
+static ADOPTED_CONTEXT_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Store a directory path for context-only opening (no workspace).
+/// Called from `parse_workspace_path_arg` when the target dir has no `.plexi/`.
+pub fn set_adopted_context_path(path: PathBuf) {
+    if let Ok(mut guard) = ADOPTED_CONTEXT_PATH.lock() {
+        *guard = Some(path);
+    }
+}
+
+/// Consume the adopted context path. Returns `Some` at most once.
+pub fn take_adopted_context_path() -> Option<PathBuf> {
+    ADOPTED_CONTEXT_PATH.lock().ok().and_then(|mut guard| guard.take())
 }
 
 /// Convenience: the active workspace root for this process. Returns the
