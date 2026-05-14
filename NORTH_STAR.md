@@ -36,6 +36,18 @@ The long horizon: Plexi becomes a platform. You build apps, publish them, sell t
 
 ---
 
+## Who This Is For
+
+Plexi's primary audience is **vibe coders** — people who build with AI, ship fast, and are just discovering what the terminal can do. They aren't sysadmins. They don't have a `.zshrc` they've cultivated for a decade. They may not know what PATH is. But they know they want to build things, and they showed up because an AI helped them write their first script.
+
+Plexi meets them where they are. Every feature that a power user would wire up manually — script discovery, secret injection, command listing, argument forwarding — Plexi packages as a product experience with guardrails, discoverability, and a growth path. `plexi run list` teaches a new user what's available. `plexi run edit` gives them a door into customization without requiring them to understand shell configuration. The CLI is not a power-user shortcut — it's the primary interface, and it must be learnable by someone whose first terminal was last month.
+
+The secondary audience is **power users and agent builders** who need a programmable, auditable, agent-scriptable environment. They benefit from the same product abstractions — a command registry that agents can read, manifests that declare capabilities, structured metadata that tooling can index — even though they could wire the pieces themselves.
+
+**Design principle:** when a Plexi feature overlaps with a UNIX primitive (PATH, make, env), that overlap validates the abstraction — it means the concept is sound. The product layer on top (discoverability, scope labeling, secret injection, agent indexing) is the value. Never decline to build a feature because a power user could assemble it from parts. The target user can't, and the power user benefits from the structured version anyway.
+
+---
+
 ## The Progression
 
 ### Phase 0 — Foundation *(shipped)*
