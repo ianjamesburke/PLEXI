@@ -76,12 +76,9 @@ impl PlexiApp {
     /// and make it the active context.
     pub(crate) fn create_page_at(&mut self, grid_x: u32, grid_y: u32, initial_cmd: Option<&str>, close_on_exit: bool) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let cwd = self.windows[self.active_window]
-            .focused_pane
-            .and_then(|t| self.windows[self.active_window].get_focused_pane_cwd(t))
-            .or_else(|| self.router.active().root.clone())
+        let cwd = self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
             .unwrap_or(home);
-        log::info!("create_page_at({grid_x},{grid_y}): cwd={} initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}", cwd.display());
+        log::info!("create_page_at({grid_x},{grid_y}): cwd={} context_root={:?} initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}", cwd.display(), self.router.active().root);
         let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd.clone()), initial_cmd, close_on_exit)
         else {
             log::error!("Failed to create terminal for new page at ({grid_x}, {grid_y})");

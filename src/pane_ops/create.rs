@@ -525,10 +525,9 @@ impl PlexiApp {
             return;
         }
 
-        let cwd = self.windows[self.active_window]
-            .focused_pane
-            .and_then(|fp| self.windows[self.active_window].get_focused_pane_cwd(fp))
+        let cwd = self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        log::info!("launch_app_by_id_with_layout: id={id} cwd={cwd:?} context_root={:?}", self.router.active().root);
 
         // Re-attach a parked background app if one is waiting
         if let Some((_park_context_id, mut parked)) = self.background_apps.remove(id) {

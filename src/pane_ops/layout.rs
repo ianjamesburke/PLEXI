@@ -225,7 +225,8 @@ impl PlexiApp {
             })
             .unwrap_or_else(|| (self.host.alloc_pane_id(), vertical));
 
-        let cwd = cwd_override.or_else(|| self.windows[self.active_window].get_focused_pane_cwd(focused));
+        let cwd = self.resolve_new_pane_cwd(cwd_override, Some(focused));
+        log::info!("split_focused: cwd={cwd:?} context_root={:?}", self.router.active().root);
         let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);
         let ctx_name = self.context_name_for(ctx_id);
         let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
@@ -317,7 +318,9 @@ impl PlexiApp {
             let new_id = self.host.alloc_pane_id();
             let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);
             let ctx_name = self.context_name_for(ctx_id);
-            let mut settings = Self::make_backend_settings(new_id, None, &self.colors, ctx_id, &ctx_name);
+            let cwd = self.resolve_new_pane_cwd(None, None);
+            log::info!("new_tab (empty context): cwd={cwd:?} context_root={:?}", self.router.active().root);
+            let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
             if let Some(cmd) = initial_cmd {
                 log::info!("new_tab (empty context): initial_cmd={cmd:?} close_on_exit={close_on_exit}");
                 super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
@@ -348,7 +351,8 @@ impl PlexiApp {
 
         let new_id = self.host.alloc_pane_id();
 
-        let cwd = self.windows[self.active_window].get_focused_pane_cwd(focused);
+        let cwd = self.resolve_new_pane_cwd(None, Some(focused));
+        log::info!("new_tab: cwd={cwd:?} context_root={:?}", self.router.active().root);
         let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);
         let ctx_name = self.context_name_for(ctx_id);
         let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
@@ -1177,6 +1181,14 @@ impl PlexiApp {
     }
 }
 
+impl PlexiApp {
+    pub(crate) fn resolve_new_pane_cwd(&self, cwd_override: Option<std::path::PathBuf>, focused: Option<TileId>) -> Option<std::path::PathBuf> {
+        cwd_override
+            .or_else(|| self.router.active().root.clone())
+            .or_else(|| focused.and_then(|f| self.windows[self.active_window].get_focused_pane_cwd(f)))
+    }
+}
+
 /// Test-only helper: pop focused pane unconditionally to a new window at max_x+1,
 /// without the boundary check. Used by pop_pane_to_new_window_tests only.
 #[cfg(test)]
@@ -1788,5 +1800,75 @@ mod move_to_row_boundary_tests {
         let new_win = app.windows.iter().find(|w| w.panes.contains_key(&pane_a)).unwrap();
         let max_x = app.windows.iter().map(|w| w.grid_x).max().unwrap();
         assert_eq!(new_win.grid_x, max_x, "pane_a must be in the rightmost window");
+    }
+}
+
+#[cfg(test)]
+mod context_root_cwd_tests {
+    use super::*;
+
+    fn test_app() -> PlexiApp {
+        let ctx = egui::Context::default();
+        let ft = crate::logging::new_frame_tick();
+        PlexiApp::new_for_test(ctx, ft).0
+    }
+
+    #[test]
+    fn context_root_used_when_set() {
+        let mut app = test_app();
+        let root = std::path::PathBuf::from("/projects/myapp");
+        app.router.get_mut(0).root = Some(root.clone());
+        let cwd = app.resolve_new_pane_cwd(None, None);
+        assert_eq!(cwd, Some(root));
+    }
+
+    #[test]
+    fn cwd_override_takes_priority_over_context_root() {
+        let mut app = test_app();
+        let root = std::path::PathBuf::from("/projects/myapp");
+        let override_dir = std::path::PathBuf::from("/override/dir");
+        app.router.get_mut(0).root = Some(root);
+        let cwd = app.resolve_new_pane_cwd(Some(override_dir.clone()), None);
+        assert_eq!(cwd, Some(override_dir));
+    }
+
+    #[test]
+    fn context_root_beats_focused_pane_cwd() {
+        use crate::app_permissions::AppPermissions;
+        use crate::pane::{AppPane, AppRuntime};
+        use crate::process_app::ProcessApp;
+
+        let mut app = test_app();
+        let root = std::path::PathBuf::from("/projects/myapp");
+        app.router.get_mut(0).root = Some(root.clone());
+        let pane_id: u64 = 42;
+        let (process_app, _tx) = ProcessApp::new_for_test(pane_id, AppPermissions::builtin());
+        let app_pane = AppPane {
+            id: pane_id,
+            runtime: AppRuntime::Process(Box::new(process_app)),
+            workspace_root: std::path::PathBuf::from("/other/workspace"),
+            permissions: AppPermissions::builtin(),
+            manifest_id: "test".to_string(),
+            name: "Test".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: None,
+        };
+        let tile = app.windows[0].tree.tiles.insert_pane(pane_id);
+        app.windows[0].tree.root = Some(tile);
+        app.windows[0].focused_pane = Some(tile);
+        app.windows[0].panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+        let pane_cwd = app.windows[0].get_focused_pane_cwd(tile);
+        assert_eq!(pane_cwd, Some(std::path::PathBuf::from("/other/workspace")), "pane has its own CWD");
+        let cwd = app.resolve_new_pane_cwd(None, Some(tile));
+        assert_eq!(cwd, Some(root), "context root must take priority over focused pane CWD");
+    }
+
+    #[test]
+    fn no_cwd_sources_returns_none() {
+        let app = test_app();
+        assert!(app.router.active().root.is_none());
+        let cwd = app.resolve_new_pane_cwd(None, None);
+        assert_eq!(cwd, None, "no context root and no focused pane returns None");
     }
 }
