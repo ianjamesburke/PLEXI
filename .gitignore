@@ -14,7 +14,6 @@ docs/scratch/
 .claude/settings.local.json
 .claude/*.lock
 .kiro/
-/skills/
 /skills-lock.json
 
 # OS
