@@ -212,7 +212,7 @@ pub enum PlexiEvent {
         input_json: String,
     },
     /// External MCP client called a tool declared in `[app.mcp]`. The app must
-    /// reply with `DrawCommand::Host(HostCommand::McpToolResult { call_id, … })`.
+    /// reply with `DrawCommand::Host(AppRequest::McpToolResult { call_id, … })`.
     McpToolCall {
         call_id: String,
         tool_name: String,
@@ -819,10 +819,10 @@ pub enum RenderCommand {
     },
 }
 
-/// Side-effectful commands — go to `route_command`.
+/// App-to-host requests — go to `route_command`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum HostCommand {
+pub enum AppRequest {
     /// Request a runtime capability prompt. Host shows modal; responds with CapabilityDecision.
     CapabilityRequest {
         request_id: String,
@@ -1447,7 +1447,7 @@ pub enum ControlCommand {
 #[serde(untagged)]
 pub enum DrawCommand {
     Render(RenderCommand),
-    Host(HostCommand),
+    Host(AppRequest),
     Control(ControlCommand),
 }
 
@@ -1718,7 +1718,7 @@ mod tests {
         let json = r#"{"type":"ai_query","request_id":"req-1","model_tier":"medium","system":"You are helpful.","messages":[{"role":"user","content":"hi"}],"tools":[]}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::AiQuery {
+            DrawCommand::Host(AppRequest::AiQuery {
                 request_id,
                 model_tier,
                 system,
@@ -1818,7 +1818,7 @@ mod tests {
         let json = r#"{"type":"list_audio_devices","request_id":"req-9"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::ListAudioDevices { request_id }) => {
+            DrawCommand::Host(AppRequest::ListAudioDevices { request_id }) => {
                 assert_eq!(request_id, "req-9");
             }
             other => panic!("expected ListAudioDevices, got {other:?}"),
@@ -1862,7 +1862,7 @@ mod tests {
         let json = r#"{"type":"list_midi_devices","request_id":"req-m1"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::ListMidiDevices { request_id }) => {
+            DrawCommand::Host(AppRequest::ListMidiDevices { request_id }) => {
                 assert_eq!(request_id, "req-m1");
             }
             other => panic!("expected ListMidiDevices, got {other:?}"),
@@ -1910,7 +1910,7 @@ mod tests {
         let json = r#"{"type":"send_midi","port_id":"123","bytes":[144,60,100]}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::SendMidi { port_id, bytes }) => {
+            DrawCommand::Host(AppRequest::SendMidi { port_id, bytes }) => {
                 assert_eq!(port_id, "123");
                 assert_eq!(bytes, &vec![0x90u8, 0x3C, 0x64]);
             }
@@ -1935,7 +1935,7 @@ mod tests {
         let json = r#"{"type":"pipe_open_directed","pipe_id":"coord-to-worker","target_pane_id":42}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::PipeOpenDirected { pipe_id, target_pane_id }) => {
+            DrawCommand::Host(AppRequest::PipeOpenDirected { pipe_id, target_pane_id }) => {
                 assert_eq!(pipe_id, "coord-to-worker");
                 assert_eq!(*target_pane_id, 42);
             }
@@ -1975,7 +1975,7 @@ mod tests {
         let good = r#"{"type":"audio_capture","pipe_id":"mic","device_id":null,"sample_rate":48000,"buffer_size":512}"#;
         let cmd: DrawCommand = serde_json::from_str(good).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::AudioCapture { pipe_id, device_id, sample_rate, buffer_size }) => {
+            DrawCommand::Host(AppRequest::AudioCapture { pipe_id, device_id, sample_rate, buffer_size }) => {
                 assert_eq!(pipe_id, "mic");
                 assert!(device_id.is_none());
                 assert_eq!(*sample_rate, 48_000);
@@ -1995,7 +1995,7 @@ mod tests {
         let json = r#"{"type":"open_video","request_id":"req-1","source":"mock://gradient","pipe_id":"video-stream"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::OpenVideo { request_id, source, pipe_id }) => {
+            DrawCommand::Host(AppRequest::OpenVideo { request_id, source, pipe_id }) => {
                 assert_eq!(request_id, "req-1");
                 assert_eq!(source, "mock://gradient");
                 assert_eq!(pipe_id, "video-stream");
@@ -2028,7 +2028,7 @@ mod tests {
         let play_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"play"}}"#;
         let cmd: DrawCommand = serde_json::from_str(play_json).expect("deserialise play");
         match &cmd {
-            DrawCommand::Host(HostCommand::SetVideoState { handle_id, state }) => {
+            DrawCommand::Host(AppRequest::SetVideoState { handle_id, state }) => {
                 assert_eq!(*handle_id, 7);
                 assert_eq!(*state, crate::video::VideoState::Play);
             }
@@ -2042,7 +2042,7 @@ mod tests {
 
         let pause_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"pause"}}"#;
         let cmd: DrawCommand = serde_json::from_str(pause_json).expect("deserialise pause");
-        if let DrawCommand::Host(HostCommand::SetVideoState { state, .. }) = &cmd {
+        if let DrawCommand::Host(AppRequest::SetVideoState { state, .. }) = &cmd {
             assert_eq!(*state, crate::video::VideoState::Pause);
         } else {
             panic!("expected SetVideoState pause, got {cmd:?}");
@@ -2051,7 +2051,7 @@ mod tests {
         let seek_json =
             r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"seek","position_ms":1500}}"#;
         let cmd: DrawCommand = serde_json::from_str(seek_json).expect("deserialise seek");
-        if let DrawCommand::Host(HostCommand::SetVideoState { state, .. }) = &cmd {
+        if let DrawCommand::Host(AppRequest::SetVideoState { state, .. }) = &cmd {
             assert_eq!(
                 *state,
                 crate::video::VideoState::Seek { position_ms: 1500 }
@@ -2066,7 +2066,7 @@ mod tests {
         let json = r#"{"type":"close_video","handle_id":42}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::CloseVideo { handle_id }) => assert_eq!(*handle_id, 42),
+            DrawCommand::Host(AppRequest::CloseVideo { handle_id }) => assert_eq!(*handle_id, 42),
             other => panic!("expected CloseVideo, got {other:?}"),
         }
         let bad = r#"{"type":"close_video"}"#;
@@ -2121,7 +2121,7 @@ mod tests {
         let json = r#"{"type":"request_linked_terminal","request_id":"req-1","cwd":"/tmp/foo","label":"bindings demo"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::RequestLinkedTerminal { request_id, cwd, label }) => {
+            DrawCommand::Host(AppRequest::RequestLinkedTerminal { request_id, cwd, label }) => {
                 assert_eq!(request_id, "req-1");
                 assert_eq!(cwd.as_deref(), Some("/tmp/foo"));
                 assert_eq!(label.as_deref(), Some("bindings demo"));
@@ -2145,7 +2145,7 @@ mod tests {
         let null_json = r#"{"type":"request_linked_terminal","request_id":"r2","cwd":null,"label":null}"#;
         let cmd: DrawCommand = serde_json::from_str(null_json).expect("deserialise null");
         match &cmd {
-            DrawCommand::Host(HostCommand::RequestLinkedTerminal { cwd, label, .. }) => {
+            DrawCommand::Host(AppRequest::RequestLinkedTerminal { cwd, label, .. }) => {
                 assert!(cwd.is_none());
                 assert!(label.is_none());
             }
@@ -2181,7 +2181,7 @@ mod tests {
         let json = r#"{"type":"run_in_linked_terminal","terminal_pane_id":42,"command":"ls -la","echo":true}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::RunInLinkedTerminal { terminal_pane_id, command, echo }) => {
+            DrawCommand::Host(AppRequest::RunInLinkedTerminal { terminal_pane_id, command, echo }) => {
                 assert_eq!(*terminal_pane_id, 42);
                 assert_eq!(command, "ls -la");
                 assert!(*echo);
@@ -2207,7 +2207,7 @@ mod tests {
         let replace_json = r#"{"type":"insert_path_token","terminal_pane_id":7,"path":"/tmp/x","mode":"replace"}"#;
         let cmd: DrawCommand = serde_json::from_str(replace_json).expect("deserialise replace");
         match &cmd {
-            DrawCommand::Host(HostCommand::InsertPathToken { mode, path, terminal_pane_id }) => {
+            DrawCommand::Host(AppRequest::InsertPathToken { mode, path, terminal_pane_id }) => {
                 assert_eq!(*mode, PathTokenMode::Replace);
                 assert_eq!(path, "/tmp/x");
                 assert_eq!(*terminal_pane_id, 7);
@@ -2217,7 +2217,7 @@ mod tests {
 
         let append_json = r#"{"type":"insert_path_token","terminal_pane_id":7,"path":"/tmp/y","mode":"append"}"#;
         let cmd: DrawCommand = serde_json::from_str(append_json).expect("deserialise append");
-        if let DrawCommand::Host(HostCommand::InsertPathToken { mode, .. }) = &cmd {
+        if let DrawCommand::Host(AppRequest::InsertPathToken { mode, .. }) = &cmd {
             assert_eq!(*mode, PathTokenMode::Append);
         } else {
             panic!("expected InsertPathToken, got {cmd:?}");
@@ -2243,7 +2243,7 @@ mod tests {
         let json = r#"{"type":"request_command_preview","request_id":"req-9","terminal_pane_id":3,"command":"rm -rf .git"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::RequestCommandPreview { request_id, terminal_pane_id, command }) => {
+            DrawCommand::Host(AppRequest::RequestCommandPreview { request_id, terminal_pane_id, command }) => {
                 assert_eq!(request_id, "req-9");
                 assert_eq!(*terminal_pane_id, 3);
                 assert_eq!(command, "rm -rf .git");
@@ -2276,7 +2276,7 @@ mod tests {
             );
             let cmd: DrawCommand = serde_json::from_str(&json).expect("deserialise");
             match &cmd {
-                DrawCommand::Host(HostCommand::OpenArtifact { path, mode }) => {
+                DrawCommand::Host(AppRequest::OpenArtifact { path, mode }) => {
                     assert_eq!(path, "/tmp/x");
                     assert_eq!(*mode, expected, "wire {wire} → {expected:?}");
                 }
@@ -2285,7 +2285,7 @@ mod tests {
         }
 
         // Round-trip serialise → snake_case on the wire.
-        let cmd = DrawCommand::Host(HostCommand::OpenArtifact {
+        let cmd = DrawCommand::Host(AppRequest::OpenArtifact {
             path: "/tmp/x".to_string(),
             mode: ArtifactOpenMode::RevealInFinder,
         });
@@ -2327,7 +2327,7 @@ mod tests {
         let json = r#"{"type":"notify","level":"info","title":"Pick","body":"choose","kind":"choice","options":[{"label":"A","value":"sidebar","shortcut":"1"},{"label":"B","value":"fullwidth","shortcut":"2"}],"priority":100}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::Notify {
+            DrawCommand::Host(AppRequest::Notify {
                 kind,
                 options,
                 priority,
@@ -2359,7 +2359,7 @@ mod tests {
         let json = r#"{"type":"notify","level":"info","title":"Pic","body":"see image","kind":"message","priority":50,"image_inline":{"mime":"image/png","base64":"AAAA"}}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::Notify {
+            DrawCommand::Host(AppRequest::Notify {
                 image_inline,
                 image_pipe_id,
                 ..
@@ -2389,7 +2389,7 @@ mod tests {
         let json = r#"{"type":"notify","level":"info","title":"Pic","body":"piped","kind":"message","priority":50,"image_pipe_id":"render-out"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::Notify {
+            DrawCommand::Host(AppRequest::Notify {
                 image_pipe_id,
                 image_inline,
                 ..
@@ -2408,7 +2408,7 @@ mod tests {
         let json = r#"{"type":"notify","level":"info","title":"Plain","body":"no image","kind":"message","priority":50}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match cmd {
-            DrawCommand::Host(HostCommand::Notify {
+            DrawCommand::Host(AppRequest::Notify {
                 image_inline,
                 image_pipe_id,
                 ..
@@ -2436,7 +2436,7 @@ mod tests {
         let json = r#"{"type":"stream_process","correlation_id":"cid-1","terminal_pane_id":42,"command":"ls -la","channel":"stdout"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::StreamProcess {
+            DrawCommand::Host(AppRequest::StreamProcess {
                 correlation_id,
                 terminal_pane_id,
                 command,
@@ -2464,7 +2464,7 @@ mod tests {
         let json = r#"{"type":"cancel_process","correlation_id":"cid-2"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::CancelProcess { correlation_id }) => {
+            DrawCommand::Host(AppRequest::CancelProcess { correlation_id }) => {
                 assert_eq!(correlation_id, "cid-2");
             }
             other => panic!("expected CancelProcess, got {other:?}"),
@@ -2534,11 +2534,11 @@ mod tests {
         let json = r#"{"type":"notify","level":"info","title":"T","body":"B","priority":50,"timeout_secs":30,"on_dismiss":"user_ignored"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match cmd {
-            DrawCommand::Host(HostCommand::Notify { timeout_secs, on_dismiss, .. }) => {
+            DrawCommand::Host(AppRequest::Notify { timeout_secs, on_dismiss, .. }) => {
                 assert_eq!(timeout_secs, Some(30));
                 assert_eq!(on_dismiss.as_deref(), Some("user_ignored"));
             }
-            other => panic!("expected HostCommand::Notify, got {other:?}"),
+            other => panic!("expected AppRequest::Notify, got {other:?}"),
         }
     }
 
@@ -2547,11 +2547,11 @@ mod tests {
         let json = r#"{"type":"notify","level":"info","title":"T","body":"B","priority":50}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match cmd {
-            DrawCommand::Host(HostCommand::Notify { timeout_secs, on_dismiss, .. }) => {
+            DrawCommand::Host(AppRequest::Notify { timeout_secs, on_dismiss, .. }) => {
                 assert!(timeout_secs.is_none());
                 assert!(on_dismiss.is_none());
             }
-            other => panic!("expected HostCommand::Notify, got {other:?}"),
+            other => panic!("expected AppRequest::Notify, got {other:?}"),
         }
     }
 
@@ -2559,7 +2559,7 @@ mod tests {
     fn set_pane_title_deserializes() {
         let json = r#"{"type":"set_pane_title","pane_id":42,"name":"my label"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).unwrap();
-        assert!(matches!(cmd, DrawCommand::Host(HostCommand::SetPaneTitle { pane_id: 42, .. })));
+        assert!(matches!(cmd, DrawCommand::Host(AppRequest::SetPaneTitle { pane_id: 42, .. })));
     }
 
     #[test]
@@ -2567,7 +2567,7 @@ mod tests {
         let json = r#"{"type":"spawn_pane","type_id":"snake","layout":"split_v","args":["--foo"],"pipe_id":"p1"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::SpawnPane { type_id, layout, args, pipe_id, from_pane_id, request_id, .. }) => {
+            DrawCommand::Host(AppRequest::SpawnPane { type_id, layout, args, pipe_id, from_pane_id, request_id, .. }) => {
                 assert_eq!(type_id, "snake");
                 assert_eq!(layout.as_deref(), Some("split_v"));
                 assert_eq!(args, &["--foo"]);
@@ -2584,7 +2584,7 @@ mod tests {
         let minimal = r#"{"type":"spawn_pane","type_id":"snake"}"#;
         let cmd2: DrawCommand = serde_json::from_str(minimal).expect("deserialise minimal");
         match &cmd2 {
-            DrawCommand::Host(HostCommand::SpawnPane { layout, args, pipe_id, from_pane_id, request_id, .. }) => {
+            DrawCommand::Host(AppRequest::SpawnPane { layout, args, pipe_id, from_pane_id, request_id, .. }) => {
                 assert!(layout.is_none(), "absent layout must deserialise to None");
                 assert!(args.is_empty());
                 assert!(pipe_id.is_none());
@@ -2631,7 +2631,7 @@ mod tests {
         let json = r#"{"type":"spawn_pane","type_id":"snake","layout":"split_v","from_pane_id":42,"request_id":"req-1"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::SpawnPane { from_pane_id, request_id, .. }) => {
+            DrawCommand::Host(AppRequest::SpawnPane { from_pane_id, request_id, .. }) => {
                 assert_eq!(*from_pane_id, Some(42u64));
                 assert_eq!(request_id.as_deref(), Some("req-1"));
             }
@@ -2647,7 +2647,7 @@ mod tests {
         let json = r#"{"type":"spawn_pane","type_id":"terminal","no_focus":true}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::SpawnPane { no_focus, .. }) => {
+            DrawCommand::Host(AppRequest::SpawnPane { no_focus, .. }) => {
                 assert!(*no_focus, "no_focus should be true");
             }
             other => panic!("expected SpawnPane, got {other:?}"),
@@ -2659,7 +2659,7 @@ mod tests {
         let json_default = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
         let cmd_default: DrawCommand = serde_json::from_str(json_default).expect("deserialise default");
         match &cmd_default {
-            DrawCommand::Host(HostCommand::SpawnPane { no_focus, .. }) => {
+            DrawCommand::Host(AppRequest::SpawnPane { no_focus, .. }) => {
                 assert!(!*no_focus, "no_focus should default to false");
             }
             other => panic!("expected SpawnPane, got {other:?}"),
@@ -2732,7 +2732,7 @@ mod tests {
         let json = r#"{"type":"key_pane","pane_id":42,"key":"enter","response_file":"result.json"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::KeyPane { pane_id, key, response_file }) => {
+            DrawCommand::Host(AppRequest::KeyPane { pane_id, key, response_file }) => {
                 assert_eq!(*pane_id, 42);
                 assert_eq!(key, "enter");
                 assert_eq!(response_file.as_deref(), Some("result.json"));
@@ -2746,7 +2746,7 @@ mod tests {
         let minimal = r#"{"type":"key_pane","pane_id":1,"key":"h"}"#;
         let cmd2: DrawCommand = serde_json::from_str(minimal).expect("deserialise minimal");
         match &cmd2 {
-            DrawCommand::Host(HostCommand::KeyPane { response_file, .. }) => {
+            DrawCommand::Host(AppRequest::KeyPane { response_file, .. }) => {
                 assert!(response_file.is_none(), "absent response_file must deserialise to None");
             }
             other => panic!("expected KeyPane, got {other:?}"),
@@ -2765,7 +2765,7 @@ mod tests {
         let json = r#"{"type":"capture_pane","pane_id":7,"lines":20,"response_file":"capture.json"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::CapturePane { pane_id, lines, response_file }) => {
+            DrawCommand::Host(AppRequest::CapturePane { pane_id, lines, response_file }) => {
                 assert_eq!(*pane_id, 7);
                 assert_eq!(*lines, 20);
                 assert_eq!(response_file, "capture.json");

@@ -10,7 +10,7 @@
 //! path also confirms that the routing layer forwarded the right
 //! `model_tier`, `system`, and `messages` payload to the broker.
 use super::super::*;
-use crate::app_protocol::{AiMessage, HostCommand, ModelTier, PlexiEvent};
+use crate::app_protocol::{AiMessage, AppRequest, ModelTier, PlexiEvent};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, AiBrokerResponse};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -69,7 +69,7 @@ fn denied_app_gets_capability_denied_response() {
     }
     app.ai_broker = Arc::new(PanicBroker);
 
-    app.route_command(HostCommand::AiQuery {
+    app.route_command(AppRequest::AiQuery {
         request_id: "req-denied".to_string(),
         model_tier: ModelTier::Low,
         system: "system".to_string(),
@@ -132,7 +132,7 @@ fn granted_app_dispatches_to_broker() {
         response: AiBrokerResponse::ok("Pong.".to_string(), 12, 4),
     });
 
-    app.route_command(HostCommand::AiQuery {
+    app.route_command(AppRequest::AiQuery {
         request_id: "req-ok".to_string(),
         model_tier: ModelTier::High,
         system: "be terse".to_string(),

@@ -129,7 +129,7 @@ App logs forward into the host log tagged `app::<app_id>`. Python SDK: `ctx.info
 **When debugging, check the log file first.**
 
 **Every new feature must be instrumented.** Logging is not optional polish — it's the first diagnostic tool when something breaks:
-- **Host (Rust):** `log::info!` at entry points for new `HostCommand`/`HostEffect`/`DrawCommand` handlers and any user-visible state change.
+- **Host (Rust):** `log::info!` at entry points for new `AppRequest`/`HostEffect`/`DrawCommand` handlers and any user-visible state change.
 - **Apps/SDK:** `ctx.info()` or `emit.info()` at meaningful state transitions (init, key actions, errors).
 - **CLI:** log the resolved command and any path it acted on.
 
@@ -160,7 +160,7 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 
 **Define done by the test, not the code.** Before writing any new module or refactoring an existing one, write the test that must pass when the work is complete. A PR is done when `cargo test --bin plexi` is green — not when the code looks right.
 
-**Test-first for host logic.** Any new `HostCommand` or `HostEffect` gets a `HostHarness` test written before the implementation. The test failing is the starting state; making it pass is the work. This prevents stubs: a stub that makes the test pass is an implementation.
+**Test-first for host logic.** Any new `AppRequest` or `HostEffect` gets a `HostHarness` test written before the implementation. The test failing is the starting state; making it pass is the work. This prevents stubs: a stub that makes the test pass is an implementation.
 
 **No partial merges.** A PR that adds a new capability, module, or feature must be complete end-to-end. If it's too large to complete in one pass, scope it down — don't merge half of it. Split at natural seams where each piece is independently testable and independently useful.
 

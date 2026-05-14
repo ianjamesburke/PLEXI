@@ -234,7 +234,7 @@ Assumptions to validate:
   (Run each check NOW, before writing any code. A failed assumption here is cheaper than a failed PR.)
 
 Logging plan (required):
-  - Every new HostCommand/HostEffect/DrawCommand handler → log::info! at entry
+  - Every new AppRequest/HostEffect/DrawCommand handler → log::info! at entry
   - Every user-visible state change → log::info! with what changed
   - Every early-return bail-out → log::warn! naming the app/command and reason
   - Every unrecoverable failure → log::error! with full context

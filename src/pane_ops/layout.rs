@@ -3,7 +3,7 @@
 
 use crate::app::PlexiApp;
 use crate::context::{replace_child, Window};
-use crate::host::command::{HostCommand, Placement};
+use crate::host::command::{HostAction, Placement};
 use crate::host::effect::HostEffect;
 use crate::keys::Direction;
 use crate::pane::{Pane, TerminalPane};
@@ -51,8 +51,8 @@ pub(super) fn restore_overlay_replacement(
 }
 
 impl PlexiApp {
-    /// Route a HostCommand through HostModel and return the resulting effects.
-    pub(super) fn submit(&mut self, cmd: HostCommand) -> Vec<HostEffect> {
+    /// Route a HostAction through HostModel and return the resulting effects.
+    pub(super) fn submit(&mut self, cmd: HostAction) -> Vec<HostEffect> {
         self.host.handle_command(cmd, &mut self.host_services)
     }
 
@@ -214,9 +214,9 @@ impl PlexiApp {
         };
 
         let cmd = if vertical {
-            HostCommand::SplitVertical
+            HostAction::SplitVertical
         } else {
-            HostCommand::SplitHorizontal
+            HostAction::SplitHorizontal
         };
         let effects = self.submit(cmd);
         log::debug!("split_focused(vertical={vertical}) effects: {:?}", effects);
@@ -532,7 +532,7 @@ impl PlexiApp {
             }
         }
 
-        let effects = self.submit(HostCommand::CloseFocusedPane);
+        let effects = self.submit(HostAction::CloseFocusedPane);
         log::debug!("close_focused effects: {:?}", effects);
         self.close_tile(self.active_window, focused);
     }
@@ -672,7 +672,7 @@ impl PlexiApp {
     }
 
     pub(crate) fn navigate(&mut self, dir: Direction) {
-        let effects = self.submit(HostCommand::Navigate(dir));
+        let effects = self.submit(HostAction::Navigate(dir));
         log::debug!("navigate({:?}) effects: {:?}", dir, effects);
 
         let (dx, dy) = match dir {

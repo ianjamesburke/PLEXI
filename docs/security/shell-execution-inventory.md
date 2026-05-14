@@ -23,7 +23,7 @@ between an app's runtime and the host OS.
 
 | Field | Value |
 |---|---|
-| File | `src/process_app/routing.rs` — `ProcessApp::route_command`, `HostCommand::StreamProcess` arm |
+| File | `src/process_app/routing.rs` — `ProcessApp::route_command`, `AppRequest::StreamProcess` arm |
 | Class | **app-requested** |
 | Capability gate | `Capability::TerminalBindings` (`terminal.bindings`) |
 | Denial path | Returns `PlexiEvent::StreamEnd { exit_code: 1 }` immediately; subprocess never spawned |

@@ -49,7 +49,7 @@ pub struct OpenPaneRequest {
 
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum HostCommand {
+pub enum HostAction {
     /// Create a new pane (Terminal or App).
     OpenPane(OpenPaneRequest),
     /// Close the pane that currently has focus.

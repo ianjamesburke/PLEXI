@@ -4,7 +4,7 @@
 //! (media, pipes, capabilities, secrets, runs, notifications) are routed here.
 
 use crate::app_permissions::{check, is_blocked, Capability, PermissionCheck};
-use crate::app_protocol::{AudioDeviceWire, HostCommand, MidiPortWire, PlexiEvent, StreamChannel};
+use crate::app_protocol::{AudioDeviceWire, AppRequest, MidiPortWire, PlexiEvent, StreamChannel};
 use crate::app_trait::AppCommand;
 use crate::audio::AudioCaptureRequest;
 use crate::event_log::{self, HostEvent};
@@ -21,10 +21,10 @@ use super::{ProcessApp, StreamHandle};
 impl ProcessApp {
     /// Route a v3 host command to the appropriate subsystem.
     /// Exhaustive match — no wildcard arm. The compiler enforces coverage.
-    pub(super) fn route_command(&mut self, cmd: HostCommand) {
+    pub(super) fn route_command(&mut self, cmd: AppRequest) {
         match cmd {
             // ── Capability request ─────────────────────────────────────────
-            HostCommand::CapabilityRequest {
+            AppRequest::CapabilityRequest {
                 request_id,
                 capability,
             } => {
@@ -69,7 +69,7 @@ impl ProcessApp {
             }
 
             // ── Secret get ─────────────────────────────────────────────────
-            HostCommand::SecretGet { key } => {
+            AppRequest::SecretGet { key } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::SecretsGet)
                 {
@@ -203,7 +203,7 @@ impl ProcessApp {
             }
 
             // ── Run get ────────────────────────────────────────────────────
-            HostCommand::RunGet { intent, .. } => {
+            AppRequest::RunGet { intent, .. } => {
                 let run_id = self.run_registry.allocate(&self.type_id);
                 log::info!(
                     "ProcessApp[{}]: RunGet intent='{}' → run_id='{}'",
@@ -224,7 +224,7 @@ impl ProcessApp {
             }
 
             // ── Run complete ───────────────────────────────────────────────
-            HostCommand::RunComplete { run_id, result } => {
+            AppRequest::RunComplete { run_id, result } => {
                 log::info!(
                     "ProcessApp[{}]: RunComplete run_id='{run_id}' result={result}",
                     self.type_id
@@ -254,7 +254,7 @@ impl ProcessApp {
             }
 
             // ── Notify ─────────────────────────────────────────────────────
-            HostCommand::Notify {
+            AppRequest::Notify {
                 level,
                 title,
                 body,
@@ -393,7 +393,7 @@ impl ProcessApp {
             }
 
             // ── Pipe open ──────────────────────────────────────────────────
-            HostCommand::PipeOpen {
+            AppRequest::PipeOpen {
                 pipe_id,
                 mode,
                 direction,
@@ -463,7 +463,7 @@ impl ProcessApp {
             // host. We register the JSON pipe locally so subsequent
             // `PipeSend` calls succeed; `has_reader` returns true for the
             // sender side because the direction is duplex.
-            HostCommand::PipeOpenDirected {
+            AppRequest::PipeOpenDirected {
                 pipe_id,
                 target_pane_id,
             } => {
@@ -502,7 +502,7 @@ impl ProcessApp {
             }
 
             // ── Pipe send ──────────────────────────────────────────────────
-            HostCommand::PipeSend { pipe_id, payload } => {
+            AppRequest::PipeSend { pipe_id, payload } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::PipeOpen)
                 {
@@ -527,12 +527,12 @@ impl ProcessApp {
             }
 
             // ── Status summary ─────────────────────────────────────────────
-            HostCommand::StatusSummary { text } => {
+            AppRequest::StatusSummary { text } => {
                 self.status_summary = Some(text);
             }
 
             // ── Navigation stack ───────────────────────────────────────────
-            HostCommand::PushNav { view_id, title } => {
+            AppRequest::PushNav { view_id, title } => {
                 self.nav_stack.push(crate::process_app::NavEntry { view_id, title });
                 log::debug!(
                     "ProcessApp[{}]: PushNav → depth={} title={:?}",
@@ -541,7 +541,7 @@ impl ProcessApp {
                     self.nav_stack.last().map(|e| &e.title),
                 );
             }
-            HostCommand::PopNav {} => {
+            AppRequest::PopNav {} => {
                 self.nav_stack.pop();
                 log::debug!(
                     "ProcessApp[{}]: PopNav → depth={}",
@@ -551,7 +551,7 @@ impl ProcessApp {
             }
 
             // ── Process streaming (#358) ───────────────────────────────────
-            HostCommand::StreamProcess {
+            AppRequest::StreamProcess {
                 correlation_id,
                 terminal_pane_id: _,
                 command,
@@ -667,7 +667,7 @@ impl ProcessApp {
                 }).expect("failed to spawn stream-reader thread");
             }
 
-            HostCommand::CancelProcess { correlation_id } => {
+            AppRequest::CancelProcess { correlation_id } => {
                 if let Some(handle) = self.stream_handles.remove(&correlation_id) {
                     log::info!(
                         "ProcessApp[{}]: CancelProcess {correlation_id} — pid={}",
@@ -695,7 +695,7 @@ impl ProcessApp {
             }
 
             // ── File picker (#514) ─────────────────────────────────────────
-            HostCommand::OpenFilePicker { request_id, filter, multiple } => {
+            AppRequest::OpenFilePicker { request_id, filter, multiple } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::FsPick)
                 {
@@ -728,7 +728,7 @@ impl ProcessApp {
             }
 
             // ── Mouse tracking toggle ──────────────────────────────────────
-            HostCommand::SetMouseTracking { enabled } => {
+            AppRequest::SetMouseTracking { enabled } => {
                 self.mouse_tracking_enabled = enabled;
                 log::debug!(
                     "ProcessApp[{}]: SetMouseTracking → {}",
@@ -738,7 +738,7 @@ impl ProcessApp {
             }
 
             // ── Spawn app ──────────────────────────────────────────────────
-            HostCommand::SpawnApp {
+            AppRequest::SpawnApp {
                 type_id,
                 layout,
                 args,
@@ -761,7 +761,7 @@ impl ProcessApp {
             }
 
             // ── Spawn pane (#592) ──────────────────────────────────────────────────────
-            HostCommand::SpawnPane {
+            AppRequest::SpawnPane {
                 type_id,
                 layout,
                 args,
@@ -797,7 +797,7 @@ impl ProcessApp {
             }
 
             // ── HTTP request (broker via HostServices::net) ───────────────
-            HostCommand::HttpRequest {
+            AppRequest::HttpRequest {
                 request_id,
                 url,
                 method,
@@ -986,7 +986,7 @@ impl ProcessApp {
                     }).expect("failed to spawn http thread");
             }
             // ── ai.query broker (#284) ─────────────────────────────────────
-            HostCommand::AiQuery {
+            AppRequest::AiQuery {
                 request_id,
                 model_tier,
                 system,
@@ -1058,7 +1058,7 @@ impl ProcessApp {
                 }).expect("failed to spawn ai-query thread");
             }
 
-            HostCommand::AudioPlay {
+            AppRequest::AudioPlay {
                 source,
                 pipe_id,
                 volume,
@@ -1161,7 +1161,7 @@ impl ProcessApp {
                     }
                 }
             }
-            HostCommand::AudioCapture {
+            AppRequest::AudioCapture {
                 pipe_id,
                 device_id,
                 sample_rate,
@@ -1182,7 +1182,7 @@ impl ProcessApp {
                 }
                 self.start_audio_capture(pipe_id, device_id, sample_rate, buffer_size);
             }
-            HostCommand::ListAudioDevices { request_id } => {
+            AppRequest::ListAudioDevices { request_id } => {
                 // Enumeration is not gated — device names are already visible
                 // to any macOS app via System Information. The per-device
                 // capture call goes through the `AudioRecord` gate.
@@ -1213,7 +1213,7 @@ impl ProcessApp {
                     });
                 }).expect("failed to spawn audio-devices thread");
             }
-            HostCommand::ListMidiDevices { request_id } => {
+            AppRequest::ListMidiDevices { request_id } => {
                 // MIDI enumeration mirrors audio: not gated. Port names are
                 // already visible in Audio MIDI Setup.app, no privacy gate.
                 // Offload to a background thread for the same reason as audio.
@@ -1242,7 +1242,7 @@ impl ProcessApp {
                     });
                 }).expect("failed to spawn midi-devices thread");
             }
-            HostCommand::OpenMidiInput { port_id, pipe_id } => {
+            AppRequest::OpenMidiInput { port_id, pipe_id } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::MidiIn)
                 {
@@ -1258,7 +1258,7 @@ impl ProcessApp {
                 }
                 self.start_midi_input(port_id, pipe_id);
             }
-            HostCommand::CloseMidiInput { port_id } => {
+            AppRequest::CloseMidiInput { port_id } => {
                 // Drop the session — its Drop impl disconnects from CoreMIDI.
                 // No response event; closing is fire-and-forget.
                 if self.midi_input_sessions.remove(&port_id).is_some() {
@@ -1273,7 +1273,7 @@ impl ProcessApp {
                     );
                 }
             }
-            HostCommand::SendMidi { port_id, bytes } => {
+            AppRequest::SendMidi { port_id, bytes } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::MidiOut)
                 {
@@ -1290,7 +1290,7 @@ impl ProcessApp {
                 self.send_midi(port_id, bytes);
             }
 
-            HostCommand::OpenVideo {
+            AppRequest::OpenVideo {
                 request_id,
                 source,
                 pipe_id,
@@ -1310,7 +1310,7 @@ impl ProcessApp {
                 }
                 self.start_video(request_id, source, pipe_id);
             }
-            HostCommand::SetVideoState { handle_id, state } => {
+            AppRequest::SetVideoState { handle_id, state } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::VideoPlayback)
                 {
@@ -1337,7 +1337,7 @@ impl ProcessApp {
                     }
                 }
             }
-            HostCommand::CloseVideo { handle_id } => {
+            AppRequest::CloseVideo { handle_id } => {
                 // Drop the handle (its Drop impl tears down the worker /
                 // decoder) and close the associated binary pipe so the
                 // drain thread exits. Fire-and-forget — no response event.
@@ -1363,13 +1363,13 @@ impl ProcessApp {
 
 
             // ── Cd request ─────────────────────────────────────────────────
-            HostCommand::CdRequest { cwd } => {
+            AppRequest::CdRequest { cwd } => {
                 log::info!("ProcessApp[{}]: CdRequest cwd='{cwd}'", self.type_id);
                 self.pending_commands.push(AppCommand::CdRequest { cwd, sender_pane_id: self.pane_id });
             }
 
             // ── Set timer ──────────────────────────────────────────────────
-            HostCommand::SetTimer { timer_id, after_ms } => {
+            AppRequest::SetTimer { timer_id, after_ms } => {
                 if let PermissionCheck::Denied(reason) = check(&self.permissions, Capability::Timer) {
                     log::warn!("ProcessApp[{}]: SetTimer {timer_id} denied — {reason}", self.type_id);
                     return;
@@ -1390,7 +1390,7 @@ impl ProcessApp {
             }
 
             // ── Cancel timer ───────────────────────────────────────────────
-            HostCommand::CancelTimer { timer_id } => {
+            AppRequest::CancelTimer { timer_id } => {
                 if let Some(flag) = self.pending_timers.remove(&timer_id) {
                     flag.store(true, std::sync::atomic::Ordering::Relaxed);
                     log::debug!("ProcessApp[{}]: timer {timer_id} cancelled", self.type_id);
@@ -1403,7 +1403,7 @@ impl ProcessApp {
             // injecting bytes into its PTY) lives at the `PlexiApp`
             // dispatch site — the routing layer just enforces the
             // capability gate, logs, and forwards an `AppCommand`.
-            HostCommand::RequestLinkedTerminal { request_id, cwd, label } => {
+            AppRequest::RequestLinkedTerminal { request_id, cwd, label } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::TerminalBindings)
                 {
@@ -1432,7 +1432,7 @@ impl ProcessApp {
                     label,
                 });
             }
-            HostCommand::RunInLinkedTerminal { terminal_pane_id, command, echo } => {
+            AppRequest::RunInLinkedTerminal { terminal_pane_id, command, echo } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::TerminalBindings)
                 {
@@ -1449,7 +1449,7 @@ impl ProcessApp {
                     echo,
                 });
             }
-            HostCommand::InsertPathToken { terminal_pane_id, path, mode } => {
+            AppRequest::InsertPathToken { terminal_pane_id, path, mode } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::TerminalBindings)
                 {
@@ -1466,7 +1466,7 @@ impl ProcessApp {
                     mode,
                 });
             }
-            HostCommand::RequestCommandPreview { request_id, terminal_pane_id, command } => {
+            AppRequest::RequestCommandPreview { request_id, terminal_pane_id, command } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::TerminalBindings)
                 {
@@ -1488,7 +1488,7 @@ impl ProcessApp {
                     command,
                 });
             }
-            HostCommand::OpenArtifact { path, mode } => {
+            AppRequest::OpenArtifact { path, mode } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::TerminalBindings)
                 {
@@ -1508,7 +1508,7 @@ impl ProcessApp {
             // ── Tool protocol (#398, #399) ─────────────────────────────────
 
             // App declares its callable tools to the host.
-            HostCommand::ExposeTools { tools } => {
+            AppRequest::ExposeTools { tools } => {
                 log::debug!(
                     "ProcessApp[{}]: ExposeTools {} tool(s)",
                     self.type_id,
@@ -1536,7 +1536,7 @@ impl ProcessApp {
             }
 
             // App returns the result of a ToolCall from the broker.
-            HostCommand::ToolResult {
+            AppRequest::ToolResult {
                 call_id,
                 output_json,
                 error,
@@ -1556,7 +1556,7 @@ impl ProcessApp {
             }
 
             // App returns the result of an McpToolCall from an external MCP client.
-            HostCommand::McpToolResult {
+            AppRequest::McpToolResult {
                 call_id,
                 result,
                 error,
@@ -1581,7 +1581,7 @@ impl ProcessApp {
 
             // SetPaneTitle is only valid over PLEXI_SOCKET; an app sending it
             // via PGAP is a protocol error — log and drop.
-            HostCommand::SetPaneTitle { pane_id, .. } => {
+            AppRequest::SetPaneTitle { pane_id, .. } => {
                 log::warn!(
                     "ProcessApp[{}]: received SetPaneTitle for pane_id={pane_id} over PGAP — ignored (use PLEXI_SOCKET instead)",
                     self.type_id
@@ -1590,49 +1590,49 @@ impl ProcessApp {
 
             // Context commands are only valid over PLEXI_SOCKET; log and drop
             // when sent via PGAP.
-            HostCommand::CreateContext { .. } => {
+            AppRequest::CreateContext { .. } => {
                 log::warn!(
                     "ProcessApp[{}]: received CreateContext over PGAP — ignored (use PLEXI_SOCKET instead)",
                     self.type_id
                 );
             }
-            HostCommand::FocusContext { .. } => {
+            AppRequest::FocusContext { .. } => {
                 log::warn!(
                     "ProcessApp[{}]: received FocusContext over PGAP — ignored (use PLEXI_SOCKET instead)",
                     self.type_id
                 );
             }
-            HostCommand::SetContextRoot { .. } => {
+            AppRequest::SetContextRoot { .. } => {
                 log::warn!(
                     "ProcessApp[{}]: received SetContextRoot over PGAP — ignored (use PLEXI_SOCKET instead)",
                     self.type_id
                 );
             }
-            HostCommand::ListPanes { .. } => {
+            AppRequest::ListPanes { .. } => {
                 log::warn!(
                     "ProcessApp[{}]: received ListPanes over PGAP — ignored (use PLEXI_SOCKET instead)",
                     self.type_id
                 );
             }
-            HostCommand::FocusPane { .. } => {
+            AppRequest::FocusPane { .. } => {
                 log::warn!(
                     "ProcessApp[{}]: received FocusPane over PGAP — ignored (use PLEXI_SOCKET instead)",
                     self.type_id
                 );
             }
-            HostCommand::ClosePane { .. } => {
+            AppRequest::ClosePane { .. } => {
                 log::warn!(
                     "ProcessApp[{}]: received ClosePane over PGAP — ignored (use PLEXI_SOCKET instead)",
                     self.type_id
                 );
             }
-            HostCommand::SendToPane { .. } => {
+            AppRequest::SendToPane { .. } => {
                 log::warn!(
                     "ProcessApp[{}]: received SendToPane over PGAP — ignored (use PLEXI_SOCKET instead)",
                     self.type_id
                 );
             }
-            HostCommand::KeyPane { .. } => {
+            AppRequest::KeyPane { .. } => {
                 log::warn!(
                     "ProcessApp[{}]: received KeyPane over PGAP — ignored (use PLEXI_SOCKET instead)",
                     self.type_id
@@ -1640,7 +1640,7 @@ impl ProcessApp {
             }
 
             // ── App state save ─────────────────────────────────────────────
-            HostCommand::SaveAppState { payload } => {
+            AppRequest::SaveAppState { payload } => {
                 let filename = format!("{}.json", self.type_id);
                 let workspace_toml = self.workspace_root.join(".plexi").join("workspace.toml");
                 let state_path = if workspace_toml.exists() {
@@ -1671,13 +1671,13 @@ impl ProcessApp {
                     }
                 }
             }
-            HostCommand::GetPaneInfo { pane_id, .. } => {
+            AppRequest::GetPaneInfo { pane_id, .. } => {
                 log::warn!(
                     "ProcessApp[{}]: GetPaneInfo pane_id={pane_id} received in app routing — ignored (host-only command)",
                     self.type_id
                 );
             }
-            HostCommand::CapturePane { pane_id, .. } => {
+            AppRequest::CapturePane { pane_id, .. } => {
                 log::warn!(
                     "ProcessApp[{}]: CapturePane pane_id={pane_id} received in app routing — ignored (use PLEXI_SOCKET instead)",
                     self.type_id

@@ -1,6 +1,6 @@
 //! Proves that user-global secrets (stored as `plexi:user:*`) are NOT
 //! injected into app subprocess environments. The only path to a secret
-//! is `HostCommand::SecretGet` through the brokered capability check.
+//! is `AppRequest::SecretGet` through the brokered capability check.
 //!
 //! Strategy: add a canary directly to the Command (simulating what the old
 //! unconditional list_user_secrets() injection did), then apply env_clear()

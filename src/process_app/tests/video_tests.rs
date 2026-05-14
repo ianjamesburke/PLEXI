@@ -6,7 +6,7 @@
 //!   2. App with the capability — `MockVideoDecoder` opens the source,
 //!      the routing layer queues `VideoOpenAck` and pumps frames.
 use super::super::*;
-use crate::app_protocol::{HostCommand, PlexiEvent};
+use crate::app_protocol::{AppRequest, PlexiEvent};
 use crate::video::{MockVideoDecoder, MockVideoDecoderConfig};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -45,7 +45,7 @@ fn denied_app_gets_capability_denied_response() {
     let mock = Arc::new(MockVideoDecoder::new(MockVideoDecoderConfig::default()));
     app.video_device = Arc::clone(&mock) as Arc<dyn crate::video::VideoDecoder>;
 
-    app.route_command(HostCommand::OpenVideo {
+    app.route_command(AppRequest::OpenVideo {
         request_id: "req-denied".to_owned(),
         source: "mock://gradient".to_owned(),
         pipe_id: "video-stream".to_owned(),
@@ -106,7 +106,7 @@ fn granted_app_dispatches_open_to_decoder() {
     }));
     app.video_device = Arc::clone(&mock) as Arc<dyn crate::video::VideoDecoder>;
 
-    app.route_command(HostCommand::OpenVideo {
+    app.route_command(AppRequest::OpenVideo {
         request_id: "req-1".to_owned(),
         source: "mock://gradient".to_owned(),
         pipe_id: "video-stream".to_owned(),
@@ -155,15 +155,15 @@ fn granted_app_dispatches_open_to_decoder() {
 
     // SetVideoState — pause then play, neither should panic and no error
     // event should arrive.
-    app.route_command(HostCommand::SetVideoState {
+    app.route_command(AppRequest::SetVideoState {
         handle_id: ack_handle_id,
         state: crate::video::VideoState::Pause,
     });
-    app.route_command(HostCommand::SetVideoState {
+    app.route_command(AppRequest::SetVideoState {
         handle_id: ack_handle_id,
         state: crate::video::VideoState::Play,
     });
-    app.route_command(HostCommand::SetVideoState {
+    app.route_command(AppRequest::SetVideoState {
         handle_id: ack_handle_id,
         state: crate::video::VideoState::Seek { position_ms: 1_000 },
     });
@@ -176,7 +176,7 @@ fn granted_app_dispatches_open_to_decoder() {
     assert_eq!(errors, 0, "set_state must not produce VideoOpenError");
 
     // CloseVideo tears down the handle and unregisters the pipe id map.
-    app.route_command(HostCommand::CloseVideo {
+    app.route_command(AppRequest::CloseVideo {
         handle_id: ack_handle_id,
     });
     assert!(

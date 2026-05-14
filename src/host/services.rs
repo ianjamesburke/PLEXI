@@ -43,7 +43,7 @@ impl FileEventSink {
         let mut sink = Self { path, writer };
         // Startup heartbeat so the post-install smoke test can assert the
         // sink opened the file for write (non-empty file means the wiring
-        // is live, even before the first HostCommand fires).
+        // is live, even before the first AppRequest fires).
         if let Some(writer) = sink.writer.as_mut() {
             use std::io::Write;
             let now = std::time::SystemTime::now()

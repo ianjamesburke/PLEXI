@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::host::command::{
-    Direction, HostCommand, OpenPaneRequest, Placement, PaneRuntimeKind,
+    Direction, HostAction, OpenPaneRequest, Placement, PaneRuntimeKind,
 };
 use crate::host::effect::{HostEffect, HostEvent};
 use crate::host::services::HostServices;
@@ -46,15 +46,15 @@ impl HostModel {
 
     pub fn handle_command(
         &mut self,
-        command: HostCommand,
+        command: HostAction,
         services: &mut HostServices,
     ) -> Vec<HostEffect> {
         let effects = match command {
-            HostCommand::OpenPane(req) => self.open_pane(req),
-            HostCommand::CloseFocusedPane => self.close_focused_pane(),
-            HostCommand::Navigate(dir) => self.navigate(dir),
-            HostCommand::SplitHorizontal => self.split(Placement::Below),
-            HostCommand::SplitVertical => self.split(Placement::Right),
+            HostAction::OpenPane(req) => self.open_pane(req),
+            HostAction::CloseFocusedPane => self.close_focused_pane(),
+            HostAction::Navigate(dir) => self.navigate(dir),
+            HostAction::SplitHorizontal => self.split(Placement::Below),
+            HostAction::SplitVertical => self.split(Placement::Right),
         };
         for e in &effects {
             services.event_sink.emit(e);
@@ -216,13 +216,13 @@ mod tests {
         }
     }
 
-    /// Cmd+N is wired to `HostCommand::SplitVertical` (semantically: side-by-side,
+    /// Cmd+N is wired to `HostAction::SplitVertical` (semantically: side-by-side,
     /// new pane on the right). Confirm the host emits `Placement::Right`.
     #[test]
     fn cmd_n_splits_right_of_focused_pane() {
         let mut model = HostModel::new();
         let mut svc = services();
-        let effects = model.handle_command(HostCommand::SplitVertical, &mut svc);
+        let effects = model.handle_command(HostAction::SplitVertical, &mut svc);
         let placement = effects
             .iter()
             .find_map(|e| match e {
@@ -233,13 +233,13 @@ mod tests {
         assert_eq!(placement, Placement::Right);
     }
 
-    /// Cmd+Shift+N is wired to `HostCommand::SplitHorizontal` (stacked, new
+    /// Cmd+Shift+N is wired to `HostAction::SplitHorizontal` (stacked, new
     /// pane below). Confirm the host emits `Placement::Below`.
     #[test]
     fn cmd_shift_n_splits_below_focused_pane() {
         let mut model = HostModel::new();
         let mut svc = services();
-        let effects = model.handle_command(HostCommand::SplitHorizontal, &mut svc);
+        let effects = model.handle_command(HostAction::SplitHorizontal, &mut svc);
         let placement = effects
             .iter()
             .find_map(|e| match e {

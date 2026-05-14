@@ -1809,7 +1809,7 @@ pub(crate) fn parse_notify_choice(raw: &str) -> Result<(String, String, Option<S
 /// Entry point for `plexi notify --title <text> --body <text> [--level info|warn|error]
 ///   [--choice key:Label]... [--timeout N]`.
 ///
-/// Connects to PLEXI_SOCKET and sends a `notify` HostCommand JSON line.
+/// Connects to PLEXI_SOCKET and sends a `notify` AppRequest JSON line.
 /// With no choices: fire-and-forget (exits 0 on send).
 /// With choices: sends the command with a `response_file` path and polls that
 /// file until the user selects an option, then prints the chosen key to stdout.

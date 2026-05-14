@@ -10,7 +10,7 @@
 
 use crate::app::PlexiApp;
 use crate::app_permissions::AppPermissions;
-use crate::app_protocol::{AiMessage, DrawCommand, HostCommand, ModelTier};
+use crate::app_protocol::{AiMessage, DrawCommand, AppRequest, ModelTier};
 use crate::pane::{AppPane, AppRuntime, Pane};
 use crate::process_app::ProcessApp;
 use crate::tiling::PaneId;
@@ -75,8 +75,8 @@ pub struct HostHarness {
     inject_channels: HashMap<PaneId, Sender<DrawCommand>>,
     /// Next pane id to assign.
     next_pane_id: u64,
-    /// IPC sender for injecting HostCommands into the pane_ipc channel.
-    pub ipc_tx: std::sync::mpsc::Sender<HostCommand>,
+    /// IPC sender for injecting AppRequests into the pane_ipc channel.
+    pub ipc_tx: std::sync::mpsc::Sender<AppRequest>,
     /// Platform output from the most recently completed frame.
     /// Contains clipboard writes, open URLs, etc.
     pub last_platform_output: egui::PlatformOutput,
@@ -226,8 +226,8 @@ impl HostHarness {
         self
     }
 
-    /// Inject a `HostCommand` directly into the pane_ipc channel.
-    pub fn inject_ipc(&self, cmd: HostCommand) -> &Self {
+    /// Inject a `AppRequest` directly into the pane_ipc channel.
+    pub fn inject_ipc(&self, cmd: AppRequest) -> &Self {
         let _ = self.ipc_tx.send(cmd);
         self
     }
@@ -250,9 +250,9 @@ impl HostHarness {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Build a minimal `DrawCommand::Host(HostCommand::AiQuery)` for use in routing tests.
+/// Build a minimal `DrawCommand::Host(AppRequest::AiQuery)` for use in routing tests.
 pub fn ai_query(request_id: &str) -> DrawCommand {
-    DrawCommand::Host(HostCommand::AiQuery {
+    DrawCommand::Host(AppRequest::AiQuery {
         request_id: request_id.to_string(),
         model_tier: ModelTier::Low,
         system: String::new(),
@@ -347,7 +347,7 @@ mod tests {
 
         h.inject(
             pane,
-            DrawCommand::Host(HostCommand::PushNav {
+            DrawCommand::Host(AppRequest::PushNav {
                 view_id: "detail".to_string(),
                 title: "Detail".to_string(),
             }),
@@ -371,14 +371,14 @@ mod tests {
 
         h.inject(
             pane,
-            DrawCommand::Host(HostCommand::PushNav {
+            DrawCommand::Host(AppRequest::PushNav {
                 view_id: "detail".to_string(),
                 title: "Detail".to_string(),
             }),
         );
         h.run_frames(1);
 
-        h.inject(pane, DrawCommand::Host(HostCommand::PopNav {}));
+        h.inject(pane, DrawCommand::Host(AppRequest::PopNav {}));
         h.run_frames(1);
 
         let win = &h.app.windows[0];
@@ -402,7 +402,7 @@ mod tests {
 
         h.inject(
             pane,
-            DrawCommand::Host(HostCommand::StatusSummary {
+            DrawCommand::Host(AppRequest::StatusSummary {
                 text: "Working…".to_string(),
             }),
         );
@@ -427,7 +427,7 @@ mod tests {
         // Injects SetPaneTitle for a pane_id that doesn't exist.
         // Must run without panicking and log a warn — verifies the drain path is wired.
         let mut h = HostHarness::new();
-        h.ipc_tx.send(HostCommand::SetPaneTitle { pane_id: 9999, name: "ghost".into() }).unwrap();
+        h.ipc_tx.send(AppRequest::SetPaneTitle { pane_id: 9999, name: "ghost".into() }).unwrap();
         h.run_frames(1); // must not panic; logs warn "not found"
     }
 
@@ -467,14 +467,14 @@ mod tests {
     /// See `docs/security/shell-execution-inventory.md` for the full audit.
     #[test]
     fn stream_process_denied_without_terminal_bindings() {
-        use crate::app_protocol::{DrawCommand, HostCommand, PlexiEvent, StreamChannel};
+        use crate::app_protocol::{DrawCommand, AppRequest, PlexiEvent, StreamChannel};
 
         let mut h = HostHarness::new();
         let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
 
         h.inject(
             pane,
-            DrawCommand::Host(HostCommand::StreamProcess {
+            DrawCommand::Host(AppRequest::StreamProcess {
                 correlation_id: "sec-test-1".to_string(),
                 terminal_pane_id: 0,
                 command: "echo SHOULD_NOT_RUN".to_string(),

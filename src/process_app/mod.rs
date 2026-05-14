@@ -270,7 +270,7 @@ pub struct ProcessApp {
     pub(crate) active_stream_threads: Arc<AtomicUsize>,
     /// MCP server handle — `Some` when the app has `[app.mcp]` in its manifest.
     mcp_server: Option<mcp_server::McpServerHandle>,
-    /// Pending MCP tool call responses awaiting `HostCommand::McpToolResult`.
+    /// Pending MCP tool call responses awaiting `AppRequest::McpToolResult`.
     /// Key = call_id, value = channel to the blocked HTTP handler thread.
     pub(crate) mcp_pending: std::collections::HashMap<String, std::sync::mpsc::SyncSender<mcp_server::McpToolResponse>>,
 }

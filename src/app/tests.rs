@@ -145,7 +145,7 @@ fn send_to_pane_searches_all_windows() {
     assert_eq!(h.app.active_window, 0);
 
     let resp_file = std::env::temp_dir().join("plexi_test_send_878.json");
-    h.inject_ipc(crate::app_protocol::HostCommand::SendToPane {
+    h.inject_ipc(crate::app_protocol::AppRequest::SendToPane {
         pane_id: cross_window_pane_id,
         text: "hello".to_string(),
         response_file: Some(resp_file.to_string_lossy().to_string()),
@@ -197,7 +197,7 @@ fn pane_list_excludes_orphaned_panes_and_navigate_succeeds() {
     assert!(h.app.windows[0].tree.tiles.find_pane(&orphan_id).is_none(), "orphan has no tile");
 
     let resp_file = std::env::temp_dir().join("plexi_test_pane_list_996.json");
-    h.inject_ipc(crate::app_protocol::HostCommand::ListPanes {
+    h.inject_ipc(crate::app_protocol::AppRequest::ListPanes {
         response_file: resp_file.to_string_lossy().to_string(),
     });
     h.app.drain_pane_cmd_channel();

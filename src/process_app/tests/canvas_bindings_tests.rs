@@ -1,6 +1,6 @@
 use super::super::*;
 use crate::app_protocol::{
-    ArtifactOpenMode, HostCommand, PathTokenMode, PlexiEvent,
+    ArtifactOpenMode, AppRequest, PathTokenMode, PlexiEvent,
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -37,7 +37,7 @@ fn denied_app_request_linked_terminal_emits_sentinel_event() {
         eprintln!("skipping: no /bin/sh available");
         return;
     };
-    app.route_command(HostCommand::RequestLinkedTerminal {
+    app.route_command(AppRequest::RequestLinkedTerminal {
         request_id: "req-0".to_string(),
         cwd: None,
         label: None,
@@ -77,7 +77,7 @@ fn denied_app_run_in_linked_terminal_drops_silently() {
         eprintln!("skipping: no /bin/sh available");
         return;
     };
-    app.route_command(HostCommand::RunInLinkedTerminal {
+    app.route_command(AppRequest::RunInLinkedTerminal {
         terminal_pane_id: 42,
         command: "ls".to_string(),
         echo: true,
@@ -99,7 +99,7 @@ fn denied_app_request_command_preview_emits_empty_cwd_sentinel() {
         eprintln!("skipping: no /bin/sh available");
         return;
     };
-    app.route_command(HostCommand::RequestCommandPreview {
+    app.route_command(AppRequest::RequestCommandPreview {
         request_id: "req-9".to_string(),
         terminal_pane_id: 42,
         command: "rm -rf .git".to_string(),
@@ -136,7 +136,7 @@ fn granted_app_dispatches_request_linked_terminal() {
         eprintln!("skipping: no /bin/sh available");
         return;
     };
-    app.route_command(HostCommand::RequestLinkedTerminal {
+    app.route_command(AppRequest::RequestLinkedTerminal {
         request_id: "req-ok".to_string(),
         cwd: Some("/tmp/foo".to_string()),
         label: Some("bindings demo".to_string()),
@@ -180,7 +180,7 @@ fn granted_app_dispatches_run_in_linked_terminal() {
         eprintln!("skipping: no /bin/sh available");
         return;
     };
-    app.route_command(HostCommand::RunInLinkedTerminal {
+    app.route_command(AppRequest::RunInLinkedTerminal {
         terminal_pane_id: 42,
         command: "ls -la".to_string(),
         echo: true,
@@ -215,7 +215,7 @@ fn granted_app_dispatches_insert_path_token() {
         eprintln!("skipping: no /bin/sh available");
         return;
     };
-    app.route_command(HostCommand::InsertPathToken {
+    app.route_command(AppRequest::InsertPathToken {
         terminal_pane_id: 42,
         path: "/tmp/x".to_string(),
         mode: PathTokenMode::Replace,
@@ -242,7 +242,7 @@ fn granted_app_dispatches_open_artifact() {
         eprintln!("skipping: no /bin/sh available");
         return;
     };
-    app.route_command(HostCommand::OpenArtifact {
+    app.route_command(AppRequest::OpenArtifact {
         path: "/tmp/x".to_string(),
         mode: ArtifactOpenMode::RevealInFinder,
     });
