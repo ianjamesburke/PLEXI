@@ -119,6 +119,8 @@ impl PlexiApp {
     /// Shared creation helper: create a single-pane context at `(grid_x, grid_y)`
     /// and make it the active context.
     pub(crate) fn create_page_at(&mut self, grid_x: u32, grid_y: u32, initial_cmd: Option<&str>, close_on_exit: bool) {
+        let old_window_id = self.windows[self.active_window].window_id;
+        let old_focus = self.windows[self.active_window].focused_pane;
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let cwd = self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
             .unwrap_or(home);
@@ -132,6 +134,7 @@ impl PlexiApp {
         let ctx_id = self.router.active().context_id;
         let win_id = self.next_window_id;
         self.next_window_id += 1;
+        self.push_focus_history(old_window_id, old_focus);
         self.windows.push(Window {
             name,
             path: cwd,

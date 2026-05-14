@@ -63,11 +63,14 @@ impl PlexiApp {
         share: crate::host::command::ShareRatio,
         new_pane_first: bool,
     ) -> Option<egui_tiles::TileId> {
+        let old_window_id = self.windows[self.active_window].window_id;
+        let old_focus = self.windows[self.active_window].focused_pane;
         let focused = self.windows[self.active_window].focused_pane?;
         let split_target = match self.windows[self.active_window].find_ancestor_tabs(focused) {
             Some((tabs_id, _)) => tabs_id,
             None => focused,
         };
+        self.push_focus_history(old_window_id, old_focus);
 
         let ctx = &mut self.windows[self.active_window];
         let parent = ctx.tree.tiles.parent_of(split_target);
@@ -204,6 +207,8 @@ impl PlexiApp {
     }
 
     pub(crate) fn split_focused(&mut self, vertical: bool, initial_cmd: Option<&str>, close_on_exit: bool, cwd_override: Option<std::path::PathBuf>) {
+        let old_window_id = self.windows[self.active_window].window_id;
+        let old_focus = self.windows[self.active_window].focused_pane;
         let Some(focused) = self.windows[self.active_window].focused_pane else {
             return;
         };
@@ -253,6 +258,7 @@ impl PlexiApp {
             Some((tabs_id, _)) => tabs_id,
             None => focused,
         };
+        self.push_focus_history(old_window_id, old_focus);
 
         let ctx = &mut self.windows[self.active_window];
         let parent = ctx.tree.tiles.parent_of(split_target);
@@ -345,6 +351,8 @@ impl PlexiApp {
             return;
         }
 
+        let old_window_id = self.windows[self.active_window].window_id;
+        let old_focus = self.windows[self.active_window].focused_pane;
         let Some(focused) = self.windows[self.active_window].focused_pane else {
             return;
         };
@@ -374,6 +382,7 @@ impl PlexiApp {
         self.windows[self.active_window]
             .panes
             .insert(new_id, Pane::Terminal(Box::new(pane)));
+        self.push_focus_history(old_window_id, old_focus);
 
         let ctx = &mut self.windows[self.active_window];
         let new_tile = ctx.tree.tiles.insert_pane(new_id);
