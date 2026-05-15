@@ -27,6 +27,26 @@ if [[ $found -eq 0 ]]; then
     echo "Nothing to clean"
 fi
 
+# Clean orphaned bin symlinks (profile dir may already be gone)
+for bin in /usr/local/bin/plexi-pr-*; do
+    [[ -L "$bin" ]] || continue
+    if [[ ! -e "$bin" ]]; then
+        rm -f "$bin"
+        echo "Removed dead symlink: $bin"
+    fi
+done
+
+# Clean orphaned app bundles
+for app in /Applications/Plexi\ PR*.app; do
+    [[ -d "$app" ]] || continue
+    num=$(echo "$app" | sed 's|.*/Plexi PR\([0-9]*\)\.app|\1|')
+    state=$(gh pr view "$num" --json state -q '.state' 2>/dev/null || echo "NOTFOUND")
+    if [[ "$state" != "OPEN" ]]; then
+        rm -rf "$app"
+        echo "Removed orphaned app: $app"
+    fi
+done
+
 # Check for orphaned feature/fix worktrees with no open PR
 echo ""
 echo "Checking for orphaned worktrees..."

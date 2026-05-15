@@ -35,10 +35,13 @@ TAG=$(curl -fsSL "$API" | grep -m 1 '"tag_name"' | sed 's/.*"tag_name": *"\([^"]
 # ── welcome banner ───────────────────────────────────────────────────────────
 
 echo ""
-echo "  ╔═════════════════════════════════════════════╗"
-echo "  ║              P L E X I  $TAG              ║"
+BOX_W=43
+echo "  ╔$(printf '═%.0s' $(seq 1 $BOX_W))╗"
+TITLE="P L E X I  $TAG"
+PAD=$(( (BOX_W - ${#TITLE}) / 2 ))
+printf "  ║%*s%s%*s║\n" $PAD "" "$TITLE" $(( BOX_W - PAD - ${#TITLE} )) ""
 echo "  ║        spatial terminal multiplexer         ║"
-echo "  ╚═════════════════════════════════════════════╝"
+echo "  ╚$(printf '═%.0s' $(seq 1 $BOX_W))╝"
 echo ""
 echo "  This installer will:"
 echo "    • Download Plexi $TAG to /Applications"
@@ -110,18 +113,31 @@ ok "CLI: $CLI_DEST"
 
 # ── shell integration ─────────────────────────────────────────────────────────
 
-info "Setting up shell integration..."
-SNIPPET='eval "$(plexi shell-init)"'
-
-for RC in "$HOME/.zshrc" "$HOME/.bashrc"; do
-    [[ -f "$RC" ]] || continue
-    if ! grep -qF 'plexi shell-init' "$RC"; then
-        printf '\n# Plexi shell integration\n%s\n' "$SNIPPET" >> "$RC"
-        ok "Added shell integration to $RC"
-    else
-        ok "Shell integration already present in $RC"
+info "Installing shell completions..."
+if command -v brew &>/dev/null; then
+    BREW_ZSH="$(brew --prefix)/share/zsh/site-functions"
+    if [[ -d "$BREW_ZSH" ]]; then
+        "$CLI_DEST" completions zsh > "$BREW_ZSH/_plexi"
+        ok "Completions (zsh): $BREW_ZSH/_plexi"
     fi
-done
+else
+    mkdir -p "$HOME/.zfunc"
+    "$CLI_DEST" completions zsh > "$HOME/.zfunc/_plexi"
+    ok "Completions (zsh): ~/.zfunc/_plexi"
+    # ensure ~/.zfunc is on fpath
+    if [[ -f "$HOME/.zshrc" ]] && ! grep -qF '.zfunc' "$HOME/.zshrc"; then
+        printf '\nfpath=(~/.zfunc $fpath)\nautoload -Uz compinit && compinit\n' >> "$HOME/.zshrc"
+        ok "Added ~/.zfunc to fpath in ~/.zshrc"
+    fi
+fi
+mkdir -p "$HOME/.bash_completion.d"
+"$CLI_DEST" completions bash > "$HOME/.bash_completion.d/plexi"
+ok "Completions (bash): ~/.bash_completion.d/plexi"
+if [[ -d "$HOME/.config/fish" ]]; then
+    mkdir -p "$HOME/.config/fish/completions"
+    "$CLI_DEST" completions fish > "$HOME/.config/fish/completions/plexi.fish"
+    ok "Completions (fish): ~/.config/fish/completions/plexi.fish"
+fi
 
 # ── register with macOS (dock icon, Spotlight, Open With) ─────────────────────
 
@@ -135,9 +151,11 @@ fi
 # ── done ──────────────────────────────────────────────────────────────────────
 
 echo ""
-echo "  ╔═════════════════════════════════════════════╗"
-echo "  ║           Plexi $TAG installed.           ║"
-echo "  ╚═════════════════════════════════════════════╝"
+echo "  ╔$(printf '═%.0s' $(seq 1 $BOX_W))╗"
+DONE="Plexi $TAG installed."
+PAD=$(( (BOX_W - ${#DONE}) / 2 ))
+printf "  ║%*s%s%*s║\n" $PAD "" "$DONE" $(( BOX_W - PAD - ${#DONE} )) ""
+echo "  ╚$(printf '═%.0s' $(seq 1 $BOX_W))╝"
 echo ""
 echo "  Open it:   open /Applications/Plexi.app"
 echo "  CLI:       plexi --version"
