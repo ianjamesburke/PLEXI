@@ -35,11 +35,6 @@ const R6: CornerRadius = CornerRadius::same(6);
 
 fn draw_contact_footer(ui: &mut egui::Ui, colors: &Colors) {
     ui.vertical_centered(|ui| {
-        ui.hyperlink_to(
-            RichText::new("❤️  Buy Me a Coffee").size(style::TEXT_BODY),
-            "https://buymeacoffee.com/ianjamesbu8",
-        );
-        ui.add_space(style::SPACE_SM);
         ui.label(
             RichText::new(
                 "If you have any ideas, want to help, or just want to say what's up...",
@@ -75,6 +70,11 @@ fn draw_contact_footer(ui: &mut egui::Ui, colors: &Colors) {
                 );
             });
         }
+        ui.add_space(style::SPACE_SM / 2.0);
+        ui.hyperlink_to(
+            RichText::new("❤️  Support the project").size(style::TEXT_CAPTION),
+            "https://buymeacoffee.com/ianjamesbu8",
+        );
     });
 }
 
