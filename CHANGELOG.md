@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.378] — 2026-05-15
+
+### Changes
+- fix(install): dynamic banner alignment, replace broken shell-init with completions, clean dead PR symlinks
 ## [0.0.377] — 2026-05-15
 
 ### Changes
