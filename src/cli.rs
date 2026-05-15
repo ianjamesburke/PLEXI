@@ -1347,11 +1347,16 @@ pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
     } else {
         binary_name.strip_prefix("plexi").unwrap_or("").to_string()
     };
-    let cap = match suffix.as_str() {
-        "-alpha" => " Alpha",
-        "-beta"  => " Beta",
-        _        => "",
+    let cap_owned = if let Some(n) = suffix.strip_prefix("-pr-") {
+        format!(" PR{n}")
+    } else {
+        match suffix.as_str() {
+            "-alpha" => " Alpha".to_string(),
+            "-beta"  => " Beta".to_string(),
+            _        => String::new(),
+        }
     };
+    let cap = cap_owned.as_str();
 
     let profile_dir = dirs::home_dir().unwrap().join(format!(".plexi{suffix}"));
     let app_bundle  = std::path::PathBuf::from(format!("/Applications/Plexi{cap}.app"));
