@@ -35,7 +35,7 @@ TAG=$(curl -fsSL "$API" | grep -m 1 '"tag_name"' | sed 's/.*"tag_name": *"\([^"]
 # ── welcome banner ───────────────────────────────────────────────────────────
 
 echo ""
-SUBTITLE="spatial terminal multiplexer"
+SUBTITLE="the last app you'll ever need"
 BOX_W=$(( ${#SUBTITLE} + 16 ))
 echo "  ╔$(printf '═%.0s' $(seq 1 $BOX_W))╗"
 TITLE="P L E X I  $TAG"
@@ -57,7 +57,7 @@ printf "  \033[2mIf you don't understand what those last two are,\n"
 printf "  proceed with caution — this is an early-stage\n"
 printf "  passion project, not a polished consumer app.\033[0m\n"
 echo ""
-read -r -p "  Press Enter to continue, or Ctrl+C to cancel. "
+read -r -p "  Press Enter to continue, or Ctrl+C to cancel. " </dev/tty
 echo ""
 
 # ── sudo upfront ─────────────────────────────────────────────────────────────
