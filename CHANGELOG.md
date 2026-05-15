@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.382] — 2026-05-15
+
+### Changes
+- docs(cli): rewrite all help text for vibe coder clarity (#1322) (#1334)
+- fix(install): improve installer tone and soften admin access warning
 ## [0.0.381] — 2026-05-15
 
 ### Changes
