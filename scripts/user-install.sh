@@ -35,18 +35,20 @@ TAG=$(curl -fsSL "$API" | grep -m 1 '"tag_name"' | sed 's/.*"tag_name": *"\([^"]
 # ── welcome banner ───────────────────────────────────────────────────────────
 
 echo ""
-BOX_W=43
+SUBTITLE="spatial terminal multiplexer"
+BOX_W=$(( ${#SUBTITLE} + 16 ))
 echo "  ╔$(printf '═%.0s' $(seq 1 $BOX_W))╗"
 TITLE="P L E X I  $TAG"
 PAD=$(( (BOX_W - ${#TITLE}) / 2 ))
 printf "  ║%*s%s%*s║\n" $PAD "" "$TITLE" $(( BOX_W - PAD - ${#TITLE} )) ""
-echo "  ║        spatial terminal multiplexer         ║"
+SUB_PAD=$(( (BOX_W - ${#SUBTITLE}) / 2 ))
+printf "  ║%*s%s%*s║\n" $SUB_PAD "" "$SUBTITLE" $(( BOX_W - SUB_PAD - ${#SUBTITLE} )) ""
 echo "  ╚$(printf '═%.0s' $(seq 1 $BOX_W))╝"
 echo ""
 echo "  This installer will:"
 echo "    • Download Plexi $TAG to /Applications"
 echo "    • Add the CLI to /usr/local/bin/plexi"
-echo "    • Add shell integration to ~/.zshrc"
+echo "    • Install shell completions"
 echo "    • Sign the app for macOS Gatekeeper"
 echo ""
 echo "  Admin access is required to install the CLI."
@@ -54,6 +56,8 @@ echo ""
 printf "  \033[2mIf you don't understand what those last two are,\n"
 printf "  proceed with caution — this is an early-stage\n"
 printf "  passion project, not a polished consumer app.\033[0m\n"
+echo ""
+read -r -p "  Press Enter to continue, or Ctrl+C to cancel. "
 echo ""
 
 # ── sudo upfront ─────────────────────────────────────────────────────────────
