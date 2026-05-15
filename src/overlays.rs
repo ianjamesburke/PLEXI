@@ -72,7 +72,9 @@ fn draw_contact_footer(ui: &mut egui::Ui, colors: &Colors) {
         }
         ui.add_space(style::SPACE_SM / 2.0);
         ui.hyperlink_to(
-            RichText::new("❤️  Support the project").size(style::TEXT_CAPTION),
+            RichText::new("❤️  Support the project")
+                .size(style::TEXT_CAPTION)
+                .color(colors.text_dim),
             "https://buymeacoffee.com/ianjamesbu8",
         );
     });
