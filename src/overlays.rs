@@ -3168,6 +3168,17 @@ impl PlexiApp {
                     }
 
                     ui.add_space(style::SPACE_XL);
+                    ui.label(
+                        RichText::new(
+                            "Caution: early-stage passion project. If you encounter \
+                             any issues, don't hesitate to reach out.",
+                        )
+                        .size(style::TEXT_HINT)
+                        .color(colors.text_dim)
+                        .italics(),
+                    );
+
+                    ui.add_space(style::SPACE_MD);
                     ui.separator();
                     ui.add_space(style::SPACE_MD);
                     draw_contact_footer(ui, &colors);
