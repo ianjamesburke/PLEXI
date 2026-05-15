@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.380"
+verified_version: "0.0.381"
 order: 7
 ---
 
@@ -94,7 +94,7 @@ Manage your Plexi apps — scaffold, install, list, and inspect
 | Subcommand | Description |
 |---|---|
 | `init` | Create a new app from a template |
-| `uninstall` | Remove an app by id (no confirmation prompt — use `plexi uninstall` if you want one) |
+| `uninstall` | Remove an installed app by id |
 | `list` | Show all installed apps |
 | `render` | Render an app to a PNG image without opening the UI (useful for screenshots and testing) |
 | `info` | Show details about an installed app: id, name, version, and available tools |
@@ -115,11 +115,14 @@ Scaffolds the folder structure and files you need to build a Plexi app. Use --la
 
 ### `plexi app uninstall`
 
-Remove an app by id (no confirmation prompt — use `plexi uninstall` if you want one)
+Remove an installed app by id.
+
+Example: plexi app uninstall github-tree
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<id>` | string | yes |  |
+| `<id>` | string | yes | App id to remove (use `plexi app list` to see installed ids) |
+| `--yes` / `-y` | flag | no | Skip the confirmation prompt |
 
 ### `plexi app list`
 
@@ -189,12 +192,16 @@ To install a local app directory you are developing, use `plexi app install <pat
 
 ## `plexi uninstall`
 
-Remove an installed app. Asks for confirmation unless you pass -y
+Remove Plexi from your Mac — uninstalls the app, CLI, and optionally your profile data.
+
+Removes the current channel's app bundle (/Applications/Plexi.app), CLI binary (/usr/local/bin/plexi), and shell completions. Your profile directory (~/.plexi/) holds your settings, secrets, and app configurations — you will be asked whether to keep it.
+
+Example: plexi uninstall
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<id>` | string | yes | App id to remove (use `plexi list` to see installed app ids) |
-| `--yes` / `-y` | flag | no | Skip the confirmation prompt |
+| `--keep-data` | flag | no | Keep your profile directory (~/.plexi/) — your settings, secrets, and app data stay on disk |
+| `--yes` / `-y` | flag | no | Skip confirmation prompts and proceed immediately |
 
 ## `plexi update`
 

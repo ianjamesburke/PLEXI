@@ -60,11 +60,18 @@ pub enum Commands {
         #[arg(long)]
         pack: Option<String>,
     },
-    /// Remove an installed app. Asks for confirmation unless you pass -y.
+    /// Remove Plexi from your Mac — uninstalls the app, CLI, and optionally your profile data.
+    ///
+    /// Removes the current channel's app bundle (/Applications/Plexi.app), CLI binary (/usr/local/bin/plexi),
+    /// and shell completions. Your profile directory (~/.plexi/) holds your settings, secrets,
+    /// and app configurations — you will be asked whether to keep it.
+    ///
+    /// Example: plexi uninstall
     Uninstall {
-        /// App id to remove (use `plexi list` to see installed app ids)
-        id: String,
-        /// Skip the confirmation prompt
+        /// Keep your profile directory (~/.plexi/) — your settings, secrets, and app data stay on disk
+        #[arg(long = "keep-data")]
+        keep_data: bool,
+        /// Skip confirmation prompts and proceed immediately
         #[arg(long = "yes", short = 'y')]
         yes: bool,
     },
@@ -257,9 +264,15 @@ pub enum AppCmd {
         #[arg(long, default_value = "python")]
         lang: String,
     },
-    /// Remove an app by id (no confirmation prompt — use `plexi uninstall` if you want one).
+    /// Remove an installed app by id.
+    ///
+    /// Example: plexi app uninstall github-tree
     Uninstall {
+        /// App id to remove (use `plexi app list` to see installed ids)
         id: String,
+        /// Skip the confirmation prompt
+        #[arg(long = "yes", short = 'y')]
+        yes: bool,
     },
     /// Show all installed apps.
     List,
