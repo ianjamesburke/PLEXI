@@ -359,13 +359,13 @@ pub enum PaneCmd {
     },
     /// Type text into another pane as if it came from the keyboard. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
     ///
-    /// Use \\n in the text to press Enter (which submits a command).
+    /// Use `\n` in the text to press Enter (which submits a command).
     ///
-    /// Example: plexi pane send 42 "git status\\n"
+    /// Example: plexi pane send 42 "git status\n"
     Send {
         /// Pane id to send text to (from `plexi pane list`)
         pane_id: u64,
-        /// Text to type into the pane (use \\n for Enter)
+        /// Text to type into the pane (use `\n` for Enter)
         text: String,
     },
     /// Print the id of the pane you are currently in.
