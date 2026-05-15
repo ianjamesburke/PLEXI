@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.379] — 2026-05-15
+
+### Changes
+- fix(install): align banner boxes dynamically, add Enter confirmation, fix bullet text
 ## [0.0.378] — 2026-05-15
 
 ### Changes
