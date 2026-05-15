@@ -26,12 +26,49 @@ require() {
 require curl
 require unzip
 
-# ── fetch latest release ──────────────────────────────────────────────────────
+# ── fetch version (needed for banner) ────────────────────────────────────────
 
-info "Fetching latest release..."
 API="https://api.github.com/repos/$REPO/releases/latest"
 TAG=$(curl -fsSL "$API" | grep -m 1 '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')
 [[ -n "$TAG" ]] || die "Could not determine latest release tag."
+
+# ── welcome banner ───────────────────────────────────────────────────────────
+
+echo ""
+echo "  ╔═════════════════════════════════════════════╗"
+echo "  ║              P L E X I  $TAG              ║"
+echo "  ║        spatial terminal multiplexer         ║"
+echo "  ╚═════════════════════════════════════════════╝"
+echo ""
+echo "  This installer will:"
+echo "    • Download Plexi $TAG to /Applications"
+echo "    • Add the CLI to /usr/local/bin/plexi"
+echo "    • Add shell integration to ~/.zshrc"
+echo "    • Sign the app for macOS Gatekeeper"
+echo ""
+echo "  Admin access is required to install the CLI."
+echo ""
+printf "  \033[2mIf you don't understand what those last two are,\n"
+printf "  proceed with caution — this is an early-stage\n"
+printf "  passion project, not a polished consumer app.\033[0m\n"
+echo ""
+
+# ── sudo upfront ─────────────────────────────────────────────────────────────
+
+NEED_SUDO=false
+if [[ ! -w "$CLI_DIR" ]]; then
+    NEED_SUDO=true
+fi
+if [[ ! -d "$CLI_DIR" ]]; then
+    NEED_SUDO=true
+fi
+
+if $NEED_SUDO; then
+    info "Requesting admin access..."
+    sudo -v || die "Admin access is required to install the CLI to $CLI_DIR."
+fi
+
+# ── download ─────────────────────────────────────────────────────────────────
 
 ZIP_NAME="Plexi-${TAG}.zip"
 DOWNLOAD_URL="https://github.com/$REPO/releases/download/$TAG/$ZIP_NAME"
@@ -46,12 +83,14 @@ curl -fsSL --progress-bar "$DOWNLOAD_URL" -o "$TMP/$ZIP_NAME"
 info "Installing $APP_NAME to /Applications..."
 unzip -q "$TMP/$ZIP_NAME" -d "$TMP/extracted"
 
-# cargo-bundle produces a lowercase bundle name on disk; find it regardless.
 APP_SRC=$(find "$TMP/extracted" -maxdepth 1 -name "*.app" | head -1)
 [[ -n "$APP_SRC" ]] || die "No .app found inside $ZIP_NAME."
 
 rm -rf "$APP_DEST"
 cp -R "$APP_SRC" "$APP_DEST"
+
+# clear Gatekeeper quarantine flag so the app opens without "unidentified developer" block
+xattr -cr "$APP_DEST" 2>/dev/null || true
 ok "Installed $APP_DEST"
 
 # ── CLI symlink ────────────────────────────────────────────────────────────────
@@ -60,10 +99,13 @@ info "Setting up CLI..."
 BINARY="$APP_DEST/Contents/MacOS/plexi"
 [[ -f "$BINARY" ]] || die "Binary not found at $BINARY."
 
-if [[ ! -d "$CLI_DIR" ]]; then
-    sudo mkdir -p "$CLI_DIR"
+if $NEED_SUDO; then
+    [[ -d "$CLI_DIR" ]] || sudo mkdir -p "$CLI_DIR"
+    sudo ln -sf "$BINARY" "$CLI_DEST"
+else
+    [[ -d "$CLI_DIR" ]] || mkdir -p "$CLI_DIR"
+    ln -sf "$BINARY" "$CLI_DEST"
 fi
-sudo ln -sf "$BINARY" "$CLI_DEST"
 ok "CLI: $CLI_DEST"
 
 # ── shell integration ─────────────────────────────────────────────────────────
@@ -93,9 +135,12 @@ fi
 # ── done ──────────────────────────────────────────────────────────────────────
 
 echo ""
-echo "  Plexi $TAG installed."
+echo "  ╔═════════════════════════════════════════════╗"
+echo "  ║           Plexi $TAG installed.           ║"
+echo "  ╚═════════════════════════════════════════════╝"
 echo ""
-echo "  Open it:  open /Applications/Plexi.app"
-echo "  CLI:      plexi --version  (after restarting your terminal)"
+echo "  Open it:   open /Applications/Plexi.app"
+echo "  CLI:       plexi --version"
 echo ""
-echo "  Or reload now:  source ~/.zshrc"
+echo "  Restart your terminal or run:  source ~/.zshrc"
+echo ""
