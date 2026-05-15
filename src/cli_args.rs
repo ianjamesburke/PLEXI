@@ -16,134 +16,156 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Run a named command from .plexi/commands.toml
+    /// Run a named command from your project's .plexi/commands.toml file.
+    ///
+    /// Define shell commands in .plexi/commands.toml and run them by name here.
+    /// Any secrets listed in the command definition are injected as environment variables automatically.
+    ///
+    /// Example: plexi run dev
     Run {
         command: String,
     },
-    /// Workspace management
+    /// Set up a .plexi/ workspace in your project folder.
+    ///
+    /// Run this once inside your project directory to enable workspace-scoped secrets and commands.
     Workspace {
         #[command(subcommand)]
         cmd: WorkspaceCmd,
     },
-    /// Secret management
+    /// Store and retrieve secrets (API keys, passwords, tokens) for your project.
+    ///
+    /// Secrets are saved to your system keychain and injected as environment variables when you run commands.
+    /// Use `plexi workspace init` first to scope secrets to a project.
     Secret {
         #[command(subcommand)]
         cmd: SecretCmd,
     },
-    /// App management
+    /// Manage your Plexi apps — scaffold, install, list, and inspect.
     App {
         #[command(subcommand)]
         cmd: AppCmd,
     },
-    /// Install an app
+    /// Install an app from a remote source or a pack file.
+    ///
+    /// Pass a GitHub source like `github:owner/repo`, or use `--pack` to install from a local pack file or the built-in core pack.
+    ///
+    /// Example: plexi install github:owner/repo
+    /// Example: plexi install --pack core
+    ///
+    /// To install a local app directory you are developing, use `plexi app install <path>` instead.
     Install {
-        /// Source spec (e.g. github:user/repo or bare app id)
+        /// Source to install from (e.g. github:owner/repo or a bare app id)
         spec: Option<String>,
         /// Install from a pack file or 'core'
         #[arg(long)]
         pack: Option<String>,
     },
-    /// Uninstall an app
+    /// Remove an installed app. Asks for confirmation unless you pass -y.
     Uninstall {
-        /// App id to remove
+        /// App id to remove (use `plexi list` to see installed app ids)
         id: String,
-        /// Skip confirmation prompt
+        /// Skip the confirmation prompt
         #[arg(long = "yes", short = 'y')]
         yes: bool,
     },
-    /// Update apps or self
+    /// Update installed apps or Plexi itself.
+    ///
+    /// Run with the `apps` subcommand to update one or all installed apps.
+    /// Run with no subcommand to update the Plexi binary itself.
     Update {
         #[command(subcommand)]
         subcommand: Option<UpdateCmd>,
     },
-    /// List installed apps
+    /// Show all installed apps with their versions.
     List,
-    /// Validate a Plexi app directory
+    /// Check a Plexi app directory for errors before publishing or installing.
     Validate {
-        /// Path to validate (default: current directory)
+        /// Path to check (default: current directory)
         #[arg(default_value = ".")]
         path: String,
     },
-    /// Pack management
+    /// Package your apps for sharing or bulk installation.
     Pack {
         #[command(subcommand)]
         cmd: PackCmd,
     },
-    /// Send a notification [requires PLEXI_SOCKET — run inside a Plexi pane]
+    /// Send a notification to the Plexi UI. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
     Notify {
         /// Notification title (required)
         #[arg(long)]
         title: String,
-        /// Notification body
+        /// Notification body text
         #[arg(long, default_value = "")]
         body: String,
-        /// Level: info, warn, or error
+        /// Severity level: info, warn, or error
         #[arg(long, default_value = "info")]
         level: String,
-        /// Choice option. Format: `key:Label` (returns key when selected) or
-        /// `Label:pane_focus:<pane_id>` (navigates to pane and returns label).
+        /// Add a clickable button to the notification. Format: `key:Label` (returns key when clicked) or
+        /// `Label:pane_focus:<pane_id>` (switches focus to that pane when clicked).
         /// Repeatable.
         #[arg(long = "choice")]
         choices: Vec<String>,
-        /// Host-side action for a choice key. Format: `key:action_type:action_arg`.
-        /// Repeatable. The host performs this action when the user clicks the matching
-        /// choice, even if the spawner has already exited.
+        /// Action to perform on the host when a button is clicked. Format: `key:action_type:action_arg`.
+        /// Repeatable. The host runs this even after the process that sent the notification has exited.
         #[arg(long = "host-action")]
         host_actions: Vec<String>,
-        /// Timeout in seconds (0 = no timeout)
+        /// How many seconds before the notification disappears (0 = stays until dismissed)
         #[arg(long, default_value = "0")]
         timeout: u64,
-        /// Notification visibility scope: window, context, or global. Default: global.
+        /// Which panes see this notification: window, context, or global (default: global)
         #[arg(long, value_name = "SCOPE")]
         scope: Option<String>,
     },
-    /// Pane management [requires PLEXI_SOCKET — run inside a Plexi pane]
+    /// Control panes — list, focus, send input, capture output, and more. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
     Pane {
         #[command(subcommand)]
         cmd: PaneCmd,
     },
-    /// Open a terminal pane
+    /// Open a plain terminal pane.
     Terminal {
-        /// Optional command to run in the terminal
+        /// Optional shell command to run inside the new terminal
         cmd: Option<String>,
-        /// Close the pane when the process exits
+        /// Close the pane automatically when the command finishes
         #[arg(long, short = 'e')]
         ephemeral: bool,
-        /// Layout hint (split_v, split_h, split_above, tab, new_window)
+        /// Where to place the new pane: split_v, split_h, split_above, tab, or new_window
         #[arg(long)]
         layout: Option<String>,
-        /// Split relative to this pane ID instead of the focused pane
+        /// Open the new pane relative to this pane ID instead of the focused pane
         #[arg(long)]
         from_pane_id: Option<u64>,
-        /// Working directory for the new terminal pane
+        /// Directory to open the terminal in
         #[arg(long)]
         cwd: Option<String>,
-        /// Keep focus on the originating pane; do not move focus to the new pane
+        /// Keep focus on the current pane instead of jumping to the new one
         #[arg(long)]
         no_focus: bool,
     },
-    /// Open an app pane
+    /// Open an app or tool in a new pane.
+    ///
+    /// Pass an app id (e.g. `plexi open snake`) to open an installed app.
+    /// Use `--mcp` to wrap an MCP server, or `--cli` to open any CLI tool with a Plexi UI.
     Open {
-        /// App or pane type id (mutually exclusive with --mcp and --cli)
+        /// App id to open (mutually exclusive with --mcp and --cli)
         #[arg(conflicts_with_all = ["mcp", "cli"])]
         type_id: Option<String>,
-        /// Wrap the given stdio MCP server command in the bundled mcp-renderer
+        /// Wrap a stdio MCP server in a Plexi pane.
         ///
         /// Example: plexi open --mcp npx @modelcontextprotocol/server-filesystem /tmp
         #[arg(long, num_args = 1.., value_name = "CMD", allow_hyphen_values = true, conflicts_with = "cli")]
         mcp: Vec<String>,
-        /// Wrap the given CLI binary in the bundled descriptor-renderer
+        /// Wrap a CLI tool in a Plexi pane with a visual UI.
         ///
         /// Example: plexi open --cli git
         #[arg(long, value_name = "BINARY", conflicts_with = "mcp")]
         cli: Option<String>,
-        /// Layout hint
+        /// Where to place the new pane: split_v, split_h, split_above, tab, or new_window
         #[arg(long)]
         layout: Option<String>,
-        /// Split relative to this pane ID instead of the focused pane
+        /// Open the new pane relative to this pane ID instead of the focused pane
         #[arg(long)]
         from_pane_id: Option<u64>,
-        /// Extra args passed to the app (only valid with type_id)
+        /// Extra arguments passed through to the app (only valid with an app id)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, conflicts_with_all = ["mcp", "cli"])]
         extra_args: Vec<String>,
     },
@@ -153,22 +175,24 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: DescriptorCmd,
     },
-    /// CLI registry
+    /// Watch installed CLI tools for changes to their available commands and options.
     Registry {
         #[command(subcommand)]
         cmd: RegistryCmd,
     },
-    /// Context management [requires PLEXI_SOCKET — run inside a Plexi pane]
+    /// Manage the active context (the folder and project scope tied to the current pane). Run this from inside a Plexi pane (open one first with `plexi open terminal`).
     Context {
         #[command(subcommand)]
         cmd: ContextCmd,
     },
-    /// Print shell completion script
+    /// Print a shell completion script to stdout.
+    ///
+    /// Example: plexi completions zsh >> ~/.zshrc
     Completions {
-        /// Shell name (zsh, bash, fish)
+        /// Shell name: zsh, bash, or fish
         shell: Option<String>,
     },
-    /// Configuration management
+    /// Check your Plexi config file for errors.
     Config {
         #[command(subcommand)]
         cmd: ConfigCmd,
@@ -177,40 +201,46 @@ pub enum Commands {
 
 #[derive(Subcommand)]
 pub enum WorkspaceCmd {
-    /// Initialise a .plexi/ workspace in the current directory
+    /// Set up a .plexi/ workspace in the current directory.
+    ///
+    /// Run this once inside your project folder. It creates a .plexi/workspace.toml
+    /// so that secrets and commands are scoped to this project.
     Init,
 }
 
 #[derive(Subcommand)]
 pub enum SecretCmd {
-    /// Store a secret
+    /// Save a secret to your keychain.
     ///
-    /// Prompts for value with hidden input; walks up to nearest .plexi/ workspace.
-    /// Use --from-env to read from an env var instead of prompting, or --global to store cross-workspace.
+    /// Plexi will prompt you to type the value (hidden). The secret is stored in your
+    /// system keychain and can be injected into commands automatically.
+    ///
+    /// Use --from-env to read the value from an existing environment variable instead of typing it.
+    /// Use --global to make the secret available across all projects, not just the current one.
     Set {
-        /// Name of the secret (also the env var name when using --from-env)
+        /// Name for this secret — also the environment variable name it will be injected as
         friendly_name: String,
-        /// Read value from the environment variable named FRIENDLY_NAME instead of prompting
+        /// Read the value from the environment variable named FRIENDLY_NAME instead of prompting
         #[arg(long = "from-env")]
         from_env: bool,
-        /// Store globally (cross-workspace) rather than scoped to the nearest .plexi/ workspace
+        /// Store this secret globally so it's available in all projects, not just this one
         #[arg(long)]
         global: bool,
     },
-    /// Read a secret value to stdout
+    /// Print a stored secret's value to stdout.
     ///
-    /// Walks up to nearest .plexi/ workspace, resolves from there first, then falls back to global.
-    /// Use --global to read from the global store only.
+    /// Looks up the secret for the current project first, then falls back to the global store.
+    /// Use --global to read only from the global store.
     Get {
-        /// Name of the secret
+        /// Name of the secret to read
         friendly_name: String,
-        /// Read from global store only (skip workspace lookup)
+        /// Read from the global store only, skipping the project-level lookup
         #[arg(long)]
         global: bool,
     },
-    /// List stored secrets
+    /// Show all secrets stored for this project.
     List,
-    /// Delete a secret
+    /// Delete a stored secret.
     Delete {
         friendly_name: String,
     },
@@ -218,65 +248,75 @@ pub enum SecretCmd {
 
 #[derive(Subcommand)]
 pub enum AppCmd {
-    /// Scaffold a new app
+    /// Create a new app from a template.
+    ///
+    /// Scaffolds the folder structure and files you need to build a Plexi app.
+    /// Use --lang to pick the language (default: python).
     Init {
         name: String,
         #[arg(long, default_value = "python")]
         lang: String,
     },
-    /// Uninstall an app
+    /// Remove an app by id (no confirmation prompt — use `plexi uninstall` if you want one).
     Uninstall {
         id: String,
     },
-    /// List installed apps
+    /// Show all installed apps.
     List,
-    /// Render an app to PNG headlessly
+    /// Render an app to a PNG image without opening the UI (useful for screenshots and testing).
     Render {
         /// App id to render (e.g. "snake")
         id: String,
-        /// Dimensions as WxH (e.g. 500x500)
+        /// Image dimensions as WxH (e.g. 500x500)
         #[arg(long, default_value = "800x600")]
         size: String,
-        /// Pre-seed app state from a JSON file before render
+        /// Pre-seed the app's state from a JSON file before rendering
         #[arg(long)]
         state: Option<String>,
-        /// Output PNG path (default: stdout)
+        /// Where to save the PNG (default: stdout)
         #[arg(long)]
         output: Option<String>,
     },
-    /// Show app info (id, name, version, MCP tools if any)
+    /// Show details about an installed app: id, name, version, and available tools.
     Info {
         id: String,
     },
-    /// Install a local app directory into the channel's app store
+    /// Install a local app directory you are developing into Plexi.
+    ///
+    /// Copies your app folder into Plexi's app store so it shows up and runs like any other app.
+    /// To install apps from GitHub or a pack file, use `plexi install` instead.
     Install {
-        /// Path to the app directory containing manifest.toml
+        /// Path to the app folder containing manifest.toml
         path: String,
     },
-    /// Register a local app directory with the workspace (does not move files)
+    /// Link a local app directory so Plexi can see it without copying files.
+    ///
+    /// Useful during development — edits to your app folder take effect immediately without reinstalling.
     Link {
-        /// Path to the app directory containing manifest.toml
+        /// Path to the app folder containing manifest.toml
         path: String,
     },
-    /// Remove a linked app directory from the workspace registry
+    /// Unlink a previously linked app directory.
     Unlink {
-        /// Path to the app directory (same path used with `link`)
+        /// Path to the app folder (the same path you passed to `link`)
         path: String,
     },
 }
 
 #[derive(Subcommand)]
 pub enum UpdateCmd {
-    /// Update installed apps
+    /// Pull the latest version of your installed apps.
+    ///
+    /// Omit the app id to update all installed apps at once.
     Apps {
-        /// Specific app id to update (omit to update all)
+        /// App id to update (omit to update all installed apps)
         id: Option<String>,
     },
 }
 
 #[derive(Subcommand)]
 pub enum PackCmd {
-    /// Export current apps as a pack file
+    /// Export your currently installed apps as a single pack file for sharing or backup.
     Export {
         path: String,
     },
@@ -284,85 +324,82 @@ pub enum PackCmd {
 
 #[derive(Subcommand)]
 pub enum PaneCmd {
-    /// Set the name of a pane
+    /// Rename a pane.
     ///
-    /// Usage:
-    ///   plexi pane name <title>           — renames the current (focused) pane
-    ///   plexi pane name <pane-id> <title> — renames an arbitrary pane by ID
+    /// With one argument, renames the current pane: plexi pane name "My Project"
+    /// With two arguments, renames any pane by id: plexi pane name 42 "My Project"
     Name {
-        /// Pane ID (from `plexi pane list`) or title when used alone
+        /// Pane id (from `plexi pane list`) or the new name if renaming the current pane
         first: String,
-        /// Title when pane-id is given as the first argument
+        /// New name when a pane id is given as the first argument
         second: Option<String>,
     },
-    /// Deprecated: use `pane name` instead
+    /// Deprecated: use `plexi pane name` instead.
     #[command(hide = true)]
     SetTitle {
-        /// Pane ID (from `plexi pane list`) or title when used alone
+        /// Pane id (from `plexi pane list`) or title when used alone
         first: String,
         /// Title when pane-id is given as the first argument
         second: Option<String>,
     },
-    /// List all open panes as a JSON array
+    /// List all open panes as a JSON array.
     List,
-    /// Move UI focus to a pane by ID
+    /// Move the visible focus to a specific pane.
     ///
-    /// NOTE: This moves the *user's visual focus* to the target pane — it does NOT
-    /// relocate the agent's execution context. An agent calling this from pane A
-    /// remains in pane A after the call; only the user sees focus shift to pane B.
+    /// This moves what the user sees on screen — it does not change which pane an agent is running in.
+    /// An agent calling this from pane A remains in pane A; the user just sees pane B highlighted.
     Focus {
-        /// Pane ID (from `plexi pane list`)
+        /// Pane id to focus (from `plexi pane list`)
         pane_id: u64,
     },
-    /// Close a pane. Omit <pane_id> to close the current pane via PLEXI_PANE_ID.
+    /// Close a pane. Omit the pane id to close the pane you are currently in.
     Close {
-        /// Pane ID (from `plexi pane list`). Defaults to PLEXI_PANE_ID if not given.
+        /// Pane id to close (from `plexi pane list`). Defaults to the current pane if not given.
         pane_id: Option<u64>,
     },
-    /// Send text to a running pane's PTY stdin [requires PLEXI_SOCKET — run inside a Plexi pane]
+    /// Type text into another pane as if it came from the keyboard. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
     ///
-    /// Use `\n` in the text to send Enter (submits the command).
+    /// Use \\n in the text to press Enter (which submits a command).
     ///
-    /// Example: plexi pane send 42 "git status\n"
+    /// Example: plexi pane send 42 "git status\\n"
     Send {
-        /// Pane ID (from `plexi pane list`)
+        /// Pane id to send text to (from `plexi pane list`)
         pane_id: u64,
-        /// Text to inject (use \n for Enter)
+        /// Text to type into the pane (use \\n for Enter)
         text: String,
     },
-    /// Print the current pane ID to stdout [requires PLEXI_PANE_ID]
+    /// Print the id of the pane you are currently in.
     ///
-    /// Reads PLEXI_PANE_ID and prints just the numeric ID — no JSON, no parsing.
-    /// Designed for agent callers who need `MY_PANE=$(plexi pane self)`.
+    /// Useful in scripts: MY_PANE=$(plexi pane self)
     #[command(name = "self")]
     Self_,
-    /// Print JSON info for the current pane [requires PLEXI_PANE_ID]
+    /// Print details about the current pane as JSON.
     Info,
-    /// Read the last N lines from a pane's PTY scrollback and print as a JSON array [requires PLEXI_SOCKET]
+    /// Capture the last N lines of a pane's output as a JSON array. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
     ///
-    /// Defaults to the current pane (PLEXI_PANE_ID) when <pane_id> is omitted.
+    /// Defaults to the current pane when no pane id is given.
     ///
     /// Example: plexi pane capture --lines 50 42
     Capture {
-        /// Pane ID to capture. Defaults to PLEXI_PANE_ID.
+        /// Pane id to capture output from. Defaults to the current pane.
         pane_id: Option<u64>,
-        /// Number of lines to read from the end of the scrollback
+        /// How many lines to read from the end of the output
         #[arg(long, default_value = "50")]
         lines: usize,
     },
-    /// Deliver a synthetic key event to a pane [requires PLEXI_SOCKET — run inside a Plexi pane]
+    /// Send a key press to a pane. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
     ///
-    /// For terminal panes, injects as PTY keystroke.
+    /// For terminal panes, injects the keystroke into the terminal.
     /// For app panes, delivers a structured key event.
     ///
-    /// Key format: single char ("h"), named key ("enter", "escape", "space",
+    /// Key formats: single character ("h"), named key ("enter", "escape", "space",
     /// "up", "down", "left", "right", "backspace"), or chord ("ctrl+c").
     ///
     /// Example: plexi pane key 42 enter
     Key {
-        /// Pane ID (from `plexi pane list`)
+        /// Pane id to send the key to (from `plexi pane list`)
         pane_id: u64,
-        /// Key to inject
+        /// Key to press
         key: String,
     },
 }
@@ -387,33 +424,33 @@ pub enum DescriptorCmd {
 
 #[derive(Subcommand)]
 pub enum RegistryCmd {
-    /// Watch installed CLIs for descriptor drift
+    /// Check installed CLI tools for changes to their help output and update Plexi's knowledge of them.
     Watch {
-        /// Only check this CLI
+        /// Only check this one CLI tool instead of all of them
         cli: Option<String>,
     },
 }
 
 #[derive(Subcommand)]
 pub enum ContextCmd {
-    /// Create a new context, optionally opening a path
+    /// Open a new context, optionally starting in a specific folder.
     New {
         path: Option<String>,
     },
-    /// Open a context at a path
+    /// Switch the current pane to a context at the given path.
     Open {
         path: Option<String>,
     },
-    /// Set the root directory for the active context
+    /// Change the root folder for the active context.
     SetRoot {
         path: Option<String>,
     },
-    /// Print the context ID and name for the current pane as JSON
+    /// Print the id and name of the current pane's context as JSON.
     Current,
 }
 
 #[derive(Subcommand)]
 pub enum ConfigCmd {
-    /// Validate config.toml and report errors
+    /// Validate your config.toml and report any errors.
     Check,
 }
