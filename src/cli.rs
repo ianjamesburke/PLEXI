@@ -707,19 +707,31 @@ fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// `plexi app uninstall <id>` — remove a globally installed app.
-pub fn app_uninstall(id: &str) -> i32 {
-    let app_dir = crate::app_registry::apps_dir().join(id);
+/// `plexi app uninstall <id> [--yes]` — remove a globally installed app with optional confirmation.
+pub fn app_uninstall(id: &str, assume_yes: bool) -> i32 {
+    let target_root = crate::app_registry::apps_dir();
+    let app_dir = target_root.join(id);
     if !app_dir.exists() {
-        eprintln!("error: app '{id}' not found in global apps dir");
+        eprintln!("error: app '{id}' not found");
         return 1;
     }
-    if let Err(e) = std::fs::remove_dir_all(&app_dir) {
-        eprintln!("error: could not remove {}: {e}", app_dir.display());
-        return 1;
+    if !assume_yes {
+        eprint!("Remove app '{id}'? [y/N]: ");
+        let _ = io::stderr().flush();
+        let mut answer = String::new();
+        if io::stdin().read_line(&mut answer).is_err() {
+            eprintln!("error: failed to read confirmation");
+            return 1;
+        }
+        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+            eprintln!("aborted");
+            return 1;
+        }
     }
-    println!("Uninstalled '{id}'.");
-    0
+    match crate::install::uninstall_one(id, &target_root) {
+        Ok(()) => { println!("Uninstalled '{id}'."); 0 }
+        Err(e) => { eprintln!("error: {e}"); 1 }
+    }
 }
 
 /// `plexi app install <path>` — copy a local app directory into the channel's app store.
@@ -1325,39 +1337,141 @@ pub fn install_pack_cli(spec: &str) -> i32 {
     }
 }
 
-/// `plexi uninstall <id> [--yes]` — remove a globally installed app after
-/// a confirmation prompt (skipped with `--yes`).
-pub fn uninstall_cli(id: &str, assume_yes: bool) -> i32 {
-    let target_root = crate::app_registry::apps_dir();
-    let dest = target_root.join(id);
-    if !dest.exists() {
-        eprintln!("error: '{id}' is not installed at {}", dest.display());
-        return 1;
+/// `plexi uninstall [--keep-data] [--yes]` — remove Plexi itself from the Mac.
+pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
+    // Detect channel suffix from binary name (e.g. "plexi-alpha" → "-alpha", "plexi" → "")
+    let exe = std::env::current_exe().unwrap_or_default();
+    let binary_name = exe.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let suffix = if binary_name == "plexi" {
+        String::new()
+    } else {
+        binary_name.strip_prefix("plexi").unwrap_or("").to_string()
+    };
+    let cap_owned = if let Some(n) = suffix.strip_prefix("-pr-") {
+        format!(" PR{n}")
+    } else {
+        match suffix.as_str() {
+            "-alpha" => " Alpha".to_string(),
+            "-beta"  => " Beta".to_string(),
+            _        => String::new(),
+        }
+    };
+    let cap = cap_owned.as_str();
+
+    let profile_dir = dirs::home_dir().unwrap().join(format!(".plexi{suffix}"));
+    let app_bundle  = std::path::PathBuf::from(format!("/Applications/Plexi{cap}.app"));
+    let cli_binary  = std::path::PathBuf::from(format!("/usr/local/bin/plexi{suffix}"));
+
+    // Print what will be removed
+    println!("This will remove:");
+    if app_bundle.exists()  { println!("  \u{2022} {}", app_bundle.display()); }
+    if cli_binary.exists()  { println!("  \u{2022} {}", cli_binary.display()); }
+    if !keep_data && profile_dir.exists() {
+        println!("  \u{2022} {}  (settings, secrets, app configs)", profile_dir.display());
+    } else if profile_dir.exists() {
+        println!("  \u{2022} {} will be kept  (--keep-data)", profile_dir.display());
     }
-    if !assume_yes {
-        eprint!("Remove {} ? [y/N]: ", dest.display());
+
+    // Data prompt (skip if --keep-data or --yes already set)
+    let keep_data = if keep_data || !profile_dir.exists() {
+        keep_data
+    } else if assume_yes {
+        false // default: remove data when -y is passed without --keep-data
+    } else {
+        eprint!("\nKeep your profile data (~/.plexi{suffix}/)? Your settings, secrets, and app configurations are stored here. [y/N]: ");
         let _ = io::stderr().flush();
         let mut answer = String::new();
         if io::stdin().read_line(&mut answer).is_err() {
-            eprintln!("error: failed to read confirmation");
+            eprintln!("error: failed to read");
             return 1;
         }
-        let trimmed = answer.trim().to_lowercase();
-        if trimmed != "y" && trimmed != "yes" {
-            eprintln!("aborted");
+        matches!(answer.trim().to_lowercase().as_str(), "y" | "yes")
+    };
+
+    // Confirmation
+    if !assume_yes {
+        eprint!("\nProceed? [y/N]: ");
+        let _ = io::stderr().flush();
+        let mut answer = String::new();
+        if io::stdin().read_line(&mut answer).is_err() {
+            eprintln!("error: failed to read");
             return 1;
         }
-    }
-    match crate::install::uninstall_one(id, &target_root) {
-        Ok(()) => {
-            println!("uninstalled '{id}'");
-            0
-        }
-        Err(e) => {
-            eprintln!("error: {e}");
-            1
+        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+            eprintln!("Aborted.");
+            return 0;
         }
     }
+
+    let mut removed = false;
+
+    // Archive backlog before potentially deleting profile dir
+    if !keep_data {
+        let backlog = profile_dir.join("backlog");
+        if backlog.exists() {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let archive = dirs::home_dir().unwrap().join(format!(
+                "plexi-backlog-archive/plexi{suffix}-backlog-{ts}"
+            ));
+            if let Some(parent) = archive.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if std::fs::rename(&backlog, &archive).is_ok() {
+                println!("Archived backlog \u{2192} {}", archive.display());
+            }
+        }
+    }
+
+    // Remove app bundle
+    if app_bundle.exists() {
+        match std::fs::remove_dir_all(&app_bundle) {
+            Ok(()) => { println!("Removed {}", app_bundle.display()); removed = true; }
+            Err(e) => eprintln!("warning: could not remove {}: {e}", app_bundle.display()),
+        }
+    }
+
+    // Remove CLI binary
+    if cli_binary.exists() || cli_binary.is_symlink() {
+        match std::fs::remove_file(&cli_binary) {
+            Ok(()) => { println!("Removed {}", cli_binary.display()); removed = true; }
+            Err(e) => eprintln!("warning: could not remove {}: {e}", cli_binary.display()),
+        }
+    }
+
+    // Remove completions (only for stable uninstall)
+    if suffix.is_empty() {
+        let brew_prefix = std::process::Command::new("brew")
+            .arg("--prefix")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string());
+        if let Some(prefix) = brew_prefix {
+            let zsh_comp = std::path::PathBuf::from(prefix).join("share/zsh/site-functions/_plexi");
+            if zsh_comp.exists() {
+                let _ = std::fs::remove_file(&zsh_comp);
+                println!("Removed {}", zsh_comp.display());
+            }
+        }
+    }
+
+    // Remove profile dir
+    if !keep_data && profile_dir.exists() {
+        match std::fs::remove_dir_all(&profile_dir) {
+            Ok(()) => { println!("Removed {}", profile_dir.display()); removed = true; }
+            Err(e) => eprintln!("warning: could not remove {}: {e}", profile_dir.display()),
+        }
+    }
+
+    if removed {
+        println!("\nDone. Plexi{} has been removed.", if cap.is_empty() { "" } else { cap });
+    } else {
+        println!("\nNothing found to remove.");
+    }
+    0
 }
 
 /// `plexi update apps [<id>]` — git-pull one installed app, or all of them.
@@ -3695,6 +3809,11 @@ _plexi() {
             init)
               _arguments '--lang[Language template]:lang:(python)'
               ;;
+            uninstall)
+              _arguments \
+                '--yes[Skip the confirmation prompt]' \
+                '-y[Skip the confirmation prompt]'
+              ;;
             render)
               _arguments \
                 '--size[Dimensions as WxH]:size:' \
@@ -3703,7 +3822,7 @@ _plexi() {
               ;;
             *)
               local subcmds
-              subcmds=('init:Scaffold a new app' 'install:Install a local app directory' 'uninstall:Uninstall an app' 'list:List installed apps' 'render:Render an app to PNG headlessly' 'info:Show app info' 'link:Register a local app directory' 'unlink:Remove a linked app directory')
+              subcmds=('init:Scaffold a new app' 'install:Install a local app directory' 'uninstall:Remove an installed app by id' 'list:List installed apps' 'render:Render an app to PNG headlessly' 'info:Show app info' 'link:Register a local app directory' 'unlink:Remove a linked app directory')
               _describe 'subcommand' subcmds
               ;;
           esac
@@ -3789,7 +3908,10 @@ _plexi() {
           _arguments '--pack[Install from a pack file or core]:pack:'
           ;;
         uninstall)
-          _arguments '--yes[Skip confirmation prompt]'
+          _arguments \
+            '--keep-data[Keep your profile directory]' \
+            '--yes[Skip confirmation prompts and proceed immediately]' \
+            '-y[Skip confirmation prompts and proceed immediately]'
           ;;
         completions)
           local shells
@@ -3843,6 +3965,9 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
         case "${words[2]}" in
           init)
             COMPREPLY=($(compgen -W "--lang" -- "$cur"))
+            ;;
+          uninstall)
+            COMPREPLY=($(compgen -W "--yes -y" -- "$cur"))
             ;;
           render)
             COMPREPLY=($(compgen -W "--size --state --output" -- "$cur"))
@@ -3916,7 +4041,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       COMPREPLY=($(compgen -W "--pack" -- "$cur"))
       ;;
     uninstall)
-      COMPREPLY=($(compgen -W "--yes" -- "$cur"))
+      COMPREPLY=($(compgen -W "--keep-data --yes -y" -- "$cur"))
       ;;
     completions)
       COMPREPLY=($(compgen -W "zsh bash fish" -- "$cur"))
@@ -4040,7 +4165,11 @@ complete -c plexi -n "__fish_seen_subcommand_from notify" -l scope -d "Notificat
 complete -c plexi -n "__fish_seen_subcommand_from install" -l pack -d "Install from a pack file or core"
 
 # uninstall flags
-complete -c plexi -n "__fish_seen_subcommand_from uninstall" -l yes -d "Skip confirmation prompt"
+complete -c plexi -n "__fish_seen_subcommand_from uninstall" -l keep-data -d "Keep your profile directory"
+complete -c plexi -n "__fish_seen_subcommand_from uninstall" -l yes -s y -d "Skip confirmation prompts and proceed immediately"
+
+# app uninstall flags
+complete -c plexi -n "__fish_seen_subcommand_from app; and __fish_seen_subcommand_from uninstall" -l yes -s y -d "Skip the confirmation prompt"
 
 # completions args
 complete -c plexi -f -n "__fish_seen_subcommand_from completions" -a "zsh bash fish"

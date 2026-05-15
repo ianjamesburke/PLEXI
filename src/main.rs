@@ -226,7 +226,7 @@ fn main() -> eframe::Result {
                     Commands::App { cmd } => match cmd {
                         AppCmd::Init { name, lang } => std::process::exit(cli::app_init(&name, &lang)),
                         AppCmd::Install { path } => std::process::exit(cli::app_install(&path)),
-                        AppCmd::Uninstall { id } => std::process::exit(cli::app_uninstall(&id)),
+                        AppCmd::Uninstall { id, yes } => std::process::exit(cli::app_uninstall(&id, yes)),
                         AppCmd::List => std::process::exit(cli::app_list()),
                         AppCmd::Render { id, size, state, output } => {
                             std::process::exit(cli::app_render(&id, &size, state.as_deref(), output.as_deref()))
@@ -247,7 +247,7 @@ fn main() -> eframe::Result {
                             }
                         }
                     }
-                    Commands::Uninstall { id, yes } => std::process::exit(cli::uninstall_cli(&id, yes)),
+                    Commands::Uninstall { keep_data, yes } => std::process::exit(cli::plexi_uninstall_cli(keep_data, yes)),
                     Commands::Update { subcommand } => match subcommand {
                         Some(UpdateCmd::Apps { id }) => std::process::exit(cli::update_cli(id.as_deref())),
                         None => std::process::exit(cli::self_update_cli()),
