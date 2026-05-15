@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.380] — 2026-05-15
+
+### Changes
+- fix(install): use North Star tagline, fix read prompt in curl|sh pipe
 ## [0.0.379] — 2026-05-15
 
 ### Changes
