@@ -532,8 +532,9 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
                         },
                         Err(_) => None,
                     };
-                    log::info!("app_init: auto-opening '{name}' via socket from_pane_id={from_pane_id:?}");
-                    let exit_code = crate::cli::open_cli(name, &[], None, from_pane_id);
+                    let workspace_cwd = workspace_root.as_ref().and_then(|p| p.to_str()).map(|s| s.to_string());
+                    log::info!("app_init: auto-opening '{name}' via socket from_pane_id={from_pane_id:?} workspace_cwd={workspace_cwd:?}");
+                    let exit_code = crate::cli::open_cli(name, &[], None, from_pane_id, workspace_cwd.as_deref());
                     if exit_code != 0 {
                         eprintln!("warning: app created but could not auto-open '{name}' (exit {exit_code}) — run: plexi open {name}");
                     }
@@ -2553,7 +2554,7 @@ pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize) -> i32 {
 /// which the running host drains each second.
 ///
 /// Returns 0 on success, 1 on error.
-pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_id: Option<u64>) -> i32 {
+pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_id: Option<u64>, cwd: Option<&str>) -> i32 {
     if type_id == "terminal" {
         log::warn!("open:cli: 'plexi open terminal' is deprecated — use 'plexi terminal' instead");
         eprintln!("warning: 'plexi open terminal' is deprecated — use 'plexi terminal' instead");
@@ -2577,7 +2578,10 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_
         if let Some(pid) = from_pane_id {
             payload["from_pane_id"] = serde_json::Value::Number(pid.into());
         }
-        log::info!("open:cli: sending via socket from_pane_id={from_pane_id:?} response_file={response_file:?}");
+        if let Some(cwd) = cwd {
+            payload["cwd"] = serde_json::Value::String(cwd.to_string());
+        }
+        log::info!("open:cli: sending via socket from_pane_id={from_pane_id:?} cwd={cwd:?} response_file={response_file:?}");
         let code = send_to_socket(payload);
         if code != 0 {
             return code;
@@ -2629,17 +2633,20 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let queue_payload = serde_json::json!({
+    let mut queue_payload = serde_json::json!({
         "type_id": type_id,
         "args": args,
         "layout": layout,
     });
+    if let Some(cwd) = cwd {
+        queue_payload["cwd"] = serde_json::Value::String(cwd.to_string());
+    }
     let file = queue_dir.join(format!("{id}.json"));
     if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {
         eprintln!("error: could not write spawn request: {e}");
         return 1;
     }
-    log::info!("cli: open queued: type_id={type_id}");
+    log::info!("cli: open queued: type_id={type_id} cwd={cwd:?}");
     println!("queued: open {type_id}");
     println!("(running outside a Plexi pane — Plexi will pick this up within a second)");
     0
