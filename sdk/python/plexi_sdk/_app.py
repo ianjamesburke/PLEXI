@@ -429,8 +429,57 @@ class App:
                 app = MyApp()
                 app.run()
         """
+        if "--plexi-introspect" in sys.argv:
+            self._run_introspect()
+            return
         sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
         asyncio.run(self._async_main())
+
+    def _run_introspect(self) -> None:
+        """Static capability check mode — called when launched with --plexi-introspect.
+
+        Inspects method bodies of this App subclass for emit.* / ctx.* calls
+        using AST analysis (not regex) to avoid false positives in docstrings.
+        Only scans methods defined in the subclass's own module (not base class).
+        Prints {"required_capabilities": [...]} to stdout, then exits.
+        """
+        import ast
+        import inspect
+        import json
+        import textwrap
+        from ._emitter import CAPABILITY_REGISTRY
+
+        required: set[str] = set()
+        app_module = type(self).__module__
+
+        for _name, method in inspect.getmembers(type(self), predicate=inspect.isfunction):
+            if getattr(method, "__module__", None) != app_module:
+                continue
+            try:
+                source = textwrap.dedent(inspect.getsource(method))
+                tree = ast.parse(source)
+            except (OSError, TypeError, SyntaxError, IndentationError):
+                continue
+            for node in ast.walk(tree):
+                if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                    continue
+                func = node.func
+                base: "str | None" = None
+                if isinstance(func.value, ast.Name):
+                    base = func.value.id
+                elif (
+                    isinstance(func.value, ast.Attribute)
+                    and isinstance(func.value.value, ast.Name)
+                    and func.value.value.id == "self"
+                ):
+                    base = f"self.{func.value.attr}"
+                if base in ("self.emit", "self.ctx", "ctx", "emit"):
+                    method_name = func.attr
+                    if method_name in CAPABILITY_REGISTRY:
+                        required.add(CAPABILITY_REGISTRY[method_name])
+
+        print(json.dumps({"required_capabilities": sorted(required)}), flush=True)
+        sys.exit(0)
 
     async def _async_main(self) -> None:
         """Asyncio entry point — two concurrent tasks to eliminate deadlocks.
