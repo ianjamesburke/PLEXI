@@ -27,14 +27,6 @@ use taffy::prelude::*;
 /// `Ui`. This is deliberate — derivation invites two-sources-of-truth bugs
 /// Returns true when `s` is a UUID v4 handle from `emit.load_image()`.
 /// Format: 8-4-4-4-12 hex chars separated by hyphens (36 chars total).
-fn is_image_handle(s: &str) -> bool {
-    s.len() == 36
-        && s.as_bytes().get(8) == Some(&b'-')
-        && s.as_bytes().get(13) == Some(&b'-')
-        && s.as_bytes().get(18) == Some(&b'-')
-        && s.as_bytes().get(23) == Some(&b'-')
-}
-
 /// where the renderer and the caller silently disagree about geometry. An
 /// earlier version used `ui.min_rect()` here and got an empty rect (because
 /// process_app paints via `ui.painter()` without allocating, so min_rect
@@ -432,13 +424,14 @@ pub(crate) fn render_draw_commands(
             RenderCommand::TextInput { .. } => {}
 
             RenderCommand::Image { src, x, y, w, h, fit } => {
-                if is_image_handle(src) {
-                    // Handle-based: already loading via AppRequest::LoadImage; just look up.
-                } else if src.starts_with("http://") || src.starts_with("https://") {
+                if src.starts_with("http://") || src.starts_with("https://") {
                     image_cache.request_url(src, net_http_granted);
                 } else {
                     image_cache.request(src, workspace_root);
                 }
+                // Handle-based srcs (UUID from emit.load_image) are already in the
+                // cache from AppRequest::LoadImage processing. The request_url /
+                // request calls above hit the contains_key early-return and no-op.
                 let target_rect = egui::Rect::from_min_size(
                     egui::pos2(origin.x + x, origin.y + y),
                     egui::vec2(*w, *h),

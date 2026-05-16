@@ -24,11 +24,31 @@ pub(crate) struct ImageCache {
     warned: HashSet<String>,
     /// Keys in `cache` that are opaque handle UUIDs (from `request_by_handle`).
     /// When these complete, `poll()` includes them in its return value so the
-    /// caller can emit `PlexiEvent::ImageLoaded`.
+    /// caller can emit `PlexiEvent::ImageLoaded`. Keys are removed on completion
+    /// to prevent unbounded growth.
     handle_keys: HashSet<String>,
     /// Immediate completions for handle requests that failed synchronously
     /// (e.g. capability denied). Drained by `poll()` alongside channel completions.
     immediate_completions: Vec<(String, Result<(), String>)>,
+}
+
+/// Fetch a remote URL and decode it as an image. Enforces a 10 MB cap to
+/// prevent OOM from malicious or oversized images.
+fn fetch_url_image(url: &str) -> Result<egui::ColorImage, String> {
+    let resp = ureq::get(url)
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|e| e.to_string())?;
+    let mut bytes: Vec<u8> = Vec::new();
+    // 10 MB cap — prevents OOM from malicious or oversized images.
+    resp.into_reader()
+        .take(10 * 1024 * 1024)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+    let rgba = img.to_rgba8();
+    let size = [rgba.width() as usize, rgba.height() as usize];
+    Ok(egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()))
 }
 
 impl ImageCache {
@@ -46,7 +66,13 @@ impl ImageCache {
 
     /// Request an async image fetch keyed by an opaque handle UUID.
     /// No-op if the handle is already in the cache.
-    /// `net_http_granted` must be true; otherwise records an immediate error completion.
+    ///
+    /// Requires `net_http_granted`; otherwise records an immediate error
+    /// completion so the caller can emit `PlexiEvent::ImageLoaded` with
+    /// `status = "error"` without waiting for the background thread.
+    ///
+    /// On success, the handle resolves via the same channel as src-keyed
+    /// requests and appears in `poll()`'s return value.
     pub(crate) fn request_by_handle(&mut self, handle: &str, src: &str, net_http_granted: bool) {
         if self.cache.contains_key(handle) {
             return;
@@ -70,26 +96,15 @@ impl ImageCache {
         let src_str = src.to_string();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result = (|| {
-                let resp = ureq::get(&src_str)
-                    .timeout(std::time::Duration::from_secs(10))
-                    .call()
-                    .map_err(|e| e.to_string())?;
-                let mut bytes: Vec<u8> = Vec::new();
-                resp.into_reader()
-                    .take(10 * 1024 * 1024)
-                    .read_to_end(&mut bytes)
-                    .map_err(|e| e.to_string())?;
-                let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
-                let rgba = img.to_rgba8();
-                let size = [rgba.width() as usize, rgba.height() as usize];
-                Ok(egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()))
-            })();
+            let result = fetch_url_image(&src_str);
             let _ = tx.send((handle_key, result));
         });
     }
 
     /// Request a remote URL image fetch keyed by raw src string. No-op if already loading/loaded/errored.
+    ///
+    /// Requires `net_http_granted`; otherwise inserts an error placeholder
+    /// immediately without spawning a thread.
     pub(crate) fn request_url(&mut self, src: &str, net_http_granted: bool) {
         if self.cache.contains_key(src) {
             return;
@@ -107,21 +122,7 @@ impl ImageCache {
         let src_key = src.to_string();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let result = (|| {
-                let resp = ureq::get(&src_key)
-                    .timeout(std::time::Duration::from_secs(10))
-                    .call()
-                    .map_err(|e| e.to_string())?;
-                let mut bytes: Vec<u8> = Vec::new();
-                resp.into_reader()
-                    .take(10 * 1024 * 1024)
-                    .read_to_end(&mut bytes)
-                    .map_err(|e| e.to_string())?;
-                let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
-                let rgba = img.to_rgba8();
-                let size = [rgba.width() as usize, rgba.height() as usize];
-                Ok(egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()))
-            })();
+            let result = fetch_url_image(&src_key);
             let _ = tx.send((src_key, result));
         });
     }
@@ -167,7 +168,8 @@ impl ImageCache {
             std::mem::take(&mut self.immediate_completions);
 
         while let Ok((key, result)) = self.rx.try_recv() {
-            let is_handle = self.handle_keys.contains(&key);
+            // `remove` cleans up the set entry, preventing unbounded growth.
+            let is_handle = self.handle_keys.remove(&key);
             match result {
                 Ok(color_image) => {
                     let handle = egui_ctx.load_texture(
