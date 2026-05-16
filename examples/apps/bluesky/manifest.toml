@@ -1,0 +1,17 @@
+schema_version = 1
+
+[app]
+id = "bluesky"
+type = "app"
+name = "Bluesky"
+entry = "main.py"
+version = "0.1.0"
+description = "Read-only Bluesky feed browser via the public AT Protocol API. No login required."
+watch = true
+mouse_tracking = true
+
+[app.capabilities]
+capabilities = ["net.http"]
+
+[launch]
+layout_hint = { side = "right", split = 0.5 }
