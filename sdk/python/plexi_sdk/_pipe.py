@@ -40,7 +40,7 @@ class Pipe:
         return self._connected.wait(timeout=timeout)
 
     def read_frame(self) -> "bytes | None":
-        """Read one length-prefixed frame. Blocks. Returns None on EOF/error."""
+        """Read one length-prefixed frame. Blocks. Returns None on EOF/error/EOS."""
         if not self._sock:
             return None
         try:
@@ -48,6 +48,8 @@ class Pipe:
             if header is None:
                 return None
             length = struct.unpack(">I", header)[0]
+            if length == 0:
+                return None  # EOS sentinel from host
             return self._recv_exact(length)
         except OSError as e:
             self._app.emit.error(f"pipe read_frame error pipe_id={self.pipe_id}: {e}")
@@ -78,6 +80,11 @@ class Pipe:
 
     def close(self) -> None:
         if self._sock:
+            try:
+                # shutdown unblocks any thread blocked in recv() before close().
+                self._sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             try:
                 self._sock.close()
             except OSError:
