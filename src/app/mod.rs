@@ -3767,7 +3767,7 @@ impl PlexiApp {
         self.key_bindings = crate::keys::build_key_bindings(self.config.keybindings.as_ref());
         log::info!("keybindings: rebuilt after config reload");
 
-        // AI broker config — broadcast fresh snapshot to all living panes
+        // AI broker config — broadcast fresh snapshot to all living panes and background apps
         let fresh_ai = self.config.ai.clone();
         for win in &mut self.windows {
             for pane in win.panes.values_mut() {
@@ -3777,6 +3777,9 @@ impl PlexiApp {
                     }
                 }
             }
+        }
+        for app_entry in self.background_apps.values_mut() {
+            app_entry.1.update_ai_config(fresh_ai.clone());
         }
         log::info!("ai_broker: config reloaded");
 
