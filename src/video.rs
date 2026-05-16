@@ -247,18 +247,17 @@ mod avf_impl {
     use std::sync::Arc;
 
     use crossbeam_queue::ArrayQueue;
-    use objc2_06 as objc2;
-    use objc2_av_foundation_06::{
+    use objc2_av_foundation::{
         AVAssetReader, AVAssetReaderTrackOutput, AVMediaTypeVideo, AVURLAsset,
     };
-    use objc2_core_media_06::{CMTime, CMTimeRange};
-    use objc2_core_video_06::{
+    use objc2_core_media::{CMTime, CMTimeRange};
+    use objc2_core_video::{
         kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_32BGRA,
         CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight,
         CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
         CVPixelBufferUnlockBaseAddress,
     };
-    use objc2_foundation_06::{NSDictionary, NSNumber, NSString, NSURL};
+    use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
 
     /// Top-level entry from the trait `open()`. Resolves the path, opens the
     /// asset, queries metadata, allocates a handle id, then spawns the
@@ -420,7 +419,7 @@ mod avf_impl {
         // value, not the bit representation, so signed/unsigned NSNumber
         // boxing is interchangeable here.
         let format_value = NSNumber::new_u32(kCVPixelFormatType_32BGRA);
-        let cf_key: &objc2_core_foundation_06::CFString =
+        let cf_key: &objc2_core_foundation::CFString =
             kCVPixelBufferPixelFormatTypeKey;
         // Toll-free bridge: CFString and NSString share an ABI-compatible
         // representation. The cast is safe because both are opaque
@@ -578,7 +577,7 @@ mod avf_impl {
                 };
                 // CVPixelBuffer = CVImageBuffer = CVBuffer (type aliases). The
                 // CV functions all accept the same `&CVBuffer` shape.
-                let pixel_buffer: &objc2_core_video_06::CVPixelBuffer = &image_buffer;
+                let pixel_buffer: &objc2_core_video::CVPixelBuffer = &image_buffer;
 
                 let lock_flags = CVPixelBufferLockFlags::ReadOnly;
                 let lock_status = CVPixelBufferLockBaseAddress(pixel_buffer, lock_flags);

@@ -38,9 +38,9 @@ pub fn apply_version_title_once() {
     let Some(title) = menu_bar_title() else { return };
     let Some(mtm) = MainThreadMarker::new() else { return };
     let app = NSApplication::sharedApplication(mtm);
-    let Some(main_menu) = (unsafe { app.mainMenu() }) else { return };
-    let Some(app_menu_item) = (unsafe { main_menu.itemAtIndex(0) }) else { return };
-    unsafe { app_menu_item.setTitle(&NSString::from_str(&title)) };
+    let Some(main_menu) = app.mainMenu() else { return };
+    let Some(app_menu_item) = main_menu.itemAtIndex(0) else { return };
+    app_menu_item.setTitle(&NSString::from_str(&title));
 }
 
 fn register_handler_class() -> &'static objc2::runtime::AnyClass {
@@ -48,7 +48,7 @@ fn register_handler_class() -> &'static objc2::runtime::AnyClass {
     CLASS.get_or_init(|| {
         let superclass = NSObject::class();
         let mut builder =
-            ClassBuilder::new("PlexiMenuHandler", superclass).expect("class already registered");
+            ClassBuilder::new(c"PlexiMenuHandler", superclass).expect("class already registered");
 
         unsafe extern "C" fn open_config(_this: &AnyObject, _cmd: Sel, _sender: *mut AnyObject) {
             crate::config::open_config_file();
@@ -77,7 +77,7 @@ fn get_handler() -> *const AnyObject {
     HANDLER
         .get_or_init(|| {
             let cls = register_handler_class();
-            let obj: Retained<NSObject> = unsafe { objc2::msg_send_id![cls, new] };
+            let obj: Retained<NSObject> = unsafe { objc2::msg_send![cls, new] };
             // Leak the object so the menu item's target stays alive forever.
             let ptr: *const AnyObject = Retained::as_ptr(&obj) as *const AnyObject;
             std::mem::forget(obj);
@@ -96,15 +96,15 @@ pub fn customize_app_menu() {
     };
 
     let app = NSApplication::sharedApplication(mtm);
-    let Some(main_menu) = (unsafe { app.mainMenu() }) else {
+    let Some(main_menu) = app.mainMenu() else {
         return;
     };
 
     // First submenu (index 0) is the app menu containing Hide/Quit/etc.
-    let Some(app_menu_item) = (unsafe { main_menu.itemAtIndex(0) }) else {
+    let Some(app_menu_item) = main_menu.itemAtIndex(0) else {
         return;
     };
-    let Some(app_menu) = (unsafe { app_menu_item.submenu() }) else {
+    let Some(app_menu) = app_menu_item.submenu() else {
         return;
     };
 
@@ -168,11 +168,11 @@ fn menu_bar_title() -> Option<String> {
 }
 
 fn remove_items_with_action(menu: &NSMenu, action: objc2::runtime::Sel) {
-    let count = unsafe { menu.numberOfItems() };
+    let count = menu.numberOfItems();
     for i in (0..count).rev() {
-        if let Some(item) = unsafe { menu.itemAtIndex(i) } {
-            if unsafe { item.action() } == Some(action) {
-                unsafe { menu.removeItemAtIndex(i) };
+        if let Some(item) = menu.itemAtIndex(i) {
+            if item.action() == Some(action) {
+                menu.removeItemAtIndex(i);
             }
         }
     }
