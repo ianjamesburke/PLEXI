@@ -163,6 +163,14 @@ pub enum PlexiEvent {
     },
     /// Fired when a SetTimer timer expires.
     Timer { timer_id: String },
+    /// Fired when a `load_image` request completes (success or failure).
+    /// `status` is "ok" or "error". `message` carries the error detail on failure.
+    ImageLoaded {
+        handle: String,
+        status: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
     /// Response to a `DrawCommand::MeasureText` request.
     /// `width` and `height` are in logical pixels at the requested font size.
     TextMeasured {
@@ -1226,6 +1234,10 @@ pub enum AppRequest {
     SetTimer { timer_id: String, after_ms: u64 },
     /// Cancel a pending timer. No-op if the timer has already fired or doesn't exist.
     CancelTimer { timer_id: String },
+    /// Async image fetch brokered through the host. Requires `net.http` capability.
+    /// Host fetches `src`, caches under `handle`, and emits `PlexiEvent::ImageLoaded`
+    /// when done. App then renders via `DrawCommand::Image { src: handle, .. }`.
+    LoadImage { handle: String, src: String },
 
     // ── Canvas Terminal Binding Primitives (#78) ─────────────────────────
     //

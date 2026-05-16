@@ -1372,7 +1372,13 @@ impl App for ProcessApp {
             .lock()
             .map(|g| g.clone())
             .unwrap_or_default();
-        self.image_cache.poll(ui.ctx());
+        for (handle, result) in self.image_cache.poll(ui.ctx()) {
+            let (status, message) = match result {
+                Ok(()) => ("ok".to_string(), None),
+                Err(e) => ("error".to_string(), Some(e)),
+            };
+            self.outbound_events.push_back(PlexiEvent::ImageLoaded { handle, status, message });
+        }
         let net_http_granted = self.permissions.is_builtin
             || self.permissions.capabilities.contains(&Capability::NetHttp);
         self.render_session.render(ui, pane_rect, &self.frame, ctx.colors, &mut self.commonmark_cache, &audio_peaks, self.pane_id, &mut self.image_cache, &self.app_dir, net_http_granted);

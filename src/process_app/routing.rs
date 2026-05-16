@@ -1368,6 +1368,19 @@ impl ProcessApp {
                 self.pending_commands.push(AppCommand::CdRequest { cwd, sender_pane_id: self.pane_id });
             }
 
+            // ── Async image load ───────────────────────────────────────────
+            AppRequest::LoadImage { handle, src } => {
+                let net_http_granted = self.permissions.is_builtin
+                    || self.permissions.capabilities.contains(&Capability::NetHttp);
+                log::info!(
+                    "ProcessApp[{}]: LoadImage handle={handle} src={src}",
+                    self.type_id
+                );
+                self.image_cache.request_by_handle(&handle, &src, net_http_granted);
+                // Immediate error completions (e.g. capability denied) were pushed to
+                // image_cache.immediate_completions and will be drained in the next poll().
+            }
+
             // ── Set timer ──────────────────────────────────────────────────
             AppRequest::SetTimer { timer_id, after_ms } => {
                 if let PermissionCheck::Denied(reason) = check(&self.permissions, Capability::Timer) {

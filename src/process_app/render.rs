@@ -25,6 +25,8 @@ use taffy::prelude::*;
 ///
 /// `pane_rect` is **passed in by the caller** rather than derived from the
 /// `Ui`. This is deliberate — derivation invites two-sources-of-truth bugs
+/// Returns true when `s` is a UUID v4 handle from `emit.load_image()`.
+/// Format: 8-4-4-4-12 hex chars separated by hyphens (36 chars total).
 /// where the renderer and the caller silently disagree about geometry. An
 /// earlier version used `ui.min_rect()` here and got an empty rect (because
 /// process_app paints via `ui.painter()` without allocating, so min_rect
@@ -427,6 +429,9 @@ pub(crate) fn render_draw_commands(
                 } else {
                     image_cache.request(src, workspace_root);
                 }
+                // Handle-based srcs (UUID from emit.load_image) are already in the
+                // cache from AppRequest::LoadImage processing. The request_url /
+                // request calls above hit the contains_key early-return and no-op.
                 let target_rect = egui::Rect::from_min_size(
                     egui::pos2(origin.x + x, origin.y + y),
                     egui::vec2(*w, *h),

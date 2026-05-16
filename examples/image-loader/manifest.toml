@@ -1,0 +1,16 @@
+schema_version = 1
+
+[app]
+id = "image-loader"
+type = "app"
+name = "Image Loader POC"
+description = "Demonstrates async emit.load_image() with handle lifecycle (#1354)."
+entry = "app.py"
+version = "0.1.0"
+watch = true
+
+[app.capabilities]
+capabilities = ["net.http"]
+
+[launch]
+layout_hint = { side = "right", split = 0.5 }
