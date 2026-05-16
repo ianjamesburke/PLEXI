@@ -54,6 +54,9 @@ pub struct PlexiBehavior<'a> {
     /// Used by `terminal_pane::render` to flag terminal panes whose CWD has
     /// drifted outside the workspace tree. See issue #308 Phase 1.
     pub workspace_root: Option<PathBuf>,
+    /// Opacity applied to unfocused panes when ghost mode is active.
+    /// `None` = no dimming. Values below 1.0 dim all non-focused panes.
+    pub unfocused_opacity: Option<f32>,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -80,6 +83,14 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         }
 
         let is_focused = self.focused_tile == Some(tile_id);
+
+        if !is_focused {
+            if let Some(opacity) = self.unfocused_opacity {
+                if opacity < 1.0 {
+                    ui.set_opacity(opacity);
+                }
+            }
+        }
 
         // Drop target: the zoomed overlay owns drops when a pane is zoomed,
         // so this path only runs when zoomed_pane.is_none() (guaranteed above).
