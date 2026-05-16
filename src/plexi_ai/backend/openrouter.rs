@@ -18,6 +18,7 @@ use std::io::{BufRead, BufReader};
 use std::sync::mpsc;
 use std::thread;
 
+use crate::app_protocol::ModelTier;
 use super::{AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent};
 
 fn parse_usage_tokens(usage: &serde_json::Value) -> (Option<u32>, Option<u32>) {
@@ -134,6 +135,12 @@ fn stream_openrouter(
             })
             .collect();
         body["tools"] = serde_json::Value::Array(tools_json);
+    }
+
+    // Disable reasoning for Low-tier queries — speed matters more than depth
+    // at this tier, and leaving it on adds latency and cost (Gemini Flash Lite).
+    if request.model_tier == Some(ModelTier::Low) {
+        body["reasoning"] = serde_json::json!({ "enabled": false });
     }
 
     let body_str = match serde_json::to_string(&body) {

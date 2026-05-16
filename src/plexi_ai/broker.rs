@@ -354,6 +354,7 @@ fn run_turn_and_respond(
             messages: conv.clone(),
             system: system.clone(),
             tools: all_tools.clone(),
+            model_tier: Some(request.model_tier),
         };
 
         let turn = turn_loop::run_turn(backend, backend_req, |_| {});
@@ -457,47 +458,93 @@ fn run_turn_and_respond(
         }
     }
 
-    // OpenRouter canonical metrics fetch (cost + native-token accounting).
-    // Docs: `/generation` returns authoritative usage/cost across providers.
-    let generation_metrics = last_generation_id.as_deref().and_then(|gen_id| {
-        if api_key.is_empty() {
-            None
-        } else {
-            fetch_generation_metrics(gen_id, &api_key)
+    // If we have a generation ID and an API key, fetch metrics on a background
+    // thread so the app response returns immediately after stream completion.
+    // The background thread writes the ledger and emits AgentTurn with
+    // authoritative token counts and cost once the generation record is ready.
+    //
+    // Gemini models via OpenRouter: the generation record appears ~7s after
+    // stream completion — blocking here causes a visible dead wait for the user.
+    if let Some(gen_id) = last_generation_id {
+        if !api_key.is_empty() {
+            let app_id = request.app_id.clone();
+            let backend_name = backend.name().to_string();
+            let model_id_bg = model_id.clone();
+            // Capture the finish timestamp before spawning — the background thread
+            // sleeps while waiting for the generation record, so generating the
+            // timestamp inside the thread would report a delayed time that doesn't
+            // represent when the AI turn actually completed.
+            let finish_ts = event_log::now_timestamp();
+            log::info!(
+                "ai_broker[{}]: spawning background metrics fetch for gen_id={}",
+                request.app_id,
+                gen_id
+            );
+            let spawn_result = std::thread::Builder::new()
+                .name("plexi-ai-metrics".to_string())
+                .spawn(move || {
+                    let metrics = fetch_generation_metrics(&gen_id, &api_key);
+                    let (tokens_in, tokens_out, cost_usd) = match metrics {
+                        Some(m) => {
+                            let ti = m.prompt_tokens.unwrap_or(total_tokens_in);
+                            let to = m.completion_tokens.unwrap_or(total_tokens_out);
+                            log::info!(
+                                "ai_broker[{}]: background usage prompt={} completion={} cached={:?} reasoning={:?} cost_usd={:?}",
+                                app_id, ti, to, m.cached_tokens, m.reasoning_tokens, m.cost_usd,
+                            );
+                            (ti, to, m.cost_usd)
+                        }
+                        None => {
+                            log::warn!(
+                                "ai_broker[{}]: background metrics unavailable for gen_id={}; using stream counts prompt={} completion={}",
+                                app_id, gen_id, total_tokens_in, total_tokens_out,
+                            );
+                            (total_tokens_in, total_tokens_out, None)
+                        }
+                    };
+                    let cost_cents = cost_usd
+                        .map(|usd| (usd * 100.0).round().max(0.0) as u64)
+                        .unwrap_or(0);
+                    let row = LedgerRow::with_attribution(
+                        &backend_name,
+                        billing,
+                        Some(app_id.clone()),
+                        Some(model_id_bg),
+                        Some(tokens_in),
+                        Some(tokens_out),
+                        cost_usd,
+                    );
+                    ledger::append(&row);
+                    event_log::emit(HostEvent::AgentTurn {
+                        pane_id: None,
+                        tokens_in,
+                        tokens_out,
+                        cost_cents,
+                        timestamp: finish_ts,
+                    });
+                });
+            match spawn_result {
+                Ok(_) => return AiBrokerResponse::ok(final_text, total_tokens_in, total_tokens_out),
+                Err(e) => {
+                    // Thread spawn failed — fall through to synchronous path so
+                    // billing records are never silently lost.
+                    log::error!(
+                        "ai_broker[{}]: failed to spawn metrics thread: {e} — writing ledger synchronously",
+                        request.app_id,
+                    );
+                }
+            }
         }
-    });
-    if let Some(metrics) = generation_metrics {
-        // Prefer generation-endpoint token counts whenever available.
-        if let Some(prompt) = metrics.prompt_tokens {
-            total_tokens_in = prompt;
-        }
-        if let Some(completion) = metrics.completion_tokens {
-            total_tokens_out = completion;
-        }
-        log::info!(
-            "ai_broker[{}]: usage prompt={} completion={} total={} cached={:?} reasoning={:?} cost_usd={:?}",
-            request.app_id,
-            total_tokens_in,
-            total_tokens_out,
-            total_tokens_in.saturating_add(total_tokens_out),
-            metrics.cached_tokens,
-            metrics.reasoning_tokens,
-            metrics.cost_usd,
-        );
-    } else {
-        log::warn!(
-            "ai_broker[{}]: generation metrics unavailable; using stream token counts prompt={} completion={}",
-            request.app_id,
-            total_tokens_in,
-            total_tokens_out,
-        );
     }
-    let cost_usd = generation_metrics.and_then(|m| m.cost_usd);
 
-    let cost_cents = cost_usd
-        .map(|usd| (usd * 100.0).round().max(0.0) as u64)
-        .unwrap_or(0);
-
+    // No generation ID (non-OpenRouter) or no API key — write ledger and event
+    // synchronously using stream token counts.
+    log::warn!(
+        "ai_broker[{}]: no generation ID — using stream token counts prompt={} completion={}",
+        request.app_id,
+        total_tokens_in,
+        total_tokens_out,
+    );
     let row = LedgerRow::with_attribution(
         backend.name(),
         billing,
@@ -505,18 +552,16 @@ fn run_turn_and_respond(
         Some(model_id),
         Some(total_tokens_in),
         Some(total_tokens_out),
-        cost_usd,
+        None,
     );
     ledger::append(&row);
-
     event_log::emit(HostEvent::AgentTurn {
         pane_id: None,
         tokens_in: total_tokens_in,
         tokens_out: total_tokens_out,
-        cost_cents,
+        cost_cents: 0,
         timestamp: event_log::now_timestamp(),
     });
-
     AiBrokerResponse::ok(final_text, total_tokens_in, total_tokens_out)
 }
 
