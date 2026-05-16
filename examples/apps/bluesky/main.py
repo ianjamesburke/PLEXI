@@ -13,8 +13,8 @@ Keys (THREAD): Esc back · o browser
 
 import asyncio
 import json
-import subprocess
 import urllib.parse
+import webbrowser
 
 from plexi_sdk import (
     App, RenderContext,
@@ -108,7 +108,7 @@ class BlueskyApp(App):
 
         self.emit.info("bluesky: init")
         ctx.status_summary("Loading Discover feed…")
-        asyncio.get_event_loop().create_task(self._fetch_discover(None))
+        asyncio.create_task(self._fetch_discover(None))
 
     # ── data ──────────────────────────────────────────────────────────────────
 
@@ -121,7 +121,7 @@ class BlueskyApp(App):
         if cursor:
             url += f"&cursor={urllib.parse.quote(cursor)}"
         try:
-            data = json.loads(await self.emit.http_get(url))
+            data = json.loads(await self.emit.http_get(url)) or {}
             self._feed     = [item["post"] for item in data.get("feed", []) if "post" in item]
             self._next_cur = data.get("cursor")
             self._sel      = 0
@@ -141,7 +141,7 @@ class BlueskyApp(App):
         if cursor:
             url += f"&cursor={urllib.parse.quote(cursor)}"
         try:
-            data  = json.loads(await self.emit.http_get(url))
+            data  = json.loads(await self.emit.http_get(url)) or {}
             posts = [item["post"] for item in data.get("feed", []) if "post" in item]
             # drop replies so the profile view shows original posts only
             self._feed     = [p for p in posts if not (p.get("record") or {}).get("reply")]
@@ -160,7 +160,7 @@ class BlueskyApp(App):
         self.emit.schedule_render()
         url = f"{BASE}/app.bsky.feed.getPostThread?uri={urllib.parse.quote(uri)}&depth=6"
         try:
-            data  = json.loads(await self.emit.http_get(url))
+            data  = json.loads(await self.emit.http_get(url)) or {}
             posts : list[dict] = []
             self._walk(data.get("thread", {}), posts, depth=0)
             self._thread   = posts
@@ -184,11 +184,11 @@ class BlueskyApp(App):
 
     def _page_fetch(self, cursor: str | None) -> None:
         if self._author_handle:
-            asyncio.get_event_loop().create_task(
+            asyncio.create_task(
                 self._fetch_author(self._author_handle, cursor)
             )
         else:
-            asyncio.get_event_loop().create_task(self._fetch_discover(cursor))
+            asyncio.create_task(self._fetch_discover(cursor))
 
     def _next_page(self) -> None:
         if not self._next_cur:
@@ -301,7 +301,7 @@ class BlueskyApp(App):
             ctx.text(PAD, HEADER_H + PAD, "Empty thread.", size=BODY, color=MUTED)
             return
 
-        heights   = [THREAD_H + len(_thumbs(item["post"])) * IMG_H
+        heights   = [THREAD_H + min(len(_thumbs(item["post"])), 2) * IMG_H
                      for item in self._thread]
         content_h = sum(heights)
         list_y    = HEADER_H
@@ -410,7 +410,7 @@ class BlueskyApp(App):
         self._page_idx      = 0
         self._next_cur      = None
         self.emit.info(f"bluesky: profile lookup @{handle}")
-        asyncio.get_event_loop().create_task(self._fetch_author(handle, None))
+        asyncio.create_task(self._fetch_author(handle, None))
 
     def on_scroll(self, _ctx: RenderContext, id: str, offset_y: float) -> None:
         if id == "feed-list":
@@ -438,7 +438,7 @@ class BlueskyApp(App):
         self.emit.info(f"bluesky: open thread uri={uri!r}")
         self._view   = self.VIEW_THREAD
         self._thread = []
-        asyncio.get_event_loop().create_task(self._fetch_thread(uri))
+        asyncio.create_task(self._fetch_thread(uri))
 
     def _open_browser(self, from_thread: bool) -> None:
         uri = ""
@@ -448,7 +448,7 @@ class BlueskyApp(App):
             uri = self._feed[self._sel].get("uri", "")
         url = _at_web(uri)
         if url:
-            subprocess.Popen(["open", url])
+            webbrowser.open(url)
             self.emit.info(f"bluesky: open browser {url}")
 
 
