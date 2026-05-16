@@ -3767,6 +3767,35 @@ pub fn config_check() -> i32 {
     if has_errors { 1 } else { 0 }
 }
 
+pub fn config_edit() -> i32 {
+    let path = crate::config::config_path();
+    log::info!("config_edit: opening {} in editor", path.display());
+
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("error: could not create config directory: {e}");
+                return 1;
+            }
+        }
+        if let Err(e) = std::fs::write(&path, "") {
+            eprintln!("error: could not create config file: {e}");
+            return 1;
+        }
+    }
+
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "open".to_string());
+    match std::process::Command::new(&editor).arg(&path).status() {
+        Ok(status) => {
+            if status.success() { 0 } else { status.code().unwrap_or(1) }
+        }
+        Err(e) => {
+            eprintln!("error: could not launch editor {editor:?}: {e}");
+            1
+        }
+    }
+}
+
 pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
     match shell {
         "zsh" => { print!("{}", zsh_completion(binary_name)); 0 }
@@ -3971,7 +4000,7 @@ _plexi() {
           ;;
         config)
           local subcmds
-          subcmds=('check:Validate config.toml and report errors')
+          subcmds=('check:Validate config.toml and report errors' 'edit:Open config.toml in $EDITOR')
           _describe 'subcommand' subcmds
           ;;
       esac
@@ -4098,7 +4127,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       COMPREPLY=($(compgen -W "zsh bash fish" -- "$cur"))
       ;;
     config)
-      COMPREPLY=($(compgen -W "check" -- "$cur"))
+      COMPREPLY=($(compgen -W "check edit" -- "$cur"))
       ;;
   esac
 }
@@ -4130,6 +4159,7 @@ complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret ap
 
 # config subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from config" -a check -d "Validate config.toml and report errors"
+complete -c plexi -f -n "__fish_seen_subcommand_from config" -a edit -d "Open config.toml in \$EDITOR"
 
 # secret subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from secret" -a set -d "Store a secret"

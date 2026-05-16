@@ -475,6 +475,9 @@ fn main() -> eframe::Result {
                         ConfigCmd::Check => {
                             std::process::exit(cli::config_check());
                         }
+                        ConfigCmd::Edit => {
+                            std::process::exit(cli::config_edit());
+                        }
                     },
                 }
             }

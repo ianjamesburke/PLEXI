@@ -475,4 +475,6 @@ pub enum ContextCmd {
 pub enum ConfigCmd {
     /// Validate your config.toml and report any errors.
     Check,
+    /// Open config.toml in your $EDITOR.
+    Edit,
 }
