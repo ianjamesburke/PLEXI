@@ -8,6 +8,101 @@ use crate::workspace::WorkspaceFile;
 use std::path::PathBuf;
 
 impl PlexiApp {
+    /// Create a child context nested inside `parent_name`. Inserts a SubContext tile
+    /// in the parent's active window. Depth is capped at 3 levels.
+    pub(crate) fn new_child_context(&mut self, parent_name: &str, path: PathBuf) -> Result<(), String> {
+        let parent_idx = self.router.position(|c| c.name == parent_name)
+            .ok_or_else(|| format!("no context named '{parent_name}'"))?;
+        let parent_id = self.router.get(parent_idx).context_id;
+        let parent_depth = self.router.get(parent_idx).depth;
+
+        if parent_depth >= 3 {
+            log::warn!(
+                "new_child_context: depth limit reached — parent '{}' is at depth {}",
+                parent_name, parent_depth
+            );
+            return Err(format!(
+                "depth limit: parent '{}' is already at depth {} (max 3)",
+                parent_name, parent_depth
+            ));
+        }
+
+        let child_depth = parent_depth + 1;
+        let ctx_id = self.next_window_id;
+        self.next_window_id += 1;
+        let win_id = self.next_window_id;
+        self.next_window_id += 1;
+
+        let ctx_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1));
+
+        log::info!(
+            "new_child_context: parent_id={parent_id} parent_depth={parent_depth} child_depth={child_depth} name={ctx_name} path={}",
+            path.display()
+        );
+
+        self.router.push(crate::context::Context {
+            name: ctx_name,
+            path: path.clone(),
+            root: Some(path.clone()),
+            context_id: ctx_id,
+            parent_id: Some(parent_id),
+            depth: child_depth,
+        });
+
+        // Create the child context window with a single terminal pane.
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(path.clone()), None, false)
+        else {
+            log::error!("new_child_context: failed to create terminal for child context");
+            // Roll back the router push.
+            let new_idx = self.router.len() - 1;
+            self.router.remove_at(new_idx);
+            return Err("failed to create terminal for child context".to_string());
+        };
+
+        self.windows.push(crate::context::Window {
+            name: String::new(),
+            path: path.clone(),
+            tree,
+            panes,
+            focused_pane: Some(root_tile),
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 0,
+            window_id: win_id,
+            context_id: ctx_id,
+        });
+        self.context_active_window.insert(ctx_id, win_id);
+
+        // Insert a SubContext tile in the parent's active window.
+        let parent_pane_id = self.host.alloc_pane_id();
+        if let Some(parent_win_idx) = self.windows.iter().position(|w| w.context_id == parent_id) {
+            let sub_ctx_pane = crate::pane::Pane::SubContext {
+                pane_id: parent_pane_id,
+                context_id: ctx_id,
+            };
+            let new_tile_id = self.windows[parent_win_idx].tree.tiles.insert_pane(parent_pane_id);
+            let existing_root = self.windows[parent_win_idx].tree.root;
+            if let Some(root) = existing_root {
+                let new_root = self.windows[parent_win_idx].tree.tiles.insert_container(
+                    egui_tiles::Linear::new(
+                        egui_tiles::LinearDir::Horizontal,
+                        vec![root, new_tile_id],
+                    ),
+                );
+                self.windows[parent_win_idx].tree.root = Some(new_root);
+            } else {
+                self.windows[parent_win_idx].tree.root = Some(new_tile_id);
+            }
+            self.windows[parent_win_idx].panes.insert(parent_pane_id, sub_ctx_pane);
+        }
+
+        self.save_workspace();
+        Ok(())
+    }
+
     pub(crate) fn new_context(&mut self) {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let cwd = self.windows[self.active_window]
@@ -32,6 +127,8 @@ impl PlexiApp {
             path: cwd.clone(),
             root: Some(cwd.clone()),
             context_id: ctx_id,
+            parent_id: None,
+            depth: 0,
         });
         self.windows.push(Window {
             name: String::new(),
@@ -81,6 +178,8 @@ impl PlexiApp {
             path: path.clone(),
             root: Some(path.clone()),
             context_id: ctx_id,
+            parent_id: None,
+            depth: 0,
         });
         self.windows.push(Window {
             name: String::new(),
@@ -175,6 +274,22 @@ impl PlexiApp {
 
         // Remove all windows belonging to this context.
         self.windows.retain(|c| c.context_id != ws_id);
+
+        // Remove SubContext tiles that pointed to this deleted context from parent windows.
+        for win in &mut self.windows {
+            let sub_ctx_pane_ids: Vec<crate::tiling::PaneId> = win.panes.iter()
+                .filter(|(_, p)| p.as_sub_context() == Some(ws_id))
+                .map(|(id, _)| *id)
+                .collect();
+            for pane_id in sub_ctx_pane_ids {
+                win.panes.remove(&pane_id);
+                // Remove from the tile tree too.
+                if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
+                    win.tree.remove_recursively(tile_id);
+                }
+            }
+        }
+
         self.router.remove_at(ws_index);
 
         // Pick a valid active window in the new active context.
@@ -391,6 +506,8 @@ impl PlexiApp {
                 path: ctx.path.clone(),
                 root: ctx.root.clone(),
                 context_id: ctx.context_id,
+                parent_id: ctx.parent_id,
+                depth: ctx.depth,
             });
         }
 
@@ -417,6 +534,15 @@ impl PlexiApp {
                         name: Some(a.name.clone()),
                         app_id: Some(a.runtime.type_id().to_string()),
                         app_state: a.runtime.serialize_state(),
+                    });
+                } else if let Some(child_ctx_id) = pane.as_sub_context() {
+                    saved_panes.push(crate::workspace::SavedPane {
+                        id,
+                        kind: crate::workspace::SavedPaneKind::SubContext { context_id: child_ctx_id },
+                        cwd: std::path::PathBuf::new(),
+                        name: None,
+                        app_id: None,
+                        app_state: None,
                     });
                 }
             }

@@ -27,6 +27,12 @@ pub struct SavedContext {
     #[serde(default)]
     pub root: Option<PathBuf>,
     pub context_id: u64,
+    /// Parent context_id for sub-contexts. None = top-level.
+    #[serde(default)]
+    pub parent_id: Option<u64>,
+    /// Nesting depth. 0 = root level.
+    #[serde(default)]
+    pub depth: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -60,12 +66,13 @@ pub struct SavedPane {
     pub app_state: Option<serde_json::Value>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum SavedPaneKind {
     #[default]
     Terminal,
     App,
+    SubContext { context_id: u64 },
 }
 
 fn workspace_path() -> PathBuf {
@@ -136,7 +143,7 @@ mod tests {
         for kind in kinds {
             let pane = SavedPane {
                 id: 42,
-                kind,
+                kind: kind.clone(),
                 cwd: PathBuf::from("/tmp"),
                 name: Some("split-pane".to_string()),
                 app_id: matches!(kind, SavedPaneKind::App)
@@ -149,6 +156,22 @@ mod tests {
             assert_eq!(restored.id, 42);
             assert_eq!(restored.cwd, PathBuf::from("/tmp"));
         }
+        // SubContext round-trips with embedded context_id.
+        let sub_ctx_pane = SavedPane {
+            id: 99,
+            kind: SavedPaneKind::SubContext { context_id: 42 },
+            cwd: PathBuf::new(),
+            name: None,
+            app_id: None,
+            app_state: None,
+        };
+        let json = serde_json::to_string(&sub_ctx_pane).expect("serialize sub_context");
+        let restored: SavedPane = serde_json::from_str(&json).expect("deserialize sub_context");
+        assert!(
+            matches!(restored.kind, SavedPaneKind::SubContext { context_id: 42 }),
+            "SubContext kind must round-trip with correct context_id"
+        );
+        assert_eq!(restored.id, 99);
     }
 
     /// SavedWindow omits `grid_x` / `grid_y` defaults cleanly.

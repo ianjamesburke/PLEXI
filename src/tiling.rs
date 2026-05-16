@@ -57,6 +57,8 @@ pub struct PlexiBehavior<'a> {
     /// Opacity applied to unfocused panes when ghost mode is active.
     /// `None` = no dimming. Values below 1.0 dim all non-focused panes.
     pub unfocused_opacity: Option<f32>,
+    /// Preview data for SubContext tiles: pane_id → (context_name, pane_count, notification_count).
+    pub sub_context_info: HashMap<PaneId, (String, usize, usize)>,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -134,6 +136,58 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             if close_exited {
                 self.close_exited = Some(tile_id);
             }
+        } else if pane.as_sub_context().is_some() {
+            // SubContext tile — wireframe preview card.
+            ui.painter().rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
+            let (ctx_name, pane_count, notif_count) = self.sub_context_info
+                .get(pane_id)
+                .cloned()
+                .unwrap_or_else(|| ("(deleted)".to_string(), 0, 0));
+            let mut content_ui = ui.new_child(
+                egui::UiBuilder::new().max_rect(pane_rect.shrink(style::SPACE_MD)),
+            );
+            content_ui.centered_and_justified(|ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new(&ctx_name)
+                            .size(style::TEXT_TITLE_XL)
+                            .strong()
+                            .color(self.colors.text_primary),
+                    );
+                    ui.add_space(style::SPACE_SM);
+                    ui.label(
+                        egui::RichText::new(format!("{pane_count} panes"))
+                            .size(style::TEXT_CAPTION)
+                            .color(self.colors.text_dim),
+                    );
+                    ui.add_space(style::SPACE_MD);
+                    // Wireframe layout outline — simple rounded rectangle placeholder.
+                    let (rect, _) = ui.allocate_exact_size(
+                        egui::Vec2::new(120.0, 60.0),
+                        egui::Sense::hover(),
+                    );
+                    ui.painter().rect_stroke(
+                        rect,
+                        egui::CornerRadius::same(4),
+                        egui::Stroke::new(1.0, self.colors.text_dim),
+                        egui::StrokeKind::Inside,
+                    );
+                    ui.add_space(style::SPACE_SM);
+                    ui.label(
+                        egui::RichText::new("\u{2318}\u{21E7}\u{21B5} to zoom in")
+                            .size(style::TEXT_HINT)
+                            .color(self.colors.text_dim),
+                    );
+                    if notif_count > 0 {
+                        ui.add_space(style::SPACE_SM);
+                        ui.label(
+                            egui::RichText::new(format!("\u{25CF} {notif_count}"))
+                                .size(style::TEXT_CAPTION)
+                                .color(egui::Color32::from_rgb(255, 100, 100)),
+                        );
+                    }
+                });
+            });
         }
 
         UiResponse::None

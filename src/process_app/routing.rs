@@ -1621,6 +1621,18 @@ impl ProcessApp {
                     self.type_id
                 );
             }
+            AppRequest::ZoomIntoContext { .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: received ZoomIntoContext over PGAP — ignored (use PLEXI_SOCKET instead)",
+                    self.type_id
+                );
+            }
+            AppRequest::ZoomOutOfContext => {
+                log::warn!(
+                    "ProcessApp[{}]: received ZoomOutOfContext over PGAP — ignored (use PLEXI_SOCKET instead)",
+                    self.type_id
+                );
+            }
             AppRequest::ListPanes { .. } => {
                 log::warn!(
                     "ProcessApp[{}]: received ListPanes over PGAP — ignored (use PLEXI_SOCKET instead)",

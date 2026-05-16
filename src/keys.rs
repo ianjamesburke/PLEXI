@@ -123,6 +123,10 @@ pub enum Action {
     SwapPane(Direction),
     /// Open the scratchpad overlay. Bound to Ctrl+Space.
     OpenScratchpad,
+    /// Zoom into the sub-context tile that has focus. Bound to Cmd+Shift+Enter.
+    ContextZoomIn,
+    /// Zoom out of the current sub-context to the parent. Bound to Cmd+Escape.
+    ContextZoomOut,
 }
 
 /// Resolved keybindings — one `(Modifiers, Key)` pair per named action.
@@ -172,6 +176,8 @@ pub struct KeyBindings {
     pub toggle_notification_modal: (egui::Modifiers, egui::Key),
     pub context_inspector: (egui::Modifiers, egui::Key),
     pub open_scratchpad: (egui::Modifiers, egui::Key),
+    pub context_zoom_in: (egui::Modifiers, egui::Key),
+    pub context_zoom_out: (egui::Modifiers, egui::Key),
 }
 
 fn cmd() -> egui::Modifiers { egui::Modifiers::COMMAND }
@@ -234,6 +240,8 @@ impl Default for KeyBindings {
             toggle_notification_modal: (cmd_shift(), egui::Key::A),
             context_inspector:         (cmd(),       egui::Key::I),
             open_scratchpad:           (ctrl(),      egui::Key::Space),
+            context_zoom_in:           (cmd_shift(), egui::Key::Enter),
+            context_zoom_out:          (cmd(),       egui::Key::Escape),
         }
     }
 }
@@ -557,7 +565,11 @@ pub fn poll_actions(
         if input.consume_key(bindings.toggle_sidebar.0, bindings.toggle_sidebar.1) {
             actions.push(Action::ToggleSidebar);
         }
-        if input.consume_key(bindings.toggle_zoom.0, bindings.toggle_zoom.1) {
+        // context_zoom_in (Cmd+Shift+Enter) must be checked before toggle_zoom (Cmd+Enter)
+        // because egui consume_key uses subset modifier matching.
+        if input.consume_key(bindings.context_zoom_in.0, bindings.context_zoom_in.1) {
+            actions.push(Action::ContextZoomIn);
+        } else if input.consume_key(bindings.toggle_zoom.0, bindings.toggle_zoom.1) {
             actions.push(Action::ToggleZoom);
         }
         if input.consume_key(bindings.toggle_shortcuts.0, bindings.toggle_shortcuts.1) {
@@ -645,6 +657,9 @@ pub fn poll_actions(
         }
         if input.consume_key(bindings.open_scratchpad.0, bindings.open_scratchpad.1) {
             actions.push(Action::OpenScratchpad);
+        }
+        if input.consume_key(bindings.context_zoom_out.0, bindings.context_zoom_out.1) {
+            actions.push(Action::ContextZoomOut);
         }
 
         // Switch context (Cmd+1 through Cmd+9) — these remain hardcoded for now.

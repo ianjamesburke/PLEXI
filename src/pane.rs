@@ -6,12 +6,19 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
 // ---------------------------------------------------------------------------
-// Pane ADT (spec §2) — Terminal | App. Adding a variant requires a spec amendment.
+// Pane ADT (spec §2) — Terminal | App | SubContext.
+// Issue #1374 is the spec amendment for the SubContext variant.
 // ---------------------------------------------------------------------------
 
 pub enum Pane {
     Terminal(Box<TerminalPane>),
     App(Box<AppPane>),
+    /// A tile that represents a child context nested inside this one.
+    /// Renders a wireframe preview; Cmd+Shift+Enter zooms in.
+    SubContext {
+        pane_id: PaneId,
+        context_id: u64,
+    },
 }
 
 impl Pane {
@@ -19,6 +26,7 @@ impl Pane {
         match self {
             Pane::Terminal(t) => t.id,
             Pane::App(a) => a.id,
+            Pane::SubContext { pane_id, .. } => *pane_id,
         }
     }
 
@@ -46,6 +54,13 @@ impl Pane {
     pub fn as_app_mut(&mut self) -> Option<&mut AppPane> {
         match self {
             Pane::App(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    pub fn as_sub_context(&self) -> Option<u64> {
+        match self {
+            Pane::SubContext { context_id, .. } => Some(*context_id),
             _ => None,
         }
     }
