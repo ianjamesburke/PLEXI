@@ -157,6 +157,7 @@ osc_pane_title = true
 # open_secrets_manager    = "cmd+shift+s"
 # force_reload_app        = "cmd+alt+r"
 # toggle_notification_modal = "cmd+shift+a"
+# open_scratchpad          = "cmd+shift+space"
 
 # ── Quick Note ─────────────────────────────────────────────────
 # Cmd+0 opens a compose modal. Enter advances to the destination

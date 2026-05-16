@@ -121,7 +121,7 @@ pub enum Action {
     /// Swap the focused pane with its neighbor in the given direction.
     /// Bound to Cmd+Ctrl+H/J/K/L.
     SwapPane(Direction),
-    /// Open the scratchpad overlay. Bound to Ctrl+Space.
+    /// Open the scratchpad overlay. Bound to Cmd+Shift+Space.
     OpenScratchpad,
     /// Zoom into the sub-context tile that has focus. Bound to Cmd+Shift+Enter.
     ContextZoomIn,
@@ -239,7 +239,7 @@ impl Default for KeyBindings {
             force_reload_app:          (cmd_alt(),   egui::Key::R),
             toggle_notification_modal: (cmd_shift(), egui::Key::A),
             context_inspector:         (cmd(),       egui::Key::I),
-            open_scratchpad:           (ctrl(),      egui::Key::Space),
+            open_scratchpad:           (cmd_shift(), egui::Key::Space),
             context_zoom_in:           (cmd_shift(), egui::Key::Enter),
             context_zoom_out:          (cmd(),       egui::Key::Escape),
         }
