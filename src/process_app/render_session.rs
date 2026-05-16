@@ -55,6 +55,7 @@ impl RenderSession {
         pane_id: u64,
         image_cache: &mut super::image_cache::ImageCache,
         app_dir: &std::path::Path,
+        net_http_granted: bool,
     ) {
         log::debug!("render_session: render pane_id={} cmds={}", pane_id, frame.len());
 
@@ -68,6 +69,7 @@ impl RenderSession {
             audio_peaks,
             image_cache,
             app_dir,
+            net_http_granted,
         );
 
         // ── Pass 2: TextInput widgets ────────────────────────────────────────

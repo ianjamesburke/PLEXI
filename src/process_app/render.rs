@@ -39,6 +39,7 @@ pub(crate) fn render_draw_commands(
     audio_peaks: &HashMap<String, f32>,
     image_cache: &mut super::image_cache::ImageCache,
     workspace_root: &std::path::Path,
+    net_http_granted: bool,
 ) {
     let origin = pane_rect.min;
 
@@ -421,7 +422,11 @@ pub(crate) fn render_draw_commands(
             RenderCommand::TextInput { .. } => {}
 
             RenderCommand::Image { src, x, y, w, h, fit } => {
-                image_cache.request(src, workspace_root);
+                if src.starts_with("http://") || src.starts_with("https://") {
+                    image_cache.request_url(src, net_http_granted);
+                } else {
+                    image_cache.request(src, workspace_root);
+                }
                 let target_rect = egui::Rect::from_min_size(
                     egui::pos2(origin.x + x, origin.y + y),
                     egui::vec2(*w, *h),
