@@ -996,6 +996,18 @@ impl BetaConfig {
             self.osc_pane_title = other.osc_pane_title;
         }
     }
+
+    /// Resolved unfocused-pane opacity.
+    /// `ghost_opacity` set → use it; `ghost = true` → 0.9; else → None (no dimming).
+    pub fn unfocused_opacity(&self) -> Option<f32> {
+        if let Some(opacity) = self.ghost_opacity {
+            Some(opacity)
+        } else if self.ghost.unwrap_or(false) {
+            Some(0.9)
+        } else {
+            None
+        }
+    }
 }
 
 impl LogConfig {

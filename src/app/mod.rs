@@ -3031,25 +3031,25 @@ impl eframe::App for PlexiApp {
                     }
                 }
 
-                let unfocused_opacity = self.config.beta.as_ref().and_then(|b| {
-                    if let Some(opacity) = b.ghost_opacity {
-                        Some(opacity)
-                    } else if b.ghost.unwrap_or(false) {
-                        Some(0.9_f32)
-                    } else {
-                        None
-                    }
-                });
+                let unfocused_opacity =
+                    self.config.beta.as_ref().and_then(|b| b.unfocused_opacity());
                 {
                     let ghost_log_id = egui::Id::new("ghost_opacity_logged");
                     let cur = unfocused_opacity.map(|v| (v * 100.0) as u32);
                     let prev: Option<u32> = ui.ctx().data(|d| d.get_temp(ghost_log_id));
-                    if prev != Some(cur.unwrap_or(u32::MAX)) {
-                        match unfocused_opacity {
-                            Some(opacity) => log::info!("[ghost] unfocused pane opacity: {opacity:.2}"),
-                            None => log::info!("[ghost] disabled"),
+                    if prev != cur {
+                        if let Some(opacity) = unfocused_opacity {
+                            log::info!("[ghost] unfocused pane opacity: {opacity:.2}");
+                        } else if prev.is_some() {
+                            log::info!("[ghost] disabled");
                         }
-                        ui.ctx().data_mut(|d| d.insert_temp(ghost_log_id, cur.unwrap_or(u32::MAX)));
+                        ui.ctx().data_mut(|d| {
+                            if let Some(v) = cur {
+                                d.insert_temp(ghost_log_id, v);
+                            } else {
+                                d.remove_temp::<u32>(ghost_log_id);
+                            }
+                        });
                     }
                 }
 
