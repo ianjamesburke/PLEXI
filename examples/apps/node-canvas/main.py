@@ -92,14 +92,15 @@ def _make_node(title: str, x: float, y: float,
     )
 
 
-def _seed() -> tuple[list[Node], list[Connection]]:
+def _seed() -> tuple[dict[str, Node], list[Connection]]:
     trigger = _make_node("HTTP Trigger", 60,  80,  [],              ["response"])
     parse   = _make_node("Parse JSON",  280, 80,  ["body"],         ["data", "error"])
     filter_ = _make_node("Filter",      500, 40,  ["items"],        ["pass", "fail"])
     send    = _make_node("Send Email",  500, 180, ["payload"],       ["sent"])
     log_    = _make_node("Log",         720, 100, ["msg"],           [])
 
-    nodes = [trigger, parse, filter_, send, log_]
+    seed_list = [trigger, parse, filter_, send, log_]
+    nodes = {n.id: n for n in seed_list}
     conns = [
         Connection(trigger.id, trigger.outputs[0].id, parse.id, parse.inputs[0].id),
         Connection(parse.id,   parse.outputs[0].id,   filter_.id, filter_.inputs[0].id),
@@ -143,13 +144,13 @@ class NodeCanvas(App):
         return px, py
 
     def _node_by_id(self, nid: str) -> Node | None:
-        return next((n for n in self._nodes if n.id == nid), None)
+        return self._nodes.get(nid)
 
     # ── Hit testing ───────────────────────────────────────────────────────────
 
     def _port_at(self, sx: float, sy: float) -> tuple[str, str, bool] | None:
         """Return (node_id, port_id, is_output) or None."""
-        for node in self._nodes:
+        for node in self._nodes.values():
             for port in node.outputs:
                 px, py = self._port_screen_pos(node, port, True)
                 if math.hypot(sx - px, sy - py) <= PORT_R * 2:
@@ -161,7 +162,7 @@ class NodeCanvas(App):
         return None
 
     def _node_at(self, sx: float, sy: float) -> str | None:
-        for node in reversed(self._nodes):
+        for node in reversed(list(self._nodes.values())):
             nx, ny = self._w2s(node.x, node.y)
             if nx <= sx <= nx + node.w and ny <= sy <= ny + node.h:
                 return node.id
@@ -217,7 +218,7 @@ class NodeCanvas(App):
         ctx.circle(mx, my, PORT_R, C_CONN_LIVE)
 
     def _draw_nodes(self, ctx: RenderContext) -> None:
-        for node in self._nodes:
+        for node in self._nodes.values():
             self._draw_node(ctx, node)
 
     def _draw_node(self, ctx: RenderContext, node: Node) -> None:
@@ -237,7 +238,6 @@ class NodeCanvas(App):
         ctx.rect(sx, sy + node.h - 2, node.w, 2, border)
         ctx.rect(sx, sy, 2, node.h, border)
         ctx.rect(sx + node.w - 2, sy, 2, node.h, border)
-        ctx.rect(sx + 2, sy + 2, node.w - 4, node.h - 4, "#00000000", radius=4.0)
 
         # title
         ctx.text(sx + PORT_LABEL_X, sy + (NODE_HEADER_H - CAPTION) / 2,
@@ -289,6 +289,9 @@ class NodeCanvas(App):
             self._selected = hit_node
             node = self._node_by_id(hit_node)
             if node:
+                # move to end so it renders on top (Z-order)
+                self._nodes.pop(hit_node)
+                self._nodes[hit_node] = node
                 sx, sy = self._w2s(node.x, node.y)
                 self._drag_node = (hit_node, x - sx, y - sy)
                 self.emit.info(f"node-canvas: drag node start {hit_node}")
@@ -367,7 +370,7 @@ class NodeCanvas(App):
                 cx - NODE_W / 2, cy - 40,
                 ["input"], ["output"],
             )
-            self._nodes.append(node)
+            self._nodes[node.id] = node
             self._selected = node.id
             self.emit.info(f"node-canvas: node added id={node.id} pos=({node.x:.0f},{node.y:.0f})")
             self.emit.schedule_render()
@@ -375,7 +378,7 @@ class NodeCanvas(App):
         elif key in ("delete", "backspace"):
             if self._selected:
                 nid = self._selected
-                self._nodes = [n for n in self._nodes if n.id != nid]
+                self._nodes.pop(nid, None)
                 self._conns = [c for c in self._conns
                                if c.from_node != nid and c.to_node != nid]
                 self._selected = None
