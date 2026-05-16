@@ -1044,6 +1044,16 @@ impl PlexiApp {
             }
         }
 
+        // N → open config file to add a new destination.
+        let add_dest = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::N)
+        });
+        if add_dest {
+            log::info!("QuickNote: opening config to add destination");
+            crate::config::open_config_file();
+            return;
+        }
+
         // Digit keys → fast-dispatch by number.
         let pressed = consume_digit_key(ctx);
 
@@ -1203,7 +1213,7 @@ impl PlexiApp {
 
                         ui.add_space(style::SPACE_XL);
                         ui.label(
-                            RichText::new("↑↓/jk navigate  ·  Enter select  ·  H/Esc back")
+                            RichText::new("↑↓/jk navigate  ·  Enter select  ·  n add dest  ·  H/Esc back")
                                 .color(self.colors.text_dim.linear_multiply(0.4))
                                 .size(style::TEXT_HINT)
                                 .family(egui::FontFamily::Monospace),
@@ -1411,6 +1421,16 @@ impl PlexiApp {
             }
         }
 
+        // N → open config file to add a new destination.
+        let add_dest = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::N)
+        });
+        if add_dest {
+            log::info!("QuickNote: opening config to add destination (from submenu)");
+            crate::config::open_config_file();
+            return;
+        }
+
         // Digit keys → fast-dispatch by number.
         let pressed = consume_digit_key(ctx);
         if let Some(key) = pressed {
@@ -1499,7 +1519,7 @@ impl PlexiApp {
 
                         ui.add_space(style::SPACE_XL);
                         ui.label(
-                            RichText::new("↑↓/jk navigate  ·  Enter select  ·  L enter  ·  H/Esc back")
+                            RichText::new("↑↓/jk navigate  ·  Enter select  ·  L enter  ·  n add dest  ·  H/Esc back")
                                 .color(self.colors.text_dim.linear_multiply(0.4))
                                 .size(style::TEXT_HINT)
                                 .family(egui::FontFamily::Monospace),
