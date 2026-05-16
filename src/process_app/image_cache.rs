@@ -6,6 +6,7 @@
 //! to retrieve a loaded handle for rendering.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 
@@ -31,6 +32,47 @@ impl ImageCache {
             rx,
             warned: HashSet::new(),
         }
+    }
+
+    /// Request a remote URL image fetch. No-op if already loading/loaded/errored.
+    ///
+    /// Requires `net_http_granted`; otherwise inserts an error placeholder
+    /// immediately without spawning a thread.
+    pub(crate) fn request_url(&mut self, src: &str, net_http_granted: bool) {
+        if self.cache.contains_key(src) {
+            return;
+        }
+        if !net_http_granted {
+            log::warn!("ImageCache: net.http capability required for remote image '{src}'");
+            self.cache.insert(
+                src.to_string(),
+                CachedImage::Error("net.http capability required for remote images".to_string()),
+            );
+            return;
+        }
+        self.cache.insert(src.to_string(), CachedImage::Loading);
+        log::info!("ImageCache: fetching remote URL '{src}'");
+        let src_key = src.to_string();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let result = (|| {
+                let resp = ureq::get(&src_key)
+                    .timeout(std::time::Duration::from_secs(10))
+                    .call()
+                    .map_err(|e| e.to_string())?;
+                let mut bytes: Vec<u8> = Vec::new();
+                // 10 MB cap — prevents OOM from malicious or oversized images.
+                resp.into_reader()
+                    .take(10 * 1024 * 1024)
+                    .read_to_end(&mut bytes)
+                    .map_err(|e| e.to_string())?;
+                let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
+                let rgba = img.to_rgba8();
+                let size = [rgba.width() as usize, rgba.height() as usize];
+                Ok(egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()))
+            })();
+            let _ = tx.send((src_key, result));
+        });
     }
 
     /// Request an image load. No-op if already loading/loaded/errored.

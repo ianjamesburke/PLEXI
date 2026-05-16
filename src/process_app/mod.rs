@@ -1339,7 +1339,9 @@ impl App for ProcessApp {
             .map(|g| g.clone())
             .unwrap_or_default();
         self.image_cache.poll(ui.ctx());
-        self.render_session.render(ui, pane_rect, &self.frame, ctx.colors, &mut self.commonmark_cache, &audio_peaks, self.pane_id, &mut self.image_cache, &self.app_dir);
+        let net_http_granted = self.permissions.is_builtin
+            || self.permissions.capabilities.contains(&Capability::NetHttp);
+        self.render_session.render(ui, pane_rect, &self.frame, ctx.colors, &mut self.commonmark_cache, &audio_peaks, self.pane_id, &mut self.image_cache, &self.app_dir, net_http_granted);
         self.outbound_events.extend(self.render_session.drain_events());
 
         // ── Error fallback ──────────────────────────────────────────────────
