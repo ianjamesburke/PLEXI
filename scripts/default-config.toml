@@ -20,6 +20,11 @@ confirm_close = false
 # Maximum depth of pane focus history (Cmd+[ / Cmd+]).
 # focus_history_depth = 100
 
+# ── OSC & Terminal Features ────────────────────────────────────────
+# osc_pane_title applies OSC 0/1/2 title sequences from running
+# processes as pane names.
+osc_pane_title = true
+
 # ── Notifications ──────────────────────────────────────────────
 # The work-area modal is the one and only notification surface.
 # Apps emit `ctx.notify(...)`, `ctx.notify_choice(...)`, or
@@ -96,7 +101,6 @@ confirm_close = false
 # crt           = false    # Retro CRT scanlines + green phosphor tint
 # ghost         = false    # Unfocused panes render at reduced opacity
 # ghost_opacity = 0.9     # Opacity for unfocused panes (0.0–1.0). Setting this enables ghost automatically.
-# osc_pane_title = false   # Apply OSC 0/1/2 title sequences from running processes as pane names
 
 # ── Logging ────────────────────────────────────────────────────
 # [log]
