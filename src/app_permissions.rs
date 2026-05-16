@@ -116,6 +116,24 @@ impl Capability {
             "panes.spawn",
         ]
     }
+
+    /// Returns a human-readable description of why this capability cannot be
+    /// satisfied by the current config, or `None` if it is satisfiable.
+    /// Called before spawning any app process — if any declared capability
+    /// returns `Some(...)`, the host shows an error tile instead of launching.
+    pub fn config_missing_reason(&self, config: &crate::config::PlexiConfig) -> Option<String> {
+        match self {
+            Capability::AiQuery => {
+                if config.ai.is_none() {
+                    Some("ai.query requires [ai] config".to_string())
+                } else {
+                    None
+                }
+            }
+            // All other capabilities are config-independent.
+            _ => None,
+        }
+    }
 }
 
 /// Error produced when a manifest or decision log names a capability that is not

@@ -623,6 +623,29 @@ impl AppRegistry {
             .unwrap_or(crate::app_protocol::NotifyScope::Window)
     }
 
+    /// Check whether an app's declared capabilities are satisfiable by the
+    /// current config. Returns human-readable missing-capability descriptions.
+    /// Empty = all satisfied. Does not spawn the process.
+    pub fn check_config_capabilities(
+        &self,
+        id: &str,
+        config: &crate::config::PlexiConfig,
+    ) -> Vec<String> {
+        let Some(installed) = self.apps.get(id) else {
+            return vec![];
+        };
+        let mut missing = Vec::new();
+        for cap_str in &installed.manifest.capabilities.capabilities {
+            let Ok(cap) = crate::app_permissions::Capability::try_from(cap_str.as_str()) else {
+                continue;
+            };
+            if let Some(reason) = cap.config_missing_reason(config) {
+                missing.push(reason);
+            }
+        }
+        missing
+    }
+
     /// Launch an app process for the given id.
     pub fn launch_process(&self, id: &str, cwd: &PathBuf, args: &[String]) -> Option<ProcessApp> {
         let installed = self.apps.get(id)?;

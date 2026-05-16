@@ -192,6 +192,51 @@ impl PlexiApp {
         let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first);
     }
 
+    /// Open a built-in error tile pane when a capability pre-flight check fails.
+    /// Mirrors `open_process_app_pane` but uses `AppRuntime::Builtin` — no
+    /// Python process is spawned.
+    fn open_launch_failed_pane(
+        &mut self,
+        app_id: &str,
+        hint: Option<&str>,
+        missing: Vec<String>,
+        workspace_root: std::path::PathBuf,
+    ) {
+        let active = self.active_window;
+        let share = crate::host::command::ShareRatio::new(1.0, 1.0).expect("1:1 is valid");
+        let (new_id, share, vertical, new_pane_first) =
+            self.open_pane_layout(app_id, None, hint, share);
+        self.windows[active].panes.insert(
+            new_id,
+            crate::pane::Pane::App(Box::new(crate::pane::AppPane {
+                id: new_id,
+                runtime: crate::pane::AppRuntime::Builtin(
+                    Box::new(crate::launch_failed::LaunchFailedApp {
+                        app_id: app_id.to_string(),
+                        missing,
+                    }),
+                ),
+                workspace_root,
+                permissions: crate::app_permissions::AppPermissions::default(),
+                manifest_id: app_id.to_string(),
+                name: format!("Cannot launch {app_id}"),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+            })),
+        );
+        if self.windows[active].focused_pane.is_none() {
+            let ctx = &mut self.windows[active];
+            let root_tile = ctx.tree.tiles.insert_pane(new_id);
+            ctx.tree.root = Some(root_tile);
+            ctx.focused_pane = Some(root_tile);
+            log::info!("app::{app_id}: launch-failed tile inserted as root pane {new_id}");
+            return;
+        }
+        let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first);
+        log::info!("app::{app_id}: launch-failed tile inserted as pane {new_id}");
+    }
+
     /// Reload the `ProcessApp` inside the AppPane at `pane_id` (#83).
     ///
     /// Sends `Shutdown` to the existing subprocess (via `Drop` on the old
@@ -554,12 +599,39 @@ impl PlexiApp {
             return;
         }
 
+        // Pre-flight: check config-level capability requirements before spawning.
+        {
+            let missing = self.registry.check_config_capabilities(id, &self.config);
+            if !missing.is_empty() {
+                log::warn!("pre-flight: '{id}' cannot launch — missing: {missing:?}");
+                let fail_hint = layout
+                    .clone()
+                    .or_else(|| self.registry.layout_hint_for(id))
+                    .or_else(|| Some("overlay".to_string()));
+                self.open_launch_failed_pane(id, fail_hint.as_deref(), missing, cwd);
+                return;
+            }
+        }
+
         // Try registry first; if it returns None, rescan from disk (supports
         // apps created mid-session via `plexi app init`) then fall through to Tier 4.
         let registry_process = self.registry.launch_process(id, &cwd, args);
         let registry_process = if registry_process.is_none() {
             log::info!("launch_app_by_id: '{id}' not in startup registry — rescanning from disk");
             self.registry = crate::app_registry::AppRegistry::load(&cwd);
+            // Pre-flight check for newly discovered (rescanned) app.
+            {
+                let missing_after_rescan = self.registry.check_config_capabilities(id, &self.config);
+                if !missing_after_rescan.is_empty() {
+                    log::warn!("pre-flight: '{id}' cannot launch — missing: {missing_after_rescan:?}");
+                    let fail_hint = layout
+                        .clone()
+                        .or_else(|| self.registry.layout_hint_for(id))
+                        .or_else(|| Some("overlay".to_string()));
+                    self.open_launch_failed_pane(id, fail_hint.as_deref(), missing_after_rescan, cwd);
+                    return;
+                }
+            }
             self.registry.launch_process(id, &cwd, args)
         } else {
             registry_process
