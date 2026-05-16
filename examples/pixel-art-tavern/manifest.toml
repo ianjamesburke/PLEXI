@@ -1,0 +1,16 @@
+schema_version = 1
+
+[app]
+id = "pixel-art-tavern"
+type = "app"
+name = "Pixel Art Tavern"
+entry = "main.py"
+version = "0.1.0"
+description = "Pixel art tavern with AI NPCs that converse turn-by-turn via ai_query"
+watch = true
+
+[app.capabilities]
+capabilities = ["ai.query"]
+
+[launch]
+layout_hint = { side = "right", split = 0.5 }
