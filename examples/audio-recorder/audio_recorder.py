@@ -5,6 +5,7 @@ Demonstrates emit.list_audio_devices() + audio capture + WAV export.
 Keys: left/right to select device, r to record/stop, s to save WAV.
 """
 from __future__ import annotations
+import array
 import struct
 import threading
 import wave
@@ -124,11 +125,10 @@ class AudioRecorderApp(App):
         path = pathlib.Path.home() / "Desktop" / "recording.wav"
         n_floats = len(all_data) // 4
         samples = struct.unpack_from(f"<{n_floats}f", all_data)
-        # Convert f32 [-1, 1] → i16
-        pcm_i16 = b""
+        arr = array.array("h")
         for s in samples:
-            v = int(max(-1.0, min(1.0, s)) * 32767)
-            pcm_i16 += struct.pack("<h", v)
+            arr.append(int(max(-1.0, min(1.0, s)) * 32767))
+        pcm_i16 = arr.tobytes()
         with wave.open(str(path), "wb") as wf:
             wf.setnchannels(CHANNELS)
             wf.setsampwidth(2)  # 16-bit
@@ -136,7 +136,7 @@ class AudioRecorderApp(App):
             wf.writeframes(pcm_i16)
         duration = len(samples) / SAMPLE_RATE
         self._status = f"Saved: {path} ({duration:.1f}s)"
-        self.emit.info(f"audio-recorder: saved {path}")
+        self.emit.info(f"audio-recorder: saved {path} ({duration:.1f}s)")
 
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
         if key in ("left", "[") and not self._capturing:
