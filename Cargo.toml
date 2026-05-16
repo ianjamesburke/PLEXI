@@ -41,7 +41,6 @@ image = { version = "0.25", default-features = false, features = ["bmp", "gif", 
 # Base64 decode for inline notification image attachments (#74).
 base64 = "0.22"
 crossbeam-queue = "0.3"
-hound = "3"
 include_dir = "0.7"
 zeroize = "1"
 thiserror = "2"
@@ -57,16 +56,15 @@ url = "2"
 libc = "0.2"
 # CoreAudio capture + device enumeration (#277). Cross-platform PCM I/O.
 cpal = "0.17"
-# Host-owned audio playback (#341). Decoder-agnostic; WAV built-in via hound
-# integration; MP3/FLAC/OGG via default symphonia features.
-rodio = "0.19"
+# Host-owned audio playback (#341). Decoder-agnostic; MP3/FLAC/OGG/WAV via default symphonia features.
+rodio = "0.22"
 # Hot reload (#83). Cross-platform fs watcher; on macOS uses FSEvents.
 # `macos_fsevent` is the recommended backend (kqueue is the alt, slower for
 # nested dirs). default-features disabled to avoid pulling crossbeam-channel.
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 egui_commonmark = "0.20"
 # Native file picker dialog (#514). Uses NSOpenPanel on macOS.
-rfd = "0.15"
+rfd = "0.17"
 # Headless app render (#850). Already transitive via eframe; declared directly for explicit use.
 pollster = "0.4"
 wgpu = { version = "24", default-features = false, features = ["wgsl", "metal"] }
@@ -81,16 +79,11 @@ security-framework = "3"
 # CoreMIDI I/O (#320). macOS-only; non-mac builds skip MIDI hardware (mock impl
 # stays available under `cfg(test)`).
 coremidi = "0.9"
-objc2 = "0.5"
-objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSPasteboard", "NSRunningApplication", "NSWindow"] }
-objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSThread", "NSString"] }
-# AVFoundation video decoder (#346). The 0.3.x family is on objc2 0.6 (already
-# transitive via arboard / cpal / eframe), so this introduces no new obj-c
-# stack — just a direct dep on what's already in the tree. Path of least
-# resistance vs. `av-foundation 0.7` which is capture-only and lacks
-# AVAssetReader. v3.5+ follow-up: consolidate src/macos_menu.rs onto objc2 0.6
-# so we have a single direct dep.
-objc2-av-foundation-06 = { package = "objc2-av-foundation", version = "0.3", features = [
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSMenu", "NSMenuItem", "NSPasteboard", "NSRunningApplication", "NSWindow"] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSThread", "NSString", "NSURL", "NSValue", "NSDictionary", "NSError", "NSObject"] }
+# AVFoundation video decoder (#346).
+objc2-av-foundation = { version = "0.3", features = [
     "AVAsset",
     "AVAssetReader",
     "AVAssetReaderOutput",
@@ -99,33 +92,19 @@ objc2-av-foundation-06 = { package = "objc2-av-foundation", version = "0.3", fea
     "objc2-core-media",
     "objc2-core-foundation",
 ] }
-objc2-core-media-06 = { package = "objc2-core-media", version = "0.3", features = [
+objc2-core-media = { version = "0.3", features = [
     "CMSampleBuffer",
     "CMTime",
     "CMTimeRange",
     "objc2-core-video",
 ] }
-objc2-core-video-06 = { package = "objc2-core-video", version = "0.3", features = [
+objc2-core-video = { version = "0.3", features = [
     "CVPixelBuffer",
     "CVImageBuffer",
     "CVBuffer",
     "CVPixelFormatDescription",
 ] }
-objc2-foundation-06 = { package = "objc2-foundation", version = "0.3", features = [
-    "NSURL",
-    "NSString",
-    "NSValue",
-    "NSDictionary",
-    "NSArray",
-    "NSError",
-    "NSObject",
-] }
-# Direct dep on objc2 0.6 so video.rs can use Retained / autoreleasepool from
-# the same major version as objc2-av-foundation-06. The existing `objc2 = "0.5"`
-# dep above stays for src/macos_menu.rs (different major; cargo coexists them
-# fine — we just have to be deliberate about the path).
-objc2-06 = { package = "objc2", version = "0.6" }
-objc2-core-foundation-06 = { package = "objc2-core-foundation", version = "0.3", features = [
+objc2-core-foundation = { version = "0.3", features = [
     "CFBase",
     "CFString",
     "objc2",

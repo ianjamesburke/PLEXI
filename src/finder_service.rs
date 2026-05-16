@@ -20,7 +20,7 @@ fn register_provider_class() -> &'static objc2::runtime::AnyClass {
     CLASS.get_or_init(|| {
         let superclass = NSObject::class();
         let mut builder =
-            ClassBuilder::new("PlexiServicesProvider", superclass).expect("class already registered");
+            ClassBuilder::new(c"PlexiServicesProvider", superclass).expect("class already registered");
 
         unsafe extern "C" fn open_in_plexi(
             _this: &AnyObject,
@@ -80,7 +80,7 @@ pub fn register() {
         return;
     };
     let cls = register_provider_class();
-    let obj: Retained<NSObject> = unsafe { objc2::msg_send_id![cls, new] };
+    let obj: Retained<NSObject> = unsafe { objc2::msg_send![cls, new] };
     let app = NSApplication::sharedApplication(mtm);
     let ptr = Retained::as_ptr(&obj) as *const AnyObject;
     unsafe {

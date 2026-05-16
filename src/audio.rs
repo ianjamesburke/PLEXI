@@ -132,37 +132,23 @@ pub struct PlaybackRequest {
     pub volume: f32,
 }
 
-/// Keep-alive wrapper to make `rodio::OutputStream` `Send`. rodio documents
-/// that the stream is safe to drop from any thread; the conservative `!Send`
-/// trait bound is an upstream limitation. We hold the stream only for its
-/// `Drop` side-effect (tearing down the output device); we never read it.
-#[cfg(not(test))]
-struct SendOutputStream {
-    _stream: rodio::OutputStream,
-}
-#[cfg(not(test))]
-unsafe impl Send for SendOutputStream {}
-
 /// Opaque handle returned from `start_playback`. Dropping it stops playback.
 #[cfg(not(test))]
 pub struct PlaybackSession {
-    /// rodio Sink — controls play/pause/stop/volume.
-    pub sink: rodio::Sink,
-    /// OutputStream must be kept alive for the duration of playback.
-    /// Kept here via the `SendOutputStream` newtype so it's `Send`.
-    _guard: SendOutputStream,
+    player: rodio::Player,
+    _handle: rodio::MixerDeviceSink,
 }
 
 #[cfg(not(test))]
 impl PlaybackSession {
     pub fn pause(&self) {
-        self.sink.pause();
+        self.player.pause();
     }
     pub fn resume(&self) {
-        self.sink.play();
+        self.player.play();
     }
     pub fn set_volume(&self, v: f32) {
-        self.sink.set_volume(v);
+        self.player.set_volume(v);
     }
 }
 
@@ -183,19 +169,16 @@ pub fn start_playback(request: PlaybackRequest) -> Result<PlaybackSession, Audio
     use std::fs::File;
     use std::io::BufReader;
 
-    let (stream, handle) = rodio::OutputStream::try_default()
+    let handle = rodio::DeviceSinkBuilder::open_default_sink()
         .map_err(|e| AudioError::Cpal(format!("rodio: output stream: {e}")))?;
-    let sink = rodio::Sink::try_new(&handle)
-        .map_err(|e| AudioError::Cpal(format!("rodio: sink: {e}")))?;
     let file = File::open(&request.source)
         .map_err(|e| AudioError::Cpal(format!("open {}: {e}", request.source)))?;
-    let source = rodio::Decoder::new(BufReader::new(file))
-        .map_err(|e| AudioError::Cpal(format!("decode {}: {e}", request.source)))?;
-    sink.set_volume(request.volume.clamp(0.0, 2.0));
-    sink.append(source);
+    let player = rodio::play(&handle.mixer(), BufReader::new(file))
+        .map_err(|e| AudioError::Cpal(format!("decode/play {}: {e}", request.source)))?;
+    player.set_volume(request.volume.clamp(0.0, 2.0));
     Ok(PlaybackSession {
-        sink,
-        _guard: SendOutputStream { _stream: stream },
+        player,
+        _handle: handle,
     })
 }
 

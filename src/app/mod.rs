@@ -2989,10 +2989,10 @@ impl eframe::App for PlexiApp {
                         MainThreadMarker::new()
                             .and_then(|mtm| {
                                 let app = NSApplication::sharedApplication(mtm);
-                                app.keyWindow().or_else(|| unsafe { app.mainWindow() })
+                                app.keyWindow().or_else(|| app.mainWindow())
                             })
                             .map(|w| {
-                                let p = unsafe { w.mouseLocationOutsideOfEventStream() };
+                                let p = w.mouseLocationOutsideOfEventStream();
                                 let content_height = ui.ctx().screen_rect().height();
                                 egui::pos2(p.x as f32, content_height - p.y as f32)
                             })
