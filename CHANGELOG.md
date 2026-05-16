@@ -1,6 +1,13 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.383] — 2026-05-16
+
+### Changes
+- fix(ai): broadcast fresh AI config to all panes on reload (#1337) (#1342)
+- feat(cli): plexi uninstall for Plexi self-removal, app uninstall cleanup (#1333) (#1335)
+- docs(cli): rewrite all help text for vibe coder clarity (#1322) (#1334)
+- fix(install): improve installer tone and soften admin access warning
 ## [0.0.382] — 2026-05-15
 
 ### Changes
