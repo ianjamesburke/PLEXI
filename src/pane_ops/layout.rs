@@ -1199,12 +1199,10 @@ impl PlexiApp {
     }
 
     /// CWD for the first terminal pane created from the welcome screen (empty window).
-    /// Priority: context root → window launch path → home_dir → /
+    /// Priority: context root → window launch path
     pub(crate) fn cwd_for_welcome_tab(&self) -> std::path::PathBuf {
-        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
         self.resolve_new_pane_cwd(None, None)
-            .or_else(|| Some(self.windows[self.active_window].path.clone()))
-            .unwrap_or(home)
+            .unwrap_or_else(|| self.windows[self.active_window].path.clone())
     }
 }
 
