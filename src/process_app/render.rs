@@ -451,8 +451,9 @@ pub(crate) fn render_draw_commands(
                         _ => "⏳ loading…",
                     };
                     let font = egui::FontId::proportional(crate::style::TEXT_HINT);
+                    let wrap_width = (target_rect.width() - 12.0).max(0.0);
                     let galley = ui.fonts(|f| {
-                        f.layout_no_wrap(state_text.to_string(), font, colors.text_dim)
+                        f.layout(state_text.to_string(), font, colors.text_dim, wrap_width)
                     });
                     let text_pos = egui::pos2(
                         target_rect.center().x - galley.size().x / 2.0,
