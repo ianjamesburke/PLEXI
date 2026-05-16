@@ -2,7 +2,7 @@
 """Screen Time — clock + monthly views from daily_log *_screen.jsonl files.
 
 Layout:
-  - Top bar chrome (AppBar, KeyRow hints, Footer) uses SDK v2 components.
+  - Top bar chrome (AppBar, KeyRow hints, Footer) uses the component API.
   - The clock face + month grid are drawn with primitive ctx.circle/arc/text —
     they're data surfaces, not chrome.
 """
@@ -460,7 +460,7 @@ class ScreenTimeApp(App):
         r_outer = min(clock_area_w / 2, available_h / 2) * 0.78
         r_inner = r_outer * 0.55
         cx = clock_area_w / 2
-        cy = top + (available_h / 2 if wide else available_h * 0.42)
+        cy = top + (available_h / 2 if wide else available_h * 0.38)
 
         self._draw_clock_ring(ctx, cx, cy, r_outer, r_inner)
         legend_y = top + (SPACE_MD if wide else available_h * 0.82)
