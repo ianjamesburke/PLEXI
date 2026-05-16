@@ -555,8 +555,10 @@ fn resolve_ollama_model_tier(tier: &ModelTier, config: &OllamaBackendConfig) -> 
 /// ```
 ///
 /// Eventual consistency: if the generation is not yet queryable, OpenRouter
-/// returns 404 or a 200 with `data` absent/null. One retry after 500ms.
-/// If still unavailable, logs a warning and returns `None`.
+/// returns 404 or a 200 with `data` absent/null. Three attempts: after 2s,
+/// 5s, and 8s (15s total). Gemini models via OpenRouter are the slowest;
+/// their records appear ~30s post-stream but well within the 35s app timeout.
+/// If still unavailable after all attempts, logs a warning and returns `None`.
 #[derive(Debug, Clone, Copy, Default)]
 struct GenerationMetrics {
     cost_usd: Option<f64>,
@@ -617,9 +619,11 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
                 return None;
             }
         };
+        // OpenRouter returns total_cost as a float for most models but as a
+        // quoted string for some (e.g. "0.00492"). Try numeric first.
         let cost_usd = data["total_cost"]
-            .as_str()
-            .and_then(|s| s.parse::<f64>().ok());
+            .as_f64()
+            .or_else(|| data["total_cost"].as_str().and_then(|s| s.parse::<f64>().ok()));
         let prompt_tokens = data["tokens_prompt"].as_u64().map(|n| n as u32);
         let completion_tokens = data["tokens_completion"].as_u64().map(|n| n as u32);
         let cached_tokens = data["native_tokens_cached"]
@@ -640,15 +644,22 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
     };
 
     // OpenRouter has eventual consistency — the generation record may not be
-    // queryable immediately after the stream completes. Wait 1s before the
-    // first attempt, then retry after another 1.5s.
-    std::thread::sleep(std::time::Duration::from_secs(1));
+    // queryable immediately after the stream completes. Gemini models via
+    // OpenRouter are especially slow: manually confirmed at ~30s. Use three
+    // attempts: wait 2s, wait 5s, wait 8s (total: 15s elapsed, well within
+    // the 35s app timeout).
+    std::thread::sleep(std::time::Duration::from_secs(2));
     if let Some(metrics) = try_fetch(1) {
         return Some(metrics);
     }
 
-    std::thread::sleep(std::time::Duration::from_millis(1500));
-    let metrics = try_fetch(2);
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    if let Some(metrics) = try_fetch(2) {
+        return Some(metrics);
+    }
+
+    std::thread::sleep(std::time::Duration::from_secs(8));
+    let metrics = try_fetch(3);
     if metrics.is_none() {
         log::warn!(
             "ai_broker: generation metrics unavailable for gen_id={gen_id} — cost/tokens fallback unavailable"
@@ -834,23 +845,33 @@ mod tests {
         );
     }
 
-    /// Verify `fetch_generation_cost` parses the documented response shape.
+    /// Verify `fetch_generation_cost` parses total_cost as string or float.
+    /// OpenRouter returns a quoted string for most models but a raw float for
+    /// Gemini (e.g. 9.075e-05). The parser must handle both.
     #[test]
     fn fetch_generation_cost_parses_total_cost_string() {
-        let mock_response = serde_json::json!({
-            "data": {
-                "total_cost": "0.00492",
-                "tokens_prompt": 24,
-                "tokens_completion": 29
-            }
+        let parse_cost = |v: &serde_json::Value| -> Option<f64> {
+            v["data"]["total_cost"]
+                .as_f64()
+                .or_else(|| v["data"]["total_cost"].as_str().and_then(|s| s.parse().ok()))
+        };
+
+        let string_response = serde_json::json!({
+            "data": { "total_cost": "0.00492", "tokens_prompt": 24, "tokens_completion": 29 }
         });
-        let total_cost_str = mock_response["data"]["total_cost"]
-            .as_str()
-            .expect("total_cost must be a string");
-        let parsed: f64 = total_cost_str.parse().expect("must parse as f64");
+        let parsed = parse_cost(&string_response).expect("string total_cost must parse");
         assert!(
             (parsed - 0.00492).abs() < 1e-9,
-            "total_cost must parse to 0.00492"
+            "string total_cost must parse to 0.00492"
+        );
+
+        let float_response = serde_json::json!({
+            "data": { "total_cost": 9.075e-05_f64, "tokens_prompt": 60, "tokens_completion": 67 }
+        });
+        let parsed = parse_cost(&float_response).expect("float total_cost must parse");
+        assert!(
+            (parsed - 9.075e-05).abs() < 1e-12,
+            "float total_cost must parse to 9.075e-05"
         );
     }
 }
