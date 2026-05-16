@@ -7,6 +7,7 @@ Keys: left/right to select device, r to record/stop, s to save WAV.
 from __future__ import annotations
 import array
 import struct
+import sys
 import threading
 import wave
 import pathlib
@@ -125,9 +126,9 @@ class AudioRecorderApp(App):
         path = pathlib.Path.home() / "Desktop" / "recording.wav"
         n_floats = len(all_data) // 4
         samples = struct.unpack_from(f"<{n_floats}f", all_data)
-        arr = array.array("h")
-        for s in samples:
-            arr.append(int(max(-1.0, min(1.0, s)) * 32767))
+        arr = array.array("h", (int(max(-1.0, min(1.0, s)) * 32767) for s in samples))
+        if sys.byteorder == "big":
+            arr.byteswap()
         pcm_i16 = arr.tobytes()
         with wave.open(str(path), "wb") as wf:
             wf.setnchannels(CHANNELS)
