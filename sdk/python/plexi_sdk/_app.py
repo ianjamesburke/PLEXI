@@ -446,6 +446,7 @@ class App:
         import ast
         import inspect
         import json
+        import textwrap
         from ._emitter import CAPABILITY_REGISTRY
 
         required: set[str] = set()
@@ -455,7 +456,7 @@ class App:
             if getattr(method, "__module__", None) != app_module:
                 continue
             try:
-                source = inspect.getsource(method)
+                source = textwrap.dedent(inspect.getsource(method))
                 tree = ast.parse(source)
             except (OSError, TypeError, SyntaxError, IndentationError):
                 continue
