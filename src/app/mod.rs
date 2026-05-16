@@ -2832,7 +2832,7 @@ impl eframe::App for PlexiApp {
                     self.minimap.toggle();
                 }
                 Action::OpenScratchpad => {
-                    log::info!("scratchpad: Ctrl+Space — opening");
+                    log::info!("scratchpad: Cmd+Shift+Space — opening");
                     self.open_scratchpad();
                 }
                 Action::ContextZoomIn => {
