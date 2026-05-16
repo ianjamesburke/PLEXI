@@ -20,8 +20,7 @@ const fmt = (d: Date) =>
 
       {posts.length === 0 ? (
         <div class="coming-soon">
-          <div class="coming-label">First post</div>
-          <div class="coming-date">Sunday, May 3</div>
+          <div class="coming-label">First post coming soon</div>
           <p class="coming-sub">drop your email below and i'll send you a heads up when it's live.</p>
         </div>
       ) : (
@@ -64,13 +63,6 @@ const fmt = (d: Date) =>
     color: var(--fg-4);
     margin-bottom: 12px;
   }
-  .coming-date {
-    font-size: 48px;
-    font-weight: 600;
-    letter-spacing: -0.02em;
-    color: var(--fg);
-    margin-bottom: 20px;
-  }
   .coming-sub {
     font-size: 14px;
     color: var(--fg-3);
@@ -99,7 +91,6 @@ const fmt = (d: Date) =>
 
   @media (max-width: 640px) {
     .section-head h2 { font-size: 28px; }
-    .coming-date { font-size: 36px; }
     .post-row { grid-template-columns: 1fr; gap: 8px; }
     .date { padding-top: 0; }
   }
