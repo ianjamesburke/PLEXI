@@ -1999,16 +1999,23 @@ pub(crate) fn static_capability_check(
 
     log::info!("ProcessApp[{type_id}]: running static capability check");
 
+    const INTROSPECT_ENV_WHITELIST: &[&str] = &[
+        "HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL",
+    ];
     let mut cmd = std::process::Command::new(py_exe);
     cmd.arg(bin_path)
         .arg("--plexi-introspect")
         .env_clear()
         .env("PYTHONPATH", pythonpath)
         .env("PATH", path_env)
-        .env("HOME", std::env::var("HOME").unwrap_or_default())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .stdin(std::process::Stdio::null());
+    for var in INTROSPECT_ENV_WHITELIST {
+        if let Ok(v) = std::env::var(var) {
+            cmd.env(var, v);
+        }
+    }
 
     let child = match cmd.spawn() {
         Ok(c) => c,
@@ -2017,6 +2024,7 @@ pub(crate) fn static_capability_check(
             return Ok(());
         }
     };
+    let pid = child.id();
 
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -2030,15 +2038,18 @@ pub(crate) fn static_capability_check(
             return Ok(());
         }
         Err(_) => {
-            log::warn!("ProcessApp[{type_id}]: static capability check timed out — skipping");
+            log::warn!("ProcessApp[{type_id}]: static capability check timed out (pid {pid}) — killing and skipping");
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL); }
             return Ok(());
         }
     };
 
     if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         log::warn!(
-            "ProcessApp[{type_id}]: static capability check exited with {:?} — skipping",
-            output.status.code()
+            "ProcessApp[{type_id}]: static capability check exited with {:?} — skipping\nstderr: {}",
+            output.status.code(),
+            stderr.trim(),
         );
         return Ok(());
     }
@@ -2047,7 +2058,12 @@ pub(crate) fn static_capability_check(
     let json: serde_json::Value = match serde_json::from_str(stdout.trim()) {
         Ok(v) => v,
         Err(e) => {
-            log::warn!("ProcessApp[{type_id}]: static capability check invalid JSON ({e}) — skipping");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log::warn!(
+                "ProcessApp[{type_id}]: static capability check invalid JSON ({e}) — skipping\nstdout: {}\nstderr: {}",
+                stdout.trim(),
+                stderr.trim(),
+            );
             return Ok(());
         }
     };
