@@ -6,7 +6,7 @@ fired via schedule_task. Idle animation between turns via ctx.elapsed.
 """
 from __future__ import annotations
 
-import time
+import copy
 from dataclasses import dataclass
 from plexi_sdk import App, RenderContext, SURFACE, MUTED
 
@@ -219,13 +219,14 @@ NPCS: list[NPC] = [
 
 class TavernApp(App):
     async def on_init(self, _ctx: RenderContext) -> None:
-        self._npcs = NPCS
+        self._npcs = copy.deepcopy(NPCS)
         self._turn_idx = 0
         self._state = "idle"   # "idle" | "thinking" | "speaking" | "pausing"
         self._anim_accum = 0.0
         self._anim_frame = 0
         self._speech_timer = 0.0
         self._pause_timer = 0.0
+        self._total_elapsed = 0.0
         self._conversation: list[dict] = []
         self._started = False
         self.emit.info(f"pixel-art-tavern initialized, {len(self._npcs)} NPCs loaded")
@@ -260,6 +261,7 @@ class TavernApp(App):
         ctx.text(PAD, PAD + HEADING + 4, "A pixel art tavern", size=CAPTION, color=MUTED, monospace=True)
 
     def _tick(self, dt: float) -> None:
+        self._total_elapsed += dt
         self._anim_accum += dt
         if self._anim_accum >= 1.0 / ANIM_FPS:
             self._anim_accum -= 1.0 / ANIM_FPS
@@ -390,18 +392,15 @@ class TavernApp(App):
                  bold=True, monospace=True, elide=False, selectable=False)
 
         # Dialogue text
-        speech = npc.speech
-        if len(speech) > 120:
-            speech = speech[:117] + "..."
-        ctx.text(bx + 8, by + 6 + CAPTION + 4, speech,
+        ctx.text(bx + 8, by + 6 + CAPTION + 4, npc.speech,
                  size=CAPTION - 1, color=W, max_width=max_w - 16,
-                 elide=False, selectable=False)
+                 elide=True, selectable=False)
 
     def _draw_thinking_dots(self, ctx: RenderContext, npc: NPC, floor_y: float) -> None:
         bx = npc.cx - 30.0
         by = floor_y - 40.0
         ctx.rect(bx, by, 60.0, 26.0, fill=SURFACE + "cc", radius=6.0)
-        frame_offset = int(time.monotonic() * ANIM_FPS) % 3
+        frame_offset = int(self._total_elapsed * ANIM_FPS) % 3
         for j in range(3):
             col = W if j == frame_offset else G
             ctx.rect(bx + 12 + j * 14, by + 9, 8.0, 8.0, fill=col, radius=4.0)
