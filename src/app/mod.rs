@@ -352,7 +352,7 @@ fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
     theme::setup_fonts(ctx);
     ctx.set_visuals(egui::Visuals::dark());
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
-    theme::setup_style(ctx, colors);
+    theme::setup_style(ctx, colors, true);
 }
 
 fn spawn_socket_listener(
@@ -457,7 +457,8 @@ impl PlexiApp {
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
-        theme::setup_style(&cc.egui_ctx, &colors);
+        let dark_mode = !theme::is_light_preset(config.theme_preset.as_deref().unwrap_or(""));
+        theme::setup_style(&cc.egui_ctx, &colors, dark_mode);
 
         let (tx, rx) = mpsc::channel();
 
@@ -3900,7 +3901,8 @@ impl PlexiApp {
         let new_colors = crate::theme::Colors::from_config(&theme_cfg);
         if self.colors != new_colors {
             self.colors = new_colors.clone();
-            crate::theme::setup_style(&self.ctx, &new_colors);
+            let dark_mode = !crate::theme::is_light_preset(fresh.theme_preset.as_deref().unwrap_or(""));
+            crate::theme::setup_style(&self.ctx, &new_colors, dark_mode);
         }
 
         // Terminal theme

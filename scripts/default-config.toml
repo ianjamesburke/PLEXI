@@ -61,7 +61,8 @@ confirm_close = false
 [theme]
 # Uncomment any line below to override the active preset.
 # Full color name reference and all preset palettes (catppuccin-mocha,
-# dracula, tokyo-night, gruvbox-dark, nord, solarized-dark):
+# catppuccin-latte, dracula, tokyo-night, gruvbox-dark, nord,
+# solarized-dark, solarized-light):
 # https://plexiapp.dev/docs/config
 #
 # accent       = "#89b4fa"   # catppuccin-mocha defaults shown
