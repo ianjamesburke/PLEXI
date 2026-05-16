@@ -325,9 +325,9 @@ impl PlexiApp {
             let new_id = self.host.alloc_pane_id();
             let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);
             let ctx_name = self.context_name_for(ctx_id);
-            let cwd = self.resolve_new_pane_cwd(None, None);
+            let cwd = self.cwd_for_welcome_tab();
             log::info!("new_tab (empty context): cwd={cwd:?} context_root={:?}", self.router.active().root);
-            let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name);
+            let mut settings = Self::make_backend_settings(new_id, Some(cwd), &self.colors, ctx_id, &ctx_name);
             if let Some(cmd) = initial_cmd {
                 log::info!("new_tab (empty context): initial_cmd={cmd:?} close_on_exit={close_on_exit}");
                 super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
@@ -1197,6 +1197,15 @@ impl PlexiApp {
             .or_else(|| self.router.active().root.clone())
             .or_else(|| focused.and_then(|f| self.windows[self.active_window].get_focused_pane_cwd(f)))
     }
+
+    /// CWD for the first terminal pane created from the welcome screen (empty window).
+    /// Priority: context root → window launch path → home_dir → /
+    pub(crate) fn cwd_for_welcome_tab(&self) -> std::path::PathBuf {
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+        self.resolve_new_pane_cwd(None, None)
+            .or_else(|| Some(self.windows[self.active_window].path.clone()))
+            .unwrap_or(home)
+    }
 }
 
 /// Test-only helper: pop focused pane unconditionally to a new window at max_x+1,
@@ -1880,5 +1889,34 @@ mod context_root_cwd_tests {
         assert!(app.router.active().root.is_none());
         let cwd = app.resolve_new_pane_cwd(None, None);
         assert_eq!(cwd, None, "no context root and no focused pane returns None");
+    }
+
+    #[test]
+    fn welcome_tab_falls_back_to_window_path_when_no_root() {
+        let mut app = test_app();
+        let test_dir = std::path::PathBuf::from("/tmp/test-dir");
+        app.windows[0].path = test_dir.clone();
+        assert!(app.router.active().root.is_none());
+        let cwd = app.cwd_for_welcome_tab();
+        assert_eq!(cwd, test_dir, "should use window.path when context root is None");
+    }
+
+    #[test]
+    fn welcome_tab_prefers_context_root_over_window_path() {
+        let mut app = test_app();
+        let root_dir = std::path::PathBuf::from("/tmp/root-dir");
+        app.router.get_mut(0).root = Some(root_dir.clone());
+        app.windows[0].path = std::path::PathBuf::from("/tmp/window-dir");
+        let cwd = app.cwd_for_welcome_tab();
+        assert_eq!(cwd, root_dir, "context root must take priority over window.path");
+    }
+
+    #[test]
+    fn welcome_tab_never_returns_root_slash() {
+        let mut app = test_app();
+        // root is None, window.path is temp_dir (set by new_for_test)
+        assert!(app.router.active().root.is_none());
+        let cwd = app.cwd_for_welcome_tab();
+        assert_ne!(cwd, std::path::PathBuf::from("/"), "should never fall through to filesystem root");
     }
 }
