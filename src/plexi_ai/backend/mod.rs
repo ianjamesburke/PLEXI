@@ -12,6 +12,8 @@ pub mod openrouter;
 
 use std::sync::mpsc;
 
+use crate::app_protocol::ModelTier;
+
 /// Whether the backend is billed per-token or via a flat subscription.
 /// Drives the cost ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -80,6 +82,9 @@ pub struct AiBackendRequest {
     pub system: String,
     /// Tools to inject into the request when non-empty.
     pub tools: Vec<crate::app_protocol::AiTool>,
+    /// Model tier from the broker request. Used by backends to apply
+    /// tier-specific request parameters (e.g. disabling reasoning for Low).
+    pub model_tier: Option<ModelTier>,
 }
 
 /// Error returned when a backend call cannot start.
