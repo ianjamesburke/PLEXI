@@ -3744,16 +3744,36 @@ pub fn config_check() -> i32 {
     if has_errors { 1 } else { 0 }
 }
 
-pub fn completions_cli(shell: &str) -> i32 {
+pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
     match shell {
-        "zsh" => { print!("{}", ZSH_COMPLETION); 0 }
-        "bash" => { print!("{}", BASH_COMPLETION); 0 }
-        "fish" => { print!("{}", FISH_COMPLETION); 0 }
+        "zsh" => { print!("{}", zsh_completion(binary_name)); 0 }
+        "bash" => { print!("{}", bash_completion(binary_name)); 0 }
+        "fish" => { print!("{}", fish_completion(binary_name)); 0 }
         other => {
             eprintln!("error: unsupported shell {other:?} — supported shells: zsh, bash, fish");
             1
         }
     }
+}
+
+fn zsh_completion(binary: &str) -> String {
+    ZSH_COMPLETION
+        .replace("#compdef plexi", &format!("#compdef {binary}"))
+        .replace("\n_plexi()", &format!("\n_{binary}()"))
+        .replace("\n_plexi \"$@\"", &format!("\n_{binary} \"$@\""))
+}
+
+fn bash_completion(binary: &str) -> String {
+    let fn_name = format!("_{}_completions", binary.replace('-', "_"));
+    let with_fn = BASH_COMPLETION.replace("_plexi_completions", &fn_name);
+    with_fn.replace(
+        &format!("complete -F {fn_name} plexi"),
+        &format!("complete -F {fn_name} {binary}"),
+    )
+}
+
+fn fish_completion(binary: &str) -> String {
+    FISH_COMPLETION.replace("-c plexi ", &format!("-c {binary} "))
 }
 
 const ZSH_COMPLETION: &str = r#"#compdef plexi

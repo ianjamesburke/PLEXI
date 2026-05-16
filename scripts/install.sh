@@ -81,37 +81,44 @@ fi
 # Called after the binary symlink is in place at $bin_dest.
 install_completions() {
   local binary="$1"
+  local binary_name
+  binary_name="$(basename "$binary")"
 
   # zsh: prefer Homebrew site-functions (already on fpath), else ~/.zfunc/
   if command -v brew &>/dev/null; then
     local brew_zsh_dir
     brew_zsh_dir="$(brew --prefix)/share/zsh/site-functions"
     if [[ -d "$brew_zsh_dir" ]]; then
-      "$binary" completions zsh > "$brew_zsh_dir/_plexi"
-      echo "Completions (zsh): $brew_zsh_dir/_plexi"
+      "$binary" completions zsh > "$brew_zsh_dir/_${binary_name}"
+      echo "Completions (zsh): $brew_zsh_dir/_${binary_name}"
     fi
   else
     mkdir -p "$HOME/.zfunc"
-    "$binary" completions zsh > "$HOME/.zfunc/_plexi"
-    echo "Completions (zsh): ~/.zfunc/_plexi"
+    "$binary" completions zsh > "$HOME/.zfunc/_${binary_name}"
+    echo "Completions (zsh): ~/.zfunc/_${binary_name}"
     echo "  note: add 'fpath=(~/.zfunc \$fpath)' to ~/.zshrc if not already present"
   fi
 
   # bash: ~/.bash_completion.d/
   mkdir -p "$HOME/.bash_completion.d"
-  "$binary" completions bash > "$HOME/.bash_completion.d/plexi"
-  echo "Completions (bash): ~/.bash_completion.d/plexi"
+  "$binary" completions bash > "$HOME/.bash_completion.d/${binary_name}"
+  echo "Completions (bash): ~/.bash_completion.d/${binary_name}"
 
   # fish: only if fish is installed
   if [[ -d "$HOME/.config/fish" ]]; then
     mkdir -p "$HOME/.config/fish/completions"
-    "$binary" completions fish > "$HOME/.config/fish/completions/plexi.fish"
-    echo "Completions (fish): ~/.config/fish/completions/plexi.fish"
+    "$binary" completions fish > "$HOME/.config/fish/completions/${binary_name}.fish"
+    echo "Completions (fish): ~/.config/fish/completions/${binary_name}.fish"
   fi
 }
 
 if [[ ! "$channel" =~ ^pr- ]]; then
   install_completions "$bin_dest"
+  # For non-stable channels, also install bare `plexi` completions so the bare
+  # symlink (pointing to this channel's binary) gets its own completion entry.
+  if [[ "$channel" != "stable" ]]; then
+    install_completions /usr/local/bin/plexi
+  fi
 fi
 
 mkdir -p "$profile_dir/sdk" "$profile_dir/apps"
