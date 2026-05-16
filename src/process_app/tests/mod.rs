@@ -9,3 +9,4 @@ mod reload_tests;
 mod app_state_tests;
 mod env_isolation_tests;
 mod image_cache_tests;
+mod capability_check_tests;

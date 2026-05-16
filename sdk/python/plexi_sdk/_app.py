@@ -429,8 +429,37 @@ class App:
                 app = MyApp()
                 app.run()
         """
+        if "--plexi-introspect" in sys.argv:
+            self._run_introspect()
+            return
         sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
         asyncio.run(self._async_main())
+
+    def _run_introspect(self) -> None:
+        """Static capability check mode — called when launched with --plexi-introspect.
+
+        Inspects method bodies of this App subclass for emit.* / ctx.* calls,
+        maps them to required capabilities via CAPABILITY_REGISTRY, and prints
+        {"required_capabilities": [...]} to stdout, then exits.
+        """
+        import inspect
+        import json
+        import re
+        from ._emitter import CAPABILITY_REGISTRY
+
+        required: set[str] = set()
+        for _name, method in inspect.getmembers(type(self), predicate=inspect.isfunction):
+            try:
+                source = inspect.getsource(method)
+            except (OSError, TypeError):
+                continue
+            for match in re.finditer(r'\b(?:self\.emit|self\.ctx|ctx|emit)\.(\w+)\s*\(', source):
+                method_name = match.group(1)
+                if method_name in CAPABILITY_REGISTRY:
+                    required.add(CAPABILITY_REGISTRY[method_name])
+
+        print(json.dumps({"required_capabilities": sorted(required)}), flush=True)
+        sys.exit(0)
 
     async def _async_main(self) -> None:
         """Asyncio entry point — two concurrent tasks to eliminate deadlocks.

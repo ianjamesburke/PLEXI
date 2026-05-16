@@ -21,6 +21,36 @@ if TYPE_CHECKING:
 # these if an app sends them, and the SDK warns at call time.
 _RESERVED_SHORTCUTS = frozenset("jkhl") | frozenset("123456789")
 
+# ── Capability registry ───────────────────────────────────────────────────────
+# Maps Emitter/RenderContext method names to the capability string they require.
+# Used by --plexi-introspect mode to report what capabilities an app uses.
+CAPABILITY_REGISTRY: dict[str, str] = {
+    "http_get": "net.http",
+    "http_request": "net.http",
+    "ai_query": "ai.query",
+    "secret_get": "secrets.get",
+    "get_secret": "secrets.get",
+    "open_file_picker": "fs.pick",
+    "spawn_pane": "panes.spawn",
+    "open_midi_input": "midi.in",
+    "send_midi": "midi.out",
+    "open_video": "video.playback",
+    "set_video_state": "video.playback",
+    "close_video": "video.playback",
+    "audio_capture": "audio.record",
+    "stop_audio_capture": "audio.record",
+    "audio_play": "audio.playback",
+    "set_timer": "timer",
+    "cancel_timer": "timer",
+    "pipe_open": "pipe.open",
+    "pipe_open_directed": "pipe.open",
+    "request_linked_terminal": "terminal.bindings",
+    "run_in_linked_terminal": "terminal.bindings",
+    "insert_path_token": "terminal.bindings",
+    "request_command_preview": "terminal.bindings",
+    "open_artifact": "terminal.bindings",
+}
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
 _LOCK = threading.Lock()
 
