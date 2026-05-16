@@ -115,8 +115,11 @@ if [[ ! "$channel" =~ ^pr- ]]; then
 fi
 
 mkdir -p "$profile_dir/sdk" "$profile_dir/apps"
-rm -rf "$profile_dir/sdk/plexi_sdk.py" "$profile_dir/sdk/plexi_sdk"
-cp -R sdk/python/plexi_sdk "$profile_dir/sdk/plexi_sdk"
+rm -rf "$profile_dir/sdk/plexi_sdk.tmp" "$profile_dir/sdk/plexi_sdk.old"
+cp -R sdk/python/plexi_sdk "$profile_dir/sdk/plexi_sdk.tmp"
+mv "$profile_dir/sdk/plexi_sdk" "$profile_dir/sdk/plexi_sdk.old" 2>/dev/null || true
+mv "$profile_dir/sdk/plexi_sdk.tmp" "$profile_dir/sdk/plexi_sdk"
+rm -rf "$profile_dir/sdk/plexi_sdk.old" "$profile_dir/sdk/plexi_sdk.py"
 find "$profile_dir/sdk/plexi_sdk" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 rsync -a --delete examples/ "$profile_dir/apps/"
 find "$profile_dir/apps" -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
