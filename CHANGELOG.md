@@ -1,6 +1,17 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.387] — 2026-05-16
+
+### Changes
+- fix(host): fetch https:// URLs in DrawCommand::Image via net.http (#1353) (#1356)
+- feat(examples): n8n-style node canvas POC — interactive graph editor in PGAP (#1338) (#1349)
+- fix(ai): increase OpenRouter generation metrics retry window for Gemini (#1339) (#1348)
+- feat(sdk): add emit.schedule_task() and guard run_sync() against deadlock (#1340) (#1341)
+- fix(ai): broadcast fresh AI config to all panes on reload (#1337) (#1342)
+- feat(cli): plexi uninstall for Plexi self-removal, app uninstall cleanup (#1333) (#1335)
+- docs(cli): rewrite all help text for vibe coder clarity (#1322) (#1334)
+- fix(install): improve installer tone and soften admin access warning
 ## [0.0.386] — 2026-05-16
 
 ### Changes
