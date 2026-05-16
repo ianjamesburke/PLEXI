@@ -460,7 +460,14 @@ fn main() -> eframe::Result {
                     },
                     Commands::Completions { shell } => {
                         let s = shell.as_deref().unwrap_or("zsh");
-                        std::process::exit(cli::completions_cli(s));
+                        let binary_name = std::env::args()
+                            .next()
+                            .as_deref()
+                            .and_then(|p| std::path::Path::new(p).file_name())
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("plexi")
+                            .to_string();
+                        std::process::exit(cli::completions_cli(s, &binary_name));
                     }
                     Commands::Config { cmd: config_cmd } => match config_cmd {
                         ConfigCmd::Check => {
