@@ -79,13 +79,20 @@ fn canonical_preset_name(name: &str) -> Option<&'static str> {
     let normalized = name.trim().to_lowercase().replace([' ', '_'], "-");
     match normalized.as_str() {
         "catppuccin" | "catppuccin-mocha" | "mocha" => Some("catppuccin-mocha"),
+        "catppuccin-latte" | "latte" => Some("catppuccin-latte"),
         "dracula" => Some("dracula"),
         "tokyo-night" | "tokyonight" | "tokyo" => Some("tokyo-night"),
         "gruvbox" | "gruvbox-dark" => Some("gruvbox-dark"),
         "nord" => Some("nord"),
         "solarized" | "solarized-dark" => Some("solarized-dark"),
+        "solarized-light" => Some("solarized-light"),
         _ => None,
     }
+}
+
+/// Returns true for presets with a light background — used to flip egui's dark_mode flag.
+pub fn is_light_preset(name: &str) -> bool {
+    matches!(canonical_preset_name(name), Some("catppuccin-latte") | Some("solarized-light"))
 }
 
 /// Returns the list of available preset names.
@@ -93,11 +100,13 @@ fn canonical_preset_name(name: &str) -> Option<&'static str> {
 pub fn preset_names() -> &'static [&'static str] {
     &[
         "catppuccin-mocha",
+        "catppuccin-latte",
         "dracula",
         "tokyo-night",
         "gruvbox-dark",
         "nord",
         "solarized-dark",
+        "solarized-light",
     ]
 }
 
@@ -304,6 +313,72 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_white: s("#fdf6e3"),
             bright_foreground: s("#fdf6e3"),
         }),
+        "catppuccin-latte" => Some(ThemeConfig {
+            bg_darkest: s("#e6e9ef"),
+            bg_sidebar: s("#eff1f5"),
+            bg_toolbar: s("#eff1f5"),
+            terminal_bg: s("#eff1f5"),
+            bg_hover: s("#dce0e8"),
+            bg_sidebar_hover: s("#ccd0da"),
+            bg_active: s("#bcc0cc"),
+            text_primary: s("#4c4f69"),
+            text_dim: s("#8c8fa1"),
+            text_section: s("#9ca0b0"),
+            accent: s("#8839ef"),
+            border: s("#ccd0da"),
+            foreground: s("#4c4f69"),
+            background: s("#eff1f5"),
+            black: s("#5c5f77"),
+            red: s("#d20f39"),
+            green: s("#40a02b"),
+            yellow: s("#df8e1d"),
+            blue: s("#1e66f5"),
+            magenta: s("#ea76cb"),
+            cyan: s("#179299"),
+            white: s("#acb0be"),
+            bright_black: s("#6c6f85"),
+            bright_red: s("#d20f39"),
+            bright_green: s("#40a02b"),
+            bright_yellow: s("#df8e1d"),
+            bright_blue: s("#1e66f5"),
+            bright_magenta: s("#8839ef"),
+            bright_cyan: s("#04a5e5"),
+            bright_white: s("#bcc0cc"),
+            bright_foreground: s("#4c4f69"),
+        }),
+        "solarized-light" => Some(ThemeConfig {
+            bg_darkest: s("#eee8d5"),
+            bg_sidebar: s("#fdf6e3"),
+            bg_toolbar: s("#fdf6e3"),
+            terminal_bg: s("#fdf6e3"),
+            bg_hover: s("#e0dcc8"),
+            bg_sidebar_hover: s("#d8d4c0"),
+            bg_active: s("#d0ccb8"),
+            text_primary: s("#657b83"),
+            text_dim: s("#93a1a1"),
+            text_section: s("#839496"),
+            accent: s("#268bd2"),
+            border: s("#ddd6c1"),
+            foreground: s("#657b83"),
+            background: s("#fdf6e3"),
+            black: s("#073642"),
+            red: s("#dc322f"),
+            green: s("#859900"),
+            yellow: s("#b58900"),
+            blue: s("#268bd2"),
+            magenta: s("#d33682"),
+            cyan: s("#2aa198"),
+            white: s("#eee8d5"),
+            bright_black: s("#586e75"),
+            bright_red: s("#cb4b16"),
+            bright_green: s("#859900"),
+            bright_yellow: s("#b58900"),
+            bright_blue: s("#268bd2"),
+            bright_magenta: s("#6c71c4"),
+            bright_cyan: s("#2aa198"),
+            bright_white: s("#fdf6e3"),
+            bright_foreground: s("#fdf6e3"),
+        }),
         _ => None,
     }
 }
@@ -346,9 +421,10 @@ pub fn apply_preset(preset: &ThemeConfig, user: &ThemeConfig) -> ThemeConfig {
     }
 }
 
-pub fn setup_style(ctx: &egui::Context, colors: &Colors) {
+pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
+    log::info!("theme: setup_style dark_mode={dark_mode}");
     let mut style = (*ctx.style()).clone();
-    style.visuals.dark_mode = true;
+    style.visuals = if dark_mode { egui::Visuals::dark() } else { egui::Visuals::light() };
     style.visuals.panel_fill = colors.bg_darkest;
     style.visuals.window_fill = colors.bg_sidebar;
     style.visuals.override_text_color = Some(colors.text_primary);
