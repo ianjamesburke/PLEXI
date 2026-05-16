@@ -3757,10 +3757,11 @@ pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
 }
 
 fn zsh_completion(binary: &str) -> String {
+    let fn_name = binary.replace('-', "_");
     ZSH_COMPLETION
         .replace("#compdef plexi", &format!("#compdef {binary}"))
-        .replace("\n_plexi()", &format!("\n_{binary}()"))
-        .replace("\n_plexi \"$@\"", &format!("\n_{binary} \"$@\""))
+        .replace("\n_plexi()", &format!("\n_{fn_name}()"))
+        .replace("\n_plexi \"$@\"", &format!("\n_{fn_name} \"$@\""))
 }
 
 fn bash_completion(binary: &str) -> String {
@@ -3773,7 +3774,7 @@ fn bash_completion(binary: &str) -> String {
 }
 
 fn fish_completion(binary: &str) -> String {
-    FISH_COMPLETION.replace("-c plexi ", &format!("-c {binary} "))
+    FISH_COMPLETION.replace("-c plexi", &format!("-c {binary}"))
 }
 
 const ZSH_COMPLETION: &str = r#"#compdef plexi
