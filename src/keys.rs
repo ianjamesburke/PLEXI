@@ -190,10 +190,6 @@ fn cmd_ctrl() -> egui::Modifiers {
 fn cmd_alt() -> egui::Modifiers {
     egui::Modifiers { alt: true, ..egui::Modifiers::COMMAND }
 }
-fn ctrl() -> egui::Modifiers {
-    egui::Modifiers { ctrl: true, ..egui::Modifiers::NONE }
-}
-
 impl Default for KeyBindings {
     fn default() -> Self {
         Self {
