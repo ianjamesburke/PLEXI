@@ -12,7 +12,7 @@ Keys:
 Mouse:
   Left-drag node body     — move node
   Left-drag output port   — start connection; release on input port to connect
-  Right-drag background   — pan canvas
+  Left-drag empty canvas  — pan canvas
 """
 import math
 import uuid
@@ -260,17 +260,12 @@ class NodeCanvas(App):
                      max_width=node.w / 2 - PORT_R - 8, elide=True)
 
     def _draw_hint(self, ctx: RenderContext) -> None:
-        hints = "n: add node   Del: remove   drag output→input: connect   right-drag: pan"
+        hints = "n: add node   Del: remove   drag output→input: connect   drag empty space: pan"
         ctx.text(8, ctx.h - HINT - 6, hints, size=HINT, color=MUTED)
 
     # ── Mouse events ──────────────────────────────────────────────────────────
 
     def on_mouse_down(self, _ctx: RenderContext, x: float, y: float, button: str) -> None:
-        if button == "secondary":
-            self._pan_anchor = (x, y, self._cam_x, self._cam_y)
-            self.emit.info("node-canvas: pan start")
-            return
-
         if button != "primary":
             return
 
@@ -296,7 +291,10 @@ class NodeCanvas(App):
                 self._drag_node = (hit_node, x - sx, y - sy)
                 self.emit.info(f"node-canvas: drag node start {hit_node}")
         else:
+            # empty canvas — pan
             self._selected = None
+            self._pan_anchor = (x, y, self._cam_x, self._cam_y)
+            self.emit.info("node-canvas: pan start")
 
     def on_mouse_move(self, _ctx: RenderContext, x: float, y: float, _buttons: list) -> None:
         if self._pan_anchor:
@@ -321,14 +319,12 @@ class NodeCanvas(App):
             self.emit.schedule_render()
 
     def on_mouse_up(self, _ctx: RenderContext, x: float, y: float, button: str) -> None:
-        if button == "secondary":
-            if self._pan_anchor:
-                self.emit.info("node-canvas: pan stop")
-            self._pan_anchor = None
-            return
-
         if button != "primary":
             return
+
+        if self._pan_anchor:
+            self.emit.info("node-canvas: pan stop")
+            self._pan_anchor = None
 
         if self._drag_conn:
             from_node_id, from_port_id, _, _ = self._drag_conn
