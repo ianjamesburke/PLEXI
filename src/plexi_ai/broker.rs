@@ -621,9 +621,10 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
         };
         // OpenRouter returns total_cost as a float for most models but as a
         // quoted string for some (e.g. "0.00492"). Try numeric first.
-        let cost_usd = data["total_cost"]
+        let total_cost = &data["total_cost"];
+        let cost_usd = total_cost
             .as_f64()
-            .or_else(|| data["total_cost"].as_str().and_then(|s| s.parse::<f64>().ok()));
+            .or_else(|| total_cost.as_str().and_then(|s| s.parse::<f64>().ok()));
         let prompt_tokens = data["tokens_prompt"].as_u64().map(|n| n as u32);
         let completion_tokens = data["tokens_completion"].as_u64().map(|n| n as u32);
         let cached_tokens = data["native_tokens_cached"]
@@ -646,26 +647,19 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
     // OpenRouter has eventual consistency — the generation record may not be
     // queryable immediately after the stream completes. Gemini models via
     // OpenRouter are especially slow: manually confirmed at ~30s. Use three
-    // attempts: wait 2s, wait 5s, wait 8s (total: 15s elapsed, well within
+    // attempts: wait 2s, wait 5s, wait 8s (15s total sleep, well within
     // the 35s app timeout).
-    std::thread::sleep(std::time::Duration::from_secs(2));
-    if let Some(metrics) = try_fetch(1) {
-        return Some(metrics);
+    for (attempt, delay_secs) in [(1u32, 2u64), (2, 5), (3, 8)] {
+        std::thread::sleep(std::time::Duration::from_secs(delay_secs));
+        if let Some(metrics) = try_fetch(attempt) {
+            return Some(metrics);
+        }
     }
 
-    std::thread::sleep(std::time::Duration::from_secs(5));
-    if let Some(metrics) = try_fetch(2) {
-        return Some(metrics);
-    }
-
-    std::thread::sleep(std::time::Duration::from_secs(8));
-    let metrics = try_fetch(3);
-    if metrics.is_none() {
-        log::warn!(
-            "ai_broker: generation metrics unavailable for gen_id={gen_id} — cost/tokens fallback unavailable"
-        );
-    }
-    metrics
+    log::warn!(
+        "ai_broker: generation metrics unavailable for gen_id={gen_id} — cost/tokens fallback unavailable"
+    );
+    None
 }
 
 #[cfg(test)]
