@@ -502,7 +502,7 @@ impl PlexiApp {
     /// Launch an installed app by id in the focused pane.
     /// Respects the `layout_hint` from the app's manifest.toml.
     pub(crate) fn launch_app_by_id(&mut self, id: &str) {
-        self.launch_app_by_id_with_layout(id, None, &[]);
+        self.launch_app_by_id_with_layout(id, None, &[], None);
     }
 
     /// Launch an installed app with an explicit layout and args override.
@@ -515,6 +515,7 @@ impl PlexiApp {
         id: &str,
         layout: Option<String>,
         args: &[String],
+        cwd_override: Option<PathBuf>,
     ) {
         // "terminal" is a builtin pane type, not in the app registry.
         // Reached via SDK AppCommand::SpawnApp("terminal", ...) and legacy paths.
@@ -530,9 +531,13 @@ impl PlexiApp {
             return;
         }
 
-        let cwd = self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
+        let cwd_explicit = cwd_override.is_some();
+        let cwd = cwd_override
+            .or_else(|| self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane))
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-        log::info!("launch_app_by_id_with_layout: id={id} cwd={cwd:?} context_root={:?}", self.router.active().root);
+        log::info!("launch_app_by_id_with_layout: id={id} cwd={cwd:?} cwd_source={} context_root={:?}",
+            if cwd_explicit { "explicit" } else { "resolved" },
+            self.router.active().root);
 
         // Re-attach a parked background app if one is waiting
         if let Some((_park_context_id, mut parked)) = self.background_apps.remove(id) {

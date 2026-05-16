@@ -1207,10 +1207,10 @@ impl PlexiApp {
                         }
                     }
 
+                    let cwd_override: Option<std::path::PathBuf> = cwd.as_deref().map(std::path::PathBuf::from);
                     if type_id == "terminal" {
                         let layout_str = layout.as_deref().unwrap_or("split_v");
                         let initial_cmd = cmd_from_args(args);
-                        let cwd_override: Option<std::path::PathBuf> = cwd.as_deref().map(std::path::PathBuf::from);
                         if layout_str == "new_window" {
                             // Create a new spatial grid window to the right of the
                             // current context row instead of splitting the active pane.
@@ -1232,7 +1232,7 @@ impl PlexiApp {
                             self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral, cwd_override);
                         }
                     } else {
-                        self.launch_app_by_id_with_layout(type_id, layout.clone(), args);
+                        self.launch_app_by_id_with_layout(type_id, layout.clone(), args, cwd_override);
                     }
 
                     // Restore original focus when no_focus is requested or from_pane_id overrode it.
@@ -1464,7 +1464,7 @@ impl PlexiApp {
                 let initial_cmd = cmd_from_args(&args);
                 self.split_focused(vertical, initial_cmd.as_deref(), ephemeral, cwd_override);
             } else {
-                self.launch_app_by_id_with_layout(&type_id, layout, &args);
+                self.launch_app_by_id_with_layout(&type_id, layout, &args, cwd_override);
             }
             if no_focus {
                 log::info!("spawn-queue: no_focus=true, retaining focus on pane_id={original_focused:?}");
@@ -1890,7 +1890,7 @@ impl eframe::App for PlexiApp {
                         });
 
                     let new_pane_id = self.host.next_pane_id();
-                    self.launch_app_by_id_with_layout(&type_id, layout, &args);
+                    self.launch_app_by_id_with_layout(&type_id, layout, &args, None);
 
                     // Confirm back to the requesting app.
                     if let Some(req_pane_id) = requesting_pane_id {
@@ -1992,7 +1992,7 @@ impl eframe::App for PlexiApp {
                         // CLI terminal uses the ephemeral flag exclusively — cmd alone does not close.
                         self.split_focused(vertical, initial_cmd.as_deref(), initial_cmd.is_some(), None);
                     } else {
-                        self.launch_app_by_id_with_layout(&type_id, Some(layout), &effective_args);
+                        self.launch_app_by_id_with_layout(&type_id, Some(layout), &effective_args, None);
                         log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
                     }
 

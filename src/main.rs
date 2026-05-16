@@ -405,10 +405,10 @@ fn main() -> eframe::Result {
                             std::process::exit(2);
                         }
                         if let Some(tid) = type_id {
-                            std::process::exit(cli::open_cli(&tid, &extra_args, layout.as_deref(), from_pane_id));
+                            std::process::exit(cli::open_cli(&tid, &extra_args, layout.as_deref(), from_pane_id, None));
                         } else if !mcp.is_empty() {
                             log::info!("open:mcp: launching mcp-renderer with command {:?}", mcp);
-                            std::process::exit(cli::open_cli("mcp-renderer", &mcp, layout.as_deref(), from_pane_id));
+                            std::process::exit(cli::open_cli("mcp-renderer", &mcp, layout.as_deref(), from_pane_id, None));
                         } else {
                             let binary = cli_flag.unwrap();
                             log::info!("open:cli-flag: running --help parser for `{binary}`");
@@ -423,7 +423,7 @@ fn main() -> eframe::Result {
                                     }
                                     let path = tmp.to_string_lossy().into_owned();
                                     log::info!("open:cli-flag: launching descriptor-renderer with descriptor at {path}");
-                                    std::process::exit(cli::open_cli("descriptor-renderer", &[path], layout.as_deref(), from_pane_id));
+                                    std::process::exit(cli::open_cli("descriptor-renderer", &[path], layout.as_deref(), from_pane_id, None));
                                 }
                                 Err(e) => {
                                     eprintln!("error: could not parse --help output for `{binary}`: {e}");

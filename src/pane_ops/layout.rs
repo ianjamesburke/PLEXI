@@ -201,6 +201,7 @@ impl PlexiApp {
                     &manifest_id,
                     Some(layout.to_string()),
                     &[],
+                    None,
                 );
             }
         }
