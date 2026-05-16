@@ -469,12 +469,18 @@ fn run_turn_and_respond(
         if !api_key.is_empty() {
             let app_id = request.app_id.clone();
             let backend_name = backend.name().to_string();
+            let model_id_bg = model_id.clone();
+            // Capture the finish timestamp before spawning — the background thread
+            // sleeps while waiting for the generation record, so generating the
+            // timestamp inside the thread would report a delayed time that doesn't
+            // represent when the AI turn actually completed.
+            let finish_ts = event_log::now_timestamp();
             log::info!(
                 "ai_broker[{}]: spawning background metrics fetch for gen_id={}",
                 request.app_id,
                 gen_id
             );
-            std::thread::Builder::new()
+            let spawn_result = std::thread::Builder::new()
                 .name("plexi-ai-metrics".to_string())
                 .spawn(move || {
                     let metrics = fetch_generation_metrics(&gen_id, &api_key);
@@ -503,7 +509,7 @@ fn run_turn_and_respond(
                         &backend_name,
                         billing,
                         Some(app_id.clone()),
-                        Some(model_id),
+                        Some(model_id_bg),
                         Some(tokens_in),
                         Some(tokens_out),
                         cost_usd,
@@ -514,11 +520,20 @@ fn run_turn_and_respond(
                         tokens_in,
                         tokens_out,
                         cost_cents,
-                        timestamp: event_log::now_timestamp(),
+                        timestamp: finish_ts,
                     });
-                })
-                .ok();
-            return AiBrokerResponse::ok(final_text, total_tokens_in, total_tokens_out);
+                });
+            match spawn_result {
+                Ok(_) => return AiBrokerResponse::ok(final_text, total_tokens_in, total_tokens_out),
+                Err(e) => {
+                    // Thread spawn failed — fall through to synchronous path so
+                    // billing records are never silently lost.
+                    log::error!(
+                        "ai_broker[{}]: failed to spawn metrics thread: {e} — writing ledger synchronously",
+                        request.app_id,
+                    );
+                }
+            }
         }
     }
 
