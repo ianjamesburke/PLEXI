@@ -57,10 +57,13 @@ impl ImageCache {
         std::thread::spawn(move || {
             let result = (|| {
                 let resp = ureq::get(&src_key)
+                    .timeout(std::time::Duration::from_secs(10))
                     .call()
                     .map_err(|e| e.to_string())?;
                 let mut bytes: Vec<u8> = Vec::new();
+                // 10 MB cap — prevents OOM from malicious or oversized images.
                 resp.into_reader()
+                    .take(10 * 1024 * 1024)
                     .read_to_end(&mut bytes)
                     .map_err(|e| e.to_string())?;
                 let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
