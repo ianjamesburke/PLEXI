@@ -1773,6 +1773,12 @@ impl App for ProcessApp {
     }
 }
 
+impl ProcessApp {
+    pub(crate) fn update_ai_config(&mut self, ai_config: Option<crate::config::AiConfig>) {
+        self.ai_broker = Arc::new(LiveAiBroker::new(ai_config));
+    }
+}
+
 /// Build a `LiveAiBroker` from the `[ai]` section of the current config.
 /// If the section is absent, the broker is constructed with `None` and will
 /// fail fast at dispatch time with a clear error directing the user to add

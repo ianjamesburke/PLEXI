@@ -3767,6 +3767,22 @@ impl PlexiApp {
         self.key_bindings = crate::keys::build_key_bindings(self.config.keybindings.as_ref());
         log::info!("keybindings: rebuilt after config reload");
 
+        // AI broker config — broadcast fresh snapshot to all living panes and background apps
+        let fresh_ai = self.config.ai.clone();
+        for win in &mut self.windows {
+            for pane in win.panes.values_mut() {
+                if let Some(app) = pane.as_app_mut() {
+                    if let crate::pane::AppRuntime::Process(proc) = &mut app.runtime {
+                        proc.update_ai_config(fresh_ai.clone());
+                    }
+                }
+            }
+        }
+        for app_entry in self.background_apps.values_mut() {
+            app_entry.1.update_ai_config(fresh_ai.clone());
+        }
+        log::info!("ai_broker: config reloaded");
+
         // Voice config
         let fresh_voice =
             crate::config::VoiceConfig::load_with_workspace(active_workspace.as_deref());
