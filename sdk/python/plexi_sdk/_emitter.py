@@ -67,6 +67,16 @@ def _blocking_emit_method(fn):
     return wrapper
 
 
+def _log_background_task_error(task: "asyncio.Task[Any]") -> None:
+    """Done callback for schedule_task — logs unhandled exceptions to stderr."""
+    try:
+        exc = task.exception()
+    except (asyncio.CancelledError, asyncio.InvalidStateError):
+        return
+    if exc is not None:
+        sys.stderr.write(f"plexi_sdk: unhandled exception in schedule_task: {exc}\n")
+
+
 def _emit(obj: dict) -> None:
     """Thread-safe JSON line write to stdout."""
     with _LOCK:
@@ -192,13 +202,18 @@ class Emitter:
                 "Only call it after App.run() is running (e.g. from on_init or later)."
             )
         try:
-            asyncio.get_running_loop()
-            # On the event loop thread — create task directly
-            task = loop.create_task(coro)
+            on_loop_thread = asyncio.get_running_loop() is loop
         except RuntimeError:
-            # Background thread — dispatch thread-safely
+            on_loop_thread = False
+
+        if on_loop_thread:
+            task = loop.create_task(coro)
+            # Strong reference prevents GC before the task completes.
+            self._app._background_tasks.add(task)
+            task.add_done_callback(self._app._background_tasks.discard)
+            task.add_done_callback(_log_background_task_error)
+        else:
             task = asyncio.run_coroutine_threadsafe(coro, loop)
-        self.info("schedule_task: dispatched coroutine")
         return task
 
     # kind = "choice"
