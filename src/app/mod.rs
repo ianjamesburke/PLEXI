@@ -3031,6 +3031,28 @@ impl eframe::App for PlexiApp {
                     }
                 }
 
+                let unfocused_opacity =
+                    self.config.beta.as_ref().and_then(|b| b.unfocused_opacity());
+                {
+                    let ghost_log_id = egui::Id::new("ghost_opacity_logged");
+                    let cur = unfocused_opacity.map(|v| (v * 100.0) as u32);
+                    let prev: Option<u32> = ui.ctx().data(|d| d.get_temp(ghost_log_id));
+                    if prev != cur {
+                        if let Some(opacity) = unfocused_opacity {
+                            log::info!("[ghost] unfocused pane opacity: {opacity:.2}");
+                        } else if prev.is_some() {
+                            log::info!("[ghost] disabled");
+                        }
+                        ui.ctx().data_mut(|d| {
+                            if let Some(v) = cur {
+                                d.insert_temp(ghost_log_id, v);
+                            } else {
+                                d.remove_temp::<u32>(ghost_log_id);
+                            }
+                        });
+                    }
+                }
+
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
                     focused_tile: if suppress_focus {
@@ -3048,6 +3070,7 @@ impl eframe::App for PlexiApp {
                     drag_cursor_pos,
                     hovered_files,
                     workspace_root: self.router.active().root.clone().or_else(crate::config::active_workspace_root),
+                    unfocused_opacity,
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ui.scope(|ui| {

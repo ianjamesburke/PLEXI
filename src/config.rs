@@ -46,7 +46,7 @@ const KNOWN_THEME: &[&str] = &[
     "bright_blue", "bright_magenta", "bright_cyan", "bright_white",
     "bright_foreground",
 ];
-const KNOWN_BETA: &[&str] = &["crt", "ghost", "osc_pane_title"];
+const KNOWN_BETA: &[&str] = &["crt", "ghost", "ghost_opacity", "osc_pane_title"];
 const KNOWN_LOG: &[&str] = &["level", "retention_days"];
 const KNOWN_NOTIFICATIONS: &[&str] = &["enabled", "focus_mode", "interrupt_threshold"];
 const KNOWN_AI: &[&str] = &["backend", "openrouter", "ollama"];
@@ -415,6 +415,9 @@ impl LogConfig {
 pub struct BetaConfig {
     pub crt: Option<bool>,
     pub ghost: Option<bool>,
+    /// Opacity for unfocused panes when ghost is enabled. Range 0.0–1.0; default 0.9.
+    /// Setting this implies ghost = true regardless of the `ghost` flag.
+    pub ghost_opacity: Option<f32>,
     pub osc_pane_title: Option<bool>,
 }
 
@@ -686,6 +689,7 @@ confirm_close = false
 [beta]
 # crt           = false    # Retro CRT scanlines + green phosphor tint
 # ghost         = false    # Unfocused panes render at reduced opacity
+# ghost_opacity = 0.9     # Opacity for unfocused panes (0.0–1.0). Setting this enables ghost automatically.
 # osc_pane_title = false   # Apply OSC 0/1/2 title sequences from running processes as pane names
 
 # ── Logging ────────────────────────────────────────────────────
@@ -985,8 +989,23 @@ impl BetaConfig {
         if other.ghost.is_some() {
             self.ghost = other.ghost;
         }
+        if other.ghost_opacity.is_some() {
+            self.ghost_opacity = other.ghost_opacity;
+        }
         if other.osc_pane_title.is_some() {
             self.osc_pane_title = other.osc_pane_title;
+        }
+    }
+
+    /// Resolved unfocused-pane opacity.
+    /// `ghost_opacity` set → use it; `ghost = true` → 0.9; else → None (no dimming).
+    pub fn unfocused_opacity(&self) -> Option<f32> {
+        if let Some(opacity) = self.ghost_opacity {
+            Some(opacity)
+        } else if self.ghost.unwrap_or(false) {
+            Some(0.9)
+        } else {
+            None
         }
     }
 }
