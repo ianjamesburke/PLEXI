@@ -35,7 +35,7 @@ QUEUE=$(plexi terminal --layout tab --from-pane-id $LANE)  # tab in LANE's windo
 NEW=$(plexi terminal --layout new_window)                # separate OS window
 ```
 
-`--from-pane-id` requires `PLEXI_SOCKET`. Get your own pane ID with `plexi pane self` (preferred — just the number) or `plexi pane info` (full JSON).
+`--from-pane-id` requires `PLEXI_SOCKET`. Use `$PLEXI_PANE_ID` (set automatically in every pane) — no extra round-trip needed. Only call `plexi pane self` if you need to capture the ID into a variable for reuse.
 
 ## Apps
 
@@ -54,9 +54,8 @@ plexi validate [path]            # validate app dir
 
 2×2 grid example (apps in 3 quadrants):
 ```bash
-MY_PANE=$(plexi pane self)
-BALLS=$(plexi open balls --layout split_v --from-pane-id $MY_PANE)
-plexi open tetris --layout split_h --from-pane-id $MY_PANE
+BALLS=$(plexi open balls --layout split_v --from-pane-id $PLEXI_PANE_ID)
+plexi open tetris --layout split_h --from-pane-id $PLEXI_PANE_ID
 plexi open snake --layout split_h --from-pane-id $BALLS
 ```
 
