@@ -1590,6 +1590,15 @@ impl PlexiApp {
                                 status,
                             });
                         }
+                        crate::pane::Pane::SubContext { pane_id, context_id } => {
+                            rows.push(PaneRow {
+                                id: *pane_id,
+                                kind: "SubContext",
+                                name: format!("sub_context:{context_id}"),
+                                detail: String::new(),
+                                status: "active",
+                            });
+                        }
                     }
                 }
             }

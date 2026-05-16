@@ -1071,6 +1071,8 @@ pub enum AppRequest {
         root: Option<std::path::PathBuf>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent_name: Option<String>,
     },
     /// Focus existing context by root, or create one. Sent by `plexi context open`.
     FocusContext {
@@ -1080,6 +1082,12 @@ pub enum AppRequest {
     SetContextRoot {
         root: std::path::PathBuf,
     },
+    /// Zoom into a sub-context. Pushes depth stack. Sent by `plexi context zoom`.
+    ZoomIntoContext {
+        context_id: u64,
+    },
+    /// Zoom out of a sub-context. Pops depth stack. Sent by `plexi context zoom-out`.
+    ZoomOutOfContext,
 
     // ── Media + HTTP primitives ──────────────────────────────────────────
     /// Host-brokered HTTP request. Requires `net.http` capability.

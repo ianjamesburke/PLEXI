@@ -7,16 +7,20 @@
 //! Structural ops (create/delete/reorder) → methods on this struct
 
 use crate::context::Context;
+use egui_tiles::TileId;
 
 pub(crate) struct WorkspaceRouter {
     active: usize,
     contexts: Vec<Context>,
+    /// Depth navigation stack. Each entry records the context_id, window_id,
+    /// and focused tile to restore when zooming back out.
+    pub(crate) depth_stack: Vec<(u64, u64, Option<TileId>)>,
 }
 
 impl WorkspaceRouter {
     pub(crate) fn new(contexts: Vec<Context>, active: usize) -> Self {
         debug_assert!(contexts.is_empty() || active < contexts.len(), "Active index out of bounds");
-        Self { active, contexts }
+        Self { active, contexts, depth_stack: Vec::new() }
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
@@ -123,5 +127,53 @@ impl WorkspaceRouter {
         } else if self.active > idx {
             self.active -= 1;
         }
+    }
+
+    // ── Depth stack (fractal zoom navigation) ───────────────────────────────
+
+    pub(crate) fn push_depth(&mut self, context_id: u64, window_id: u64, focused_tile: Option<TileId>) {
+        self.depth_stack.push((context_id, window_id, focused_tile));
+    }
+
+    pub(crate) fn pop_depth(&mut self) -> Option<(u64, u64, Option<TileId>)> {
+        self.depth_stack.pop()
+    }
+
+    pub(crate) fn current_depth(&self) -> usize {
+        self.depth_stack.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn make_ctx(id: u64, parent_id: Option<u64>, depth: u32) -> Context {
+        Context {
+            name: format!("ctx{id}"),
+            path: PathBuf::from("/tmp"),
+            root: None,
+            context_id: id,
+            parent_id,
+            depth,
+        }
+    }
+
+    #[test]
+    fn depth_stack_push_pop() {
+        let mut router = WorkspaceRouter::new(vec![make_ctx(1, None, 0)], 0);
+        assert_eq!(router.current_depth(), 0);
+        router.push_depth(1, 10, None);
+        assert_eq!(router.current_depth(), 1);
+        let popped = router.pop_depth();
+        assert_eq!(popped, Some((1, 10, None)));
+        assert_eq!(router.current_depth(), 0);
+    }
+
+    #[test]
+    fn depth_stack_empty_pop_returns_none() {
+        let mut router = WorkspaceRouter::new(vec![make_ctx(1, None, 0)], 0);
+        assert_eq!(router.pop_depth(), None);
     }
 }

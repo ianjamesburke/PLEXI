@@ -449,6 +449,9 @@ pub enum ContextCmd {
     /// Open a new context, optionally starting in a specific folder.
     New {
         path: Option<String>,
+        /// Create as a child of the named context (fractal sub-context).
+        #[arg(long)]
+        parent: Option<String>,
     },
     /// Switch the current pane to a context at the given path.
     Open {
@@ -460,6 +463,12 @@ pub enum ContextCmd {
     },
     /// Print the id and name of the current pane's context as JSON.
     Current,
+    /// Zoom into a sub-context by its numeric context_id.
+    Zoom {
+        context_id: u64,
+    },
+    /// Zoom out of the current sub-context to the parent.
+    ZoomOut,
 }
 
 #[derive(Subcommand)]

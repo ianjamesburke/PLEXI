@@ -37,6 +37,29 @@ impl PlexiApp {
         });
         ui.add_space(4.0);
 
+        // Breadcrumb bar — only shown when navigated into a sub-context.
+        if self.router.current_depth() > 0 {
+            ui.horizontal(|ui| {
+                ui.add_space(16.0);
+                let mut path_ids: Vec<u64> = self.router.depth_stack.iter()
+                    .map(|(ctx_id, _, _)| *ctx_id)
+                    .collect();
+                path_ids.push(self.router.active().context_id);
+
+                for (i, &ctx_id) in path_ids.iter().enumerate() {
+                    let name = self.router.iter()
+                        .find(|c| c.context_id == ctx_id)
+                        .map(|c| c.name.as_str())
+                        .unwrap_or("?");
+                    let _ = ui.small_button(name);
+                    if i < path_ids.len() - 1 {
+                        ui.label(egui::RichText::new("\u{203A}").color(self.colors.text_dim));
+                    }
+                }
+            });
+            ui.separator();
+        }
+
         let num_contexts = self.router.len();
         let mut clicked_workspace: Option<usize> = None;
         let mut delete_context: Option<usize> = None;
@@ -133,6 +156,7 @@ impl PlexiApp {
                 if is_dragging { 0.4 } else { 1.0 },
             );
             let ctx_name = self.router.get(i).name.clone();
+            let ctx_depth = self.router.get(i).depth;
             let badge_count = if is_active {
                 self.visible_notification_count()
             } else {
@@ -146,7 +170,7 @@ impl PlexiApp {
                 egui::Id::new(("ctx", i)),
                 &self.colors,
                 |row_ui, _hovered| {
-                    row_ui.add_space(20.0);
+                    row_ui.add_space(20.0 + ctx_depth as f32 * 12.0);
                     if i < 9 {
                         row_ui.label(
                             RichText::new(format!("{}", i + 1)).size(11.0).color(dim_color),

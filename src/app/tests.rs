@@ -44,6 +44,8 @@ fn pane_navigate_cross_window_updates_active_window() {
         path: std::env::temp_dir(),
         root: None,
         context_id: 2,
+        parent_id: None,
+        depth: 0,
     });
 
     assert_eq!(h.app.active_window, 0);
@@ -64,6 +66,8 @@ fn pane_navigate_cross_window_syncs_router() {
         path: std::env::temp_dir(),
         root: None,
         context_id: 2,
+        parent_id: None,
+        depth: 0,
     });
 
     assert_eq!(h.app.router.active_idx(), 0);
@@ -84,6 +88,8 @@ fn dispatch_notify_action_pane_focus_navigates() {
         path: std::env::temp_dir(),
         root: None,
         context_id: 2,
+        parent_id: None,
+        depth: 0,
     });
 
     assert_eq!(h.app.active_window, 0);
@@ -139,6 +145,8 @@ fn send_to_pane_searches_all_windows() {
         path: std::env::temp_dir(),
         root: None,
         context_id: 2,
+        parent_id: None,
+        depth: 0,
     });
 
     // active_window remains 0 — pane is in window 1.

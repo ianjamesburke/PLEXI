@@ -28,6 +28,10 @@ pub struct Context {
     pub root: Option<PathBuf>,
     /// Stable unique ID, assigned at creation and never reused.
     pub context_id: u64,
+    /// Parent context_id for sub-contexts. None = top-level.
+    pub parent_id: Option<u64>,
+    /// Nesting depth. 0 = root level. Capped at 3.
+    pub depth: u32,
 }
 
 /// A window is a single spatial grid page — a pane layout with focus and zoom state.

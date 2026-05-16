@@ -3639,14 +3639,37 @@ fn send_to_socket(payload: serde_json::Value) -> i32 {
 /// `plexi context new [path]`
 ///
 /// Creates a new context. Uses `path` as the root (or CWD if omitted).
-pub fn context_new_cli(path: Option<&str>) -> i32 {
+pub fn context_new_cli(path: Option<&str>, parent: Option<&str>) -> i32 {
     let root = match resolve_path(path) {
         Ok(p) => p,
         Err(e) => { eprintln!("{e}"); return 1; }
     };
-    send_to_socket(serde_json::json!({
+    let mut payload = serde_json::json!({
         "type": "create_context",
         "root": root,
+    });
+    if let Some(p) = parent {
+        payload["parent_name"] = serde_json::Value::String(p.to_string());
+    }
+    send_to_socket(payload)
+}
+
+/// `plexi context zoom <context_id>`
+///
+/// Zoom into a sub-context by its numeric context_id.
+pub fn context_zoom_cli(context_id: u64) -> i32 {
+    send_to_socket(serde_json::json!({
+        "type": "zoom_into_context",
+        "context_id": context_id,
+    }))
+}
+
+/// `plexi context zoom-out`
+///
+/// Zoom out of the current sub-context to the parent.
+pub fn context_zoom_out_cli() -> i32 {
+    send_to_socket(serde_json::json!({
+        "type": "zoom_out_of_context",
     }))
 }
 
