@@ -424,7 +424,7 @@ pub fn apply_preset(preset: &ThemeConfig, user: &ThemeConfig) -> ThemeConfig {
 pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     log::info!("theme: setup_style dark_mode={dark_mode}");
     let mut style = (*ctx.style()).clone();
-    style.visuals.dark_mode = dark_mode;
+    style.visuals = if dark_mode { egui::Visuals::dark() } else { egui::Visuals::light() };
     style.visuals.panel_fill = colors.bg_darkest;
     style.visuals.window_fill = colors.bg_sidebar;
     style.visuals.override_text_color = Some(colors.text_primary);
