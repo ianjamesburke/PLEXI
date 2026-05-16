@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::app_protocol::{LayoutChild, LayoutDirection, RenderCommand};
+use crate::app_protocol::{LayoutChild, LayoutDirection, RenderCommand, ResponsiveTier};
 use crate::style;
 use crate::theme::Colors;
 use egui::Color32;
@@ -367,6 +367,24 @@ pub(crate) fn render_draw_commands(
                     direction, children, *gap,
                     colors, commonmark_cache, audio_peaks,
                 );
+            }
+
+            RenderCommand::Responsive { x, y, tiers } => {
+                let avail_w = pane_rect.width();
+                let avail_h = pane_rect.height();
+                if let Some(tier) = select_responsive_tier(tiers, avail_w, avail_h) {
+                    log::info!(
+                        "responsive: selected tier aspect={} for rect {}x{}",
+                        tier.aspect, avail_w, avail_h
+                    );
+                    render_layout_node(
+                        ui, pane_rect, clip, *x, *y,
+                        &tier.direction, &tier.children, tier.gap,
+                        colors, commonmark_cache, audio_peaks,
+                    );
+                } else {
+                    log::warn!("responsive: no matching tier for rect {}x{}", avail_w, avail_h);
+                }
             }
 
             RenderCommand::Markdown {
@@ -1228,4 +1246,24 @@ fn fit_image(
             (dest, full_uv)
         }
     }
+}
+
+// ── Responsive tier selection ──────────────────────────────────────────────────
+
+/// Select the first matching responsive tier based on the available rect's aspect ratio.
+/// - "landscape": width > height
+/// - "portrait": height > width
+/// - "square": ratio between 0.83 and 1.2 (fallback)
+pub(crate) fn select_responsive_tier(
+    tiers: &[ResponsiveTier],
+    width: f32,
+    height: f32,
+) -> Option<&ResponsiveTier> {
+    let ratio = if height > 0.0 { width / height } else { f32::MAX };
+    tiers.iter().find(|tier| match tier.aspect.as_str() {
+        "landscape" => ratio > 1.2,
+        "portrait" => ratio < 0.83,
+        "square" => true, // fallback — matches anything not caught above
+        _ => false,
+    })
 }

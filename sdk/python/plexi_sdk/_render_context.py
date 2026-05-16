@@ -720,6 +720,41 @@ class RenderContext:
             "gap": 0.0,
         })
 
+    def responsive(
+        self,
+        x: float,
+        y: float,
+        tiers: "list[dict]",
+    ) -> None:
+        """Emit a responsive layout that adapts to the available pane aspect ratio.
+
+        The host evaluates tiers in order and renders the first match:
+        - "landscape": pane is wider than tall (ratio > 1.2)
+        - "portrait": pane is taller than wide (ratio < 0.83)
+        - "square": fallback for balanced aspect ratios
+
+        Each tier dict has: aspect (str), direction (str), children (list), gap (float).
+
+        Example::
+
+            ctx.responsive(
+                x=0.0, y=0.0,
+                tiers=[
+                    {"aspect": "landscape", "direction": "row",
+                     "children": [ctx.text_child("wide view")], "gap": 6.0},
+                    {"aspect": "portrait", "direction": "column",
+                     "children": [ctx.text_child("tall view")], "gap": 4.0},
+                    {"aspect": "square", "direction": "column",
+                     "children": [ctx.text_child("default")], "gap": 4.0},
+                ],
+            )
+        """
+        self._queue({
+            "type": "responsive",
+            "x": x, "y": y,
+            "tiers": tiers,
+        })
+
     def frame_done(self) -> None:
         """Flush all buffered draw commands for this frame.
 
