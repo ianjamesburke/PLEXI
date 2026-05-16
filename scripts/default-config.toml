@@ -7,7 +7,7 @@ font_size = 14.0
 
 # ── Theme ──────────────────────────────────────────────────────
 # Pick a preset OR customize individual colors below.
-# Presets: catppuccin-mocha, dracula, tokyo-night, gruvbox-dark, nord, solarized-dark
+# Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, gruvbox-dark, nord, solarized-dark, solarized-light
 theme_preset = "catppuccin-mocha"
 
 # ── Confirmation Dialogs ───────────────────────────────────────
