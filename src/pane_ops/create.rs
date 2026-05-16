@@ -203,7 +203,7 @@ impl PlexiApp {
         workspace_root: std::path::PathBuf,
     ) {
         let active = self.active_window;
-        let share = crate::host::command::ShareRatio::new(1.0, 1.0).expect("1:1 is valid");
+        let share = Self::share_ratio_from_fraction(app_id, self.registry.share_for(app_id));
         let (new_id, share, vertical, new_pane_first) =
             self.open_pane_layout(app_id, None, hint, share);
         self.windows[active].panes.insert(
@@ -599,43 +599,27 @@ impl PlexiApp {
             return;
         }
 
-        // Pre-flight: check config-level capability requirements before spawning.
-        {
-            let missing = self.registry.check_config_capabilities(id, &self.config);
-            if !missing.is_empty() {
-                log::warn!("pre-flight: '{id}' cannot launch — missing: {missing:?}");
-                let fail_hint = layout
-                    .clone()
-                    .or_else(|| self.registry.layout_hint_for(id))
-                    .or_else(|| Some("overlay".to_string()));
-                self.open_launch_failed_pane(id, fail_hint.as_deref(), missing, cwd);
-                return;
-            }
-        }
-
-        // Try registry first; if it returns None, rescan from disk (supports
-        // apps created mid-session via `plexi app init`) then fall through to Tier 4.
-        let registry_process = self.registry.launch_process(id, &cwd, args);
-        let registry_process = if registry_process.is_none() {
+        // Ensure the registry is up-to-date: rescan if the app was added mid-session
+        // via `plexi app init` and wasn't present at startup.
+        if self.registry.get(id).is_none() {
             log::info!("launch_app_by_id: '{id}' not in startup registry — rescanning from disk");
             self.registry = crate::app_registry::AppRegistry::load(&cwd);
-            // Pre-flight check for newly discovered (rescanned) app.
-            {
-                let missing_after_rescan = self.registry.check_config_capabilities(id, &self.config);
-                if !missing_after_rescan.is_empty() {
-                    log::warn!("pre-flight: '{id}' cannot launch — missing: {missing_after_rescan:?}");
-                    let fail_hint = layout
-                        .clone()
-                        .or_else(|| self.registry.layout_hint_for(id))
-                        .or_else(|| Some("overlay".to_string()));
-                    self.open_launch_failed_pane(id, fail_hint.as_deref(), missing_after_rescan, cwd);
-                    return;
-                }
-            }
-            self.registry.launch_process(id, &cwd, args)
-        } else {
-            registry_process
-        };
+        }
+
+        // Pre-flight: check config-level capability requirements before spawning.
+        let missing = self.registry.check_config_capabilities(id, &self.config);
+        if !missing.is_empty() {
+            log::warn!("pre-flight: '{id}' cannot launch — missing: {missing:?}");
+            let fail_hint = layout
+                .clone()
+                .or_else(|| self.registry.layout_hint_for(id))
+                .or_else(|| Some("overlay".to_string()));
+            self.open_launch_failed_pane(id, fail_hint.as_deref(), missing, cwd);
+            return;
+        }
+
+        // Try registry first; if it returns None, fall through to Tier 4.
+        let registry_process = self.registry.launch_process(id, &cwd, args);
         // Query group/hint after any registry reload so metadata reflects the
         // actual registry that found the app.
         let group = self.registry.group_for(id);
