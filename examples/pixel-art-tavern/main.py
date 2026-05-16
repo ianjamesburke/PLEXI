@@ -374,8 +374,8 @@ class TavernApp(App):
                  align="top_center", bold=True, monospace=True, elide=False, selectable=False)
 
     def _draw_speech_bubble(self, ctx: RenderContext, npc: NPC, floor_y: float) -> None:
-        max_w = 220.0
-        bubble_h = 60.0
+        max_w = 240.0
+        bubble_h = 96.0
         bx = npc.cx - max_w / 2
         by = floor_y - bubble_h - 16.0
 
@@ -391,10 +391,9 @@ class TavernApp(App):
         ctx.text(bx + 8, by + 6, npc.name, size=CAPTION, color=npc.color,
                  bold=True, monospace=True, elide=False, selectable=False)
 
-        # Dialogue text
-        ctx.text(bx + 8, by + 6 + CAPTION + 4, npc.speech,
-                 size=CAPTION - 1, color=W, max_width=max_w - 16,
-                 elide=True, selectable=False)
+        # Dialogue text — markdown wraps automatically within the bubble width
+        ctx.markdown(bx + 8, by + 6 + CAPTION + 4, max_w - 16, npc.speech,
+                     base_size=CAPTION - 1, color=W)
 
     def _draw_thinking_dots(self, ctx: RenderContext, npc: NPC, floor_y: float) -> None:
         bx = npc.cx - 30.0
@@ -406,7 +405,7 @@ class TavernApp(App):
             ctx.rect(bx + 12 + j * 14, by + 9, 8.0, 8.0, fill=col, radius=4.0)
 
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
-        if key in (" ", "return") and not self._started:
+        if key in ("space", "return") and not self._started:
             self._started = True
             self._state = "thinking"
             self.emit.info("tavern conversation started")
