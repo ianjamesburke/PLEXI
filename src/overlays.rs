@@ -90,6 +90,130 @@ fn section_label(ui: &mut egui::Ui, title: &str, colors: &Colors) {
     ui.add_space(2.0);
 }
 
+struct PaneRow {
+    id: PaneId,
+    kind: &'static str,
+    name: String,
+    detail: String,
+    status: &'static str,
+}
+
+fn render_inspector_pane_row(
+    ui: &mut egui::Ui,
+    row: &PaneRow,
+    is_selected: bool,
+    colors: &Colors,
+) -> (egui::Response, Option<PaneId>) {
+    let row_id = row.id;
+    let mut close_pane: Option<PaneId> = None;
+    let (row_resp, _) = crate::widgets::selectable_row(ui, is_selected, colors, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!("#{} {}", row_id, row.kind))
+                    .size(style::TEXT_CAPTION)
+                    .color(colors.text_dim),
+            );
+            let display_name: &str = if row.name.is_empty() { row.kind } else { &row.name };
+            ui.label(
+                RichText::new(display_name)
+                    .size(style::TEXT_BODY)
+                    .color(colors.text_primary),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("✕")
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.text_dim),
+                        )
+                        .frame(false),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    close_pane = Some(row_id);
+                }
+                let status_color = if row.status == "running" { colors.accent } else { colors.text_dim };
+                ui.label(
+                    RichText::new(row.status)
+                        .size(style::TEXT_HINT)
+                        .color(status_color),
+                );
+                if !row.detail.is_empty() {
+                    ui.label(
+                        RichText::new(row.detail.as_str())
+                            .size(style::TEXT_HINT)
+                            .color(colors.text_dim),
+                    );
+                }
+            });
+        });
+    });
+    (row_resp, close_pane)
+}
+
+fn render_inspector_header(
+    ui: &mut egui::Ui,
+    ctx_name: &str,
+    ctx_root: &Option<std::path::PathBuf>,
+    colors: &Colors,
+) {
+    ui.label(
+        RichText::new(ctx_name)
+            .size(style::TEXT_TITLE_XL)
+            .color(colors.text_primary)
+            .strong(),
+    );
+    if let Some(root) = ctx_root {
+        ui.add_space(style::SPACE_SM);
+        let root_str = root.display().to_string();
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(&root_str).size(style::TEXT_CAPTION).color(colors.text_dim));
+            crate::widgets::copy_button(ui, egui::Id::new("inspector_copy_root"), &root_str);
+        });
+    }
+    ui.add_space(style::SPACE_XL);
+    ui.label(RichText::new("Panes").size(style::TEXT_CAPTION).color(colors.text_dim).strong());
+    ui.add_space(style::SPACE_SM);
+}
+
+fn render_inspector_hints(
+    ui: &mut egui::Ui,
+    pane_count: usize,
+    num_contexts: usize,
+    colors: &Colors,
+) -> bool {
+    let mut delete_context = false;
+    ui.horizontal(|ui| {
+        if num_contexts > 1 {
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("Delete context")
+                            .size(style::TEXT_CAPTION)
+                            .color(colors.text_primary),
+                    )
+                    .fill(colors.bg_active),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .clicked()
+            {
+                delete_context = true;
+            }
+            ui.add_space(style::SPACE_XL);
+        }
+        crate::widgets::key_combo_list(ui, &[&["Esc"]], Some("close"), colors);
+        ui.add_space(style::SPACE_MD);
+        crate::widgets::key_combo_list(ui, &[&["j"], &["k"]], Some("navigate"), colors);
+        if pane_count > 0 {
+            ui.add_space(style::SPACE_MD);
+            crate::widgets::key_combo_list(ui, &[&["Enter"]], Some("focus pane"), colors);
+        }
+    });
+    delete_context
+}
+
 impl PlexiApp {
     pub(crate) fn draw_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
@@ -1424,41 +1548,9 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn draw_context_inspector(&mut self, ctx: &egui::Context) {
-        let mut dismissed = false;
-        let mut close_pane: Option<PaneId> = None;
-        let mut focus_pane: Option<PaneId> = None;
-        let mut delete_context = false;
-
-        let (nav_down, nav_up, enter_pressed) = ctx.input_mut(|i| {
-            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-            let down = i.consume_key(egui::Modifiers::NONE, egui::Key::J)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
-            let up = i.consume_key(egui::Modifiers::NONE, egui::Key::K)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
-            let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-            if esc {
-                dismissed = true;
-            }
-            (down, up, enter)
-        });
-
-        let ctx_name = self.router.active().name.clone();
-        let ctx_root = self.router.active().root.clone();
-        let num_contexts = self.router.len();
-
-        // Collect all panes across all contexts, grouped by context.
-        struct PaneRow {
-            id: PaneId,
-            kind: &'static str,
-            name: String,
-            detail: String,
-            status: &'static str,
-        }
-
+    fn collect_inspector_rows(&self) -> (Vec<(String, Vec<PaneRow>)>, Vec<PaneId>) {
         let mut groups: Vec<(String, Vec<PaneRow>)> = Vec::new();
         let mut all_pane_ids: Vec<PaneId> = Vec::new();
-
         for ctx_entry in self.router.iter() {
             let cname = ctx_entry.name.clone();
             let cid = ctx_entry.context_id;
@@ -1473,33 +1565,19 @@ impl PlexiApp {
                             rows.push(PaneRow {
                                 id: t.id,
                                 kind: "Terminal",
-                                name: t
-                                    .name
-                                    .clone()
-                                    .or_else(|| t.pty_title.clone())
-                                    .unwrap_or_default(),
+                                name: t.name.clone().or_else(|| t.pty_title.clone()).unwrap_or_default(),
                                 detail: String::new(),
                                 status: if t.exited { "exited" } else { "running" },
                             });
                         }
                         crate::pane::Pane::App(a) => {
-                            let status = if let crate::pane::AppRuntime::Process(ref proc) =
-                                a.runtime
-                            {
+                            let status = if let crate::pane::AppRuntime::Process(ref proc) = a.runtime {
                                 match proc.lifecycle.state() {
-                                    crate::process_app::LifecycleState::Running => {
-                                        "running"
-                                    }
-                                    crate::process_app::LifecycleState::Booting => {
-                                        "booting"
-                                    }
-                                    crate::process_app::LifecycleState::Crashed => {
-                                        "crashed"
-                                    }
+                                    crate::process_app::LifecycleState::Running => "running",
+                                    crate::process_app::LifecycleState::Booting => "booting",
+                                    crate::process_app::LifecycleState::Crashed => "crashed",
                                     crate::process_app::LifecycleState::Hung => "hung",
-                                    crate::process_app::LifecycleState::ProtocolError => {
-                                        "error"
-                                    }
+                                    crate::process_app::LifecycleState::ProtocolError => "error",
                                 }
                             } else {
                                 "running"
@@ -1523,8 +1601,32 @@ impl PlexiApp {
                 groups.push((cname, rows));
             }
         }
+        (groups, all_pane_ids)
+    }
 
+    pub(crate) fn draw_context_inspector(&mut self, ctx: &egui::Context) {
+        let mut dismissed = false;
+        let mut close_pane: Option<PaneId> = None;
+        let mut focus_pane: Option<PaneId> = None;
+        let mut delete_context = false;
+
+        let (nav_down, nav_up, enter_pressed) = ctx.input_mut(|i| {
+            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            let down = i.consume_key(egui::Modifiers::NONE, egui::Key::J)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
+            let up = i.consume_key(egui::Modifiers::NONE, egui::Key::K)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
+            let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            if esc { dismissed = true; }
+            (down, up, enter)
+        });
+
+        let ctx_name = self.router.active().name.clone();
+        let ctx_root = self.router.active().root.clone();
+        let num_contexts = self.router.len();
+        let (groups, all_pane_ids) = self.collect_inspector_rows();
         let pane_count = all_pane_ids.len();
+
         if nav_down && pane_count > 0 {
             self.inspector_selected_pane = (self.inspector_selected_pane + 1) % pane_count;
         }
@@ -1541,23 +1643,13 @@ impl PlexiApp {
 
         let colors = self.colors;
         let selected = self.inspector_selected_pane;
-
         let screen_rect = ctx.screen_rect();
+
         egui::Area::new(egui::Id::new("context_inspector_scrim"))
-            .fixed_pos(screen_rect.min)
-            .order(egui::Order::Middle)
+            .fixed_pos(screen_rect.min).order(egui::Order::Middle)
             .show(ctx, |ui| {
-                ui.painter().rect_filled(
-                    screen_rect,
-                    0.0,
-                    Color32::from_black_alpha(style::SCRIM_ALPHA),
-                );
-                if ui
-                    .allocate_rect(screen_rect, egui::Sense::click())
-                    .clicked()
-                {
-                    dismissed = true;
-                }
+                ui.painter().rect_filled(screen_rect, 0.0, Color32::from_black_alpha(style::SCRIM_ALPHA));
+                if ui.allocate_rect(screen_rect, egui::Sense::click()).clicked() { dismissed = true; }
             });
 
         egui::Area::new(egui::Id::new("context_inspector_overlay"))
@@ -1574,185 +1666,36 @@ impl PlexiApp {
                     ))
                     .show(ui, |ui| {
                         ui.set_width(style::MODAL_WIDTH_MD);
-
-                        ui.label(
-                            RichText::new(&ctx_name)
-                                .size(style::TEXT_TITLE_XL)
-                                .color(colors.text_primary)
-                                .strong(),
-                        );
-
-                        if let Some(root) = &ctx_root {
-                            ui.add_space(style::SPACE_SM);
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(root.display().to_string())
-                                        .size(style::TEXT_CAPTION)
-                                        .color(colors.text_dim),
-                                );
-                                crate::widgets::copy_button(
-                                    ui,
-                                    egui::Id::new("inspector_copy_root"),
-                                    &root.display().to_string(),
-                                );
-                            });
-                        }
-
-                        ui.add_space(style::SPACE_XL);
-                        ui.label(
-                            RichText::new("Panes")
-                                .size(style::TEXT_CAPTION)
-                                .color(colors.text_dim)
-                                .strong(),
-                        );
-                        ui.add_space(style::SPACE_SM);
-
-                        let max_pane_height = ctx.available_rect().height() * 0.6;
+                        render_inspector_header(ui, &ctx_name, &ctx_root, &colors);
                         egui::ScrollArea::vertical()
-                            .max_height(max_pane_height)
+                            .max_height(ctx.available_rect().height() * 0.6)
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
                                 if pane_count == 0 {
-                                    ui.label(
-                                        RichText::new("No panes")
-                                            .size(style::TEXT_BODY)
-                                            .color(colors.text_dim),
-                                    );
+                                    ui.label(RichText::new("No panes").size(style::TEXT_BODY).color(colors.text_dim));
                                 } else {
                                     let mut global_idx: usize = 0;
                                     for (group_name, rows) in &groups {
                                         ui.add_space(style::SPACE_SM);
-                                        ui.label(
-                                            RichText::new(group_name.as_str())
-                                                .size(style::TEXT_CAPTION)
-                                                .color(colors.text_dim),
-                                        );
+                                        ui.label(RichText::new(group_name.as_str()).size(style::TEXT_CAPTION).color(colors.text_dim));
                                         ui.add_space(style::SPACE_SM);
-
                                         for row in rows {
-                                            let i = global_idx;
-                                            global_idx += 1;
-                                            let is_selected = i == selected;
-                                            let row_id = row.id;
-                                            let (row_resp, _) = crate::widgets::selectable_row(
-                                                ui,
-                                                is_selected,
-                                                &colors,
-                                                |ui| {
-                                                    ui.horizontal(|ui| {
-                                                        ui.label(
-                                                            RichText::new(format!(
-                                                                "#{} {}",
-                                                                row_id, row.kind
-                                                            ))
-                                                            .size(style::TEXT_CAPTION)
-                                                            .color(colors.text_dim),
-                                                        );
-                                                        let display_name: &str = if row.name.is_empty() {
-                                                            row.kind
-                                                        } else {
-                                                            &row.name
-                                                        };
-                                                        ui.label(
-                                                            RichText::new(display_name)
-                                                                .size(style::TEXT_BODY)
-                                                                .color(colors.text_primary),
-                                                        );
-                                                        ui.with_layout(
-                                                            Layout::right_to_left(Align::Center),
-                                                            |ui| {
-                                                                if ui
-                                                                    .add(
-                                                                        egui::Button::new(
-                                                                            RichText::new("✕")
-                                                                                .size(style::TEXT_CAPTION)
-                                                                                .color(colors.text_dim),
-                                                                        )
-                                                                        .frame(false),
-                                                                    )
-                                                                    .on_hover_cursor(
-                                                                        egui::CursorIcon::PointingHand,
-                                                                    )
-                                                                    .clicked()
-                                                                {
-                                                                    close_pane = Some(row_id);
-                                                                }
-                                                                let status_color =
-                                                                    if row.status == "running" {
-                                                                        colors.accent
-                                                                    } else {
-                                                                        colors.text_dim
-                                                                    };
-                                                                ui.label(
-                                                                    RichText::new(row.status)
-                                                                        .size(style::TEXT_HINT)
-                                                                        .color(status_color),
-                                                                );
-                                                                if !row.detail.is_empty() {
-                                                                    ui.label(
-                                                                        RichText::new(row.detail.as_str())
-                                                                            .size(style::TEXT_HINT)
-                                                                            .color(colors.text_dim),
-                                                                    );
-                                                                }
-                                                            },
-                                                        );
-                                                    });
-                                                },
+                                            let (resp, to_close) = render_inspector_pane_row(
+                                                ui, row, global_idx == selected, &colors,
                                             );
-                                            if row_resp.clicked() {
-                                                focus_pane = Some(row_id);
-                                            }
+                                            global_idx += 1;
+                                            if let Some(pid) = to_close { close_pane = Some(pid); }
+                                            if resp.clicked() { focus_pane = Some(row.id); }
                                         }
                                     }
                                 }
                             });
-
                         ui.add_space(style::SPACE_XL);
                         ui.separator();
                         ui.add_space(style::SPACE_MD);
-
-                        ui.horizontal(|ui| {
-                            if num_contexts > 1 {
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            RichText::new("Delete context")
-                                                .size(style::TEXT_CAPTION)
-                                                .color(colors.text_primary),
-                                        )
-                                        .fill(colors.bg_active),
-                                    )
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .clicked()
-                                {
-                                    delete_context = true;
-                                }
-                                ui.add_space(style::SPACE_XL);
-                            }
-                            crate::widgets::key_combo_list(
-                                ui,
-                                &[&["Esc"]],
-                                Some("close"),
-                                &colors,
-                            );
-                            ui.add_space(style::SPACE_MD);
-                            crate::widgets::key_combo_list(
-                                ui,
-                                &[&["j"], &["k"]],
-                                Some("navigate"),
-                                &colors,
-                            );
-                            if pane_count > 0 {
-                                ui.add_space(style::SPACE_MD);
-                                crate::widgets::key_combo_list(
-                                    ui,
-                                    &[&["Enter"]],
-                                    Some("focus pane"),
-                                    &colors,
-                                );
-                            }
-                        });
+                        if render_inspector_hints(ui, pane_count, num_contexts, &colors) {
+                            delete_context = true;
+                        }
                     });
             });
 
@@ -1760,18 +1703,15 @@ impl PlexiApp {
             self.show_context_inspector = false;
             log::info!("ContextInspector: closed");
         }
-
         if let Some(pid) = focus_pane {
             log::info!("ContextInspector: focusing pane {pid}");
             self.pane_navigate(pid);
             self.show_context_inspector = false;
         }
-
         if let Some(pid) = close_pane {
             log::info!("ContextInspector: closing pane {pid}");
             self.close_pane_by_id(pid);
         }
-
         if delete_context {
             let ctx_idx = self.router.active_idx();
             log::info!(
