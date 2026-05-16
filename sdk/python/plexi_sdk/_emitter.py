@@ -155,6 +155,13 @@ class Emitter:
         Raises ``RuntimeError`` if there is no running event loop to dispatch to
         (e.g. called before ``App.run()`` starts).
         """
+        if getattr(_SYNC_HOOK_LOCAL, 'active', False):
+            raise RuntimeError(
+                "emit.run_sync() called from a sync hook (e.g. on_render) — "
+                "this deadlocks the event loop. Use emit.schedule_task(coro) "
+                "instead when you don't need the return value, or change the "
+                "hook to 'async def' and use 'await self.emit.method()'."
+            )
         loop = self._app._loop
         if loop is None:
             raise RuntimeError(
@@ -164,6 +171,35 @@ class Emitter:
             )
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         return future.result()
+
+    def schedule_task(self, coro: "Any") -> Any:
+        """Schedule a coroutine as a background asyncio task from any context.
+
+        Safe to call from sync hooks (on_render, on_key, etc.) or background
+        threads. Returns immediately without blocking. The coroutine runs in
+        the background; use this when you don't need the return value::
+
+            def on_render(self, ctx: RenderContext) -> None:
+                if self._btn.render(ctx):
+                    self.emit.schedule_task(self._do_query())
+
+        Raises ``RuntimeError`` if the event loop hasn't started yet.
+        """
+        loop = self._app._loop
+        if loop is None:
+            raise RuntimeError(
+                "emit.schedule_task() called before the event loop started. "
+                "Only call it after App.run() is running (e.g. from on_init or later)."
+            )
+        try:
+            asyncio.get_running_loop()
+            # On the event loop thread — create task directly
+            task = loop.create_task(coro)
+        except RuntimeError:
+            # Background thread — dispatch thread-safely
+            task = asyncio.run_coroutine_threadsafe(coro, loop)
+        self.info("schedule_task: dispatched coroutine")
+        return task
 
     # kind = "choice"
     @_blocking_emit_method
