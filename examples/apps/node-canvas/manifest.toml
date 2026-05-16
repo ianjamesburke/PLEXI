@@ -1,0 +1,17 @@
+schema_version = 1
+
+[app]
+id = "node-canvas"
+type = "app"
+name = "Node Canvas"
+entry = "main.py"
+version = "0.1.0"
+description = "Interactive n8n-style node graph editor. Drag nodes, connect ports, pan the canvas."
+watch = true
+mouse_tracking = true
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "right", split = 0.6 }
