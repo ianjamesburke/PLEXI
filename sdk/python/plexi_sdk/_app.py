@@ -118,6 +118,9 @@ class App:
         self._pending_secret: "dict[str, asyncio.Queue]" = {}
         self._app_state: dict = {}
         self._pending_http: "dict[str, asyncio.Queue]" = {}
+        # v3.x async image loading (#1354): awaits PlexiEvent::ImageLoaded keyed
+        # on handle UUID. Each entry is consumed by a single load_image() call.
+        self._pending_image: "dict[str, asyncio.Queue]" = {}
         # v3.3 ai.query broker (#284): awaits PlexiEvent::AiResponse keyed
         # on request_id. Each entry is consumed by a single ai_query() call.
         self._pending_ai: "dict[str, asyncio.Queue]" = {}
@@ -552,6 +555,14 @@ class App:
                             q.put_nowait(("error", ev["error"]))
                         else:
                             q.put_nowait(("ok", ev.get("body", "")))
+
+                elif t == "image_loaded":
+                    handle = ev.get("handle", "")
+                    q = self._pending_image.pop(handle, None)
+                    if q:
+                        status = ev.get("status", "error")
+                        message = ev.get("message")
+                        q.put_nowait((status, message))
 
                 elif t == "ai_response":
                     # v3.3 ai.query broker (#284). Hand the whole event dict to

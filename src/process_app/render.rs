@@ -25,6 +25,16 @@ use taffy::prelude::*;
 ///
 /// `pane_rect` is **passed in by the caller** rather than derived from the
 /// `Ui`. This is deliberate — derivation invites two-sources-of-truth bugs
+/// Returns true when `s` is a UUID v4 handle from `emit.load_image()`.
+/// Format: 8-4-4-4-12 hex chars separated by hyphens (36 chars total).
+fn is_image_handle(s: &str) -> bool {
+    s.len() == 36
+        && s.as_bytes().get(8) == Some(&b'-')
+        && s.as_bytes().get(13) == Some(&b'-')
+        && s.as_bytes().get(18) == Some(&b'-')
+        && s.as_bytes().get(23) == Some(&b'-')
+}
+
 /// where the renderer and the caller silently disagree about geometry. An
 /// earlier version used `ui.min_rect()` here and got an empty rect (because
 /// process_app paints via `ui.painter()` without allocating, so min_rect
@@ -422,7 +432,9 @@ pub(crate) fn render_draw_commands(
             RenderCommand::TextInput { .. } => {}
 
             RenderCommand::Image { src, x, y, w, h, fit } => {
-                if src.starts_with("http://") || src.starts_with("https://") {
+                if is_image_handle(src) {
+                    // Handle-based: already loading via AppRequest::LoadImage; just look up.
+                } else if src.starts_with("http://") || src.starts_with("https://") {
                     image_cache.request_url(src, net_http_granted);
                 } else {
                     image_cache.request(src, workspace_root);

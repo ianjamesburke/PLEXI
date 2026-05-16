@@ -27,6 +27,7 @@ _RESERVED_SHORTCUTS = frozenset("jkhl") | frozenset("123456789")
 CAPABILITY_REGISTRY: dict[str, str] = {
     "http_get": "net.http",
     "http_request": "net.http",
+    "load_image": "net.http",
     "ai_query": "ai.query",
     "secret_get": "secrets.get",
     "get_secret": "secrets.get",
@@ -753,6 +754,34 @@ class Emitter:
         if status == "error":
             raise RuntimeError(f"http_request {url!r}: {value}")
         return value
+
+    @_blocking_emit_method
+    async def load_image(self, src: str) -> str:
+        """Request an async image fetch brokered through the host. Requires net.http capability.
+
+        Returns a stable handle ID. Pass the handle to ``ctx.image(handle, x, y, w, h)``
+        to render. While loading, ``ctx.image()`` renders a placeholder rect. On load
+        completion the host fires ``PlexiEvent::ImageLoaded`` which triggers a re-render.
+
+        Raises ``RuntimeError`` immediately if ``net.http`` is not declared in the manifest.
+        Raises ``RuntimeError`` if the fetch fails (network error, bad URL, decode error).
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.load_image(url))``.
+        """
+        if "net.http" not in self._app.capabilities:
+            raise RuntimeError(
+                "load_image: net.http capability not declared in manifest — "
+                "add 'net.http' to [capabilities] in manifest.toml"
+            )
+        handle = str(uuid.uuid4())
+        q: asyncio.Queue[tuple[str, "str | None"]] = _make_async_queue()
+        self._app._pending_image[handle] = q
+        _emit({"type": "load_image", "handle": handle, "src": src})
+        status, message = await q.get()
+        if status == "error":
+            raise RuntimeError(f"load_image {src!r}: {message}")
+        return handle
 
     @_blocking_emit_method
     async def ai_query(self, model_tier: str, system: str,
