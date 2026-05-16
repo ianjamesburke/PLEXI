@@ -594,6 +594,19 @@ pub fn config_dir() -> PathBuf {
 
 const CONFIG_TEMPLATE: &str = include_str!("../scripts/default-config.toml");
 
+/// Ensures the config file exists, creating it from the default template if not.
+/// Returns the config file path.
+pub fn ensure_config_exists() -> std::path::PathBuf {
+    let path = config_path();
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, CONFIG_TEMPLATE);
+    }
+    path
+}
+
 pub fn open_config_file() {
     let path = config_path();
 

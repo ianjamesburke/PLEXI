@@ -3768,29 +3768,18 @@ pub fn config_check() -> i32 {
 }
 
 pub fn config_edit() -> i32 {
-    let path = crate::config::config_path();
+    let path = crate::config::ensure_config_exists();
     log::info!("config_edit: opening {} in editor", path.display());
 
-    if !path.exists() {
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!("error: could not create config directory: {e}");
-                return 1;
-            }
-        }
-        if let Err(e) = std::fs::write(&path, "") {
-            eprintln!("error: could not create config file: {e}");
-            return 1;
-        }
-    }
-
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "open".to_string());
-    match std::process::Command::new(&editor).arg(&path).status() {
+    let editor_env = std::env::var("EDITOR").unwrap_or_else(|_| "open".to_string());
+    let mut parts = editor_env.split_whitespace();
+    let editor_bin = parts.next().unwrap_or("open");
+    match std::process::Command::new(editor_bin).args(parts).arg(&path).status() {
         Ok(status) => {
             if status.success() { 0 } else { status.code().unwrap_or(1) }
         }
         Err(e) => {
-            eprintln!("error: could not launch editor {editor:?}: {e}");
+            eprintln!("error: could not launch editor {editor_bin:?}: {e}");
             1
         }
     }
