@@ -1,6 +1,32 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.401] — 2026-05-16
+
+### Changes
+- feat(contexts): fractal sub-contexts with spatial zoom-in/zoom-out (#1374) (#1377)
+- perf(deps): remove dead hound dep, upgrade rodio/rfd/objc2 to eliminate cpal duplicate (#1309) (#1376)
+- refactor(config): consolidate CONFIG_TEMPLATE into single source of truth (#1121) (#1375)
+- fix(website): remove MIT wording, sync version, fix blog date, first-person voice (#1372) (#1373)
+- feat(cli): channel-aware shell completions (#1316) (#1371)
+- perf(ai): async generation metrics fetch — eliminate 7s post-stream block (#1352) (#1370)
+- refactor(inspector): extract draw_context_inspector into helpers — 358 lines → 120 (#1368)
+- fix(infra): seed PR build config from alpha instead of blank template (#1369)
+- fix(terminal): first pane from welcome screen falls back to context path instead of / (#1351) (#1364)
+- feat(host): capability pre-flight check — error tile when app lacks required config (#1345) (#1366)
+- fix(infra): atomic SDK swap in install.sh to prevent TOCTOU crash (#1324) (#1365)
+- feat(sdk/host): async image loading — emit.load_image() handle/lifecycle (#1354) (#1362)
+- feat(ui): configurable unfocused-pane opacity via ghost_opacity (#1350) (#1359)
+- fix(app-init): pass workspace cwd to host so auto-open finds the new app (#1360)
+- feat(host/sdk): static capability validation at app launch (#1355) (#1357)
+- fix(host): fetch https:// URLs in DrawCommand::Image via net.http (#1353) (#1356)
+- feat(examples): n8n-style node canvas POC — interactive graph editor in PGAP (#1338) (#1349)
+- fix(ai): increase OpenRouter generation metrics retry window for Gemini (#1339) (#1348)
+- feat(sdk): add emit.schedule_task() and guard run_sync() against deadlock (#1340) (#1341)
+- fix(ai): broadcast fresh AI config to all panes on reload (#1337) (#1342)
+- feat(cli): plexi uninstall for Plexi self-removal, app uninstall cleanup (#1333) (#1335)
+- docs(cli): rewrite all help text for vibe coder clarity (#1322) (#1334)
+- fix(install): improve installer tone and soften admin access warning
 ## [0.0.400] — 2026-05-16
 
 ### Changes
