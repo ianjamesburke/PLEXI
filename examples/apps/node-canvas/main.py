@@ -171,6 +171,7 @@ class NodeCanvas(App):
     # ── Rendering ─────────────────────────────────────────────────────────────
 
     def on_render(self, ctx: RenderContext) -> None:
+        ctx.set_mouse_tracking(True)
         ctx.clear(BG)
         self._draw_grid(ctx)
         self._draw_connections(ctx)
