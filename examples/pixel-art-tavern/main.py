@@ -300,8 +300,8 @@ class TavernApp(App):
             text = (resp.content or "").strip()
             npc.speech = text
             self._conversation.append({"role": "assistant", "content": f"{npc.name}: {text}"})
-            if len(self._conversation) > 12:
-                self._conversation = self._conversation[-12:]
+            if len(self._conversation) > 25:
+                self._conversation = self._conversation[-25:]
             self._state = "speaking"
             self._speech_timer = BUBBLE_DISPLAY_SECS
             self.emit.info(f"NPC {npc.name} responded: {resp.tokens_in} in, {resp.tokens_out} out")
