@@ -14,7 +14,7 @@ This is the compass for Plexi's development. It is not a sprint plan or a featur
 
 ## Short Bio
 
-Plexi is a tiling, terminal-native personal computing environment for macOS. You run sandboxed apps inside it, build apps for it, and wire them together with typed pipes and shared context. Everything lives on disk in plain text — no cloud, no subscriptions, no data held hostage. AI, audio, network, and filesystem access are brokered with explicit consent and a full audit trail. You install it once and build your working environment on top of it for the rest of your career.
+Plexi is a tiling, terminal-native personal computing environment. You run sandboxed apps inside it, build apps for it, and wire them together with typed pipes and shared context. Everything lives on disk. AI, audio, network, and filesystem access are brokered with explicit consent and a full audit trail. You install it once and build your working environment on top of it for the rest of your life.
 
 ---
 
@@ -38,11 +38,17 @@ The long horizon: Plexi becomes a platform. You build apps, publish them, sell t
 
 ## Who This Is For
 
-Plexi's primary audience is **vibe coders** — people who build with AI, ship fast, and are just discovering what the terminal can do. They aren't sysadmins. They don't have a `.zshrc` they've cultivated for a decade. They may not know what PATH is. But they know they want to build things, and they showed up because an AI helped them write their first script.
+Plexi's primary audience is non-technical people aware of the potential of AI but who know they could be getting more out of it. They may not know exactly what the terminal does or what it's capable of, but they know it's what AI power users have started to catch on to.
 
-Plexi meets them where they are. Every feature that a power user would wire up manually — script discovery, secret injection, command listing, argument forwarding — Plexi packages as a product experience with guardrails, discoverability, and a growth path. `plexi run list` teaches a new user what's available. `plexi run edit` gives them a door into customization without requiring them to understand shell configuration. The CLI is not a power-user shortcut — it's the primary interface, and it must be learnable by someone whose first terminal was last month.
+Plexi meets them where they are. 99% of CLI commands are executed by agents, not humans. The entire user experience is wrapped in a command-line interface so that an agent can use it, collaborate with you to build any interface you can imagine, and run it on any computer for the next hundred years. Every feature that a power user would wire up manually — script discovery, secret injection, command listing, argument forwarding — Plexi packages as a single entry with guardrails, discoverability, and a growth path. `plexi run list` teaches a new user what's available. `plexi run edit` gives them a door into customization without requiring them to understand shell configuration. The CLI is not a power-user shortcut — it's the primary interface for agents, and it must be learnable by someone whose first terminal was last month.
 
 The secondary audience is **power users and agent builders** who need a programmable, auditable, agent-scriptable environment. They benefit from the same product abstractions — a command registry that agents can read, manifests that declare capabilities, structured metadata that tooling can index — even though they could wire the pieces themselves.
+
+The primitives are right when you can build a deployable agentic system and ship it directly onto your client's hardware. No authentication layer to maintain. No cloud costs to absorb. No infrastructure to babysit. If the system needs AI, you hook them up with an OpenRouter account of their own and they're set up, good to go. The deployment model is: install Plexi, install the app, connect the API key. Done. You built the system; they own it on their machine.
+
+
+
+
 
 **Design principle — product over primitive:** when a Plexi feature overlaps with a UNIX primitive (PATH, make, env), that overlap validates the abstraction — it means the concept is sound. The product layer on top (discoverability, scope labeling, secret injection, agent indexing) is the value. Never decline to build a feature because a power user could assemble it from parts. The target user can't, and the power user benefits from the structured version anyway.
 
@@ -54,11 +60,11 @@ The secondary audience is **power users and agent builders** who need a programm
 
 ### Phase 0 — Foundation *(shipped)*
 
-Tiling layout. Terminal, App, and Agent pane types. PGAP protocol + Python SDK. Typed pipes. Context/workspace scoping. Capability system with permissions.jsonl audit trail. Copy-mode. CLI.
+Tiling layout. Terminal, App. PGAP protocol + Python SDK. Typed pipes. Context/workspace scoping. Capability system with permissions.jsonl audit trail. Copy-mode. CLI.
 
 ### Phase 1 — Intelligence & Wiring *(in progress)*
 
-IQ query: agent panes with OpenRouter backend, ledger per turn, session transcripts on disk. Ollama backend (local LLM, no OpenRouter dependency). Typed pipes Phase 1: manifest `[app.io]` wiring, auto-wire by linked group.
+Agent panes with OpenRouter backend. Per-turn cost ledger. Session transcripts on disk. Typed pipes Phase 1: manifest `[app.io]` wiring, auto-wire by linked group. Context-aware app dispatch. CLI as the universal agent interface.
 
 ### Phase 2 — Agent Infrastructure *(near term)*
 
