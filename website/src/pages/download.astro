@@ -3,7 +3,7 @@ import Layout from '../layouts/Layout.astro';
 import Newsletter from '../components/Newsletter.astro';
 
 const RELEASES_LATEST = 'https://github.com/ianjamesburke/PLEXI/releases/latest';
-const INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | sh';
+const INSTALL_CMD = 'bash -c "$(curl -fsSL https://plexiapp.com/install)"';
 ---
 <Layout title="Download Plexi" description="Install Plexi on macOS with a single command.">
   <header class="dl-hero">
@@ -41,20 +41,22 @@ const INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | sh';
 
 <script>
   document.querySelectorAll('.copy-btn').forEach((btn) => {
+    let resetTimer;
     btn.addEventListener('click', async () => {
       const cmd = btn.getAttribute('data-cmd');
       if (!cmd) return;
       const label = btn.querySelector('.copy-label');
+      clearTimeout(resetTimer);
       try {
         await navigator.clipboard.writeText(cmd);
         if (label) {
           label.textContent = 'Copied';
-          setTimeout(() => { label.textContent = 'Copy'; }, 2000);
+          resetTimer = setTimeout(() => { label.textContent = 'Copy'; }, 2000);
         }
       } catch {
         if (label) {
           label.textContent = 'Failed';
-          setTimeout(() => { label.textContent = 'Copy'; }, 2000);
+          resetTimer = setTimeout(() => { label.textContent = 'Copy'; }, 2000);
         }
       }
     });

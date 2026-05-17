@@ -12,7 +12,7 @@ Plexi runs on macOS (Apple Silicon or Intel, macOS 12 Monterey or later).
 Open Terminal and run:
 
 ```
-curl -fsSL https://plexiapp.com/install | sh
+bash -c "$(curl -fsSL https://plexiapp.com/install)"
 ```
 
 You'll be asked for your password. The script installs Plexi.app to /Applications, sets up the `plexi` CLI in /usr/local/bin, and adds shell completions. Launch Plexi from Applications or Spotlight.
