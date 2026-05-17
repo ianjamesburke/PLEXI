@@ -94,6 +94,10 @@ impl PlexiApp {
                 if let Some(egui_tiles::Tile::Pane(ref mut id)) = win.tree.tiles.get_mut(adopt_tile_id) {
                     *id = sub_ctx_pane_id;
                 }
+                // If the adopted pane was zoomed, clear it — zooming a SubContext tile is meaningless.
+                if win.zoomed_pane == Some(adopt_tile_id) {
+                    win.zoomed_pane = None;
+                }
                 win.panes.insert(sub_ctx_pane_id, crate::pane::Pane::SubContext {
                     pane_id: sub_ctx_pane_id,
                     context_id: ctx_id,
