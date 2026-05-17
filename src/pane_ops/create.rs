@@ -12,6 +12,7 @@ use crate::host::command::{HostAction, OpenPaneRequest, PaneRuntimeKind, Placeme
 use crate::host::effect::HostEffect;
 use crate::pane::{Pane, TerminalPane};
 use crate::tiling::PaneId;
+use egui_term::BackendCommand;
 use egui_tiles::{Tile, TileId, Tree};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -740,43 +741,40 @@ impl PlexiApp {
         self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"), None);
     }
 
-    /// Open the scratchpad as a full-pane overlay on the focused terminal.
+    /// Open a terminal editor in the focused pane for scratchpad editing.
+    ///
+    /// Injects `micro <path>` (or `nano` fallback) into the focused terminal's PTY.
+    /// The scratchpad file persists at `<config_dir>/scratchpad.md` across sessions.
     pub(crate) fn open_scratchpad(&mut self) {
-        // Toggle: if already open, close it.
-        let ctx = &self.windows[self.active_window];
-        if let Some(focused) = ctx.focused_pane {
-            if let Some(egui_tiles::Tile::Pane(pane_id)) = ctx.tree.tiles.get(focused) {
-                if let Some(pane) = ctx.panes.get(pane_id) {
-                    if let Some(a) = pane.as_app() {
-                        if a.runtime.type_id() == "scratchpad" {
-                            log::info!("scratchpad: already open — closing");
-                            self.close_focused_app();
-                            return;
-                        }
-                    }
-                }
-            }
-        }
+        let active = self.active_window;
 
-        let cwd = {
-            let ctx = &self.windows[self.active_window];
-            ctx.focused_pane
-                .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
-                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+        let focused_tile = match self.windows[active].focused_pane {
+            Some(t) => t,
+            None => {
+                log::warn!("scratchpad: no focused pane — ignored");
+                return;
+            }
+        };
+        let pane_id = match self.windows[active].tree.tiles.get(focused_tile) {
+            Some(egui_tiles::Tile::Pane(id)) => *id,
+            _ => {
+                log::warn!("scratchpad: focused tile is not a pane — ignored");
+                return;
+            }
+        };
+        let Some(term) = self.windows[active].panes.get_mut(&pane_id).and_then(Pane::as_terminal_mut) else {
+            log::warn!("scratchpad: focused pane {pane_id} is not a terminal — ignored");
+            return;
         };
 
-        let workspace_root = crate::config::active_workspace_root()
-            .unwrap_or_else(|| crate::config::config_dir());
+        let path = scratchpad_file();
+        let path_str = path.display().to_string();
+        let escaped = shell_quote_path(&path_str);
+        let editor = preferred_editor();
 
-        log::info!(
-            "scratchpad: opening — cwd={} workspace_root={}",
-            cwd.display(),
-            workspace_root.display()
-        );
-
-        let app = Box::new(crate::scratchpad::ScratchpadApp::new(workspace_root.clone()));
-        let perms = crate::app_permissions::AppPermissions::builtin();
-        self.open_builtin_app_pane(app, perms, workspace_root, None, Some("overlay"), None);
+        let cmd = format!("{editor} {escaped}\r");
+        log::info!("scratchpad: injecting '{editor} {escaped}' into terminal pane {pane_id}");
+        term.backend.process_command(BackendCommand::Write(cmd.into_bytes()));
     }
 
     /// Open the quick note modal: capture context and push FocusLayer::QuickNote.
@@ -1491,5 +1489,54 @@ mod quick_note_tests {
         let result = PlexiApp::substitute_note_tokens_static("echo {context_root}", "note", &c);
         // When context_root is None, {context_root} substitutes to shell_quote("") = ''
         assert!(result.contains("''") || result.ends_with("echo "), "unexpected result: {result}");
+    }
+}
+
+/// Stable scratchpad file path: `<config_dir>/scratchpad.md`.
+fn scratchpad_file() -> PathBuf {
+    crate::config::config_dir().join("scratchpad.md")
+}
+
+/// Resolve the preferred terminal editor: `micro` if available, else `nano`.
+fn preferred_editor() -> &'static str {
+    for editor in ["micro", "nano", "vim"] {
+        if std::process::Command::new("which")
+            .arg(editor)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            return editor;
+        }
+    }
+    "nano"
+}
+
+/// POSIX-quote a path that contains shell-significant characters.
+fn shell_quote_path(path: &str) -> String {
+    if path.contains(|c: char| c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)) {
+        format!("'{}'", path.replace('\'', "'\\''"))
+    } else {
+        path.to_string()
+    }
+}
+
+#[cfg(test)]
+mod scratchpad_tests {
+    use super::*;
+
+    #[test]
+    fn shell_quote_plain_path() {
+        assert_eq!(shell_quote_path("/home/user/scratchpad.md"), "/home/user/scratchpad.md");
+    }
+
+    #[test]
+    fn shell_quote_path_with_spaces() {
+        assert_eq!(shell_quote_path("/my docs/notes.md"), "'/my docs/notes.md'");
+    }
+
+    #[test]
+    fn shell_quote_path_with_apostrophe() {
+        assert_eq!(shell_quote_path("/it's here/file.md"), "'/it'\\''s here/file.md'");
     }
 }
