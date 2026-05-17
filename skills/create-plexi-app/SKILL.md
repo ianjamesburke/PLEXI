@@ -208,7 +208,7 @@ on_timer(ctx, timer_id)   task — from emit.set_timer()
 just dev <app-dir>
 
 # Launch in a new split pane (--layout prevents reusing/replacing a running instance):
-<plexi-binary> open <app-id> --layout split_v
+<plexi-binary> open <app-id> --layout split_h
 
 # Headless render to PNG — no running host required:
 # Agent runs this, reads the PNG with the Read tool, iterates on code, re-renders to confirm.

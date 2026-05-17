@@ -53,8 +53,8 @@ impl HostModel {
             HostAction::OpenPane(req) => self.open_pane(req),
             HostAction::CloseFocusedPane => self.close_focused_pane(),
             HostAction::Navigate(dir) => self.navigate(dir),
-            HostAction::SplitHorizontal => self.split(Placement::Below),
-            HostAction::SplitVertical => self.split(Placement::Right),
+            HostAction::SplitHorizontal => self.split(Placement::Right),
+            HostAction::SplitVertical => self.split(Placement::Below),
         };
         for e in &effects {
             services.event_sink.emit(e);
@@ -216,13 +216,12 @@ mod tests {
         }
     }
 
-    /// Cmd+N is wired to `HostAction::SplitVertical` (semantically: side-by-side,
-    /// new pane on the right). Confirm the host emits `Placement::Right`.
+    /// `SplitHorizontal` (tmux convention: side-by-side) must emit `Placement::Right`.
     #[test]
-    fn cmd_n_splits_right_of_focused_pane() {
+    fn split_horizontal_places_right() {
         let mut model = HostModel::new();
         let mut svc = services();
-        let effects = model.handle_command(HostAction::SplitVertical, &mut svc);
+        let effects = model.handle_command(HostAction::SplitHorizontal, &mut svc);
         let placement = effects
             .iter()
             .find_map(|e| match e {
@@ -233,13 +232,12 @@ mod tests {
         assert_eq!(placement, Placement::Right);
     }
 
-    /// Cmd+Shift+N is wired to `HostAction::SplitHorizontal` (stacked, new
-    /// pane below). Confirm the host emits `Placement::Below`.
+    /// `SplitVertical` (tmux convention: stacked) must emit `Placement::Below`.
     #[test]
-    fn cmd_shift_n_splits_below_focused_pane() {
+    fn split_vertical_places_below() {
         let mut model = HostModel::new();
         let mut svc = services();
-        let effects = model.handle_command(HostAction::SplitHorizontal, &mut svc);
+        let effects = model.handle_command(HostAction::SplitVertical, &mut svc);
         let placement = effects
             .iter()
             .find_map(|e| match e {

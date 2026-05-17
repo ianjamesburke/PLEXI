@@ -194,9 +194,9 @@ impl PlexiApp {
             Kind::App(manifest_id) => {
                 // Fresh instance of the same app at the requested placement.
                 // The layout hint maps directly to the split direction:
-                //   Placement::Right → "split_v" (side-by-side, new pane right)
-                //   Placement::Below → "split_h" (stacked,      new pane below)
-                let layout = if vertical { "split_v" } else { "split_h" };
+                //   Placement::Right → "split_h" (side-by-side, new pane right)
+                //   Placement::Below → "split_v" (stacked,      new pane below)
+                let layout = if vertical { "split_h" } else { "split_v" };
                 self.launch_app_by_id_with_layout(
                     &manifest_id,
                     Some(layout.to_string()),
@@ -215,9 +215,9 @@ impl PlexiApp {
         };
 
         let cmd = if vertical {
-            HostAction::SplitVertical
-        } else {
             HostAction::SplitHorizontal
+        } else {
+            HostAction::SplitVertical
         };
         let effects = self.submit(cmd);
         log::debug!("split_focused(vertical={vertical}) effects: {:?}", effects);

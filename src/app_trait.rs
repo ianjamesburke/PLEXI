@@ -10,7 +10,7 @@ pub enum AppCommand {
     /// Post an ephemeral notification.
     Notify(String),
     /// Request the host to spawn a new app pane.
-    /// `layout`: "split_v" (right, default), "split_h" (below), or "overlay".
+    /// `layout`: "split_h" (right), "split_v" (below, default), or "overlay".
     /// `args`: passed as argv to the child process.
     SpawnApp {
         type_id: String,

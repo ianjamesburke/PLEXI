@@ -987,7 +987,7 @@ pub enum AppRequest {
     StatusSummary { text: String },
 
     /// Request the host to spawn a new app pane. Requires `spawn.app` capability.
-    /// `layout`: "split_v" (default, new pane below), "split_h" (new pane right),
+    /// `layout`: "split_h" (new pane right), "split_v" (default, new pane below),
     ///           or "overlay" (full pane, no split).
     /// `args`: argv passed to the child process (appended after the binary path).
     /// Host responds with `PlexiEvent::AppSpawned { pane_id }` on success.
@@ -1001,7 +1001,7 @@ pub enum AppRequest {
 
     /// Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps.
     /// Requires `panes.spawn` capability.
-    /// `layout`: one of "split_v", "split_h", "split_above", "split_left", "overlay",
+    /// `layout`: one of "split_h", "split_right", "split_v", "split_below", "split_above", "split_left", "overlay",
     ///   "new_window" (terminal only — creates a new spatial grid window to the right
     ///   of the current context row instead of splitting the active pane),
     ///   "tab" (terminal only — adds a new tab alongside the focused pane, wrapping
