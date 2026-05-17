@@ -461,7 +461,8 @@ pub fn poll_actions(
     keyboard_capture_active: bool,
     overlay_open: bool,
     shortcuts_overlay_open: bool,
-    notification_is_choice: bool,
+    notification_modal_active: bool,
+    notification_shortcuts_blocked: bool,
 ) -> Vec<Action> {
     let mut actions = Vec::new();
 
@@ -559,15 +560,19 @@ pub fn poll_actions(
             });
         }
 
-        // Bare H/L cycle through the notification queue when the modal is open.
-        // Skipped for Choice notifications — H and L must remain available as
-        // per-option shortcut keys handled by overlays.rs.
-        if overlay_open && !notification_is_choice {
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::H) {
+        // Bare H/L cycle the notification queue when the modal is focused.
+        // Restricted to the notification modal specifically (not other overlays).
+        // Blocked when the active notification is Choice or Input — those kinds
+        // need H/L as per-option shortcut keys or free text input.
+        // modifiers.is_none() guard is required: consume_key(NONE, key) matches
+        // regardless of modifiers (see GOTCHA at top of file), so Shift+H or
+        // Cmd+H must not accidentally trigger cycling.
+        if notification_modal_active && !notification_shortcuts_blocked {
+            if input.modifiers.is_none() && input.consume_key(egui::Modifiers::NONE, egui::Key::H) {
                 log::info!("notification cycle: prev (H)");
                 actions.push(Action::NotificationCyclePrev);
             }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::L) {
+            if input.modifiers.is_none() && input.consume_key(egui::Modifiers::NONE, egui::Key::L) {
                 log::info!("notification cycle: next (L)");
                 actions.push(Action::NotificationCycleNext);
             }
