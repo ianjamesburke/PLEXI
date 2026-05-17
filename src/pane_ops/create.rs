@@ -769,7 +769,7 @@ impl PlexiApp {
 
         let path = scratchpad_file();
         let path_str = path.display().to_string();
-        let escaped = shell_quote_path(&path_str);
+        let escaped = crate::shell::shell_quote(&path_str);
         let editor = preferred_editor();
 
         let cmd = format!("{editor} {escaped}\r");
@@ -1497,46 +1497,12 @@ fn scratchpad_file() -> PathBuf {
     crate::config::config_dir().join("scratchpad.md")
 }
 
-/// Resolve the preferred terminal editor: `micro` if available, else `nano`.
+/// Resolve the preferred terminal editor: `micro` if available, else `nano`, then `vim`.
 fn preferred_editor() -> &'static str {
     for editor in ["micro", "nano", "vim"] {
-        if std::process::Command::new("which")
-            .arg(editor)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
+        if cli_binary_in_path(editor) {
             return editor;
         }
     }
     "nano"
-}
-
-/// POSIX-quote a path that contains shell-significant characters.
-fn shell_quote_path(path: &str) -> String {
-    if path.contains(|c: char| c.is_whitespace() || "\"'\\()&|;$`!#".contains(c)) {
-        format!("'{}'", path.replace('\'', "'\\''"))
-    } else {
-        path.to_string()
-    }
-}
-
-#[cfg(test)]
-mod scratchpad_tests {
-    use super::*;
-
-    #[test]
-    fn shell_quote_plain_path() {
-        assert_eq!(shell_quote_path("/home/user/scratchpad.md"), "/home/user/scratchpad.md");
-    }
-
-    #[test]
-    fn shell_quote_path_with_spaces() {
-        assert_eq!(shell_quote_path("/my docs/notes.md"), "'/my docs/notes.md'");
-    }
-
-    #[test]
-    fn shell_quote_path_with_apostrophe() {
-        assert_eq!(shell_quote_path("/it's here/file.md"), "'/it'\\''s here/file.md'");
-    }
 }
