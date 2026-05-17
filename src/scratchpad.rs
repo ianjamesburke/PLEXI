@@ -123,9 +123,15 @@ impl App for ScratchpadApp {
             );
 
             let te_id = egui::Id::new("scratchpad_text");
-            if !self.focus_requested {
+            let window_regained_focus = ui.ctx().input(|i| {
+                i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true)))
+            });
+            if !self.focus_requested || window_regained_focus {
                 ui.ctx().memory_mut(|m| m.request_focus(te_id));
                 self.focus_requested = true;
+                if window_regained_focus {
+                    log::info!("scratchpad: window regained focus — re-requesting text editor focus");
+                }
             }
 
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(text_rect), |ui| {
@@ -175,9 +181,15 @@ impl App for ScratchpadApp {
             }
 
             let te_id = egui::Id::new("scratchpad_filename");
-            if !self.save_focus_requested {
+            let window_regained_focus = ui.ctx().input(|i| {
+                i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true)))
+            });
+            if !self.save_focus_requested || window_regained_focus {
                 ui.ctx().memory_mut(|m| m.request_focus(te_id));
                 self.save_focus_requested = true;
+                if window_regained_focus {
+                    log::info!("scratchpad: window regained focus — re-requesting filename field focus");
+                }
             }
 
             egui::Area::new(egui::Id::new("scratchpad_save_modal"))
