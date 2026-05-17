@@ -53,8 +53,8 @@ impl HostModel {
             HostAction::OpenPane(req) => self.open_pane(req),
             HostAction::CloseFocusedPane => self.close_focused_pane(),
             HostAction::Navigate(dir) => self.navigate(dir),
-            HostAction::SplitHorizontal => self.split(Placement::Right),
-            HostAction::SplitVertical => self.split(Placement::Below),
+            HostAction::SplitHorizontal => self.split(Placement::Below),
+            HostAction::SplitVertical => self.split(Placement::Right),
         };
         for e in &effects {
             services.event_sink.emit(e);
@@ -216,9 +216,11 @@ mod tests {
         }
     }
 
-    /// `SplitHorizontal` (tmux convention: side-by-side) must emit `Placement::Right`.
+    /// `SplitHorizontal` emits `Placement::Below` (stacked). In `split_focused`, vertical=false
+    /// maps to SplitHorizontal, and the recalculation `!matches(Below, Below)=false` preserves
+    /// vertical=false → Horizontal tile → side-by-side. The Placement here is internal state.
     #[test]
-    fn split_horizontal_places_right() {
+    fn split_horizontal_emits_below_placement() {
         let mut model = HostModel::new();
         let mut svc = services();
         let effects = model.handle_command(HostAction::SplitHorizontal, &mut svc);
@@ -229,12 +231,14 @@ mod tests {
                 _ => None,
             })
             .expect("SplitOpened effect must be emitted");
-        assert_eq!(placement, Placement::Right);
+        assert_eq!(placement, Placement::Below);
     }
 
-    /// `SplitVertical` (tmux convention: stacked) must emit `Placement::Below`.
+    /// `SplitVertical` emits `Placement::Right` (side-by-side). In `split_focused`, vertical=true
+    /// maps to SplitVertical, and the recalculation `!matches(Right, Below)=true` preserves
+    /// vertical=true → Vertical tile → stacked. The Placement here is internal state.
     #[test]
-    fn split_vertical_places_below() {
+    fn split_vertical_emits_right_placement() {
         let mut model = HostModel::new();
         let mut svc = services();
         let effects = model.handle_command(HostAction::SplitVertical, &mut svc);
@@ -245,6 +249,6 @@ mod tests {
                 _ => None,
             })
             .expect("SplitOpened effect must be emitted");
-        assert_eq!(placement, Placement::Below);
+        assert_eq!(placement, Placement::Right);
     }
 }

@@ -39,7 +39,7 @@ NEW=$(plexi terminal --layout new_window)                # separate OS window
 
 ## Apps
 
-`plexi open <app-id>` launches an installed app. Flags: `--layout <left|right|top|bottom|overlay|split_h|split_v|split_right|split_below>`, `--from-pane-id <id>` (split relative to a pane), `--mcp`, `--cli`.
+`plexi open <app-id>` launches an installed app. Flags: `--layout <overlay|split_h|split_v|split_right|split_below|split_above>`, `--from-pane-id <id>` (split relative to a pane), `--mcp`, `--cli`.
 
 ```bash
 plexi list                       # list installed apps

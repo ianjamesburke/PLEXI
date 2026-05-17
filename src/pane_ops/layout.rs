@@ -181,9 +181,9 @@ impl PlexiApp {
             Some(Pane::SubContext { .. }) | None => return,
         };
 
-        // `vertical` parameter for `split_with_new_pane` / `split_focused`:
-        //   true  → side-by-side (new pane on the right) → Placement::Right
-        //   false → stacked      (new pane below)         → Placement::Below
+        // `vertical` here follows split_with_new_pane semantics (not split_focused):
+        //   true  → split_h (side-by-side, new pane right) → Placement::Right
+        //   false → split_v (stacked,      new pane below) → Placement::Below
         let vertical = matches!(placement, Placement::Right);
 
         match kind {
@@ -215,9 +215,9 @@ impl PlexiApp {
         };
 
         let cmd = if vertical {
-            HostAction::SplitHorizontal
-        } else {
             HostAction::SplitVertical
+        } else {
+            HostAction::SplitHorizontal
         };
         let effects = self.submit(cmd);
         log::debug!("split_focused(vertical={vertical}) effects: {:?}", effects);
