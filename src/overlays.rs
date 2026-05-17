@@ -159,7 +159,6 @@ fn render_inspector_pane_row(
 fn render_inspector_header(
     ui: &mut egui::Ui,
     ctx_name: &str,
-    ctx_root: &Option<std::path::PathBuf>,
     colors: &Colors,
 ) {
     ui.label(
@@ -168,17 +167,6 @@ fn render_inspector_header(
             .color(colors.text_primary)
             .strong(),
     );
-    if let Some(root) = ctx_root {
-        ui.add_space(style::SPACE_SM);
-        let root_str = root.display().to_string();
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(&root_str).size(style::TEXT_CAPTION).color(colors.text_dim));
-            crate::widgets::copy_button(ui, egui::Id::new("inspector_copy_root"), &root_str);
-        });
-    }
-    ui.add_space(style::SPACE_XL);
-    ui.label(RichText::new("Panes").size(style::TEXT_CAPTION).color(colors.text_dim).strong());
-    ui.add_space(style::SPACE_SM);
 }
 
 fn render_inspector_hints(
@@ -1645,8 +1633,21 @@ impl PlexiApp {
         let mut close_pane: Option<PaneId> = None;
         let mut focus_pane: Option<PaneId> = None;
         let mut delete_context = false;
+        let mut start_root_edit = false;
 
         let num_contexts = self.router.len();
+
+        // Consume Enter/Escape for root edit before the inspector's own Escape handler.
+        let (root_committed, root_cancelled) = if self.inspector_root_edit_active {
+            ctx.input_mut(|i| {
+                let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                (enter, esc)
+            })
+        } else {
+            (false, false)
+        };
+
         let (nav_down, nav_up, enter_pressed, backspace_pressed) = ctx.input_mut(|i| {
             let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
             let down = i.consume_key(egui::Modifiers::NONE, egui::Key::J)
@@ -1728,7 +1729,61 @@ impl PlexiApp {
                     ))
                     .show(ui, |ui| {
                         ui.set_width(style::MODAL_WIDTH_MD);
-                        render_inspector_header(ui, &ctx_name, &ctx_root, &colors);
+                        render_inspector_header(ui, &ctx_name, &colors);
+                        // Root path section — editable
+                        if self.inspector_root_edit_active {
+                            ui.add_space(style::SPACE_SM);
+                            let te_id = egui::Id::new("inspector_root_edit");
+                            let _te_resp = ui.scope(|ui| {
+                                ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                                ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                                ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
+                                ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, self.colors.accent);
+                                ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.colors.border);
+                                let resp = ui.add(
+                                    egui::TextEdit::singleline(&mut self.inspector_root_buffer)
+                                        .id(te_id)
+                                        .desired_width(f32::INFINITY)
+                                        .hint_text("Path to project root…")
+                                        .font(egui::TextStyle::Body)
+                                        .margin(egui::Margin::symmetric(8, 5)),
+                                );
+                                if !resp.has_focus() {
+                                    resp.request_focus();
+                                }
+                            });
+                        } else {
+                            match &ctx_root {
+                                Some(root) => {
+                                    ui.add_space(style::SPACE_SM);
+                                    let root_str = root.display().to_string();
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(&root_str).size(style::TEXT_CAPTION).color(colors.text_dim));
+                                        crate::widgets::copy_button(ui, egui::Id::new("inspector_copy_root"), &root_str);
+                                        if ui.small_button(RichText::new("✎").color(colors.text_dim))
+                                            .on_hover_text("Edit root path")
+                                            .clicked()
+                                        {
+                                            start_root_edit = true;
+                                        }
+                                    });
+                                }
+                                None => {
+                                    ui.add_space(style::SPACE_SM);
+                                    if ui.add(egui::Button::new(
+                                            RichText::new("Set root…").size(style::TEXT_CAPTION).color(colors.text_dim)
+                                        ).frame(false))
+                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                        .clicked()
+                                    {
+                                        start_root_edit = true;
+                                    }
+                                }
+                            }
+                        }
+                        ui.add_space(style::SPACE_XL);
+                        ui.label(RichText::new("Panes").size(style::TEXT_CAPTION).color(colors.text_dim).strong());
+                        ui.add_space(style::SPACE_SM);
                         egui::ScrollArea::vertical()
                             .max_height(ctx.available_rect().height() * 0.6)
                             .auto_shrink([false, true])
@@ -1765,8 +1820,40 @@ impl PlexiApp {
             self.show_context_inspector = false;
             self.inspector_delete_press_count = 0;
             self.inspector_delete_last_press = None;
+            self.inspector_root_edit_active = false;
+            self.inspector_root_buffer = String::new();
             log::info!("ContextInspector: closed");
         }
+        // Apply root edit actions
+        if start_root_edit {
+            let active_idx = self.router.active_idx();
+            self.inspector_root_edit_active = true;
+            self.inspector_root_buffer = self.router.get(active_idx).root
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+        }
+        if root_committed {
+            let active_idx = self.router.active_idx();
+            let path_str = self.inspector_root_buffer.trim().to_string();
+            if path_str.is_empty() {
+                log::info!("ContextInspector: root cleared via empty commit");
+                self.router.get_mut(active_idx).root = None;
+            } else {
+                let path = std::path::PathBuf::from(&path_str);
+                log::info!("ContextInspector: set root path={}", path.display());
+                self.router.get_mut(active_idx).root = Some(path);
+            }
+            self.save_workspace();
+            self.inspector_root_edit_active = false;
+            self.inspector_root_buffer = String::new();
+        }
+        if root_cancelled {
+            log::info!("ContextInspector: root edit cancelled");
+            self.inspector_root_edit_active = false;
+            self.inspector_root_buffer = String::new();
+        }
+
         if let Some(pid) = focus_pane {
             log::info!("ContextInspector: focusing pane {pid}");
             self.pane_navigate(pid);

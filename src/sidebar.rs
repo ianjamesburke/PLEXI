@@ -216,19 +216,22 @@ impl PlexiApp {
                         if ui.button("Move Down").clicked() { menu_action = Some((i, WindowMenuAction::MoveDown)); ui.close_menu(); }
                         if ui.button("Move to Bottom").clicked() { menu_action = Some((i, WindowMenuAction::MoveToBottom)); ui.close_menu(); }
                     }
-                    if cwd_for_menu.is_some() || has_root {
-                        ui.separator();
-                        if let Some(cwd) = &cwd_for_menu {
-                            if ui.button("Set root to current path").clicked() {
-                                menu_action = Some((i, WindowMenuAction::SetRoot(cwd.clone())));
-                                ui.close_menu();
-                            }
+                    ui.separator();
+                    if let Some(cwd) = &cwd_for_menu {
+                        if ui.button("Set root to current path").clicked() {
+                            menu_action = Some((i, WindowMenuAction::SetRoot(cwd.clone())));
+                            ui.close_menu();
                         }
-                        if has_root {
-                            if ui.button("Clear root").clicked() {
-                                menu_action = Some((i, WindowMenuAction::ClearRoot));
-                                ui.close_menu();
-                            }
+                    } else {
+                        if ui.button("Set root…").clicked() {
+                            menu_action = Some((i, WindowMenuAction::OpenRootEdit));
+                            ui.close_menu();
+                        }
+                    }
+                    if has_root {
+                        if ui.button("Clear root").clicked() {
+                            menu_action = Some((i, WindowMenuAction::ClearRoot));
+                            ui.close_menu();
                         }
                     }
                     if num_ctxs > 1 {
@@ -316,6 +319,18 @@ impl PlexiApp {
                     log::info!("sidebar: clear context root ctx_idx={i}");
                     self.router.get_mut(i).root = None;
                     self.save_workspace();
+                }
+                WindowMenuAction::OpenRootEdit => {
+                    log::info!("sidebar: open inspector root edit ctx_idx={i}");
+                    if i != self.router.active_idx() {
+                        self.switch_workspace(i);
+                    }
+                    self.show_context_inspector = true;
+                    self.inspector_root_edit_active = true;
+                    self.inspector_root_buffer = self.router.get(i).root
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default();
                 }
                 WindowMenuAction::Delete => {
                     self.delete_context(i);

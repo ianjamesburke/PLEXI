@@ -15,6 +15,7 @@ pub(crate) enum WindowMenuAction {
     Delete,
     SetRoot(PathBuf),
     ClearRoot,
+    OpenRootEdit,
 }
 
 /// A context is a sidebar item — a project or directory scope.
