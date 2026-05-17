@@ -4,6 +4,9 @@ use crate::theme::Colors;
 use crate::tiling::PaneId;
 use egui::{Align, Align2, Color32, CornerRadius, Layout, RichText, Stroke, Vec2};
 
+/// Timeout (ms) between presses in a multi-tap confirmation sequence.
+const CONFIRM_TIMEOUT_MS: u64 = 1500;
+
 /// Consume the first digit key (0–9) pressed this frame; return its value.
 fn consume_digit_key(ctx: &egui::Context) -> Option<u8> {
     ctx.input_mut(|i| {
@@ -201,6 +204,8 @@ fn render_inspector_hints(
             {
                 delete_context = true;
             }
+            ui.add_space(style::SPACE_XL);
+            crate::widgets::key_combo_list(ui, &[&["⌫"]], Some("delete (3×)"), colors);
             ui.add_space(style::SPACE_XL);
         }
         crate::widgets::key_combo_list(ui, &[&["Esc"]], Some("close"), colors);
@@ -1568,9 +1573,10 @@ impl PlexiApp {
         }
     }
 
-    fn collect_inspector_rows(&self) -> (Vec<(String, Vec<PaneRow>)>, Vec<PaneId>) {
+    fn collect_inspector_rows(&self) -> (Vec<(String, Vec<PaneRow>)>, Vec<PaneId>, Vec<u64>) {
         let mut groups: Vec<(String, Vec<PaneRow>)> = Vec::new();
         let mut all_pane_ids: Vec<PaneId> = Vec::new();
+        let mut all_context_ids: Vec<u64> = Vec::new();
         for ctx_entry in self.router.iter() {
             let cname = ctx_entry.name.clone();
             let cid = ctx_entry.context_id;
@@ -1626,11 +1632,12 @@ impl PlexiApp {
                 rows.sort_by_key(|r| r.id);
                 for r in &rows {
                     all_pane_ids.push(r.id);
+                    all_context_ids.push(cid);
                 }
                 groups.push((cname, rows));
             }
         }
-        (groups, all_pane_ids)
+        (groups, all_pane_ids, all_context_ids)
     }
 
     pub(crate) fn draw_context_inspector(&mut self, ctx: &egui::Context) {
@@ -1639,21 +1646,25 @@ impl PlexiApp {
         let mut focus_pane: Option<PaneId> = None;
         let mut delete_context = false;
 
-        let (nav_down, nav_up, enter_pressed) = ctx.input_mut(|i| {
+        let num_contexts = self.router.len();
+        let (nav_down, nav_up, enter_pressed, backspace_pressed) = ctx.input_mut(|i| {
             let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
             let down = i.consume_key(egui::Modifiers::NONE, egui::Key::J)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
             let up = i.consume_key(egui::Modifiers::NONE, egui::Key::K)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
             let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            let backspace = num_contexts > 1 && (
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+            );
             if esc { dismissed = true; }
-            (down, up, enter)
+            (down, up, enter, backspace)
         });
 
         let ctx_name = self.router.active().name.clone();
         let ctx_root = self.router.active().root.clone();
-        let num_contexts = self.router.len();
-        let (groups, all_pane_ids) = self.collect_inspector_rows();
+        let (groups, all_pane_ids, all_context_ids) = self.collect_inspector_rows();
         let pane_count = all_pane_ids.len();
 
         if nav_down && pane_count > 0 {
@@ -1668,6 +1679,28 @@ impl PlexiApp {
         }
         if enter_pressed && pane_count > 0 {
             focus_pane = Some(all_pane_ids[self.inspector_selected_pane]);
+        }
+        if backspace_pressed {
+            let now = std::time::Instant::now();
+            let elapsed = self
+                .inspector_delete_last_press
+                .map(|t| now.duration_since(t))
+                .unwrap_or(std::time::Duration::MAX);
+            if elapsed > std::time::Duration::from_millis(CONFIRM_TIMEOUT_MS) {
+                self.inspector_delete_press_count = 0;
+            }
+            self.inspector_delete_press_count += 1;
+            self.inspector_delete_last_press = Some(now);
+            log::info!(
+                "ContextInspector: backspace press {} of 3 for context {:?}",
+                self.inspector_delete_press_count,
+                self.router.active().name
+            );
+            if self.inspector_delete_press_count >= 3 {
+                self.inspector_delete_press_count = 0;
+                self.inspector_delete_last_press = None;
+                delete_context = true;
+            }
         }
 
         let colors = self.colors;
@@ -1730,32 +1763,57 @@ impl PlexiApp {
 
         if dismissed {
             self.show_context_inspector = false;
+            self.inspector_delete_press_count = 0;
+            self.inspector_delete_last_press = None;
             log::info!("ContextInspector: closed");
         }
         if let Some(pid) = focus_pane {
             log::info!("ContextInspector: focusing pane {pid}");
             self.pane_navigate(pid);
             self.show_context_inspector = false;
+            self.inspector_delete_press_count = 0;
+            self.inspector_delete_last_press = None;
         }
         if let Some(pid) = close_pane {
             log::info!("ContextInspector: closing pane {pid}");
             self.close_pane_by_id(pid);
         }
         if delete_context {
-            let ctx_idx = self.router.active_idx();
+            let ctx_idx = if pane_count > 0 {
+                let target_cid = all_context_ids[self.inspector_selected_pane];
+                self.router
+                    .position(|c| c.context_id == target_cid)
+                    .unwrap_or_else(|| self.router.active_idx())
+            } else {
+                self.router.active_idx()
+            };
             log::info!(
-                "ContextInspector: deleting context idx={ctx_idx} name={:?}",
-                self.router.active().name
+                "ContextInspector: deleting context idx={ctx_idx} name={:?} (via backspace or button)",
+                self.router.get(ctx_idx).name
             );
-            self.show_context_inspector = false;
+            self.inspector_delete_press_count = 0;
+            self.inspector_delete_last_press = None;
             self.delete_context(ctx_idx);
             self.save_workspace();
         }
+
+        if self.inspector_delete_press_count > 0 {
+            let timed_out = self
+                .inspector_delete_last_press
+                .map(|t| t.elapsed() > std::time::Duration::from_millis(CONFIRM_TIMEOUT_MS))
+                .unwrap_or(false);
+            if timed_out {
+                self.inspector_delete_press_count = 0;
+                self.inspector_delete_last_press = None;
+            } else {
+                self.draw_inspector_delete_overlay(ctx);
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+        }
     }
 
-    pub(crate) fn draw_welcome_delete_overlay(&self, ctx: &egui::Context) {
-        let count = self.welcome_delete_press_count;
-        egui::Area::new(egui::Id::new("welcome_delete_overlay"))
+    fn draw_triple_tap_overlay(&self, ctx: &egui::Context, id: &str, count: u8, label: &str) {
+        egui::Area::new(egui::Id::new(id))
             .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -40.0))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
@@ -1768,7 +1826,7 @@ impl PlexiApp {
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new(format!(
-                                    "⌫ pressed {} of 3 — press again to delete context",
+                                    "{label} {} of 3 — press again to delete context",
                                     count
                                 ))
                                 .size(12.0)
@@ -1785,12 +1843,29 @@ impl PlexiApp {
                                     Vec2::new(8.0, 8.0),
                                     egui::Sense::hover(),
                                 );
-                                ui.painter()
-                                    .circle_filled(rect.center(), 4.0, color);
+                                ui.painter().circle_filled(rect.center(), 4.0, color);
                             }
                         });
                     });
             });
+    }
+
+    pub(crate) fn draw_inspector_delete_overlay(&self, ctx: &egui::Context) {
+        self.draw_triple_tap_overlay(
+            ctx,
+            "inspector_delete_overlay",
+            self.inspector_delete_press_count,
+            "⌫ pressed",
+        );
+    }
+
+    pub(crate) fn draw_welcome_delete_overlay(&self, ctx: &egui::Context) {
+        self.draw_triple_tap_overlay(
+            ctx,
+            "welcome_delete_overlay",
+            self.welcome_delete_press_count,
+            "⌫ pressed",
+        );
     }
 
     pub(crate) fn draw_quit_confirm_overlay(&self, ctx: &egui::Context) {
