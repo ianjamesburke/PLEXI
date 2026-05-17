@@ -17,6 +17,9 @@ use egui_term::{TerminalTheme, TerminalView};
 use egui_tiles::TileId;
 use std::collections::HashMap;
 use std::path::Path;
+use std::time::{Duration, Instant};
+
+const OUTSIDE_WORKSPACE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Render one frame of a terminal pane. Returns `true` if the process has
 /// exited and the user pressed a key (the caller should close the tile).
@@ -179,22 +182,39 @@ fn render_name_bar_and_dots(
 /// the workspace root. Returns false when there is no workspace root, when
 /// the CWD can't be probed, or when the terminal has exited.
 fn is_terminal_outside_workspace(
-    terminal: &TerminalPane,
+    terminal: &mut TerminalPane,
     workspace_root: Option<&Path>,
 ) -> bool {
     let Some(root) = workspace_root else {
+        terminal.outside_workspace_cached = false;
+        terminal.outside_workspace_checked_at = None;
+        terminal.outside_workspace_root = None;
         return false;
     };
     if terminal.exited {
         return false;
     }
+    if terminal.outside_workspace_root.as_deref() == Some(root)
+        && terminal
+            .outside_workspace_checked_at
+            .map_or(false, |checked_at| checked_at.elapsed() < OUTSIDE_WORKSPACE_CHECK_INTERVAL)
+    {
+        return terminal.outside_workspace_cached;
+    }
+
     let pid = terminal.backend.child_pid();
-    let Some(cwd) = crate::shell::get_pid_cwd(pid) else {
-        return false;
+    let outside_workspace = if let Some(cwd) = crate::shell::get_pid_cwd(pid) {
+        // Canonicalize both sides so /var → /private/var on macOS doesn't
+        // produce a false-positive "outside" badge.
+        let cwd_canon = cwd.canonicalize().unwrap_or(cwd);
+        let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        !cwd_canon.starts_with(&root_canon)
+    } else {
+        false
     };
-    // Canonicalize both sides so /var → /private/var on macOS doesn't
-    // produce a false-positive "outside" badge.
-    let cwd_canon = cwd.canonicalize().unwrap_or(cwd);
-    let root_canon = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    !cwd_canon.starts_with(&root_canon)
+
+    terminal.outside_workspace_cached = outside_workspace;
+    terminal.outside_workspace_checked_at = Some(Instant::now());
+    terminal.outside_workspace_root = Some(root.to_path_buf());
+    outside_workspace
 }
