@@ -202,6 +202,8 @@ fn render_inspector_hints(
                 delete_context = true;
             }
             ui.add_space(style::SPACE_XL);
+            crate::widgets::key_combo_list(ui, &[&["⌫"]], Some("delete (3×)"), colors);
+            ui.add_space(style::SPACE_XL);
         }
         crate::widgets::key_combo_list(ui, &[&["Esc"]], Some("close"), colors);
         ui.add_space(style::SPACE_MD);
@@ -1639,20 +1641,24 @@ impl PlexiApp {
         let mut focus_pane: Option<PaneId> = None;
         let mut delete_context = false;
 
-        let (nav_down, nav_up, enter_pressed) = ctx.input_mut(|i| {
+        let num_contexts = self.router.len();
+        let (nav_down, nav_up, enter_pressed, backspace_pressed) = ctx.input_mut(|i| {
             let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
             let down = i.consume_key(egui::Modifiers::NONE, egui::Key::J)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
             let up = i.consume_key(egui::Modifiers::NONE, egui::Key::K)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
             let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            let backspace = num_contexts > 1 && (
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+            );
             if esc { dismissed = true; }
-            (down, up, enter)
+            (down, up, enter, backspace)
         });
 
         let ctx_name = self.router.active().name.clone();
         let ctx_root = self.router.active().root.clone();
-        let num_contexts = self.router.len();
         let (groups, all_pane_ids) = self.collect_inspector_rows();
         let pane_count = all_pane_ids.len();
 
@@ -1668,6 +1674,28 @@ impl PlexiApp {
         }
         if enter_pressed && pane_count > 0 {
             focus_pane = Some(all_pane_ids[self.inspector_selected_pane]);
+        }
+        if backspace_pressed {
+            let now = std::time::Instant::now();
+            let elapsed = self
+                .inspector_delete_last_press
+                .map(|t| now.duration_since(t))
+                .unwrap_or(std::time::Duration::MAX);
+            if elapsed > std::time::Duration::from_millis(1500) {
+                self.inspector_delete_press_count = 0;
+            }
+            self.inspector_delete_press_count += 1;
+            self.inspector_delete_last_press = Some(now);
+            log::info!(
+                "ContextInspector: backspace press {} of 3 for context {:?}",
+                self.inspector_delete_press_count,
+                self.router.active().name
+            );
+            if self.inspector_delete_press_count >= 3 {
+                self.inspector_delete_press_count = 0;
+                self.inspector_delete_last_press = None;
+                delete_context = true;
+            }
         }
 
         let colors = self.colors;
@@ -1730,12 +1758,16 @@ impl PlexiApp {
 
         if dismissed {
             self.show_context_inspector = false;
+            self.inspector_delete_press_count = 0;
+            self.inspector_delete_last_press = None;
             log::info!("ContextInspector: closed");
         }
         if let Some(pid) = focus_pane {
             log::info!("ContextInspector: focusing pane {pid}");
             self.pane_navigate(pid);
             self.show_context_inspector = false;
+            self.inspector_delete_press_count = 0;
+            self.inspector_delete_last_press = None;
         }
         if let Some(pid) = close_pane {
             log::info!("ContextInspector: closing pane {pid}");
@@ -1744,13 +1776,69 @@ impl PlexiApp {
         if delete_context {
             let ctx_idx = self.router.active_idx();
             log::info!(
-                "ContextInspector: deleting context idx={ctx_idx} name={:?}",
+                "ContextInspector: deleting context idx={ctx_idx} name={:?} (via backspace or button)",
                 self.router.active().name
             );
             self.show_context_inspector = false;
+            self.inspector_delete_press_count = 0;
+            self.inspector_delete_last_press = None;
             self.delete_context(ctx_idx);
             self.save_workspace();
         }
+
+        if self.inspector_delete_press_count > 0 {
+            let timed_out = self
+                .inspector_delete_last_press
+                .map(|t| t.elapsed() > std::time::Duration::from_millis(1500))
+                .unwrap_or(false);
+            if timed_out {
+                self.inspector_delete_press_count = 0;
+                self.inspector_delete_last_press = None;
+            } else {
+                self.draw_inspector_delete_overlay(ctx);
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            }
+        }
+    }
+
+    pub(crate) fn draw_inspector_delete_overlay(&self, ctx: &egui::Context) {
+        let count = self.inspector_delete_press_count;
+        egui::Area::new(egui::Id::new("inspector_delete_overlay"))
+            .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -40.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, self.colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(16, 10))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format!(
+                                    "⌫ pressed {} of 3 — press again to delete context",
+                                    count
+                                ))
+                                .size(12.0)
+                                .color(self.colors.text_dim),
+                            );
+                            ui.add_space(8.0);
+                            for i in 1u8..=3 {
+                                let color = if i <= count {
+                                    self.colors.accent
+                                } else {
+                                    self.colors.bg_active
+                                };
+                                let (rect, _) = ui.allocate_exact_size(
+                                    Vec2::new(8.0, 8.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter()
+                                    .circle_filled(rect.center(), 4.0, color);
+                            }
+                        });
+                    });
+            });
     }
 
     pub(crate) fn draw_welcome_delete_overlay(&self, ctx: &egui::Context) {
