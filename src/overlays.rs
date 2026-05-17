@@ -1573,9 +1573,10 @@ impl PlexiApp {
         }
     }
 
-    fn collect_inspector_rows(&self) -> (Vec<(String, Vec<PaneRow>)>, Vec<PaneId>) {
+    fn collect_inspector_rows(&self) -> (Vec<(String, Vec<PaneRow>)>, Vec<PaneId>, Vec<u64>) {
         let mut groups: Vec<(String, Vec<PaneRow>)> = Vec::new();
         let mut all_pane_ids: Vec<PaneId> = Vec::new();
+        let mut all_context_ids: Vec<u64> = Vec::new();
         for ctx_entry in self.router.iter() {
             let cname = ctx_entry.name.clone();
             let cid = ctx_entry.context_id;
@@ -1631,11 +1632,12 @@ impl PlexiApp {
                 rows.sort_by_key(|r| r.id);
                 for r in &rows {
                     all_pane_ids.push(r.id);
+                    all_context_ids.push(cid);
                 }
                 groups.push((cname, rows));
             }
         }
-        (groups, all_pane_ids)
+        (groups, all_pane_ids, all_context_ids)
     }
 
     pub(crate) fn draw_context_inspector(&mut self, ctx: &egui::Context) {
@@ -1662,7 +1664,7 @@ impl PlexiApp {
 
         let ctx_name = self.router.active().name.clone();
         let ctx_root = self.router.active().root.clone();
-        let (groups, all_pane_ids) = self.collect_inspector_rows();
+        let (groups, all_pane_ids, all_context_ids) = self.collect_inspector_rows();
         let pane_count = all_pane_ids.len();
 
         if nav_down && pane_count > 0 {
@@ -1777,10 +1779,17 @@ impl PlexiApp {
             self.close_pane_by_id(pid);
         }
         if delete_context {
-            let ctx_idx = self.router.active_idx();
+            let ctx_idx = if pane_count > 0 {
+                let target_cid = all_context_ids[self.inspector_selected_pane];
+                self.router
+                    .position(|c| c.context_id == target_cid)
+                    .unwrap_or_else(|| self.router.active_idx())
+            } else {
+                self.router.active_idx()
+            };
             log::info!(
                 "ContextInspector: deleting context idx={ctx_idx} name={:?} (via backspace or button)",
-                self.router.active().name
+                self.router.get(ctx_idx).name
             );
             self.inspector_delete_press_count = 0;
             self.inspector_delete_last_press = None;
