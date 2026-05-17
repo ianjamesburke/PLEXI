@@ -1782,7 +1782,6 @@ impl PlexiApp {
                 "ContextInspector: deleting context idx={ctx_idx} name={:?} (via backspace or button)",
                 self.router.active().name
             );
-            self.show_context_inspector = false;
             self.inspector_delete_press_count = 0;
             self.inspector_delete_last_press = None;
             self.delete_context(ctx_idx);
