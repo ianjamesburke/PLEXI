@@ -825,6 +825,35 @@ pub enum RenderCommand {
         #[serde(default)]
         gap: f32,
     },
+
+    /// Responsive layout — host picks the matching tier based on available rect aspect ratio.
+    ///
+    /// Tiers are evaluated in order. First match wins. The aspect condition is one of:
+    /// - `"landscape"` — width > height
+    /// - `"portrait"` — height > width
+    /// - `"square"` — within ~20% ratio (0.83..1.2), or used as a fallback
+    ///
+    /// The winning tier's layout tree is rendered through the existing taffy pipeline.
+    Responsive {
+        x: f32,
+        y: f32,
+        tiers: Vec<ResponsiveTier>,
+    },
+}
+
+/// A single tier in a responsive layout. Contains an aspect-ratio condition
+/// and the layout tree to render when that condition matches.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct ResponsiveTier {
+    /// One of: "landscape", "portrait", "square"
+    pub aspect: String,
+    /// Flex direction for this tier's root node.
+    pub direction: LayoutDirection,
+    /// Children of this tier's layout tree.
+    pub children: Vec<LayoutChild>,
+    /// Gap between children in pixels.
+    #[serde(default)]
+    pub gap: f32,
 }
 
 /// App-to-host requests — go to `route_command`.

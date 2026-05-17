@@ -860,6 +860,12 @@
                 "null"
               ]
             },
+            "parent_name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "root": {
               "type": [
                 "string",
@@ -907,6 +913,38 @@
           "required": [
             "type",
             "root"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Zoom into a sub-context. Pushes depth stack. Sent by `plexi context zoom`.",
+          "properties": {
+            "context_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "zoom_into_context",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "context_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Zoom out of a sub-context. Pops depth stack. Sent by `plexi context zoom-out`.",
+          "properties": {
+            "type": {
+              "const": "zoom_out_of_context",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
           ],
           "type": "object"
         },
@@ -1354,6 +1392,27 @@
           "required": [
             "type",
             "timer_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Async image fetch brokered through the host. Requires `net.http` capability.\nHost fetches `src`, caches under `handle`, and emits `PlexiEvent::ImageLoaded`\nwhen done. App then renders via `DrawCommand::Image { src: handle, .. }`.",
+          "properties": {
+            "handle": {
+              "type": "string"
+            },
+            "src": {
+              "type": "string"
+            },
+            "type": {
+              "const": "load_image",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "handle",
+            "src"
           ],
           "type": "object"
         },
@@ -2471,6 +2530,33 @@
           "type": "object"
         },
         {
+          "description": "Fired when a `load_image` request completes (success or failure).\n`status` is \"ok\" or \"error\". `message` carries the error detail on failure.",
+          "properties": {
+            "handle": {
+              "type": "string"
+            },
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "status": {
+              "type": "string"
+            },
+            "type": {
+              "const": "image_loaded",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "handle",
+            "status"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Response to a `DrawCommand::MeasureText` request.\n`width` and `height` are in logical pixels at the requested font size.",
           "properties": {
             "height": {
@@ -3143,6 +3229,38 @@
             "y",
             "w",
             "h"
+          ],
+          "type": "object"
+        },
+        "ResponsiveTier": {
+          "description": "A single tier in a responsive layout. Contains an aspect-ratio condition\nand the layout tree to render when that condition matches.",
+          "properties": {
+            "aspect": {
+              "description": "One of: \"landscape\", \"portrait\", \"square\"",
+              "type": "string"
+            },
+            "children": {
+              "description": "Children of this tier's layout tree.",
+              "items": {
+                "$ref": "#/$defs/LayoutChild"
+              },
+              "type": "array"
+            },
+            "direction": {
+              "$ref": "#/$defs/LayoutDirection",
+              "description": "Flex direction for this tier's root node."
+            },
+            "gap": {
+              "default": 0.0,
+              "description": "Gap between children in pixels.",
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "aspect",
+            "direction",
+            "children"
           ],
           "type": "object"
         },
@@ -3951,6 +4069,36 @@
             "y",
             "direction",
             "children"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Responsive layout — host picks the matching tier based on available rect aspect ratio.\n\nTiers are evaluated in order. First match wins. The aspect condition is one of:\n- `\"landscape\"` — width > height\n- `\"portrait\"` — height > width\n- `\"square\"` — within ~20% ratio (0.83..1.2), or used as a fallback\n\nThe winning tier's layout tree is rendered through the existing taffy pipeline.",
+          "properties": {
+            "tiers": {
+              "items": {
+                "$ref": "#/$defs/ResponsiveTier"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "responsive",
+              "type": "string"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "x",
+            "y",
+            "tiers"
           ],
           "type": "object"
         }

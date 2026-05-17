@@ -209,6 +209,7 @@ impl HeadlessRenderer {
                 "line" => self.pgap_line(&mut pixmap, cmd),
                 "list" => self.pgap_list(&mut pixmap, cmd, width),
                 "layout" => self.pgap_layout(&mut pixmap, cmd, width as f32),
+                "responsive" => self.pgap_responsive(&mut pixmap, cmd, width, height),
                 _ => {}
             }
         }
@@ -414,6 +415,37 @@ impl HeadlessRenderer {
         }
 
         paint(&tree, root, origin_x, origin_y, pixmap, self);
+    }
+
+    fn pgap_responsive(&self, pixmap: &mut Pixmap, cmd: &Value, width: u32, height: u32) {
+        let tiers = match cmd.get("tiers").and_then(Value::as_array) {
+            Some(t) => t,
+            None => return,
+        };
+        let w = width as f32;
+        let h = height as f32;
+        let ratio = if h > 0.0 { w / h } else { f32::MAX };
+        let tier = tiers.iter().find(|t| {
+            let aspect = t.get("aspect").and_then(Value::as_str).unwrap_or("");
+            match aspect {
+                "landscape" => ratio > 1.2,
+                "portrait" => ratio < 0.83,
+                "square" => true,
+                _ => false,
+            }
+        });
+        if let Some(tier) = tier {
+            // Synthesize a layout command from the winning tier and delegate
+            let mut layout_cmd = tier.clone();
+            layout_cmd["type"] = serde_json::json!("layout");
+            if layout_cmd.get("x").is_none() {
+                layout_cmd["x"] = cmd.get("x").cloned().unwrap_or(serde_json::json!(0.0));
+            }
+            if layout_cmd.get("y").is_none() {
+                layout_cmd["y"] = cmd.get("y").cloned().unwrap_or(serde_json::json!(0.0));
+            }
+            self.pgap_layout(pixmap, &layout_cmd, w);
+        }
     }
 
     fn pgap_rect(&self, pixmap: &mut Pixmap, cmd: &Value) {

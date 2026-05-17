@@ -137,57 +137,35 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 self.close_exited = Some(tile_id);
             }
         } else if pane.as_sub_context().is_some() {
-            // SubContext tile — wireframe preview card.
+            // SubContext tile — responsive PGAP-rendered preview.
             ui.painter().rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
             let (ctx_name, pane_count, notif_count) = self.sub_context_info
                 .get(pane_id)
                 .cloned()
                 .unwrap_or_else(|| ("(deleted)".to_string(), 0, 0));
-            let mut content_ui = ui.new_child(
-                egui::UiBuilder::new().max_rect(pane_rect.shrink(style::SPACE_MD)),
+
+            let tiers = crate::tiling::sub_context_responsive_tiers(
+                &ctx_name, pane_count, notif_count, &self.colors,
             );
-            content_ui.centered_and_justified(|ui| {
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        egui::RichText::new(&ctx_name)
-                            .size(style::TEXT_TITLE_XL)
-                            .strong()
-                            .color(self.colors.text_primary),
-                    );
-                    ui.add_space(style::SPACE_SM);
-                    ui.label(
-                        egui::RichText::new(format!("{pane_count} panes"))
-                            .size(style::TEXT_CAPTION)
-                            .color(self.colors.text_dim),
-                    );
-                    ui.add_space(style::SPACE_MD);
-                    // Wireframe layout outline — simple rounded rectangle placeholder.
-                    let (rect, _) = ui.allocate_exact_size(
-                        egui::Vec2::new(120.0, 60.0),
-                        egui::Sense::hover(),
-                    );
-                    ui.painter().rect_stroke(
-                        rect,
-                        egui::CornerRadius::same(4),
-                        egui::Stroke::new(1.0, self.colors.text_dim),
-                        egui::StrokeKind::Inside,
-                    );
-                    ui.add_space(style::SPACE_SM);
-                    ui.label(
-                        egui::RichText::new("\u{2318}\u{21E7}\u{21B5} to zoom in")
-                            .size(style::TEXT_HINT)
-                            .color(self.colors.text_dim),
-                    );
-                    if notif_count > 0 {
-                        ui.add_space(style::SPACE_SM);
-                        ui.label(
-                            egui::RichText::new(format!("\u{25CF} {notif_count}"))
-                                .size(style::TEXT_CAPTION)
-                                .color(egui::Color32::from_rgb(255, 100, 100)),
-                        );
-                    }
-                });
-            });
+            let avail_w = pane_rect.width();
+            let avail_h = pane_rect.height();
+            if let Some(tier) = crate::process_app::render::select_responsive_tier(
+                &tiers, avail_w, avail_h,
+            ) {
+                log::info!(
+                    "sub_context responsive: aspect={} for {}x{}",
+                    tier.aspect, avail_w, avail_h,
+                );
+                let clip = pane_rect;
+                let mut cache = egui_commonmark::CommonMarkCache::default();
+                let audio_peaks = HashMap::new();
+                crate::process_app::render::render_layout_node(
+                    ui, pane_rect, clip,
+                    style::SPACE_MD, style::SPACE_MD,
+                    &tier.direction, &tier.children, tier.gap,
+                    &self.colors, &mut cache, &audio_peaks,
+                );
+            }
         }
 
         UiResponse::None
@@ -278,4 +256,171 @@ pub(crate) fn write_dropped_paths_to_terminal(ui: &egui::Ui, t: &mut TerminalPan
             .process_command(BackendCommand::Write(escaped.as_bytes().to_vec()));
         log::info!("drop: path written ok");
     }
+}
+
+// ── SubContext responsive tier builder ─────────────────────────────────────────
+
+use crate::app_protocol::{LayoutChild, LayoutDirection, RenderCommand, ResponsiveTier};
+
+/// Build the three responsive tiers for a SubContext preview card.
+///
+/// - Landscape: horizontal row with context name + pane count + notification badge
+/// - Square: column with abbreviated info
+/// - Portrait: compact vertical stack
+pub(crate) fn sub_context_responsive_tiers(
+    ctx_name: &str,
+    pane_count: usize,
+    notif_count: usize,
+    colors: &Colors,
+) -> Vec<ResponsiveTier> {
+    let text_primary = format!("#{:02x}{:02x}{:02x}", colors.text_primary.r(), colors.text_primary.g(), colors.text_primary.b());
+    let text_dim = format!("#{:02x}{:02x}{:02x}", colors.text_dim.r(), colors.text_dim.g(), colors.text_dim.b());
+
+    let name_leaf = LayoutChild::Leaf {
+        command: Box::new(RenderCommand::Text {
+            x: 0.0, y: 0.0,
+            text: ctx_name.to_string(),
+            size: style::TEXT_TITLE_XL,
+            color: text_primary.clone(),
+            monospace: false,
+            bold: true,
+            align: "top_left".to_string(),
+            max_width: None,
+            elide: false,
+            selectable: false,
+        }),
+    };
+
+    let pane_count_leaf = LayoutChild::Leaf {
+        command: Box::new(RenderCommand::Text {
+            x: 0.0, y: 0.0,
+            text: format!("{pane_count} panes"),
+            size: style::TEXT_CAPTION,
+            color: text_dim.clone(),
+            monospace: false,
+            bold: false,
+            align: "top_left".to_string(),
+            max_width: None,
+            elide: false,
+            selectable: false,
+        }),
+    };
+
+    let shortcut_leaf = LayoutChild::Leaf {
+        command: Box::new(RenderCommand::Text {
+            x: 0.0, y: 0.0,
+            text: "\u{2318}\u{21E7}\u{21B5} zoom in".to_string(),
+            size: style::TEXT_HINT,
+            color: text_dim.clone(),
+            monospace: false,
+            bold: false,
+            align: "top_left".to_string(),
+            max_width: None,
+            elide: false,
+            selectable: false,
+        }),
+    };
+
+    let mut landscape_children = vec![
+        name_leaf.clone(),
+        pane_count_leaf.clone(),
+        shortcut_leaf.clone(),
+    ];
+    if notif_count > 0 {
+        landscape_children.push(LayoutChild::Leaf {
+            command: Box::new(RenderCommand::Badge {
+                x: 0.0, y: 0.0,
+                label: format!("{notif_count}"),
+                fill: "#ff6464".to_string(),
+                fg: "#ffffff".to_string(),
+                font_size: style::TEXT_HINT,
+                radius: 8.0,
+            }),
+        });
+    }
+
+    let mut square_children = vec![
+        name_leaf.clone(),
+        pane_count_leaf.clone(),
+    ];
+    if notif_count > 0 {
+        square_children.push(LayoutChild::Leaf {
+            command: Box::new(RenderCommand::Badge {
+                x: 0.0, y: 0.0,
+                label: format!("{notif_count}"),
+                fill: "#ff6464".to_string(),
+                fg: "#ffffff".to_string(),
+                font_size: style::TEXT_HINT,
+                radius: 8.0,
+            }),
+        });
+    }
+
+    let mut portrait_children = vec![
+        LayoutChild::Leaf {
+            command: Box::new(RenderCommand::Text {
+                x: 0.0, y: 0.0,
+                text: ctx_name.to_string(),
+                size: style::TEXT_CAPTION,
+                color: text_primary.clone(),
+                monospace: false,
+                bold: true,
+                align: "top_left".to_string(),
+                max_width: None,
+                elide: false,
+                selectable: false,
+            }),
+        },
+        LayoutChild::Leaf {
+            command: Box::new(RenderCommand::Text {
+                x: 0.0, y: 0.0,
+                text: format!("{pane_count}p"),
+                size: style::TEXT_HINT,
+                color: text_dim.clone(),
+                monospace: false,
+                bold: false,
+                align: "top_left".to_string(),
+                max_width: None,
+                elide: false,
+                selectable: false,
+            }),
+        },
+    ];
+    if notif_count > 0 {
+        portrait_children.push(LayoutChild::Leaf {
+            command: Box::new(RenderCommand::Text {
+                x: 0.0, y: 0.0,
+                text: format!("\u{25CF} {notif_count}"),
+                size: style::TEXT_HINT,
+                color: "#ff6464".to_string(),
+                monospace: false,
+                bold: false,
+                align: "top_left".to_string(),
+                max_width: None,
+                elide: false,
+                selectable: false,
+            }),
+        });
+    }
+
+    vec![
+        ResponsiveTier {
+            aspect: "landscape".to_string(),
+            direction: LayoutDirection::Row,
+            children: landscape_children,
+            gap: style::SPACE_MD,
+        },
+        ResponsiveTier {
+            aspect: "portrait".to_string(),
+            direction: LayoutDirection::Column,
+            children: portrait_children,
+            gap: style::SPACE_SM,
+        },
+        ResponsiveTier {
+            aspect: "square".to_string(),
+            direction: LayoutDirection::Column,
+            children: square_children,
+            gap: style::SPACE_SM,
+        },
+    ]
 }

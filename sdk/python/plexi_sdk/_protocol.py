@@ -1,7 +1,6 @@
 # AUTO-GENERATED — do not edit by hand.
 # Regenerate with: just gen-schema
 # Protocol: pgap/3
-# Note: AudioDeviceInfo/AudioDeviceList added manually alongside list_audio_devices helper (#341).
 
 from __future__ import annotations
 from dataclasses import dataclass
@@ -30,20 +29,5 @@ class MidiPortInfo:
 @dataclass
 class MidiDeviceList:
     """Result of Emitter.list_midi_devices."""
-    inputs: list
-    outputs: list
-
-
-@dataclass
-class AudioDeviceInfo:
-    """One audio device. Mirrors AudioDeviceWire in the Rust protocol."""
-    id: str
-    name: str
-    default: bool
-
-
-@dataclass
-class AudioDeviceList:
-    """Result of Emitter.list_audio_devices."""
     inputs: list
     outputs: list
