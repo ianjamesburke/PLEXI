@@ -44,11 +44,18 @@ const INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | sh';
     btn.addEventListener('click', async () => {
       const cmd = btn.getAttribute('data-cmd');
       if (!cmd) return;
-      await navigator.clipboard.writeText(cmd);
       const label = btn.querySelector('.copy-label');
-      if (label) {
-        label.textContent = 'Copied';
-        setTimeout(() => { label.textContent = 'Copy'; }, 2000);
+      try {
+        await navigator.clipboard.writeText(cmd);
+        if (label) {
+          label.textContent = 'Copied';
+          setTimeout(() => { label.textContent = 'Copy'; }, 2000);
+        }
+      } catch {
+        if (label) {
+          label.textContent = 'Failed';
+          setTimeout(() => { label.textContent = 'Copy'; }, 2000);
+        }
       }
     });
   });
