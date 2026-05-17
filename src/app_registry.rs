@@ -572,16 +572,16 @@ impl AppRegistry {
     }
 
     /// Get the launch-time layout side hint: "right" | "below" | "above" | "overlay".
-    /// Internally mapped to the `split_v` / `split_h` / `split_above` strings pane_ops uses.
+    /// Internally mapped to the `split_h` / `split_v` / `split_above` strings pane_ops uses.
     pub fn layout_hint_for(&self, app_id: &str) -> Option<String> {
         self.apps
             .get(app_id)
             .and_then(|a| a.launch.layout_hint.as_ref())
             .map(|h| match h.side.as_str() {
-                "below" => "split_h".to_string(),
+                "below" => "split_v".to_string(),
                 "above" => "split_above".to_string(),
                 "overlay" => "overlay".to_string(),
-                _ => "split_v".to_string(),
+                _ => "split_h".to_string(),
             })
     }
 

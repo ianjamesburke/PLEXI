@@ -296,7 +296,7 @@ Leave the user's cursor in the first active lane.
 
 ## Notes
 
-- **CLI reference:** See the `/plexi-cli` skill for full `plexi terminal`, `plexi pane`, and `plexi open` usage — layout values (`split_v`, `split_h`, `tab`, `new_window`), flags, and patterns.
+- **CLI reference:** See the `/plexi-cli` skill for full `plexi terminal`, `plexi pane`, and `plexi open` usage — layout values (`split_h`, `split_v`, `split_right`, `split_below`, `split_above`, `tab`, `new_window`), flags, and patterns.
 - `plexi terminal` returns the pane ID on stdout. If that fails, diff `plexi pane list` before/after.
 - For queue panes, omit `\n` from `plexi pane send` so the command is staged but not executed.
 - `c` is a personal zsh alias (login shell) — available in all interactive panes opened by Plexi.

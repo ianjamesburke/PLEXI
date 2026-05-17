@@ -1254,7 +1254,7 @@ impl PlexiApp {
                             log::info!("pane_ipc: spawn_pane terminal layout=tab initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
                             self.new_tab(initial_cmd.as_deref(), *ephemeral);
                         } else {
-                            let vertical = matches!(layout_str, "split_h" | "split_above");
+                            let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
                             log::info!("pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
                             self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral, cwd_override);
                         }
@@ -1519,7 +1519,7 @@ impl PlexiApp {
             let original_focused = self.windows[active].focused_pane;
             if type_id == "terminal" {
                 let layout_str = layout.as_deref().unwrap_or("split_v");
-                let vertical = matches!(layout_str, "split_h" | "split_above");
+                let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
                 let initial_cmd = cmd_from_args(&args);
                 self.split_focused(vertical, initial_cmd.as_deref(), ephemeral, cwd_override);
             } else {
@@ -2070,8 +2070,8 @@ impl eframe::App for PlexiApp {
                         // split_focused uses inverted LinearDir vs split_with_new_pane:
                         //   split_focused(false) → insert_horizontal_tile → side-by-side (RIGHT)
                         //   split_focused(true)  → insert_vertical_tile   → stacked (BELOW)
-                        // So: split_v (right) → false, split_h/split_above (below) → true.
-                        let vertical = matches!(layout.as_str(), "split_h" | "split_above");
+                        // So: split_h/split_right (right) → false, split_v/split_below/split_above (below/above) → true.
+                        let vertical = matches!(layout.as_str(), "split_v" | "split_below" | "split_above");
                         let initial_cmd = cmd_from_args(&effective_args);
                         log::info!(
                             "SpawnPane: terminal layout='{layout}' vertical={vertical} pane_id={new_pane_id} initial_cmd={initial_cmd:?}"

@@ -61,7 +61,7 @@ impl PlexiApp {
         share: ShareRatio,
     ) -> (PaneId, ShareRatio, bool, bool) {
         let new_pane_first = matches!(hint, Some("split_above"));
-        let vertical = !matches!(hint, Some("split_h") | Some("split_above"));
+        let vertical = matches!(hint, Some("split_h") | Some("split_right"));
         let placement = if vertical {
             Placement::Right
         } else {
@@ -554,8 +554,8 @@ impl PlexiApp {
     /// Launch an installed app with an explicit layout and args override.
     /// `layout` overrides the manifest's `layout_hint` when `Some`.
     ///   "overlay" (default) — full pane takeover; Esc restores the original pane
-    ///   "split_v"           — vertical split, new pane below
     ///   "split_h"           — horizontal split, new pane to the right
+    ///   "split_v"           — vertical split, new pane below
     pub(crate) fn launch_app_by_id_with_layout(
         &mut self,
         id: &str,
@@ -568,7 +568,7 @@ impl PlexiApp {
         // Socket IPC and spawn-queue handle terminal inline in app/mod.rs.
         if id == "terminal" {
             let layout_str = layout.as_deref().unwrap_or("split_v");
-            let vertical = matches!(layout_str, "split_h" | "split_above");
+            let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
             let initial_cmd = if args.is_empty() { None } else { Some(crate::shell::shell_join(args)) };
             log::info!(
                 "SpawnPane: terminal layout='{layout_str}' vertical={vertical} initial_cmd={initial_cmd:?}"
