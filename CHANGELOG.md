@@ -1,6 +1,50 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.415] — 2026-05-17
+
+### Changes
+- fix(contexts): sub-context adopts focused pane instead of starting empty (#1384) (#1414)
+- fix(ui): context inspector delete via Backspace key (3×) (#1383) (#1413)
+- Extract app init template to standalone SDK v2 Python file (#1272)
+- fix(gh-projects): replace broken gh project CLI with raw GraphQL (#1319)
+- feat(examples): Bluesky feed browser app (PGAP) (#1343) (#1347)
+- feat(website): add Download nav button and pre-release gate page
+- feat(pgap): responsive breakpoint layout primitive for SubContext and apps (#1404) (#1406)
+- fix(website): apps page shows marketplace coming soon instead of POC list (#1405)
+- fix(keys): change scratchpad trigger from Ctrl+Space to Cmd+Shift+Space (#1380) (#1407)
+- feat(quick-note): add 'n' shortcut to open config from destination picker (#1403)
+- chore(config): gut unimplemented voice config infrastructure (#1401)
+- fix(audio): eliminate save hang and improve pipe teardown (#1389) (#1400)
+- feat(cli): add 'plexi config edit' command (#1387) (#1399)
+- docs(config): add catppuccin-latte and solarized-light to preset header comment (#1396)
+- Enable osc_pane_title by default (#1395)
+- feat(theme): add catppuccin-latte and solarized-light presets (#1386) (#1394)
+- fix(examples/screen-time): shift clock ring up in narrow mode to clear legend (#1393)
+- feat(examples): pixel art tavern — NPC conversation via ai_query + PGAP canvas (#1361) (#1363)
+- feat(contexts): fractal sub-contexts with spatial zoom-in/zoom-out (#1374) (#1377)
+- perf(deps): remove dead hound dep, upgrade rodio/rfd/objc2 to eliminate cpal duplicate (#1309) (#1376)
+- refactor(config): consolidate CONFIG_TEMPLATE into single source of truth (#1121) (#1375)
+- fix(website): remove MIT wording, sync version, fix blog date, first-person voice (#1372) (#1373)
+- feat(cli): channel-aware shell completions (#1316) (#1371)
+- perf(ai): async generation metrics fetch — eliminate 7s post-stream block (#1352) (#1370)
+- refactor(inspector): extract draw_context_inspector into helpers — 358 lines → 120 (#1368)
+- fix(infra): seed PR build config from alpha instead of blank template (#1369)
+- fix(terminal): first pane from welcome screen falls back to context path instead of / (#1351) (#1364)
+- feat(host): capability pre-flight check — error tile when app lacks required config (#1345) (#1366)
+- fix(infra): atomic SDK swap in install.sh to prevent TOCTOU crash (#1324) (#1365)
+- feat(sdk/host): async image loading — emit.load_image() handle/lifecycle (#1354) (#1362)
+- feat(ui): configurable unfocused-pane opacity via ghost_opacity (#1350) (#1359)
+- fix(app-init): pass workspace cwd to host so auto-open finds the new app (#1360)
+- feat(host/sdk): static capability validation at app launch (#1355) (#1357)
+- fix(host): fetch https:// URLs in DrawCommand::Image via net.http (#1353) (#1356)
+- feat(examples): n8n-style node canvas POC — interactive graph editor in PGAP (#1338) (#1349)
+- fix(ai): increase OpenRouter generation metrics retry window for Gemini (#1339) (#1348)
+- feat(sdk): add emit.schedule_task() and guard run_sync() against deadlock (#1340) (#1341)
+- fix(ai): broadcast fresh AI config to all panes on reload (#1337) (#1342)
+- feat(cli): plexi uninstall for Plexi self-removal, app uninstall cleanup (#1333) (#1335)
+- docs(cli): rewrite all help text for vibe coder clarity (#1322) (#1334)
+- fix(install): improve installer tone and soften admin access warning
 ## [0.0.414] — 2026-05-17
 
 ### Changes
