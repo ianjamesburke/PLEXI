@@ -1,6 +1,17 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.419] — 2026-05-17
+
+### Changes
+- fix(layout): align split_h/split_v naming with tmux convention (#1312) (#1423)
+- feat(keys): H/L to cycle notifications, blocked in Choice kind (#1420) (#1421)
+- feat(scratchpad): replace egui overlay with terminal editor (#1282) (#1416)
+- fix(contexts): sub-context adopts focused pane instead of starting empty (#1384) (#1414)
+- fix(ui): context inspector delete via Backspace key (3×) (#1383) (#1413)
+- Extract app init template to standalone SDK v2 Python file (#1272)
+- fix(gh-projects): replace broken gh project CLI with raw GraphQL (#1319)
+- feat(examples): Bluesky feed browser app (PGAP) (#1343) (#1347)
 ## [0.0.418] — 2026-05-17
 
 ### Changes
