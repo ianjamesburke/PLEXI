@@ -1,8 +1,14 @@
 use crate::context::WindowMenuAction;
 use crate::sidebar_row::{with_alpha, SidebarAction, SidebarRow, ROW_HEIGHT};
 use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
+use egui_tiles::Tile;
 
 use crate::app::PlexiApp;
+
+const PANE_DOT_HEIGHT: f32 = 11.0;
+const PANE_DOT_RADIUS: f32 = 2.5;
+const PANE_DOT_SPACING: f32 = 8.0;
+const PANE_DOT_MAX: usize = 6;
 
 fn drop_slot_from_rects(rects: &[Rect], mouse_y: f32) -> usize {
     for (i, rect) in rects.iter().enumerate() {
@@ -76,6 +82,29 @@ impl PlexiApp {
             let is_renaming = self.renaming_window == Some(i);
             let is_dragging = self.drag_context == Some(i);
             let any_dragging = self.drag_context.is_some();
+
+            // Pane count + focused-dot index for this context
+            let ctx_id = self.router.get(i).context_id;
+            let mut pane_ids: Vec<u64> = self.windows.iter()
+                .filter(|w| w.context_id == ctx_id)
+                .flat_map(|w| w.panes.keys().copied())
+                .collect();
+            pane_ids.sort_unstable();
+            let pane_count = pane_ids.len();
+
+            let focused_dot_idx: Option<usize> = if is_active {
+                self.windows.get(self.active_window)
+                    .and_then(|w| w.focused_pane)
+                    .and_then(|tile_id| {
+                        let w = &self.windows[self.active_window];
+                        match w.tree.tiles.get(tile_id) {
+                            Some(Tile::Pane(pid)) => pane_ids.iter().position(|&p| p == *pid),
+                            _ => None,
+                        }
+                    })
+            } else {
+                None
+            };
 
             // --- Renaming: special-cased before SidebarRow path ---
             if is_renaming {
@@ -190,7 +219,48 @@ impl PlexiApp {
                 },
             );
 
-            row_rects.push(row_full);
+            // Pane dots — shown when 2+ panes exist in this context
+            let dot_area_height = if pane_count > 1 { PANE_DOT_HEIGHT } else { 0.0 };
+            if pane_count > 1 {
+                let dots_origin = ui.cursor().min;
+                let dots_rect = Rect::from_min_size(dots_origin, Vec2::new(sidebar_width, PANE_DOT_HEIGHT));
+                ui.allocate_space(Vec2::new(sidebar_width, PANE_DOT_HEIGHT));
+
+                if is_active {
+                    ui.painter().rect_filled(dots_rect, CornerRadius::ZERO, with_alpha(self.colors.bg_active, if is_dragging { 0.4 } else { 1.0 }));
+                    ui.painter().rect_filled(
+                        Rect::from_min_size(dots_rect.min, Vec2::new(3.0, PANE_DOT_HEIGHT)),
+                        CornerRadius::ZERO,
+                        with_alpha(self.colors.accent, if is_dragging { 0.4 } else { 1.0 }),
+                    );
+                }
+
+                let indent = 20.0 + ctx_depth as f32 * 12.0;
+                let cy = dots_rect.center().y;
+                let capped = pane_count.min(PANE_DOT_MAX);
+                for dot_i in 0..capped {
+                    let cx = dots_rect.min.x + indent + (dot_i as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS;
+                    let color = if focused_dot_idx == Some(dot_i) {
+                        with_alpha(self.colors.accent, if is_dragging { 0.4 } else { 1.0 })
+                    } else {
+                        with_alpha(self.colors.text_dim, if is_dragging { 0.15 } else { 0.35 })
+                    };
+                    ui.painter().circle_filled(egui::pos2(cx, cy), PANE_DOT_RADIUS, color);
+                }
+                if pane_count > PANE_DOT_MAX {
+                    let overflow_x = dots_rect.min.x + indent + (capped as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS * 0.5;
+                    ui.painter().text(
+                        egui::pos2(overflow_x, cy),
+                        egui::Align2::LEFT_CENTER,
+                        format!("+{}", pane_count - PANE_DOT_MAX),
+                        egui::FontId::proportional(8.0),
+                        with_alpha(self.colors.text_dim, 0.5),
+                    );
+                }
+            }
+
+            let item_origin = row_full.min;
+            row_rects.push(Rect::from_min_size(item_origin, Vec2::new(sidebar_width, ROW_HEIGHT + dot_area_height)));
 
             match action {
                 SidebarAction::DragStart => { self.drag_context = Some(i); }
