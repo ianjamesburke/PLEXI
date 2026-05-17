@@ -461,6 +461,7 @@ pub fn poll_actions(
     keyboard_capture_active: bool,
     overlay_open: bool,
     shortcuts_overlay_open: bool,
+    notification_is_choice: bool,
 ) -> Vec<Action> {
     let mut actions = Vec::new();
 
@@ -556,6 +557,20 @@ pub fn poll_actions(
             } else {
                 Action::FocusHistoryForward
             });
+        }
+
+        // Bare H/L cycle through the notification queue when the modal is open.
+        // Skipped for Choice notifications — H and L must remain available as
+        // per-option shortcut keys handled by overlays.rs.
+        if overlay_open && !notification_is_choice {
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::H) {
+                log::info!("notification cycle: prev (H)");
+                actions.push(Action::NotificationCyclePrev);
+            }
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::L) {
+                log::info!("notification cycle: next (L)");
+                actions.push(Action::NotificationCycleNext);
+            }
         }
 
         if input.consume_key(bindings.toggle_sidebar.0, bindings.toggle_sidebar.1) {

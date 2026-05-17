@@ -2543,7 +2543,10 @@ impl eframe::App for PlexiApp {
 
         // Handle keyboard shortcuts
         let modal_open = self.input_captured_by_overlay();
-        for action in keys::poll_actions(ctx, &self.key_bindings, app_active, keyboard_capture_active, modal_open, self.show_shortcuts) {
+        let notification_is_choice = self.pending_notifications.first()
+            .map(|n| matches!(n.kind, crate::app_protocol::NotifyKind::Choice))
+            .unwrap_or(false);
+        for action in keys::poll_actions(ctx, &self.key_bindings, app_active, keyboard_capture_active, modal_open, self.show_shortcuts, notification_is_choice) {
             match action {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].zoomed_pane = None;
