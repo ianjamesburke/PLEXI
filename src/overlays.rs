@@ -3300,22 +3300,36 @@ impl PlexiApp {
 /// Format a CWD path for compact display: tilde-abbreviate, then keep the last 3 components.
 /// e.g. `/Users/alice/Documents/GitHub/PLEXI` → `~/Documents/GitHub/PLEXI`
 ///      `/Users/alice/a/b/c/d/e` → `~/…/c/d/e`
+///      `/var/log/a/b/c/d` → `/…/b/c/d`
 fn format_cwd_short(path: &std::path::Path) -> String {
-    let tilde_path = dirs::home_dir()
-        .and_then(|home| path.strip_prefix(&home).ok().map(|rel| {
-            let rel_str = rel.to_string_lossy();
-            if rel_str.is_empty() { "~".to_string() } else { format!("~/{rel_str}") }
-        }))
-        .unwrap_or_else(|| path.to_string_lossy().to_string());
+    use std::path::Component;
 
-    // Count components after the tilde abbreviation.
-    let after_tilde = tilde_path.strip_prefix("~/").unwrap_or(&tilde_path);
-    let parts: Vec<&str> = after_tilde.split('/').filter(|s| !s.is_empty()).collect();
+    let home = dirs::home_dir();
+    let in_home = home.as_ref().map_or(false, |h| path.starts_with(h));
+
+    let (prefix, components_path): (&str, &std::path::Path) = if in_home {
+        let rel = path.strip_prefix(home.as_ref().unwrap()).unwrap();
+        if rel.components().next().is_none() {
+            return "~".to_string();
+        }
+        ("~/", rel)
+    } else {
+        ("", path)
+    };
+
+    let parts: Vec<std::borrow::Cow<str>> = components_path
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => Some(s.to_string_lossy()),
+            _ => None,
+        })
+        .collect();
+
     if parts.len() <= 3 {
-        tilde_path
+        format!("{prefix}{}", components_path.to_string_lossy())
     } else {
         let tail = parts[parts.len() - 3..].join("/");
-        format!("~/\u{2026}/{tail}")
+        format!("{prefix}\u{2026}/{tail}")
     }
 }
 
