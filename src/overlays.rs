@@ -904,6 +904,16 @@ impl PlexiApp {
                                 .size(style::TEXT_HINT)
                                 .family(egui::FontFamily::Monospace),
                         );
+
+                        // CWD indicator — shows which directory {cwd} resolves to.
+                        let cwd_label = format_cwd_short(&self.quick_note_ctx.cwd);
+                        ui.label(
+                            RichText::new(format!("cwd: {cwd_label}"))
+                                .color(self.colors.text_dim.linear_multiply(0.4))
+                                .size(style::TEXT_HINT)
+                                .family(egui::FontFamily::Monospace),
+                        );
+
                         ui.add_space(style::SPACE_SM);
 
                         // Text input — starts at ~25% screen height, grows with content, caps at ~80%.
@@ -3284,6 +3294,28 @@ impl PlexiApp {
             log::info!("cli_setup: dismissed via Escape — will ask again next launch");
             self.show_cli_setup_prompt = false;
         }
+    }
+}
+
+/// Format a CWD path for compact display: tilde-abbreviate, then keep the last 3 components.
+/// e.g. `/Users/alice/Documents/GitHub/PLEXI` → `~/Documents/GitHub/PLEXI`
+///      `/Users/alice/a/b/c/d/e` → `~/…/c/d/e`
+fn format_cwd_short(path: &std::path::Path) -> String {
+    let tilde_path = dirs::home_dir()
+        .and_then(|home| path.strip_prefix(&home).ok().map(|rel| {
+            let rel_str = rel.to_string_lossy();
+            if rel_str.is_empty() { "~".to_string() } else { format!("~/{rel_str}") }
+        }))
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
+
+    // Count components after the tilde abbreviation.
+    let after_tilde = tilde_path.strip_prefix("~/").unwrap_or(&tilde_path);
+    let parts: Vec<&str> = after_tilde.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() <= 3 {
+        tilde_path
+    } else {
+        let tail = parts[parts.len() - 3..].join("/");
+        format!("~/\u{2026}/{tail}")
     }
 }
 
