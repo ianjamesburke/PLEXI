@@ -57,9 +57,19 @@ pub fn should_prompt() -> bool {
     true
 }
 
-/// Note: `just pr-install` always creates `/usr/local/bin/plexi-pr-<N>` as part of its
-/// setup, so this returns `true` in every PR build. To test the CLI setup modal in a PR
-/// build, first remove that symlink manually before opening the app.
+/// Checks whether the CLI binary is reachable: first at the canonical
+/// `/usr/local/bin/<name>` path, then anywhere on `$PATH`. This handles
+/// installs into `/opt/homebrew/bin`, `~/.local/bin`, etc.
+///
+/// Note: `just pr-install` always creates `/usr/local/bin/plexi-pr-<N>` as
+/// part of its setup, so this returns `true` in every PR build. To test the
+/// CLI setup modal in a PR build, first remove that symlink manually.
 pub fn is_installed() -> bool {
-    install_path().exists()
+    if install_path().exists() {
+        return true;
+    }
+    let name = cli_name();
+    std::env::var_os("PATH").map_or(false, |path| {
+        std::env::split_paths(&path).any(|dir| dir.join(&name).exists())
+    })
 }
