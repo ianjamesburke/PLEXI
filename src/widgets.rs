@@ -224,6 +224,9 @@ pub(crate) struct SearchableList {
     pub(crate) selected: usize,
     pub(crate) query: String,
     prev_selected: usize,
+    /// Id of the search TextEdit, set by show_search(). Used by handle_nav()
+    /// to skip j/k when the user is actively typing in the search box.
+    search_te_id: Option<egui::Id>,
 }
 
 impl Default for SearchableList {
@@ -232,6 +235,7 @@ impl Default for SearchableList {
             selected: 0,
             query: String::new(),
             prev_selected: 0,
+            search_te_id: None,
         }
     }
 }
@@ -246,12 +250,15 @@ impl SearchableList {
         self.selected = 0;
         self.prev_selected = 0;
         self.query.clear();
+        self.search_te_id = None;
     }
 
     /// Clamp `selected` to `count` items. Call after filtering items so an
     /// existing selection can't point past the end of the filtered list.
     pub(crate) fn clamp(&mut self, count: usize) {
-        if count > 0 {
+        if count == 0 {
+            self.selected = 0;
+        } else {
             self.selected = self.selected.min(count - 1);
         }
     }
@@ -268,6 +275,10 @@ impl SearchableList {
     ///
     /// Call at `ctx` level before the egui Area so key events are consumed
     /// before widgets inside the Area can see them.
+    ///
+    /// When a search field is active and focused (after `show_search` has been
+    /// called at least once), j/k are NOT consumed so the user can type those
+    /// characters into the query. ArrowDown/Up always navigate.
     pub(crate) fn handle_nav(
         &mut self,
         ctx: &egui::Context,
@@ -276,17 +287,24 @@ impl SearchableList {
         self.prev_selected = self.selected;
         let mut confirmed: Option<usize> = None;
 
+        // Skip vim keys when the search field has keyboard focus so the user
+        // can type 'j' and 'k' into the query box without moving the selection.
+        let search_focused = self
+            .search_te_id
+            .map(|id| ctx.memory(|m| m.focused() == Some(id)))
+            .unwrap_or(false);
+
         ctx.input_mut(|input| {
-            if (input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
-                || input.consume_key(egui::Modifiers::NONE, egui::Key::J))
-                && item_count > 0
-            {
+            let down = input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                || (!search_focused
+                    && input.consume_key(egui::Modifiers::NONE, egui::Key::J));
+            let up = input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                || (!search_focused
+                    && input.consume_key(egui::Modifiers::NONE, egui::Key::K));
+            if down && item_count > 0 {
                 self.selected = (self.selected + 1).min(item_count - 1);
             }
-            if (input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
-                || input.consume_key(egui::Modifiers::NONE, egui::Key::K))
-                && item_count > 0
-            {
+            if up && item_count > 0 {
                 self.selected = self.selected.saturating_sub(1);
             }
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
@@ -297,6 +315,14 @@ impl SearchableList {
         });
 
         confirmed
+    }
+
+    /// True if the search field managed by this list currently has keyboard focus.
+    /// Use this to guard keys that would conflict with text input (e.g. Backspace).
+    pub(crate) fn search_has_focus(&self, ctx: &egui::Context) -> bool {
+        self.search_te_id
+            .map(|id| ctx.memory(|m| m.focused() == Some(id)))
+            .unwrap_or(false)
     }
 
     /// Render a styled search text input, updating `self.query`.
@@ -313,6 +339,7 @@ impl SearchableList {
         colors: &Colors,
     ) -> bool {
         let te_id = egui::Id::new(id_salt).with("search");
+        self.search_te_id = Some(te_id);
         let changed = ui.scope(|ui| {
             ui.visuals_mut().text_cursor.stroke.width = 1.5;
             ui.visuals_mut().text_cursor.stroke.color = colors.accent;
@@ -335,7 +362,8 @@ impl SearchableList {
         }
         if changed.changed() {
             self.selected = 0;
-            self.prev_selected = 0;
+            // Leave prev_selected unchanged so selection_changed() returns
+            // true on the next frame, triggering scroll_to_me for index 0.
             return true;
         }
         false

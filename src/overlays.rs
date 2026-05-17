@@ -1638,10 +1638,13 @@ impl PlexiApp {
 
         // Esc and Backspace are handled before SearchableList so we don't
         // accidentally consume them inside the nav handler.
+        // Backspace/Delete are only consumed for the 3-tap delete when the
+        // search field is NOT focused — when typing a query those keys edit text.
+        let search_focused = self.context_inspector_list.search_has_focus(ctx);
         let backspace_pressed = ctx.input_mut(|i| {
             let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
             if esc { dismissed = true; }
-            num_contexts > 1 && (
+            num_contexts > 1 && !search_focused && (
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
                     || i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
             )
@@ -1654,10 +1657,10 @@ impl PlexiApp {
         // Build a flat list of rows so SearchableList can index into it.
         // Each entry: (group_name, row) — group_name drives the section header.
         let query = self.context_inspector_list.query.to_lowercase();
-        let flat_rows: Vec<(String, &PaneRow)> = groups
+        let flat_rows: Vec<(&str, &PaneRow)> = groups
             .iter()
             .flat_map(|(group_name, rows)| {
-                rows.iter().map(move |row| (group_name.clone(), row))
+                rows.iter().map(move |row| (group_name.as_str(), row))
             })
             .filter(|(_, row)| {
                 query.is_empty()
@@ -1751,11 +1754,11 @@ impl PlexiApp {
                                 } else {
                                     let mut last_group = "";
                                     for (i, (group_name, row)) in flat_rows.iter().enumerate() {
-                                        if group_name.as_str() != last_group {
+                                        if *group_name != last_group {
                                             ui.add_space(style::SPACE_SM);
-                                            ui.label(RichText::new(group_name.as_str()).size(style::TEXT_CAPTION).color(colors.text_dim));
+                                            ui.label(RichText::new(*group_name).size(style::TEXT_CAPTION).color(colors.text_dim));
                                             ui.add_space(style::SPACE_SM);
-                                            last_group = group_name.as_str();
+                                            last_group = *group_name;
                                         }
                                         let is_sel = i == selected;
                                         let (resp, to_close) = render_inspector_pane_row(ui, row, is_sel, &colors);
