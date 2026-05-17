@@ -4,6 +4,9 @@ use crate::theme::Colors;
 use crate::tiling::PaneId;
 use egui::{Align, Align2, Color32, CornerRadius, Layout, RichText, Stroke, Vec2};
 
+/// Timeout (ms) between presses in a multi-tap confirmation sequence.
+const CONFIRM_TIMEOUT_MS: u64 = 1500;
+
 /// Consume the first digit key (0–9) pressed this frame; return its value.
 fn consume_digit_key(ctx: &egui::Context) -> Option<u8> {
     ctx.input_mut(|i| {
@@ -1681,7 +1684,7 @@ impl PlexiApp {
                 .inspector_delete_last_press
                 .map(|t| now.duration_since(t))
                 .unwrap_or(std::time::Duration::MAX);
-            if elapsed > std::time::Duration::from_millis(1500) {
+            if elapsed > std::time::Duration::from_millis(CONFIRM_TIMEOUT_MS) {
                 self.inspector_delete_press_count = 0;
             }
             self.inspector_delete_press_count += 1;
@@ -1789,7 +1792,7 @@ impl PlexiApp {
         if self.inspector_delete_press_count > 0 {
             let timed_out = self
                 .inspector_delete_last_press
-                .map(|t| t.elapsed() > std::time::Duration::from_millis(1500))
+                .map(|t| t.elapsed() > std::time::Duration::from_millis(CONFIRM_TIMEOUT_MS))
                 .unwrap_or(false);
             if timed_out {
                 self.inspector_delete_press_count = 0;
@@ -1801,9 +1804,8 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn draw_inspector_delete_overlay(&self, ctx: &egui::Context) {
-        let count = self.inspector_delete_press_count;
-        egui::Area::new(egui::Id::new("inspector_delete_overlay"))
+    fn draw_triple_tap_overlay(&self, ctx: &egui::Context, id: &str, count: u8, label: &str) {
+        egui::Area::new(egui::Id::new(id))
             .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -40.0))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
@@ -1816,7 +1818,7 @@ impl PlexiApp {
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new(format!(
-                                    "⌫ pressed {} of 3 — press again to delete context",
+                                    "{label} {} of 3 — press again to delete context",
                                     count
                                 ))
                                 .size(12.0)
@@ -1833,52 +1835,29 @@ impl PlexiApp {
                                     Vec2::new(8.0, 8.0),
                                     egui::Sense::hover(),
                                 );
-                                ui.painter()
-                                    .circle_filled(rect.center(), 4.0, color);
+                                ui.painter().circle_filled(rect.center(), 4.0, color);
                             }
                         });
                     });
             });
     }
 
+    pub(crate) fn draw_inspector_delete_overlay(&self, ctx: &egui::Context) {
+        self.draw_triple_tap_overlay(
+            ctx,
+            "inspector_delete_overlay",
+            self.inspector_delete_press_count,
+            "⌫ pressed",
+        );
+    }
+
     pub(crate) fn draw_welcome_delete_overlay(&self, ctx: &egui::Context) {
-        let count = self.welcome_delete_press_count;
-        egui::Area::new(egui::Id::new("welcome_delete_overlay"))
-            .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -40.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
-                    .stroke(Stroke::new(1.0, self.colors.border))
-                    .corner_radius(R6)
-                    .inner_margin(egui::Margin::symmetric(16, 10))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(format!(
-                                    "⌫ pressed {} of 3 — press again to delete context",
-                                    count
-                                ))
-                                .size(12.0)
-                                .color(self.colors.text_dim),
-                            );
-                            ui.add_space(8.0);
-                            for i in 1u8..=3 {
-                                let color = if i <= count {
-                                    self.colors.accent
-                                } else {
-                                    self.colors.bg_active
-                                };
-                                let (rect, _) = ui.allocate_exact_size(
-                                    Vec2::new(8.0, 8.0),
-                                    egui::Sense::hover(),
-                                );
-                                ui.painter()
-                                    .circle_filled(rect.center(), 4.0, color);
-                            }
-                        });
-                    });
-            });
+        self.draw_triple_tap_overlay(
+            ctx,
+            "welcome_delete_overlay",
+            self.welcome_delete_press_count,
+            "⌫ pressed",
+        );
     }
 
     pub(crate) fn draw_quit_confirm_overlay(&self, ctx: &egui::Context) {
