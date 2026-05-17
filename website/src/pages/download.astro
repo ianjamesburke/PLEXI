@@ -3,7 +3,7 @@ import Layout from '../layouts/Layout.astro';
 import Newsletter from '../components/Newsletter.astro';
 
 const RELEASES_LATEST = 'https://github.com/ianjamesburke/PLEXI/releases/latest';
-const INSTALL_CMD = 'bash -c "$(curl -fsSL https://plexiapp.com/install)"';
+const INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | sh';
 ---
 <Layout title="Download Plexi" description="Install Plexi on macOS with a single command.">
   <header class="dl-hero">
