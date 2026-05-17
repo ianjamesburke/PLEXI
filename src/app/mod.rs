@@ -2543,7 +2543,12 @@ impl eframe::App for PlexiApp {
 
         // Handle keyboard shortcuts
         let modal_open = self.input_captured_by_overlay();
-        for action in keys::poll_actions(ctx, &self.key_bindings, app_active, keyboard_capture_active, modal_open, self.show_shortcuts) {
+        let notification_modal_active = matches!(self.focus_stack.last(), Some(FocusLayer::NotificationModal));
+        let notification_shortcuts_blocked = self.current_notify_id.as_ref()
+            .and_then(|id| self.pending_notifications.iter().find(|n| n.notify_id == *id))
+            .map(|n| matches!(n.kind, crate::app_protocol::NotifyKind::Choice | crate::app_protocol::NotifyKind::Input))
+            .unwrap_or(true);
+        for action in keys::poll_actions(ctx, &self.key_bindings, app_active, keyboard_capture_active, modal_open, self.show_shortcuts, notification_modal_active, notification_shortcuts_blocked) {
             match action {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].zoomed_pane = None;
@@ -4119,6 +4124,14 @@ impl PlexiApp {
     /// variants are dropped by default — promoting one requires adding it to
     /// `InputIntent`.
     pub(crate) fn drain_captured_keyboard_input(&self, ctx: &egui::Context) {
+        // Allow bare H/L through when the notification modal is focused on a
+        // non-Choice, non-Input notification so poll_actions can cycle the queue.
+        let allow_bare_hl = matches!(self.focus_stack.last(), Some(FocusLayer::NotificationModal))
+            && self.current_notify_id.as_ref()
+                .and_then(|id| self.pending_notifications.iter().find(|n| n.notify_id == *id))
+                .map(|n| !matches!(n.kind, crate::app_protocol::NotifyKind::Choice | crate::app_protocol::NotifyKind::Input))
+                .unwrap_or(false);
+
         ctx.input_mut(|i| {
             i.events.retain(|e| {
                 if crate::input_intent::classify(e).is_none() {
@@ -4128,6 +4141,12 @@ impl PlexiApp {
                     egui::Event::Key { key, modifiers, .. } => {
                         let cmd = modifiers.command;
                         let shift = modifiers.shift;
+                        if allow_bare_hl
+                            && modifiers.is_none()
+                            && matches!(key, egui::Key::H | egui::Key::L)
+                        {
+                            return true;
+                        }
                         if !cmd || modifiers.alt || modifiers.ctrl {
                             return false;
                         }

@@ -234,7 +234,12 @@ impl RenderSession {
         frame: &[RenderCommand],
     ) {
         let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
-        let pointer_pos = ui.input(|i| i.pointer.hover_pos());
+        if scroll_delta.y == 0.0 {
+            return;
+        }
+        let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) else {
+            return;
+        };
 
         let mut scroll_regions: Vec<(&String, egui::Rect, f32)> = Vec::new();
         let origin = pane_rect.min;
@@ -248,24 +253,20 @@ impl RenderSession {
             }
         }
 
-        if scroll_delta.y != 0.0 {
-            if let Some(pos) = pointer_pos {
-                for (id, viewport, content_height) in scroll_regions.iter().rev() {
-                    if viewport.contains(pos) {
-                        let viewport_h = viewport.height();
-                        let max_offset = (content_height - viewport_h).max(0.0);
-                        let prev = self.scroll_offsets.get(*id).copied().unwrap_or(0.0);
-                        let next = (prev - scroll_delta.y).clamp(0.0, max_offset);
-                        if (next - prev).abs() > 0.01 {
-                            self.scroll_offsets.insert((*id).clone(), next);
-                            self.outbound_events.push(PlexiEvent::ScrollOffset {
-                                id: (*id).clone(),
-                                offset_y: next,
-                            });
-                        }
-                        break;
-                    }
+        for (id, viewport, content_height) in scroll_regions.iter().rev() {
+            if viewport.contains(pointer_pos) {
+                let viewport_h = viewport.height();
+                let max_offset = (content_height - viewport_h).max(0.0);
+                let prev = self.scroll_offsets.get(*id).copied().unwrap_or(0.0);
+                let next = (prev - scroll_delta.y).clamp(0.0, max_offset);
+                if (next - prev).abs() > 0.01 {
+                    self.scroll_offsets.insert((*id).clone(), next);
+                    self.outbound_events.push(PlexiEvent::ScrollOffset {
+                        id: (*id).clone(),
+                        offset_y: next,
+                    });
                 }
+                break;
             }
         }
     }

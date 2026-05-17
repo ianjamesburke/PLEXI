@@ -373,7 +373,7 @@ pub(crate) fn render_draw_commands(
                 let avail_w = pane_rect.width();
                 let avail_h = pane_rect.height();
                 if let Some(tier) = select_responsive_tier(tiers, avail_w, avail_h) {
-                    log::info!(
+                    log::debug!(
                         "responsive: selected tier aspect={} for rect {}x{}",
                         tier.aspect, avail_w, avail_h
                     );

@@ -85,6 +85,11 @@ pub struct TerminalPane {
     /// Last OSC 2 title string the process wrote, tracked independently of `name` and `name_locked`.
     /// Used by FocusChanged events to record what was running in the pane.
     pub pty_title: Option<String>,
+    /// Cached result for the workspace-scope badge. The actual probe hits the
+    /// OS for the child process cwd, so the render path throttles it.
+    pub(crate) outside_workspace_cached: bool,
+    pub(crate) outside_workspace_checked_at: Option<std::time::Instant>,
+    pub(crate) outside_workspace_root: Option<PathBuf>,
 }
 
 impl TerminalPane {
@@ -111,6 +116,9 @@ impl TerminalPane {
             font_size: default_font_size,
             ephemeral: false,
             pty_title: None,
+            outside_workspace_cached: false,
+            outside_workspace_checked_at: None,
+            outside_workspace_root: None,
         })
     }
 }
@@ -254,5 +262,4 @@ pub struct AppPane {
     /// of deleting the tile.
     pub overlay_replaced: Option<Box<Pane>>,
 }
-
 
