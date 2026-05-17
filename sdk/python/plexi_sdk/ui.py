@@ -178,7 +178,7 @@ def _markdown_measure_lines(text: str, avail_px: float, font_size: float,
 class Component:
     """Base class. Subclasses implement `measure` and `render`."""
 
-    def measure(self, avail_w: float) -> float:
+    def measure(self, _avail_w: float) -> float:
         """Return pixel height this component needs within `avail_w`."""
         return 0.0
 
@@ -186,7 +186,7 @@ class Component:
         """True if the component grows to fill remaining space."""
         return False
 
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+    def render(self, _ctx, _x: float, _y: float, _w: float, _h: float) -> None:
         """Emit draw commands. Implementations should stay within (x, y, w, h)."""
         raise NotImplementedError
 
@@ -230,10 +230,10 @@ class Heading(Component):
             3: TEXT_HEADING,
         }.get(self.level, TEXT_TITLE)
 
-    def measure(self, avail_w: float) -> float:
+    def measure(self, _avail_w: float) -> float:
         return self._font_size() + self.DESCENDER_PAD
 
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+    def render(self, ctx, x: float, y: float, w: float, _h: float) -> None:
         fs = self._font_size()
         ctx.text(x, y, self.text, size=fs, color=self.color, bold=self.bold,
                  max_width=w, elide=True)
@@ -288,7 +288,7 @@ class Label(Component):
         # Add descender padding so the last line's descenders aren't clipped.
         return len(lines) * self._line_h() - self.LINE_LEADING + self.DESCENDER_PAD
 
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+    def render(self, ctx, x: float, y: float, w: float, _h: float) -> None:
         fs = self._font_size()
         color = self._color()
         line_h = self._line_h()
@@ -306,7 +306,7 @@ class Spacer(Component):
     def is_grow(self) -> bool:
         return self.grow
 
-    def measure(self, avail_w: float) -> float:
+    def measure(self, _avail_w: float) -> float:
         return 0.0 if self.grow else self.size
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
@@ -1323,6 +1323,110 @@ def render_tree(ctx, root: Component, fill: str = BG) -> None:
     root.render(ctx, 0.0, 0.0, ctx.w, ctx.h)
 
 
+@dataclass
+class InfoTable(Component):
+    """Key-value table with surface background, border, and row dividers.
+
+    Each row is a ``(key, value)`` tuple rendered in a fixed-width key column
+    (monospace, green accent) and a value column (monospace, FG).
+
+    Example::
+
+        InfoTable([
+            ("app_id", "my-app"),
+            ("workspace", "/path/to/ws"),
+        ])
+    """
+    rows: List[tuple]  # list of (key_label, value_text)
+    key_width: float = 100.0
+    background: str = SURFACE
+    border: str = HIGHLIGHT
+    radius: float = RADIUS_MD
+
+    ROW_H = 30.0
+    PAD_H = SPACE_MD
+
+    def measure(self, avail_w: float) -> float:
+        if not self.rows:
+            return 0.0
+        return self.ROW_H * len(self.rows)
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        # Background + border
+        ctx.rect(x, y, w, h, self.background, radius=self.radius)
+        ctx.rect(x, y, w, 1.0, self.border)
+        ctx.rect(x, y + h - 1.0, w, 1.0, self.border)
+        ctx.rect(x, y, 1.0, h, self.border)
+        ctx.rect(x + w - 1.0, y, 1.0, h, self.border)
+
+        val_x = x + self.PAD_H + self.key_width + self.PAD_H
+        val_w = w - self.PAD_H - self.key_width - self.PAD_H * 2
+
+        for i, (key, value) in enumerate(self.rows):
+            row_y = y + i * self.ROW_H
+            cy = row_y + self.ROW_H / 2.0
+
+            # Key (green, monospace)
+            ctx.text(x + self.PAD_H, cy, str(key),
+                     size=TEXT_CAPTION, color=GREEN, monospace=True,
+                     align="left_center", max_width=self.key_width, elide=True)
+
+            # Value (FG, monospace)
+            ctx.text(val_x, cy, str(value),
+                     size=TEXT_CAPTION, color=FG, monospace=True,
+                     align="left_center", max_width=val_w, elide=True)
+
+            # Row divider (skip last row)
+            if i < len(self.rows) - 1:
+                div_y = row_y + self.ROW_H
+                ctx.rect(x + 1.0, div_y, w - 2.0, 1.0, BG)
+
+
+@dataclass
+class ButtonRow(Component):
+    """A clickable button rendered as a component in the declarative tree.
+
+    Delegates to ``ctx.button()`` for host-managed hover/click state.
+    After ``ctx.render(column)``, check ``.clicked`` to see if the button
+    was pressed this frame.
+
+    Example::
+
+        self._btn = ButtonRow("action", "Click me")
+
+        def on_render(self, ctx):
+            ctx.render(Column([self._btn]))
+            if self._btn.clicked:
+                handle_click()
+    """
+    id: str
+    label: str
+    text_color: str = ACCENT
+    fill: str = SURFACE
+    hover_fill: str = HIGHLIGHT
+    active_fill: str = "#585b70"
+    font_size: float = TEXT_BODY
+    radius: float = RADIUS_MD
+    height: float = 36.0
+    clicked: bool = field(default=False, init=False, repr=False)
+
+    def measure(self, avail_w: float) -> float:
+        return self.height
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        self.clicked = ctx.button(
+            id=self.id,
+            x=x, y=y, w=w, h=h,
+            label=self.label,
+            fill=self.fill,
+            hover_fill=self.hover_fill,
+            active_fill=self.active_fill,
+            text_color=self.text_color,
+            font_size=self.font_size,
+            radius=self.radius,
+        )
+
+
 __all__ = [
     # tokens
     "SPACE_XS", "SPACE_SM", "SPACE_MD", "SPACE_LG", "SPACE_XL",
@@ -1337,6 +1441,7 @@ __all__ = [
     "Spacer", "Divider", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
     "ListItem", "Row", "TextInput", "ChatBubble",
     "SelectList", "FormField",
+    "InfoTable", "ButtonRow",
     # badge primitive
     "badge",
     # scroll helpers
