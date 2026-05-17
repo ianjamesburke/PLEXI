@@ -195,6 +195,153 @@ pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::
     resp
 }
 
+// ── SearchableList ────────────────────────────────────────────────────────
+//
+// Keyboard-navigable list with optional fuzzy search input. Extracted from
+// the command palette pattern so every overlay gets the same j/k + clamping
+// + scroll-into-view behavior for free.
+//
+// Usage:
+//     // in your state struct:
+//     my_list: crate::widgets::SearchableList,
+//
+//     // in your overlay draw fn (before rendering):
+//     let confirmed = self.my_list.handle_nav(ctx, item_count);
+//
+//     // inside the egui Area:
+//     let query_changed = self.my_list.show_search(ui, "Search…", "my_list", &colors);
+//     egui::ScrollArea::vertical().show(ui, |ui| {
+//         for (i, item) in items.iter().enumerate() {
+//             let is_sel = i == self.my_list.selected;
+//             let (resp, _) = selectable_row(ui, is_sel, &colors, |ui| { /* ... */ });
+//             if is_sel && self.my_list.selection_changed() { resp.scroll_to_me(None); }
+//             if resp.clicked() { /* activate item i */ }
+//         }
+//     });
+
+/// Shared keyboard-nav + search state for list overlays.
+pub(crate) struct SearchableList {
+    pub(crate) selected: usize,
+    pub(crate) query: String,
+    prev_selected: usize,
+}
+
+impl Default for SearchableList {
+    fn default() -> Self {
+        Self {
+            selected: 0,
+            query: String::new(),
+            prev_selected: 0,
+        }
+    }
+}
+
+impl SearchableList {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Reset selection and search query (call when the overlay opens).
+    pub(crate) fn reset(&mut self) {
+        self.selected = 0;
+        self.prev_selected = 0;
+        self.query.clear();
+    }
+
+    /// Clamp `selected` to `count` items. Call after filtering items so an
+    /// existing selection can't point past the end of the filtered list.
+    pub(crate) fn clamp(&mut self, count: usize) {
+        if count > 0 {
+            self.selected = self.selected.min(count - 1);
+        }
+    }
+
+    /// True if the selected index changed since the last `handle_nav` call.
+    /// Use this to decide whether to call `resp.scroll_to_me(None)`.
+    pub(crate) fn selection_changed(&self) -> bool {
+        self.selected != self.prev_selected
+    }
+
+    /// Process j/k/arrow/Enter key events. Returns `Some(idx)` when Enter is
+    /// pressed; returns `None` otherwise. Does NOT consume Escape — callers
+    /// handle dismiss themselves.
+    ///
+    /// Call at `ctx` level before the egui Area so key events are consumed
+    /// before widgets inside the Area can see them.
+    pub(crate) fn handle_nav(
+        &mut self,
+        ctx: &egui::Context,
+        item_count: usize,
+    ) -> Option<usize> {
+        self.prev_selected = self.selected;
+        let mut confirmed: Option<usize> = None;
+
+        ctx.input_mut(|input| {
+            if (input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                || input.consume_key(egui::Modifiers::NONE, egui::Key::J))
+                && item_count > 0
+            {
+                self.selected = (self.selected + 1).min(item_count - 1);
+            }
+            if (input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+                || input.consume_key(egui::Modifiers::NONE, egui::Key::K))
+                && item_count > 0
+            {
+                self.selected = self.selected.saturating_sub(1);
+            }
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                && item_count > 0
+            {
+                confirmed = Some(self.selected);
+            }
+        });
+
+        confirmed
+    }
+
+    /// Render a styled search text input, updating `self.query`.
+    /// Returns `true` if the query changed this frame (callers should
+    /// re-filter their item list and call `self.clamp(new_count)`).
+    ///
+    /// `id_salt` must be unique per call site so egui's Id doesn't collide
+    /// when multiple SearchableList instances are shown simultaneously.
+    pub(crate) fn show_search(
+        &mut self,
+        ui: &mut egui::Ui,
+        hint: &str,
+        id_salt: &str,
+        colors: &Colors,
+    ) -> bool {
+        let te_id = egui::Id::new(id_salt).with("search");
+        let changed = ui.scope(|ui| {
+            ui.visuals_mut().text_cursor.stroke.width = 1.5;
+            ui.visuals_mut().text_cursor.stroke.color = colors.accent;
+            ui.visuals_mut().extreme_bg_color = colors.bg_active;
+            ui.visuals_mut().widgets.active.bg_stroke =
+                egui::Stroke::new(1.0, colors.accent);
+            ui.visuals_mut().widgets.inactive.bg_stroke =
+                egui::Stroke::new(1.0, colors.border);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.query)
+                    .id(te_id)
+                    .desired_width(f32::INFINITY)
+                    .hint_text(hint)
+                    .font(egui::TextStyle::Body)
+                    .margin(egui::Margin::symmetric(8, 5)),
+            )
+        }).inner;
+        if !changed.has_focus() {
+            changed.request_focus();
+        }
+        if changed.changed() {
+            self.selected = 0;
+            self.prev_selected = 0;
+            return true;
+        }
+        false
+    }
+}
+
 /// Renders a dismissable centered modal overlay. Handles Escape and click-outside.
 /// Returns `true` if the user dismissed it this frame. Callers guard with
 /// `if !open { return; }` and apply `if dismissed { open = false; }` after.

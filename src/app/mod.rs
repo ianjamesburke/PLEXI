@@ -192,7 +192,7 @@ pub struct PlexiApp {
     pub(crate) quit_last_press: Option<std::time::Instant>,
     pub(crate) pending_close: bool,
     pub(crate) show_context_inspector: bool,
-    pub(crate) inspector_selected_pane: usize,
+    pub(crate) context_inspector_list: crate::widgets::SearchableList,
     pub(crate) inspector_delete_press_count: u8,
     pub(crate) inspector_delete_last_press: Option<std::time::Instant>,
     pub(crate) welcome_delete_press_count: u8,
@@ -241,8 +241,8 @@ pub struct PlexiApp {
     pub(crate) quick_note_text: String,
     /// Context captured at the time the quick note modal was opened.
     pub(crate) quick_note_ctx: QuickNoteCtx,
-    /// Cursor row in the destination picker (0 = global backlog, 1+ = config destinations).
-    pub(crate) quick_note_dest_cursor: usize,
+    /// Nav + search state for the destination picker (0 = global backlog, 1+ = config destinations).
+    pub(crate) quick_note_dest_list: crate::widgets::SearchableList,
     /// Cursor row in the sub-destination picker.
     pub(crate) quick_note_sub_cursor: usize,
     /// Cache of dynamically loaded children, keyed by full key path. Cleared on modal open.
@@ -668,7 +668,7 @@ impl PlexiApp {
                     quit_press_count: 0,
                     quit_last_press: None,
                     show_context_inspector: false,
-                    inspector_selected_pane: 0,
+                    context_inspector_list: crate::widgets::SearchableList::new(),
                     inspector_delete_press_count: 0,
                     inspector_delete_last_press: None,
                     welcome_delete_press_count: 0,
@@ -695,7 +695,7 @@ impl PlexiApp {
                     modal_input_buffer: String::new(),
                     quick_note_text: String::new(),
                     quick_note_ctx: QuickNoteCtx::default(),
-                    quick_note_dest_cursor: 0,
+                    quick_note_dest_list: crate::widgets::SearchableList::new(),
                     quick_note_sub_cursor: 0,
                     quick_note_children_cache: HashMap::new(),
                     quick_note_children_rx: None,
@@ -784,7 +784,7 @@ impl PlexiApp {
             quit_press_count: 0,
             quit_last_press: None,
             show_context_inspector: false,
-            inspector_selected_pane: 0,
+            context_inspector_list: crate::widgets::SearchableList::new(),
             inspector_delete_press_count: 0,
             inspector_delete_last_press: None,
             welcome_delete_press_count: 0,
@@ -811,7 +811,7 @@ impl PlexiApp {
             modal_input_buffer: String::new(),
             quick_note_text: String::new(),
             quick_note_ctx: QuickNoteCtx::default(),
-            quick_note_dest_cursor: 0,
+            quick_note_dest_list: crate::widgets::SearchableList::new(),
             quick_note_sub_cursor: 0,
             quick_note_children_cache: HashMap::new(),
             quick_note_children_rx: None,
@@ -909,7 +909,7 @@ impl PlexiApp {
             quit_press_count: 0,
             quit_last_press: None,
             show_context_inspector: false,
-            inspector_selected_pane: 0,
+            context_inspector_list: crate::widgets::SearchableList::new(),
             inspector_delete_press_count: 0,
             inspector_delete_last_press: None,
             welcome_delete_press_count: 0,
@@ -939,7 +939,7 @@ impl PlexiApp {
             modal_input_buffer: String::new(),
             quick_note_text: String::new(),
             quick_note_ctx: QuickNoteCtx::default(),
-            quick_note_dest_cursor: 0,
+            quick_note_dest_list: crate::widgets::SearchableList::new(),
             quick_note_sub_cursor: 0,
             quick_note_children_cache: HashMap::new(),
             quick_note_children_rx: None,
@@ -2833,7 +2833,7 @@ impl eframe::App for PlexiApp {
                 }
                 Action::ContextInspector => {
                     self.show_context_inspector = !self.show_context_inspector;
-                    self.inspector_selected_pane = 0;
+                    self.context_inspector_list.reset();
                     log::info!("ContextInspector: toggled to {}", self.show_context_inspector);
                 }
                 Action::ToggleMinimap => {

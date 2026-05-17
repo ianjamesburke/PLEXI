@@ -862,7 +862,7 @@ impl PlexiApp {
             }
         });
         if advance && !self.quick_note_text.trim().is_empty() {
-            self.quick_note_dest_cursor = 0;
+            self.quick_note_dest_list.reset();
             self.push_focus_layer(crate::app::FocusLayer::QuickNoteDestination);
             log::info!("QuickNote: advancing to destination picker");
             // Draw destination in the same frame to avoid a one-frame scrim flash.
@@ -949,7 +949,8 @@ impl PlexiApp {
             .unwrap_or(0);
         let total = 1 + dest_count;
 
-        // H or Esc → back to compose.
+        // H or Esc → back to compose. Consume before handle_nav so ArrowLeft
+        // doesn't also move the selection.
         let back = ctx.input_mut(|i| {
             i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::H)
@@ -957,37 +958,92 @@ impl PlexiApp {
         });
         if back {
             self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
+            self.quick_note_dest_list.reset();
             log::info!("QuickNote: destination picker dismissed, back to composing");
             self.draw_quick_note_modal(ctx); // same-frame draw to avoid flash
             return;
         }
 
-        // Arrow / vim navigation.
-        let up = ctx.input_mut(|i| {
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::K)
+        // L / ArrowRight → enter submenu for selected item (zero-flash).
+        // Consume before handle_nav to prevent ArrowRight from moving selection.
+        let enter_sub = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::L)
+                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
         });
-        let down = ctx.input_mut(|i| {
-            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::J)
-        });
-        if up {
-            self.quick_note_dest_cursor = if self.quick_note_dest_cursor == 0 {
-                total.saturating_sub(1)
-            } else {
-                self.quick_note_dest_cursor - 1
-            };
-            log::info!("QuickNote: dest cursor → {}", self.quick_note_dest_cursor);
-        }
-        if down {
-            self.quick_note_dest_cursor = (self.quick_note_dest_cursor + 1) % total.max(1);
-            log::info!("QuickNote: dest cursor → {}", self.quick_note_dest_cursor);
+        if enter_sub {
+            let cursor = self.quick_note_dest_list.selected;
+            if cursor > 0 {
+                let dest = self.config.quick_note.as_ref()
+                    .and_then(|qn| qn.destinations.get(cursor - 1).cloned());
+                if let Some(dest) = dest {
+                    if dest.options.is_some() || dest.children_cmd.is_some() {
+                        let key = dest.key;
+                        self.quick_note_sub_cursor = 0;
+                        self.quick_note_children_cache.clear();
+                        self.quick_note_children_rx = None;
+                        self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(vec![key]));
+                        log::info!("QuickNote: submenu opened via L: path=[{key}]");
+                        self.draw_quick_note_menu(ctx, &[key]);
+                        return;
+                    }
+                }
+            }
         }
 
-        // Enter → dispatch selected item.
-        let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
-        if enter {
-            let cursor = self.quick_note_dest_cursor;
+        // N → open config file to add a new destination.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::N)) {
+            log::info!("QuickNote: opening config to add destination");
+            crate::config::open_config_file();
+            return;
+        }
+
+        // Digit keys → fast-dispatch by number.
+        if let Some(key) = consume_digit_key(ctx) {
+            if key == 0 {
+                let text = self.quick_note_text.clone();
+                log::info!("QuickNote: destination selected: key=0 (global backlog)");
+                if self.commit_quick_note_global_backlog(&text) {
+                    self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
+                    self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+                    self.quick_note_text.clear();
+                    self.quick_note_dest_list.reset();
+                }
+                return;
+            }
+            let dest = self.config.quick_note.as_ref()
+                .and_then(|qn| qn.destinations.iter().find(|d| d.key == key).cloned());
+            if let Some(dest) = dest {
+                log::info!("QuickNote: destination selected: key={key}");
+                if dest.options.is_some() || dest.children_cmd.is_some() {
+                    self.quick_note_sub_cursor = 0;
+                    self.quick_note_children_cache.clear();
+                    self.quick_note_children_rx = None;
+                    self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(vec![key]));
+                    log::info!("QuickNote: submenu opened: path=[{key}]");
+                    self.draw_quick_note_menu(ctx, &[key]);
+                } else {
+                    let text = self.quick_note_text.clone();
+                    if self.commit_quick_note(&text, &dest) {
+                        self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
+                        self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+                        self.quick_note_text.clear();
+                        self.quick_note_children_cache.clear();
+                        self.quick_note_children_rx = None;
+                        self.quick_note_dest_list.reset();
+                    }
+                }
+            }
+            return;
+        }
+
+        // j/k/arrows/Enter — delegated to SearchableList for clamped navigation
+        // and scroll-into-view behavior.
+        self.quick_note_dest_list.clamp(total);
+        let confirmed = self.quick_note_dest_list.handle_nav(ctx, total);
+        let selection_changed = self.quick_note_dest_list.selection_changed();
+        log::info!("QuickNote: dest cursor → {}", self.quick_note_dest_list.selected);
+
+        if let Some(cursor) = confirmed {
             if cursor == 0 {
                 let text = self.quick_note_text.clone();
                 log::info!("QuickNote: destination selected via Enter: cursor=0 (global backlog)");
@@ -995,6 +1051,7 @@ impl PlexiApp {
                     self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
                     self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
                     self.quick_note_text.clear();
+                    self.quick_note_dest_list.reset();
                 }
                 return;
             }
@@ -1018,80 +1075,7 @@ impl PlexiApp {
                         self.quick_note_text.clear();
                         self.quick_note_children_cache.clear();
                         self.quick_note_children_rx = None;
-                    }
-                }
-            }
-            return;
-        }
-
-        // L → enter submenu for selected item (zero-flash).
-        let enter_sub = ctx.input_mut(|i| {
-            i.consume_key(egui::Modifiers::NONE, egui::Key::L)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight)
-        });
-        if enter_sub {
-            let cursor = self.quick_note_dest_cursor;
-            if cursor > 0 {
-                let dest = self.config.quick_note.as_ref()
-                    .and_then(|qn| qn.destinations.get(cursor - 1).cloned());
-                if let Some(dest) = dest {
-                    if dest.options.is_some() || dest.children_cmd.is_some() {
-                        let key = dest.key;
-                        self.quick_note_sub_cursor = 0;
-                        self.quick_note_children_cache.clear();
-                        self.quick_note_children_rx = None;
-                        self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(vec![key]));
-                        log::info!("QuickNote: submenu opened via L: path=[{key}]");
-                        self.draw_quick_note_menu(ctx, &[key]);
-                        return;
-                    }
-                }
-            }
-        }
-
-        // N → open config file to add a new destination.
-        let add_dest = ctx.input_mut(|i| {
-            i.consume_key(egui::Modifiers::NONE, egui::Key::N)
-        });
-        if add_dest {
-            log::info!("QuickNote: opening config to add destination");
-            crate::config::open_config_file();
-            return;
-        }
-
-        // Digit keys → fast-dispatch by number.
-        let pressed = consume_digit_key(ctx);
-
-        if let Some(key) = pressed {
-            if key == 0 {
-                let text = self.quick_note_text.clone();
-                log::info!("QuickNote: destination selected: key=0 (global backlog)");
-                if self.commit_quick_note_global_backlog(&text) {
-                    self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
-                    self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
-                    self.quick_note_text.clear();
-                }
-                return;
-            }
-            let dest = self.config.quick_note.as_ref()
-                .and_then(|qn| qn.destinations.iter().find(|d| d.key == key).cloned());
-            if let Some(dest) = dest {
-                log::info!("QuickNote: destination selected: key={key}");
-                if dest.options.is_some() || dest.children_cmd.is_some() {
-                    self.quick_note_sub_cursor = 0;
-                    self.quick_note_children_cache.clear();
-                    self.quick_note_children_rx = None;
-                    self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(vec![key]));
-                    log::info!("QuickNote: submenu opened: path=[{key}]");
-                    self.draw_quick_note_menu(ctx, &[key]);
-                } else {
-                    let text = self.quick_note_text.clone();
-                    if self.commit_quick_note(&text, &dest) {
-                        self.pop_focus_layer(&crate::app::FocusLayer::QuickNoteDestination);
-                        self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
-                        self.quick_note_text.clear();
-                        self.quick_note_children_cache.clear();
-                        self.quick_note_children_rx = None;
+                        self.quick_note_dest_list.reset();
                     }
                 }
             }
@@ -1100,6 +1084,7 @@ impl PlexiApp {
 
         // Render
         let screen_rect = ctx.screen_rect();
+        let cursor = self.quick_note_dest_list.selected;
 
         egui::Area::new(egui::Id::new("quick_note_scrim"))
             .fixed_pos(screen_rect.min)
@@ -1113,7 +1098,6 @@ impl PlexiApp {
             });
 
         let modal_w = (screen_rect.width() * 0.6).min(672.0).max(408.0);
-        let cursor = self.quick_note_dest_cursor;
         let destinations = self.config.quick_note.as_ref()
             .map(|qn| qn.destinations.as_slice())
             .unwrap_or(&[]);
@@ -1162,59 +1146,63 @@ impl PlexiApp {
                         );
                         ui.add_space(style::SPACE_MD);
 
-                        // Row 0: global backlog
-                        let row0_frame = if cursor == 0 {
-                            egui::Frame::new()
-                                .fill(self.colors.bg_active)
-                                .corner_radius(egui::CornerRadius::same(4))
-                                .inner_margin(egui::Margin::symmetric(4, 2))
-                        } else {
-                            egui::Frame::new()
-                                .inner_margin(egui::Margin::symmetric(4, 2))
-                        };
-                        row0_frame.show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = style::SPACE_SM;
-                                widgets::key_chip(ui, "0", &self.colors);
-                                ui.label(
-                                    RichText::new("Backlog (global)")
-                                        .color(self.colors.text_dim)
-                                        .size(style::TEXT_BODY),
-                                );
-                            });
-                        });
-                        ui.add_space(style::SPACE_SM);
-
-                        // Config destinations
-                        for (idx, dest) in destinations.iter().enumerate() {
-                            let row_idx = idx + 1;
-                            let label = if dest.options.is_some() || dest.children_cmd.is_some() {
-                                format!("{} ›", dest.label)
-                            } else {
-                                dest.label.clone()
-                            };
-                            let row_frame = if cursor == row_idx {
-                                egui::Frame::new()
-                                    .fill(self.colors.bg_active)
+                        // Wrap in a ScrollArea so j/k keeps the selection visible
+                        // when there are more destinations than fit on screen.
+                        let max_list_h = (screen_rect.height() * 0.4).max(120.0);
+                        egui::ScrollArea::vertical()
+                            .max_height(max_list_h)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                // Row 0: global backlog
+                                let row0 = egui::Frame::new()
+                                    .fill(if cursor == 0 { self.colors.bg_active } else { egui::Color32::TRANSPARENT })
                                     .corner_radius(egui::CornerRadius::same(4))
                                     .inner_margin(egui::Margin::symmetric(4, 2))
-                            } else {
-                                egui::Frame::new()
-                                    .inner_margin(egui::Margin::symmetric(4, 2))
-                            };
-                            row_frame.show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = style::SPACE_SM;
-                                    widgets::key_chip(ui, &dest.key.to_string(), &self.colors);
-                                    ui.label(
-                                        RichText::new(&label)
-                                            .color(self.colors.text_dim)
-                                            .size(style::TEXT_BODY),
-                                    );
-                                });
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.spacing_mut().item_spacing.x = style::SPACE_SM;
+                                            widgets::key_chip(ui, "0", &self.colors);
+                                            ui.label(
+                                                RichText::new("Backlog (global)")
+                                                    .color(self.colors.text_dim)
+                                                    .size(style::TEXT_BODY),
+                                            );
+                                        });
+                                    });
+                                if cursor == 0 && selection_changed {
+                                    row0.response.scroll_to_me(None);
+                                }
+                                ui.add_space(style::SPACE_SM);
+
+                                // Config destinations
+                                for (idx, dest) in destinations.iter().enumerate() {
+                                    let row_idx = idx + 1;
+                                    let label = if dest.options.is_some() || dest.children_cmd.is_some() {
+                                        format!("{} ›", dest.label)
+                                    } else {
+                                        dest.label.clone()
+                                    };
+                                    let row = egui::Frame::new()
+                                        .fill(if cursor == row_idx { self.colors.bg_active } else { egui::Color32::TRANSPARENT })
+                                        .corner_radius(egui::CornerRadius::same(4))
+                                        .inner_margin(egui::Margin::symmetric(4, 2))
+                                        .show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                ui.spacing_mut().item_spacing.x = style::SPACE_SM;
+                                                widgets::key_chip(ui, &dest.key.to_string(), &self.colors);
+                                                ui.label(
+                                                    RichText::new(&label)
+                                                        .color(self.colors.text_dim)
+                                                        .size(style::TEXT_BODY),
+                                                );
+                                            });
+                                        });
+                                    if cursor == row_idx && selection_changed {
+                                        row.response.scroll_to_me(None);
+                                    }
+                                    ui.add_space(style::SPACE_SM);
+                                }
                             });
-                            ui.add_space(style::SPACE_SM);
-                        }
 
                         ui.add_space(style::SPACE_XL);
                         ui.label(
@@ -1647,39 +1635,49 @@ impl PlexiApp {
         let mut delete_context = false;
 
         let num_contexts = self.router.len();
-        let (nav_down, nav_up, enter_pressed, backspace_pressed) = ctx.input_mut(|i| {
+
+        // Esc and Backspace are handled before SearchableList so we don't
+        // accidentally consume them inside the nav handler.
+        let backspace_pressed = ctx.input_mut(|i| {
             let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-            let down = i.consume_key(egui::Modifiers::NONE, egui::Key::J)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
-            let up = i.consume_key(egui::Modifiers::NONE, egui::Key::K)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
-            let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-            let backspace = num_contexts > 1 && (
+            if esc { dismissed = true; }
+            num_contexts > 1 && (
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
                     || i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
-            );
-            if esc { dismissed = true; }
-            (down, up, enter, backspace)
+            )
         });
 
         let ctx_name = self.router.active().name.clone();
         let ctx_root = self.router.active().root.clone();
         let (groups, all_pane_ids, all_context_ids) = self.collect_inspector_rows();
-        let pane_count = all_pane_ids.len();
 
-        if nav_down && pane_count > 0 {
-            self.inspector_selected_pane = (self.inspector_selected_pane + 1) % pane_count;
+        // Build a flat list of rows so SearchableList can index into it.
+        // Each entry: (group_name, row) — group_name drives the section header.
+        let query = self.context_inspector_list.query.to_lowercase();
+        let flat_rows: Vec<(String, &PaneRow)> = groups
+            .iter()
+            .flat_map(|(group_name, rows)| {
+                rows.iter().map(move |row| (group_name.clone(), row))
+            })
+            .filter(|(_, row)| {
+                query.is_empty()
+                    || row.name.to_lowercase().contains(&query)
+                    || row.kind.to_lowercase().contains(&query)
+            })
+            .collect();
+        let pane_count = flat_rows.len();
+        self.context_inspector_list.clamp(pane_count);
+
+        // Handle nav after filtering so j/k operates on the filtered list.
+        let confirmed = self.context_inspector_list.handle_nav(ctx, pane_count);
+        let selection_changed = self.context_inspector_list.selection_changed();
+
+        if let Some(i) = confirmed {
+            if let Some((_, row)) = flat_rows.get(i) {
+                focus_pane = Some(row.id);
+            }
         }
-        if nav_up && pane_count > 0 {
-            self.inspector_selected_pane =
-                (self.inspector_selected_pane + pane_count - 1) % pane_count;
-        }
-        if self.inspector_selected_pane >= pane_count && pane_count > 0 {
-            self.inspector_selected_pane = pane_count - 1;
-        }
-        if enter_pressed && pane_count > 0 {
-            focus_pane = Some(all_pane_ids[self.inspector_selected_pane]);
-        }
+
         if backspace_pressed {
             let now = std::time::Instant::now();
             let elapsed = self
@@ -1704,7 +1702,7 @@ impl PlexiApp {
         }
 
         let colors = self.colors;
-        let selected = self.inspector_selected_pane;
+        let selected = self.context_inspector_list.selected;
         let screen_rect = ctx.screen_rect();
 
         egui::Area::new(egui::Id::new("context_inspector_scrim"))
@@ -1729,26 +1727,43 @@ impl PlexiApp {
                     .show(ui, |ui| {
                         ui.set_width(style::MODAL_WIDTH_MD);
                         render_inspector_header(ui, &ctx_name, &ctx_root, &colors);
+                        ui.add_space(style::SPACE_SM);
+                        if self.context_inspector_list.show_search(
+                            ui, "Search panes…", "context_inspector", &colors,
+                        ) {
+                            log::info!(
+                                "ContextInspector: search query='{}'",
+                                self.context_inspector_list.query
+                            );
+                        }
+                        ui.add_space(style::SPACE_SM);
                         egui::ScrollArea::vertical()
                             .max_height(ctx.available_rect().height() * 0.6)
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
                                 if pane_count == 0 {
-                                    ui.label(RichText::new("No panes").size(style::TEXT_BODY).color(colors.text_dim));
+                                    let msg = if self.context_inspector_list.query.is_empty() {
+                                        "No panes"
+                                    } else {
+                                        "No matching panes"
+                                    };
+                                    ui.label(RichText::new(msg).size(style::TEXT_BODY).color(colors.text_dim));
                                 } else {
-                                    let mut global_idx: usize = 0;
-                                    for (group_name, rows) in &groups {
-                                        ui.add_space(style::SPACE_SM);
-                                        ui.label(RichText::new(group_name.as_str()).size(style::TEXT_CAPTION).color(colors.text_dim));
-                                        ui.add_space(style::SPACE_SM);
-                                        for row in rows {
-                                            let (resp, to_close) = render_inspector_pane_row(
-                                                ui, row, global_idx == selected, &colors,
-                                            );
-                                            global_idx += 1;
-                                            if let Some(pid) = to_close { close_pane = Some(pid); }
-                                            if resp.clicked() { focus_pane = Some(row.id); }
+                                    let mut last_group = "";
+                                    for (i, (group_name, row)) in flat_rows.iter().enumerate() {
+                                        if group_name.as_str() != last_group {
+                                            ui.add_space(style::SPACE_SM);
+                                            ui.label(RichText::new(group_name.as_str()).size(style::TEXT_CAPTION).color(colors.text_dim));
+                                            ui.add_space(style::SPACE_SM);
+                                            last_group = group_name.as_str();
                                         }
+                                        let is_sel = i == selected;
+                                        let (resp, to_close) = render_inspector_pane_row(ui, row, is_sel, &colors);
+                                        if is_sel && selection_changed {
+                                            resp.scroll_to_me(None);
+                                        }
+                                        if let Some(pid) = to_close { close_pane = Some(pid); }
+                                        if resp.clicked() { focus_pane = Some(row.id); }
                                     }
                                 }
                             });
@@ -1763,6 +1778,7 @@ impl PlexiApp {
 
         if dismissed {
             self.show_context_inspector = false;
+            self.context_inspector_list.reset();
             self.inspector_delete_press_count = 0;
             self.inspector_delete_last_press = None;
             log::info!("ContextInspector: closed");
@@ -1771,6 +1787,7 @@ impl PlexiApp {
             log::info!("ContextInspector: focusing pane {pid}");
             self.pane_navigate(pid);
             self.show_context_inspector = false;
+            self.context_inspector_list.reset();
             self.inspector_delete_press_count = 0;
             self.inspector_delete_last_press = None;
         }
@@ -1780,7 +1797,16 @@ impl PlexiApp {
         }
         if delete_context {
             let ctx_idx = if pane_count > 0 {
-                let target_cid = all_context_ids[self.inspector_selected_pane];
+                // Use the selected row's context id from the filtered list.
+                let target_cid = flat_rows
+                    .get(selected)
+                    .and_then(|(_, row)| {
+                        all_pane_ids
+                            .iter()
+                            .position(|&id| id == row.id)
+                            .and_then(|pos| all_context_ids.get(pos).copied())
+                    })
+                    .unwrap_or_else(|| self.router.active().context_id);
                 self.router
                     .position(|c| c.context_id == target_cid)
                     .unwrap_or_else(|| self.router.active_idx())
