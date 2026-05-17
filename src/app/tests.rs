@@ -664,3 +664,92 @@ fn split_with_new_pane_pushes_focus_history() {
     app.step_focus_history_back();
     assert_eq!(app.windows[0].focused_pane, Some(tile_a));
 }
+
+/// Regression guard for #1384: creating a child context should adopt the focused
+/// pane from the parent, not start with a blank terminal.
+#[test]
+fn new_child_context_adopts_focused_pane() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    // Add a pane and focus it in the parent.
+    let (tile_id, pane_id) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_id);
+
+    let parent_name = "Test"; // initial context name from new_for_test
+    app.new_child_context(parent_name, std::path::PathBuf::from("/tmp/child"))
+        .expect("new_child_context should succeed");
+
+    // Parent's focused tile must now be a SubContext pointing at the child.
+    let parent_focused_tile = app.windows[0].focused_pane.expect("parent has focused tile");
+    let parent_sub_pane_id = match app.windows[0].tree.tiles.get(parent_focused_tile) {
+        Some(egui_tiles::Tile::Pane(id)) => *id,
+        other => panic!("expected Tile::Pane, got {other:?}"),
+    };
+    let child_ctx_id = app.windows[0].panes.get(&parent_sub_pane_id)
+        .and_then(|p| p.as_sub_context())
+        .expect("parent focused pane is SubContext");
+
+    // The original pane must not remain in the parent.
+    assert!(
+        app.windows[0].panes.get(&pane_id).is_none(),
+        "adopted pane must be removed from parent"
+    );
+
+    // The child context and window must exist.
+    assert!(
+        app.router.position(|c| c.context_id == child_ctx_id).is_some(),
+        "child context must be in router"
+    );
+    let child_win_idx = app.windows.iter().position(|w| w.context_id == child_ctx_id)
+        .expect("child window must exist");
+
+    // The child window must have exactly the adopted pane.
+    assert_eq!(app.windows[child_win_idx].panes.len(), 1, "child has exactly 1 pane");
+    assert!(
+        app.windows[child_win_idx].panes.contains_key(&pane_id),
+        "child window must contain the adopted pane"
+    );
+
+    // Child's focused tile must point at the adopted pane.
+    let child_focused_tile = app.windows[child_win_idx].focused_pane.expect("child has focused tile");
+    let child_focused_pane_id = match app.windows[child_win_idx].tree.tiles.get(child_focused_tile) {
+        Some(egui_tiles::Tile::Pane(id)) => *id,
+        other => panic!("expected Tile::Pane in child, got {other:?}"),
+    };
+    assert_eq!(child_focused_pane_id, pane_id, "child focuses the adopted pane");
+}
+
+/// Regression guard for #1384: when no pane is focused, the fallback path must
+/// create a terminal in the child and add a SubContext tile alongside the parent's
+/// existing panes (legacy behavior preserved).
+#[test]
+fn new_child_context_fallback_when_no_focused_pane() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    // Explicitly clear focused pane so fallback triggers.
+    app.windows[0].focused_pane = None;
+
+    let parent_pane_count_before = app.windows[0].panes.len();
+
+    // new_child_context returns an error when create_single_pane_tree fails (no PTY
+    // in test environment), so we only assert on the state mutations that happen
+    // before the terminal spawn — specifically that the adoption path was NOT taken.
+    // In prod this path creates a terminal; in tests it errors out at PTY spawn.
+    let result = app.new_child_context("Test", std::path::PathBuf::from("/tmp/child2"));
+
+    // Whether success or failure, the parent's focused_pane must remain None
+    // (we did not adopt anything).
+    assert_eq!(app.windows[0].focused_pane, None, "parent focused_pane untouched on fallback");
+
+    // Parent pane count must be unchanged if the terminal fallback failed.
+    if result.is_err() {
+        assert_eq!(
+            app.windows[0].panes.len(), parent_pane_count_before,
+            "parent panes unchanged on failed fallback"
+        );
+    }
+}
