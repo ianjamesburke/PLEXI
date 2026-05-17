@@ -36,6 +36,48 @@ use crate::app::PlexiApp;
 pub(crate) const MODAL_WIDTH: f32 = 400.0;
 const R6: CornerRadius = CornerRadius::same(6);
 
+/// Show a native macOS folder picker using rfd's async API.
+/// Blocks the calling (background) thread; must NOT be called on the main thread.
+fn pick_folder() -> Option<std::path::PathBuf> {
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::task::{Context, Poll, Wake, Waker};
+    use std::pin::pin;
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        let signal = Arc::new((Mutex::new(false), Condvar::new()));
+        struct Signal(Arc<(Mutex<bool>, Condvar)>);
+        impl Wake for Signal {
+            fn wake(self: Arc<Self>) { self.signal(); }
+            fn wake_by_ref(self: &Arc<Self>) { self.signal(); }
+        }
+        impl Signal {
+            fn signal(&self) {
+                let (lock, cvar) = &*self.0;
+                *lock.lock().unwrap() = true;
+                cvar.notify_one();
+            }
+        }
+        let waker: Waker = Arc::new(Signal(Arc::clone(&signal))).into();
+        let mut cx = Context::from_waker(&waker);
+        let mut f = pin!(f);
+        loop {
+            match f.as_mut().poll(&mut cx) {
+                Poll::Ready(val) => return val,
+                Poll::Pending => {
+                    let (lock, cvar) = &*signal;
+                    let mut ready = lock.lock().unwrap();
+                    while !*ready { ready = cvar.wait(ready).unwrap(); }
+                    *ready = false;
+                }
+            }
+        }
+    }
+
+    let dialog = rfd::AsyncFileDialog::new();
+    let handle = block_on(dialog.pick_folder())?;
+    Some(handle.path().to_path_buf())
+}
+
 fn draw_contact_footer(ui: &mut egui::Ui, colors: &Colors) {
     ui.vertical_centered(|ui| {
         ui.label(
@@ -156,12 +198,15 @@ fn render_inspector_pane_row(
     (row_resp, close_pane)
 }
 
+/// Returns `true` if the user clicked "Set root..." or the edit button on an
+/// existing root, signaling the caller to open the text-input overlay.
 fn render_inspector_header(
     ui: &mut egui::Ui,
     ctx_name: &str,
     ctx_root: &Option<std::path::PathBuf>,
     colors: &Colors,
-) {
+) -> bool {
+    let mut open_root_overlay = false;
     ui.label(
         RichText::new(ctx_name)
             .size(style::TEXT_TITLE_XL)
@@ -174,11 +219,44 @@ fn render_inspector_header(
         ui.horizontal(|ui| {
             ui.label(RichText::new(&root_str).size(style::TEXT_CAPTION).color(colors.text_dim));
             crate::widgets::copy_button(ui, egui::Id::new("inspector_copy_root"), &root_str);
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("\u{270e}")
+                            .size(style::TEXT_CAPTION)
+                            .color(colors.text_dim),
+                    )
+                    .frame(false),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Edit root path")
+                .clicked()
+            {
+                open_root_overlay = true;
+            }
         });
+    } else {
+        ui.add_space(style::SPACE_SM);
+        if ui
+            .add(
+                egui::Button::new(
+                    RichText::new("Set root\u{2026}")
+                        .size(style::TEXT_CAPTION)
+                        .color(colors.text_primary),
+                )
+                .frame(false),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("Set a project root directory for this context")
+            .clicked()
+        {
+            open_root_overlay = true;
+        }
     }
     ui.add_space(style::SPACE_XL);
     ui.label(RichText::new("Panes").size(style::TEXT_CAPTION).color(colors.text_dim).strong());
     ui.add_space(style::SPACE_SM);
+    open_root_overlay
 }
 
 fn render_inspector_hints(
@@ -664,6 +742,215 @@ impl PlexiApp {
         });
         if dismissed {
             self.show_changelog = false;
+        }
+    }
+
+    /// Shared text-input overlay. Renders a centered modal with a text field,
+    /// optional "Browse..." button (for folder targets), and Enter/Escape
+    /// commit/cancel. Dispatches commit to `OverlayTarget`.
+    pub(crate) fn draw_text_input_overlay(&mut self, ctx: &egui::Context) {
+        use crate::app::OverlayTarget;
+
+        if self.text_overlay.is_none() {
+            return;
+        }
+
+        // Consume Enter/Escape before the Area so they don't bleed through.
+        let (commit, cancel) = ctx.input_mut(|i| {
+            let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            (enter, esc)
+        });
+
+        // Poll async folder-picker result.
+        if let Some(rx) = &self.text_overlay_browse_rx {
+            if let Ok(result) = rx.try_recv() {
+                if let Some(path) = result {
+                    let path_str = path.display().to_string();
+                    log::info!("TextInputOverlay: browse selected path={path_str}");
+                    if let Some((ref mut ov, _)) = self.text_overlay {
+                        ov.buffer = path_str;
+                    }
+                }
+                self.text_overlay_browse_rx = None;
+            }
+        }
+
+        // Re-borrow after potential mutation above.
+        let (overlay, target) = match self.text_overlay.as_mut() {
+            Some(pair) => pair,
+            None => return,
+        };
+        let label = overlay.label.clone();
+        let hint = overlay.hint.clone();
+        let show_browse = matches!(target, OverlayTarget::ContextRoot(_));
+        let mut browse_clicked = false;
+
+        // Scrim
+        let screen_rect = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("text_input_overlay_scrim"))
+            .fixed_pos(screen_rect.min)
+            .order(egui::Order::Middle)
+            .show(ctx, |ui| {
+                ui.painter().rect_filled(
+                    screen_rect,
+                    0.0,
+                    Color32::from_black_alpha(style::SCRIM_ALPHA),
+                );
+            });
+
+        egui::Area::new(egui::Id::new("text_input_overlay"))
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, self.colors.border))
+                    .corner_radius(style::RADIUS_MD)
+                    .inner_margin(egui::Margin::symmetric(
+                        style::MODAL_PADDING_H,
+                        style::MODAL_PADDING_V,
+                    ))
+                    .show(ui, |ui| {
+                        ui.set_width(MODAL_WIDTH);
+                        ui.label(
+                            RichText::new(&label)
+                                .size(13.0)
+                                .color(self.colors.text_primary)
+                                .strong(),
+                        );
+                        ui.add_space(6.0);
+
+                        let te_id = egui::Id::new("text_input_overlay_field");
+                        let (overlay, _target) = self.text_overlay.as_mut().unwrap();
+                        let te = ui
+                            .scope(|ui| {
+                                ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                                ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                                ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
+                                ui.visuals_mut().widgets.active.bg_stroke =
+                                    egui::Stroke::new(1.0, self.colors.accent);
+                                ui.visuals_mut().widgets.inactive.bg_stroke =
+                                    egui::Stroke::new(1.0, self.colors.border);
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut overlay.buffer)
+                                        .id(te_id)
+                                        .desired_width(MODAL_WIDTH)
+                                        .hint_text(&hint)
+                                        .font(egui::TextStyle::Body)
+                                        .margin(egui::Margin::symmetric(8, 5)),
+                                )
+                            })
+                            .inner;
+
+                        // One-shot focus guard.
+                        if !overlay.focus_requested {
+                            te.request_focus();
+                            if let Some(mut state) =
+                                egui::TextEdit::load_state(ui.ctx(), te_id)
+                            {
+                                state
+                                    .cursor
+                                    .set_char_range(Some(egui::text::CCursorRange::two(
+                                        egui::text::CCursor::new(0),
+                                        egui::text::CCursor::new(overlay.buffer.len()),
+                                    )));
+                                state.store(ui.ctx(), te_id);
+                            }
+                            overlay.focus_requested = true;
+                            log::info!("TextInputOverlay: focus requested");
+                        }
+
+                        if show_browse {
+                            ui.add_space(style::SPACE_SM);
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            RichText::new("Browse\u{2026}")
+                                                .size(style::TEXT_CAPTION)
+                                                .color(self.colors.text_primary),
+                                        )
+                                        .fill(self.colors.bg_active),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    browse_clicked = true;
+                                }
+                                ui.add_space(style::SPACE_SM);
+                                ui.label(
+                                    RichText::new("Enter to confirm, Esc to cancel")
+                                        .size(style::TEXT_CAPTION)
+                                        .color(self.colors.text_dim),
+                                );
+                            });
+                        }
+                    });
+            });
+
+        if cancel {
+            log::info!("TextInputOverlay: cancelled");
+            self.text_overlay = None;
+            self.text_overlay_browse_rx = None;
+            return;
+        }
+
+        if browse_clicked && self.text_overlay_browse_rx.is_none() {
+            log::info!("TextInputOverlay: browse folder picker opened");
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.text_overlay_browse_rx = Some(rx);
+            std::thread::spawn(move || {
+                let result = pick_folder();
+                let _ = tx.send(result);
+            });
+            return;
+        }
+
+        if commit {
+            // Take overlay state for dispatch.
+            let (overlay, target) = match self.text_overlay.take() {
+                Some(pair) => pair,
+                None => return,
+            };
+            self.text_overlay_browse_rx = None;
+            let raw = overlay.buffer.trim().to_string();
+
+            match target {
+                OverlayTarget::ContextRoot(idx) => {
+                    if raw.is_empty() {
+                        log::info!("TextInputOverlay: clear context root idx={idx}");
+                        self.router.get_mut(idx).root = None;
+                    } else {
+                        // Tilde expansion.
+                        let expanded = if raw.starts_with("~/") {
+                            if let Some(home) = dirs::home_dir() {
+                                home.join(&raw[2..])
+                            } else {
+                                std::path::PathBuf::from(&raw)
+                            }
+                        } else if raw.starts_with('~') && raw.len() == 1 {
+                            dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(&raw))
+                        } else {
+                            std::path::PathBuf::from(&raw)
+                        };
+
+                        // Resolve relative paths against context path.
+                        let resolved = if expanded.is_relative() {
+                            self.router.get(idx).path.join(&expanded)
+                        } else {
+                            expanded
+                        };
+
+                        log::info!(
+                            "TextInputOverlay: set context root idx={idx} path={}",
+                            resolved.display()
+                        );
+                        self.router.get_mut(idx).root = Some(resolved);
+                    }
+                    self.save_workspace();
+                }
+            }
         }
     }
 
@@ -1645,6 +1932,7 @@ impl PlexiApp {
         let mut close_pane: Option<PaneId> = None;
         let mut focus_pane: Option<PaneId> = None;
         let mut delete_context = false;
+        let mut open_root_overlay = false;
 
         let num_contexts = self.router.len();
         let (nav_down, nav_up, enter_pressed, backspace_pressed) = ctx.input_mut(|i| {
@@ -1728,7 +2016,9 @@ impl PlexiApp {
                     ))
                     .show(ui, |ui| {
                         ui.set_width(style::MODAL_WIDTH_MD);
-                        render_inspector_header(ui, &ctx_name, &ctx_root, &colors);
+                        if render_inspector_header(ui, &ctx_name, &ctx_root, &colors) {
+                            open_root_overlay = true;
+                        }
                         egui::ScrollArea::vertical()
                             .max_height(ctx.available_rect().height() * 0.6)
                             .auto_shrink([false, true])
@@ -1795,6 +2085,24 @@ impl PlexiApp {
             self.inspector_delete_last_press = None;
             self.delete_context(ctx_idx);
             self.save_workspace();
+        }
+        if open_root_overlay {
+            let idx = self.router.active_idx();
+            let existing = self.router.active().root.as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            log::info!("TextInputOverlay: opened target=ContextRoot({idx})");
+            self.text_overlay = Some((
+                crate::app::TextInputOverlay {
+                    label: "Set context root".to_string(),
+                    hint: "/path/to/project or ~/...".to_string(),
+                    buffer: existing,
+                    focus_requested: false,
+                },
+                crate::app::OverlayTarget::ContextRoot(idx),
+            ));
+            // Close the inspector so the text overlay takes focus.
+            self.show_context_inspector = false;
         }
 
         if self.inspector_delete_press_count > 0 {

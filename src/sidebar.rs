@@ -286,19 +286,23 @@ impl PlexiApp {
                         if ui.button("Move Down").clicked() { menu_action = Some((i, WindowMenuAction::MoveDown)); ui.close_menu(); }
                         if ui.button("Move to Bottom").clicked() { menu_action = Some((i, WindowMenuAction::MoveToBottom)); ui.close_menu(); }
                     }
-                    if cwd_for_menu.is_some() || has_root {
-                        ui.separator();
-                        if let Some(cwd) = &cwd_for_menu {
-                            if ui.button("Set root to current path").clicked() {
-                                menu_action = Some((i, WindowMenuAction::SetRoot(cwd.clone())));
-                                ui.close_menu();
-                            }
+                    ui.separator();
+                    if let Some(cwd) = &cwd_for_menu {
+                        if ui.button("Set root to current path").clicked() {
+                            menu_action = Some((i, WindowMenuAction::SetRoot(cwd.clone())));
+                            ui.close_menu();
                         }
-                        if has_root {
-                            if ui.button("Clear root").clicked() {
-                                menu_action = Some((i, WindowMenuAction::ClearRoot));
-                                ui.close_menu();
-                            }
+                    }
+                    if !has_root {
+                        if ui.button("Set root\u{2026}").clicked() {
+                            menu_action = Some((i, WindowMenuAction::OpenRootOverlay));
+                            ui.close_menu();
+                        }
+                    }
+                    if has_root {
+                        if ui.button("Clear root").clicked() {
+                            menu_action = Some((i, WindowMenuAction::ClearRoot));
+                            ui.close_menu();
                         }
                     }
                     if num_ctxs > 1 {
@@ -386,6 +390,21 @@ impl PlexiApp {
                     log::info!("sidebar: clear context root ctx_idx={i}");
                     self.router.get_mut(i).root = None;
                     self.save_workspace();
+                }
+                WindowMenuAction::OpenRootOverlay => {
+                    let existing = self.router.get(i).root.as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_default();
+                    log::info!("TextInputOverlay: opened target=ContextRoot({i}) via sidebar");
+                    self.text_overlay = Some((
+                        crate::app::TextInputOverlay {
+                            label: "Set context root".to_string(),
+                            hint: "/path/to/project or ~/...".to_string(),
+                            buffer: existing,
+                            focus_requested: false,
+                        },
+                        crate::app::OverlayTarget::ContextRoot(i),
+                    ));
                 }
                 WindowMenuAction::Delete => {
                     self.delete_context(i);
