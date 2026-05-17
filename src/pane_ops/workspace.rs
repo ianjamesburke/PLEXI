@@ -8,8 +8,9 @@ use crate::workspace::WorkspaceFile;
 use std::path::PathBuf;
 
 impl PlexiApp {
-    /// Create a child context nested inside `parent_name`. Inserts a SubContext tile
-    /// in the parent's active window. Depth is capped at 3 levels.
+    /// Create a child context nested inside `parent_name`. Moves the parent's focused
+    /// pane into the new child context and replaces it with a SubContext tile. Falls
+    /// back to a new terminal if no adoptable pane is focused. Depth is capped at 3.
     pub(crate) fn new_child_context(&mut self, parent_name: &str, path: PathBuf) -> Result<(), String> {
         let parent_idx = self.router.position(|c| c.name == parent_name)
             .ok_or_else(|| format!("no context named '{parent_name}'"))?;
@@ -38,9 +39,33 @@ impl PlexiApp {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1));
 
+        // Find the parent's active window and the focused adoptable pane.
+        let parent_win_idx = {
+            let preferred = self.context_active_window.get(&parent_id).copied();
+            preferred
+                .and_then(|wid| self.windows.iter().position(|w| w.window_id == wid && w.context_id == parent_id))
+                .or_else(|| self.windows.iter().position(|w| w.context_id == parent_id))
+        };
+
+        // (tile_id, pane_id) if the focused pane can be adopted (Terminal or App, not SubContext).
+        let adoption: Option<(egui_tiles::TileId, crate::tiling::PaneId)> = parent_win_idx
+            .and_then(|idx| {
+                let win = &self.windows[idx];
+                let tile_id = win.focused_pane?;
+                let pane_id = match win.tree.tiles.get(tile_id)? {
+                    egui_tiles::Tile::Pane(id) => *id,
+                    _ => return None,
+                };
+                if win.panes.get(&pane_id)?.as_sub_context().is_some() {
+                    return None;
+                }
+                Some((tile_id, pane_id))
+            });
+
         log::info!(
-            "new_child_context: parent_id={parent_id} parent_depth={parent_depth} child_depth={child_depth} name={ctx_name} path={}",
-            path.display()
+            "new_child_context: parent_id={parent_id} parent_depth={parent_depth} child_depth={child_depth} \
+             name={ctx_name} path={} adopt={:?}",
+            path.display(), adoption.map(|(_, pid)| pid)
         );
 
         self.router.push(crate::context::Context {
@@ -52,22 +77,79 @@ impl PlexiApp {
             depth: child_depth,
         });
 
-        // Create the child context window with a single terminal pane.
-        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(path.clone()), None, false)
-        else {
-            log::error!("new_child_context: failed to create terminal for child context");
-            // Roll back the router push.
-            let new_idx = self.router.len() - 1;
-            self.router.remove_at(new_idx);
-            return Err("failed to create terminal for child context".to_string());
+        let (child_tree, child_panes, child_root_tile) = if let Some((adopt_tile_id, adopt_pane_id)) = adoption {
+            let parent_win_idx = parent_win_idx.unwrap();
+
+            // Remove the adopted pane from the parent.
+            let adopted_pane = self.windows[parent_win_idx].panes.remove(&adopt_pane_id)
+                .expect("adopt pane must exist in parent");
+
+            // Allocate a new pane_id for the SubContext tile that replaces it.
+            let sub_ctx_pane_id = self.host.alloc_pane_id();
+            log::info!("new_child_context: adopting pane_id={adopt_pane_id} → sub_ctx_pane_id={sub_ctx_pane_id} for child ctx_id={ctx_id}");
+
+            // Mutate the existing tile in-place: same TileId, new PaneId (SubContext).
+            {
+                let win = &mut self.windows[parent_win_idx];
+                if let Some(egui_tiles::Tile::Pane(ref mut id)) = win.tree.tiles.get_mut(adopt_tile_id) {
+                    *id = sub_ctx_pane_id;
+                }
+                win.panes.insert(sub_ctx_pane_id, crate::pane::Pane::SubContext {
+                    pane_id: sub_ctx_pane_id,
+                    context_id: ctx_id,
+                });
+            }
+
+            // Build the child window tree with the adopted pane as sole content.
+            let mut child_tiles = egui_tiles::Tiles::default();
+            let adopted_tile = child_tiles.insert_pane(adopt_pane_id);
+            let child_tree = egui_tiles::Tree::new("plexi", adopted_tile, child_tiles);
+            let mut child_panes = std::collections::HashMap::new();
+            child_panes.insert(adopt_pane_id, adopted_pane);
+
+            (child_tree, child_panes, adopted_tile)
+        } else {
+            // Fallback: create a fresh terminal pane for the child.
+            let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(path.clone()), None, false)
+            else {
+                log::error!("new_child_context: failed to create terminal for child context");
+                let new_idx = self.router.len() - 1;
+                self.router.remove_at(new_idx);
+                return Err("failed to create terminal for child context".to_string());
+            };
+            log::info!("new_child_context: no adoptable pane — creating terminal fallback for child ctx_id={ctx_id}");
+
+            // Add a SubContext tile alongside existing panes in the parent.
+            if let Some(parent_idx) = parent_win_idx {
+                let sub_ctx_pane_id = self.host.alloc_pane_id();
+                let new_tile_id = self.windows[parent_idx].tree.tiles.insert_pane(sub_ctx_pane_id);
+                let existing_root = self.windows[parent_idx].tree.root;
+                if let Some(root) = existing_root {
+                    let new_root = self.windows[parent_idx].tree.tiles.insert_container(
+                        egui_tiles::Linear::new(
+                            egui_tiles::LinearDir::Horizontal,
+                            vec![root, new_tile_id],
+                        ),
+                    );
+                    self.windows[parent_idx].tree.root = Some(new_root);
+                } else {
+                    self.windows[parent_idx].tree.root = Some(new_tile_id);
+                }
+                self.windows[parent_idx].panes.insert(sub_ctx_pane_id, crate::pane::Pane::SubContext {
+                    pane_id: sub_ctx_pane_id,
+                    context_id: ctx_id,
+                });
+            }
+
+            (tree, panes, root_tile)
         };
 
         self.windows.push(crate::context::Window {
             name: String::new(),
             path: path.clone(),
-            tree,
-            panes,
-            focused_pane: Some(root_tile),
+            tree: child_tree,
+            panes: child_panes,
+            focused_pane: Some(child_root_tile),
             zoomed_pane: None,
             grid_x: 0,
             grid_y: 0,
@@ -75,29 +157,6 @@ impl PlexiApp {
             context_id: ctx_id,
         });
         self.context_active_window.insert(ctx_id, win_id);
-
-        // Insert a SubContext tile in the parent's active window.
-        let parent_pane_id = self.host.alloc_pane_id();
-        if let Some(parent_win_idx) = self.windows.iter().position(|w| w.context_id == parent_id) {
-            let sub_ctx_pane = crate::pane::Pane::SubContext {
-                pane_id: parent_pane_id,
-                context_id: ctx_id,
-            };
-            let new_tile_id = self.windows[parent_win_idx].tree.tiles.insert_pane(parent_pane_id);
-            let existing_root = self.windows[parent_win_idx].tree.root;
-            if let Some(root) = existing_root {
-                let new_root = self.windows[parent_win_idx].tree.tiles.insert_container(
-                    egui_tiles::Linear::new(
-                        egui_tiles::LinearDir::Horizontal,
-                        vec![root, new_tile_id],
-                    ),
-                );
-                self.windows[parent_win_idx].tree.root = Some(new_root);
-            } else {
-                self.windows[parent_win_idx].tree.root = Some(new_tile_id);
-            }
-            self.windows[parent_win_idx].panes.insert(parent_pane_id, sub_ctx_pane);
-        }
 
         self.save_workspace();
         Ok(())
