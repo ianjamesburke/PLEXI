@@ -67,9 +67,29 @@ check-schema:
 run:
     cargo run --release
 
+# Regenerate generated artifacts only when their source files changed.
+# When adding a new generated artifact, add a stale check here.
+#
+# Source file                → Generated artifact(s)               → Generator
+# src/cli_args.rs            → website/src/content/docs/cli.md     → cargo run -p gen_cli_docs
+# src/app_protocol.rs        → sdk/protocol/pgap.schema.json       → cargo run -p gen_schema
+#                            → sdk/python/plexi_sdk/_protocol.py   → python3 tools/gen_protocol_py.py
+regen-if-stale:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ src/cli_args.rs -nt website/src/content/docs/cli.md ]]; then
+        echo "cli_args.rs changed — regenerating CLI docs..."
+        cargo run -p gen_cli_docs > website/src/content/docs/cli.md
+    fi
+    if [[ src/app_protocol.rs -nt sdk/protocol/pgap.schema.json ]]; then
+        echo "app_protocol.rs changed — regenerating schema..."
+        cargo run -p gen_schema > sdk/protocol/pgap.schema.json
+        python3 tools/gen_protocol_py.py
+    fi
+
 # Derives channel from git branch (main→stable, alpha/beta pass through).
 # Run from repo root or any worktree: just install
-install: fetch-python-runtime
+install: fetch-python-runtime regen-if-stale
     bash scripts/install.sh
 
 # Build and install the current worktree as a testable PR build.

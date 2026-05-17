@@ -156,6 +156,29 @@ fi
 # [ai] is intentionally omitted — it's commented out in the template (coming soon).
 "$SCRIPT_DIR/migrate-config.sh" "$CONFIG" "[notifications]" "[theme]" "[beta]"
 
+# Install agent skills for terminal AI assistants.
+install_skills() {
+  local skills_dest="$profile_dir/.agents/skills"
+  local repo_skills="$SCRIPT_DIR/../skills"
+  local installed=0
+
+  for skill_dir in "$repo_skills"/*/; do
+    [[ -f "$skill_dir/SKILL.md" ]] || continue
+    local name
+    name="$(basename "$skill_dir")"
+    mkdir -p "$skills_dest/$name"
+    cp -R "$skill_dir"/* "$skills_dest/$name/"
+    installed=$((installed + 1))
+  done
+
+  if [[ $installed -gt 0 ]]; then
+    echo "Skills: $installed installed to $skills_dest/"
+    echo "  Agents can use these skills from $skills_dest/ (move them to your preferred location if needed)"
+  fi
+}
+
+install_skills
+
 echo "Installed $app_dest"
 echo "CLI: $bin_dest"
 echo "Config dir: $profile_dir/"

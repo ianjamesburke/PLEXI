@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.381"
+verified_version: "0.0.419"
 order: 7
 ---
 
@@ -373,7 +373,7 @@ Open a plain terminal pane
 |---|---|---|---|
 | `<cmd>` | string | no | Optional shell command to run inside the new terminal |
 | `--ephemeral` / `-e` | flag | no | Close the pane automatically when the command finishes |
-| `--layout` | string | no | Where to place the new pane: split_v, split_h, split_above, tab, or new_window |
+| `--layout` | string | no | Where to place the new pane: split_h (right), split_v (below), split_right, split_below, split_above, tab, or new_window |
 | `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane |
 | `--cwd` | string | no | Directory to open the terminal in |
 | `--no-focus` | flag | no | Keep focus on the current pane instead of jumping to the new one |
@@ -389,7 +389,7 @@ Pass an app id (e.g. `plexi open snake`) to open an installed app. Use `--mcp` t
 | `<type_id>` | string | no | App id to open (mutually exclusive with --mcp and --cli) |
 | `--mcp` | string (repeatable) | no | Wrap a stdio MCP server in a Plexi pane.  Example: plexi open --mcp npx @modelcontextprotocol/server-filesystem /tmp |
 | `--cli` | string | no | Wrap a CLI tool in a Plexi pane with a visual UI.  Example: plexi open --cli git |
-| `--layout` | string | no | Where to place the new pane: split_v, split_h, split_above, tab, or new_window |
+| `--layout` | string | no | Where to place the new pane: split_h (right), split_v (below), split_right, split_below, split_above, tab, or new_window |
 | `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane |
 | `<extra_args>` | string (repeatable) | no | Extra arguments passed through to the app (only valid with an app id) |
 
@@ -419,6 +419,8 @@ Manage the active context (the folder and project scope tied to the current pane
 | `open` | Switch the current pane to a context at the given path |
 | `set-root` | Change the root folder for the active context |
 | `current` | Print the id and name of the current pane's context as JSON |
+| `zoom` | Zoom into a sub-context by its numeric context_id |
+| `zoom-out` | Zoom out of the current sub-context to the parent |
 
 ### `plexi context new`
 
@@ -427,6 +429,7 @@ Open a new context, optionally starting in a specific folder
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<path>` | string | no |  |
+| `--parent` | string | no | Create as a child of the named context (fractal sub-context) |
 
 ### `plexi context open`
 
@@ -448,6 +451,18 @@ Change the root folder for the active context
 
 Print the id and name of the current pane's context as JSON
 
+### `plexi context zoom`
+
+Zoom into a sub-context by its numeric context_id
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<context_id>` | string | yes |  |
+
+### `plexi context zoom-out`
+
+Zoom out of the current sub-context to the parent
+
 ## `plexi completions`
 
 Print a shell completion script to stdout.
@@ -465,8 +480,13 @@ Check your Plexi config file for errors
 | Subcommand | Description |
 |---|---|
 | `check` | Validate your config.toml and report any errors |
+| `edit` | Open config.toml in your $EDITOR |
 
 ### `plexi config check`
 
 Validate your config.toml and report any errors
+
+### `plexi config edit`
+
+Open config.toml in your $EDITOR
 

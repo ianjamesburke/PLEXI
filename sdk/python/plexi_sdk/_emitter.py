@@ -237,14 +237,13 @@ class Emitter:
         except RuntimeError:
             on_loop_thread = False
 
-        if on_loop_thread:
-            task = loop.create_task(coro)
-            # Strong reference prevents GC before the task completes.
-            self._app._background_tasks.add(task)
-            task.add_done_callback(self._app._background_tasks.discard)
-            task.add_done_callback(_log_background_task_error)
-        else:
-            task = asyncio.run_coroutine_threadsafe(coro, loop)
+        if not on_loop_thread:
+            return asyncio.run_coroutine_threadsafe(coro, loop)
+        task = loop.create_task(coro)
+        # Strong reference prevents GC before the task completes.
+        self._app._background_tasks.add(task)
+        task.add_done_callback(self._app._background_tasks.discard)
+        task.add_done_callback(_log_background_task_error)
         return task
 
     # kind = "choice"
