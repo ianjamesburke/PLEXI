@@ -396,6 +396,7 @@ impl PlexiApp {
                         .map(|p| p.display().to_string())
                         .unwrap_or_default();
                     log::info!("TextInputOverlay: opened target=ContextRoot({i}) via sidebar");
+                    self.text_overlay_browse_rx = None;
                     self.text_overlay = Some((
                         crate::app::TextInputOverlay {
                             label: "Set context root".to_string(),

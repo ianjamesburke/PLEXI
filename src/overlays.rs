@@ -918,6 +918,10 @@ impl PlexiApp {
 
             match target {
                 OverlayTarget::ContextRoot(idx) => {
+                    if idx >= self.router.len() {
+                        log::warn!("TextInputOverlay: context idx={idx} no longer exists");
+                        return;
+                    }
                     if raw.is_empty() {
                         log::info!("TextInputOverlay: clear context root idx={idx}");
                         self.router.get_mut(idx).root = None;
@@ -2092,6 +2096,7 @@ impl PlexiApp {
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
             log::info!("TextInputOverlay: opened target=ContextRoot({idx})");
+            self.text_overlay_browse_rx = None;
             self.text_overlay = Some((
                 crate::app::TextInputOverlay {
                     label: "Set context root".to_string(),
