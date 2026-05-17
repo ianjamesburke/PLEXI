@@ -3234,6 +3234,7 @@ impl PlexiApp {
     pub(crate) fn draw_cli_setup_modal(&mut self, ctx: &egui::Context) {
         let cli_name = crate::cli_setup::cli_name();
         let colors = self.colors;
+        let cmd = crate::cli_setup::INSTALL_COMMAND;
 
         egui::Area::new(egui::Id::new("cli_setup_modal"))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
@@ -3249,7 +3250,7 @@ impl PlexiApp {
 
                         ui.vertical_centered(|ui| {
                             ui.label(
-                                RichText::new(format!("Install `{cli_name}`?"))
+                                RichText::new(format!("Install `{cli_name}`"))
                                     .size(style::TEXT_BODY)
                                     .color(colors.text_primary)
                                     .strong(),
@@ -3271,85 +3272,56 @@ impl PlexiApp {
                                     );
                                 });
                             }
-                            ui.add_space(style::SPACE_SM);
+                            ui.add_space(style::SPACE_MD);
                             ui.label(
-                                RichText::new(format!(
-                                    "Symlinks /usr/local/bin/{cli_name} → this binary."
-                                ))
+                                RichText::new(
+                                    "Open Terminal, paste this command, and press Enter.\n\
+                                     You'll be asked for your password."
+                                )
                                 .size(style::TEXT_CAPTION)
                                 .color(colors.text_dim),
                             );
+                            ui.add_space(style::SPACE_SM);
+
+                            // Copyable install command with code-block styling.
+                            egui::Frame::new()
+                                .fill(colors.bg_darkest)
+                                .corner_radius(R6)
+                                .inner_margin(egui::Margin::symmetric(12, 8))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(cmd)
+                                                .size(style::TEXT_CAPTION)
+                                                .color(colors.text_primary)
+                                                .monospace(),
+                                        );
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            crate::widgets::copy_button(
+                                                ui,
+                                                egui::Id::new("cli_setup_copy"),
+                                                cmd,
+                                            );
+                                        });
+                                    });
+                                });
+
                             ui.add_space(style::SPACE_MD);
 
-                            if let Some(err) = &self.cli_setup_error.clone() {
-                                ui.label(
-                                    RichText::new(format!("Install failed: {err}"))
-                                        .size(style::TEXT_CAPTION)
-                                        .color(egui::Color32::from_rgb(220, 80, 80)),
-                                );
-                                ui.add_space(style::SPACE_SM);
-                                ui.label(
-                                    RichText::new("Run manually:")
-                                        .size(style::TEXT_CAPTION)
+                            let btn_w = 100.0;
+                            let skip_btn = ui.add(
+                                egui::Button::new(
+                                    RichText::new("Not now")
+                                        .size(style::TEXT_BODY)
                                         .color(colors.text_dim),
-                                );
-                                ui.add_space(2.0);
-                                ui.label(
-                                    RichText::new(format!(
-                                        "sudo ln -sf /Applications/Plexi.app/Contents/MacOS/plexi /usr/local/bin/{cli_name}"
-                                    ))
-                                    .size(style::TEXT_CAPTION)
-                                    .color(colors.text_primary)
-                                    .monospace(),
-                                );
-                                ui.add_space(style::SPACE_SM);
+                                )
+                                .min_size(egui::vec2(btn_w, 28.0)),
+                            );
+
+                            if skip_btn.clicked() {
+                                log::info!("cli_setup: user chose Not now — will ask again next launch");
+                                self.show_cli_setup_prompt = false;
                             }
-
-                            ui.horizontal(|ui| {
-                                // Centre the two buttons manually.
-                                let btn_w = 100.0;
-                                let gap = style::SPACE_SM;
-                                let pad = ((ui.available_width() - btn_w * 2.0 - gap) / 2.0).max(0.0);
-                                ui.add_space(pad);
-
-                                let install_btn = ui.add(
-                                    egui::Button::new(
-                                        RichText::new("Install")
-                                            .size(style::TEXT_BODY)
-                                            .color(colors.text_primary),
-                                    )
-                                    .min_size(egui::vec2(btn_w, 28.0)),
-                                );
-                                ui.add_space(gap);
-                                let skip_btn = ui.add(
-                                    egui::Button::new(
-                                        RichText::new("Not now")
-                                            .size(style::TEXT_BODY)
-                                            .color(colors.text_dim),
-                                    )
-                                    .min_size(egui::vec2(btn_w, 28.0)),
-                                );
-
-                                if install_btn.clicked() {
-                                    match crate::cli_setup::install_symlink() {
-                                        Ok(msg) => {
-                                            log::info!("cli_setup: {msg}");
-                                            crate::cli_setup::mark_prompted();
-                                            self.show_cli_setup_prompt = false;
-                                            self.cli_setup_error = None;
-                                        }
-                                        Err(e) => {
-                                            log::warn!("cli_setup: install failed: {e}");
-                                            self.cli_setup_error = Some(e);
-                                        }
-                                    }
-                                }
-                                if skip_btn.clicked() {
-                                    log::info!("cli_setup: user chose Not now — will ask again next launch");
-                                    self.show_cli_setup_prompt = false;
-                                    self.cli_setup_error = None;
-                                }
-                            });
                         });
                     });
             });
