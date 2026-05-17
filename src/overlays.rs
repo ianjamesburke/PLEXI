@@ -1840,7 +1840,17 @@ impl PlexiApp {
                 log::info!("ContextInspector: root cleared via empty commit");
                 self.router.get_mut(active_idx).root = None;
             } else {
-                let path = std::path::PathBuf::from(&path_str);
+                // Expand leading ~/ to home dir so users can type ~/projects/foo naturally.
+                let path = if path_str.starts_with("~/") {
+                    dirs::home_dir()
+                        .map(|h| h.join(&path_str[2..]))
+                        .unwrap_or_else(|| std::path::PathBuf::from(&path_str))
+                } else if path_str.starts_with('/') {
+                    std::path::PathBuf::from(&path_str)
+                } else {
+                    // Resolve relative paths against the context's base path.
+                    self.router.get(active_idx).path.join(&path_str)
+                };
                 log::info!("ContextInspector: set root path={}", path.display());
                 self.router.get_mut(active_idx).root = Some(path);
             }
