@@ -90,6 +90,9 @@ impl App for ScratchpadApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
         let colors = ctx.colors;
+        let window_regained_focus = ui.ctx().input(|i| {
+            i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true)))
+        });
 
         if self.mode == Mode::Editing {
             let save_pressed = ui.input_mut(|i| {
@@ -123,9 +126,6 @@ impl App for ScratchpadApp {
             );
 
             let te_id = egui::Id::new("scratchpad_text");
-            let window_regained_focus = ui.ctx().input(|i| {
-                i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true)))
-            });
             if !self.focus_requested || window_regained_focus {
                 ui.ctx().memory_mut(|m| m.request_focus(te_id));
                 self.focus_requested = true;
@@ -177,13 +177,11 @@ impl App for ScratchpadApp {
             });
             if esc_pressed {
                 self.mode = Mode::Editing;
+                self.focus_requested = false;
                 return;
             }
 
             let te_id = egui::Id::new("scratchpad_filename");
-            let window_regained_focus = ui.ctx().input(|i| {
-                i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(true)))
-            });
             if !self.save_focus_requested || window_regained_focus {
                 ui.ctx().memory_mut(|m| m.request_focus(te_id));
                 self.save_focus_requested = true;
