@@ -293,8 +293,9 @@ impl PlexiApp {
                             ui.close_menu();
                         }
                     }
-                    if !has_root {
-                        if ui.button("Set root\u{2026}").clicked() {
+                    {
+                        let label = if has_root { "Edit root\u{2026}" } else { "Set root\u{2026}" };
+                        if ui.button(label).clicked() {
                             menu_action = Some((i, WindowMenuAction::OpenRootOverlay));
                             ui.close_menu();
                         }

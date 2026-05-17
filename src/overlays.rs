@@ -940,7 +940,9 @@ impl PlexiApp {
                         };
 
                         // Resolve relative paths against context path.
-                        let resolved = if expanded.is_relative() {
+                        // Skip resolution if the raw input started with ~ (failed
+                        // tilde expansion should not be treated as relative).
+                        let resolved = if expanded.is_relative() && !raw.starts_with('~') {
                             self.router.get(idx).path.join(&expanded)
                         } else {
                             expanded
