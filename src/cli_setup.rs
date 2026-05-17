@@ -1,4 +1,3 @@
-use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 
 /// CLI name for the running build variant (e.g. `plexi`, `plexi-alpha`).
@@ -25,7 +24,10 @@ pub fn mark_prompted() {
     let _ = std::fs::write(sentinel_path(), "");
 }
 
-/// Shows every launch until the user clicks Install (writes sentinel).
+/// The install command shown in the CLI setup modal.
+pub const INSTALL_COMMAND: &str = "curl -fsSL https://plexiapp.com/install | sh";
+
+/// Shows every launch until the CLI is verified installed.
 /// "Not now" and Escape dismiss for the session only.
 ///
 /// If the sentinel exists but the binary isn't installed (e.g. profile was
@@ -33,6 +35,12 @@ pub fn mark_prompted() {
 /// prompt is shown again.
 pub fn should_prompt() -> bool {
     if is_installed() {
+        // CLI is present. Write the sentinel if it's missing so we don't
+        // prompt again, then skip.
+        if !was_prompted() {
+            log::info!("cli_setup: {} installed — writing sentinel", cli_name());
+            mark_prompted();
+        }
         log::info!("cli_setup: {} already installed — skipping prompt", cli_name());
         return false;
     }
@@ -54,21 +62,4 @@ pub fn should_prompt() -> bool {
 /// build, first remove that symlink manually before opening the app.
 pub fn is_installed() -> bool {
     install_path().exists()
-}
-
-/// Symlink `/usr/local/bin/<cli_name>` → current binary.
-pub fn install_symlink() -> Result<String, String> {
-    let name = cli_name();
-    let link_path = install_path();
-    let current_binary =
-        std::env::current_exe().map_err(|e| format!("could not locate binary: {e}"))?;
-
-    if link_path.exists() || link_path.symlink_metadata().is_ok() {
-        std::fs::remove_file(&link_path)
-            .map_err(|e| format!("could not remove existing link: {e}"))?;
-    }
-    symlink(&current_binary, &link_path)
-        .map_err(|e| format!("could not create /usr/local/bin/{name}: {e}"))?;
-
-    Ok(format!("/usr/local/bin/{name} → {}", current_binary.display()))
 }
