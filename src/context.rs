@@ -15,6 +15,8 @@ pub(crate) enum WindowMenuAction {
     Delete,
     SetRoot(PathBuf),
     ClearRoot,
+    /// Open the text-input overlay to set the root interactively.
+    OpenRootOverlay,
 }
 
 /// A context is a sidebar item — a project or directory scope.

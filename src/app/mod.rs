@@ -81,6 +81,25 @@ pub(crate) enum FocusLayer {
     CliSetupPrompt,
     /// Context inspector modal — shows pane list, allows close/delete.
     ContextInspector,
+    /// Shared text-input overlay (context root, future: context rename).
+    TextInput,
+}
+
+/// What a `TextInputOverlay` commit should do.
+#[derive(Clone, Debug)]
+pub(crate) enum OverlayTarget {
+    /// Set (or clear) the root directory on the context at `idx`.
+    ContextRoot(usize),
+}
+
+/// Shared text-input overlay state. One instance per open modal.
+#[derive(Clone, Debug)]
+pub(crate) struct TextInputOverlay {
+    pub label: String,
+    pub hint: String,
+    pub buffer: String,
+    /// One-shot guard: true after the first `request_focus()` call.
+    pub focus_requested: bool,
 }
 
 #[derive(Clone)]
@@ -214,6 +233,10 @@ pub struct PlexiApp {
     /// first render. Prevents the focus from being re-requested every frame,
     /// which lets a later widget steal it on the same frame indefinitely.
     pub(crate) rename_pane_focus_requested: bool,
+    /// Active text-input overlay and its dispatch target.
+    pub(crate) text_overlay: Option<(TextInputOverlay, OverlayTarget)>,
+    /// Receiver for async folder-picker results (Browse button).
+    pub(crate) text_overlay_browse_rx: Option<mpsc::Receiver<Option<PathBuf>>>,
     pub(crate) features: crate::features::FeatureFlags,
     /// Notifications queued from apps via ShowNotification.
     pub(crate) pending_notifications: Vec<PendingNotification>,
@@ -684,6 +707,8 @@ impl PlexiApp {
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
                     rename_pane_focus_requested: false,
+                    text_overlay: None,
+                    text_overlay_browse_rx: None,
                     registry,
                     features: features.clone(),
                     pending_notifications: Vec::new(),
@@ -799,6 +824,8 @@ impl PlexiApp {
             context_visit_history: Vec::new(),
             renaming_pane: None,
             rename_pane_focus_requested: false,
+            text_overlay: None,
+            text_overlay_browse_rx: None,
             registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
             features,
             pending_notifications: Vec::new(),
@@ -924,6 +951,8 @@ impl PlexiApp {
             context_visit_history: Vec::new(),
             renaming_pane: None,
             rename_pane_focus_requested: false,
+            text_overlay: None,
+            text_overlay_browse_rx: None,
             registry: AppRegistry::load_with_global(
                 &path,
                 &path.join("nonexistent-apps-dir"),
@@ -1877,6 +1906,7 @@ impl eframe::App for PlexiApp {
         self.sync_context_rename_focus();
         self.sync_cli_setup_prompt_focus();
         self.sync_context_inspector_focus();
+        self.sync_text_input_focus();
 
         // If an overlay owns input, render it FIRST so its widgets (the
         // notification modal's TextEdit for the `input` kind, the palette's
@@ -1919,6 +1949,9 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::ContextInspector) => {
                     self.draw_context_inspector(ctx);
                 }
+                Some(FocusLayer::TextInput) => {
+                    self.draw_text_input_overlay(ctx);
+                }
                 None => {}
             }
             self.drain_captured_keyboard_input(ctx);
@@ -1933,6 +1966,7 @@ impl eframe::App for PlexiApp {
             self.sync_context_rename_focus();
             self.sync_cli_setup_prompt_focus();
             self.sync_context_inspector_focus();
+            self.sync_text_input_focus();
         }
 
         // Apps only receive key input if nothing is capturing above them.
@@ -3671,6 +3705,7 @@ impl PlexiApp {
                 | Some(FocusLayer::QuickNoteSubDestination(_))
                 | Some(FocusLayer::CliSetupPrompt)
                 | Some(FocusLayer::ContextInspector)
+                | Some(FocusLayer::TextInput)
         )
     }
 
@@ -4096,7 +4131,7 @@ impl PlexiApp {
     }
 
     /// Reconcile the context-rename focus layer. Active when `renaming_window`
-    /// is set AND the sidebar is hidden — in that case the inline sidebar row
+    /// is set AND the sidebar is hidden -- in that case the inline sidebar row
     /// never renders, so we promote the rename to a modal overlay instead.
     pub(crate) fn sync_context_rename_focus(&mut self) {
         let should_own = self.renaming_window.is_some() && !self.sidebar_visible;
@@ -4108,6 +4143,20 @@ impl PlexiApp {
             self.push_focus_layer(FocusLayer::ContextRename);
         } else if !should_own && has_layer {
             self.pop_focus_layer(&FocusLayer::ContextRename);
+        }
+    }
+
+    /// Reconcile the text-input overlay focus layer with `text_overlay`.
+    pub(crate) fn sync_text_input_focus(&mut self) {
+        let should_own = self.text_overlay.is_some();
+        let has_layer = self
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::TextInput);
+        if should_own && !has_layer {
+            self.push_focus_layer(FocusLayer::TextInput);
+        } else if !should_own && has_layer {
+            self.pop_focus_layer(&FocusLayer::TextInput);
         }
     }
 
