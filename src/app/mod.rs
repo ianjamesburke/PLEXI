@@ -267,6 +267,8 @@ pub struct PlexiApp {
     pub(crate) pending_context_close: Option<ContextCloseState>,
     pub(crate) show_context_inspector: bool,
     pub(crate) inspector_selected_pane: usize,
+    pub(crate) inspector_renaming: bool,
+    pub(crate) inspector_rename_focus_requested: bool,
     pub(crate) inspector_delete_press_count: u8,
     pub(crate) inspector_delete_last_press: Option<std::time::Instant>,
     pub(crate) welcome_delete_press_count: u8,
@@ -878,6 +880,8 @@ impl PlexiApp {
                     quit_last_press: None,
                     show_context_inspector: false,
                     inspector_selected_pane: 0,
+                    inspector_renaming: false,
+                    inspector_rename_focus_requested: false,
                     inspector_delete_press_count: 0,
                     inspector_delete_last_press: None,
                     welcome_delete_press_count: 0,
@@ -1002,6 +1006,8 @@ impl PlexiApp {
             quit_last_press: None,
             show_context_inspector: false,
             inspector_selected_pane: 0,
+            inspector_renaming: false,
+            inspector_rename_focus_requested: false,
             inspector_delete_press_count: 0,
             inspector_delete_last_press: None,
             welcome_delete_press_count: 0,
@@ -1136,6 +1142,8 @@ impl PlexiApp {
             quit_last_press: None,
             show_context_inspector: false,
             inspector_selected_pane: 0,
+            inspector_renaming: false,
+            inspector_rename_focus_requested: false,
             inspector_delete_press_count: 0,
             inspector_delete_last_press: None,
             welcome_delete_press_count: 0,
@@ -3212,6 +3220,8 @@ impl eframe::App for PlexiApp {
                 }
                 Action::ContextInspector => {
                     self.show_context_inspector = !self.show_context_inspector;
+                    self.inspector_renaming = false;
+                    self.inspector_rename_focus_requested = false;
                     if self.show_context_inspector {
                         let focused_pane_id = self.windows[self.active_window]
                             .focused_pane
@@ -3999,6 +4009,15 @@ impl eframe::App for PlexiApp {
         // pane TextInput widgets rendered in CentralPanel can't steal it.
         if matches!(self.focus_stack.last(), Some(FocusLayer::QuickNote)) {
             ctx.memory_mut(|m| m.request_focus(egui::Id::new("quick_note_text")));
+        }
+
+        // Same pattern: inspector inline rename TextEdit needs re-focus every frame.
+        // The one-shot focus request in draw_context_inspector fires during early overlay
+        // dispatch, BEFORE CentralPanel runs — pane TextInput widgets then steal focus back.
+        // Re-requesting here (post-CentralPanel) ensures we always win the last-write-wins
+        // contest while rename mode is active.
+        if self.inspector_renaming {
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("inspector_rename_input")));
         }
 
         // Detect genuine pane focus transitions and emit FocusChanged events.

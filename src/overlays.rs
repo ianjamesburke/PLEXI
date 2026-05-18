@@ -204,15 +204,35 @@ fn render_inspector_header(
     ctx_root: &Option<std::path::PathBuf>,
     ctx_description: &Option<String>,
     colors: &Colors,
-) -> (bool, bool) {
+    renaming: bool,
+    rename_buffer: &mut String,
+) -> (bool, bool, bool) {
     let mut open_root_overlay = false;
     let mut open_description_overlay = false;
-    ui.label(
-        RichText::new(ctx_name)
-            .size(style::TEXT_TITLE_XL)
-            .color(colors.text_primary)
-            .strong(),
-    );
+    let mut start_rename = false;
+
+    if renaming {
+        let te_id = egui::Id::new("inspector_rename_input");
+        // Do NOT call request_focus() here — focus is managed via the one-shot
+        // inspector_rename_focus_requested flag in draw_context_inspector, called
+        // AFTER all UI renders so it wins egui's last-caller-wins focus contest.
+        crate::widgets::styled_text_input(ui, rename_buffer, "Context name...", te_id, colors);
+    } else {
+        let name_resp = ui.add(
+            egui::Label::new(
+                RichText::new(ctx_name)
+                    .size(style::TEXT_TITLE_XL)
+                    .color(colors.text_primary)
+                    .strong(),
+            )
+            .sense(egui::Sense::click()),
+        );
+        if name_resp.clicked() {
+            start_rename = true;
+        }
+        name_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    }
+
     if let Some(root) = ctx_root {
         ui.add_space(style::SPACE_SM);
         let root_str = root.display().to_string();
@@ -294,7 +314,7 @@ fn render_inspector_header(
     ui.add_space(style::SPACE_XL);
     ui.label(RichText::new("Panes").size(style::TEXT_CAPTION).color(colors.text_dim).strong());
     ui.add_space(style::SPACE_SM);
-    (open_root_overlay, open_description_overlay)
+    (open_root_overlay, open_description_overlay, start_rename)
 }
 
 fn render_inspector_hints(
@@ -302,36 +322,45 @@ fn render_inspector_hints(
     pane_count: usize,
     num_contexts: usize,
     colors: &Colors,
+    renaming: bool,
 ) -> bool {
     let mut delete_context = false;
     ui.horizontal(|ui| {
-        if num_contexts > 1 {
-            if ui
-                .add(
-                    egui::Button::new(
-                        RichText::new("Delete context")
-                            .size(style::TEXT_CAPTION)
-                            .color(colors.text_primary),
+        if renaming {
+            crate::widgets::key_combo_list(ui, &[&["Enter"]], Some("save"), colors);
+            ui.add_space(style::SPACE_MD);
+            crate::widgets::key_combo_list(ui, &[&["Esc"]], Some("cancel"), colors);
+        } else {
+            if num_contexts > 1 {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Delete context")
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.text_primary),
+                        )
+                        .fill(colors.bg_active),
                     )
-                    .fill(colors.bg_active),
-                )
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .clicked()
-            {
-                delete_context = true;
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    delete_context = true;
+                }
+                ui.add_space(style::SPACE_XL);
+                crate::widgets::key_combo_list(ui, &[&["⌫"]], Some("delete (3×)"), colors);
+                ui.add_space(style::SPACE_XL);
             }
-            ui.add_space(style::SPACE_XL);
-            crate::widgets::key_combo_list(ui, &[&["⌫"]], Some("delete (3×)"), colors);
-            ui.add_space(style::SPACE_XL);
-        }
-        crate::widgets::key_combo_list(ui, &[&["Esc"]], Some("close"), colors);
-        ui.add_space(style::SPACE_MD);
-        crate::widgets::key_combo_list(ui, &[&["j"], &["k"]], Some("navigate"), colors);
-        if pane_count > 0 {
+            crate::widgets::key_combo_list(ui, &[&["R"]], Some("rename"), colors);
             ui.add_space(style::SPACE_MD);
-            crate::widgets::key_combo_list(ui, &[&["Enter"]], Some("focus pane"), colors);
+            crate::widgets::key_combo_list(ui, &[&["Esc"]], Some("close"), colors);
             ui.add_space(style::SPACE_MD);
-            crate::widgets::key_combo_list(ui, &[&["⌘", "W"]], Some("close pane"), colors);
+            crate::widgets::key_combo_list(ui, &[&["j"], &["k"]], Some("navigate"), colors);
+            if pane_count > 0 {
+                ui.add_space(style::SPACE_MD);
+                crate::widgets::key_combo_list(ui, &[&["Enter"]], Some("focus pane"), colors);
+                ui.add_space(style::SPACE_MD);
+                crate::widgets::key_combo_list(ui, &[&["⌘", "W"]], Some("close pane"), colors);
+            }
         }
     });
     delete_context
@@ -2077,22 +2106,38 @@ impl PlexiApp {
         let mut delete_context = false;
         let mut open_root_overlay = false;
         let mut open_description_overlay = false;
+        let mut start_rename = false;
+        let mut commit_rename = false;
+        let mut cancel_rename = false;
 
+        let renaming = self.inspector_renaming;
         let num_contexts = self.router.len();
         let (nav_down, nav_up, enter_pressed, backspace_pressed, cmd_w_pressed) = ctx.input_mut(|i| {
-            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-            let down = i.consume_key(egui::Modifiers::NONE, egui::Key::J)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
-            let up = i.consume_key(egui::Modifiers::NONE, egui::Key::K)
-                || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
-            let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-            let backspace = num_contexts > 1 && (
-                i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
-                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
-            );
-            let cmd_w = i.consume_key(egui::Modifiers::COMMAND, egui::Key::W);
-            if esc { dismissed = true; }
-            (down, up, enter, backspace, cmd_w)
+            if renaming {
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+                    commit_rename = true;
+                }
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                    cancel_rename = true;
+                }
+                (false, false, false, false, false)
+            } else {
+                let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                let down = i.consume_key(egui::Modifiers::NONE, egui::Key::J)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
+                let up = i.consume_key(egui::Modifiers::NONE, egui::Key::K)
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
+                let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                let r = i.consume_key(egui::Modifiers::NONE, egui::Key::R);
+                let backspace = num_contexts > 1 && (
+                    i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
+                        || i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+                );
+                let cmd_w = i.consume_key(egui::Modifiers::COMMAND, egui::Key::W);
+                if esc { dismissed = true; }
+                if r { start_rename = true; }
+                (down, up, enter, backspace, cmd_w)
+            }
         });
 
         let (groups, all_pane_ids, all_context_ids) = self.collect_inspector_rows();
@@ -2172,42 +2217,94 @@ impl PlexiApp {
                     ))
                     .show(ui, |ui| {
                         ui.set_width(style::MODAL_WIDTH_MD);
-                        let (want_root, want_desc) = render_inspector_header(ui, &ctx_name, &ctx_root, &ctx_description, &colors);
+                        let (want_root, want_desc, rename_clicked) = render_inspector_header(
+                            ui, &ctx_name, &ctx_root, &ctx_description, &colors,
+                            renaming, &mut self.rename_buffer,
+                        );
                         if want_root { open_root_overlay = true; }
                         if want_desc { open_description_overlay = true; }
-                        egui::ScrollArea::vertical()
-                            .max_height(ctx.available_rect().height() * 0.6)
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| {
-                                if pane_count == 0 {
-                                    ui.label(RichText::new("No panes").size(style::TEXT_BODY).color(colors.text_dim));
-                                } else {
-                                    let mut global_idx: usize = 0;
-                                    for (group_name, rows) in &groups {
-                                        ui.add_space(style::SPACE_SM);
-                                        ui.label(RichText::new(group_name.as_str()).size(style::TEXT_CAPTION).color(colors.text_dim));
-                                        ui.add_space(style::SPACE_SM);
-                                        for row in rows {
-                                            let resp = render_inspector_pane_row(
-                                                ui, row, global_idx == selected, &colors,
-                                            );
-                                            global_idx += 1;
-                                            if resp.clicked() { focus_pane = Some(row.id); }
+                        if rename_clicked { start_rename = true; }
+                        // While renaming, hide the pane list — interactive widgets
+                        // rendered after the TextEdit can steal egui focus (last-caller-wins).
+                        // See GOTCHAS.md "egui TextEdit focus in complex frames".
+                        if !renaming {
+                            egui::ScrollArea::vertical()
+                                .max_height(ctx.available_rect().height() * 0.6)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    if pane_count == 0 {
+                                        ui.label(RichText::new("No panes").size(style::TEXT_BODY).color(colors.text_dim));
+                                    } else {
+                                        let mut global_idx: usize = 0;
+                                        for (group_name, rows) in &groups {
+                                            ui.add_space(style::SPACE_SM);
+                                            ui.label(RichText::new(group_name.as_str()).size(style::TEXT_CAPTION).color(colors.text_dim));
+                                            ui.add_space(style::SPACE_SM);
+                                            for row in rows {
+                                                let resp = render_inspector_pane_row(
+                                                    ui, row, global_idx == selected, &colors,
+                                                );
+                                                global_idx += 1;
+                                                if resp.clicked() { focus_pane = Some(row.id); }
+                                            }
                                         }
                                     }
-                                }
-                            });
-                        ui.add_space(style::SPACE_XL);
-                        ui.separator();
-                        ui.add_space(style::SPACE_MD);
-                        if render_inspector_hints(ui, pane_count, num_contexts, &colors) {
+                                });
+                            ui.add_space(style::SPACE_XL);
+                            ui.separator();
+                            ui.add_space(style::SPACE_MD);
+                        }
+                        if render_inspector_hints(ui, pane_count, num_contexts, &colors, renaming) {
                             delete_context = true;
                         }
                     });
             });
 
+        // One-shot focus: request AFTER all UI renders so we win egui's
+        // last-caller-wins focus contest. See GOTCHAS.md for the pattern.
+        if renaming && !self.inspector_rename_focus_requested {
+            let te_id = egui::Id::new("inspector_rename_input");
+            ctx.memory_mut(|m| m.request_focus(te_id));
+            if let Some(mut state) = egui::TextEdit::load_state(ctx, te_id) {
+                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(self.rename_buffer.chars().count()),
+                )));
+                state.store(ctx, te_id);
+            }
+            self.inspector_rename_focus_requested = true;
+            log::info!("ContextInspector: rename TextEdit focus requested (one-shot)");
+        }
+
+        if start_rename && !renaming {
+            self.rename_buffer = ctx_name.to_string();
+            self.inspector_renaming = true;
+            self.inspector_rename_focus_requested = false;
+            log::info!("ContextInspector: rename mode entered for context {:?}", ctx_name);
+        }
+        if commit_rename {
+            let new_name = self.rename_buffer.trim().to_string();
+            if !new_name.is_empty() {
+                log::info!(
+                    "ContextInspector: renamed context {:?} → {:?}",
+                    self.router.get(selected_ctx_idx).name,
+                    new_name
+                );
+                self.router.get_mut(selected_ctx_idx).name = new_name;
+                self.save_workspace();
+            }
+            self.inspector_renaming = false;
+            self.inspector_rename_focus_requested = false;
+        }
+        if cancel_rename {
+            self.inspector_renaming = false;
+            self.inspector_rename_focus_requested = false;
+            log::info!("ContextInspector: rename cancelled");
+        }
         if dismissed {
             self.show_context_inspector = false;
+            self.inspector_renaming = false;
+            self.inspector_rename_focus_requested = false;
             self.inspector_delete_press_count = 0;
             self.inspector_delete_last_press = None;
             log::info!("ContextInspector: closed");
@@ -2216,6 +2313,8 @@ impl PlexiApp {
             log::info!("ContextInspector: focusing pane {pid}");
             self.pane_navigate(pid);
             self.show_context_inspector = false;
+            self.inspector_renaming = false;
+            self.inspector_rename_focus_requested = false;
             self.inspector_delete_press_count = 0;
             self.inspector_delete_last_press = None;
         }
