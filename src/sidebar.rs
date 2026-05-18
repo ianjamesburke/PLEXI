@@ -1,14 +1,9 @@
 use crate::context::WindowMenuAction;
-use crate::sidebar_row::{with_alpha, SidebarAction, SidebarRow, ROW_HEIGHT};
+use crate::sidebar_row::{SidebarAction, ContextItem, PaneDots};
 use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 use egui_tiles::Tile;
 
 use crate::app::PlexiApp;
-
-const PANE_DOT_HEIGHT: f32 = 11.0;
-const PANE_DOT_RADIUS: f32 = 2.5;
-const PANE_DOT_SPACING: f32 = 8.0;
-const PANE_DOT_MAX: usize = 6;
 
 fn drop_slot_from_rects(rects: &[Rect], mouse_y: f32) -> usize {
     for (i, rect) in rects.iter().enumerate() {
@@ -106,37 +101,25 @@ impl PlexiApp {
                 None
             };
 
-            // --- Renaming: special-cased before SidebarRow path ---
+            // --- Renaming: special-cased before ContextItem path ---
             if is_renaming {
-                let origin = ui.cursor().min;
-                let row_rect = Rect::from_min_size(origin, Vec2::new(sidebar_width, ROW_HEIGHT));
-                row_rects.push(row_rect);
-                ui.allocate_space(Vec2::new(sidebar_width, ROW_HEIGHT));
-
                 let fill = if is_active { self.colors.bg_active } else { self.colors.bg_sidebar_hover };
-                ui.painter().rect_filled(row_rect, CornerRadius::ZERO, fill);
-                if is_active {
-                    ui.painter().rect_filled(
-                        Rect::from_min_size(row_rect.min, Vec2::new(3.0, ROW_HEIGHT)),
-                        CornerRadius::ZERO,
-                        self.colors.accent,
-                    );
-                }
-
+                let bg_idx = ui.painter().add(egui::Shape::Noop);
                 let te_id = egui::Id::new(("rename_ctx", i));
-                let text_rect = row_rect.shrink2(egui::vec2(20.0, 2.0));
-                ui.allocate_new_ui(
-                    egui::UiBuilder::new()
-                        .max_rect(text_rect)
-                        .layout(Layout::left_to_right(Align::Center)),
-                    |ui| {
+                let accent = self.colors.accent;
+                let sidebar_w = sidebar_width;
+                let scope = ui.scope(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.add_space(20.0);
                         let te = ui.scope(|ui| {
                             ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                            ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                            ui.visuals_mut().text_cursor.stroke.color = accent;
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.rename_buffer)
                                     .id(te_id)
-                                    .desired_width(sidebar_width - 56.0)
+                                    .desired_width(sidebar_w - 56.0)
                                     .font(egui::TextStyle::Body),
                             )
                         }).inner;
@@ -165,25 +148,23 @@ impl PlexiApp {
                                 state.store(ui.ctx(), te_id);
                             }
                         }
-                    },
-                );
+                    });
+                    ui.add_space(4.0);
+                });
+                let row_rect = scope.response.rect;
+                row_rects.push(row_rect);
+                ui.painter().set(bg_idx, egui::Shape::rect_filled(row_rect, CornerRadius::ZERO, fill));
+                if is_active {
+                    ui.painter().rect_filled(
+                        Rect::from_min_size(row_rect.min, Vec2::new(3.0, row_rect.height())),
+                        CornerRadius::ZERO,
+                        self.colors.accent,
+                    );
+                }
                 continue;
             }
 
-            // --- Normal row via SidebarRow ---
-            // Zones are declared here, before any rendering.
-            let row = SidebarRow::new(ui, sidebar_width, num_contexts > 1 && !any_dragging)
-                .active(is_active)
-                .dragging(is_dragging, any_dragging);
-
-            // Snapshot the layout for drop-indicator tracking (must be before draw()).
-            let row_full = row.layout.full;
-
-            // Prepare content data (borrows resolved before the closure).
-            let text_color = with_alpha(
-                if is_active { self.colors.text_primary } else { self.colors.text_dim },
-                if is_dragging { 0.4 } else { 1.0 },
-            );
+            // --- Normal row via ContextItem ---
             let ctx_name = self.router.get(i).name.clone();
             let ctx_depth = self.router.get(i).depth;
             let badge_count = if is_active {
@@ -191,76 +172,23 @@ impl PlexiApp {
             } else {
                 self.context_notification_count(i)
             };
-            let dim_color = self.colors.text_dim;
-            let accent_color = self.colors.accent;
+            let subtitle = self.router.get(i).root.as_ref()
+                .map(|p| p.display().to_string());
 
-            let (action, response) = row.draw(
-                ui,
-                egui::Id::new(("ctx", i)),
-                &self.colors,
-                |row_ui, _hovered| {
-                    row_ui.add_space(20.0 + ctx_depth as f32 * 12.0);
-                    if i < 9 {
-                        row_ui.label(
-                            RichText::new(format!("{}", i + 1)).size(11.0).color(dim_color),
-                        );
-                    }
-                    row_ui.add(
-                        egui::Label::new(RichText::new(&ctx_name).size(12.0).color(text_color))
-                            .selectable(false),
-                    );
-                    if badge_count > 0 {
-                        row_ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.add_space(8.0);
-                            let badge_text = if badge_count > 9 { "9+".to_string() } else { badge_count.to_string() };
-                            ui.label(RichText::new(badge_text).size(10.0).color(accent_color));
-                        });
-                    }
-                },
-            );
+            let (action, response) = ContextItem {
+                is_active,
+                is_dragging,
+                any_dragging,
+                action_enabled: num_contexts > 1 && !any_dragging,
+                ctx_depth,
+                ctx_name,
+                ctx_index: Some(i),
+                badge_count,
+                subtitle,
+                pane_dots: Some(PaneDots { count: pane_count, focused_idx: focused_dot_idx }),
+            }.draw(ui, egui::Id::new(("ctx", i)), &self.colors);
 
-            // Pane dots — shown when 2+ panes exist in this context
-            let dot_area_height = if pane_count > 1 { PANE_DOT_HEIGHT } else { 0.0 };
-            if pane_count > 1 {
-                let dots_origin = ui.cursor().min;
-                let dots_rect = Rect::from_min_size(dots_origin, Vec2::new(sidebar_width, PANE_DOT_HEIGHT));
-                ui.allocate_space(Vec2::new(sidebar_width, PANE_DOT_HEIGHT));
-
-                if is_active {
-                    ui.painter().rect_filled(dots_rect, CornerRadius::ZERO, with_alpha(self.colors.bg_active, if is_dragging { 0.4 } else { 1.0 }));
-                    ui.painter().rect_filled(
-                        Rect::from_min_size(dots_rect.min, Vec2::new(3.0, PANE_DOT_HEIGHT)),
-                        CornerRadius::ZERO,
-                        with_alpha(self.colors.accent, if is_dragging { 0.4 } else { 1.0 }),
-                    );
-                }
-
-                let indent = 20.0 + ctx_depth as f32 * 12.0;
-                let cy = dots_rect.center().y;
-                let capped = pane_count.min(PANE_DOT_MAX);
-                for dot_i in 0..capped {
-                    let cx = dots_rect.min.x + indent + (dot_i as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS;
-                    let color = if focused_dot_idx == Some(dot_i) {
-                        with_alpha(self.colors.accent, if is_dragging { 0.4 } else { 1.0 })
-                    } else {
-                        with_alpha(self.colors.text_dim, if is_dragging { 0.15 } else { 0.35 })
-                    };
-                    ui.painter().circle_filled(egui::pos2(cx, cy), PANE_DOT_RADIUS, color);
-                }
-                if pane_count > PANE_DOT_MAX {
-                    let overflow_x = dots_rect.min.x + indent + (capped as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS * 0.5;
-                    ui.painter().text(
-                        egui::pos2(overflow_x, cy),
-                        egui::Align2::LEFT_CENTER,
-                        format!("+{}", pane_count - PANE_DOT_MAX),
-                        egui::FontId::proportional(8.0),
-                        with_alpha(self.colors.text_dim, 0.5),
-                    );
-                }
-            }
-
-            let item_origin = row_full.min;
-            row_rects.push(Rect::from_min_size(item_origin, Vec2::new(sidebar_width, ROW_HEIGHT + dot_area_height)));
+            row_rects.push(response.rect);
 
             match action {
                 SidebarAction::DragStart => { self.drag_context = Some(i); }
