@@ -4,6 +4,26 @@
 
 ---
 
+## [egui] TextEdit focus in complex modal frames — last-caller-wins, use one-shot pattern
+
+`ctx.memory_mut(|m| m.request_focus(id))` and `response.request_focus()` are **last-caller-wins within a single frame**. If you call `request_focus()` on a TextEdit and then render other interactive widgets (ScrollArea, Buttons, pane rows) in the same frame after it, those later widgets can overwrite your focus request and the TextEdit never gets stable focus.
+
+**Wrong pattern** (used in `draw_rename_context_overlay` — only works because it's the sole widget in its Area):
+```rust
+if !te.has_focus() { te.request_focus(); }  // re-requested every frame — any later widget wins
+```
+
+**Correct pattern** (used in `draw_rename_pane_overlay`, now also in `draw_context_inspector`):
+1. Add a `*_focus_requested: bool` one-shot flag to `PlexiApp`.
+2. Call `ctx.memory_mut(|m| m.request_focus(te_id))` **after** all other UI in the frame completes, only once (gated on `!focus_requested`), then set `focus_requested = true`.
+3. Reset the flag when exiting the editing state (commit, cancel, dismiss).
+
+Because we call focus LAST, we win the contest regardless of what other widgets rendered earlier. Optionally, hide competing interactive elements (ScrollArea, pane rows) while editing to eliminate the contest entirely.
+
+Canonical example: `inspector_rename_focus_requested` + the one-shot block at the bottom of `draw_context_inspector` in `src/overlays.rs`.
+
+---
+
 ## [macos · rust] proc_listchildpids(NULL, 0) returns EFAULT on macOS 23.x
 
 `proc_listchildpids` with a NULL buffer and 0 size is documented to return the bytes needed (n_children × sizeof(pid_t)). On macOS 23.x (Sonoma) it returns -1 (EFAULT) instead. Any code that treats a negative return as "default busy" will show every shell as busy. Use `pgrep -P <pid>` instead — exits 0 when children exist, 1 when idle, and is reliable across all macOS versions. The 500ms cache in `shell::has_foreground_child` keeps the subprocess overhead acceptable.

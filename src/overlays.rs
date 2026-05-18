@@ -2224,40 +2224,62 @@ impl PlexiApp {
                         if want_root { open_root_overlay = true; }
                         if want_desc { open_description_overlay = true; }
                         if rename_clicked { start_rename = true; }
-                        egui::ScrollArea::vertical()
-                            .max_height(ctx.available_rect().height() * 0.6)
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| {
-                                if pane_count == 0 {
-                                    ui.label(RichText::new("No panes").size(style::TEXT_BODY).color(colors.text_dim));
-                                } else {
-                                    let mut global_idx: usize = 0;
-                                    for (group_name, rows) in &groups {
-                                        ui.add_space(style::SPACE_SM);
-                                        ui.label(RichText::new(group_name.as_str()).size(style::TEXT_CAPTION).color(colors.text_dim));
-                                        ui.add_space(style::SPACE_SM);
-                                        for row in rows {
-                                            let resp = render_inspector_pane_row(
-                                                ui, row, global_idx == selected, &colors,
-                                            );
-                                            global_idx += 1;
-                                            if resp.clicked() { focus_pane = Some(row.id); }
+                        // While renaming, hide the pane list — interactive widgets
+                        // rendered after the TextEdit can steal egui focus (last-caller-wins).
+                        // See GOTCHAS.md "egui TextEdit focus in complex frames".
+                        if !renaming {
+                            egui::ScrollArea::vertical()
+                                .max_height(ctx.available_rect().height() * 0.6)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    if pane_count == 0 {
+                                        ui.label(RichText::new("No panes").size(style::TEXT_BODY).color(colors.text_dim));
+                                    } else {
+                                        let mut global_idx: usize = 0;
+                                        for (group_name, rows) in &groups {
+                                            ui.add_space(style::SPACE_SM);
+                                            ui.label(RichText::new(group_name.as_str()).size(style::TEXT_CAPTION).color(colors.text_dim));
+                                            ui.add_space(style::SPACE_SM);
+                                            for row in rows {
+                                                let resp = render_inspector_pane_row(
+                                                    ui, row, global_idx == selected, &colors,
+                                                );
+                                                global_idx += 1;
+                                                if resp.clicked() { focus_pane = Some(row.id); }
+                                            }
                                         }
                                     }
-                                }
-                            });
-                        ui.add_space(style::SPACE_XL);
-                        ui.separator();
-                        ui.add_space(style::SPACE_MD);
+                                });
+                            ui.add_space(style::SPACE_XL);
+                            ui.separator();
+                            ui.add_space(style::SPACE_MD);
+                        }
                         if render_inspector_hints(ui, pane_count, num_contexts, &colors, renaming) {
                             delete_context = true;
                         }
                     });
             });
 
+        // One-shot focus: request AFTER all UI renders so we win egui's
+        // last-caller-wins focus contest. See GOTCHAS.md for the pattern.
+        if renaming && !self.inspector_rename_focus_requested {
+            let te_id = egui::Id::new("inspector_rename_input");
+            ctx.memory_mut(|m| m.request_focus(te_id));
+            if let Some(mut state) = egui::TextEdit::load_state(ctx, te_id) {
+                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(self.rename_buffer.chars().count()),
+                )));
+                state.store(ctx, te_id);
+            }
+            self.inspector_rename_focus_requested = true;
+            log::info!("ContextInspector: rename TextEdit focus requested (one-shot)");
+        }
+
         if start_rename && !renaming {
             self.rename_buffer = ctx_name.to_string();
             self.inspector_renaming = true;
+            self.inspector_rename_focus_requested = false;
             log::info!("ContextInspector: rename mode entered for context {:?}", ctx_name);
         }
         if commit_rename {
@@ -2272,14 +2294,17 @@ impl PlexiApp {
                 self.save_workspace();
             }
             self.inspector_renaming = false;
+            self.inspector_rename_focus_requested = false;
         }
         if cancel_rename {
             self.inspector_renaming = false;
+            self.inspector_rename_focus_requested = false;
             log::info!("ContextInspector: rename cancelled");
         }
         if dismissed {
             self.show_context_inspector = false;
             self.inspector_renaming = false;
+            self.inspector_rename_focus_requested = false;
             self.inspector_delete_press_count = 0;
             self.inspector_delete_last_press = None;
             log::info!("ContextInspector: closed");
@@ -2289,6 +2314,7 @@ impl PlexiApp {
             self.pane_navigate(pid);
             self.show_context_inspector = false;
             self.inspector_renaming = false;
+            self.inspector_rename_focus_requested = false;
             self.inspector_delete_press_count = 0;
             self.inspector_delete_last_press = None;
         }
