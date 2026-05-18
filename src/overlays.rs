@@ -202,9 +202,11 @@ fn render_inspector_header(
     ui: &mut egui::Ui,
     ctx_name: &str,
     ctx_root: &Option<std::path::PathBuf>,
+    ctx_description: &Option<String>,
     colors: &Colors,
-) -> bool {
+) -> (bool, bool) {
     let mut open_root_overlay = false;
+    let mut open_description_overlay = false;
     ui.label(
         RichText::new(ctx_name)
             .size(style::TEXT_TITLE_XL)
@@ -251,10 +253,48 @@ fn render_inspector_header(
             open_root_overlay = true;
         }
     }
+    // Description row
+    ui.add_space(style::SPACE_SM);
+    if let Some(desc) = ctx_description {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(desc.as_str()).size(style::TEXT_CAPTION).color(colors.text_dim));
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("\u{270e}")
+                            .size(style::TEXT_CAPTION)
+                            .color(colors.text_dim),
+                    )
+                    .frame(false),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Edit description")
+                .clicked()
+            {
+                open_description_overlay = true;
+            }
+        });
+    } else {
+        if ui
+            .add(
+                egui::Button::new(
+                    RichText::new("Add description\u{2026}")
+                        .size(style::TEXT_CAPTION)
+                        .color(colors.text_primary),
+                )
+                .frame(false),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("Add a description for this context")
+            .clicked()
+        {
+            open_description_overlay = true;
+        }
+    }
     ui.add_space(style::SPACE_XL);
     ui.label(RichText::new("Panes").size(style::TEXT_CAPTION).color(colors.text_dim).strong());
     ui.add_space(style::SPACE_SM);
-    open_root_overlay
+    (open_root_overlay, open_description_overlay)
 }
 
 fn render_inspector_hints(
@@ -2035,6 +2075,7 @@ impl PlexiApp {
         let mut focus_pane: Option<PaneId> = None;
         let mut delete_context = false;
         let mut open_root_overlay = false;
+        let mut open_description_overlay = false;
 
         let num_contexts = self.router.len();
         let (nav_down, nav_up, enter_pressed, backspace_pressed, cmd_w_pressed) = ctx.input_mut(|i| {
@@ -2063,6 +2104,7 @@ impl PlexiApp {
             .unwrap_or_else(|| self.router.active_idx());
         let ctx_name = self.router.get(selected_ctx_idx).name.clone();
         let ctx_root = self.router.get(selected_ctx_idx).root.clone();
+        let ctx_description = self.router.get(selected_ctx_idx).description.clone();
 
         if nav_down && pane_count > 0 {
             self.inspector_selected_pane = (self.inspector_selected_pane + 1) % pane_count;
@@ -2129,9 +2171,9 @@ impl PlexiApp {
                     ))
                     .show(ui, |ui| {
                         ui.set_width(style::MODAL_WIDTH_MD);
-                        if render_inspector_header(ui, &ctx_name, &ctx_root, &colors) {
-                            open_root_overlay = true;
-                        }
+                        let (want_root, want_desc) = render_inspector_header(ui, &ctx_name, &ctx_root, &ctx_description, &colors);
+                        if want_root { open_root_overlay = true; }
+                        if want_desc { open_description_overlay = true; }
                         egui::ScrollArea::vertical()
                             .max_height(ctx.available_rect().height() * 0.6)
                             .auto_shrink([false, true])
@@ -2215,6 +2257,16 @@ impl PlexiApp {
                 crate::app::OverlayTarget::ContextRoot(idx),
             ));
             // Close the inspector so the text overlay takes focus.
+            self.show_context_inspector = false;
+        }
+        if open_description_overlay {
+            let idx = selected_ctx_idx;
+            let existing = self.router.get(idx).description.clone().unwrap_or_default();
+            log::info!("ContextInspector: opening description overlay for ctx_idx={idx}");
+            self.editing_description = Some(idx);
+            self.description_buffer = existing;
+            self.description_focus_requested = false;
+            self.push_focus_layer(crate::app::FocusLayer::ContextDescription);
             self.show_context_inspector = false;
         }
 
