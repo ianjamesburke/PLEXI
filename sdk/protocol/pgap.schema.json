@@ -563,7 +563,7 @@
           "type": "object"
         },
         {
-          "description": "Request the host to spawn a new app pane. Requires `spawn.app` capability.\n`layout`: \"split_v\" (default, new pane below), \"split_h\" (new pane right),\n          or \"overlay\" (full pane, no split).\n`args`: argv passed to the child process (appended after the binary path).\nHost responds with `PlexiEvent::AppSpawned { pane_id }` on success.",
+          "description": "Request the host to spawn a new app pane. Requires `spawn.app` capability.\n`layout`: \"split_h\" (new pane right), \"split_v\" (default, new pane below),\n          or \"overlay\" (full pane, no split).\n`args`: argv passed to the child process (appended after the binary path).\nHost responds with `PlexiEvent::AppSpawned { pane_id }` on success.",
           "properties": {
             "args": {
               "default": [],
@@ -594,7 +594,7 @@
           "type": "object"
         },
         {
-          "description": "Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps.\nRequires `panes.spawn` capability.\n`layout`: one of \"split_v\", \"split_h\", \"split_above\", \"split_left\", \"overlay\",\n  \"new_window\" (terminal only — creates a new spatial grid window to the right\n  of the current context row instead of splitting the active pane),\n  \"tab\" (terminal only — adds a new tab alongside the focused pane, wrapping\n  both in a Tabs container if needed; use after `pane focus` to target a window).\n  \"overlay_pane\" and \"background\" are reserved but not yet implemented.\n`pipe_id`: when set, the host appends `--pipe=<pipe_id>` to args before launch\n  so the spawned app can reply via PipeSend on completion.\nHost responds: `PlexiEvent::PaneSpawned { pane_id }` on success,\n              `PlexiEvent::PaneSpawnError { reason }` on failure.",
+          "description": "Unified pane spawn primitive (#592). Supersedes SpawnApp for new apps.\nRequires `panes.spawn` capability.\n`layout`: one of \"split_h\", \"split_right\", \"split_v\", \"split_below\", \"split_above\", \"split_left\", \"overlay\",\n  \"new_window\" (terminal only — creates a new spatial grid window to the right\n  of the current context row instead of splitting the active pane),\n  \"tab\" (terminal only — adds a new tab alongside the focused pane, wrapping\n  both in a Tabs container if needed; use after `pane focus` to target a window).\n  \"overlay_pane\" and \"background\" are reserved but not yet implemented.\n`pipe_id`: when set, the host appends `--pipe=<pipe_id>` to args before launch\n  so the spawned app can reply via PipeSend on completion.\nHost responds: `PlexiEvent::PaneSpawned { pane_id }` on success,\n              `PlexiEvent::PaneSpawnError { reason }` on failure.",
           "properties": {
             "args": {
               "default": [],
@@ -628,6 +628,13 @@
             },
             "no_focus": {
               "type": "boolean"
+            },
+            "path": {
+              "description": "When set, the host launches the app directly from this filesystem path\nrather than looking it up in the registry by type_id.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "pipe_id": {
               "type": [
@@ -824,6 +831,10 @@
         {
           "description": "Read the last N lines from a terminal pane's PTY scrollback buffer.\nSent by `plexi pane capture`. Host writes a JSON array of strings to `response_file`.",
           "properties": {
+            "full_output": {
+              "description": "When true, preserve trailing empty lines. Defaults to false (strip them).",
+              "type": "boolean"
+            },
             "lines": {
               "description": "Number of lines to capture from the end of the scrollback.",
               "format": "uint",
@@ -913,6 +924,23 @@
           "required": [
             "type",
             "root"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Set/update the description of the active context. Sent by `plexi context describe`.",
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "type": {
+              "const": "set_context_description",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "description"
           ],
           "type": "object"
         },
@@ -1812,6 +1840,29 @@
             "font_size"
           ],
           "type": "object"
+        },
+        {
+          "description": "Override the manifest-declared minimum size at runtime.\nStored by the host and used as the live effective minimum from this\npoint forward, superseding the manifest `[launch]` values.",
+          "properties": {
+            "height": {
+              "format": "float",
+              "type": "number"
+            },
+            "type": {
+              "const": "set_min_size",
+              "type": "string"
+            },
+            "width": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "width",
+            "height"
+          ],
+          "type": "object"
         }
       ],
       "title": "ControlCommand"
@@ -1950,6 +2001,12 @@
               },
               "type": "array"
             },
+            "compact_threshold": {
+              "default": 280.0,
+              "description": "compact/regular threshold sent to SDK so ctx.size_class matches host behaviour.\nDefaults match SDK constants COMPACT_DEFAULT (280) / REGULAR_DEFAULT (480).",
+              "format": "float",
+              "type": "number"
+            },
             "feature_flags": {
               "description": "Additive feature flags. Unknown flags are ignored.\ne.g. [\"media_v1\", \"pane_groups_v1\"]",
               "items": {
@@ -1960,6 +2017,11 @@
             "protocol": {
               "description": "Protocol version string, e.g. \"pgap/3\". App must refuse unknown versions.",
               "type": "string"
+            },
+            "regular_threshold": {
+              "default": 480.0,
+              "format": "float",
+              "type": "number"
             },
             "type": {
               "const": "init",

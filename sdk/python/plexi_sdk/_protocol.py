@@ -31,18 +31,3 @@ class MidiDeviceList:
     """Result of Emitter.list_midi_devices."""
     inputs: list
     outputs: list
-
-
-@dataclass
-class AudioDeviceInfo:
-    """One audio device. Mirrors AudioDeviceWire in the Rust protocol."""
-    id: str
-    name: str
-    default: bool
-
-
-@dataclass
-class AudioDeviceList:
-    """Result of Emitter.list_audio_devices."""
-    inputs: list
-    outputs: list

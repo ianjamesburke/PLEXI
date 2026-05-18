@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.444"
+verified_version: "0.0.449"
 order: 7
 ---
 
@@ -431,6 +431,7 @@ Manage the active context (the folder and project scope tied to the current pane
 | `open` | Switch the current pane to a context at the given path |
 | `set-root` | Change the root folder for the active context |
 | `current` | Print the id and name of the current pane's context as JSON |
+| `describe` | Set the description for the active context |
 | `zoom` | Zoom into a sub-context by its numeric context_id |
 | `zoom-out` | Zoom out of the current sub-context to the parent |
 
@@ -463,6 +464,14 @@ Change the root folder for the active context
 ### `plexi context current`
 
 Print the id and name of the current pane's context as JSON
+
+### `plexi context describe`
+
+Set the description for the active context
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<text>` | string | yes | Description text |
 
 ### `plexi context zoom`
 
