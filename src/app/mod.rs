@@ -194,6 +194,7 @@ pub struct PlexiApp {
     pub(crate) pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
     pub(crate) pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
     pub(crate) last_notify_poll: std::time::Instant,
+    pub(crate) scheduler: crate::scheduler::Scheduler,
     pub(crate) theme: TerminalTheme,
     pub(crate) colors: Colors,
     pub(crate) default_font_size: f32,
@@ -736,6 +737,7 @@ impl PlexiApp {
                     pane_focus_future: Vec::new(),
                     navigating_history: false,
                     last_notify_poll: std::time::Instant::now(),
+                    scheduler: crate::scheduler::Scheduler::new(),
                     host,
                     host_services: crate::host::services::HostServices::new(),
                     background_apps: HashMap::new(),
@@ -854,6 +856,7 @@ impl PlexiApp {
             pane_focus_future: Vec::new(),
             navigating_history: false,
             last_notify_poll: std::time::Instant::now(),
+            scheduler: crate::scheduler::Scheduler::new(),
             host: crate::host::model::HostModel::new(),
             host_services: crate::host::services::HostServices::new(),
             background_apps: HashMap::new(),
@@ -902,6 +905,7 @@ impl PlexiApp {
             pty_event_rx: rx,
             pty_event_tx: tx,
             last_notify_poll: std::time::Instant::now(),
+            scheduler: crate::scheduler::Scheduler::new(),
             theme: theme::terminal_theme(&theme_cfg),
             colors,
             default_font_size: theme::FONT_SIZE,
@@ -1533,6 +1537,70 @@ impl PlexiApp {
         }
     }
 
+    fn tick_scheduler(&mut self) {
+        // Load routines from every context that has a root set
+        let roots: Vec<std::path::PathBuf> = self.router.iter()
+            .filter_map(|ctx| ctx.root.clone())
+            .collect();
+        for root in &roots {
+            self.scheduler.load_from_root(root);
+        }
+
+        let now = chrono::Local::now();
+        let due = self.scheduler.due_routines(now);
+        for idx in due {
+            let (name, command, context_name, ephemeral) = {
+                let entry = &self.scheduler.entries[idx];
+                (
+                    entry.routine.name.clone(),
+                    entry.routine.command.clone(),
+                    entry.routine.context.clone(),
+                    entry.routine.ephemeral,
+                )
+            };
+            self.scheduler.mark_fired(idx, now);
+            self.fire_routine(&name, &command, &context_name, ephemeral);
+        }
+    }
+
+    fn fire_routine(&mut self, name: &str, command: &str, context_name: &str, ephemeral: bool) {
+        log::info!("scheduler: routine '{}' fired context='{}' ephemeral={}", name, context_name, ephemeral);
+
+        // Find target context index
+        let target_ctx_idx = if context_name.is_empty() {
+            self.router.active_idx()
+        } else {
+            match self.router.position(|c| c.name == context_name) {
+                Some(idx) => idx,
+                None => {
+                    log::warn!("scheduler: routine '{}' — context '{}' not found, skipping", name, context_name);
+                    return;
+                }
+            }
+        };
+
+        let original_ctx_idx = self.router.active_idx();
+        let original_active_win = self.active_window;
+
+        // Temporarily switch to target context's window if different from current
+        if target_ctx_idx != original_ctx_idx {
+            self.router.set_active(target_ctx_idx);
+            let target_ctx_id = self.router.get(target_ctx_idx).context_id;
+            if let Some(win_idx) = self.windows.iter().position(|w| w.context_id == target_ctx_id) {
+                self.active_window = win_idx;
+            }
+        }
+
+        let cwd = self.router.get(target_ctx_idx).root.clone();
+        self.split_focused(false, Some(command), ephemeral, cwd);
+
+        // Restore original context
+        if target_ctx_idx != original_ctx_idx {
+            self.router.set_active(original_ctx_idx);
+            self.active_window = original_active_win;
+        }
+    }
+
     fn drain_spawn_queue(&mut self) {
         let queue_dir = crate::config::config_dir().join("spawn-queue");
         let Ok(entries) = std::fs::read_dir(&queue_dir) else {
@@ -1914,6 +1982,7 @@ impl eframe::App for PlexiApp {
         if self.last_notify_poll.elapsed() >= std::time::Duration::from_secs(1) {
             self.last_notify_poll = std::time::Instant::now();
             self.drain_spawn_queue();
+            self.tick_scheduler();
             self.tick_notification_timeouts();
         }
         self.drain_pane_cmd_channel();
