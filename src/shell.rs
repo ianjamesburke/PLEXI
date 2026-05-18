@@ -5,6 +5,64 @@ use std::process::Command;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+// ---------------------------------------------------------------------------
+// Foreground child detection — used by the context inspector for idle/busy status
+// ---------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+extern "C" {
+    fn proc_listchildpids(
+        ppid: libc::c_int,
+        buffer: *mut libc::c_void,
+        buffersize: libc::c_int,
+    ) -> libc::c_int;
+}
+
+static BUSY_CACHE: LazyLock<Mutex<HashMap<u32, (bool, Instant)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+const BUSY_CACHE_TTL: Duration = Duration::from_millis(500);
+
+/// Returns true if `pid` has at least one immediate child process.
+/// Cached at 500 ms so the inspector can call it per-pane without per-frame syscall cost.
+pub fn has_foreground_child(pid: u32) -> bool {
+    if let Ok(cache) = BUSY_CACHE.lock() {
+        if let Some((busy, ts)) = cache.get(&pid) {
+            if ts.elapsed() < BUSY_CACHE_TTL {
+                return *busy;
+            }
+        }
+    }
+    let busy = check_has_children(pid);
+    log::debug!("shell::has_foreground_child: pid={pid} → busy={busy}");
+    if let Ok(mut cache) = BUSY_CACHE.lock() {
+        cache.insert(pid, (busy, Instant::now()));
+    }
+    busy
+}
+
+fn check_has_children(pid: u32) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // proc_listchildpids with null buffer returns n_children * sizeof(pid_t) bytes needed.
+        // A positive return means at least one child exists.
+        let ret = unsafe {
+            proc_listchildpids(pid as libc::c_int, std::ptr::null_mut(), 0)
+        };
+        ret > 0
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 pub fn detect_shell() -> String {
     if let Ok(shell) = std::env::var("SHELL") {
         if Path::new(&shell).exists() {
