@@ -126,7 +126,12 @@ def _build_dag(events: list[dict]) -> tuple[dict[str, FlowNode], list[FlowEdge]]
     color_counter = [0]
 
     def _color(path: str) -> int:
-        top = path.replace(HOME, "").strip("/").split("/")[0] or "~"
+        if path == HOME:
+            top = "~"
+        elif path.startswith(HOME + "/"):
+            top = path[len(HOME) + 1:].split("/")[0] or "~"
+        else:
+            top = path.lstrip("/").split("/")[0] or "~"
         if top not in color_map:
             color_map[top] = color_counter[0] % len(PALETTE)
             color_counter[0] += 1
