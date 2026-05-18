@@ -85,6 +85,10 @@ pub struct PlexiBehavior<'a> {
     pub unfocused_opacity: Option<f32>,
     /// Preview data for SubContext tiles.
     pub sub_context_info: HashMap<PaneId, SubContextPreview>,
+    /// True when an overlay or modal has captured keyboard input this frame.
+    /// Prevents terminal panes from calling `request_focus()` and stealing
+    /// egui focus from the active overlay (egui resolves focus last-caller-wins).
+    pub modal_open: bool,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -110,7 +114,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             self.new_focused = Some(tile_id);
         }
 
-        let is_focused = self.focused_tile == Some(tile_id);
+        let is_focused = self.focused_tile == Some(tile_id) && !self.modal_open;
 
         if !is_focused {
             if let Some(opacity) = self.unfocused_opacity {
