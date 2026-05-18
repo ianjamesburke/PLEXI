@@ -160,6 +160,7 @@ mod tests {
             name: format!("ctx{id}"),
             path: PathBuf::from("/tmp"),
             root: None,
+            description: None,
             context_id: id,
             parent_id,
             depth,

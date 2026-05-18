@@ -225,6 +225,10 @@ impl PlexiApp {
                         menu_action = Some((i, WindowMenuAction::Rename));
                         ui.close_menu();
                     }
+                    if ui.button("Edit Description").clicked() {
+                        menu_action = Some((i, WindowMenuAction::EditDescription));
+                        ui.close_menu();
+                    }
                     ui.separator();
                     if i > 0 {
                         if ui.button("Move to Top").clicked() { menu_action = Some((i, WindowMenuAction::MoveToTop)); ui.close_menu(); }
@@ -313,6 +317,13 @@ impl PlexiApp {
                 WindowMenuAction::Rename => {
                     self.renaming_window = Some(i);
                     self.rename_buffer = self.router.get(i).name.clone();
+                }
+                WindowMenuAction::EditDescription => {
+                    log::info!("sidebar: edit context description ctx_idx={i}");
+                    self.editing_description = Some(i);
+                    self.description_buffer = self.router.get(i).description.clone().unwrap_or_default();
+                    self.description_focus_requested = false;
+                    self.push_focus_layer(crate::app::FocusLayer::ContextDescription);
                 }
                 WindowMenuAction::MoveToTop => {
                     self.renaming_window = None;

@@ -517,6 +517,11 @@ pub enum ContextCmd {
     },
     /// Print the id and name of the current pane's context as JSON.
     Current,
+    /// Set the description for the active context
+    Describe {
+        /// Description text
+        text: String,
+    },
     /// Zoom into a sub-context by its numeric context_id.
     Zoom {
         context_id: u64,

@@ -202,9 +202,11 @@ fn render_inspector_header(
     ui: &mut egui::Ui,
     ctx_name: &str,
     ctx_root: &Option<std::path::PathBuf>,
+    ctx_description: &Option<String>,
     colors: &Colors,
-) -> bool {
+) -> (bool, bool) {
     let mut open_root_overlay = false;
+    let mut open_description_overlay = false;
     ui.label(
         RichText::new(ctx_name)
             .size(style::TEXT_TITLE_XL)
@@ -251,10 +253,48 @@ fn render_inspector_header(
             open_root_overlay = true;
         }
     }
+    // Description row
+    ui.add_space(style::SPACE_SM);
+    if let Some(desc) = ctx_description {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(desc.as_str()).size(style::TEXT_CAPTION).color(colors.text_dim));
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("\u{270e}")
+                            .size(style::TEXT_CAPTION)
+                            .color(colors.text_dim),
+                    )
+                    .frame(false),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Edit description")
+                .clicked()
+            {
+                open_description_overlay = true;
+            }
+        });
+    } else {
+        if ui
+            .add(
+                egui::Button::new(
+                    RichText::new("Add description\u{2026}")
+                        .size(style::TEXT_CAPTION)
+                        .color(colors.text_primary),
+                )
+                .frame(false),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("Add a description for this context")
+            .clicked()
+        {
+            open_description_overlay = true;
+        }
+    }
     ui.add_space(style::SPACE_XL);
     ui.label(RichText::new("Panes").size(style::TEXT_CAPTION).color(colors.text_dim).strong());
     ui.add_space(style::SPACE_SM);
-    open_root_overlay
+    (open_root_overlay, open_description_overlay)
 }
 
 fn render_inspector_hints(
@@ -1104,6 +1144,99 @@ impl PlexiApp {
         }
     }
 
+    /// Modal for editing a context's description. Multiline text input with
+    /// Cmd+Enter to save, Esc to cancel.
+    pub(crate) fn draw_edit_description_overlay(&mut self, ctx: &egui::Context) {
+        let ctx_idx = match self.editing_description {
+            Some(idx) if idx < self.router.len() => idx,
+            _ => {
+                self.editing_description = None;
+                self.pop_focus_layer(&crate::app::FocusLayer::ContextDescription);
+                return;
+            }
+        };
+
+        let (commit, cancel) = ctx.input_mut(|i| {
+            let cmd_enter = i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter);
+            let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            (cmd_enter, esc)
+        });
+
+        egui::Area::new(egui::Id::new("edit_description_overlay"))
+            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(self.colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, self.colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(16, 12))
+                    .show(ui, |ui| {
+                        ui.set_width(MODAL_WIDTH);
+                        let ctx_name = self.router.get(ctx_idx).name.clone();
+                        ui.label(
+                            RichText::new(format!("Description for \"{}\"", ctx_name))
+                                .size(13.0)
+                                .color(self.colors.text_primary)
+                                .strong(),
+                        );
+                        ui.add_space(6.0);
+
+                        let te_id = egui::Id::new("edit_description_input");
+                        let te = ui.scope(|ui| {
+                            ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                            ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                            ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
+                            ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, self.colors.accent);
+                            ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.colors.border);
+                            ui.add(
+                                egui::TextEdit::multiline(&mut self.description_buffer)
+                                    .id(te_id)
+                                    .desired_width(MODAL_WIDTH)
+                                    .desired_rows(3)
+                                    .hint_text("What are you working on in this context?")
+                                    .font(egui::TextStyle::Body)
+                                    .margin(egui::Margin::symmetric(8, 5)),
+                            )
+                        }).inner;
+
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new("Cmd+Enter to save  ·  Esc to cancel")
+                                .size(11.0)
+                                .color(self.colors.text_dim),
+                        );
+
+                        if !self.description_focus_requested {
+                            te.request_focus();
+                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
+                                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
+                                    egui::text::CCursor::new(0),
+                                    egui::text::CCursor::new(self.description_buffer.len()),
+                                )));
+                                state.store(ui.ctx(), te_id);
+                            }
+                            self.description_focus_requested = true;
+                        }
+                    });
+            });
+
+        if cancel {
+            log::info!("context_description: edit cancelled ctx_idx={ctx_idx}");
+            self.editing_description = None;
+            self.description_focus_requested = false;
+            self.pop_focus_layer(&crate::app::FocusLayer::ContextDescription);
+        } else if commit {
+            let new_desc = self.description_buffer.trim().to_string();
+            self.router.get_mut(ctx_idx).description = if new_desc.is_empty() { None } else { Some(new_desc) };
+            self.editing_description = None;
+            self.description_focus_requested = false;
+            self.pop_focus_layer(&crate::app::FocusLayer::ContextDescription);
+            self.save_workspace();
+            log::info!("context_description: updated ctx_idx={ctx_idx}");
+        }
+    }
+
     /// Quick note compose phase: full-screen scrim + centered text input.
     pub(crate) fn draw_quick_note_modal(&mut self, ctx: &egui::Context) {
         use crate::style;
@@ -1943,6 +2076,7 @@ impl PlexiApp {
         let mut focus_pane: Option<PaneId> = None;
         let mut delete_context = false;
         let mut open_root_overlay = false;
+        let mut open_description_overlay = false;
 
         let num_contexts = self.router.len();
         let (nav_down, nav_up, enter_pressed, backspace_pressed, cmd_w_pressed) = ctx.input_mut(|i| {
@@ -1971,6 +2105,7 @@ impl PlexiApp {
             .unwrap_or_else(|| self.router.active_idx());
         let ctx_name = self.router.get(selected_ctx_idx).name.clone();
         let ctx_root = self.router.get(selected_ctx_idx).root.clone();
+        let ctx_description = self.router.get(selected_ctx_idx).description.clone();
 
         if nav_down && pane_count > 0 {
             self.inspector_selected_pane = (self.inspector_selected_pane + 1) % pane_count;
@@ -2037,9 +2172,9 @@ impl PlexiApp {
                     ))
                     .show(ui, |ui| {
                         ui.set_width(style::MODAL_WIDTH_MD);
-                        if render_inspector_header(ui, &ctx_name, &ctx_root, &colors) {
-                            open_root_overlay = true;
-                        }
+                        let (want_root, want_desc) = render_inspector_header(ui, &ctx_name, &ctx_root, &ctx_description, &colors);
+                        if want_root { open_root_overlay = true; }
+                        if want_desc { open_description_overlay = true; }
                         egui::ScrollArea::vertical()
                             .max_height(ctx.available_rect().height() * 0.6)
                             .auto_shrink([false, true])
@@ -2123,6 +2258,16 @@ impl PlexiApp {
                 crate::app::OverlayTarget::ContextRoot(idx),
             ));
             // Close the inspector so the text overlay takes focus.
+            self.show_context_inspector = false;
+        }
+        if open_description_overlay {
+            let idx = selected_ctx_idx;
+            let existing = self.router.get(idx).description.clone().unwrap_or_default();
+            log::info!("ContextInspector: opening description overlay for ctx_idx={idx}");
+            self.editing_description = Some(idx);
+            self.description_buffer = existing;
+            self.description_focus_requested = false;
+            self.push_focus_layer(crate::app::FocusLayer::ContextDescription);
             self.show_context_inspector = false;
         }
 

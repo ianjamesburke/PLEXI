@@ -45,6 +45,7 @@ pub(crate) struct QuickNoteCtx {
     pub workspace_root: Option<std::path::PathBuf>,
     pub context: String,
     pub context_root: Option<std::path::PathBuf>,
+    pub context_description: Option<String>,
 }
 
 /// Which layer currently owns keyboard input.
@@ -69,6 +70,8 @@ pub(crate) enum FocusLayer {
     /// sidebar is hidden. Mirrors the inline sidebar rename but as a centred
     /// overlay so the terminal is immediately usable after dismissal.
     ContextRename,
+    /// Context description editor overlay.
+    ContextDescription,
     /// Quick note compose modal (text input phase).
     QuickNote,
     /// Quick note destination picker.
@@ -275,6 +278,9 @@ pub struct PlexiApp {
     pub(crate) key_bindings: crate::keys::KeyBindings,
     pub(crate) renaming_window: Option<usize>,
     pub(crate) rename_buffer: String,
+    pub(crate) editing_description: Option<usize>,
+    pub(crate) description_buffer: String,
+    pub(crate) description_focus_requested: bool,
     pub(crate) drag_context: Option<usize>,
     pub(crate) registry: AppRegistry,
     pub(crate) show_command_palette: bool,
@@ -685,6 +691,9 @@ impl PlexiApp {
             let ctx_name_map: std::collections::HashMap<u64, String> = ws.contexts.iter()
                 .map(|c| (c.context_id, c.name.clone()))
                 .collect();
+            let ctx_desc_map: std::collections::HashMap<u64, String> = ws.contexts.iter()
+                .filter_map(|c| c.description.as_ref().map(|d| (c.context_id, d.clone())))
+                .collect();
             for saved_win in ws.windows {
                 let mut panes = HashMap::new();
                 for saved_pane in &saved_win.panes {
@@ -773,7 +782,8 @@ impl PlexiApp {
 
                     if pane_entry.is_none() {
                         let ctx_name = ctx_name_map.get(&saved_win.context_id).cloned().unwrap_or_default();
-                        let settings = Self::make_backend_settings(saved_pane.id, cwd, &colors, saved_win.context_id, &ctx_name);
+                        let ctx_desc = ctx_desc_map.get(&saved_win.context_id).cloned().unwrap_or_default();
+                        let settings = Self::make_backend_settings(saved_pane.id, cwd, &colors, saved_win.context_id, &ctx_name, &ctx_desc);
                         if let Some(mut pane) = TerminalPane::new(
                             saved_pane.id,
                             cc.egui_ctx.clone(),
@@ -834,6 +844,7 @@ impl PlexiApp {
                         name: saved_ctx.name,
                         path: saved_ctx.path,
                         root: saved_ctx.root,
+                        description: saved_ctx.description,
                         context_id: saved_ctx.context_id,
                         parent_id: saved_ctx.parent_id,
                         depth: saved_ctx.depth,
@@ -878,6 +889,9 @@ impl PlexiApp {
                     frame_tick: frame_tick.clone(),
                     renaming_window: None,
                     rename_buffer: String::new(),
+                    editing_description: None,
+                    description_buffer: String::new(),
+                    description_focus_requested: false,
                     drag_context: None,
                     show_command_palette: false,
                     palette_query: String::new(),
@@ -958,6 +972,7 @@ impl PlexiApp {
                     name: "Default".into(),
                     path: path.clone(),
                     root: None,
+                    description: None,
                     context_id: 1,
                     parent_id: None,
                     depth: 0,
@@ -998,6 +1013,9 @@ impl PlexiApp {
             frame_tick,
             renaming_window: None,
             rename_buffer: String::new(),
+            editing_description: None,
+            description_buffer: String::new(),
+            description_focus_requested: false,
             drag_context: None,
             show_command_palette: false,
             palette_query: String::new(),
@@ -1090,6 +1108,7 @@ impl PlexiApp {
                     name: "Test".into(),
                     path: path.clone(),
                     root: None,
+                    description: None,
                     context_id: 1,
                     parent_id: None,
                     depth: 0,
@@ -1128,6 +1147,9 @@ impl PlexiApp {
             frame_tick,
             renaming_window: None,
             rename_buffer: String::new(),
+            editing_description: None,
+            description_buffer: String::new(),
+            description_focus_requested: false,
             drag_context: None,
             show_command_palette: false,
             palette_query: String::new(),
@@ -1242,6 +1264,7 @@ impl PlexiApp {
         colors: &Colors,
         context_id: u64,
         context_name: &str,
+        context_description: &str,
     ) -> BackendSettings {
         log::info!("make_backend_settings: pane_id={pane_id} context_id={context_id} context_name={context_name:?}");
         let mut env = shell::build_env();
@@ -1253,6 +1276,7 @@ impl PlexiApp {
         env.insert("PLEXI_SOCKET".into(), socket);
         env.insert("PLEXI_CONTEXT_ID".into(), context_id.to_string());
         env.insert("PLEXI_CONTEXT_NAME".into(), context_name.to_string());
+        env.insert("PLEXI_CONTEXT_DESCRIPTION".into(), context_description.to_string());
         BackendSettings {
             shell: shell::detect_shell(),
             args: vec!["-l".to_string()],
@@ -1266,6 +1290,13 @@ impl PlexiApp {
         self.router.iter()
             .find(|c| c.context_id == context_id)
             .map(|c| c.name.clone())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn context_description_for(&self, context_id: u64) -> String {
+        self.router.iter()
+            .find(|c| c.context_id == context_id)
+            .and_then(|c| c.description.clone())
             .unwrap_or_default()
     }
 
@@ -1683,6 +1714,13 @@ impl PlexiApp {
                 crate::app_protocol::AppRequest::SetContextRoot { root } => {
                     log::info!("pane_ipc: kind=set_context_root root={}", root.display());
                     self.set_active_context_root(root.clone());
+                    self.save_workspace();
+                }
+                crate::app_protocol::AppRequest::SetContextDescription { description } => {
+                    log::info!("pane_ipc: kind=set_context_description");
+                    let idx = self.router.active_idx();
+                    let trimmed = description.trim().to_string();
+                    self.router.get_mut(idx).description = if trimmed.is_empty() { None } else { Some(trimmed) };
                     self.save_workspace();
                 }
                 crate::app_protocol::AppRequest::ZoomIntoContext { context_id } => {
@@ -2215,6 +2253,9 @@ impl eframe::App for PlexiApp {
                 }
                 Some(FocusLayer::ContextRename) => {
                     self.draw_rename_context_overlay(ctx);
+                }
+                Some(FocusLayer::ContextDescription) => {
+                    self.draw_edit_description_overlay(ctx);
                 }
                 Some(FocusLayer::QuickNote) => {
                     self.draw_quick_note_modal(ctx);
@@ -4008,6 +4049,7 @@ impl PlexiApp {
         };
         let Some(pane) = win.panes.get(&pane_id) else { return };
         let context_name = self.context_name_for(win.context_id);
+        let context_description = self.context_description_for(win.context_id);
 
         let (cwd, pty_title, pane_name, app_type_id) = match pane {
             crate::pane::Pane::Terminal(t) => {
@@ -4031,6 +4073,7 @@ impl PlexiApp {
         crate::event_log::emit(crate::event_log::HostEvent::FocusChanged {
             pane_id,
             context_name,
+            context_description,
             cwd,
             pty_title,
             pane_name,
@@ -4051,6 +4094,7 @@ impl PlexiApp {
                 | Some(FocusLayer::CommandPalette)
                 | Some(FocusLayer::RenamePane)
                 | Some(FocusLayer::ContextRename)
+                | Some(FocusLayer::ContextDescription)
                 | Some(FocusLayer::QuickNote)
                 | Some(FocusLayer::QuickNoteDestination)
                 | Some(FocusLayer::QuickNoteSubDestination(_))

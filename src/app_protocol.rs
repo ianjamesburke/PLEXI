@@ -1124,6 +1124,10 @@ pub enum AppRequest {
     SetContextRoot {
         root: std::path::PathBuf,
     },
+    /// Set/update the description of the active context. Sent by `plexi context describe`.
+    SetContextDescription {
+        description: String,
+    },
     /// Zoom into a sub-context. Pushes depth stack. Sent by `plexi context zoom`.
     ZoomIntoContext {
         context_id: u64,
@@ -2893,5 +2897,28 @@ mod tests {
         }
         let serialised = serde_json::to_string(&DrawCommand::Control(ControlCommand::SetMinSize { width: 200.0, height: 100.0 })).unwrap();
         assert!(serialised.contains(r#""type":"set_min_size""#), "got: {serialised}");
+    }
+
+    #[test]
+    fn set_context_description_round_trips_serde() {
+        let json = r#"{"type":"set_context_description","description":"Main project workspace"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Host(AppRequest::SetContextDescription { description }) => {
+                assert_eq!(description, "Main project workspace");
+            }
+            other => panic!("expected SetContextDescription, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"set_context_description""#),
+            "wire tag missing: {serialised}"
+        );
+
+        let bad = r#"{"type":"set_context_description"}"#;
+        assert!(
+            serde_json::from_str::<DrawCommand>(bad).is_err(),
+            "must fail without required description field"
+        );
     }
 }
