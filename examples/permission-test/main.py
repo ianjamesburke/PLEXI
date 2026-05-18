@@ -56,7 +56,8 @@ class PermissionTest(App):
         ctx.text(PAD, y, f"panes.spawn: {self.panes_spawn_state}", size=CAPTION, color=state_color)
         y += CAPTION + 6
         self._btn_spawn.y = y
-        if not self.requesting and self._btn_spawn.render(ctx):
+        spawn_clicked = self._btn_spawn.render(ctx)
+        if not self.requesting and spawn_clicked:
             self.requesting = True
             self.emit.schedule_task(self._request("panes.spawn"))
         y += self._btn_spawn.h + PAD
@@ -66,7 +67,8 @@ class PermissionTest(App):
         ctx.text(PAD, y, f"ai.query:    {self.ai_query_state}", size=CAPTION, color=state_color)
         y += CAPTION + 6
         self._btn_ai.y = y
-        if not self.requesting and self._btn_ai.render(ctx):
+        ai_clicked = self._btn_ai.render(ctx)
+        if not self.requesting and ai_clicked:
             self.requesting = True
             self.emit.schedule_task(self._request("ai.query"))
 
@@ -75,7 +77,7 @@ class PermissionTest(App):
         granted = await self.emit.capability_request(cap)
         if cap == "panes.spawn":
             self.panes_spawn_state = "granted" if granted else "denied"
-        else:
+        elif cap == "ai.query":
             self.ai_query_state = "granted" if granted else "denied"
         self.emit.info(f"permission-test: {cap} -> {'granted' if granted else 'denied'}")
         self.requesting = False

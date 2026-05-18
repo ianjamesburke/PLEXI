@@ -142,7 +142,10 @@ impl Capability {
         matches!(
             self,
             Self::PanesSpawn
+                | Self::SpawnApp
                 | Self::AiQuery
+                | Self::Llm
+                | Self::AudioRecord
                 | Self::TerminalBindings
                 | Self::FsWrite
                 | Self::SecretsGet
@@ -639,7 +642,10 @@ mod tests {
 
         let sensitive: HashSet<Capability> = [
             Capability::PanesSpawn,
+            Capability::SpawnApp,
             Capability::AiQuery,
+            Capability::Llm,
+            Capability::AudioRecord,
             Capability::TerminalBindings,
             Capability::FsWrite,
             Capability::SecretsGet,
