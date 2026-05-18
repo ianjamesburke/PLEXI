@@ -1866,6 +1866,10 @@ impl PlexiApp {
         }
     }
 
+    pub(crate) fn inspector_pane_order(&self) -> Vec<PaneId> {
+        self.collect_inspector_rows().1
+    }
+
     fn collect_inspector_rows(&self) -> (Vec<(String, Vec<PaneRow>)>, Vec<PaneId>, Vec<u64>) {
         let mut groups: Vec<(String, Vec<PaneRow>)> = Vec::new();
         let mut all_pane_ids: Vec<PaneId> = Vec::new();

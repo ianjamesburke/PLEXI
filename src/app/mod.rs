@@ -2878,8 +2878,25 @@ impl eframe::App for PlexiApp {
                 }
                 Action::ContextInspector => {
                     self.show_context_inspector = !self.show_context_inspector;
-                    self.inspector_selected_pane = 0;
-                    log::info!("ContextInspector: toggled to {}", self.show_context_inspector);
+                    if self.show_context_inspector {
+                        let focused_pane_id = self.windows[self.active_window]
+                            .focused_pane
+                            .and_then(|tile_id| match self.windows[self.active_window].tree.tiles.get(tile_id) {
+                                Some(Tile::Pane(pane_id)) => Some(*pane_id),
+                                _ => None,
+                            });
+                        let pane_order = self.inspector_pane_order();
+                        self.inspector_selected_pane = focused_pane_id
+                            .and_then(|fpid| pane_order.iter().position(|&pid| pid == fpid))
+                            .unwrap_or(0);
+                        log::info!(
+                            "ContextInspector: opened — pre-selected pane idx={} (focused={:?})",
+                            self.inspector_selected_pane,
+                            focused_pane_id
+                        );
+                    } else {
+                        log::info!("ContextInspector: closed via toggle");
+                    }
                 }
                 Action::ToggleMinimap => {
                     self.minimap.toggle();
