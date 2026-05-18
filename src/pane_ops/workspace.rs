@@ -363,19 +363,20 @@ impl PlexiApp {
             None
         };
 
-        // Remove windows and SubContext tiles for all deleted contexts.
-        for &id in &ids_to_delete {
-            self.windows.retain(|w| w.context_id != id);
-            for win in &mut self.windows {
-                let sub_pane_ids: Vec<crate::tiling::PaneId> = win.panes.iter()
-                    .filter(|(_, p)| p.as_sub_context() == Some(id))
-                    .map(|(pid, _)| *pid)
-                    .collect();
-                for pane_id in sub_pane_ids {
-                    win.panes.remove(&pane_id);
-                    if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
-                        win.tree.remove_recursively(tile_id);
-                    }
+        // Build a HashSet for O(1) membership checks during window cleanup.
+        let ids_set: std::collections::HashSet<u64> = ids_to_delete.iter().copied().collect();
+
+        // Single-pass window removal and SubContext tile cleanup.
+        self.windows.retain(|w| !ids_set.contains(&w.context_id));
+        for win in &mut self.windows {
+            let sub_pane_ids: Vec<crate::tiling::PaneId> = win.panes.iter()
+                .filter(|(_, p)| p.as_sub_context().map_or(false, |id| ids_set.contains(&id)))
+                .map(|(pid, _)| *pid)
+                .collect();
+            for pane_id in sub_pane_ids {
+                win.panes.remove(&pane_id);
+                if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
+                    win.tree.remove_recursively(tile_id);
                 }
             }
         }
@@ -409,7 +410,7 @@ impl PlexiApp {
         // Drop notifications scoped to any deleted context.
         self.pending_notifications.retain(|n| {
             !(matches!(n.scope, crate::app_protocol::NotifyScope::Context)
-                && ids_to_delete.contains(&n.source_context_id))
+                && ids_set.contains(&n.source_context_id))
         });
         if let Some(ref id) = self.current_notify_id.clone() {
             let still_present = self.pending_notifications.iter().any(|n| &n.notify_id == id);
@@ -430,21 +431,20 @@ impl PlexiApp {
 
     /// Returns `root_id` plus the context_ids of all its descendants.
     fn collect_descendant_ids(&self, root_id: u64) -> Vec<u64> {
-        let mut ids = vec![root_id];
+        let mut ids: std::collections::HashSet<u64> = std::collections::HashSet::from([root_id]);
         let mut changed = true;
         while changed {
             changed = false;
             for ctx in self.router.iter() {
-                if ids.contains(&ctx.context_id) {
-                    continue;
-                }
-                if ctx.parent_id.map_or(false, |pid| ids.contains(&pid)) {
-                    ids.push(ctx.context_id);
-                    changed = true;
+                if !ids.contains(&ctx.context_id) {
+                    if ctx.parent_id.map_or(false, |pid| ids.contains(&pid)) {
+                        ids.insert(ctx.context_id);
+                        changed = true;
+                    }
                 }
             }
         }
-        ids
+        ids.into_iter().collect()
     }
 
     pub(crate) fn delete_window(&mut self, index: usize) {
