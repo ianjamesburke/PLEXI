@@ -141,6 +141,8 @@ struct PaneRow {
     name: String,
     detail: String,
     status: &'static str,
+    /// Supplementary label shown next to status (e.g. agent name from OSC title when busy).
+    osc_badge: Option<String>,
 }
 
 fn render_inspector_pane_row(
@@ -179,12 +181,23 @@ fn render_inspector_pane_row(
                 {
                     close_pane = Some(row_id);
                 }
-                let status_color = if row.status == "running" { colors.accent } else { colors.text_dim };
+                let status_color = if matches!(row.status, "busy" | "running") {
+                    colors.accent
+                } else {
+                    colors.text_dim
+                };
                 ui.label(
                     RichText::new(row.status)
                         .size(style::TEXT_HINT)
                         .color(status_color),
                 );
+                if let Some(badge) = &row.osc_badge {
+                    ui.label(
+                        RichText::new(format!("· {badge}"))
+                            .size(style::TEXT_HINT)
+                            .color(colors.text_dim),
+                    );
+                }
                 if !row.detail.is_empty() {
                     ui.label(
                         RichText::new(row.detail.as_str())
@@ -1863,12 +1876,33 @@ impl PlexiApp {
                                 .filter(|pt| !pt.is_empty() && *pt != pane_name.as_str())
                                 .map(|s| s.to_string())
                                 .unwrap_or_default();
+                            let (status, osc_badge) = if t.exited {
+                                ("exited", None)
+                            } else {
+                                let busy = crate::shell::has_foreground_child(t.backend.child_pid());
+                                let badge = if busy {
+                                    // Surface agent activity when OSC title contains a known indicator.
+                                    t.pty_title.as_deref().and_then(|title| {
+                                        if title.to_ascii_lowercase().contains("claude") {
+                                            Some("Claude Code".to_string())
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                } else {
+                                    None
+                                };
+                                let status = if busy { "busy" } else { "idle" };
+                                log::debug!("inspector: terminal pane {} status={status}", t.id);
+                                (status, badge)
+                            };
                             rows.push(PaneRow {
                                 id: t.id,
                                 kind: "Terminal",
                                 name: pane_name,
                                 detail: pane_detail,
-                                status: if t.exited { "exited" } else { "running" },
+                                status,
+                                osc_badge,
                             });
                         }
                         crate::pane::Pane::App(a) => {
@@ -1889,6 +1923,7 @@ impl PlexiApp {
                                 name: a.name.clone(),
                                 detail: a.manifest_id.clone(),
                                 status,
+                                osc_badge: None,
                             });
                         }
                         crate::pane::Pane::SubContext { pane_id, context_id } => {
@@ -1898,6 +1933,7 @@ impl PlexiApp {
                                 name: format!("sub_context:{context_id}"),
                                 detail: String::new(),
                                 status: "active",
+                                osc_badge: None,
                             });
                         }
                     }
