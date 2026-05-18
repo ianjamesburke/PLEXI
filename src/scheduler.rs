@@ -125,13 +125,6 @@ impl Scheduler {
         log::info!("scheduler: loaded {count} routines from {}", path.display());
     }
 
-    /// Remove all entries whose source root is no longer in the active context list.
-    /// Call this when a context is removed or closed.
-    pub fn prune_root(&mut self, root: &Path) {
-        self.entries.retain(|e| e.source_root != root);
-        self.loaded_roots.remove(root);
-    }
-
     /// Check which routines are due. Returns their indices.
     pub fn due_routines(&mut self, now: chrono::DateTime<chrono::Local>) -> Vec<usize> {
         let mut due = Vec::new();
