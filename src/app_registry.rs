@@ -485,7 +485,7 @@ impl AppRegistry {
         }
     }
 
-    fn load_app(&self, app_dir: &PathBuf) -> Result<InstalledApp, String> {
+    pub(crate) fn load_app(&self, app_dir: &PathBuf) -> Result<InstalledApp, String> {
         let manifest_path = app_dir.join("manifest.toml");
         let manifest_str = std::fs::read_to_string(&manifest_path)
             .map_err(|e| format!("no manifest.toml: {e}"))?;
@@ -750,7 +750,7 @@ pub fn resolve_workspace_root(start: &Path) -> Option<PathBuf> {
 
 /// Resolve the `entry` field from manifest.toml to a path.
 /// Fails fast — no guessing, no fallbacks.
-fn resolve_entry(app_dir: &PathBuf, entry: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_entry(app_dir: &PathBuf, entry: &str) -> Result<PathBuf, String> {
     let path = app_dir.join(entry);
 
     if !path.exists() {

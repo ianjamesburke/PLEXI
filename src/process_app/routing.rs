@@ -772,6 +772,7 @@ impl ProcessApp {
                 ephemeral: _,
                 cwd: _,
                 no_focus: _,
+                path: _,
             } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::PanesSpawn)

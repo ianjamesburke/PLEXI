@@ -649,6 +649,71 @@ impl PlexiApp {
         }
     }
 
+    /// Launch an app directly from a filesystem path without looking it up in the registry.
+    ///
+    /// Used by `plexi app run <path>` and the `SpawnPane` IPC when `path` is set.
+    /// The app runs in-place; its own directory is used as `workspace_root`.
+    pub(crate) fn launch_app_by_path_with_layout(
+        &mut self,
+        app_path: &str,
+        layout: Option<String>,
+    ) {
+        let app_dir = PathBuf::from(app_path);
+        log::info!("launch_app_by_path_with_layout: path={app_path}");
+
+        let installed = match self.registry.load_app(&app_dir) {
+            Ok(a) => a,
+            Err(e) => {
+                log::warn!("launch_app_by_path_with_layout: failed to load manifest at {app_path}: {e}");
+                return;
+            }
+        };
+
+        let perms = installed.manifest.capabilities.to_permissions();
+        let caps = perms.capabilities.clone();
+        let keyboard_capture = installed.launch.keyboard_capture;
+        let app_id = installed.manifest.id.clone();
+
+        let layout_hint = layout.or_else(|| {
+            installed.launch.layout_hint.as_ref().map(|h| match h.side.as_str() {
+                "below" => "split_v".to_string(),
+                "above" => "split_above".to_string(),
+                "overlay" => "overlay".to_string(),
+                _ => "split_h".to_string(),
+            })
+        }).or_else(|| {
+            log::info!("launch_app_by_path_with_layout: no layout_hint — defaulting to overlay");
+            Some("overlay".to_string())
+        });
+
+        let cwd = self
+            .resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+
+        match crate::process_app::ProcessApp::launch(
+            installed.manifest.id.clone(),
+            installed.manifest.name.clone(),
+            &installed.bin_path,
+            &cwd,
+            &[],
+            app_dir.clone(),
+            caps,
+            keyboard_capture,
+            installed.manifest.mcp.as_ref(),
+        ) {
+            Ok(mut process) => {
+                process.permissions.allowed_hosts = perms.allowed_hosts;
+                log::info!(
+                    "launch_app_by_path_with_layout: launched '{app_id}' from {app_path}"
+                );
+                self.open_process_app_pane(&app_id, process, app_dir, None, layout_hint.as_deref());
+            }
+            Err(e) => {
+                log::error!("launch_app_by_path_with_layout: failed to launch '{app_id}' from {app_path}: {e}");
+            }
+        }
+    }
+
     /// Attempt to spawn a PGAP process from the CLI's native `--plexi` descriptor
     /// `plexi_app` field. Returns `None` if the CLI is not found, does not support
     /// `--plexi`, or has no `plexi_app` field.
@@ -1079,6 +1144,7 @@ mod tests {
             ephemeral: false,
             cwd: None,
             no_focus: false,
+            path: None,
         });
         h.run_frames(2);
 
@@ -1116,6 +1182,7 @@ mod tests {
             ephemeral: false,
             cwd: None,
             no_focus: false,
+            path: None,
         });
         h.run_frames(2);
 
@@ -1156,6 +1223,7 @@ mod tests {
             ephemeral: false,
             cwd: None,
             no_focus: false,
+            path: None,
         });
         h.run_frames(2);
 
@@ -1195,6 +1263,7 @@ mod tests {
             ephemeral: false,
             cwd: None,
             no_focus: false,
+            path: None,
         });
         h.run_frames(2);
 
@@ -1244,6 +1313,7 @@ mod tests {
             ephemeral: false,
             cwd: None,
             no_focus: false,
+            path: None,
         });
         h.run_frames(2);
 
@@ -1291,6 +1361,7 @@ mod tests {
                 ephemeral: false,
                 cwd: None,
                 no_focus: false,
+                path: None,
             });
             h.run_frames(2);
         }
