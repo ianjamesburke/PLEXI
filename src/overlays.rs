@@ -1911,7 +1911,6 @@ impl PlexiApp {
                                     None
                                 };
                                 let status = if busy { "busy" } else { "idle" };
-                                log::debug!("inspector: terminal pane {} status={status}", t.id);
                                 (status, badge)
                             };
                             rows.push(PaneRow {
