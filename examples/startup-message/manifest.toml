@@ -1,0 +1,13 @@
+schema_version = 1
+
+[app]
+id = "startup-message"
+type = "app"
+name = "Startup Message Demo"
+version = "0.1.0"
+description = "Demo app for issue #185 — shows startup_message in the companion terminal on launch."
+entry = "app.py"
+
+[launch]
+layout_hint = { side = "right", split = 0.4 }
+startup_message = "Starting Startup Message Demo…"

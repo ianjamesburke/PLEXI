@@ -223,6 +223,10 @@ pub struct LaunchSection {
     /// regular/full size-class threshold (logical px). None = use SDK default (480).
     #[serde(default)]
     pub regular: Option<f32>,
+    /// Message written into the companion terminal's PTY on launch. Gives the
+    /// user immediate feedback that the app started. Omit to launch silently.
+    #[serde(default)]
+    pub startup_message: Option<String>,
 }
 
 /// Structured layout hint. `side` ∈ {`"right"`, `"below"`, `"overlay"`}.
@@ -635,6 +639,11 @@ impl AppRegistry {
             .get(app_id)
             .map(|a| a.launch.notification_scope.clone().into())
             .unwrap_or(crate::app_protocol::NotifyScope::Window)
+    }
+
+    /// Return the manifest-declared startup message, if any.
+    pub fn startup_message_for(&self, app_id: &str) -> Option<String> {
+        self.apps.get(app_id).and_then(|a| a.launch.startup_message.clone())
     }
 
     /// Check whether an app's declared capabilities are satisfiable by the
@@ -1287,5 +1296,44 @@ notification_scope = \"context\"
         let registry = AppRegistry::load_with_global(bare.path(), global.path());
         let scope = registry.default_notification_scope_for("ctx-scoped");
         assert_eq!(scope, crate::app_protocol::NotifyScope::Context);
+    }
+
+    #[test]
+    fn startup_message_round_trips_from_manifest() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        let app_dir = global.path().join("greeter");
+        fs::create_dir_all(&app_dir).unwrap();
+        let manifest = "\
+schema_version = 1
+
+[app]
+id = \"greeter\"
+type = \"app\"
+name = \"Greeter\"
+version = \"0.0.1\"
+entry = \"run.sh\"
+
+[launch]
+startup_message = \"Starting Greeter…\"
+";
+        fs::write(app_dir.join("manifest.toml"), manifest).unwrap();
+        fs::write(app_dir.join("run.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        assert_eq!(
+            registry.startup_message_for("greeter"),
+            Some("Starting Greeter…".to_string())
+        );
+        assert_eq!(registry.startup_message_for("unknown"), None);
+    }
+
+    #[test]
+    fn startup_message_absent_returns_none() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app(global.path(), "silent-app", "Silent App");
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        assert_eq!(registry.startup_message_for("silent-app"), None);
     }
 }

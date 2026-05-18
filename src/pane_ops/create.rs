@@ -191,6 +191,21 @@ impl PlexiApp {
         }
 
         let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first);
+
+        if let (Some(msg), Some(term_id)) =
+            (self.registry.startup_message_for(app_id), linked_pane_id)
+        {
+            if let Some(term) = self.windows[active]
+                .panes
+                .get_mut(&term_id)
+                .and_then(|p| p.as_terminal_mut())
+            {
+                let quoted = crate::shell::shell_quote(&msg);
+                let cmd = format!("\x15printf '%s\\n' {quoted}\n");
+                term.backend.process_command(BackendCommand::Write(cmd.into_bytes()));
+                log::info!("app::{app_id}: startup message written to terminal pane {term_id}");
+            }
+        }
     }
 
     /// Open a built-in error tile pane when a capability pre-flight check fails.
