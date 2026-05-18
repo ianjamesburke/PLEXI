@@ -3144,10 +3144,13 @@ impl eframe::App for PlexiApp {
                             .find(|c| c.context_id == child_ctx_id)
                             .map(|c| c.name.clone())
                             .unwrap_or_else(|| "(deleted)".to_string());
-                        let pane_summaries: Vec<crate::tiling::ChildPaneSummary> = self.windows.iter()
+                        let mut pane_entries: Vec<(crate::tiling::PaneId, &crate::pane::Pane)> = self.windows.iter()
                             .filter(|w| w.context_id == child_ctx_id)
-                            .flat_map(|w| w.panes.iter())
-                            .filter_map(|(_, p)| match p {
+                            .flat_map(|w| w.panes.iter().map(|(id, p)| (*id, p)))
+                            .collect();
+                        pane_entries.sort_by_key(|(id, _)| *id);
+                        let pane_summaries: Vec<crate::tiling::ChildPaneSummary> = pane_entries.iter()
+                            .filter_map(|(_, p)| match *p {
                                 crate::pane::Pane::Terminal(t) => {
                                     let cwd = crate::shell::get_pid_cwd(t.backend.child_pid())
                                         .map(|path| path.to_string_lossy().into_owned());

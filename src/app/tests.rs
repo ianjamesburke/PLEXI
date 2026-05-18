@@ -761,6 +761,10 @@ fn new_child_context_case_insensitive_parent() {
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
 
+    // Set up a focused pane so the adoption path is taken (not the PTY fallback).
+    let (tile_id, _pane_id) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_id);
+
     // The initial context is named "Test" (from new_for_test).
     // Lookup with lowercase "test" must succeed.
     let result = app.new_child_context("test", std::path::PathBuf::from("/tmp/child_ci"));

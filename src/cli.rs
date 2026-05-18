@@ -3693,8 +3693,21 @@ pub fn context_new_cli(name: Option<&str>, path: Option<&str>, parent: Option<&s
     };
     // Default parent: current context when inside a Plexi pane and --parent omitted.
     let resolved_parent = parent
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
-        .or_else(|| std::env::var("PLEXI_CONTEXT_NAME").ok());
+        .or_else(|| {
+            std::env::var("PLEXI_CONTEXT_NAME")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+    log::info!(
+        "context_new_cli: name={:?} root={} parent={:?}",
+        name,
+        root.display(),
+        resolved_parent.as_deref()
+    );
     let mut payload = serde_json::json!({
         "type": "create_context",
         "root": root,
