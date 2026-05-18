@@ -211,9 +211,10 @@ fn main() -> eframe::Result {
         Ok(cli) => {
             if let Some(cmd) = cli.command {
                 match cmd {
-                    Commands::Run { command } => {
-                        std::process::exit(cli::run_command(&command));
-                    }
+                    Commands::Run { command } => match command {
+                        Some(cmd) => std::process::exit(cli::run_command(&cmd)),
+                        None => std::process::exit(cli::run_list_commands()),
+                    },
                     Commands::Workspace { cmd } => match cmd {
                         WorkspaceCmd::Init => std::process::exit(cli::workspace_init()),
                     },
