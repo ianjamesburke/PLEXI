@@ -45,8 +45,9 @@ jobs:
 
       - name: Create zip
         run: |
+          cp -R skills target/release/bundle/osx/skills
           cd target/release/bundle/osx
-          zip -r Plexi-${{ github.ref_name }}.zip Plexi.app
+          zip -r Plexi-${{ github.ref_name }}.zip Plexi.app skills
 
       - name: Install git-cliff
         uses: taiki-e/install-action@v2
