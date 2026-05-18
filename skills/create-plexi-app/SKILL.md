@@ -281,6 +281,33 @@ Full `AppHarness` (headless event injection) is coming — see issue #865.
 
 ---
 
+## Layout Safety Rules
+
+### Rule 1 — Right-edge text (hint/breadcrumb rows)
+
+Never place hint or breadcrumb text at a fixed coordinate near the right edge. It clips silently when the pane is narrower than the assumed minimum width — the left clip is the non-obvious failure.
+
+```python
+# w = ctx.width (pane width)
+# Bad:  ctx.text(w - 260, y, hint, CAPTION, MUTED)                          # clips when pane is narrow
+# Good: ctx.text(max(w / 2, w - 260), y, hint, CAPTION, MUTED, align="right")
+# Or:   ctx.text(w - PAD, y, hint, CAPTION, MUTED, align="right")           # right-align from edge
+```
+
+### Rule 2 — Minimum text alpha
+
+Any alpha below 160 is effectively invisible on Catppuccin Mocha dark backgrounds at typical pane sizes.
+
+```python
+# dim(FG, 80)  → invisible on dark bg — never use for text
+# dim(FG, 120) → barely readable — avoid
+# dim(FG, 160) → minimum for de-emphasized but readable text
+# dim(FG, 200) → standard secondary text
+# FG (255)     → primary / focused text
+```
+
+---
+
 ## Common mistakes
 
 | Mistake | Fix |
@@ -291,3 +318,5 @@ Full `AppHarness` (headless event injection) is coming — see issue #865.
 | Hard-coding pixel sizes for text | Use `await ctx.measure_text()` or `ctx.render()` with UI components |
 | No logging | Every app ships with at minimum `on_init` log and error traces |
 | Using `ctrl` for primary shortcuts | Prefer `meta` (⌘) on macOS |
+| `ctx.text(w - N, y, hint, CAPTION, MUTED)` near right edge | Use `ctx.text(max(w/2, w - N), y, hint, CAPTION, MUTED, align="right")` — prevents left-clip in narrow panes |
+| `dim(FG, 80)` or `dim(FG, 120)` for labels | Minimum readable alpha is 160 — use `dim(FG, 160)` for de-emphasized text |
