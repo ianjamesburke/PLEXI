@@ -4,6 +4,12 @@
 
 ---
 
+## [macos · rust] proc_listchildpids(NULL, 0) returns EFAULT on macOS 23.x
+
+`proc_listchildpids` with a NULL buffer and 0 size is documented to return the bytes needed (n_children × sizeof(pid_t)). On macOS 23.x (Sonoma) it returns -1 (EFAULT) instead. Any code that treats a negative return as "default busy" will show every shell as busy. Use `pgrep -P <pid>` instead — exits 0 when children exist, 1 when idle, and is reliable across all macOS versions. The 500ms cache in `shell::has_foreground_child` keeps the subprocess overhead acceptable.
+
+---
+
 ## [railway] Build context must be repo root, builder must be Dockerfile
 
 The website Dockerfile (`website/Dockerfile`) uses `COPY website/ .` and `COPY sdk/python/plexi_sdk /sdk/plexi_sdk` — both paths are relative to the build context root. Three things must align in Railway dashboard for this to work:
