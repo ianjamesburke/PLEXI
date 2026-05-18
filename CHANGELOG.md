@@ -1,6 +1,51 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.436] — 2026-05-18
+
+### Changes
+- feat(cli): pane capture strips trailing empty lines by default, add --full-output flag (#1483)
+- ux(notifications): replace ⌘[ / ⌘] cycle hint with H / L in modal header (#1424) (#1480)
+- feat(layout): add split_left — new pane opens left of focused pane (#1430) (#1476)
+- docs(readme): add contact section before install (#478) (#1478)
+- docs(gotchas): proc_listchildpids(NULL,0) returns EFAULT on macOS 23.x
+- feat(inspector): smarter pane status — idle vs busy shell, OSC title awareness (#1288) (#1472)
+- refactor(widgets): extract styled_text_input() helper — deduplicates modal text input pattern (#1471)
+- fix(overlays): context inspector UI audit — centering, title, terminal detail (#1468)
+- feat(permissions): first-run consent prompt for sensitive capabilities (#1455) (#1467)
+- feat(install): print dotfiles hint after successful install (#1469)
+- fix(keys): swap Cmd+D / Cmd+Shift+D split polarity (#1466)
+- fix(apps): pixel tavern — persistent bubbles, parchment styling, terse system prompts (#1379) (#1461)
+- feat(context): sub-context creation auto-zooms in, ChildPaneSummary for tile previews (#1409) (#1464)
+- fix(overlays): context inspector pre-selects focused pane on open (#1434) (#1462)
+- feat(config): [agents] block — tiered coding agent command templates (#1397) (#1459)
+- feat(cli): add `plexi app run <path>` and deprecate `app link`/`app unlink` (#1408) (#1460)
+- fix(ai): block on background metrics so AiResponse carries accurate token counts (#1458)
+- fix(overlays): Cmd+0 quick note works when another modal is open (#1435) (#1457)
+- refactor(sidebar): replace SidebarRow pixel math with ContextItem scope+shape layout (#1448) (#1454)
+- ux(install): replace 'restart your terminal' with 'close this terminal and open Plexi' (#1437) (#1452)
+- chore(examples): flatten examples/apps/ into examples/ root (#1450)
+- feat(install): bundle and install skills in user-install.sh (#1451)
+- fix(cli): unify plexi list / plexi app list and fix command discovery (#1440) (#1443)
+- Revert "feat(sidebar): unified context row with subtitle and pane dots (#1442)"
+- feat(sidebar): unified context row with subtitle and pane dots (#1442)
+- fix(install): add 'Check for success' button to CLI setup modal (#1439) (#1441)
+- feat(overlays): TextInputOverlay primitive + context root management (#1426) (#1433)
+- feat(website): surface install script as primary download CTA (#1431)
+- fix(install): replace in-app CLI Install button with copyable curl one-liner (#1427) (#1432)
+- feat(ui): pane dots below context names in sidebar (#1418)
+- docs(north-star): rewrite audience sections, update Phase 1
+- chore(github): add funding configuration
+- fix(ci): resolve SDK type errors, stale CLI docs, and install pipeline gaps
+- ui(welcome): move caution message above keyboard shortcuts
+- fix(layout): align split_h/split_v naming with tmux convention (#1312) (#1423)
+- feat(keys): H/L to cycle notifications, blocked in Choice kind (#1420) (#1421)
+- feat(scratchpad): replace egui overlay with terminal editor (#1282) (#1416)
+- fix(contexts): sub-context adopts focused pane instead of starting empty (#1384) (#1414)
+- fix(ui): context inspector delete via Backspace key (3×) (#1383) (#1413)
+- Extract app init template to standalone SDK v2 Python file (#1272)
+- fix(gh-projects): replace broken gh project CLI with raw GraphQL (#1319)
+- feat(examples): Bluesky feed browser app (PGAP) (#1343) (#1347)
 ## [0.0.435] — 2026-05-18
 
 ### Changes
