@@ -2,13 +2,13 @@
 """Pixel Art Tavern — AI NPCs converse via ai_query + PGAP canvas.
 
 Three named characters take turns speaking. One active ai_query at a time,
-fired via schedule_task. Idle animation between turns via ctx.elapsed.
+fired via schedule_task. Speech bubbles persist until replaced by new dialogue.
 """
 from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from plexi_sdk import App, RenderContext, SURFACE, MUTED
+from plexi_sdk import App, RenderContext, MUTED
 
 # ── Design constants ──────────────────────────────────────────────────────────
 PIXEL   = 4.0    # logical px per sprite pixel
@@ -19,9 +19,8 @@ CAPTION = 12.0
 BODY    = 14.0
 HEADING = 18.0
 
-BUBBLE_DISPLAY_SECS = 4.5   # how long a speech bubble stays visible
-TURN_DELAY_SECS     = 0.8   # pause between bubble dismiss and next query
-ANIM_FPS            = 3.0   # idle animation frame rate
+TURN_DELAY_SECS = 0.8   # pause after response before next query
+ANIM_FPS        = 3.0   # idle animation frame rate
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 _ = None   # transparent
@@ -36,6 +35,11 @@ N = "#c9a46e"  # skin/wood
 O = "#fab387"  # orange
 P = "#cba6f7"  # purple
 T = "#94e2d5"  # teal
+
+# Tavern-themed bubble palette
+BUBBLE_BG    = "#2a1f0f"   # deep parchment brown (border)
+BUBBLE_FILL  = "#f5e6c8"   # warm parchment
+BUBBLE_GOLD  = "#8b6914"   # aged wood gold (border accent)
 
 # Sprites: list of rows (top→bottom), each row is a list of COL_W color|None
 # Frame 0 = normal, Frame 1 = arms-raised / eyes-closed (idle blink)
@@ -182,11 +186,10 @@ NPCS: list[NPC] = [
         color=O,
         frames=BRAM_FRAMES,
         system_prompt=(
-            "You are Bram, a gruff but warm tavern bartender in a fantasy world. "
-            "You've heard every tale, seen every adventurer come and go. "
-            "You speak in short, world-weary sentences. You occasionally wipe the bar. "
-            "Respond in 1-2 sentences as if continuing a casual tavern conversation. "
-            "Never repeat what the previous speaker just said."
+            "You are Bram, the bartender of The Rusty Flagon tavern. "
+            "Speak only in dialogue — no action descriptions, no asterisks, no narration. "
+            "You are gruff, warm, and world-weary. Keep it to 1-2 short sentences. "
+            "Open with: 'Welcome to the Rusty Flagon. What'll it be?'"
         ),
     ),
     NPC(
@@ -195,11 +198,9 @@ NPCS: list[NPC] = [
         color=P,
         frames=LYRA_FRAMES,
         system_prompt=(
-            "You are Lyra, an excitable young mage in a fantasy tavern. "
-            "You pepper your speech with magical references and occasionally let a spark fly. "
-            "You speak in 1-2 energetic sentences. "
-            "Respond as if continuing a casual tavern conversation. "
-            "Never repeat what the previous speaker just said."
+            "You are Lyra, an excitable young mage drinking at the tavern. "
+            "Speak only in dialogue — no action descriptions, no asterisks, no narration. "
+            "You are curious and enthusiastic, with a flair for magical metaphor. 1-2 sentences."
         ),
     ),
     NPC(
@@ -208,10 +209,9 @@ NPCS: list[NPC] = [
         color=R,
         frames=DREXL_FRAMES,
         system_prompt=(
-            "You are Drexl, a battle-hardened warrior in a fantasy tavern. "
-            "You speak in clipped, blunt sentences. You distrust magic. "
-            "Respond in 1-2 sentences as if continuing a casual tavern conversation. "
-            "Never repeat what the previous speaker just said."
+            "You are Drexl, a battle-hardened warrior nursing a drink at the tavern. "
+            "Speak only in dialogue — no action descriptions, no asterisks, no narration. "
+            "You are blunt and skeptical, especially of magic. 1-2 short sentences."
         ),
     ),
 ]
@@ -221,10 +221,9 @@ class TavernApp(App):
     async def on_init(self, _ctx: RenderContext) -> None:
         self._npcs = copy.deepcopy(NPCS)
         self._turn_idx = 0
-        self._state = "idle"   # "idle" | "thinking" | "speaking" | "pausing"
+        self._state = "idle"   # "idle" | "thinking" | "pausing"
         self._anim_accum = 0.0
         self._anim_frame = 0
-        self._speech_timer = 0.0
         self._pause_timer = 0.0
         self._total_elapsed = 0.0
         self._conversation: list[dict] = []
@@ -267,14 +266,6 @@ class TavernApp(App):
             self._anim_accum -= 1.0 / ANIM_FPS
             self._anim_frame = 1 - self._anim_frame
 
-        if self._state == "speaking":
-            self._speech_timer -= dt
-            if self._speech_timer <= 0:
-                self._state = "pausing"
-                self._pause_timer = TURN_DELAY_SECS
-                npc = self._npcs[self._turn_idx]
-                npc.speech = ""
-
         if self._state == "pausing":
             self._pause_timer -= dt
             if self._pause_timer <= 0:
@@ -289,7 +280,7 @@ class TavernApp(App):
     async def _do_turn(self, idx: int) -> None:
         npc = self._npcs[idx]
         messages = list(self._conversation) + [
-            {"role": "user", "content": "Continue the tavern conversation in character. 1-2 sentences max."}
+            {"role": "user", "content": "Continue the tavern conversation in character. 1-2 sentences max. Dialogue only."}
         ]
         try:
             resp = await self.emit.ai_query(
@@ -298,12 +289,13 @@ class TavernApp(App):
                 messages=messages,
             )
             text = (resp.content or "").strip()
+            # Replace previous speech — bubble persists until next response replaces it
             npc.speech = text
             self._conversation.append({"role": "assistant", "content": f"{npc.name}: {text}"})
             if len(self._conversation) > 25:
                 self._conversation = self._conversation[-25:]
-            self._state = "speaking"
-            self._speech_timer = BUBBLE_DISPLAY_SECS
+            self._state = "pausing"
+            self._pause_timer = TURN_DELAY_SECS
             self.emit.info(f"NPC {npc.name} responded: {resp.tokens_in} in, {resp.tokens_out} out")
         except Exception as e:
             self.emit.error(f"NPC {npc.name} ai_query failed: {e}")
@@ -328,7 +320,7 @@ class TavernApp(App):
 
     def _draw_scene(self, ctx: RenderContext, floor_y: float,
                     sprite_w: float, sprite_h: float) -> None:
-        active_idx = self._turn_idx if self._state in ("speaking", "thinking") else -1
+        active_idx = self._turn_idx if self._state in ("thinking", "pausing") else -1
 
         for i, npc in enumerate(self._npcs):
             is_active = (i == active_idx)
@@ -336,10 +328,11 @@ class TavernApp(App):
             self._draw_sprite(ctx, npc, floor_y, sprite_w, sprite_h, frame=frame, active=is_active)
             self._draw_name_tag(ctx, npc, floor_y, sprite_h)
 
-            if is_active and self._state == "speaking" and npc.speech:
-                self._draw_speech_bubble(ctx, npc, floor_y)
-            elif is_active and self._state == "thinking":
+            # Thinking dots take precedence over persistent bubbles for the active NPC
+            if is_active and self._state == "thinking":
                 self._draw_thinking_dots(ctx, npc, floor_y)
+            elif npc.speech:
+                self._draw_speech_bubble(ctx, npc, floor_y)
 
     def _draw_sprite(self, ctx: RenderContext, npc: NPC, floor_y: float,
                      sprite_w: float, sprite_h: float, frame: int, active: bool) -> None:
@@ -375,33 +368,40 @@ class TavernApp(App):
 
     def _draw_speech_bubble(self, ctx: RenderContext, npc: NPC, floor_y: float) -> None:
         max_w = 240.0
-        bubble_h = 96.0
+        bubble_h = 120.0   # tall enough for 3-4 wrapped lines
         bx = npc.cx - max_w / 2
-        by = floor_y - bubble_h - 16.0
+        by = floor_y - bubble_h - 20.0
 
-        ctx.rect(bx, by, max_w, bubble_h, fill="#1e1e2eee", radius=8.0)
-        ctx.rect(bx + 1, by + 1, max_w - 2, bubble_h - 2, fill=SURFACE + "cc", radius=7.0)
+        # Border (aged wood gold)
+        ctx.rect(bx - 2, by - 2, max_w + 4, bubble_h + 4, fill=BUBBLE_GOLD, radius=10.0)
+        # Parchment fill
+        ctx.rect(bx, by, max_w, bubble_h, fill=BUBBLE_BG, radius=8.0)
+        ctx.rect(bx + 2, by + 2, max_w - 4, bubble_h - 4, fill=BUBBLE_FILL, radius=6.0)
 
         # Tail pointing down to sprite
         tail_x = npc.cx
-        ctx.rect(tail_x - 5, by + bubble_h - 1, 10, 12, fill=SURFACE + "cc")
-        ctx.rect(tail_x - 3, by + bubble_h + 10, 6, 4, fill=SURFACE + "99")
+        ctx.rect(tail_x - 5, by + bubble_h - 1, 10, 10, fill=BUBBLE_FILL)
+        ctx.rect(tail_x - 3, by + bubble_h + 8, 6, 5, fill=BUBBLE_GOLD)
 
-        # Name header
-        ctx.text(bx + 8, by + 6, npc.name, size=CAPTION, color=npc.color,
+        # Name header (dark ink on parchment)
+        ctx.text(bx + 10, by + 7, npc.name, size=CAPTION, color=BUBBLE_BG,
                  bold=True, monospace=True, elide=False, selectable=False)
 
-        # Dialogue text — markdown wraps automatically within the bubble width
-        ctx.markdown(bx + 8, by + 6 + CAPTION + 4, max_w - 16, npc.speech,
-                     base_size=CAPTION - 1, color=W)
+        # Divider line
+        ctx.rect(bx + 10, by + 7 + CAPTION + 4, max_w - 20, 1.0, fill=BUBBLE_GOLD + "88")
+
+        # Dialogue text — word-wrapped within bubble bounds, dark ink on parchment
+        ctx.markdown(bx + 10, by + 7 + CAPTION + 8, max_w - 20, npc.speech,
+                     base_size=CAPTION, color="#2a1505")
 
     def _draw_thinking_dots(self, ctx: RenderContext, npc: NPC, floor_y: float) -> None:
         bx = npc.cx - 30.0
         by = floor_y - 40.0
-        ctx.rect(bx, by, 60.0, 26.0, fill=SURFACE + "cc", radius=6.0)
+        ctx.rect(bx - 2, by - 2, 64.0, 30.0, fill=BUBBLE_GOLD, radius=8.0)
+        ctx.rect(bx, by, 60.0, 26.0, fill=BUBBLE_FILL, radius=6.0)
         frame_offset = int(self._total_elapsed * ANIM_FPS) % 3
         for j in range(3):
-            col = W if j == frame_offset else G
+            col = BUBBLE_BG if j == frame_offset else BUBBLE_GOLD
             ctx.rect(bx + 12 + j * 14, by + 9, 8.0, 8.0, fill=col, radius=4.0)
 
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
