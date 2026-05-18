@@ -47,15 +47,48 @@ impl PlexiApp {
                     .collect();
                 path_ids.push(self.router.active().context_id);
 
-                for (i, &ctx_id) in path_ids.iter().enumerate() {
-                    let name = self.router.iter()
+                let total = path_ids.len();
+                let is_deep = total >= 3;
+                let sep = egui::RichText::new("\u{203A}").color(self.colors.text_dim);
+                let name_color = if is_deep { self.colors.text_dim } else { self.colors.text_primary };
+
+                let ctx_name = |ctx_id: u64| -> String {
+                    self.router.iter()
                         .find(|c| c.context_id == ctx_id)
-                        .map(|c| c.name.as_str())
-                        .unwrap_or("?");
-                    let _ = ui.small_button(name);
-                    if i < path_ids.len() - 1 {
-                        ui.label(egui::RichText::new("\u{203A}").color(self.colors.text_dim));
+                        .map(|c| c.name.clone())
+                        .unwrap_or_else(|| "?".to_string())
+                };
+
+                if total >= 5 {
+                    // first + … + last 2
+                    let _ = ui.small_button(
+                        egui::RichText::new(ctx_name(path_ids[0])).color(name_color)
+                    );
+                    ui.label(sep.clone());
+                    ui.label(egui::RichText::new("\u{2026}").color(self.colors.text_dim));
+                    ui.label(sep.clone());
+                    let _ = ui.small_button(
+                        egui::RichText::new(ctx_name(path_ids[total - 2])).color(name_color)
+                    );
+                    ui.label(sep.clone());
+                    let _ = ui.small_button(
+                        egui::RichText::new(ctx_name(path_ids[total - 1])).color(name_color)
+                    );
+                } else {
+                    for (i, &ctx_id) in path_ids.iter().enumerate() {
+                        let _ = ui.small_button(
+                            egui::RichText::new(ctx_name(ctx_id)).color(name_color)
+                        );
+                        if i < total - 1 {
+                            ui.label(sep.clone());
+                        }
                     }
+                }
+
+                // Soft indicator when nesting is >= 3 levels deep.
+                if is_deep {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("deep").color(self.colors.text_dim).small());
                 }
             });
             ui.separator();

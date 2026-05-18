@@ -10,7 +10,7 @@ use std::path::PathBuf;
 impl PlexiApp {
     /// Create a child context nested inside `parent_name`. Moves the parent's focused
     /// pane into the new child context and replaces it with a SubContext tile. Falls
-    /// back to a new terminal if no adoptable pane is focused. Depth is capped at 3.
+    /// back to a new terminal if no adoptable pane is focused. No hard depth limit.
     pub(crate) fn new_child_context(&mut self, parent_name: &str, path: PathBuf) -> Result<(), String> {
         let parent_idx = self.router.position(|c| c.name.eq_ignore_ascii_case(parent_name))
             .ok_or_else(|| format!("no context named '{parent_name}'"))?;
@@ -19,13 +19,9 @@ impl PlexiApp {
 
         if parent_depth >= 3 {
             log::warn!(
-                "new_child_context: depth limit reached — parent '{}' is at depth {}",
+                "new_child_context: deep nesting — parent '{}' is at depth {} (consider reorganizing)",
                 parent_name, parent_depth
             );
-            return Err(format!(
-                "depth limit: parent '{}' is already at depth {} (max 3)",
-                parent_name, parent_depth
-            ));
         }
 
         let child_depth = parent_depth + 1;
@@ -335,33 +331,85 @@ impl PlexiApp {
         }
         let ws_id = self.router.get(ws_index).context_id;
 
-        // Remove all windows belonging to this context.
-        self.windows.retain(|c| c.context_id != ws_id);
+        // Cascade: collect ws_id and all descendants so children are deleted together
+        // with their parent instead of becoming orphaned with a dangling parent_id.
+        let ids_to_delete = self.collect_descendant_ids(ws_id);
+        if self.router.len() <= ids_to_delete.len() {
+            // Cascade would remove every context — refuse rather than panic.
+            log::warn!(
+                "delete_context: refused cascade of {} context(s) — would remove all contexts",
+                ids_to_delete.len()
+            );
+            return;
+        }
+        log::info!(
+            "delete_context: removing {} context(s) (root={ws_id} ids={ids_to_delete:?})",
+            ids_to_delete.len()
+        );
 
-        // Remove SubContext tiles that pointed to this deleted context from parent windows.
-        for win in &mut self.windows {
-            let sub_ctx_pane_ids: Vec<crate::tiling::PaneId> = win.panes.iter()
-                .filter(|(_, p)| p.as_sub_context() == Some(ws_id))
-                .map(|(id, _)| *id)
-                .collect();
-            for pane_id in sub_ctx_pane_ids {
-                win.panes.remove(&pane_id);
-                // Remove from the tile tree too.
-                if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
-                    win.tree.remove_recursively(tile_id);
+        // If the active context is being deleted, find a surviving ancestor in the depth
+        // stack to land on.  depth_stack entries are (parent_ctx_id, parent_win_id, tile)
+        // ordered oldest-first; the last entry is the direct parent of the current active.
+        let active_id = self.router.active().context_id;
+        let active_deleted = ids_to_delete.contains(&active_id);
+
+        // Strip deleted contexts from depth_stack first.
+        self.router.depth_stack.retain(|(ctx_id, _, _)| !ids_to_delete.contains(ctx_id));
+
+        // Pop the top of the cleaned stack to get the surviving parent we'll land on.
+        let override_active: Option<(u64, u64)> = if active_deleted {
+            self.router.depth_stack.pop().map(|(ctx_id, win_id, _)| (ctx_id, win_id))
+        } else {
+            None
+        };
+
+        // Remove windows and SubContext tiles for all deleted contexts.
+        for &id in &ids_to_delete {
+            self.windows.retain(|w| w.context_id != id);
+            for win in &mut self.windows {
+                let sub_pane_ids: Vec<crate::tiling::PaneId> = win.panes.iter()
+                    .filter(|(_, p)| p.as_sub_context() == Some(id))
+                    .map(|(pid, _)| *pid)
+                    .collect();
+                for pane_id in sub_pane_ids {
+                    win.panes.remove(&pane_id);
+                    if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
+                        win.tree.remove_recursively(tile_id);
+                    }
                 }
             }
         }
 
-        self.router.remove_at(ws_index);
+        // Remove contexts from the router largest-index-first so earlier indices stay valid.
+        let mut indices: Vec<usize> = ids_to_delete.iter()
+            .filter_map(|&id| self.router.position(|c| c.context_id == id))
+            .collect();
+        indices.sort_unstable_by(|a, b| b.cmp(a));
+        for idx in indices {
+            self.router.remove_at(idx);
+        }
 
-        // Pick a valid active window in the new active context.
-        self.pick_active_context_from_workspace();
+        // Apply the active-context override (surviving ancestor from depth_stack),
+        // or fall back to the default picker which uses whatever remove_at settled on.
+        if let Some((ctx_id, win_id)) = override_active {
+            if let Some(idx) = self.router.position(|c| c.context_id == ctx_id) {
+                self.router.set_active(idx);
+                if let Some(win_idx) = self.windows.iter().position(|w| w.window_id == win_id) {
+                    self.active_window = win_idx;
+                } else {
+                    self.pick_active_context_from_workspace();
+                }
+            } else {
+                self.pick_active_context_from_workspace();
+            }
+        } else {
+            self.pick_active_context_from_workspace();
+        }
 
-        // Notifications scoped to this context are dropped.
+        // Drop notifications scoped to any deleted context.
         self.pending_notifications.retain(|n| {
             !(matches!(n.scope, crate::app_protocol::NotifyScope::Context)
-                && n.source_context_id == ws_id)
+                && ids_to_delete.contains(&n.source_context_id))
         });
         if let Some(ref id) = self.current_notify_id.clone() {
             let still_present = self.pending_notifications.iter().any(|n| &n.notify_id == id);
@@ -378,6 +426,25 @@ impl PlexiApp {
             .get(&new_ws_id)
             .copied()
             .unwrap_or(page_count > 1);
+    }
+
+    /// Returns `root_id` plus the context_ids of all its descendants.
+    fn collect_descendant_ids(&self, root_id: u64) -> Vec<u64> {
+        let mut ids = vec![root_id];
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for ctx in self.router.iter() {
+                if ids.contains(&ctx.context_id) {
+                    continue;
+                }
+                if ctx.parent_id.map_or(false, |pid| ids.contains(&pid)) {
+                    ids.push(ctx.context_id);
+                    changed = true;
+                }
+            }
+        }
+        ids
     }
 
     pub(crate) fn delete_window(&mut self, index: usize) {

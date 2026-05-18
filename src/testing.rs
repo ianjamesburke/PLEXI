@@ -777,4 +777,146 @@ mod tests {
         }
     }
 
+    // -- Context nesting (issue #1392) ───────────────────────────────────────
+
+    /// Regression guard: deleting a parent context while zoomed past it into a
+    /// grandchild must not leave dangling entries in depth_stack.
+    /// Attempt 1 (PR #1453) removed the depth cap but skipped this fix,
+    /// causing breadcrumb to render "?".
+    ///
+    /// Hierarchy: root → child_A → child_B (active)
+    /// Zoomed: depth_stack = [(root_id, ...), (child_A_id, ...)]
+    /// Delete child_A → cascade deletes child_B → land on root, depth_stack = [].
+    #[test]
+    fn delete_parent_context_cleans_depth_stack() {
+        use std::path::PathBuf;
+
+        let mut h = HostHarness::new();
+
+        let root_name = h.app.router.active().name.clone();
+        let root_id   = h.app.router.active().context_id;
+        let root_win_id = h.app.windows[0].window_id;
+
+        // Create child_A under root.
+        h.app.new_child_context(&root_name, PathBuf::from("/tmp/child_a"))
+            .expect("new_child_context at depth 1");
+        let child_a_id = h.app.router.iter()
+            .find(|c| c.parent_id == Some(root_id))
+            .map(|c| c.context_id)
+            .expect("child_A must exist");
+        let child_a_name = h.app.router.iter()
+            .find(|c| c.context_id == child_a_id)
+            .map(|c| c.name.clone())
+            .unwrap();
+
+        // Create child_B under child_A.
+        h.app.new_child_context(&child_a_name, PathBuf::from("/tmp/child_b"))
+            .expect("new_child_context at depth 2");
+        let child_b_id = h.app.router.iter()
+            .find(|c| c.parent_id == Some(child_a_id))
+            .map(|c| c.context_id)
+            .expect("child_B must exist");
+
+        assert_eq!(h.app.router.len(), 3, "root + child_A + child_B");
+
+        // Simulate being zoomed root → child_A → child_B (active).
+        h.app.router.push_depth(root_id, root_win_id, None);
+        let child_a_idx = h.app.router.position(|c| c.context_id == child_a_id).unwrap();
+        h.app.router.set_active(child_a_idx);
+        // Fake a second window id for child_A for the depth entry.
+        h.app.router.push_depth(child_a_id, root_win_id + 1, None);
+        let child_b_idx = h.app.router.position(|c| c.context_id == child_b_id).unwrap();
+        h.app.router.set_active(child_b_idx);
+
+        assert_eq!(h.app.router.current_depth(), 2, "zoomed 2 levels deep");
+        assert_eq!(h.app.router.active().context_id, child_b_id);
+
+        // Delete child_A while active is child_B.
+        // Cascade: child_B is deleted too. We should land on root.
+        let child_a_idx2 = h.app.router.position(|c| c.context_id == child_a_id).unwrap();
+        h.app.delete_context(child_a_idx2);
+
+        // depth_stack must be empty — no dangling entries.
+        assert_eq!(
+            h.app.router.depth_stack.len(),
+            0,
+            "depth_stack must be empty after deleting all zoomed contexts"
+        );
+
+        // Neither child_A nor child_B must survive.
+        for ctx in h.app.router.iter() {
+            assert_ne!(ctx.context_id, child_a_id, "child_A must be gone");
+            assert_ne!(ctx.context_id, child_b_id, "child_B must be cascade-deleted");
+        }
+
+        // Root must still be present and active.
+        assert_eq!(h.app.router.active().context_id, root_id, "must land on root");
+    }
+
+    /// Deleting the active child context while zoomed into it must pop back to
+    /// the parent and leave depth_stack consistent.
+    #[test]
+    fn delete_active_child_context_lands_on_parent() {
+        use std::path::PathBuf;
+
+        let mut h = HostHarness::new();
+
+        let root_name = h.app.router.active().name.clone();
+        let root_id   = h.app.router.active().context_id;
+
+        h.app.new_child_context(&root_name, PathBuf::from("/tmp/child"))
+            .expect("new_child_context at depth 1");
+
+        let child_id = h.app.router.iter()
+            .find(|c| c.parent_id == Some(root_id))
+            .map(|c| c.context_id)
+            .expect("child must exist");
+
+        // Zoom into child.
+        h.app.router.push_depth(root_id, 1, None);
+        let child_idx = h.app.router.position(|c| c.context_id == child_id).unwrap();
+        h.app.router.set_active(child_idx);
+
+        // Delete the active child context.
+        let child_idx2 = h.app.router.position(|c| c.context_id == child_id).unwrap();
+        h.app.delete_context(child_idx2);
+
+        // Must land back on root, depth_stack empty.
+        assert_eq!(
+            h.app.router.current_depth(),
+            0,
+            "depth_stack must be empty after deleting the only child"
+        );
+        assert_eq!(
+            h.app.router.active().context_id,
+            root_id,
+            "active context must be the root after child deletion"
+        );
+    }
+
+    /// depth > 3 must succeed: new_child_context must not return Err at depth 3+.
+    #[test]
+    fn new_child_context_succeeds_beyond_depth_3() {
+        use std::path::PathBuf;
+
+        let mut h = HostHarness::new();
+
+        // Build: root → d1 → d2 → d3 → d4
+        let mut parent_name = h.app.router.active().name.clone();
+        for depth in 1..=4u32 {
+            let path = PathBuf::from(format!("/tmp/depth{depth}"));
+            let result = h.app.new_child_context(&parent_name, path.clone());
+            assert!(result.is_ok(), "new_child_context must not error at depth {depth}");
+            parent_name = path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+        }
+
+        // All 5 contexts (root + 4 children) must exist.
+        assert_eq!(h.app.router.len(), 5, "must have root + 4 child contexts");
+        let max_depth = h.app.router.iter().map(|c| c.depth).max().unwrap_or(0);
+        assert_eq!(max_depth, 4, "deepest context must be at depth 4");
+    }
 }
