@@ -22,6 +22,11 @@ _git_channel() {
 
 channel="${1:-$(_git_channel)}"
 
+# Respect a custom target-dir from .cargo/config.toml or CARGO_TARGET_DIR.
+# Without this, install.sh resolves "target/" relative to CWD and finds a stale
+# bundle when the config points cargo to a shared absolute path.
+TARGET_DIR="${CARGO_TARGET_DIR:-$(cargo metadata --no-deps --format-version 1 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])' 2>/dev/null || echo "target")}"
+
 if [[ "$channel" == "stable" ]]; then
   cap=""
   suffix=""
@@ -35,7 +40,7 @@ fi
 
 display="Plexi${cap}"
 bundle_id="com.ianjamesburke.plexi${suffix}"
-app_src="target/release/bundle/osx/Plexi.app"
+app_src="$TARGET_DIR/release/bundle/osx/Plexi.app"
 app_dest="/Applications/${display}.app"
 bin_dest="/usr/local/bin/plexi${suffix}"
 profile_dir="$HOME/.plexi${suffix}"
