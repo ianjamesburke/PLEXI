@@ -20,6 +20,12 @@ One binary. A tiling shell that brings Unix composability to the desktop — ter
 
 ---
 
+## Contact
+
+If you run into any issues, don't hesitate to reach out directly: adhdisntreal@gmail.com
+
+---
+
 ## Install
 
 > **macOS only.** Linux is untested.
