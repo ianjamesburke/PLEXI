@@ -4,9 +4,13 @@ schema_version = 1
 id = "logs"
 type = "app"
 name = "Logs"
-version = "0.1.0"
+version = "0.2.0"
 description = "Live tail of the Plexi host log, color-coded by level."
 entry = "logs.py"
+mouse_tracking = true
+
+[app.capabilities]
+capabilities = ["fs.read", "timer"]
 
 [launch]
 layout_hint = { side = "right", split = 0.5 }
