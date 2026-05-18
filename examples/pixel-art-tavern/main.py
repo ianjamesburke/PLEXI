@@ -328,11 +328,11 @@ class TavernApp(App):
             self._draw_sprite(ctx, npc, floor_y, sprite_w, sprite_h, frame=frame, active=is_active)
             self._draw_name_tag(ctx, npc, floor_y, sprite_h)
 
-            # Bubbles persist as long as the NPC has speech
-            if npc.speech:
-                self._draw_speech_bubble(ctx, npc, floor_y)
-            elif is_active and self._state == "thinking":
+            # Thinking dots take precedence over persistent bubbles for the active NPC
+            if is_active and self._state == "thinking":
                 self._draw_thinking_dots(ctx, npc, floor_y)
+            elif npc.speech:
+                self._draw_speech_bubble(ctx, npc, floor_y)
 
     def _draw_sprite(self, ctx: RenderContext, npc: NPC, floor_y: float,
                      sprite_w: float, sprite_h: float, frame: int, active: bool) -> None:
