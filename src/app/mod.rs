@@ -3463,6 +3463,10 @@ impl eframe::App for PlexiApp {
                     map
                 };
 
+                // Computed before the mutable borrow of `ctx` — needed by PlexiBehavior
+                // to prevent terminal panes from stealing egui focus while a modal is open.
+                let modal_open = self.input_captured_by_overlay();
+
                 let ctx = &mut self.windows[self.active_window];
 
                 // Resolve focused_pane if simplifier moved the tile
@@ -3599,6 +3603,7 @@ impl eframe::App for PlexiApp {
                     workspace_root: self.router.active().root.clone().or_else(crate::config::active_workspace_root),
                     unfocused_opacity,
                     sub_context_info,
+                    modal_open,
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ui.scope(|ui| {
