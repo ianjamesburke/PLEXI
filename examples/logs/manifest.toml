@@ -10,7 +10,7 @@ entry = "logs.py"
 watch = true
 
 [app.capabilities]
-capabilities = ["fs.read"]
+capabilities = ["fs.read", "timer"]
 
 [launch]
 layout_hint = { side = "right", split = 0.25 }
