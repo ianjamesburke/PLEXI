@@ -1222,6 +1222,7 @@ impl PlexiApp {
             });
 
         if cancel {
+            log::info!("context_description: edit cancelled ctx_idx={ctx_idx}");
             self.editing_description = None;
             self.description_focus_requested = false;
             self.pop_focus_layer(&crate::app::FocusLayer::ContextDescription);

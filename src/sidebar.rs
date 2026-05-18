@@ -319,6 +319,7 @@ impl PlexiApp {
                     self.rename_buffer = self.router.get(i).name.clone();
                 }
                 WindowMenuAction::EditDescription => {
+                    log::info!("sidebar: edit context description ctx_idx={i}");
                     self.editing_description = Some(i);
                     self.description_buffer = self.router.get(i).description.clone().unwrap_or_default();
                     self.description_focus_requested = false;
