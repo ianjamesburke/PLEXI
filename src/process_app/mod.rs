@@ -631,6 +631,7 @@ impl ProcessApp {
             pane_id: 0,
             timestamp: event_log::now_timestamp(),
         });
+        log::info!("app::{type_id}: === SESSION START ===");
 
         Ok(Self {
             type_id,
@@ -2125,6 +2126,7 @@ mod tests;
 
 impl Drop for ProcessApp {
     fn drop(&mut self) {
+        log::info!("app::{}: === SESSION END ===", self.type_id);
         // Cancel active StreamProcess children (#675) — same escalation as
         // CancelProcess: SIGTERM, then SIGKILL after 1s on a background thread.
         for (corr_id, handle) in self.stream_handles.drain() {

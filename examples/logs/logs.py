@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Logs — live tail of ~/.plexi-beta/plexi.log, newest-first, color-coded by level."""
+"""Logs — live tail of the Plexi host log, filterable by level and substring."""
 
 import os
 import re
@@ -14,7 +14,6 @@ from plexi_sdk.ui import (
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-LOG_PATH = os.path.expanduser("~/.plexi-beta/plexi.log")
 POLL_MS  = 2_000
 TIMER_ID = "poll"
 
@@ -27,6 +26,9 @@ TIME_W   = 66.0   # "HH:MM:SS" at hint size
 BADGE_W  = 38.0   # "WARN" widest label
 TARGET_W = 150.0
 
+WIDTH_WIDE = 400.0
+WIDTH_TINY = 100.0
+
 FILTERS = ["ALL", "ERROR", "WARN", "INFO", "DEBUG"]
 
 LEVEL_COLOR: dict[str, str] = {
@@ -37,7 +39,6 @@ LEVEL_COLOR: dict[str, str] = {
     "TRACE": "#585b70",
 }
 
-# "#rrggbb33" — 20% alpha tint for badge background
 LEVEL_BG: dict[str, str] = {
     "ERROR": "#f38ba833",
     "WARN":  "#f9e2af33",
@@ -46,22 +47,54 @@ LEVEL_BG: dict[str, str] = {
     "TRACE": "#58597033",
 }
 
-ROW_ALT = "#1a1a2a"   # alternating row tint
+ROW_ALT = "#1a1a2a"
 
 _LOG_RE = re.compile(
     r"^\[(\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2}))\] \[(\w+)\] \[([^\]]+)\] (.*)$"
 )
 
+
+def _detect_log_path() -> str:
+    """Resolve the active channel's log file path.
+
+    Prefers PLEXI_CONFIG_DIR if injected by the host, then picks the most
+    recently modified log among known channel paths.
+    """
+    config_dir = os.environ.get("PLEXI_CONFIG_DIR")
+    if config_dir:
+        return os.path.join(config_dir, "plexi.log")
+    candidates = [
+        "~/.plexi-alpha/plexi.log",
+        "~/.plexi/plexi.log",
+        "~/.plexi-beta/plexi.log",
+    ]
+    best_path: str | None = None
+    best_mtime = 0.0
+    for p in candidates:
+        expanded = os.path.expanduser(p)
+        try:
+            mtime = os.path.getmtime(expanded)
+            if mtime > best_mtime:
+                best_mtime = mtime
+                best_path = expanded
+        except OSError:
+            pass
+    return best_path or os.path.expanduser("~/.plexi-alpha/plexi.log")
+
+
+LOG_PATH = _detect_log_path()
+
 # ── Data ───────────────────────────────────────────────────────────────────────
 
 class LogLine:
-    __slots__ = ("time", "level", "target", "message")
+    __slots__ = ("time", "level", "target", "message", "raw")
 
-    def __init__(self, time: str, level: str, target: str, message: str) -> None:
+    def __init__(self, time: str, level: str, target: str, message: str, raw: str) -> None:
         self.time    = time
         self.level   = level
         self.target  = target
         self.message = message
+        self.raw     = raw
 
 
 def _parse(raw: str) -> LogLine | None:
@@ -69,7 +102,7 @@ def _parse(raw: str) -> LogLine | None:
     if not m:
         return None
     _, time, level, target, message = m.groups()
-    return LogLine(time, level, target, message)
+    return LogLine(time, level, target, message, raw.rstrip())
 
 
 def _read_log(max_lines: int = 5_000) -> list[LogLine]:
@@ -93,8 +126,11 @@ class LogsApp(App):
         self._filter_idx: int   = 0
         self._scroll:     float = 0.0
         self._viewport_h: float = 400.0
+        self._search:     str   = ""
+        self._searching:  bool  = False
         ctx.status_summary("Logs")
-        ctx.set_timer(TIMER_ID, 50)   # near-immediate first load
+        ctx.info(f"logs: watching {LOG_PATH}")
+        ctx.set_timer(TIMER_ID, 50)
 
     def on_timer(self, ctx: RenderContext, timer_id: str) -> None:
         if timer_id != TIMER_ID:
@@ -103,11 +139,26 @@ class LogsApp(App):
         ctx.set_timer(TIMER_ID, POLL_MS)
 
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
+        if self._searching:
+            if key == "escape":
+                self._searching = False
+                self._search = ""
+                self._scroll = 0.0
+            elif key == "return":
+                self._searching = False
+            elif key == "backspace":
+                self._search = self._search[:-1]
+                self._scroll = 0.0
+            elif len(key) == 1:
+                self._search += key
+                self._scroll = 0.0
+            return
+
         step = ROW_H * 4
-        if key in ("j", "down", "down"):
+        if key in ("j", "down"):
             self._scroll += step
             self._clamp()
-        elif key in ("k", "up", "up"):
+        elif key in ("k", "up"):
             self._scroll = max(0.0, self._scroll - step)
         elif key == "g":
             self._scroll = 0.0
@@ -117,6 +168,10 @@ class LogsApp(App):
         elif key in ("1", "2", "3", "4", "5"):
             self._filter_idx = int(key) - 1
             self._scroll = 0.0
+        elif key == "/":
+            self._searching = True
+            self._search = ""
+            self._scroll = 0.0
 
     def _clamp(self) -> None:
         filtered = self._filtered()
@@ -125,39 +180,82 @@ class LogsApp(App):
 
     def _filtered(self) -> list[LogLine]:
         level = FILTERS[self._filter_idx]
-        if level == "ALL":
-            return self._lines
-        return [l for l in self._lines if l.level == level]
+        lines = self._lines if level == "ALL" else [l for l in self._lines if l.level == level]
+        if self._search:
+            q = self._search.lower()
+            lines = [l for l in lines if q in l.raw.lower()]
+        return lines
 
     def on_render(self, ctx: RenderContext) -> None:
         w, h = ctx.w, ctx.h
         filtered = self._filtered()
 
-        # ── background ──────────────────────────────────────────────────────
         ctx.rect(0, 0, w, h, BG)
+
+        # ── tiny mode: just an error/warn count badge ────────────────────────
+        if w <= WIDTH_TINY:
+            ctx.rect(0, 0, w, h, SURFACE)
+            error_count = sum(1 for l in self._lines if l.level == "ERROR")
+            warn_count  = sum(1 for l in self._lines if l.level == "WARN")
+            if error_count:
+                label = f"E{error_count}"
+                color = RED
+            elif warn_count:
+                label = f"W{warn_count}"
+                color = YELLOW
+            else:
+                label = "OK"
+                color = MUTED
+            ctx.text(PAD, h / 2 - TEXT_CAPTION / 2, label,
+                     size=TEXT_CAPTION, color=color, bold=True)
+            return
 
         # ── top bar ─────────────────────────────────────────────────────────
         ctx.rect(0, 0, w, BAR_H, SURFACE)
-        ctx.text(PAD, BAR_H / 2 - TEXT_CAPTION / 2, "Logs",
-                 size=TEXT_CAPTION, color=FG, bold=True)
 
-        chip_x = 48.0
-        for i, label in enumerate(FILTERS):
-            active  = i == self._filter_idx
-            chip_w  = len(label) * 6.5 + PAD * 2
-            chip_bg = ACCENT if active else HIGHLIGHT
-            chip_fg = BG     if active else MUTED
-            ctx.rect(chip_x, 6, chip_w, BAR_H - 12, chip_bg, radius=RADIUS_SM)
-            ctx.text(chip_x + PAD, 6 + (BAR_H - 12) / 2 - TEXT_HINT / 2,
-                     label, size=TEXT_HINT, color=chip_fg, bold=active)
-            chip_x += chip_w + 4
+        if self._searching:
+            ctx.text(PAD, BAR_H / 2 - TEXT_CAPTION / 2, "/ ",
+                     size=TEXT_CAPTION, color=ACCENT, bold=True)
+            ctx.text(PAD + 16, BAR_H / 2 - TEXT_CAPTION / 2,
+                     f"{self._search}▌",
+                     size=TEXT_CAPTION, color=FG)
+        else:
+            ctx.text(PAD, BAR_H / 2 - TEXT_CAPTION / 2, "Logs",
+                     size=TEXT_CAPTION, color=FG, bold=True)
+
+            if w >= WIDTH_WIDE:
+                chip_x = 48.0
+                for i, label in enumerate(FILTERS):
+                    active  = i == self._filter_idx
+                    chip_w  = len(label) * 6.5 + PAD * 2
+                    chip_bg = ACCENT if active else HIGHLIGHT
+                    chip_fg = BG     if active else MUTED
+                    ctx.rect(chip_x, 6, chip_w, BAR_H - 12, chip_bg, radius=RADIUS_SM)
+                    ctx.text(chip_x + PAD, 6 + (BAR_H - 12) / 2 - TEXT_HINT / 2,
+                             label, size=TEXT_HINT, color=chip_fg, bold=active)
+                    chip_x += chip_w + 4
+
+            if self._search:
+                search_text = f"/{self._search}"
+                ctx.text(w - len(search_text) * 6.5 - PAD,
+                         BAR_H / 2 - TEXT_HINT / 2,
+                         search_text, size=TEXT_HINT, color=ACCENT)
 
         # ── footer ──────────────────────────────────────────────────────────
         foot_y = h - FOOT_H
         ctx.rect(0, foot_y, w, FOOT_H, SURFACE)
-        ctx.text(PAD, foot_y + FOOT_H / 2 - TEXT_HINT / 2,
-                 f"j/k scroll · g/G top/bottom · 1–5 filter · {len(filtered)} lines",
-                 size=TEXT_HINT, color=MUTED)
+        if self._searching:
+            ctx.text(PAD, foot_y + FOOT_H / 2 - TEXT_HINT / 2,
+                     "Enter apply  Esc cancel",
+                     size=TEXT_HINT, color=MUTED)
+        elif w >= WIDTH_WIDE:
+            ctx.text(PAD, foot_y + FOOT_H / 2 - TEXT_HINT / 2,
+                     f"j/k scroll · g/G top/bottom · 1–5 filter · / search · {len(filtered)} lines",
+                     size=TEXT_HINT, color=MUTED)
+        else:
+            ctx.text(PAD, foot_y + FOOT_H / 2 - TEXT_HINT / 2,
+                     f"j/k · / search · {len(filtered)} lines",
+                     size=TEXT_HINT, color=MUTED)
 
         # ── log rows ────────────────────────────────────────────────────────
         list_y = BAR_H
@@ -165,45 +263,44 @@ class LogsApp(App):
         self._viewport_h = list_h
 
         if not filtered:
-            ctx.text(PAD, list_y + 16, "no log entries", size=TEXT_CAPTION, color=MUTED)
+            msg = "no matches" if (self._search or self._filter_idx) else "no log entries"
+            ctx.text(PAD, list_y + 16, msg, size=TEXT_CAPTION, color=MUTED)
             return
 
         ctx.push_clip(0, list_y, w, list_h)
 
         first = int(self._scroll / ROW_H)
         count = int(list_h / ROW_H) + 2
+        wide  = w >= WIDTH_WIDE
 
         for i in range(first, min(first + count, len(filtered))):
-            ll  = filtered[i]
+            ll    = filtered[i]
             row_y = list_y + i * ROW_H - self._scroll
 
-            # alternating stripe
             if i % 2 == 0:
                 ctx.rect(0, row_y, w, ROW_H, ROW_ALT)
 
-            x = PAD
-            text_y = row_y + ROW_H / 2 - TEXT_HINT / 2
-
-            # timestamp
-            ctx.text(x, text_y, ll.time,
-                     size=TEXT_HINT, color=MUTED, monospace=True)
-            x += TIME_W
-
-            # level badge
             lc = LEVEL_COLOR.get(ll.level, MUTED)
             lb = LEVEL_BG.get(ll.level, "#6c708633")
+            text_y = row_y + ROW_H / 2 - TEXT_HINT / 2
+            x = PAD
+
+            if wide:
+                ctx.text(x, text_y, ll.time,
+                         size=TEXT_HINT, color=MUTED, monospace=True)
+                x += TIME_W
+
             ctx.rect(x, row_y + 3, BADGE_W, ROW_H - 6, lb, radius=RADIUS_SM)
             ctx.text(x + 4, row_y + 3 + (ROW_H - 6) / 2 - TEXT_HINT / 2,
                      ll.level[:4], size=TEXT_HINT, color=lc, bold=True, monospace=True)
             x += BADGE_W + PAD
 
-            # target
-            ctx.text(x, text_y, ll.target,
-                     size=TEXT_HINT, color=MUTED,
-                     max_width=TARGET_W, elide=True)
-            x += TARGET_W + PAD
+            if wide:
+                ctx.text(x, text_y, ll.target,
+                         size=TEXT_HINT, color=MUTED,
+                         max_width=TARGET_W, elide=True)
+                x += TARGET_W + PAD
 
-            # message
             ctx.text(x, text_y, ll.message,
                      size=TEXT_HINT, color=FG,
                      max_width=w - x - PAD, elide=True)
