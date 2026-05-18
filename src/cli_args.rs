@@ -235,6 +235,14 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: RoutineCmd,
     },
+    /// Browse and open scratchpad notes created with Cmd+Shift+Space.
+    ///
+    /// Each scratchpad session writes a timestamped file to `<config_dir>/notes/`.
+    /// Use `plexi notes list` to print note paths, or `plexi notes open` to pick one with fzf.
+    Notes {
+        #[command(subcommand)]
+        cmd: Option<NotesCmd>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -546,4 +554,15 @@ pub enum RoutineCmd {
         /// Name of the routine to run
         name: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum NotesCmd {
+    /// Print paths of all scratchpad notes, newest first.
+    List,
+    /// Open a note picker with fzf in the focused terminal pane.
+    ///
+    /// Requires fzf to be installed. Falls back to printing the notes directory when fzf
+    /// is not available or PLEXI_SOCKET is not set.
+    Open,
 }

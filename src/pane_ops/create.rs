@@ -835,6 +835,13 @@ impl PlexiApp {
         };
 
         let path = scratchpad_file();
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::warn!("scratchpad: could not create notes dir {:?}: {e}", parent);
+            } else {
+                log::info!("scratchpad: notes dir {:?} ready", parent);
+            }
+        }
         let path_str = path.display().to_string();
         let escaped = crate::shell::shell_quote(&path_str);
         let editor = preferred_editor();
@@ -1565,9 +1572,11 @@ mod quick_note_tests {
     }
 }
 
-/// Stable scratchpad file path: `<config_dir>/scratchpad.md`.
+/// Timestamped scratchpad file path: `<config_dir>/notes/YYYY-MM-DD_HHMMSS.md`.
 fn scratchpad_file() -> PathBuf {
-    crate::config::config_dir().join("scratchpad.md")
+    use chrono::Local;
+    let timestamp = Local::now().format("%Y-%m-%d_%H%M%S").to_string();
+    crate::config::config_dir().join("notes").join(format!("{timestamp}.md"))
 }
 
 /// Resolve the preferred terminal editor: `micro` if available, else `nano`, then `vim`.
