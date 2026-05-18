@@ -50,6 +50,77 @@ pub(super) fn restore_overlay_replacement(
     }
 }
 
+/// Insert `new_pane_id` as a new tile next to `split_target` in `tree`.
+/// Pure tile/tree manipulation — no PlexiApp state, no focus history.
+///
+/// If `split_target` is `None` or the tree is empty, inserts as the new root.
+/// If `split_target`'s parent is already a Linear container in the requested
+/// direction, inserts as a sibling. Otherwise wraps `split_target` and the new
+/// tile in a fresh Linear container.
+///
+/// Returns the `TileId` of the newly inserted pane.
+pub(crate) fn insert_split_tile(
+    tree: &mut egui_tiles::Tree<PaneId>,
+    split_target: Option<egui_tiles::TileId>,
+    new_pane_id: PaneId,
+    vertical: bool,
+    share: crate::host::command::ShareRatio,
+    new_pane_first: bool,
+) -> egui_tiles::TileId {
+    use egui_tiles::LinearDir;
+
+    let new_tile = tree.tiles.insert_pane(new_pane_id);
+
+    // Empty tree or no split target → new pane becomes the root.
+    let Some(target) = split_target.or(tree.root) else {
+        tree.root = Some(new_tile);
+        return new_tile;
+    };
+
+    // LinearDir::Horizontal = side-by-side (left/right); Vertical = stacked (top/bottom).
+    // `vertical` here means "split vertically" (new pane to the right), so we need Horizontal.
+    let split_dir = if vertical { LinearDir::Horizontal } else { LinearDir::Vertical };
+    let parent = tree.tiles.parent_of(target);
+
+    let inserted_as_sibling = if let Some(parent_id) = parent {
+        if let Some(Tile::Container(Container::Linear(linear))) = tree.tiles.get_mut(parent_id) {
+            if linear.dir == split_dir {
+                if let Some(pos) = linear.children.iter().position(|&c| c == target) {
+                    let insert_pos = if new_pane_first { pos } else { pos + 1 };
+                    linear.children.insert(insert_pos, new_tile);
+                    true
+                } else { false }
+            } else { false }
+        } else { false }
+    } else { false };
+
+    if !inserted_as_sibling {
+        let ordered = if new_pane_first {
+            vec![new_tile, target]
+        } else {
+            vec![target, new_tile]
+        };
+        let container_tile = if vertical {
+            tree.tiles.insert_horizontal_tile(ordered)
+        } else {
+            tree.tiles.insert_vertical_tile(ordered)
+        };
+        if let Some(Tile::Container(Container::Linear(ref mut lin))) = tree.tiles.get_mut(container_tile) {
+            lin.shares.set_share(target, share.denominator);
+            lin.shares.set_share(new_tile, share.numerator);
+        }
+        if let Some(parent_id) = parent {
+            if let Some(Tile::Container(parent_container)) = tree.tiles.get_mut(parent_id) {
+                replace_child(parent_container, target, container_tile);
+            }
+        } else {
+            tree.root = Some(container_tile);
+        }
+    }
+
+    new_tile
+}
+
 impl PlexiApp {
     /// Route a HostAction through HostModel and return the resulting effects.
     pub(super) fn submit(&mut self, cmd: HostAction) -> Vec<HostEffect> {
@@ -73,66 +144,7 @@ impl PlexiApp {
         self.push_focus_history(old_window_id, old_focus);
 
         let ctx = &mut self.windows[self.active_window];
-        let parent = ctx.tree.tiles.parent_of(split_target);
-        let new_tile = ctx.tree.tiles.insert_pane(new_pane_id);
-
-        // LinearDir::Horizontal = side-by-side (left/right); Vertical = stacked (top/bottom).
-        // `vertical` here means "split vertically" (new pane to the right), so we need Horizontal.
-        let split_dir = if vertical {
-            egui_tiles::LinearDir::Horizontal
-        } else {
-            egui_tiles::LinearDir::Vertical
-        };
-
-        let inserted_as_sibling = if let Some(parent_id) = parent {
-            if let Some(Tile::Container(Container::Linear(linear))) =
-                ctx.tree.tiles.get_mut(parent_id)
-            {
-                if linear.dir == split_dir {
-                    if let Some(pos) = linear.children.iter().position(|&c| c == split_target) {
-                        let insert_pos = if new_pane_first { pos } else { pos + 1 };
-                        linear.children.insert(insert_pos, new_tile);
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        } else {
-            false
-        };
-
-        if !inserted_as_sibling {
-            let ordered = if new_pane_first {
-                vec![new_tile, split_target]
-            } else {
-                vec![split_target, new_tile]
-            };
-            let container_tile = if vertical {
-                ctx.tree.tiles.insert_horizontal_tile(ordered)
-            } else {
-                ctx.tree.tiles.insert_vertical_tile(ordered)
-            };
-
-            if let Some(Tile::Container(Container::Linear(ref mut lin))) =
-                ctx.tree.tiles.get_mut(container_tile)
-            {
-                lin.shares.set_share(split_target, share.denominator);
-                lin.shares.set_share(new_tile, share.numerator);
-            }
-
-            if let Some(parent_id) = parent {
-                if let Some(Tile::Container(parent_container)) = ctx.tree.tiles.get_mut(parent_id) {
-                    replace_child(parent_container, split_target, container_tile);
-                }
-            } else {
-                ctx.tree.root = Some(container_tile);
-            }
-        }
+        let new_tile = insert_split_tile(&mut ctx.tree, Some(split_target), new_pane_id, vertical, share, new_pane_first);
 
         ctx.focused_pane = Some(new_tile);
         Some(new_tile)
