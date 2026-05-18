@@ -267,6 +267,7 @@ pub struct PlexiApp {
     pub(crate) pending_context_close: Option<ContextCloseState>,
     pub(crate) show_context_inspector: bool,
     pub(crate) inspector_selected_pane: usize,
+    pub(crate) inspector_renaming: bool,
     pub(crate) inspector_delete_press_count: u8,
     pub(crate) inspector_delete_last_press: Option<std::time::Instant>,
     pub(crate) welcome_delete_press_count: u8,
@@ -878,6 +879,7 @@ impl PlexiApp {
                     quit_last_press: None,
                     show_context_inspector: false,
                     inspector_selected_pane: 0,
+                    inspector_renaming: false,
                     inspector_delete_press_count: 0,
                     inspector_delete_last_press: None,
                     welcome_delete_press_count: 0,
@@ -1002,6 +1004,7 @@ impl PlexiApp {
             quit_last_press: None,
             show_context_inspector: false,
             inspector_selected_pane: 0,
+            inspector_renaming: false,
             inspector_delete_press_count: 0,
             inspector_delete_last_press: None,
             welcome_delete_press_count: 0,
@@ -1136,6 +1139,7 @@ impl PlexiApp {
             quit_last_press: None,
             show_context_inspector: false,
             inspector_selected_pane: 0,
+            inspector_renaming: false,
             inspector_delete_press_count: 0,
             inspector_delete_last_press: None,
             welcome_delete_press_count: 0,
@@ -3212,6 +3216,7 @@ impl eframe::App for PlexiApp {
                 }
                 Action::ContextInspector => {
                     self.show_context_inspector = !self.show_context_inspector;
+                    self.inspector_renaming = false;
                     if self.show_context_inspector {
                         let focused_pane_id = self.windows[self.active_window]
                             .focused_pane
