@@ -2861,7 +2861,7 @@ mod tests {
         let json = r#"{"type":"set_context_description","description":"Main project workspace"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(HostCommand::SetContextDescription { description }) => {
+            DrawCommand::Host(AppRequest::SetContextDescription { description }) => {
                 assert_eq!(description, "Main project workspace");
             }
             other => panic!("expected SetContextDescription, got {other:?}"),
