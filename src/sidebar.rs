@@ -198,7 +198,7 @@ impl PlexiApp {
                         None
                     }
                 }).map(|s| {
-                    if s.len() > SUBTITLE_MAX_CHARS {
+                    if s.chars().count() > SUBTITLE_MAX_CHARS {
                         let mut truncated: String = s.chars().take(SUBTITLE_MAX_CHARS - 1).collect();
                         truncated.push('\u{2026}');
                         truncated
