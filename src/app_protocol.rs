@@ -1096,6 +1096,9 @@ pub enum AppRequest {
         /// Number of lines to capture from the end of the scrollback.
         lines: usize,
         response_file: String,
+        /// When true, preserve trailing empty lines. Defaults to false (strip them).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        full_output: bool,
     },
 
     /// Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.
@@ -2818,15 +2821,27 @@ mod tests {
         let json = r#"{"type":"capture_pane","pane_id":7,"lines":20,"response_file":"capture.json"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::CapturePane { pane_id, lines, response_file }) => {
+            DrawCommand::Host(AppRequest::CapturePane { pane_id, lines, response_file, full_output }) => {
                 assert_eq!(*pane_id, 7);
                 assert_eq!(*lines, 20);
                 assert_eq!(response_file, "capture.json");
+                assert!(!full_output, "full_output should default to false");
             }
             other => panic!("expected CapturePane, got {other:?}"),
         }
         let serialised = serde_json::to_string(&cmd).expect("serialise");
         assert!(serialised.contains(r#""type":"capture_pane""#), "wire tag missing: {serialised}");
+        assert!(!serialised.contains("full_output"), "full_output=false should be omitted from wire format: {serialised}");
+
+        // full_output=true should round-trip
+        let json_full = r#"{"type":"capture_pane","pane_id":7,"lines":20,"response_file":"capture.json","full_output":true}"#;
+        let cmd_full: DrawCommand = serde_json::from_str(json_full).expect("deserialise full_output");
+        match &cmd_full {
+            DrawCommand::Host(AppRequest::CapturePane { full_output, .. }) => {
+                assert!(*full_output, "full_output should be true when set");
+            }
+            other => panic!("expected CapturePane, got {other:?}"),
+        }
 
         // Missing required fields must fail
         let bad = r#"{"type":"capture_pane","pane_id":1}"#;

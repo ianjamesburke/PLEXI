@@ -1376,8 +1376,8 @@ impl PlexiApp {
                         }
                     }
                 }
-                crate::app_protocol::AppRequest::CapturePane { pane_id, lines, response_file } => {
-                    log::info!("pane_ipc: kind=capture_pane pane_id={pane_id} lines={lines} response_file={:?}", response_file);
+                crate::app_protocol::AppRequest::CapturePane { pane_id, lines, response_file, full_output } => {
+                    log::info!("pane_ipc: kind=capture_pane pane_id={pane_id} lines={lines} full_output={full_output} response_file={:?}", response_file);
                     let result = match self.windows.iter().find_map(|win| win.panes.get(pane_id)) {
                         None => {
                             log::warn!("pane_ipc: capture_pane: pane_id={pane_id} not found");
@@ -1388,7 +1388,17 @@ impl PlexiApp {
                                 log::warn!("pane_ipc: capture_pane: pane_id={pane_id} is not a terminal pane");
                                 Err(format!("pane {pane_id} is not a terminal pane"))
                             }
-                            Some(term) => Ok(term.backend.capture_lines(*lines)),
+                            Some(term) => {
+                                let mut captured = term.backend.capture_lines(*lines);
+                                if !full_output {
+                                    let trimmed = captured.iter().rposition(|l| !l.trim().is_empty())
+                                        .map(|pos| pos + 1)
+                                        .unwrap_or(0);
+                                    captured.truncate(trimmed);
+                                    log::info!("pane_ipc: capture_pane: stripped trailing empty lines, result len={}", captured.len());
+                                }
+                                Ok(captured)
+                            }
                         },
                     };
                     let json_str = match result {
