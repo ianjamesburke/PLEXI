@@ -595,6 +595,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         "context",
         "completions",
         "config",
+        "routine",
     ];
     let mut iter = args.iter().enumerate();
     // Skip argv[0] (binary name).
