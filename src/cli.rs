@@ -3832,7 +3832,9 @@ pub fn config_edit() -> i32 {
 
 pub fn config_get(key: &str) -> i32 {
     log::info!("config_get: resolving key={key}");
-    let config = crate::config::PlexiConfig::load();
+    let config = crate::config::PlexiConfig::load_with_workspace(
+        crate::config::active_workspace_root().as_deref(),
+    );
     let agents = config.agents.as_ref();
     let value = match key {
         "agents.low" => agents.map(|a| a.effective_low()).unwrap_or(crate::config::DEFAULT_AGENT_LOW),
