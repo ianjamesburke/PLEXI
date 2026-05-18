@@ -166,9 +166,11 @@ pub fn run_command(command_name: &str) -> i32 {
         return 1;
     }
 
-    // Spawn the command via sh -c with secrets injected as env vars
+    // Spawn the command via sh -c with secrets injected as env vars.
+    // PLEXI_CONFIG_DIR lets scripts reference channel-correct paths without hardcoding ~/.plexi/.
     let mut child_cmd = Command::new("sh");
     child_cmd.arg("-c").arg(&cmd_def.run);
+    child_cmd.env("PLEXI_CONFIG_DIR", crate::config::config_dir());
     for (key, value) in &resolved {
         child_cmd.env(key, value);
     }
