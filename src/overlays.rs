@@ -2004,8 +2004,8 @@ impl PlexiApp {
         self.collect_inspector_rows().1
     }
 
-    fn collect_inspector_rows(&self) -> (Vec<(String, Vec<PaneRow>)>, Vec<PaneId>, Vec<u64>) {
-        let mut groups: Vec<(String, Vec<PaneRow>)> = Vec::new();
+    fn collect_inspector_rows(&self) -> (Vec<(String, u64, Vec<PaneRow>)>, Vec<PaneId>, Vec<u64>) {
+        let mut groups: Vec<(String, u64, Vec<PaneRow>)> = Vec::new();
         let mut all_pane_ids: Vec<PaneId> = Vec::new();
         let mut all_context_ids: Vec<u64> = Vec::new();
         for ctx_entry in self.router.iter() {
@@ -2093,7 +2093,7 @@ impl PlexiApp {
                     all_pane_ids.push(r.id);
                     all_context_ids.push(cid);
                 }
-                groups.push((cname, rows));
+                groups.push((cname, cid, rows));
             }
         }
         (groups, all_pane_ids, all_context_ids)
@@ -2142,8 +2142,6 @@ impl PlexiApp {
 
         let (groups, all_pane_ids, all_context_ids) = self.collect_inspector_rows();
         let pane_count = all_pane_ids.len();
-
-        // Header title reflects the selected pane's context, not the router's active context.
         let selected_ctx_idx = all_context_ids
             .get(self.inspector_selected_pane)
             .and_then(|&cid| self.router.position(|c| c.context_id == cid))
@@ -2151,6 +2149,7 @@ impl PlexiApp {
         let ctx_name = self.router.get(selected_ctx_idx).name.clone();
         let ctx_root = self.router.get(selected_ctx_idx).root.clone();
         let ctx_description = self.router.get(selected_ctx_idx).description.clone();
+        let active_cid = self.router.active().context_id;
 
         if nav_down && pane_count > 0 {
             self.inspector_selected_pane = (self.inspector_selected_pane + 1) % pane_count;
@@ -2218,7 +2217,7 @@ impl PlexiApp {
                     .show(ui, |ui| {
                         ui.set_width(style::MODAL_WIDTH_MD);
                         let (want_root, want_desc, rename_clicked) = render_inspector_header(
-                            ui, &ctx_name, &ctx_root, &ctx_description, &colors,
+                            ui, "Workspace", &ctx_root, &ctx_description, &colors,
                             renaming, &mut self.rename_buffer,
                         );
                         if want_root { open_root_overlay = true; }
@@ -2236,9 +2235,15 @@ impl PlexiApp {
                                         ui.label(RichText::new("No panes").size(style::TEXT_BODY).color(colors.text_dim));
                                     } else {
                                         let mut global_idx: usize = 0;
-                                        for (group_name, rows) in &groups {
+                                        for (group_name, group_cid, rows) in &groups {
+                                            let is_active = *group_cid == active_cid;
                                             ui.add_space(style::SPACE_SM);
-                                            ui.label(RichText::new(group_name.as_str()).size(style::TEXT_CAPTION).color(colors.text_dim));
+                                            let group_label = RichText::new(group_name.as_str()).size(style::TEXT_CAPTION);
+                                            ui.label(if is_active {
+                                                group_label.color(colors.text_primary).strong()
+                                            } else {
+                                                group_label.color(colors.text_dim)
+                                            });
                                             ui.add_space(style::SPACE_SM);
                                             for row in rows {
                                                 let resp = render_inspector_pane_row(
@@ -2341,7 +2346,7 @@ impl PlexiApp {
             self.save_workspace();
         }
         if open_root_overlay {
-            let idx = selected_ctx_idx;
+            let idx = self.router.active_idx();
             let existing = self.router.get(idx).root.as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
