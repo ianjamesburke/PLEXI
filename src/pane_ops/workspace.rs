@@ -650,15 +650,7 @@ impl PlexiApp {
         let mut saved_windows = Vec::new();
 
         for ctx in self.router.iter() {
-            saved_contexts.push(crate::workspace::SavedContext {
-                name: ctx.name.clone(),
-                path: ctx.path.clone(),
-                root: ctx.root.clone(),
-                description: ctx.description.clone(),
-                context_id: ctx.context_id,
-                parent_id: ctx.parent_id,
-                depth: ctx.depth,
-            });
+            saved_contexts.push(ctx.clone());
         }
 
         for win in &self.windows {

@@ -1,3 +1,4 @@
+use crate::context::Context;
 use crate::tiling::PaneId;
 use egui_tiles::{TileId, Tree};
 use serde::{Deserialize, Serialize};
@@ -12,30 +13,11 @@ pub struct WorkspaceFile {
     pub active_context: usize,
     pub sidebar_visible: bool,
     pub next_pane_id: u64,
-    pub contexts: Vec<SavedContext>,
+    pub contexts: Vec<Context>,
     pub windows: Vec<SavedWindow>,
     /// context_id → last active window_id for that context.
     #[serde(default)]
     pub context_active_window: HashMap<u64, u64>,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct SavedContext {
-    pub name: String,
-    pub path: PathBuf,
-    /// Optional project root — persisted so contexts restore their root on relaunch.
-    #[serde(default)]
-    pub root: Option<PathBuf>,
-    /// Optional description — ambient intent for what you're doing in this context.
-    #[serde(default)]
-    pub description: Option<String>,
-    pub context_id: u64,
-    /// Parent context_id for sub-contexts. None = top-level.
-    #[serde(default)]
-    pub parent_id: Option<u64>,
-    /// Nesting depth. 0 = root level.
-    #[serde(default)]
-    pub depth: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -213,5 +195,45 @@ mod tests {
         let restored: SavedPane = serde_json::from_str(legacy_json)
             .expect("legacy SavedPane must deserialize");
         assert_eq!(restored.kind, SavedPaneKind::Terminal);
+    }
+
+    /// Context (formerly SavedContext) round-trips through JSON and handles
+    /// legacy files missing optional fields (root, description, parent_id, depth).
+    #[test]
+    fn context_serde_round_trip() {
+        let ctx = Context {
+            name: "dev".to_string(),
+            path: PathBuf::from("/projects/dev"),
+            root: Some(PathBuf::from("/projects/dev/src")),
+            description: Some("main workspace".to_string()),
+            context_id: 42,
+            parent_id: Some(1),
+            depth: 1,
+        };
+        let json = serde_json::to_string(&ctx).expect("serialize");
+        let restored: Context = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(restored.name, "dev");
+        assert_eq!(restored.context_id, 42);
+        assert_eq!(restored.parent_id, Some(1));
+        assert_eq!(restored.depth, 1);
+        assert_eq!(restored.root, Some(PathBuf::from("/projects/dev/src")));
+    }
+
+    /// Legacy workspace JSON without optional Context fields deserializes with defaults.
+    #[test]
+    fn legacy_context_without_optional_fields_deserializes() {
+        let legacy_json = r#"{
+            "name": "old-ctx",
+            "path": "/tmp",
+            "context_id": 7
+        }"#;
+        let restored: Context = serde_json::from_str(legacy_json)
+            .expect("legacy Context must deserialize");
+        assert_eq!(restored.name, "old-ctx");
+        assert_eq!(restored.context_id, 7);
+        assert_eq!(restored.parent_id, None);
+        assert_eq!(restored.depth, 0);
+        assert_eq!(restored.root, None);
+        assert_eq!(restored.description, None);
     }
 }

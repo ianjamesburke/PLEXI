@@ -840,18 +840,7 @@ impl PlexiApp {
                         next_id = next_id.max(win.window_id + 1);
                     }
                 }
-                let mut contexts = Vec::new();
-                for saved_ctx in ws.contexts {
-                    contexts.push(crate::context::Context {
-                        name: saved_ctx.name,
-                        path: saved_ctx.path,
-                        root: saved_ctx.root,
-                        description: saved_ctx.description,
-                        context_id: saved_ctx.context_id,
-                        parent_id: saved_ctx.parent_id,
-                        depth: saved_ctx.depth,
-                    });
-                }
+                let contexts = ws.contexts;
                 let active_ctx = ws.active_context.min(contexts.len().saturating_sub(1));
                 let active_ctx_id = contexts[active_ctx].context_id;
                 let active = ws.context_active_window.get(&active_ctx_id)

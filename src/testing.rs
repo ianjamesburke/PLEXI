@@ -208,6 +208,13 @@ impl HostHarness {
         })
     }
 
+    // ── Context management ────────────────────────────────────────────────────
+
+    /// Add a sub-context under the given parent context in the host model.
+    pub fn add_sub_context(&mut self, context_id: u64, parent_id: u64) {
+        self.app.host.add_context(context_id, Some(parent_id));
+    }
+
     // ── State inspection ─────────────────────────────────────────────────────
 
     /// Snapshot observable state from the app after the last frame.
