@@ -703,10 +703,11 @@ impl PlexiApp {
         ) {
             Ok(mut process) => {
                 process.permissions.allowed_hosts = perms.allowed_hosts;
+                let group = installed.launch.join_group.clone();
                 log::info!(
-                    "launch_app_by_path_with_layout: launched '{app_id}' from {app_path}"
+                    "launch_app_by_path_with_layout: launched '{app_id}' from {app_path} group={group:?}"
                 );
-                self.open_process_app_pane(&app_id, process, app_dir, None, layout_hint.as_deref());
+                self.open_process_app_pane(&app_id, process, app_dir, group, layout_hint.as_deref());
             }
             Err(e) => {
                 log::error!("launch_app_by_path_with_layout: failed to launch '{app_id}' from {app_path}: {e}");
