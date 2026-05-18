@@ -11,6 +11,8 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: write
+    env:
+      CARGO_TARGET_DIR: target
     steps:
       - uses: actions/checkout@v6
         with:
