@@ -46,7 +46,10 @@ fn key_pressed_no_repeat(input: &egui::InputState, key: egui::Key) -> bool {
     })
 }
 
-fn classify_key(input: &egui::InputState) -> Option<FileBrowserAction> {
+// in_search gates all letter keys so that j/k/h/l/s/r/slash fall through
+// to AppendText instead of firing navigation/action commands while the user
+// is typing a query. Arrow keys, Enter, Escape, and Backspace always work.
+fn classify_key(input: &egui::InputState, in_search: bool) -> Option<FileBrowserAction> {
     if key_pressed_no_repeat(input, egui::Key::Escape) {
         return Some(FileBrowserAction::Escape);
     }
@@ -54,12 +57,12 @@ fn classify_key(input: &egui::InputState) -> Option<FileBrowserAction> {
         return Some(FileBrowserAction::Backspace);
     }
     if input.key_pressed(egui::Key::ArrowDown)
-        || (input.key_pressed(egui::Key::J) && !input.modifiers.any())
+        || (!in_search && input.key_pressed(egui::Key::J) && !input.modifiers.any())
     {
         return Some(FileBrowserAction::SelectNext);
     }
     if input.key_pressed(egui::Key::ArrowUp)
-        || (input.key_pressed(egui::Key::K) && !input.modifiers.any())
+        || (!in_search && input.key_pressed(egui::Key::K) && !input.modifiers.any())
     {
         return Some(FileBrowserAction::SelectPrev);
     }
@@ -78,23 +81,23 @@ fn classify_key(input: &egui::InputState) -> Option<FileBrowserAction> {
     if !input.modifiers.command
         && (key_pressed_no_repeat(input, egui::Key::Enter)
             || key_pressed_no_repeat(input, egui::Key::ArrowRight)
-            || key_pressed_no_repeat(input, egui::Key::L))
+            || (!in_search && key_pressed_no_repeat(input, egui::Key::L)))
     {
         return Some(FileBrowserAction::Activate);
     }
     if !input.modifiers.command
         && (key_pressed_no_repeat(input, egui::Key::ArrowLeft)
-            || key_pressed_no_repeat(input, egui::Key::H))
+            || (!in_search && key_pressed_no_repeat(input, egui::Key::H)))
     {
         return Some(FileBrowserAction::NavigateUp);
     }
-    if key_pressed_no_repeat(input, egui::Key::Slash) && !input.modifiers.command {
+    if !in_search && key_pressed_no_repeat(input, egui::Key::Slash) && !input.modifiers.command {
         return Some(FileBrowserAction::EnterSearch);
     }
-    if key_pressed_no_repeat(input, egui::Key::S) && !input.modifiers.any() {
+    if !in_search && key_pressed_no_repeat(input, egui::Key::S) && !input.modifiers.any() {
         return Some(FileBrowserAction::ToggleSort);
     }
-    if key_pressed_no_repeat(input, egui::Key::R) && !input.modifiers.any() {
+    if !in_search && key_pressed_no_repeat(input, egui::Key::R) && !input.modifiers.any() {
         return Some(FileBrowserAction::Refresh);
     }
     let mut text = String::new();
@@ -831,7 +834,7 @@ impl App for FileBrowserApp {
         } else {
             Mode::Normal
         };
-        let action = classify_key(input);
+        let action = classify_key(input, self.in_search);
         log::debug!("file_browser: handle_key mode={mode:?} action={action:?}");
 
         match (mode, action) {
@@ -1218,5 +1221,116 @@ mod tests {
         assert!(consumed);
         assert_eq!(app.opened_files.len(), 1, "Enter in search mode on a file must call open_file");
         assert!(!app.in_search, "search mode must exit after opening a file");
+    }
+
+    // ── Search mode: letter keys must append to query, not fire vim actions ──
+    // Regression tests for issue #258.
+
+    #[test]
+    fn search_mode_h_does_not_navigate_up() {
+        let (mut app, _dir) = make_populated_dir_app();
+        let original_cwd = app.cwd.clone();
+        app.in_search = true;
+        app.refilter();
+        run_handle_key(&mut app, vec![key_event(Key::H, Modifiers::default())]);
+        assert_eq!(app.cwd, original_cwd, "H in search mode must not navigate to parent");
+    }
+
+    #[test]
+    fn search_mode_h_appends_to_query() {
+        let (mut app, _dir) = make_populated_dir_app();
+        app.in_search = true;
+        app.refilter();
+        run_handle_key(&mut app, vec![
+            key_event(Key::H, Modifiers::default()),
+            egui::Event::Text("h".to_string()),
+        ]);
+        assert_eq!(app.search_query, "h", "H in search mode must append to query");
+    }
+
+    #[test]
+    fn search_mode_l_does_not_activate() {
+        let (mut app, _dir) = make_file_only_dir_app();
+        app.in_search = true;
+        app.refilter();
+        run_handle_key(&mut app, vec![key_event(Key::L, Modifiers::default())]);
+        assert!(app.opened_files.is_empty(), "L in search mode must not open a file");
+    }
+
+    #[test]
+    fn search_mode_l_appends_to_query() {
+        let (mut app, _dir) = make_populated_dir_app();
+        app.in_search = true;
+        app.refilter();
+        run_handle_key(&mut app, vec![
+            key_event(Key::L, Modifiers::default()),
+            egui::Event::Text("l".to_string()),
+        ]);
+        assert_eq!(app.search_query, "l", "L in search mode must append to query");
+    }
+
+    #[test]
+    fn search_mode_j_appends_to_query() {
+        let (mut app, _dir) = make_populated_dir_app();
+        app.in_search = true;
+        app.refilter();
+        run_handle_key(&mut app, vec![
+            key_event(Key::J, Modifiers::default()),
+            egui::Event::Text("j".to_string()),
+        ]);
+        assert_eq!(app.search_query, "j", "J in search mode must append to query");
+    }
+
+    #[test]
+    fn search_mode_k_appends_to_query() {
+        let (mut app, _dir) = make_populated_dir_app();
+        app.in_search = true;
+        app.refilter();
+        run_handle_key(&mut app, vec![
+            key_event(Key::K, Modifiers::default()),
+            egui::Event::Text("k".to_string()),
+        ]);
+        assert_eq!(app.search_query, "k", "K in search mode must append to query");
+    }
+
+    #[test]
+    fn search_mode_s_does_not_toggle_sort() {
+        let (mut app, _dir) = make_populated_dir_app();
+        let original_sort = app.sort_mode;
+        app.in_search = true;
+        app.refilter();
+        run_handle_key(&mut app, vec![
+            key_event(Key::S, Modifiers::default()),
+            egui::Event::Text("s".to_string()),
+        ]);
+        assert_eq!(app.sort_mode, original_sort, "S in search mode must not toggle sort");
+        assert_eq!(app.search_query, "s", "S in search mode must append to query");
+    }
+
+    #[test]
+    fn search_mode_r_appends_to_query() {
+        let (mut app, _dir) = make_populated_dir_app();
+        app.in_search = true;
+        app.refilter();
+        run_handle_key(&mut app, vec![
+            key_event(Key::R, Modifiers::default()),
+            egui::Event::Text("r".to_string()),
+        ]);
+        assert_eq!(app.search_query, "r", "R in search mode must append to query");
+    }
+
+    #[test]
+    fn arrow_down_still_selects_next_in_search() {
+        let (mut app, _dir) = make_populated_dir_app();
+        // add a second file so there's something to move to
+        std::fs::write(app.cwd.join("other.txt"), b"x").expect("write");
+        app.refresh();
+        app.in_search = true;
+        app.refilter();
+        assert!(app.search_indices.len() >= 2, "need at least 2 entries for this test");
+        let before = app.selected;
+        run_handle_key(&mut app, vec![key_event(Key::ArrowDown, Modifiers::default())]);
+        assert_eq!(app.selected, before + 1, "↓ must still move selection in search mode");
+        assert_eq!(app.search_query, "", "↓ must not append to query");
     }
 }
