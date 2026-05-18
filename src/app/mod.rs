@@ -205,7 +205,7 @@ pub struct PlexiApp {
     pub(crate) show_shortcuts: bool,
     pub(crate) show_changelog: bool,
     pub(crate) show_cli_setup_prompt: bool,
-    /// `None` = idle, `Some(true)` = found, `Some(false)` = not found.
+    /// `None` = idle/success (modal closes on success), `Some(false)` = not found.
     pub(crate) cli_setup_check_result: Option<bool>,
     pub(crate) quitting: bool,
     pub(crate) quit_press_count: u8,
