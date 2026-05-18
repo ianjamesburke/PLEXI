@@ -1247,8 +1247,8 @@ impl PlexiApp {
                         log::warn!("pane_ipc: close_pane: pane_id={pane_id} not found");
                     }
                 }
-                crate::app_protocol::AppRequest::SpawnPane { type_id, layout, args, ephemeral, response_file, from_pane_id, cwd, no_focus, .. } => {
-                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id} layout={layout:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} response_file={response_file:?}");
+                crate::app_protocol::AppRequest::SpawnPane { type_id, layout, args, ephemeral, response_file, from_pane_id, cwd, no_focus, path, .. } => {
+                    log::info!("pane_ipc: kind=spawn_pane type_id={type_id} path={path:?} layout={layout:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} response_file={response_file:?}");
                     let new_pane_id = self.host.next_pane_id();
 
                     // Override focused_pane for the split if from_pane_id is specified,
@@ -1288,6 +1288,8 @@ impl PlexiApp {
                             log::info!("pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
                             self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral, cwd_override);
                         }
+                    } else if let Some(path_str) = path {
+                        self.launch_app_by_path_with_layout(path_str, layout.clone());
                     } else {
                         self.launch_app_by_id_with_layout(type_id, layout.clone(), args, cwd_override);
                     }
@@ -1528,8 +1530,9 @@ impl PlexiApp {
                 continue;
             };
             let type_id = val["type_id"].as_str().unwrap_or("").to_string();
-            if type_id.is_empty() {
-                log::warn!("spawn-queue: entry missing type_id, skipping");
+            let path = val["path"].as_str().map(|s| s.to_string());
+            if type_id.is_empty() && path.is_none() {
+                log::warn!("spawn-queue: entry missing type_id and path, skipping");
                 continue;
             }
             let layout = val["layout"].as_str().map(|s| s.to_string());
@@ -1544,7 +1547,7 @@ impl PlexiApp {
                 .unwrap_or_default();
             let cwd_override: Option<std::path::PathBuf> = val["cwd"].as_str().map(std::path::PathBuf::from);
             let no_focus = val["no_focus"].as_bool().unwrap_or(false);
-            log::info!("spawn-queue: launching '{type_id}' layout={layout:?} ephemeral={ephemeral} no_focus={no_focus} cwd={cwd_override:?}");
+            log::info!("spawn-queue: launching '{type_id}' path={path:?} layout={layout:?} ephemeral={ephemeral} no_focus={no_focus} cwd={cwd_override:?}");
             let active = self.active_window;
             let original_focused = self.windows[active].focused_pane;
             if type_id == "terminal" {
@@ -1552,6 +1555,8 @@ impl PlexiApp {
                 let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
                 let initial_cmd = cmd_from_args(&args);
                 self.split_focused(vertical, initial_cmd.as_deref(), ephemeral, cwd_override);
+            } else if let Some(ref path_str) = path {
+                self.launch_app_by_path_with_layout(path_str, layout);
             } else {
                 self.launch_app_by_id_with_layout(&type_id, layout, &args, cwd_override);
             }

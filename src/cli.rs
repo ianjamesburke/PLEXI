@@ -542,11 +542,11 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
         }
     };
 
-    let workspace_root = crate::app_registry::resolve_workspace_root(&cwd);
-    let (app_dir, should_link) = if workspace_root.is_some() {
-        (cwd.join("apps").join(name), true)
+    let has_workspace = crate::app_registry::resolve_workspace_root(&cwd).is_some();
+    let app_dir = if has_workspace {
+        cwd.join("apps").join(name)
     } else {
-        (cwd.join(name), false)
+        cwd.join(name)
     };
 
     if app_dir.exists() {
@@ -567,42 +567,21 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
     match result {
         Ok(()) => {
             println!("Created app '{name}' at {}", app_dir.display());
-            if should_link {
-                let path_str = app_dir.to_string_lossy().to_string();
-                let rc = app_link(&path_str);
-                if rc != 0 {
-                    eprintln!("warning: created app but auto-link failed (run `plexi app link {}` manually)", app_dir.display());
-                }
-            }
             if lang == "rust" {
                 println!("\nNext steps:");
                 println!("  cd {}", app_dir.display());
                 println!("  cargo build --release");
-                println!("  # then run: plexi open {name}");
+                println!("  # then run: plexi app run {}", app_dir.display());
             } else {
+                println!("  Run with: plexi app run {}", app_dir.display());
                 // Auto-open the app if PLEXI_SOCKET is set (running inside a pane).
-                // The host rescans the registry on cache miss, so newly scaffolded
-                // apps are immediately openable without restarting Plexi.
                 if std::env::var("PLEXI_SOCKET").is_ok() {
-                    let from_pane_id = match std::env::var("PLEXI_PANE_ID") {
-                        Ok(s) => match s.parse::<u64>() {
-                            Ok(id) => Some(id),
-                            Err(_) => {
-                                log::warn!("app_init: PLEXI_PANE_ID is set but not a valid number: {s}");
-                                None
-                            }
-                        },
-                        Err(_) => None,
-                    };
-                    let workspace_cwd = workspace_root.as_ref().and_then(|p| p.to_str()).map(|s| s.to_string());
-                    log::info!("app_init: auto-opening '{name}' via socket from_pane_id={from_pane_id:?} workspace_cwd={workspace_cwd:?}");
-                    let exit_code = crate::cli::open_cli(name, &[], None, from_pane_id, workspace_cwd.as_deref());
+                    let path_str = app_dir.to_string_lossy().to_string();
+                    log::info!("app_init: auto-opening '{name}' via app_run from_path={path_str}");
+                    let exit_code = app_run(&path_str);
                     if exit_code != 0 {
-                        eprintln!("warning: app created but could not auto-open '{name}' (exit {exit_code}) — run: plexi open {name}");
+                        eprintln!("warning: app created but could not auto-open (exit {exit_code}) — run: plexi app run {}", app_dir.display());
                     }
-                } else {
-                    println!("\nRun inside a Plexi pane to open it immediately:");
-                    println!("  plexi open {name}");
                 }
             }
             0
@@ -784,6 +763,7 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> 
 
 /// `plexi app link <path>` — register a local app directory with the nearest workspace.
 pub fn app_link(path: &str) -> i32 {
+    eprintln!("deprecated: `plexi app link` is deprecated — use `plexi app run <path>` instead");
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => { eprintln!("error: {e}"); return 1; }
@@ -881,6 +861,7 @@ pub fn app_link(path: &str) -> i32 {
 
 /// `plexi app unlink <path>` — remove a linked app directory from the workspace registry.
 pub fn app_unlink(path: &str) -> i32 {
+    eprintln!("deprecated: `plexi app unlink` is deprecated — use `plexi app run <path>` instead");
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => { eprintln!("error: {e}"); return 1; }
@@ -943,6 +924,122 @@ pub fn app_unlink(path: &str) -> i32 {
     }
 
     println!("Unlinked: {}", app_dir.display());
+    0
+}
+
+/// `plexi app run <path>` — open any directory with a valid manifest.toml as an app pane.
+///
+/// No install, no link required. Edits take effect on next launch.
+pub fn app_run(path: &str) -> i32 {
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => { eprintln!("error: {e}"); return 1; }
+    };
+    let app_dir = if std::path::Path::new(path).is_absolute() {
+        std::path::PathBuf::from(path)
+    } else {
+        cwd.join(path)
+    };
+    let app_dir = match app_dir.canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: could not resolve {path}: {e}");
+            return 1;
+        }
+    };
+    // Validate manifest.toml exists and parses
+    let manifest_path = app_dir.join("manifest.toml");
+    if !manifest_path.exists() {
+        eprintln!("error: no manifest.toml found in {}", app_dir.display());
+        eprintln!("  Is this a Plexi app directory? Run `plexi app init <name>` to scaffold one.");
+        return 1;
+    }
+    let manifest_str = match std::fs::read_to_string(&manifest_path) {
+        Ok(s) => s,
+        Err(e) => { eprintln!("error: could not read manifest.toml: {e}"); return 1; }
+    };
+    let _: toml::Value = match toml::from_str(&manifest_str) {
+        Ok(v) => v,
+        Err(e) => { eprintln!("error: manifest.toml parse failed: {e}"); return 1; }
+    };
+    let abs_path = app_dir.to_string_lossy().to_string();
+    log::info!("app_run:cli: launching app from path={abs_path}");
+
+    if std::env::var("PLEXI_SOCKET").is_ok() {
+        let id = uuid::Uuid::new_v4();
+        let response_file = crate::config::config_dir()
+            .join(format!("spawn-pane-response-{id}.json"))
+            .to_string_lossy()
+            .into_owned();
+        let from_pane_id = std::env::var("PLEXI_PANE_ID")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok());
+        let mut payload = serde_json::json!({
+            "type": "spawn_pane",
+            "type_id": "",
+            "path": abs_path,
+            "response_file": response_file,
+        });
+        if let Some(pid) = from_pane_id {
+            payload["from_pane_id"] = serde_json::Value::Number(pid.into());
+        }
+        log::info!("app_run:cli: sending via socket path={abs_path} response_file={response_file}");
+        let code = send_to_socket(payload);
+        if code != 0 {
+            return code;
+        }
+        let response_path = std::path::PathBuf::from(&response_file);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if response_path.exists() {
+                match std::fs::read_to_string(&response_path) {
+                    Ok(content) => {
+                        let _ = std::fs::remove_file(&response_path);
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
+                                println!("{pid}");
+                                return 0;
+                            }
+                        }
+                        print!("{content}");
+                        return 0;
+                    }
+                    Err(e) => {
+                        eprintln!("error: could not read response file: {e}");
+                        return 1;
+                    }
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                eprintln!("error: timed out waiting for open response");
+                return 1;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    // Fallback: write to spawn-queue
+    let queue_dir = crate::config::config_dir().join("spawn-queue");
+    if let Err(e) = std::fs::create_dir_all(&queue_dir) {
+        eprintln!("error: could not create spawn queue: {e}");
+        return 1;
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let queue_payload = serde_json::json!({
+        "type_id": "",
+        "path": abs_path,
+    });
+    let file = queue_dir.join(format!("{ts}.json"));
+    if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {
+        eprintln!("error: could not write spawn request: {e}");
+        return 1;
+    }
+    log::info!("app_run:cli: queued path={abs_path}");
+    println!("queued: run {abs_path}");
+    println!("(running outside a Plexi pane — Plexi will pick this up within a second)");
     0
 }
 
@@ -4380,5 +4477,33 @@ mod secret_set_tests {
         // a bare temp dir with no .plexi returns None, proving the walk stops.
         let bare: TempDir = tempfile::tempdir().unwrap();
         assert!(crate::app_registry::resolve_workspace_root(bare.path()).is_none());
+    }
+}
+
+#[cfg(test)]
+mod app_run_tests {
+    use tempfile::TempDir;
+
+    #[test]
+    fn app_run_nonexistent_path_returns_1() {
+        let code = super::app_run("/tmp/plexi-test-nonexistent-path-xyzzy-12345");
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn app_run_dir_without_manifest_returns_1() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let code = super::app_run(&path);
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn app_run_invalid_manifest_returns_1() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("manifest.toml"), "this is not valid toml ][[[").unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let code = super::app_run(&path);
+        assert_eq!(code, 1);
     }
 }

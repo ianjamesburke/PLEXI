@@ -1031,6 +1031,10 @@ pub enum AppRequest {
         cwd: Option<String>,
         #[serde(default, skip_serializing_if = "is_false")]
         no_focus: bool,
+        /// When set, the host launches the app directly from this filesystem path
+        /// rather than looking it up in the registry by type_id.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`

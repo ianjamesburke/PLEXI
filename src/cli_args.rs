@@ -337,6 +337,14 @@ pub enum AppCmd {
         /// Path to the app folder (the same path you passed to `link`)
         path: String,
     },
+    /// Run an app directly from a local directory without installing or linking.
+    ///
+    /// Opens the app in a pane immediately. Edits to the app take effect on next launch.
+    /// Replaces `plexi app link` for development workflows.
+    Run {
+        /// Path to the app folder containing manifest.toml
+        path: String,
+    },
 }
 
 #[derive(Subcommand)]
