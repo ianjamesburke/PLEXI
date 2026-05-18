@@ -36,7 +36,11 @@ fn print_tip(msg: &str) {
     let enabled = config.cli.as_ref().and_then(|c| c.tips).unwrap_or(true);
     if enabled {
         log::info!("cli:tip: {msg}");
-        eprintln!("\x1b[2mtip: {msg}\x1b[0m");
+        if std::env::var_os("NO_COLOR").is_none() {
+            eprintln!("\x1b[2mtip: {msg}\x1b[0m");
+        } else {
+            eprintln!("tip: {msg}");
+        }
     }
 }
 
@@ -190,7 +194,7 @@ pub fn run_command(command_name: &str) -> i32 {
         Ok(status) => {
             let code = status.code().unwrap_or(1);
             if code == 0 {
-                print_tip("run `plexi run list` to see all available commands.");
+                print_tip("run `plexi run` to see all available commands.");
             }
             code
         }
@@ -716,7 +720,7 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
                 println!("  cd {}", app_dir.display());
                 println!("  cargo build --release");
                 println!("  # then run: plexi app run {}", app_dir.display());
-                print_tip("link your app globally with `plexi app link .` so you can open it from any context.");
+                print_tip("install your app globally with `plexi app install .` so you can open it from any context.");
             } else {
                 println!("  Run with: plexi app run {}", app_dir.display());
                 // Auto-open the app if PLEXI_SOCKET is set (running inside a pane).
@@ -728,7 +732,7 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
                         eprintln!("warning: app created but could not auto-open (exit {exit_code}) — run: plexi app run {}", app_dir.display());
                     }
                 } else {
-                    print_tip("link your app globally with `plexi app link .` so you can open it from any context.");
+                    print_tip("install your app globally with `plexi app install .` so you can open it from any context.");
                 }
             }
             0
