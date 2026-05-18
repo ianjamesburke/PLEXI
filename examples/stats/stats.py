@@ -18,9 +18,11 @@ PALETTE = [
 
 BREADCRUMB_H = 24.0
 STATS_BAR_H = 34.0
-TIMELINE_H = 50.0
-MIN_CELL_W = 60.0
-MIN_CELL_H = 40.0
+NODE_W = 120.0
+NODE_H = 44.0
+NODE_H_GAP = 28.0
+NODE_V_GAP = 60.0
+EDGE_COLOR = "#45475a"
 HOME = str(Path.home())
 
 
@@ -32,12 +34,20 @@ def _shorten(path: str) -> str:
     return path
 
 
+def _label(path: str) -> str:
+    short = _shorten(path)
+    parts = short.rstrip("/").split("/")
+    return parts[-1] if parts[-1] else short
+
+
 def _fmt_duration(secs: float) -> str:
     h = int(secs) // 3600
     m = (int(secs) % 3600) // 60
     if h > 0:
         return f"{h}h {m:02d}m"
-    return f"{m}m"
+    if m > 0:
+        return f"{m}m"
+    return f"{int(secs)}s"
 
 
 def _resolve_events_path() -> Path | None:
@@ -79,162 +89,157 @@ def _parse_events(path: Path, hours: int = 24) -> list[dict]:
                     events.append(ev)
     except OSError:
         pass
-    return events
+    return sorted(events, key=lambda e: e["_ts"])
 
 
-class TreeNode:
-    __slots__ = ("path", "label", "self_duration", "total_duration", "visits",
-                 "children", "color_index")
+# --- DAG data structures ---
 
-    def __init__(self, path: str, label: str):
+class FlowNode:
+    __slots__ = ("path", "label", "total_duration", "visits", "color_index",
+                 "layer", "col", "x", "y")
+
+    def __init__(self, path: str):
         self.path = path
-        self.label = label
-        self.self_duration = 0.0
+        self.label = _label(path)
         self.total_duration = 0.0
         self.visits = 0
-        self.children: list[TreeNode] = []
         self.color_index = 0
+        self.layer = 0
+        self.col = 0
+        self.x = 0.0
+        self.y = 0.0
 
 
-def _build_tree(events: list[dict]) -> TreeNode:
-    by_cwd: dict[str, tuple[float, int]] = {}
+class FlowEdge:
+    __slots__ = ("src", "dst", "count")
+
+    def __init__(self, src: str, dst: str):
+        self.src = src
+        self.dst = dst
+        self.count = 1
+
+
+def _build_dag(events: list[dict]) -> tuple[dict[str, FlowNode], list[FlowEdge]]:
+    nodes: dict[str, FlowNode] = {}
+    edges: dict[tuple[str, str], FlowEdge] = {}
+    color_map: dict[str, int] = {}
+    color_counter = [0]
+
+    def _color(path: str) -> int:
+        top = path.replace(HOME, "").strip("/").split("/")[0] or "~"
+        if top not in color_map:
+            color_map[top] = color_counter[0] % len(PALETTE)
+            color_counter[0] += 1
+        return color_map[top]
+
+    prev_cwd: str | None = None
     for ev in events:
         cwd = ev.get("cwd") or HOME
-        dur = ev.get("duration_secs", 0)
-        prev = by_cwd.get(cwd, (0.0, 0))
-        by_cwd[cwd] = (prev[0] + dur, prev[1] + 1)
+        dur = ev.get("duration_secs", 0.0)
 
-    root = TreeNode(HOME, "~")
-    nodes: dict[str, TreeNode] = {HOME: root}
+        if cwd not in nodes:
+            n = FlowNode(cwd)
+            n.color_index = _color(cwd)
+            nodes[cwd] = n
+        nodes[cwd].total_duration += dur
+        nodes[cwd].visits += 1
 
-    for cwd in sorted(by_cwd.keys()):
-        parts = cwd.split("/")
-        for i in range(1, len(parts) + 1):
-            prefix = "/".join(parts[:i]) or "/"
-            if prefix not in nodes:
-                parent_path = "/".join(parts[:i - 1]) or "/"
-                parent = nodes.get(parent_path, root)
-                node = TreeNode(prefix, parts[i - 1] if i > 0 else "/")
-                nodes[prefix] = node
-                parent.children.append(node)
-
-    for cwd, (dur, visits) in by_cwd.items():
-        node = nodes.get(cwd)
-        if node:
-            node.self_duration = dur
-            node.visits = visits
-
-    def rollup(n: TreeNode) -> float:
-        child_total = sum(rollup(c) for c in n.children)
-        n.total_duration = n.self_duration + child_total
-        n.children.sort(key=lambda c: c.total_duration, reverse=True)
-        return n.total_duration
-
-    rollup(root)
-
-    for i, child in enumerate(root.children):
-        _assign_colors(child, i)
-
-    return root
-
-
-def _assign_colors(node: TreeNode, base_index: int) -> None:
-    node.color_index = base_index
-    for child in node.children:
-        _assign_colors(child, base_index)
-
-
-def _squarify(items: list[tuple[TreeNode, float]], rect: tuple[float, float, float, float]) -> list[tuple[TreeNode, float, float, float, float]]:
-    if not items:
-        return []
-    x, y, w, h = rect
-    if w <= 0 or h <= 0:
-        return []
-
-    total = sum(v for _, v in items)
-    if total <= 0:
-        return []
-
-    result: list[tuple[TreeNode, float, float, float, float]] = []
-
-    remaining = list(items)
-    rx, ry, rw, rh = x, y, w, h
-
-    while remaining:
-        rem_total = sum(v for _, v in remaining)
-        if rem_total <= 0:
-            break
-
-        short_side = min(rw, rh)
-        if short_side <= 0:
-            break
-
-        row: list[tuple[TreeNode, float]] = []
-        row_area = 0.0
-        best_ratio = float("inf")
-
-        for node, val in remaining:
-            test_row = row + [(node, val)]
-            test_area = row_area + val
-            area_frac = (test_area / rem_total) * rw * rh
-            long_side = area_frac / short_side if short_side > 0 else 0
-
-            worst = 0.0
-            for _, rv in test_row:
-                cell_frac = rv / test_area if test_area > 0 else 0
-                cell_long = long_side * cell_frac
-                cell_short = area_frac / long_side if long_side > 0 else 0
-                if cell_long > 0 and cell_short > 0:
-                    ratio = max(cell_long / cell_short, cell_short / cell_long)
-                    worst = max(worst, ratio)
-
-            if worst <= best_ratio:
-                row = test_row
-                row_area = test_area
-                best_ratio = worst
+        if prev_cwd is not None and prev_cwd != cwd:
+            key = (prev_cwd, cwd)
+            if key in edges:
+                edges[key].count += 1
             else:
-                break
+                edges[key] = FlowEdge(prev_cwd, cwd)
+        prev_cwd = cwd
 
-        row_frac = row_area / rem_total if rem_total > 0 else 0
-        if rw >= rh:
-            row_w = rw * row_frac
-            cy = ry
-            for node, val in row:
-                cell_frac = val / row_area if row_area > 0 else 0
-                cell_h = rh * cell_frac
-                result.append((node, rx, cy, row_w, cell_h))
-                cy += cell_h
-            rx += row_w
-            rw -= row_w
-        else:
-            row_h = rh * row_frac
-            cx = rx
-            for node, val in row:
-                cell_frac = val / row_area if row_area > 0 else 0
-                cell_w = rw * cell_frac
-                result.append((node, cx, ry, cell_w, row_h))
-                cx += cell_w
-            ry += row_h
-            rh -= row_h
+    return nodes, list(edges.values())
 
-        remaining = remaining[len(row):]
 
-    return result
+def _layout_dag(
+    nodes: dict[str, FlowNode],
+    edges: list[FlowEdge],
+    canvas_w: float,
+    _canvas_h: float,
+    scroll_x: float,
+    scroll_y: float,
+) -> None:
+    if not nodes:
+        return
 
+    # Build adjacency for layer assignment
+    out_edges: dict[str, list[str]] = {k: [] for k in nodes}
+    in_degree: dict[str, int] = {k: 0 for k in nodes}
+    for e in edges:
+        if e.src in nodes and e.dst in nodes:
+            out_edges[e.src].append(e.dst)
+            in_degree[e.dst] = in_degree.get(e.dst, 0) + 1
+
+    # BFS layer assignment from sources
+    layer: dict[str, int] = {}
+    queue = [k for k, d in in_degree.items() if d == 0]
+    if not queue:
+        queue = sorted(nodes.keys(), key=lambda k: -nodes[k].visits)
+
+    while queue:
+        nxt = queue.pop(0)
+        if nxt in layer:
+            continue
+        max_pred = -1
+        for e in edges:
+            if e.dst == nxt and e.src in layer:
+                max_pred = max(max_pred, layer[e.src])
+        layer[nxt] = max_pred + 1
+        for succ in out_edges.get(nxt, []):
+            queue.append(succ)
+
+    max_layer = max(layer.values()) if layer else 0
+    for k in nodes:
+        if k not in layer:
+            layer[k] = max_layer + 1
+
+    # Assign columns within each layer sorted by visits descending
+    by_layer: dict[int, list[str]] = {}
+    for k, l in layer.items():
+        by_layer.setdefault(l, []).append(k)
+    for l in by_layer:
+        by_layer[l].sort(key=lambda k: -nodes[k].visits)
+
+    # Compute positions centered horizontally per layer
+    for l, keys in by_layer.items():
+        row_count = len(keys)
+        row_w = row_count * NODE_W + (row_count - 1) * NODE_H_GAP
+        start_x = max(0.0, (canvas_w - row_w) / 2) + scroll_x
+        for col, k in enumerate(keys):
+            n = nodes[k]
+            n.layer = l
+            n.col = col
+            n.x = start_x + col * (NODE_W + NODE_H_GAP)
+            n.y = BREADCRUMB_H + 16 + l * (NODE_H + NODE_V_GAP) + scroll_y
+
+
+# --- App ---
 
 class StatsApp(App):
 
     async def on_init(self, ctx: RenderContext) -> None:
-        self.root: TreeNode | None = None
-        self.view_root: TreeNode | None = None
-        self.view_stack: list[TreeNode] = []
-        self.cells: list[tuple[TreeNode, float, float, float, float]] = []
-        self.timeline: list[tuple[float, float, str, int]] = []
+        self.nodes: dict[str, FlowNode] = {}
+        self.edges: list[FlowEdge] = []
+        self.highlighted: str | None = None
+        self.highlight_chain: set[str] = set()
         self.total_time = 0.0
         self.total_visits = 0
-        self.total_projects = 0
+        self.context_switches = 0
+        self.dominant: str | None = None
         self.events_path: Path | None = None
-        self.highlight_path: str | None = None
+        self.scroll_x = 0.0
+        self.scroll_y = 0.0
+        self._dragging = False
+        self._drag_sx = 0.0
+        self._drag_sy = 0.0
+        self._drag_ox = 0.0
+        self._drag_oy = 0.0
+        self._layout_w = 0.0
+        self._layout_h = 0.0
         self._load(ctx)
         self.emit.info("stats: initialized")
 
@@ -242,178 +247,222 @@ class StatsApp(App):
         self.events_path = _resolve_events_path()
         if not self.events_path:
             self.emit.warn("stats: no events.jsonl found")
-            self.root = None
-            self.view_root = None
-            self.view_stack = []
-            self.timeline = []
+            self.nodes = {}
+            self.edges = []
             self.total_time = 0.0
             self.total_visits = 0
-            self.total_projects = 0
+            self.context_switches = 0
+            self.dominant = None
             return
 
         events = _parse_events(self.events_path)
-        self.emit.info(f"stats: loaded {len(events)} focus events from {self.events_path}")
-
-        self.root = _build_tree(events)
-        self.view_root = self.root
-        self.view_stack = []
-
-        self.total_time = sum(ev.get("duration_secs", 0) for ev in events)
+        self.nodes, self.edges = _build_dag(events)
+        self.total_time = sum(ev.get("duration_secs", 0.0) for ev in events)
         self.total_visits = len(events)
-        self.total_projects = len({ev.get("context_name", "") for ev in events})
+        self.context_switches = len(self.edges)
+        if self.nodes:
+            dom = max(self.nodes.values(), key=lambda n: n.total_duration)
+            self.dominant = dom.label
+        else:
+            self.dominant = None
 
-        now = datetime.now(timezone.utc)
-        start_window = now - timedelta(hours=24)
-        self.timeline = []
-        for ev in events:
-            ts = ev["_ts"]
-            dur = ev.get("duration_secs", 0)
-            cwd = ev.get("cwd") or HOME
-            end_frac = (ts - start_window).total_seconds() / 86400.0
-            start_frac = ((ts - timedelta(seconds=dur)) - start_window).total_seconds() / 86400.0
-            start_frac = max(0.0, min(1.0, start_frac))
-            end_frac = max(0.0, min(1.0, end_frac))
-            parts = cwd.replace(HOME, "").strip("/").split("/")
-            top_dir = parts[0] if parts and parts[0] else "~"
-            color_idx = 0
-            if self.root:
-                for i, child in enumerate(self.root.children):
-                    if child.label == top_dir or child.path.endswith("/" + top_dir):
-                        color_idx = i
-                        break
-            self.timeline.append((start_frac, end_frac, cwd, color_idx))
+        self._layout_w = 0.0  # trigger relayout on next render
+        self.highlighted = None
+        self.highlight_chain = set()
 
-        ctx.status_summary(f"{_fmt_duration(self.total_time)} active")
+        self.emit.info(
+            f"stats: loaded {len(events)} events, "
+            f"{len(self.nodes)} nodes, {len(self.edges)} edges"
+        )
+        ctx.status_summary(f"{_fmt_duration(self.total_time)} active · {self.context_switches} switches")
+
+    def _ensure_layout(self, ctx: RenderContext) -> None:
+        if self._layout_w != ctx.w or self._layout_h != ctx.h:
+            _layout_dag(self.nodes, self.edges, ctx.w, ctx.h, self.scroll_x, self.scroll_y)
+            self._layout_w = ctx.w
+            self._layout_h = ctx.h
+
+    def _relayout(self, ctx: RenderContext) -> None:
+        _layout_dag(self.nodes, self.edges, ctx.w, ctx.h, self.scroll_x, self.scroll_y)
+        self._layout_w = ctx.w
+        self._layout_h = ctx.h
+
+    def _build_chain(self, path: str) -> set[str]:
+        chain: set[str] = {path}
+        visited: set[str] = set()
+        frontier = [path]
+        while frontier:
+            cur = frontier.pop()
+            if cur in visited:
+                continue
+            visited.add(cur)
+            for e in self.edges:
+                if e.dst == cur and e.src not in chain:
+                    chain.add(e.src)
+                    frontier.append(e.src)
+        visited = set()
+        frontier = [path]
+        while frontier:
+            cur = frontier.pop()
+            if cur in visited:
+                continue
+            visited.add(cur)
+            for e in self.edges:
+                if e.src == cur and e.dst not in chain:
+                    chain.add(e.dst)
+                    frontier.append(e.dst)
+        return chain
 
     def on_render(self, ctx: RenderContext) -> None:
         ctx.clear("#11111b")
         w, h = ctx.w, ctx.h
 
-        if not self.root or not self.view_root:
-            ctx.text(w / 2 - 80, h / 2, "No events found", size=BODY, color=MUTED)
+        ctx.rect(0, 0, w, BREADCRUMB_H, fill="#181825")
+        ctx.text(8, 5, "Focus Flow · 24h", size=HINT, color=MUTED, bold=True)
+        ctx.text(w - 260, 5,
+                 "r refresh · click highlight · esc clear · drag scroll",
+                 size=HINT, color=dim(MUTED, 120))
+
+        if not self.nodes:
+            ctx.text(w / 2 - 80, h / 2, "No focus events found", size=BODY, color=MUTED)
             if self.events_path:
-                ctx.text(w / 2 - 120, h / 2 + 24, f"Path: {self.events_path}", size=HINT, color=MUTED)
+                ctx.text(w / 2 - 120, h / 2 + 24,
+                         f"Path: {self.events_path}", size=HINT, color=MUTED)
             else:
-                ctx.text(w / 2 - 120, h / 2 + 24, "No events.jsonl found", size=HINT, color=MUTED)
+                ctx.text(w / 2 - 120, h / 2 + 24,
+                         "No events.jsonl found in any Plexi profile", size=HINT, color=MUTED)
             return
 
-        vr = self.view_root
-        breadcrumb_path = _shorten(vr.path) if vr.path != HOME else "~"
+        self._ensure_layout(ctx)
 
-        # breadcrumb bar
-        ctx.rect(0, 0, w, BREADCRUMB_H, fill="#181825")
-        ctx.text(8, 5, f"{breadcrumb_path} › 24h overview", size=HINT, color=MUTED, bold=True)
-        ctx.text(w - 200, 5, "r refresh · click drill · esc back", size=HINT, color=dim(MUTED, 120))
+        canvas_top = BREADCRUMB_H
+        canvas_h = h - BREADCRUMB_H - STATS_BAR_H
+        ctx.rect(0, canvas_top, w, canvas_h, fill="#11111b")
 
-        # treemap region
-        treemap_y = BREADCRUMB_H
-        treemap_h = h - BREADCRUMB_H - STATS_BAR_H - TIMELINE_H
-        if treemap_h < 10:
-            treemap_h = 10
+        max_count = max((e.count for e in self.edges), default=1)
+        for edge in self.edges:
+            if edge.src not in self.nodes or edge.dst not in self.nodes:
+                continue
+            src = self.nodes[edge.src]
+            dst = self.nodes[edge.dst]
+            in_chain = (
+                bool(self.highlight_chain)
+                and edge.src in self.highlight_chain
+                and edge.dst in self.highlight_chain
+            )
+            sx = src.x + NODE_W / 2
+            sy = src.y + NODE_H
+            dx = dst.x + NODE_W / 2
+            dy = dst.y
+            if max(sy, dy) < canvas_top or min(sy, dy) > canvas_top + canvas_h:
+                continue
+            alpha = 180 if in_chain else 80
+            width = 1.0 + 2.0 * (edge.count / max_count)
+            color = "#89b4fa" if in_chain else EDGE_COLOR
+            mx = (sx + dx) / 2
+            my = (sy + dy) / 2
+            ctx.line(sx, sy, mx, my, color=dim(color, alpha), width=width)
+            ctx.line(mx, my, dx, dy, color=dim(color, alpha), width=width)
 
-        children = vr.children if vr.children else [vr]
-        items = [(c, c.total_duration) for c in children if c.total_duration > 0]
-        self.cells = _squarify(items, (0, treemap_y, w, treemap_h))
+        for path, node in self.nodes.items():
+            nx, ny = node.x, node.y
+            if ny + NODE_H < canvas_top or ny > canvas_top + canvas_h:
+                continue
+            in_chain = bool(self.highlight_chain and path in self.highlight_chain)
+            is_focal = path == self.highlighted
+            base_color = PALETTE[node.color_index % len(PALETTE)]
+            if is_focal:
+                fill = base_color
+                text_alpha = 255
+            elif in_chain:
+                fill = dim(base_color, 160)
+                text_alpha = 200
+            else:
+                fill = dim(base_color, 60)
+                text_alpha = 80
+            ctx.rect(nx, ny, NODE_W, NODE_H, fill=fill, radius=6.0)
+            label = node.label
+            if len(label) > 14:
+                label = label[:12] + ".."
+            ctx.text(nx + NODE_W / 2, ny + 8, label,
+                     size=CAPTION, color=dim(FG, text_alpha), bold=True, align="center")
+            ctx.text(nx + NODE_W / 2, ny + 8 + CAPTION + 4,
+                     _fmt_duration(node.total_duration),
+                     size=HINT, color=dim(FG, max(40, text_alpha - 40)), align="center")
+            if node.visits > 1:
+                ctx.text(nx + NODE_W - 6, ny + 4,
+                         f"{node.visits}x", size=HINT,
+                         color=dim(FG, max(40, text_alpha - 40)), align="right")
 
-        for node, cx, cy, cw, ch in self.cells:
-            color = PALETTE[node.color_index % len(PALETTE)]
-            is_highlighted = self.highlight_path and node.path == self.highlight_path
-            fill = color if not is_highlighted else "#ffffff"
-            ctx.rect(cx + 1, cy + 1, max(0, cw - 2), max(0, ch - 2), fill=dim(fill, 180 if not is_highlighted else 255), radius=3.0)
-
-            if cw >= MIN_CELL_W and ch >= MIN_CELL_H:
-                parent_label = _shorten(os.path.dirname(node.path))
-                if parent_label and parent_label != _shorten(vr.path):
-                    ctx.text(cx + 6, cy + ch - 14 - BODY - HINT - 2, parent_label, size=HINT, color=dim(FG, 100))
-
-                ctx.text(cx + 6, cy + ch - 14 - BODY, node.label, size=BODY, color=FG, bold=True)
-                ctx.text(cx + 6, cy + ch - 14, _fmt_duration(node.total_duration), size=CAPTION, color=dim(FG, 180))
-
-                if node.visits > 0:
-                    ctx.text(cx + cw - 40, cy + 6, f"{node.visits}x", size=HINT, color=dim(FG, 100))
-
-        # stats bar
-        stats_y = treemap_y + treemap_h
+        stats_y = h - STATS_BAR_H
         ctx.rect(0, stats_y, w, STATS_BAR_H, fill="#181825")
         ctx.line(0, stats_y, w, stats_y, color=dim(MUTED, 60), width=1.0)
-        ctx.line(0, stats_y + STATS_BAR_H, w, stats_y + STATS_BAR_H, color=dim(MUTED, 60), width=1.0)
-
         stats_text_y = stats_y + (STATS_BAR_H - CAPTION) / 2
         third = w / 3
-        ctx.text(third * 0.5, stats_text_y, f"{_fmt_duration(self.total_time)} active", size=CAPTION, color=ACCENT, bold=True, align="center")
-        ctx.text(third * 1.5, stats_text_y, f"{self.total_visits} visits", size=CAPTION, color="#a6e3a1", bold=True, align="center")
-        ctx.text(third * 2.5, stats_text_y, f"{self.total_projects} projects", size=CAPTION, color="#f9e2af", bold=True, align="center")
+        ctx.text(third * 0.5, stats_text_y,
+                 f"{_fmt_duration(self.total_time)} active",
+                 size=CAPTION, color=ACCENT, bold=True, align="center")
+        ctx.text(third * 1.5, stats_text_y,
+                 f"{self.context_switches} switches",
+                 size=CAPTION, color="#a6e3a1", bold=True, align="center")
+        dom_label = self.dominant or "—"
+        ctx.text(third * 2.5, stats_text_y,
+                 f"top: {dom_label}",
+                 size=CAPTION, color="#f9e2af", bold=True, align="center")
 
-        # timeline strip
-        tl_y = stats_y + STATS_BAR_H
-        ctx.rect(0, tl_y, w, TIMELINE_H, fill="#11111b")
-
-        bar_y = tl_y + 4
-        bar_h = TIMELINE_H - 20
-        for start_frac, end_frac, _, color_idx in self.timeline:
-            bx = start_frac * w
-            bw = max(2.0, (end_frac - start_frac) * w)
-            color = PALETTE[color_idx % len(PALETTE)]
-            ctx.rect(bx, bar_y, bw, bar_h, fill=dim(color, 200), radius=2.0)
-
-        # hour markers (dynamic, aligned to rolling 24h window)
-        marker_y = tl_y + TIMELINE_H - 14
-        now = datetime.now(timezone.utc)
-        start_time = now - timedelta(hours=24)
-        labels: list[tuple[float, str]] = []
-        for tick in range(7):
-            frac = tick / 6
-            t = start_time + timedelta(hours=24 * frac)
-            if tick == 6:
-                lbl = "now"
-            else:
-                h = t.astimezone().hour
-                suffix = "a" if h < 12 else "p"
-                h12 = h % 12 or 12
-                lbl = f"{h12}{suffix}"
-            labels.append((frac, lbl))
-        for frac, lbl in labels:
-            mx = frac * w
-            ctx.text(mx, marker_y, lbl, size=HINT, color=dim(MUTED, 120), align="center")
-
-        self.highlight_path = None
-
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
         if key == "r":
             self._load(ctx)
+            self._relayout(ctx)
             self.emit.info("stats: refreshed")
             ctx.emit.schedule_render(0)
         elif key in ("escape", "backspace"):
-            if self.view_stack:
-                self.view_root = self.view_stack.pop()
-                self.emit.info(f"stats: navigated up to {self.view_root.path}")
-                ctx.emit.schedule_render(0)
+            self.highlighted = None
+            self.highlight_chain = set()
+            self.emit.info("stats: cleared highlight")
+            ctx.emit.schedule_render(0)
 
-    def on_click(self, ctx: RenderContext, x: float, y: float, button: str) -> None:
-        w, h = ctx.w, ctx.h
-        tl_y = h - TIMELINE_H
-
-        if y >= tl_y:
-            bar_y = tl_y + 4
-            bar_h = TIMELINE_H - 20
-            if bar_y <= y <= bar_y + bar_h:
-                frac = x / w if w > 0 else 0
-                for start_frac, end_frac, cwd, _ in self.timeline:
-                    if start_frac <= frac <= end_frac:
-                        self.highlight_path = cwd
-                        self.emit.info(f"stats: highlighted {cwd}")
-                        ctx.emit.schedule_render(0)
-                        break
+    def on_click(self, ctx: RenderContext, x: float, y: float, _button: str) -> None:
+        if y < BREADCRUMB_H:
             return
+        for path, node in self.nodes.items():
+            if node.x <= x <= node.x + NODE_W and node.y <= y <= node.y + NODE_H:
+                if self.highlighted == path:
+                    self.highlighted = None
+                    self.highlight_chain = set()
+                    self.emit.info("stats: cleared highlight")
+                else:
+                    self.highlighted = path
+                    self.highlight_chain = self._build_chain(path)
+                    self.emit.info(
+                        f"stats: highlighted {node.label} "
+                        f"({len(self.highlight_chain)} connected)"
+                    )
+                ctx.emit.schedule_render(0)
+                return
 
-        for node, cx, cy, cw, ch in self.cells:
-            if cx <= x <= cx + cw and cy <= y <= cy + ch:
-                if node.children and self.view_root is not None:
-                    self.view_stack.append(self.view_root)
-                    self.view_root = node
-                    self.emit.info(f"stats: drilled into {node.path}")
-                    ctx.emit.schedule_render(0)
-                break
+    def on_mouse_down(self, _ctx: RenderContext, x: float, y: float, button: str) -> None:
+        if button != "left" or y <= BREADCRUMB_H:
+            return
+        for _, node in self.nodes.items():
+            if node.x <= x <= node.x + NODE_W and node.y <= y <= node.y + NODE_H:
+                return
+        self._dragging = True
+        self._drag_sx = x
+        self._drag_sy = y
+        self._drag_ox = self.scroll_x
+        self._drag_oy = self.scroll_y
+
+    def on_mouse_up(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> None:
+        self._dragging = False
+
+    def on_mouse_move(self, ctx: RenderContext, x: float, y: float, _buttons: list) -> None:
+        if not self._dragging:
+            return
+        self.scroll_x = self._drag_ox + (x - self._drag_sx)
+        self.scroll_y = self._drag_oy + (y - self._drag_sy)
+        self._relayout(ctx)
+        ctx.emit.schedule_render(0)
 
 
 if __name__ == "__main__":
