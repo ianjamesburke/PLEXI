@@ -3623,20 +3623,54 @@ impl PlexiApp {
 
                             ui.add_space(style::SPACE_MD);
 
-                            let btn_w = 100.0;
-                            let skip_btn = ui.add(
-                                egui::Button::new(
-                                    RichText::new("Not now")
-                                        .size(style::TEXT_BODY)
-                                        .color(colors.text_dim),
-                                )
-                                .min_size(egui::vec2(btn_w, 28.0)),
-                            );
-
-                            if skip_btn.clicked() {
-                                log::info!("cli_setup: user chose Not now — will ask again next launch");
-                                self.show_cli_setup_prompt = false;
+                            // Show result feedback from a previous check.
+                            if let Some(false) = self.cli_setup_check_result {
+                                ui.label(
+                                    RichText::new("CLI not found. Run the command above and try again.")
+                                        .size(style::TEXT_CAPTION)
+                                        .color(colors.accent),
+                                );
+                                ui.add_space(style::SPACE_SM);
                             }
+
+                            ui.horizontal(|ui| {
+                                let check_btn = ui.add(
+                                    egui::Button::new(
+                                        RichText::new("Check for success")
+                                            .size(style::TEXT_BODY)
+                                            .color(colors.text_primary),
+                                    )
+                                    .fill(colors.bg_active)
+                                    .min_size(egui::vec2(150.0, 28.0)),
+                                );
+
+                                if check_btn.clicked() {
+                                    log::info!("cli_setup: user clicked Check for success");
+                                    if crate::cli_setup::is_installed() {
+                                        log::info!("cli_setup: CLI found - closing modal");
+                                        crate::cli_setup::mark_prompted();
+                                        self.cli_setup_check_result = None;
+                                        self.show_cli_setup_prompt = false;
+                                    } else {
+                                        log::info!("cli_setup: CLI not found - showing retry");
+                                        self.cli_setup_check_result = Some(false);
+                                    }
+                                }
+
+                                let skip_btn = ui.add(
+                                    egui::Button::new(
+                                        RichText::new("Not now")
+                                            .size(style::TEXT_BODY)
+                                            .color(colors.text_dim),
+                                    )
+                                    .min_size(egui::vec2(100.0, 28.0)),
+                                );
+
+                                if skip_btn.clicked() {
+                                    log::info!("cli_setup: user chose Not now - will ask again next launch");
+                                    self.show_cli_setup_prompt = false;
+                                }
+                            });
                         });
                     });
             });
