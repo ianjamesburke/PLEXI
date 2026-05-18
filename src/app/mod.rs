@@ -4399,7 +4399,9 @@ impl PlexiApp {
             if win.context_id != context_id {
                 continue;
             }
-            for (_, pane) in &win.panes {
+            let mut pane_entries: Vec<_> = win.panes.iter().collect();
+            pane_entries.sort_by_key(|(id, _)| *id);
+            for (_, pane) in pane_entries {
                 match pane {
                     crate::pane::Pane::Terminal(t) => {
                         let name = t.name.clone()

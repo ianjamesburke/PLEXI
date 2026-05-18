@@ -600,10 +600,11 @@ impl PlexiApp {
             .map(|(i, _)| i)
             .collect();
 
-        // Drain panes from child windows into a staging list.
+        // Drain panes from child windows into a staging list (sorted by ID for deterministic order).
         let mut adopted: Vec<(crate::tiling::PaneId, crate::pane::Pane)> = Vec::new();
         for &win_idx in &child_win_indices {
-            let pane_ids: Vec<crate::tiling::PaneId> = self.windows[win_idx].panes.keys().copied().collect();
+            let mut pane_ids: Vec<crate::tiling::PaneId> = self.windows[win_idx].panes.keys().copied().collect();
+            pane_ids.sort();
             for pane_id in pane_ids {
                 if let Some(pane) = self.windows[win_idx].panes.remove(&pane_id) {
                     adopted.push((pane_id, pane));
@@ -664,16 +665,17 @@ impl PlexiApp {
             });
         }
 
+        // Fix up active_window index BEFORE the retain shifts indices.
+        // Count how many child windows sit before parent_idx — each removal shifts the index down by 1.
+        let removed_before = child_win_indices.iter().filter(|&&i| i < parent_idx).count();
+
         // Remove child context windows and router entry.
         self.windows.retain(|w| w.context_id != child_ctx_id);
         if let Some(idx) = self.router.position(|c| c.context_id == child_ctx_id) {
             self.router.remove_at(idx);
         }
 
-        // Fix up active_window index after removing child windows.
-        if self.active_window >= self.windows.len() {
-            self.active_window = self.windows.len().saturating_sub(1);
-        }
+        self.active_window = parent_idx - removed_before;
 
         // Focus the first pane in the parent window.
         let new_focus = self.windows[self.active_window].tree.root
