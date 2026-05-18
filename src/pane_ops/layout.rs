@@ -730,6 +730,29 @@ impl PlexiApp {
                     let wid = w.window_id;
                     self.context_active_window.insert(ws_id, wid);
                     self.record_context_visit(wid);
+                    // Focus the spatially leftmost pane in the destination window.
+                    // If the window has not yet been rendered (no rects), leave focused_pane as-is.
+                    let leftmost: Option<TileId> = {
+                        let dest = &self.windows[idx];
+                        dest.tree.active_tiles().into_iter()
+                            .filter_map(|tile_id| {
+                                if !matches!(dest.tree.tiles.get(tile_id), Some(Tile::Pane(_))) {
+                                    return None;
+                                }
+                                let rect = dest.tree.tiles.rect(tile_id)?;
+                                Some((tile_id, rect))
+                            })
+                            .min_by(|(_, a), (_, b)| {
+                                a.left().partial_cmp(&b.left())
+                                    .unwrap_or(std::cmp::Ordering::Equal)
+                                    .then(a.top().partial_cmp(&b.top()).unwrap_or(std::cmp::Ordering::Equal))
+                            })
+                            .map(|(tile_id, _)| tile_id)
+                    };
+                    if let Some(tile_id) = leftmost {
+                        log::info!("navigate({:?}): focused_pane → leftmost {:?}", dir, tile_id);
+                        self.windows[idx].focused_pane = Some(tile_id);
+                    }
                 }
             }
         } else {
@@ -1919,5 +1942,115 @@ mod context_root_cwd_tests {
         assert!(app.router.active().root.is_none());
         let cwd = app.cwd_for_welcome_tab();
         assert_ne!(cwd, std::path::PathBuf::from("/"), "should never fall through to filesystem root");
+    }
+}
+
+#[cfg(test)]
+mod navigate_boundary_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn test_app() -> PlexiApp {
+        let ctx = egui::Context::default();
+        let ft = crate::logging::new_frame_tick();
+        PlexiApp::new_for_test(ctx, ft).0
+    }
+
+    fn make_app_pane(id: u64) -> crate::pane::Pane {
+        use crate::app_permissions::AppPermissions;
+        use crate::pane::{AppPane, AppRuntime};
+        use crate::process_app::ProcessApp;
+        let (process_app, _draw_tx) = ProcessApp::new_for_test(id, AppPermissions::builtin());
+        crate::pane::Pane::App(Box::new(AppPane {
+            id,
+            runtime: AppRuntime::Process(Box::new(process_app)),
+            workspace_root: std::env::temp_dir(),
+            permissions: AppPermissions::builtin(),
+            manifest_id: "test".to_string(),
+            name: "Test".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: None,
+        }))
+    }
+
+    fn window_at(context_id: u64, window_id: u64, grid_x: u32, grid_y: u32) -> crate::context::Window {
+        crate::context::Window {
+            name: String::new(),
+            path: std::env::temp_dir(),
+            tree: egui_tiles::Tree::empty(format!("tree_{window_id}")),
+            panes: HashMap::new(),
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x,
+            grid_y,
+            window_id,
+            context_id,
+        }
+    }
+
+    // Navigate UP from window at grid_y=1 → active_window switches to grid_y=0 window.
+    // No rects set → focused_pane in destination left as None (fallback path).
+    #[test]
+    fn up_boundary_jumps_to_first_window() {
+        let mut app = test_app();
+        // Window 0 (initial, context 1, grid_y=0) — destination after UP boundary jump
+        let dest_pane: u64 = 1;
+        let dest_tile = app.windows[0].tree.tiles.insert_pane(dest_pane);
+        app.windows[0].tree.root = Some(dest_tile);
+        app.windows[0].panes.insert(dest_pane, make_app_pane(dest_pane));
+        app.windows[0].grid_x = 0;
+        app.windows[0].grid_y = 0;
+
+        // Window 1 (active source, grid_y=1)
+        let mut src_win = window_at(1, 2, 0, 1);
+        let src_pane: u64 = 2;
+        let src_tile = src_win.tree.tiles.insert_pane(src_pane);
+        src_win.tree.root = Some(src_tile);
+        src_win.focused_pane = Some(src_tile);
+        src_win.panes.insert(src_pane, make_app_pane(src_pane));
+        app.windows.push(src_win);
+        app.active_window = 1;
+
+        app.navigate(Direction::Up);
+
+        assert_eq!(app.active_window, 0, "should have jumped to first window");
+        // No rects available → focused_pane is unchanged (still None from setup)
+        assert_eq!(app.windows[0].focused_pane, None, "no rects — focused_pane left unchanged");
+    }
+
+    // Same jump but the destination already has a focused_pane set.
+    // No rects → focused_pane is preserved (not overwritten).
+    #[test]
+    fn up_boundary_preserves_focused_pane_when_no_rects() {
+        let mut app = test_app();
+        // Window 0 (dest, grid_y=0): two tiles, focused_pane pre-set to tile_b
+        let pane_a: u64 = 10;
+        let pane_b: u64 = 20;
+        let tile_a = app.windows[0].tree.tiles.insert_pane(pane_a);
+        let tile_b = app.windows[0].tree.tiles.insert_pane(pane_b);
+        let container = app.windows[0].tree.tiles.insert_horizontal_tile(vec![tile_a, tile_b]);
+        app.windows[0].tree.root = Some(container);
+        app.windows[0].focused_pane = Some(tile_b); // previously-focused pane
+        app.windows[0].panes.insert(pane_a, make_app_pane(pane_a));
+        app.windows[0].panes.insert(pane_b, make_app_pane(pane_b));
+        app.windows[0].grid_x = 0;
+        app.windows[0].grid_y = 0;
+
+        // Window 1 (active source, grid_y=1)
+        let mut src_win = window_at(1, 2, 0, 1);
+        let src_pane: u64 = 30;
+        let src_tile = src_win.tree.tiles.insert_pane(src_pane);
+        src_win.tree.root = Some(src_tile);
+        src_win.focused_pane = Some(src_tile);
+        src_win.panes.insert(src_pane, make_app_pane(src_pane));
+        app.windows.push(src_win);
+        app.active_window = 1;
+
+        app.navigate(Direction::Up);
+
+        assert_eq!(app.active_window, 0, "should jump to first window");
+        // No rects available → fallback, focused_pane unchanged at tile_b
+        assert_eq!(app.windows[0].focused_pane, Some(tile_b), "no rects — focused_pane left unchanged");
     }
 }
