@@ -205,7 +205,7 @@ fn main() -> eframe::Result {
             Some(a.clone())
         })
         .collect();
-    use crate::cli_args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PackCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd, ConfigCmd, RoutineCmd};
+    use crate::cli_args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PackCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd, ConfigCmd, RoutineCmd, NotesCmd};
     use clap::Parser;
 
     match Cli::try_parse_from(&args) {
@@ -491,6 +491,10 @@ fn main() -> eframe::Result {
                             std::process::exit(cli::config_reset());
                         }
                     },
+                    Commands::Notes { cmd } => match cmd {
+                        Some(NotesCmd::List) | None => std::process::exit(cli::notes_list_cli()),
+                        Some(NotesCmd::Open) => std::process::exit(cli::notes_open_cli()),
+                    },
                 }
             }
             // No subcommand — fall through to workspace path check, then GUI
@@ -596,6 +600,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         "completions",
         "config",
         "routine",
+        "notes",
     ];
     let mut iter = args.iter().enumerate();
     // Skip argv[0] (binary name).

@@ -4053,6 +4053,88 @@ pub fn config_reset() -> i32 {
     }
 }
 
+fn binary_in_path(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).any(|dir| dir.join(name).is_file()))
+        .unwrap_or(false)
+}
+
+/// `plexi notes list` — print paths of all scratchpad notes, newest first.
+pub fn notes_list_cli() -> i32 {
+    let notes_dir = crate::config::config_dir().join("notes");
+    log::info!("notes_list: scanning {:?}", notes_dir);
+    let entries = match std::fs::read_dir(&notes_dir) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            log::info!("notes_list: notes dir does not exist yet");
+            return 0;
+        }
+        Err(e) => {
+            eprintln!("error: could not read notes directory: {e}");
+            return 1;
+        }
+    };
+    let mut paths: Vec<(std::time::SystemTime, std::path::PathBuf)> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |x| x == "md"))
+        .filter_map(|e| {
+            let p = e.path();
+            let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
+            Some((mtime, p))
+        })
+        .collect();
+    paths.sort_by(|a, b| b.0.cmp(&a.0));
+    log::info!("notes_list: found {} notes", paths.len());
+    for (_, path) in &paths {
+        println!("{}", path.display());
+    }
+    0
+}
+
+/// `plexi notes open` — inject fzf note picker into the focused terminal pane.
+///
+/// Falls back to printing the notes directory when PLEXI_SOCKET is unset or fzf is absent.
+pub fn notes_open_cli() -> i32 {
+    let notes_dir = crate::config::config_dir().join("notes");
+    let notes_dir_str = notes_dir.display().to_string();
+
+    let socket_set = std::env::var("PLEXI_SOCKET").is_ok();
+    let fzf_available = binary_in_path("fzf");
+
+    if !socket_set || !fzf_available {
+        if !fzf_available {
+            eprintln!("hint: install fzf (`brew install fzf`) for an interactive picker");
+        }
+        if !socket_set {
+            eprintln!("hint: run inside a Plexi pane for interactive note picking");
+        }
+        println!("{notes_dir_str}");
+        return 0;
+    }
+
+    let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("error: PLEXI_PANE_ID is not set — run inside a Plexi terminal pane");
+            return 1;
+        }
+    };
+    let pane_id: u64 = match pane_id_str.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
+            return 1;
+        }
+    };
+
+    let editor = if binary_in_path("micro") { "micro" } else if binary_in_path("nano") { "nano" } else { "vim" };
+    let cmd = format!(
+        "selected=$(ls -t {notes_dir_str}/*.md 2>/dev/null | fzf --header='Select note'); [ -n \"$selected\" ] && {editor} \"$selected\"\r"
+    );
+    log::info!("notes_open: injecting fzf picker into pane {pane_id}");
+    pane_send_cli(pane_id, &cmd)
+}
+
 pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
     match shell {
         "zsh" => { print!("{}", zsh_completion(binary_name)); 0 }
