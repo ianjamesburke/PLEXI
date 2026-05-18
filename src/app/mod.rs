@@ -4011,6 +4011,15 @@ impl eframe::App for PlexiApp {
             ctx.memory_mut(|m| m.request_focus(egui::Id::new("quick_note_text")));
         }
 
+        // Same pattern: inspector inline rename TextEdit needs re-focus every frame.
+        // The one-shot focus request in draw_context_inspector fires during early overlay
+        // dispatch, BEFORE CentralPanel runs — pane TextInput widgets then steal focus back.
+        // Re-requesting here (post-CentralPanel) ensures we always win the last-write-wins
+        // contest while rename mode is active.
+        if self.inspector_renaming {
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("inspector_rename_input")));
+        }
+
         // Detect genuine pane focus transitions and emit FocusChanged events.
         // Comparing at frame-end means temporary save/restore patterns in
         // canvas_bindings are invisible — focused_pane holds the settled value here.

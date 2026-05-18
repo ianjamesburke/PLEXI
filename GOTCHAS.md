@@ -4,23 +4,34 @@
 
 ---
 
-## [egui] TextEdit focus in complex modal frames — last-caller-wins, use one-shot pattern
+## [egui] TextEdit focus in complex modal frames — two-layer focus problem
 
-`ctx.memory_mut(|m| m.request_focus(id))` and `response.request_focus()` are **last-caller-wins within a single frame**. If you call `request_focus()` on a TextEdit and then render other interactive widgets (ScrollArea, Buttons, pane rows) in the same frame after it, those later widgets can overwrite your focus request and the TextEdit never gets stable focus.
+`ctx.memory_mut(|m| m.request_focus(id))` is **last-caller-wins within a single frame**. Modal overlays face a two-layer focus problem:
 
-**Wrong pattern** (used in `draw_rename_context_overlay` — only works because it's the sole widget in its Area):
+**Layer 1 — intra-overlay contest:** Rendering other interactive widgets (ScrollArea, Buttons, pane rows) AFTER `request_focus()` overwrites the request. Any widget that renders after can steal focus.
+
+**Layer 2 — frame-order contest:** Overlays dispatch during "early overlay dispatch" in `update()`, BEFORE `CentralPanel` renders. App panes render their own TextInput widgets during CentralPanel, calling `request_focus()` on them — which then overwrites the overlay's earlier request. The overlay's TextEdit never receives input.
+
+**Wrong pattern:**
 ```rust
-if !te.has_focus() { te.request_focus(); }  // re-requested every frame — any later widget wins
+if !te.has_focus() { te.request_focus(); }  // re-every-frame in the overlay render fn — CentralPanel panes steal it back
 ```
 
-**Correct pattern** (used in `draw_rename_pane_overlay`, now also in `draw_context_inspector`):
-1. Add a `*_focus_requested: bool` one-shot flag to `PlexiApp`.
-2. Call `ctx.memory_mut(|m| m.request_focus(te_id))` **after** all other UI in the frame completes, only once (gated on `!focus_requested`), then set `focus_requested = true`.
-3. Reset the flag when exiting the editing state (commit, cancel, dismiss).
+**Correct pattern — two fixes, both required:**
 
-Because we call focus LAST, we win the contest regardless of what other widgets rendered earlier. Optionally, hide competing interactive elements (ScrollArea, pane rows) while editing to eliminate the contest entirely.
+**Fix 1 (one-shot, for Layer 1):** Add a `*_focus_requested: bool` flag. After ALL widgets in the overlay render, call `request_focus` exactly once, then set the flag. Gating on `!focus_requested` prevents re-firing. Also set cursor selection state here (use `chars().count()` not `len()` for multi-byte safety).
 
-Canonical example: `inspector_rename_focus_requested` + the one-shot block at the bottom of `draw_context_inspector` in `src/overlays.rs`.
+**Fix 2 (every-frame, for Layer 2):** In `update()`, after CentralPanel completes (search for the `palette_search` / `quick_note_text` re-focus block), add:
+```rust
+if self.<overlay>_renaming {
+    ctx.memory_mut(|m| m.request_focus(egui::Id::new("<overlay>_rename_input")));
+}
+```
+This mirrors the established pattern for `palette_search` and `quick_note_text`, which face the same frame-order problem.
+
+Both fixes are necessary. Fix 1 alone fails when CentralPanel runs after the overlay. Fix 2 alone skips initial cursor selection.
+
+Canonical implementation: `inspector_rename_focus_requested` (one-shot, `src/overlays.rs::draw_context_inspector`) + `if self.inspector_renaming { ctx.memory_mut... }` block in `src/app/mod.rs::update()` after the QuickNote re-focus block.
 
 ---
 
