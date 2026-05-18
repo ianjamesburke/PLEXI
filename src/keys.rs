@@ -196,8 +196,8 @@ impl Default for KeyBindings {
             quit:                      (cmd(),       egui::Key::Q),
             close_pane:                (cmd(),       egui::Key::W),
             toggle_command_palette:    (cmd(),       egui::Key::P),
-            split_horizontal:          (cmd_shift(), egui::Key::D),
-            split_vertical:            (cmd(),       egui::Key::D),
+            split_horizontal:          (cmd(),       egui::Key::D),
+            split_vertical:            (cmd_shift(), egui::Key::D),
             split_right:               (cmd(),       egui::Key::Backslash),
             split_down:                (cmd_shift(), egui::Key::Backslash),
             swap_pane_left:            (cmd_ctrl(),  egui::Key::H),
@@ -482,11 +482,11 @@ pub fn poll_actions(
             return;
         }
 
-        // Check split_horizontal (Cmd+Shift+D) before split_vertical (Cmd+D) — more specific first.
-        if input.consume_key(bindings.split_horizontal.0, bindings.split_horizontal.1) {
-            actions.push(Action::SplitHorizontal);
-        } else if input.consume_key(bindings.split_vertical.0, bindings.split_vertical.1) {
+        // Check split_vertical (Cmd+Shift+D) before split_horizontal (Cmd+D) — more specific first.
+        if input.consume_key(bindings.split_vertical.0, bindings.split_vertical.1) {
             actions.push(Action::SplitVertical);
+        } else if input.consume_key(bindings.split_horizontal.0, bindings.split_horizontal.1) {
+            actions.push(Action::SplitHorizontal);
         }
 
         // Pane swap — check before plain pane navigation.
