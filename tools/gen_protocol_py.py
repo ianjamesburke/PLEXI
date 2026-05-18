@@ -2,8 +2,8 @@
 """Generate sdk/python/plexi_sdk/_protocol.py from sdk/protocol/pgap.schema.json.
 
 Reads the canonical PGAP JSON Schema and emits typed Python dataclasses for
-the wire types that the SDK uses directly: AiResponse, MidiPortInfo, MidiDeviceList.
-Also emits the PROTOCOL_VERSION constant.
+the wire types that the SDK uses directly: AiResponse, MidiPortInfo, MidiDeviceList,
+AudioDeviceInfo, AudioDeviceList. Also emits the PROTOCOL_VERSION constant.
 
 Run via: just gen-schema  (or directly: python3 tools/gen_protocol_py.py)
 """
@@ -41,6 +41,15 @@ def find_midi_port_wire(schema: dict) -> dict:
     return defs["MidiPortWire"]
 
 
+def find_audio_device_wire(schema: dict) -> dict:
+    """Return the AudioDeviceWire schema from PlexiEvent.$defs."""
+    plexi_event = schema["definitions"]["PlexiEvent"]
+    defs = plexi_event.get("$defs", {})
+    if "AudioDeviceWire" not in defs:
+        raise RuntimeError("AudioDeviceWire not found in PlexiEvent.$defs")
+    return defs["AudioDeviceWire"]
+
+
 def generate(schema: dict) -> str:
     protocol_str = schema["protocol"]  # e.g. "pgap/3"
 
@@ -50,6 +59,9 @@ def generate(schema: dict) -> str:
 
     midi_wire = find_midi_port_wire(schema)
     midi_props = midi_wire["properties"]
+
+    audio_wire = find_audio_device_wire(schema)
+    audio_props = audio_wire["properties"]
 
     lines = [
         "# AUTO-GENERATED — do not edit by hand.",
@@ -115,6 +127,33 @@ def generate(schema: dict) -> str:
         "@dataclass",
         "class MidiDeviceList:",
         '    """Result of Emitter.list_midi_devices."""',
+        "    inputs: list",
+        "    outputs: list",
+        "",
+        "",
+        "@dataclass",
+        "class AudioDeviceInfo:",
+        '    """One audio device. Mirrors AudioDeviceWire in the Rust protocol."""',
+    ]
+
+    # AudioDeviceInfo fields
+    for field in ["id", "name", "default"]:
+        if field not in audio_props:
+            continue
+        prop = audio_props[field]
+        prop_type = prop.get("type")
+        if prop_type == "boolean":
+            py_type = "bool"
+        else:
+            py_type = "str"
+        lines.append(f"    {field}: {py_type}")
+
+    lines += [
+        "",
+        "",
+        "@dataclass",
+        "class AudioDeviceList:",
+        '    """Result of Emitter.list_audio_devices."""',
         "    inputs: list",
         "    outputs: list",
         "",
