@@ -3681,20 +3681,42 @@ fn send_to_socket(payload: serde_json::Value) -> i32 {
     0
 }
 
-/// `plexi context new [path]`
+/// `plexi context new [name] [--path <path>] [--parent <parent>]`
 ///
-/// Creates a new context. Uses `path` as the root (or CWD if omitted).
-pub fn context_new_cli(path: Option<&str>, parent: Option<&str>) -> i32 {
+/// Creates a new context. `name` is the display name (positional). `--path` sets
+/// the root directory (defaults to CWD). When run inside a Plexi pane and `--parent`
+/// is not given, defaults to creating a child of the current context.
+pub fn context_new_cli(name: Option<&str>, path: Option<&str>, parent: Option<&str>) -> i32 {
     let root = match resolve_path(path) {
         Ok(p) => p,
         Err(e) => { eprintln!("{e}"); return 1; }
     };
+    // Default parent: current context when inside a Plexi pane and --parent omitted.
+    let resolved_parent = parent
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            std::env::var("PLEXI_CONTEXT_NAME")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+    log::info!(
+        "context_new_cli: name={:?} root={} parent={:?}",
+        name,
+        root.display(),
+        resolved_parent.as_deref()
+    );
     let mut payload = serde_json::json!({
         "type": "create_context",
         "root": root,
     });
-    if let Some(p) = parent {
-        payload["parent_name"] = serde_json::Value::String(p.to_string());
+    if let Some(n) = name {
+        payload["name"] = serde_json::Value::String(n.to_string());
+    }
+    if let Some(p) = resolved_parent {
+        payload["parent_name"] = serde_json::Value::String(p);
     }
     send_to_socket(payload)
 }

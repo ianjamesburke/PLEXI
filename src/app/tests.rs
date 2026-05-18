@@ -753,3 +753,54 @@ fn new_child_context_fallback_when_no_focused_pane() {
         );
     }
 }
+
+/// Issue #1409: parent name lookup must be case-insensitive.
+#[test]
+fn new_child_context_case_insensitive_parent() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    // Set up a focused pane so the adoption path is taken (not the PTY fallback).
+    let (tile_id, _pane_id) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_id);
+
+    // The initial context is named "Test" (from new_for_test).
+    // Lookup with lowercase "test" must succeed.
+    let result = app.new_child_context("test", std::path::PathBuf::from("/tmp/child_ci"));
+    assert!(result.is_ok(), "case-insensitive lookup should succeed: {result:?}");
+}
+
+/// Issue #1409: creating a child context with a parent should auto-zoom into it.
+#[test]
+fn create_child_context_auto_zooms() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let (tile_id, _pane_id) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_id);
+
+    let parent_ctx_id = app.router.active().context_id;
+
+    // Simulate what the CreateContext handler does: capture current state,
+    // call new_child_context, then push_depth + switch_workspace.
+    let current_win_id = app.windows[app.active_window].window_id;
+    let current_focused = app.windows[app.active_window].focused_pane;
+    app.new_child_context("Test", std::path::PathBuf::from("/tmp/child_zoom"))
+        .expect("should succeed");
+    let new_ctx_idx = app.router.len() - 1;
+    let new_ctx_id = app.router.get(new_ctx_idx).context_id;
+    app.router.push_depth(parent_ctx_id, current_win_id, current_focused);
+    app.switch_workspace(new_ctx_idx);
+
+    // Active context must now be the child.
+    assert_eq!(
+        app.router.active().context_id,
+        new_ctx_id,
+        "should be zoomed into child context after creation"
+    );
+
+    // Depth stack must have one entry (parent pushed).
+    assert_eq!(app.router.current_depth(), 1);
+}

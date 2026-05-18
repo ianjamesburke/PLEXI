@@ -1453,11 +1453,21 @@ impl PlexiApp {
                     log::info!("pane_ipc: kind=create_context root={:?} name={:?} parent_name={:?}", root, name, parent_name);
                     if let Some(pname) = parent_name {
                         let path = root.as_ref().cloned().unwrap_or_else(|| std::path::PathBuf::from("."));
+                        let current_ctx_id = self.router.active().context_id;
+                        let current_win_id = self.windows[self.active_window].window_id;
+                        let current_focused = self.windows[self.active_window].focused_pane;
                         if let Err(e) = self.new_child_context(pname.as_str(), path) {
                             log::warn!("pane_ipc: create_context with parent failed: {e}");
-                        } else if let Some(n) = name {
-                            let idx = self.router.len() - 1;
-                            self.router.get_mut(idx).name = n.clone();
+                        } else {
+                            if let Some(n) = name {
+                                let idx = self.router.len() - 1;
+                                self.router.get_mut(idx).name = n.clone();
+                            }
+                            let new_ctx_idx = self.router.len() - 1;
+                            let new_ctx_id = self.router.get(new_ctx_idx).context_id;
+                            self.router.push_depth(current_ctx_id, current_win_id, current_focused);
+                            self.switch_workspace(new_ctx_idx);
+                            log::info!("pane_ipc: auto-zoomed into new child context ctx_id={new_ctx_id}");
                         }
                     } else {
                         if let Some(r) = root {
@@ -3121,7 +3131,7 @@ impl eframe::App for PlexiApp {
                 let canvas_old_window_id = self.windows[self.active_window].window_id;
 
                 // Build sub-context preview data before taking the mutable ctx borrow.
-                let sub_context_info: std::collections::HashMap<crate::tiling::PaneId, (String, usize, usize)> = {
+                let sub_context_info: std::collections::HashMap<crate::tiling::PaneId, crate::tiling::SubContextPreview> = {
                     let active_win = self.active_window;
                     let mut map = std::collections::HashMap::new();
                     let sub_ctx_panes: Vec<(crate::tiling::PaneId, u64)> = self.windows[active_win]
@@ -3134,12 +3144,38 @@ impl eframe::App for PlexiApp {
                             .find(|c| c.context_id == child_ctx_id)
                             .map(|c| c.name.clone())
                             .unwrap_or_else(|| "(deleted)".to_string());
-                        let pane_count = self.windows.iter()
+                        let mut pane_entries: Vec<(crate::tiling::PaneId, &crate::pane::Pane)> = self.windows.iter()
                             .filter(|w| w.context_id == child_ctx_id)
-                            .map(|w| w.panes.len())
-                            .sum::<usize>();
+                            .flat_map(|w| w.panes.iter().map(|(id, p)| (*id, p)))
+                            .collect();
+                        pane_entries.sort_by_key(|(id, _)| *id);
+                        let pane_summaries: Vec<crate::tiling::ChildPaneSummary> = pane_entries.iter()
+                            .filter_map(|(_, p)| match *p {
+                                crate::pane::Pane::Terminal(t) => {
+                                    let cwd = crate::shell::get_pid_cwd(t.backend.child_pid())
+                                        .map(|path| path.to_string_lossy().into_owned());
+                                    Some(crate::tiling::ChildPaneSummary {
+                                        pane_name: t.name.clone().or_else(|| t.pty_title.clone()),
+                                        cwd,
+                                        app_type: "terminal".to_string(),
+                                    })
+                                }
+                                crate::pane::Pane::App(a) => {
+                                    Some(crate::tiling::ChildPaneSummary {
+                                        pane_name: Some(a.name.clone()),
+                                        cwd: Some(a.workspace_root.to_string_lossy().into_owned()),
+                                        app_type: a.runtime.type_id().to_string(),
+                                    })
+                                }
+                                crate::pane::Pane::SubContext { .. } => None,
+                            })
+                            .collect();
                         let notif_count = self.context_notification_count_recursive(child_ctx_id);
-                        map.insert(pane_id, (ctx_name, pane_count, notif_count));
+                        map.insert(pane_id, crate::tiling::SubContextPreview {
+                            context_name: ctx_name,
+                            panes: pane_summaries,
+                            notification_count: notif_count,
+                        });
                     }
                     map
                 };

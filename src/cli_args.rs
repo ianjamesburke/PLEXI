@@ -477,10 +477,14 @@ pub enum RegistryCmd {
 
 #[derive(Subcommand)]
 pub enum ContextCmd {
-    /// Open a new context, optionally starting in a specific folder.
+    /// Open a new context with an optional name.
     New {
+        /// Name for the new context. Defaults to the directory basename.
+        name: Option<String>,
+        /// Root path for the new context. Defaults to current working directory.
+        #[arg(long)]
         path: Option<String>,
-        /// Create as a child of the named context (fractal sub-context).
+        /// Create as a child of the named context. Defaults to current context if inside one.
         #[arg(long)]
         parent: Option<String>,
     },
