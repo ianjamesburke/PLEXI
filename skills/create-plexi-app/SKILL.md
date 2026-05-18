@@ -318,5 +318,5 @@ Any alpha below 160 is effectively invisible on Catppuccin Mocha dark background
 | Hard-coding pixel sizes for text | Use `await ctx.measure_text()` or `ctx.render()` with UI components |
 | No logging | Every app ships with at minimum `on_init` log and error traces |
 | Using `ctrl` for primary shortcuts | Prefer `meta` (⌘) on macOS |
-| `ctx.text(w - N, y, hint)` near right edge | Use `ctx.text(max(w/2, w - N), y, hint, align="right")` — prevents left-clip in narrow panes |
+| `ctx.text(w - N, y, hint, CAPTION, MUTED)` near right edge | Use `ctx.text(max(w/2, w - N), y, hint, CAPTION, MUTED, align="right")` — prevents left-clip in narrow panes |
 | `dim(FG, 80)` or `dim(FG, 120)` for labels | Minimum readable alpha is 160 — use `dim(FG, 160)` for de-emphasized text |
