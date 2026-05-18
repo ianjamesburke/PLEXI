@@ -87,9 +87,16 @@ impl PlexiApp {
         let Some(app_pane) = pane.as_app_mut() else {
             return;
         };
-        ctx.input(|i| {
-            app_pane.runtime.handle_key(i);
-        });
+        // Capture whether the app consumed the key. If it did, also consume
+        // Escape from the InputState so poll_actions can't re-fire CloseApp
+        // for keys the app already handled (e.g. Escape exiting search mode
+        // in the file browser rather than closing the pane).
+        let consumed = ctx.input(|i| app_pane.runtime.handle_key(i));
+        if consumed {
+            ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            });
+        }
     }
 
     /// Drain `pending_commands` from **every** app pane in **every** context,
