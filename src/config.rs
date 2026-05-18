@@ -277,6 +277,7 @@ pub struct PlexiConfig {
     pub keybindings: Option<KeybindingsConfig>,
     pub quick_note: Option<QuickNoteConfig>,
     pub focus_history_depth: Option<usize>,
+    pub agents: Option<AgentsConfig>,
 }
 
 /// Plexi AI broker configuration (`ai.query` capability).
@@ -369,6 +370,39 @@ impl OllamaBackendConfig {
         if other.model_high.is_some() {
             self.model_high = other.model_high;
         }
+    }
+}
+
+pub const DEFAULT_AGENT_LOW: &str = "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'";
+pub const DEFAULT_AGENT_MEDIUM: &str = "claude --model claude-sonnet-4-6 --dangerously-skip-permissions '{cmd}'";
+pub const DEFAULT_AGENT_HIGH: &str = "claude --dangerously-skip-permissions '{cmd}'";
+
+/// Coding agent command templates for dispatch. Each field is a shell command template
+/// where `{cmd}` is replaced with the prompt or slash command at dispatch time.
+#[derive(Deserialize, Default, Clone)]
+pub struct AgentsConfig {
+    /// Fast/cheap tasks. Default: claude haiku with --dangerously-skip-permissions.
+    pub low: Option<String>,
+    /// Standard work. Default: claude sonnet with --dangerously-skip-permissions.
+    pub medium: Option<String>,
+    /// Complex/autonomous tasks. Default: claude with --dangerously-skip-permissions.
+    pub high: Option<String>,
+}
+
+impl AgentsConfig {
+    pub fn effective_low(&self) -> &str {
+        self.low.as_deref().unwrap_or(DEFAULT_AGENT_LOW)
+    }
+    pub fn effective_medium(&self) -> &str {
+        self.medium.as_deref().unwrap_or(DEFAULT_AGENT_MEDIUM)
+    }
+    pub fn effective_high(&self) -> &str {
+        self.high.as_deref().unwrap_or(DEFAULT_AGENT_HIGH)
+    }
+    fn overlay(&mut self, other: Self) {
+        if other.low.is_some() { self.low = other.low; }
+        if other.medium.is_some() { self.medium = other.medium; }
+        if other.high.is_some() { self.high = other.high; }
     }
 }
 
@@ -592,7 +626,7 @@ pub fn config_dir() -> PathBuf {
         .join(config_dir_name())
 }
 
-const CONFIG_TEMPLATE: &str = include_str!("../scripts/default-config.toml");
+pub const CONFIG_TEMPLATE: &str = include_str!("../scripts/default-config.toml");
 
 /// Ensures the config file exists, creating it from the default template if not.
 /// Returns the config file path.
@@ -725,6 +759,11 @@ impl PlexiConfig {
         match (self.quick_note.as_mut(), other.quick_note) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
             (None, Some(incoming)) => self.quick_note = Some(incoming),
+            _ => {}
+        }
+        match (self.agents.as_mut(), other.agents) {
+            (Some(existing), Some(incoming)) => existing.overlay(incoming),
+            (None, Some(incoming)) => self.agents = Some(incoming),
             _ => {}
         }
     }

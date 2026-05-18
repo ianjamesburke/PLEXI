@@ -207,3 +207,21 @@ hidden  = true
 # # Script stdout format: one entry per line as  key|label|command
 # # Example line: 1|PLEXI|cd ~/Documents/GitHub/PLEXI && plexi terminal --layout context-end -- claude -p {note}
 
+# ── Coding Agent Commands ──────────────────────────────────────
+# Command templates used when Plexi skills dispatch coding agent panes.
+# {cmd} is replaced with the prompt or slash command at dispatch time.
+#
+# Tiers:
+#   low    → fast/cheap tasks (e.g. haiku)
+#   medium → standard work   (e.g. sonnet)
+#   high   → complex/autonomous tasks (default model, max permissions)
+#
+# Set these to your own aliases if you have them:
+#   low    = "ch '{cmd}'"
+#   medium = "c '{cmd}'"
+#   high   = "ca '{cmd}'"
+[agents]
+low    = "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'"
+medium = "claude --model claude-sonnet-4-6 --dangerously-skip-permissions '{cmd}'"
+high   = "claude --dangerously-skip-permissions '{cmd}'"
+

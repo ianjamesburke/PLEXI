@@ -508,4 +508,16 @@ pub enum ConfigCmd {
     Check,
     /// Open config.toml in your $EDITOR.
     Edit,
+    /// Print the resolved value of a config key to stdout.
+    ///
+    /// Supports dotted keys: agents.low, agents.medium, agents.high.
+    /// Returns the effective value (user setting or built-in default).
+    Get {
+        /// Dotted key to retrieve (e.g. agents.medium).
+        key: String,
+    },
+    /// Overwrite config.toml with the built-in default template.
+    ///
+    /// Creates a backup at config.toml.bak before overwriting.
+    Reset,
 }

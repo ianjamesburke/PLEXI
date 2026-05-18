@@ -479,6 +479,12 @@ fn main() -> eframe::Result {
                         ConfigCmd::Edit => {
                             std::process::exit(cli::config_edit());
                         }
+                        ConfigCmd::Get { key } => {
+                            std::process::exit(cli::config_get(&key));
+                        }
+                        ConfigCmd::Reset => {
+                            std::process::exit(cli::config_reset());
+                        }
                     },
                 }
             }
