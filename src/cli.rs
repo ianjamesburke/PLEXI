@@ -3830,6 +3830,54 @@ pub fn config_edit() -> i32 {
     }
 }
 
+pub fn config_get(key: &str) -> i32 {
+    log::info!("config_get: resolving key={key}");
+    let config = crate::config::PlexiConfig::load_with_workspace(
+        crate::config::active_workspace_root().as_deref(),
+    );
+    let agents = config.agents.as_ref();
+    let value = match key {
+        "agents.low" => agents.map(|a| a.effective_low()).unwrap_or(crate::config::DEFAULT_AGENT_LOW),
+        "agents.medium" => agents.map(|a| a.effective_medium()).unwrap_or(crate::config::DEFAULT_AGENT_MEDIUM),
+        "agents.high" => agents.map(|a| a.effective_high()).unwrap_or(crate::config::DEFAULT_AGENT_HIGH),
+        _ => {
+            eprintln!("error: unknown config key {key:?} — supported keys: agents.low, agents.medium, agents.high");
+            return 1;
+        }
+    };
+    println!("{value}");
+    0
+}
+
+pub fn config_reset() -> i32 {
+    let path = crate::config::config_path();
+    log::info!("config_reset: writing default config to {}", path.display());
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!("error: could not create config dir {}: {e}", parent.display());
+            return 1;
+        }
+    }
+    if path.exists() {
+        let bak = path.with_extension("toml.bak");
+        if let Err(e) = std::fs::copy(&path, &bak) {
+            eprintln!("error: could not back up config to {}: {e}", bak.display());
+            return 1;
+        }
+        eprintln!("backed up existing config to {}", bak.display());
+    }
+    match std::fs::write(&path, crate::config::CONFIG_TEMPLATE) {
+        Ok(()) => {
+            eprintln!("✓ wrote default config to {}", path.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("error: could not write config: {e}");
+            1
+        }
+    }
+}
+
 pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
     match shell {
         "zsh" => { print!("{}", zsh_completion(binary_name)); 0 }
@@ -4034,7 +4082,7 @@ _plexi() {
           ;;
         config)
           local subcmds
-          subcmds=('check:Validate config.toml and report errors' 'edit:Open config.toml in $EDITOR')
+          subcmds=('check:Validate config.toml and report errors' 'edit:Open config.toml in $EDITOR' 'get:Print resolved value of a config key' 'reset:Overwrite config.toml with built-in defaults')
           _describe 'subcommand' subcmds
           ;;
       esac
@@ -4161,7 +4209,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       COMPREPLY=($(compgen -W "zsh bash fish" -- "$cur"))
       ;;
     config)
-      COMPREPLY=($(compgen -W "check edit" -- "$cur"))
+      COMPREPLY=($(compgen -W "check edit get reset" -- "$cur"))
       ;;
   esac
 }
@@ -4194,6 +4242,8 @@ complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret ap
 # config subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from config" -a check -d "Validate config.toml and report errors"
 complete -c plexi -f -n "__fish_seen_subcommand_from config" -a edit -d "Open config.toml in \$EDITOR"
+complete -c plexi -f -n "__fish_seen_subcommand_from config" -a get -d "Print resolved value of a config key"
+complete -c plexi -f -n "__fish_seen_subcommand_from config" -a reset -d "Overwrite config.toml with built-in defaults"
 
 # secret subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from secret" -a set -d "Store a secret"
