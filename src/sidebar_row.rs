@@ -2,6 +2,7 @@ use egui::{Align, Color32, CornerRadius, CursorIcon, Id, Layout, Pos2, Rect, Sen
 use crate::theme::Colors;
 
 pub const ROW_HEIGHT: f32 = 26.0;
+pub const SUBTITLE_LINE_HEIGHT: f32 = 14.0;
 pub const ACTION_ZONE_WIDTH: f32 = 30.0;
 
 pub(crate) fn with_alpha(c: Color32, alpha: f32) -> Color32 {
@@ -21,16 +22,19 @@ pub struct RowLayout {
 }
 
 impl RowLayout {
-    fn new(origin: Pos2, width: f32, action_enabled: bool) -> Self {
-        let full = Rect::from_min_size(origin, Vec2::new(width, ROW_HEIGHT));
+    fn new(origin: Pos2, width: f32, action_enabled: bool, subtitle_height: f32) -> Self {
+        let total_height = ROW_HEIGHT + subtitle_height;
+        let full = Rect::from_min_size(origin, Vec2::new(width, total_height));
         let action = action_enabled.then(|| {
             Rect::from_min_size(
                 egui::pos2(full.max.x - ACTION_ZONE_WIDTH, full.min.y),
-                Vec2::new(ACTION_ZONE_WIDTH, ROW_HEIGHT),
+                Vec2::new(ACTION_ZONE_WIDTH, total_height),
             )
         });
         let content = action.map(|a| full.with_max_x(a.min.x)).unwrap_or(full);
-        Self { full, content, action }
+        // Content rect for line 1 only (name row), restricted to ROW_HEIGHT.
+        let content_line1 = Rect::from_min_size(content.min, Vec2::new(content.width(), ROW_HEIGHT));
+        Self { full, content: content_line1, action }
     }
 
     fn in_action(&self, ui: &egui::Ui) -> bool {
@@ -68,6 +72,7 @@ pub enum SidebarAction {
 /// before any rendering or interaction registration occurs.
 pub struct SidebarRow {
     pub layout: RowLayout,
+    subtitle_height: f32,
     is_active: bool,
     is_this_dragging: bool,
     is_any_dragging: bool,
@@ -77,11 +82,12 @@ impl SidebarRow {
     /// Compute layout zones from the current cursor position.
     /// `action_enabled`: whether to carve out the action zone.
     /// Pass `false` when only one context exists or dragging is active.
-    /// The action glyph is gated on hover inside draw() — geometry is stable.
-    pub fn new(ui: &egui::Ui, width: f32, action_enabled: bool) -> Self {
+    /// `subtitle_height`: extra height for the subtitle line (0.0 when no subtitle).
+    pub fn new(ui: &egui::Ui, width: f32, action_enabled: bool, subtitle_height: f32) -> Self {
         let origin = ui.cursor().min;
         Self {
-            layout: RowLayout::new(origin, width, action_enabled),
+            layout: RowLayout::new(origin, width, action_enabled, subtitle_height),
+            subtitle_height,
             is_active: false,
             is_this_dragging: false,
             is_any_dragging: false,
@@ -98,8 +104,9 @@ impl SidebarRow {
 
     /// Render the row and return a typed action plus the full-row response.
     ///
-    /// `content_fn` receives a `&mut Ui` scoped to the content zone only.
-    /// It must not call `interact()` or set cursor icons — the row builder owns those.
+    /// `content_fn` receives a `&mut Ui` scoped to the content zone (line 1) only.
+    /// `subtitle_fn` receives the painter, the subtitle rect, and the row alpha for line 2.
+    /// Neither must call `interact()` or set cursor icons — the row builder owns those.
     ///
     /// The returned `Response` covers the full row and is intended for context_menu attachment.
     pub fn draw(
@@ -108,15 +115,16 @@ impl SidebarRow {
         id: Id,
         colors: &Colors,
         content_fn: impl FnOnce(&mut egui::Ui, bool),
+        subtitle_fn: impl FnOnce(&egui::Painter, Rect, f32),
     ) -> (SidebarAction, egui::Response) {
+        let total_height = ROW_HEIGHT + self.subtitle_height;
         let row_alpha = if self.is_this_dragging { 0.4_f32 } else { 1.0_f32 };
         let hovered = self.layout.hovered(ui);
 
-        // Advance the layout cursor — must happen before any allocate_new_ui calls
-        // that would otherwise try to use the same origin.
-        ui.allocate_space(Vec2::new(self.layout.full.width(), ROW_HEIGHT));
+        // Advance the layout cursor by the full item height.
+        ui.allocate_space(Vec2::new(self.layout.full.width(), total_height));
 
-        // Background
+        // Background — covers the full item (name + subtitle).
         let fill = if self.is_active {
             with_alpha(colors.bg_active, row_alpha)
         } else if hovered && !self.is_this_dragging {
@@ -126,16 +134,16 @@ impl SidebarRow {
         };
         ui.painter().rect_filled(self.layout.full, CornerRadius::ZERO, fill);
 
-        // Active accent bar
+        // Active accent bar — covers the full item height.
         if self.is_active {
             ui.painter().rect_filled(
-                Rect::from_min_size(self.layout.full.min, Vec2::new(3.0, ROW_HEIGHT)),
+                Rect::from_min_size(self.layout.full.min, Vec2::new(3.0, total_height)),
                 CornerRadius::ZERO,
                 with_alpha(colors.accent, row_alpha),
             );
         }
 
-        // Content zone — sub-Ui is restricted to the content rect
+        // Content zone (line 1) — sub-Ui restricted to the name row.
         ui.allocate_new_ui(
             UiBuilder::new()
                 .max_rect(self.layout.content)
@@ -143,8 +151,18 @@ impl SidebarRow {
             |ui| content_fn(ui, hovered),
         );
 
+        // Subtitle zone (line 2) — rendered via painter callback.
+        if self.subtitle_height > 0.0 {
+            let subtitle_rect = Rect::from_min_size(
+                Pos2::new(self.layout.full.min.x, self.layout.full.min.y + ROW_HEIGHT),
+                Vec2::new(self.layout.full.width(), self.subtitle_height),
+            );
+            subtitle_fn(ui.painter(), subtitle_rect, row_alpha);
+        }
+
         // Action zone — glyph only (no interact call). Click detection is via pointer-position
         // geometry against the single full-row interact registered below.
+        // Vertically center the glyph in the name row (line 1), not the full item.
         let in_action = self.layout.in_action(ui);
         if let Some(az) = self.layout.action {
             if hovered && !self.is_this_dragging {
@@ -152,8 +170,9 @@ impl SidebarRow {
                     if in_action { colors.text_primary } else { colors.text_dim },
                     row_alpha,
                 );
+                let action_line1_center = egui::pos2(az.center().x, az.min.y + ROW_HEIGHT * 0.5);
                 ui.painter().text(
-                    az.center(),
+                    action_line1_center,
                     egui::Align2::CENTER_CENTER,
                     "\u{2715}",
                     egui::FontId::proportional(13.0),
@@ -162,20 +181,13 @@ impl SidebarRow {
             }
         }
 
-        // Single interact on the full row. Priority chain encodes mutual exclusion:
-        // 1. double_clicked → Rename (full row is the target)
-        // 2. drag_started   → DragStart
-        // 3. drag_stopped   → DragEnd
-        // 4. clicked + in_action + hovered → Delete
-        // 5. clicked        → Activate
+        // Single interact on the full row.
         let response = ui.interact(self.layout.full, id, Sense::click_and_drag());
 
-        // Tooltip for the action zone — shown via the full-row response when pointer is in zone.
         if in_action {
             response.clone().on_hover_text("Delete context");
         }
 
-        // Cursor — single authority, derived from zones only
         if let Some(icon) = self.layout.resolve_cursor(ui, self.is_this_dragging, self.is_any_dragging) {
             ui.ctx().set_cursor_icon(icon);
         }
