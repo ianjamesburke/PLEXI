@@ -4,6 +4,7 @@
 Opens via `plexi open editor [file]`. Full-page TextArea + TextBuffer.
 Cmd+S to save. Cmd+W (close) is handled by the host.
 """
+import asyncio
 import sys
 from pathlib import Path
 
@@ -16,7 +17,7 @@ FOOTER_H = 24.0
 
 
 class EditorApp(App):
-    def on_init(self, ctx: RenderContext) -> None:
+    async def on_init(self, ctx: RenderContext) -> None:
         path_arg = sys.argv[1].strip() if len(sys.argv) > 1 else None
         self._path: Path | None = Path(path_arg).expanduser().resolve() if path_arg else None
         self._dirty = False
@@ -25,7 +26,7 @@ class EditorApp(App):
         initial_text = ""
         if self._path and self._path.exists():
             try:
-                initial_text = self._path.read_text(encoding="utf-8")
+                initial_text = await asyncio.to_thread(self._path.read_text, encoding="utf-8")
             except Exception as e:
                 self._status = f"Error reading file: {e}"
                 ctx.warn(f"editor: failed to read {self._path}: {e}")
@@ -51,13 +52,14 @@ class EditorApp(App):
         name = self._path.name if self._path else "untitled"
         return f"{name}{'*' if self._dirty else ''}"
 
-    def _save(self, ctx: RenderContext) -> None:
+    async def _save(self, ctx: RenderContext) -> None:
         if not self._path:
             self._status = "no file — pass a path: plexi open editor <path>"
             ctx.warn("editor: save attempted with no path")
             return
         try:
-            self._path.write_text(self._buffer.text(), encoding="utf-8")
+            text = self._buffer.text()
+            await asyncio.to_thread(self._path.write_text, text, encoding="utf-8")
             self._dirty = False
             self._status = f"Saved {self._path.name}"
             ctx.info(f"editor: saved path={self._path}")
@@ -65,13 +67,13 @@ class EditorApp(App):
             self._status = f"Save failed: {e}"
             ctx.error(f"editor: save failed path={self._path}: {e}")
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    async def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
         cmd = mods.get("cmd", False)
         shift = mods.get("shift", False)
         ctrl = mods.get("ctrl", False)
 
         if cmd and key == "s":
-            self._save(ctx)
+            await self._save(ctx)
             return
 
         # Cmd+W is consumed by the host (close_pane binding) before reaching the app.
@@ -79,9 +81,9 @@ class EditorApp(App):
         if cmd:
             return
 
-        before = self._buffer.text()
         self._area.on_key(key, shift=shift, ctrl=ctrl)
-        if self._buffer.text() != before:
+        _mutating = {"backspace", "delete", "enter", "return"}
+        if len(key) == 1 or key in _mutating:
             self._dirty = True
         self._status = ""
 
@@ -97,7 +99,7 @@ class EditorApp(App):
 
         # ── Editor body ──────────────────────────────────────────────
         body_y = HEADER_H
-        body_h = ctx.h - HEADER_H - FOOTER_H
+        body_h = max(0.0, ctx.h - HEADER_H - FOOTER_H)
         for cmd_dict in self._area.render(0, body_y, ctx.w, body_h):
             ctx._queue(cmd_dict)
 
