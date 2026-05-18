@@ -3,53 +3,65 @@ import Layout from '../layouts/Layout.astro';
 import Newsletter from '../components/Newsletter.astro';
 
 const RELEASES_LATEST = 'https://github.com/ianjamesburke/PLEXI/releases/latest';
-const RELEASES_ALL = 'https://github.com/ianjamesburke/PLEXI/releases';
-
-const platforms = [
-  { id: 'mac',     name: 'macOS',   note: '.dmg installer · Apple Silicon & Intel', comingSoon: false },
-  { id: 'windows', name: 'Windows', note: '.exe installer · Windows 10+',           comingSoon: true  },
-  { id: 'linux',   name: 'Linux',   note: '.AppImage · most distros',               comingSoon: true  },
-];
+const INSTALL_CMD = 'curl -fsSL https://plexiapp.com/install | sh';
 ---
-<Layout title="Download Plexi" description="Download the latest release of Plexi for macOS.">
+<Layout title="Download Plexi" description="Install Plexi on macOS with a single command.">
   <header class="dl-hero">
     <div class="wrap">
-      <h1>Download Plexi</h1>
-      <p class="tagline">macOS only for now. Latest release, straight from GitHub.</p>
+      <h1>Install Plexi</h1>
+      <p class="tagline">One command. Installs the app, CLI, and shell completions.</p>
     </div>
   </header>
 
   <section class="dl-section">
     <div class="wrap">
-      <div class="dl-gate-wrap">
-        <div class="dl-gate">
-          <p class="dl-gate-title">Plexi is currently in pre-release.</p>
-          <p class="dl-gate-body">
-            If you'd like to become an alpha tester, you can download the latest build on
-            <a href={RELEASES_LATEST}>GitHub</a>.
-          </p>
+      <div class="install-block">
+        <div class="install-label">Open Terminal and run:</div>
+        <div class="install-cmd-row">
+          <code class="install-cmd">{INSTALL_CMD}</code>
+          <button class="copy-btn" data-cmd={INSTALL_CMD} aria-label="Copy to clipboard">
+            <span class="copy-icon">&#x2398;</span>
+            <span class="copy-label">Copy</span>
+          </button>
         </div>
-        <div class="dl-grid dl-grid-blurred" aria-hidden="true">
-          {platforms.map((p) => (
-            <div class={`dl-card${p.comingSoon ? ' is-soon' : ''}`} data-os={p.id}>
-              <div class="dl-os">
-                {p.name}
-                {p.comingSoon && <span class="dl-badge">Coming soon</span>}
-              </div>
-              <div class="dl-note">{p.note}</div>
-              {p.comingSoon
-                ? <span class="btn btn-disabled">Download <span class="arrow">→</span></span>
-                : <span class="btn">Download <span class="arrow">→</span></span>
-              }
-            </div>
-          ))}
-        </div>
+        <p class="install-note">
+          You'll be asked for your password &mdash; it installs the app to /Applications
+          and sets up the CLI in one shot.
+        </p>
+      </div>
+
+      <div class="alt-link">
+        Prefer to install manually? <a href={RELEASES_LATEST}>Download from GitHub</a>
       </div>
     </div>
   </section>
 
   <Newsletter compact />
 </Layout>
+
+<script>
+  document.querySelectorAll('.copy-btn').forEach((btn) => {
+    let resetTimer;
+    btn.addEventListener('click', async () => {
+      const cmd = btn.getAttribute('data-cmd');
+      if (!cmd) return;
+      const label = btn.querySelector('.copy-label');
+      clearTimeout(resetTimer);
+      try {
+        await navigator.clipboard.writeText(cmd);
+        if (label) {
+          label.textContent = 'Copied';
+          resetTimer = setTimeout(() => { label.textContent = 'Copy'; }, 2000);
+        }
+      } catch {
+        if (label) {
+          label.textContent = 'Failed';
+          resetTimer = setTimeout(() => { label.textContent = 'Copy'; }, 2000);
+        }
+      }
+    });
+  });
+</script>
 
 <style>
   .dl-hero { padding: 120px 0 40px; }
@@ -59,84 +71,86 @@ const platforms = [
   }
   .dl-hero .tagline { font-size: 16px; color: var(--fg-2); max-width: 560px; }
 
-  .dl-section { padding: 32px 0 120px; }
+  .dl-section { padding: 32px 0 80px; }
 
-  .dl-gate-wrap { position: relative; }
-
-  .dl-gate {
-    position: absolute;
-    inset: 0;
-    z-index: 10;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-    text-align: center;
-    padding: 32px;
-  }
-  .dl-gate-title {
-    font-size: 20px; font-weight: 600; letter-spacing: -0.01em; color: var(--fg);
-  }
-  .dl-gate-body {
-    font-size: 15px; color: var(--fg-2); max-width: 380px; line-height: 1.6;
-  }
-  .dl-gate-body a { color: var(--accent-light); text-decoration: none; }
-  .dl-gate-body a:hover { color: var(--fg); }
-
-  .dl-grid {
-    display: grid; grid-template-columns: repeat(3, 1fr);
-    gap: 20px; margin-bottom: 32px;
-  }
-  .dl-grid-blurred {
-    opacity: 0.15;
-    filter: blur(3px);
-    pointer-events: none;
-    user-select: none;
-  }
-
-  .dl-card {
-    border: 1px solid var(--border-2);
+  .install-block {
     background: var(--bg-2);
-    border-radius: 10px;
-    padding: 28px 24px;
-    display: flex; flex-direction: column; gap: 10px;
+    border: 1px solid var(--border-2);
+    border-radius: 12px;
+    padding: 32px;
+    max-width: 640px;
   }
-  .dl-card .dl-os {
-    font-size: 18px; font-weight: 600; letter-spacing: -0.01em; color: var(--fg);
-  }
-  .dl-card .dl-note {
-    font-size: 12px; color: var(--fg-3); margin-bottom: 14px;
-  }
-  .dl-card .btn { align-self: flex-start; }
 
-  .dl-badge {
-    display: inline-block;
-    margin-left: 10px;
-    font-size: 10px; font-weight: 500; letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--fg-3);
-    border: 1px solid var(--border-2);
-    border-radius: 4px;
-    padding: 1px 6px;
-    vertical-align: middle;
+  .install-label {
+    font-size: 14px;
+    color: var(--fg-2);
+    margin-bottom: 12px;
+    font-weight: 500;
   }
-  .btn-disabled {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 8px 16px;
+
+  .install-cmd-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--bg);
+    border: 1px solid var(--border-2);
+    border-radius: 8px;
+    padding: 14px 16px;
+    overflow-x: auto;
+  }
+
+  .install-cmd {
+    flex: 1;
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--fg);
+    white-space: nowrap;
+    user-select: all;
+  }
+
+  .copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    font-family: var(--mono);
+    color: var(--fg-2);
+    background: var(--bg-2);
+    border: 1px solid var(--border-2);
     border-radius: 6px;
-    border: 1px solid var(--border-2);
-    color: var(--fg-3);
-    font-size: 13px; font-weight: 500;
-    cursor: not-allowed;
-    user-select: none;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: color 150ms, border-color 150ms;
   }
+  .copy-btn:hover {
+    color: var(--fg);
+    border-color: var(--fg-3);
+  }
+
+  .copy-icon { font-size: 14px; }
+
+  .install-note {
+    margin-top: 16px;
+    font-size: 13px;
+    color: var(--fg-3);
+    line-height: 1.6;
+  }
+
+  .alt-link {
+    margin-top: 24px;
+    font-size: 13px;
+    color: var(--fg-3);
+  }
+  .alt-link a {
+    color: var(--accent-light);
+    text-decoration: none;
+  }
+  .alt-link a:hover { color: var(--fg); }
 
   @media (max-width: 720px) {
     .dl-hero h1 { font-size: 40px; }
-    .dl-grid { grid-template-columns: 1fr; }
-    .dl-gate { padding: 24px 16px; }
-    .dl-gate-title { font-size: 17px; }
-    .dl-gate-body { font-size: 14px; }
+    .install-block { padding: 24px 16px; }
   }
 </style>
