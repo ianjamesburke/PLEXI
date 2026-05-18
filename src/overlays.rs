@@ -152,7 +152,7 @@ fn render_inspector_pane_row(
     let row_id = row.id;
     let mut close_pane: Option<PaneId> = None;
     let (row_resp, _) = crate::widgets::selectable_row(ui, is_selected, colors, |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_centered(|ui| {
             ui.label(
                 RichText::new(format!("#{} {}", row_id, row.kind))
                     .size(style::TEXT_CAPTION)
@@ -1885,11 +1885,17 @@ impl PlexiApp {
                 for (_, pane) in &win.panes {
                     match pane {
                         crate::pane::Pane::Terminal(t) => {
+                            let pane_name = t.name.clone().or_else(|| t.pty_title.clone()).unwrap_or_default();
+                            // Show pty_title in detail only when it adds context beyond the displayed name.
+                            let pane_detail = t.pty_title.as_deref()
+                                .filter(|pt| !pt.is_empty() && *pt != pane_name.as_str())
+                                .map(|s| s.to_string())
+                                .unwrap_or_default();
                             rows.push(PaneRow {
                                 id: t.id,
                                 kind: "Terminal",
-                                name: t.name.clone().or_else(|| t.pty_title.clone()).unwrap_or_default(),
-                                detail: String::new(),
+                                name: pane_name,
+                                detail: pane_detail,
                                 status: if t.exited { "exited" } else { "running" },
                             });
                         }
@@ -1960,10 +1966,16 @@ impl PlexiApp {
             (down, up, enter, backspace)
         });
 
-        let ctx_name = self.router.active().name.clone();
-        let ctx_root = self.router.active().root.clone();
         let (groups, all_pane_ids, all_context_ids) = self.collect_inspector_rows();
         let pane_count = all_pane_ids.len();
+
+        // Header title reflects the selected pane's context, not the router's active context.
+        let selected_ctx_idx = all_context_ids
+            .get(self.inspector_selected_pane)
+            .and_then(|&cid| self.router.position(|c| c.context_id == cid))
+            .unwrap_or_else(|| self.router.active_idx());
+        let ctx_name = self.router.get(selected_ctx_idx).name.clone();
+        let ctx_root = self.router.get(selected_ctx_idx).root.clone();
 
         if nav_down && pane_count > 0 {
             self.inspector_selected_pane = (self.inspector_selected_pane + 1) % pane_count;
@@ -2097,8 +2109,8 @@ impl PlexiApp {
             self.save_workspace();
         }
         if open_root_overlay {
-            let idx = self.router.active_idx();
-            let existing = self.router.active().root.as_ref()
+            let idx = selected_ctx_idx;
+            let existing = self.router.get(idx).root.as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
             log::info!("TextInputOverlay: opened target=ContextRoot({idx})");
