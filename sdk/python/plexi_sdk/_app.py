@@ -135,6 +135,9 @@ class App:
         # single open_video() call.
         self._pending_video_open: "dict[str, asyncio.Queue]" = {}
         self._pending_notify: "dict[str, asyncio.Queue]" = {}
+        # #310: non-blocking notify_*_async callbacks. Keyed on notify_id;
+        # each callable is invoked on the event thread when NotifyAction arrives.
+        self._pending_notify_callbacks: "dict[str, Any]" = {}
         # v3.5 Canvas Terminal Binding Primitives (#78). Two response shapes:
         # `linked_terminal_ready` carries an int pane_id; `command_preview`
         # carries (command, would_run_in_cwd). Each async helper awaits
@@ -636,14 +639,23 @@ class App:
                     notify_id = ev.get("notify_id", "")
                     action_label = ev.get("action_label", "")
                     value = ev.get("value")
+                    if action_label == "cancel":
+                        result = "__cancel__"
+                    elif value is not None:
+                        result = value
+                    else:
+                        result = action_label or "acknowledge"
                     q = self._pending_notify.pop(notify_id, None)
                     if q:
-                        if action_label == "cancel":
-                            q.put_nowait("__cancel__")
-                        elif value is not None:
-                            q.put_nowait(value)
-                        else:
-                            q.put_nowait(action_label or "acknowledge")
+                        q.put_nowait(result)
+                    else:
+                        cb = self._pending_notify_callbacks.pop(notify_id, None)
+                        if cb is not None:
+                            self.emit.info(f"notify_async: dispatching callback for {notify_id!r}")
+                            try:
+                                cb(result)
+                            except Exception as exc:
+                                sys.stderr.write(f"plexi_sdk: notify_async callback raised: {exc}\n")
 
                 elif t == "text_measured":
                     # Response to RenderContext.measure_text(). Forward (width, height)

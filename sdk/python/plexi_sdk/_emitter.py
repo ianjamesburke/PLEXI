@@ -408,6 +408,146 @@ class Emitter:
         _emit(payload)
         return await q.get()
 
+    # ── Non-blocking (callback-based) notify variants (#310) ─────────────────
+    # Each method returns immediately with the notify_id (str). The callback
+    # `on_response` fires on the event thread when the user interacts.
+    # Registry entry is removed after the first invocation.
+
+    def notify_async(self, title: str, priority: int, body: str = "",
+                     level: str = "info",
+                     actions: "list | None" = None,
+                     image_inline: "dict | None" = None,
+                     image_pipe_id: "str | None" = None,
+                     timeout_secs: "int | None" = None,
+                     on_dismiss: "str | None" = None,
+                     on_response: "Any" = None) -> str:
+        """Non-blocking notify_and_wait. Returns immediately with notify_id.
+
+        If on_response is None, behaves like fire-and-forget notify() — returns "".
+        If on_response is set, registers the callback; it receives "acknowledge"
+        or "__cancel__" when the user interacts.
+
+        `priority` is required (int, higher = more urgent).
+        """
+        if on_response is None:
+            self.notify(title=title, priority=priority, body=body, level=level,
+                        actions=actions, image_inline=image_inline,
+                        image_pipe_id=image_pipe_id, timeout_secs=timeout_secs,
+                        on_dismiss=on_dismiss)
+            return ""
+        notify_id = str(uuid.uuid4())
+        self._app._pending_notify_callbacks[notify_id] = on_response
+        self.info(f"notify_async: registered callback for {notify_id!r}")
+        payload: dict = {"type": "notify", "level": level, "title": title,
+                         "body": body, "kind": "message", "actions": actions or [],
+                         "priority": priority, "notify_id": notify_id}
+        if image_inline is not None:
+            payload["image_inline"] = image_inline
+        if image_pipe_id is not None:
+            payload["image_pipe_id"] = image_pipe_id
+        if timeout_secs is not None:
+            payload["timeout_secs"] = int(timeout_secs)
+        if on_dismiss is not None:
+            payload["on_dismiss"] = on_dismiss
+        _emit(payload)
+        return notify_id
+
+    def notify_choice_async(self, title: str, options: list, priority: int,
+                            body: str = "",
+                            level: str = "info", required: bool = False,
+                            image_inline: "dict | None" = None,
+                            image_pipe_id: "str | None" = None,
+                            timeout_secs: "int | None" = None,
+                            on_dismiss: "str | None" = None,
+                            on_response: "Any" = None) -> str:
+        """Non-blocking notify_choice. Returns immediately with notify_id.
+
+        `on_response` receives the chosen option's value (or label if no value
+        set), or "__cancel__" if the user dismissed (required=False only).
+        `priority` is required (int, higher = more urgent).
+        """
+        import warnings
+        for opt in options:
+            sc = opt.get("shortcut", "")
+            if sc and sc.lower() in _RESERVED_SHORTCUTS:
+                warnings.warn(
+                    f"notify_choice_async: shortcut {sc!r} on option "
+                    f"{opt.get('label', '')!r} conflicts with notification "
+                    f"navigation keys (j/k/h/l, 1-9). Use y/n or another letter.",
+                    stacklevel=2,
+                )
+        notify_id = str(uuid.uuid4())
+        if on_response is not None:
+            self._app._pending_notify_callbacks[notify_id] = on_response
+            self.info(f"notify_choice_async: registered callback for {notify_id!r}")
+        payload: dict = {"type": "notify", "level": level, "title": title,
+                         "body": body, "kind": "choice", "options": options,
+                         "required": required, "priority": priority,
+                         "notify_id": notify_id}
+        if image_inline is not None:
+            payload["image_inline"] = image_inline
+        if image_pipe_id is not None:
+            payload["image_pipe_id"] = image_pipe_id
+        if timeout_secs is not None:
+            payload["timeout_secs"] = int(timeout_secs)
+        if on_dismiss is not None:
+            payload["on_dismiss"] = on_dismiss
+        _emit(payload)
+        return notify_id
+
+    def notify_input_async(self, title: str, priority: int,
+                           prompt: str = "", body: str = "",
+                           level: str = "info", required: bool = False,
+                           timeout_secs: "int | None" = None,
+                           on_dismiss: "str | None" = None,
+                           on_response: "Any" = None) -> str:
+        """Non-blocking notify_input. Returns immediately with notify_id.
+
+        `on_response` receives the typed text (possibly empty), or "__cancel__"
+        if the user dismissed (required=False only).
+        `priority` is required (int, higher = more urgent).
+        """
+        notify_id = str(uuid.uuid4())
+        if on_response is not None:
+            self._app._pending_notify_callbacks[notify_id] = on_response
+            self.info(f"notify_input_async: registered callback for {notify_id!r}")
+        payload: dict = {"type": "notify", "level": level, "title": title,
+                         "body": body, "kind": "input", "input_prompt": prompt,
+                         "required": required, "priority": priority,
+                         "notify_id": notify_id}
+        if timeout_secs is not None:
+            payload["timeout_secs"] = int(timeout_secs)
+        if on_dismiss is not None:
+            payload["on_dismiss"] = on_dismiss
+        _emit(payload)
+        return notify_id
+
+    def notify_and_wait_async(self, title: str, priority: int,
+                              body: str = "", level: str = "info",
+                              actions: "list | None" = None,
+                              timeout_secs: "int | None" = None,
+                              on_dismiss: "str | None" = None,
+                              on_response: "Any" = None) -> str:
+        """Non-blocking notify_and_wait. Returns immediately with notify_id.
+
+        `on_response` receives "acknowledge" on Enter/Space/button, or
+        "__cancel__" on Esc.
+        `priority` is required (int, higher = more urgent).
+        """
+        notify_id = str(uuid.uuid4())
+        if on_response is not None:
+            self._app._pending_notify_callbacks[notify_id] = on_response
+            self.info(f"notify_and_wait_async: registered callback for {notify_id!r}")
+        payload: dict = {"type": "notify", "level": level, "title": title,
+                         "body": body, "kind": "message", "actions": actions or [],
+                         "priority": priority, "notify_id": notify_id}
+        if timeout_secs is not None:
+            payload["timeout_secs"] = int(timeout_secs)
+        if on_dismiss is not None:
+            payload["on_dismiss"] = on_dismiss
+        _emit(payload)
+        return notify_id
+
     # Terminal commands (legacy back-compat)
     def run_in_terminal(self, command: str) -> None:
         _emit({"type": "run_in_terminal", "command": command})

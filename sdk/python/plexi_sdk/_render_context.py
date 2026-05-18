@@ -574,6 +574,73 @@ class RenderContext:
                                                timeout_secs=timeout_secs,
                                                on_dismiss=on_dismiss)
 
+    def notify_async(self, title: str, priority: int, body: str = "",
+                     level: str = "info",
+                     actions: "list | None" = None,
+                     image_inline: "dict | None" = None,
+                     image_pipe_id: "str | None" = None,
+                     timeout_secs: "int | None" = None,
+                     on_dismiss: "str | None" = None,
+                     on_response: "Any" = None) -> str:
+        """Non-blocking notify_and_wait. Returns immediately with notify_id.
+        `priority` is required. See Emitter.notify_async."""
+        return self.emit.notify_async(title=title, priority=priority, body=body,
+                                      level=level, actions=actions,
+                                      image_inline=image_inline,
+                                      image_pipe_id=image_pipe_id,
+                                      timeout_secs=timeout_secs,
+                                      on_dismiss=on_dismiss,
+                                      on_response=on_response)
+
+    def notify_choice_async(self, title: str, options: list, priority: int,
+                            body: str = "",
+                            level: str = "info", required: bool = False,
+                            image_inline: "dict | None" = None,
+                            image_pipe_id: "str | None" = None,
+                            timeout_secs: "int | None" = None,
+                            on_dismiss: "str | None" = None,
+                            on_response: "Any" = None) -> str:
+        """Non-blocking notify_choice. Returns immediately with notify_id.
+        `priority` is required. See Emitter.notify_choice_async."""
+        return self.emit.notify_choice_async(title=title, options=options,
+                                             priority=priority, body=body,
+                                             level=level, required=required,
+                                             image_inline=image_inline,
+                                             image_pipe_id=image_pipe_id,
+                                             timeout_secs=timeout_secs,
+                                             on_dismiss=on_dismiss,
+                                             on_response=on_response)
+
+    def notify_input_async(self, title: str, priority: int,
+                           prompt: str = "", body: str = "",
+                           level: str = "info", required: bool = False,
+                           timeout_secs: "int | None" = None,
+                           on_dismiss: "str | None" = None,
+                           on_response: "Any" = None) -> str:
+        """Non-blocking notify_input. Returns immediately with notify_id.
+        `priority` is required. See Emitter.notify_input_async."""
+        return self.emit.notify_input_async(title=title, priority=priority,
+                                            prompt=prompt, body=body,
+                                            level=level, required=required,
+                                            timeout_secs=timeout_secs,
+                                            on_dismiss=on_dismiss,
+                                            on_response=on_response)
+
+    def notify_and_wait_async(self, title: str, priority: int,
+                              body: str = "", level: str = "info",
+                              actions: "list | None" = None,
+                              timeout_secs: "int | None" = None,
+                              on_dismiss: "str | None" = None,
+                              on_response: "Any" = None) -> str:
+        """Non-blocking notify_and_wait. Returns immediately with notify_id.
+        `priority` is required. See Emitter.notify_and_wait_async."""
+        return self.emit.notify_and_wait_async(title=title, priority=priority,
+                                               body=body, level=level,
+                                               actions=actions,
+                                               timeout_secs=timeout_secs,
+                                               on_dismiss=on_dismiss,
+                                               on_response=on_response)
+
     def status_summary(self, text: str) -> None:
         _emit({"type": "status_summary", "text": text})
 
