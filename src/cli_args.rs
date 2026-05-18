@@ -227,6 +227,14 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: ConfigCmd,
     },
+    /// Manage workspace routines — scheduled shell commands.
+    ///
+    /// Routines are declared in `.plexi/routines.toml` and run automatically on schedule.
+    /// Use `plexi routine list` to see configured routines, or `plexi routine run <name>` to fire one manually.
+    Routine {
+        #[command(subcommand)]
+        cmd: RoutineCmd,
+    },
 }
 
 #[derive(Subcommand)]
@@ -527,4 +535,15 @@ pub enum ConfigCmd {
     ///
     /// Creates a backup at config.toml.bak before overwriting.
     Reset,
+}
+
+#[derive(Subcommand)]
+pub enum RoutineCmd {
+    /// List routines defined in .plexi/routines.toml with their schedule and next fire time.
+    List,
+    /// Manually trigger a named routine from .plexi/routines.toml.
+    Run {
+        /// Name of the routine to run
+        name: String,
+    },
 }
