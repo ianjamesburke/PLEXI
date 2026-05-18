@@ -1,8 +1,10 @@
 use egui::{Align, Color32, CornerRadius, CursorIcon, Id, Layout, Pos2, Rect, Sense, UiBuilder, Vec2};
 use crate::theme::Colors;
 
-pub const ROW_HEIGHT: f32 = 26.0;
+pub const NAME_LINE_HEIGHT: f32 = 26.0;
 pub const SUBTITLE_LINE_HEIGHT: f32 = 14.0;
+/// Every context row is this height: name line + subtitle line (path + dots).
+pub const ROW_HEIGHT: f32 = NAME_LINE_HEIGHT + SUBTITLE_LINE_HEIGHT;
 pub const ACTION_ZONE_WIDTH: f32 = 30.0;
 
 pub(crate) fn with_alpha(c: Color32, alpha: f32) -> Color32 {
@@ -22,18 +24,17 @@ pub struct RowLayout {
 }
 
 impl RowLayout {
-    fn new(origin: Pos2, width: f32, action_enabled: bool, subtitle_height: f32) -> Self {
-        let total_height = ROW_HEIGHT + subtitle_height;
-        let full = Rect::from_min_size(origin, Vec2::new(width, total_height));
+    fn new(origin: Pos2, width: f32, action_enabled: bool) -> Self {
+        let full = Rect::from_min_size(origin, Vec2::new(width, ROW_HEIGHT));
         let action = action_enabled.then(|| {
             Rect::from_min_size(
                 egui::pos2(full.max.x - ACTION_ZONE_WIDTH, full.min.y),
-                Vec2::new(ACTION_ZONE_WIDTH, total_height),
+                Vec2::new(ACTION_ZONE_WIDTH, ROW_HEIGHT),
             )
         });
         let content = action.map(|a| full.with_max_x(a.min.x)).unwrap_or(full);
-        // Content rect for line 1 only (name row), restricted to ROW_HEIGHT.
-        let content_line1 = Rect::from_min_size(content.min, Vec2::new(content.width(), ROW_HEIGHT));
+        // Content rect for line 1 only (name row), restricted to NAME_LINE_HEIGHT.
+        let content_line1 = Rect::from_min_size(content.min, Vec2::new(content.width(), NAME_LINE_HEIGHT));
         Self { full, content: content_line1, action }
     }
 
@@ -72,7 +73,6 @@ pub enum SidebarAction {
 /// before any rendering or interaction registration occurs.
 pub struct SidebarRow {
     pub layout: RowLayout,
-    subtitle_height: f32,
     is_active: bool,
     is_this_dragging: bool,
     is_any_dragging: bool,
@@ -82,12 +82,10 @@ impl SidebarRow {
     /// Compute layout zones from the current cursor position.
     /// `action_enabled`: whether to carve out the action zone.
     /// Pass `false` when only one context exists or dragging is active.
-    /// `subtitle_height`: extra height for the subtitle line (0.0 when no subtitle).
-    pub fn new(ui: &egui::Ui, width: f32, action_enabled: bool, subtitle_height: f32) -> Self {
+    pub fn new(ui: &egui::Ui, width: f32, action_enabled: bool) -> Self {
         let origin = ui.cursor().min;
         Self {
-            layout: RowLayout::new(origin, width, action_enabled, subtitle_height),
-            subtitle_height,
+            layout: RowLayout::new(origin, width, action_enabled),
             is_active: false,
             is_this_dragging: false,
             is_any_dragging: false,
@@ -117,12 +115,11 @@ impl SidebarRow {
         content_fn: impl FnOnce(&mut egui::Ui, bool),
         subtitle_fn: impl FnOnce(&egui::Painter, Rect, f32),
     ) -> (SidebarAction, egui::Response) {
-        let total_height = ROW_HEIGHT + self.subtitle_height;
         let row_alpha = if self.is_this_dragging { 0.4_f32 } else { 1.0_f32 };
         let hovered = self.layout.hovered(ui);
 
-        // Advance the layout cursor by the full item height.
-        ui.allocate_space(Vec2::new(self.layout.full.width(), total_height));
+        // Advance the layout cursor by the fixed row height.
+        ui.allocate_space(Vec2::new(self.layout.full.width(), ROW_HEIGHT));
 
         // Background — covers the full item (name + subtitle).
         let fill = if self.is_active {
@@ -137,7 +134,7 @@ impl SidebarRow {
         // Active accent bar — covers the full item height.
         if self.is_active {
             ui.painter().rect_filled(
-                Rect::from_min_size(self.layout.full.min, Vec2::new(3.0, total_height)),
+                Rect::from_min_size(self.layout.full.min, Vec2::new(3.0, ROW_HEIGHT)),
                 CornerRadius::ZERO,
                 with_alpha(colors.accent, row_alpha),
             );
@@ -151,14 +148,12 @@ impl SidebarRow {
             |ui| content_fn(ui, hovered),
         );
 
-        // Subtitle zone (line 2) — rendered via painter callback.
-        if self.subtitle_height > 0.0 {
-            let subtitle_rect = Rect::from_min_size(
-                Pos2::new(self.layout.full.min.x, self.layout.full.min.y + ROW_HEIGHT),
-                Vec2::new(self.layout.full.width(), self.subtitle_height),
-            );
-            subtitle_fn(ui.painter(), subtitle_rect, row_alpha);
-        }
+        // Subtitle zone (line 2) — always allocated, rendered via painter callback.
+        let subtitle_rect = Rect::from_min_size(
+            Pos2::new(self.layout.full.min.x, self.layout.full.min.y + NAME_LINE_HEIGHT),
+            Vec2::new(self.layout.full.width(), SUBTITLE_LINE_HEIGHT),
+        );
+        subtitle_fn(ui.painter(), subtitle_rect, row_alpha);
 
         // Action zone — glyph only (no interact call). Click detection is via pointer-position
         // geometry against the single full-row interact registered below.
@@ -170,7 +165,7 @@ impl SidebarRow {
                     if in_action { colors.text_primary } else { colors.text_dim },
                     row_alpha,
                 );
-                let action_line1_center = egui::pos2(az.center().x, az.min.y + ROW_HEIGHT * 0.5);
+                let action_line1_center = egui::pos2(az.center().x, az.min.y + NAME_LINE_HEIGHT * 0.5);
                 ui.painter().text(
                     action_line1_center,
                     egui::Align2::CENTER_CENTER,

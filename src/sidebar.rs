@@ -1,6 +1,6 @@
 use crate::context::WindowMenuAction;
-use crate::sidebar_row::{with_alpha, SidebarAction, SidebarRow, SUBTITLE_LINE_HEIGHT, ROW_HEIGHT};
-use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
+use crate::sidebar_row::{with_alpha, SidebarAction, SidebarRow, ROW_HEIGHT};
+use egui::{Align, Color32, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 use egui_tiles::Tile;
 
 use crate::app::PlexiApp;
@@ -174,7 +174,6 @@ impl PlexiApp {
 
             // Derive subtitle: pty_title or CWD basename for the focused pane of this context.
             let subtitle: Option<String> = {
-                // Find the window belonging to this context that has a focused pane.
                 let ctx_window = self.windows.iter()
                     .find(|w| w.context_id == ctx_id && w.focused_pane.is_some());
                 ctx_window.and_then(|w| {
@@ -185,7 +184,6 @@ impl PlexiApp {
                     };
                     let pane = w.panes.get(&pane_id)?;
                     if let Some(t) = pane.as_terminal() {
-                        // Prefer name (user-set or OSC), then pty_title, then CWD basename.
                         t.name.clone()
                             .or_else(|| t.pty_title.clone())
                             .or_else(|| {
@@ -208,18 +206,13 @@ impl PlexiApp {
                 })
             };
 
-            // Subtitle line shown when context has at least one pane.
-            let has_subtitle = pane_count > 0 && subtitle.is_some();
-            let subtitle_height = if has_subtitle { SUBTITLE_LINE_HEIGHT } else { 0.0 };
-
-            let row = SidebarRow::new(ui, sidebar_width, num_contexts > 1 && !any_dragging, subtitle_height)
+            // Fixed-height row: every context is the same size.
+            let row = SidebarRow::new(ui, sidebar_width, num_contexts > 1 && !any_dragging)
                 .active(is_active)
                 .dragging(is_dragging, any_dragging);
 
-            // Snapshot the layout for drop-indicator tracking (must be before draw()).
             let row_full = row.layout.full;
 
-            // Prepare content data (borrows resolved before the closure).
             let text_color = with_alpha(
                 if is_active { self.colors.text_primary } else { self.colors.text_dim },
                 if is_dragging { 0.4 } else { 1.0 },
@@ -234,7 +227,6 @@ impl PlexiApp {
             let dim_color = self.colors.text_dim;
             let accent_color = self.colors.accent;
 
-            // Capture subtitle rendering data before the closures.
             let show_dots = pane_count > 1;
             let subtitle_text = subtitle.clone();
             let indent = 20.0 + ctx_depth as f32 * 12.0;
@@ -263,16 +255,32 @@ impl PlexiApp {
                         });
                     }
                 },
-                // Line 2: pane dots (if 2+ panes) + subtitle text
+                // Line 2: subtitle path first, then pane dots to the right
                 |painter, subtitle_rect, row_alpha| {
                     let cy = subtitle_rect.center().y;
-                    let mut text_x = subtitle_rect.min.x + indent;
+                    let mut cursor_x = subtitle_rect.min.x + indent;
 
-                    // Pane dots (only when 2+ panes)
+                    // Subtitle text (path/title) — always first
+                    if let Some(ref text) = subtitle_text {
+                        let text_galley = painter.layout_no_wrap(
+                            text.to_string(),
+                            egui::FontId::proportional(9.0),
+                            with_alpha(dim_color, 0.6 * row_alpha),
+                        );
+                        let text_width = text_galley.size().x;
+                        painter.galley(
+                            egui::pos2(cursor_x, cy - text_galley.size().y * 0.5),
+                            text_galley,
+                            Color32::TRANSPARENT,
+                        );
+                        cursor_x += text_width + 6.0;
+                    }
+
+                    // Pane dots (only when 2+ panes) — after the path
                     if show_dots {
                         let capped = pane_count.min(PANE_DOT_MAX);
                         for dot_i in 0..capped {
-                            let cx = subtitle_rect.min.x + indent + (dot_i as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS;
+                            let cx = cursor_x + (dot_i as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS;
                             let color = if focused_dot_idx == Some(dot_i) {
                                 with_alpha(accent_color, row_alpha)
                             } else {
@@ -281,7 +289,7 @@ impl PlexiApp {
                             painter.circle_filled(egui::pos2(cx, cy), PANE_DOT_RADIUS, color);
                         }
                         if pane_count > PANE_DOT_MAX {
-                            let overflow_x = subtitle_rect.min.x + indent + (capped as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS * 0.5;
+                            let overflow_x = cursor_x + (capped as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS * 0.5;
                             painter.text(
                                 egui::pos2(overflow_x, cy),
                                 egui::Align2::LEFT_CENTER,
@@ -290,25 +298,6 @@ impl PlexiApp {
                                 with_alpha(dim_color, 0.5 * row_alpha),
                             );
                         }
-                        // Advance text_x past the dots
-                        let dots_width = (capped as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS;
-                        if pane_count > PANE_DOT_MAX {
-                            // Extra space for overflow text
-                            text_x += dots_width + 16.0;
-                        } else {
-                            text_x += dots_width + 6.0;
-                        }
-                    }
-
-                    // Subtitle text
-                    if let Some(ref text) = subtitle_text {
-                        painter.text(
-                            egui::pos2(text_x, cy),
-                            egui::Align2::LEFT_CENTER,
-                            text,
-                            egui::FontId::proportional(9.0),
-                            with_alpha(dim_color, 0.6 * row_alpha),
-                        );
                     }
                 },
             );
