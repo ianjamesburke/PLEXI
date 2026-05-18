@@ -4184,13 +4184,17 @@ impl PlexiApp {
 
         // Cmd+0 (quick note) is a global shortcut that must fire even when another
         // overlay is open — it pushes QuickNote on top of the current overlay.
-        // Block it when QuickNote is already active to prevent resetting mid-edit.
-        let allow_quick_note = !matches!(
-            self.focus_stack.last(),
-            Some(FocusLayer::QuickNote)
-                | Some(FocusLayer::QuickNoteDestination)
-                | Some(FocusLayer::QuickNoteSubDestination(_))
-        );
+        // Block it when ANY QuickNote layer is on the stack (not just the top),
+        // so a notification pushed on top of QuickNote doesn't re-open and reset
+        // the note mid-edit.
+        let allow_quick_note = !self.focus_stack.iter().any(|layer| {
+            matches!(
+                layer,
+                FocusLayer::QuickNote
+                    | FocusLayer::QuickNoteDestination
+                    | FocusLayer::QuickNoteSubDestination(_)
+            )
+        });
 
         ctx.input_mut(|i| {
             i.events.retain(|e| {

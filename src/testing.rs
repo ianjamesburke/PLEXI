@@ -651,6 +651,8 @@ mod tests {
             FocusLayer::ConfirmClose,
             FocusLayer::RenamePane,
             FocusLayer::TextInput,
+            FocusLayer::ContextRename,
+            FocusLayer::CliSetupPrompt,
         ];
 
         for layer in non_quick_note_layers {
@@ -690,7 +692,8 @@ mod tests {
     }
 
     /// Cmd+0 must be drained when quick note is already the active overlay to
-    /// prevent resetting the modal state mid-edit.
+    /// prevent resetting the modal state mid-edit. This includes when another
+    /// overlay is stacked on top of QuickNote (e.g. a notification pushed above it).
     #[test]
     fn drain_blocks_quick_note_key_when_quick_note_active() {
         use crate::app::FocusLayer;
@@ -700,6 +703,43 @@ mod tests {
             FocusLayer::QuickNoteDestination,
             FocusLayer::QuickNoteSubDestination(vec![0]),
         ];
+
+        // Also verify that a non-QuickNote layer on top of QuickNote still blocks Cmd+0.
+        {
+            let mut h = HostHarness::new();
+            h.app.push_focus_layer(FocusLayer::QuickNote);
+            h.app.push_focus_layer(FocusLayer::NotificationModal);
+
+            let event = egui::Event::Key {
+                key: egui::Key::Num0,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            };
+
+            h.app.ctx.input_mut(|i| {
+                i.events.push(event);
+            });
+
+            h.app.drain_captured_keyboard_input(&h.app.ctx.clone());
+
+            let mut found = false;
+            h.app.ctx.input(|i| {
+                found = i.events.iter().any(|e| matches!(
+                    e,
+                    egui::Event::Key { key: egui::Key::Num0, modifiers, .. }
+                        if modifiers.command
+                ));
+            });
+            assert!(
+                !found,
+                "Cmd+0 leaked through drain when NotificationModal is on top of QuickNote"
+            );
+        }
 
         for layer in quick_note_layers {
             let mut h = HostHarness::new();
