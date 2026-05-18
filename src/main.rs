@@ -389,7 +389,7 @@ fn main() -> eframe::Result {
                         PaneCmd::Key { pane_id, key } => std::process::exit(cli::pane_key_cli(pane_id, &key)),
                         PaneCmd::Self_ => std::process::exit(cli::pane_self_cli()),
                         PaneCmd::Info => std::process::exit(cli::pane_info_cli()),
-                        PaneCmd::Capture { pane_id, lines } => std::process::exit(cli::pane_capture_cli(pane_id, lines)),
+                        PaneCmd::Capture { pane_id, lines, full_output } => std::process::exit(cli::pane_capture_cli(pane_id, lines, full_output)),
                     },
                     Commands::Terminal { cmd, ephemeral, layout, from_pane_id, cwd, no_focus } => {
                         std::process::exit(cli::terminal_cli(cmd.as_deref(), ephemeral, layout.as_deref(), from_pane_id, cwd.as_deref(), no_focus));

@@ -430,6 +430,9 @@ pub enum PaneCmd {
         /// How many lines to read from the end of the output
         #[arg(long, default_value = "50")]
         lines: usize,
+        /// Preserve trailing empty lines (by default they are stripped)
+        #[arg(long)]
+        full_output: bool,
     },
     /// Send a key press to a pane. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
     ///
