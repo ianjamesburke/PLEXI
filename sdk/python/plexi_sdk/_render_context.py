@@ -13,6 +13,8 @@ if TYPE_CHECKING:
     from ._app import App
     from ._emitter import Emitter
 
+COMPACT_DEFAULT: float = 280.0
+REGULAR_DEFAULT: float = 480.0
 
 # ── RenderContext ──────────────────────────────────────────────────────────────
 
@@ -36,6 +38,8 @@ class RenderContext:
         # Seconds elapsed since the previous on_render call. 0.0 on first frame.
         # Use this for time-based game logic instead of calling time.time() yourself.
         self.elapsed: float = elapsed
+        self._compact_threshold: float = COMPACT_DEFAULT
+        self._regular_threshold: float = REGULAR_DEFAULT
         # Buffered JSON lines — flushed as a single write in frame_done().
         self._buf: "list[str]" = []
         # Mouse state for ctx.button() hit-testing (#255).
@@ -62,6 +66,29 @@ class RenderContext:
     @property
     def height(self) -> float:
         return self.h
+
+    @property
+    def size_class(self) -> str:
+        """Current size class based on pane width vs declared thresholds.
+
+        Returns 'compact', 'regular', or 'full'.
+        Thresholds come from the manifest [launch] section (or SDK defaults).
+        """
+        if self.w < self._compact_threshold:
+            return "compact"
+        elif self.w < self._regular_threshold:
+            return "regular"
+        return "full"
+
+    def declare_min_size(self, width: float, height: float) -> None:
+        """Override the manifest-declared minimum size at runtime.
+
+        Emits DrawCommand::SetMinSize. The host stores this and uses it as the
+        live effective minimum for this pane going forward, superseding the
+        manifest value. Use when a view mode needs more space than the default
+        (e.g. a detail view vs a list view).
+        """
+        self._queue({"type": "set_min_size", "width": width, "height": height})
 
     # ── Visual primitives ──
     def clear(self, fill: str = "#000000") -> None:

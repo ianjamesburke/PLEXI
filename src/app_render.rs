@@ -77,6 +77,8 @@ fn spawn_and_collect_frame(
         workspace_root: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
         capabilities: vec![],
         feature_flags: vec![],
+        compact_threshold: 280.0,
+        regular_threshold: 480.0,
     };
     let init_json = serde_json::to_string(&init)
         .map_err(|e| format!("failed to serialize Init: {e}"))?;
