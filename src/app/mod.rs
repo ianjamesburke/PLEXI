@@ -83,6 +83,8 @@ pub(crate) enum FocusLayer {
     ContextInspector,
     /// Shared text-input overlay (context root, future: context rename).
     TextInput,
+    /// Close-context confirmation dialog with pane inventory and dissolve option.
+    ContextCloseConfirm,
 }
 
 /// What a `TextInputOverlay` commit should do.
@@ -90,6 +92,21 @@ pub(crate) enum FocusLayer {
 pub(crate) enum OverlayTarget {
     /// Set (or clear) the root directory on the context at `idx`.
     ContextRoot(usize),
+}
+
+/// A single pane entry shown in the context-close confirmation dialog.
+#[derive(Clone, Debug)]
+pub(crate) struct ContextCloseItem {
+    pub kind: &'static str,
+    pub name: String,
+}
+
+/// State for the context-close confirmation dialog.
+#[derive(Clone, Debug)]
+pub(crate) struct ContextCloseState {
+    pub context_id: u64,
+    pub context_name: String,
+    pub items: Vec<ContextCloseItem>,
 }
 
 /// Shared text-input overlay state. One instance per open modal.
@@ -244,6 +261,7 @@ pub struct PlexiApp {
     pub(crate) quit_press_count: u8,
     pub(crate) quit_last_press: Option<std::time::Instant>,
     pub(crate) pending_close: bool,
+    pub(crate) pending_context_close: Option<ContextCloseState>,
     pub(crate) show_context_inspector: bool,
     pub(crate) inspector_selected_pane: usize,
     pub(crate) inspector_delete_press_count: u8,
@@ -856,6 +874,7 @@ impl PlexiApp {
                     config: config.clone(),
                     key_bindings: key_bindings.clone(),
                     pending_close: false,
+                    pending_context_close: None,
                     frame_tick: frame_tick.clone(),
                     renaming_window: None,
                     rename_buffer: String::new(),
@@ -975,6 +994,7 @@ impl PlexiApp {
             config,
             key_bindings,
             pending_close: false,
+            pending_context_close: None,
             frame_tick,
             renaming_window: None,
             rename_buffer: String::new(),
@@ -1104,6 +1124,7 @@ impl PlexiApp {
             config,
             key_bindings,
             pending_close: false,
+            pending_context_close: None,
             frame_tick,
             renaming_window: None,
             rename_buffer: String::new(),
@@ -2162,6 +2183,7 @@ impl eframe::App for PlexiApp {
         // `input_captured_by_overlay()` answers correctly this frame.
         self.sync_notification_modal_focus();
         self.sync_confirm_close_focus();
+        self.sync_context_close_focus();
         self.sync_command_palette_focus();
         self.sync_rename_pane_focus();
         self.sync_context_rename_focus();
@@ -2213,6 +2235,9 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::TextInput) => {
                     self.draw_text_input_overlay(ctx);
                 }
+                Some(FocusLayer::ContextCloseConfirm) => {
+                    self.draw_context_close_confirm(ctx);
+                }
                 None => {}
             }
             self.drain_captured_keyboard_input(ctx);
@@ -2222,6 +2247,7 @@ impl eframe::App for PlexiApp {
             // rest of this frame.
             self.sync_notification_modal_focus();
             self.sync_confirm_close_focus();
+            self.sync_context_close_focus();
             self.sync_command_palette_focus();
             self.sync_rename_pane_focus();
             self.sync_context_rename_focus();
@@ -2932,7 +2958,21 @@ impl eframe::App for PlexiApp {
                     // (via PushNav), Escape routes NavBack to the app
                     // instead of closing the pane.
                     if !self.try_nav_back_focused() {
-                        if self.confirm_close() {
+                        if let Some(child_ctx_id) = self.get_focused_sub_context_id() {
+                            let state = self.build_context_close_state(child_ctx_id);
+                            if state.items.is_empty() {
+                                // Empty context — close immediately, no dialog needed.
+                                let idx = self.router.iter().position(|c| c.context_id == child_ctx_id);
+                                if let Some(i) = idx {
+                                    log::info!("context_close: empty ctx={child_ctx_id} — closing immediately");
+                                    self.delete_context(i);
+                                    self.save_workspace();
+                                }
+                            } else {
+                                log::info!("context_close: ctx={child_ctx_id} has {} panes — showing dialog", state.items.len());
+                                self.pending_context_close = Some(state);
+                            }
+                        } else if self.confirm_close() {
                             self.pending_close = true;
                         } else if self.execute_close_pane() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -4012,6 +4052,7 @@ impl PlexiApp {
                 | Some(FocusLayer::CliSetupPrompt)
                 | Some(FocusLayer::ContextInspector)
                 | Some(FocusLayer::TextInput)
+                | Some(FocusLayer::ContextCloseConfirm)
         )
     }
 
@@ -4318,6 +4359,71 @@ impl PlexiApp {
         } else if !should_own && has_layer {
             self.pop_focus_layer(&FocusLayer::ConfirmClose);
         }
+    }
+
+    pub(crate) fn sync_context_close_focus(&mut self) {
+        let should_own = self.pending_context_close.is_some();
+        let has_layer = self
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::ContextCloseConfirm);
+        if should_own && !has_layer {
+            self.push_focus_layer(FocusLayer::ContextCloseConfirm);
+        } else if !should_own && has_layer {
+            self.pop_focus_layer(&FocusLayer::ContextCloseConfirm);
+        }
+    }
+
+    /// Returns the `context_id` of the child context if the focused pane is a SubContext tile.
+    pub(crate) fn get_focused_sub_context_id(&self) -> Option<u64> {
+        let win = &self.windows[self.active_window];
+        let focused_tile = win.focused_pane?;
+        let pane_id = match win.tree.tiles.get(focused_tile) {
+            Some(egui_tiles::Tile::Pane(id)) => *id,
+            _ => return None,
+        };
+        win.panes.get(&pane_id)?.as_sub_context()
+    }
+
+    /// Collect the pane inventory for a child context close dialog.
+    pub(crate) fn build_context_close_state(&self, context_id: u64) -> ContextCloseState {
+        let context_name = self
+            .router
+            .iter()
+            .find(|c| c.context_id == context_id)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
+
+        let mut items = Vec::new();
+        for win in &self.windows {
+            if win.context_id != context_id {
+                continue;
+            }
+            for (_, pane) in &win.panes {
+                match pane {
+                    crate::pane::Pane::Terminal(t) => {
+                        let name = t.name.clone()
+                            .or_else(|| t.pty_title.clone())
+                            .unwrap_or_else(|| "Terminal".to_string());
+                        items.push(ContextCloseItem { kind: "Terminal", name });
+                    }
+                    crate::pane::Pane::App(a) => {
+                        items.push(ContextCloseItem { kind: "App", name: a.name.clone() });
+                    }
+                    crate::pane::Pane::SubContext { context_id: child_id, .. } => {
+                        let name = self
+                            .router
+                            .iter()
+                            .find(|c| c.context_id == *child_id)
+                            .map(|c| c.name.clone())
+                            .unwrap_or_else(|| "Sub-context".to_string());
+                        items.push(ContextCloseItem { kind: "Context", name });
+                    }
+                }
+            }
+        }
+
+        ContextCloseState { context_id, context_name, items }
     }
 
     pub(crate) fn sync_notification_modal_focus(&mut self) {
