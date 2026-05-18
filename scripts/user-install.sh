@@ -49,6 +49,7 @@ echo "  This installer will:"
 echo "    • Download Plexi $TAG to /Applications"
 echo "    • Add the CLI to /usr/local/bin/plexi"
 echo "    • Install shell completions"
+echo "    • Install agent skills for AI coding assistants"
 echo "    • Sign the app for macOS Gatekeeper"
 echo ""
 echo "  Admin access may be required for the CLI symlink."
@@ -140,6 +141,24 @@ if [[ -d "$HOME/.config/fish" ]]; then
     mkdir -p "$HOME/.config/fish/completions"
     "$CLI_DEST" completions fish > "$HOME/.config/fish/completions/plexi.fish"
     ok "Completions (fish): ~/.config/fish/completions/plexi.fish"
+fi
+
+# ── agent skills ──────────────────────────────────────────────────────────────
+
+PROFILE_DIR="$HOME/.plexi"
+SKILLS_SRC=$(find "$TMP/extracted" -maxdepth 1 -type d -name "skills" | head -1)
+if [[ -n "$SKILLS_SRC" ]]; then
+    info "Installing agent skills..."
+    SKILLS_DEST="$PROFILE_DIR/.agents/skills"
+    installed=0
+    for skill_dir in "$SKILLS_SRC"/*/; do
+        [[ -f "$skill_dir/SKILL.md" ]] || continue
+        name="$(basename "$skill_dir")"
+        mkdir -p "$SKILLS_DEST/$name"
+        cp -R "$skill_dir"/* "$SKILLS_DEST/$name/"
+        installed=$((installed + 1))
+    done
+    [[ $installed -gt 0 ]] && ok "Skills: $installed installed to $SKILLS_DEST/"
 fi
 
 # ── register with macOS (dock icon, Spotlight, Open With) ─────────────────────
