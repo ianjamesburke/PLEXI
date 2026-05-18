@@ -35,9 +35,10 @@ impl std::fmt::Display for ConfigDiagnostic {
 const KNOWN_TOP_LEVEL: &[&str] = &[
     "font_size", "theme_preset", "theme", "beta", "log",
     "notifications", "ai", "confirm_quit", "confirm_close",
-    "keybindings", "quick_note", "focus_history_depth", "agents",
+    "keybindings", "quick_note", "focus_history_depth", "agents", "cli",
 ];
 const KNOWN_AGENTS: &[&str] = &["low", "medium", "high"];
+const KNOWN_CLI: &[&str] = &["tips"];
 const KNOWN_THEME: &[&str] = &[
     "bg_darkest", "bg_sidebar", "bg_toolbar", "terminal_bg", "bg_hover",
     "bg_sidebar_hover", "bg_active", "text_primary", "text_dim",
@@ -121,6 +122,9 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
             }
             if let Some(toml::Value::Table(t)) = table.get("agents") {
                 check_unknown_keys(t, "agents", KNOWN_AGENTS, &path_str, &mut diags);
+            }
+            if let Some(toml::Value::Table(t)) = table.get("cli") {
+                check_unknown_keys(t, "cli", KNOWN_CLI, &path_str, &mut diags);
             }
         }
     }
@@ -282,6 +286,14 @@ pub struct PlexiConfig {
     pub quick_note: Option<QuickNoteConfig>,
     pub focus_history_depth: Option<usize>,
     pub agents: Option<AgentsConfig>,
+    pub cli: Option<CliConfig>,
+}
+
+/// CLI behavior configuration.
+#[derive(Deserialize, Default, Clone)]
+pub struct CliConfig {
+    /// Print contextual tips after CLI commands. Default: `true`. Set to `false` to suppress.
+    pub tips: Option<bool>,
 }
 
 /// Plexi AI broker configuration (`ai.query` capability).

@@ -29,6 +29,17 @@ pub struct CommandDef {
     pub secrets: Vec<String>,
 }
 
+fn print_tip(msg: &str) {
+    let config = crate::config::PlexiConfig::load_with_workspace(
+        crate::config::active_workspace_root().as_deref(),
+    );
+    let enabled = config.cli.as_ref().and_then(|c| c.tips).unwrap_or(true);
+    if enabled {
+        log::info!("cli:tip: {msg}");
+        eprintln!("\x1b[2mtip: {msg}\x1b[0m");
+    }
+}
+
 /// Entry point for `plexi run <command_name>`.
 /// Returns the exit code.
 /// `plexi run` with no argument — list available commands from .plexi/commands.toml.
@@ -176,7 +187,13 @@ pub fn run_command(command_name: &str) -> i32 {
     }
 
     match child_cmd.status() {
-        Ok(status) => status.code().unwrap_or(1),
+        Ok(status) => {
+            let code = status.code().unwrap_or(1);
+            if code == 0 {
+                print_tip("run `plexi run list` to see all available commands.");
+            }
+            code
+        }
         Err(e) => {
             eprintln!("error: failed to spawn command: {e}");
             1
@@ -345,6 +362,7 @@ pub fn workspace_init() -> i32 {
             println!("Initialized workspace at {}", cwd.display());
             println!("  workspace id: {}", cfg.id);
             println!("  router:       .plexi/secrets.toml (fallback = true)");
+            print_tip("define runnable commands in .plexi/commands.toml, then run them with `plexi run <name>`.");
             0
         }
         Err(e) => {
@@ -441,6 +459,7 @@ pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool) -> i32
                 Ok(()) => {
                     log::info!("secret_set:cli: stored globally account={account}");
                     eprintln!("Stored '{friendly}' globally (plexi:user:{friendly})");
+                    print_tip("reference secrets in commands.toml under `[secrets] required = [\"...\"]`.");
                     0
                 }
                 Err(e) => {
@@ -475,6 +494,7 @@ pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool) -> i32
                     root.display(),
                     cfg.id
                 );
+                print_tip("reference secrets in commands.toml under `[secrets] required = [\"...\"]`.");
                 0
             }
             Err(e) => {
@@ -696,6 +716,7 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
                 println!("  cd {}", app_dir.display());
                 println!("  cargo build --release");
                 println!("  # then run: plexi app run {}", app_dir.display());
+                print_tip("link your app globally with `plexi app link .` so you can open it from any context.");
             } else {
                 println!("  Run with: plexi app run {}", app_dir.display());
                 // Auto-open the app if PLEXI_SOCKET is set (running inside a pane).
@@ -706,6 +727,8 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
                     if exit_code != 0 {
                         eprintln!("warning: app created but could not auto-open (exit {exit_code}) — run: plexi app run {}", app_dir.display());
                     }
+                } else {
+                    print_tip("link your app globally with `plexi app link .` so you can open it from any context.");
                 }
             }
             0
@@ -1421,6 +1444,7 @@ pub fn install_cli(spec: &str) -> i32 {
         Ok(outcome) => match outcome.status {
             crate::install::InstallStatus::Installed(path) => {
                 println!("installed '{}' at {}", outcome.id, path.display());
+                print_tip(&format!("open your app with `plexi open {}`.", outcome.id));
                 0
             }
             crate::install::InstallStatus::AlreadyAtVersion => {
