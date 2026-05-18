@@ -979,7 +979,7 @@ impl PlexiApp {
                 })
                 .or_else(|| ctx.workspace_root.as_ref().map(|p| p.to_string_lossy().to_string()));
             let name_and_desc = match &ctx.context_description {
-                Some(desc) if !desc.is_empty() => format!("{} — \"{}\"", ctx.context, desc),
+                Some(desc) if !desc.is_empty() => format!("{} — \"{}\"", ctx.context, desc.replace('\n', " ").replace('\r', "")),
                 _ => ctx.context.clone(),
             };
             match ws {
