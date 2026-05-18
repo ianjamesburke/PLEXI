@@ -26,6 +26,14 @@ The full development lifecycle for PLEXI. One skill, four entry points:
 - All issues are marked `in progress` at Phase 1 start; all have that label removed on fail or merge.
 - Pane title: `#<n1>+<n2> — <short summary>`
 
+### Flags
+
+| Flag | Effect |
+|---|---|
+| `--skip-review` | Skip Phase 4b (AI review). Also auto-enabled when the PR diff is ≤ 10 changed lines. |
+
+Flags can be combined with any entry point: `/ship 1444 --skip-review`, `/ship P2 --skip-review`.
+
 ---
 
 ## Phase 0 — Find the Issue
@@ -293,6 +301,17 @@ plexi pane name "#<issue-number> / PR #${PR_NUMBER} — <short-title>"
 ---
 
 ## Phase 4b — AI Review
+
+**Skip gate:**
+```bash
+CHANGED_LINES=$(gh pr diff $PR_NUMBER --stat | tail -1 | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+')
+DELETED_LINES=$(gh pr diff $PR_NUMBER --stat | tail -1 | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+')
+TOTAL_CHANGED=$(( ${CHANGED_LINES:-0} + ${DELETED_LINES:-0} ))
+if [ "$SKIP_REVIEW" = "true" ] || [ "$TOTAL_CHANGED" -le 10 ]; then
+  echo "[AI REVIEW] Skipped — diff is $TOTAL_CHANGED lines (threshold: 10) or --skip-review passed."
+  # Skip to Phase 4 — Install & Test
+fi
+```
 
 Run after PR creation, before installing the PR build.
 
