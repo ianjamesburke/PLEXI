@@ -45,21 +45,25 @@ fn check_has_children(pid: u32) -> bool {
     {
         // proc_listchildpids with null buffer returns n_children * sizeof(pid_t) bytes needed.
         // A positive return means at least one child exists.
+        // Negative return is an error — default to true (busy) to avoid false idle display.
         let ret = unsafe {
             proc_listchildpids(pid as libc::c_int, std::ptr::null_mut(), 0)
         };
-        ret > 0
+        if ret < 0 { true } else { ret > 0 }
     }
     #[cfg(target_os = "linux")]
     {
+        // /proc/<pid>/task/<pid>/children lists immediate children space-separated.
+        // On read failure (kernel too old, pid gone) default to true to avoid false idle.
         std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
             .map(|s| !s.trim().is_empty())
-            .unwrap_or(false)
+            .unwrap_or(true)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
+        // Detection not implemented for this platform — show busy to match old "running" behavior.
         let _ = pid;
-        false
+        true
     }
 }
 
