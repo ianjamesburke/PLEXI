@@ -2,7 +2,7 @@
 """Editor — minimal native text editor PGAP app.
 
 Opens via `plexi open editor [file]`. Full-page TextArea + TextBuffer.
-Cmd+S to save. Cmd+W (close) is handled by the host.
+Ctrl+S to save. Cmd+W (close) is handled by the host.
 """
 import asyncio
 import sys
@@ -72,14 +72,19 @@ class EditorApp(App):
         shift = mods.get("shift", False)
         ctrl = mods.get("ctrl", False)
 
-        if cmd and key == "s":
+        if ctrl and key == "s":
             await self._save(ctx)
             return
 
         # Cmd+W is consumed by the host (close_pane binding) before reaching the app.
-        # All other cmd-combos (cmd+c, cmd+v, etc.) are also host-handled.
+        # All other cmd-combos are also host-handled and never reach here.
         if cmd:
             return
+
+        # Normalize "Space" debug name to " " — host sends Key events for non-printable
+        # keys by Debug name; space may arrive either way depending on platform focus state.
+        if key == "Space":
+            key = " "
 
         self._area.on_key(key, shift=shift, ctrl=ctrl)
         _mutating = {"backspace", "delete", "enter", "return"}
@@ -94,7 +99,7 @@ class EditorApp(App):
         ctx.rect(0, 0, ctx.w, HEADER_H, fill=SURFACE, radius=0)
         title = self._title()
         ctx.text(PAD, (HEADER_H - CAPTION) / 2, title, size=CAPTION, color=FG, bold=True)
-        hint = "⌘S save  ⌘W close"
+        hint = "^S save  ⌘W close"
         ctx.text(ctx.w - PAD, (HEADER_H - HINT) / 2, hint, size=HINT, color=MUTED, align="right")
 
         # ── Editor body ──────────────────────────────────────────────
