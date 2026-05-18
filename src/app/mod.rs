@@ -1748,7 +1748,7 @@ impl PlexiApp {
         }
 
         let cwd = self.router.get(target_ctx_idx).root.clone();
-        self.split_focused(false, Some(command), ephemeral, cwd);
+        self.split_focused(false, Some(command), ephemeral, false, cwd);
 
         // Restore original context
         if target_ctx_idx != original_ctx_idx {
