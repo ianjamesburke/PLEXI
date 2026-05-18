@@ -1,0 +1,16 @@
+schema_version = 1
+
+[app]
+id = "permission-test"
+type = "app"
+name = "Permission Test"
+entry = "main.py"
+version = "0.1.0"
+description = "POC app verifying first-run consent prompt for sensitive capabilities (panes.spawn, ai.query)"
+watch = true
+
+[app.capabilities]
+capabilities = ["panes.spawn", "ai.query"]
+
+[launch]
+layout_hint = { side = "right", split = 0.5 }
