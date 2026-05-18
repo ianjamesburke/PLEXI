@@ -1,0 +1,16 @@
+schema_version = 1
+
+[app]
+id = "notification-tester"
+type = "app"
+name = "Notification Tester"
+entry = "main.py"
+version = "0.1.0"
+description = "Demonstrates blocking and non-blocking notify variants (#310)"
+watch = true
+
+[app.capabilities]
+capabilities = []
+
+[launch]
+layout_hint = { side = "right", split = 0.5 }
