@@ -454,7 +454,7 @@ fn main() -> eframe::Result {
                         }
                     },
                     Commands::Context { cmd } => match cmd {
-                        ContextCmd::New { path, parent } => std::process::exit(cli::context_new_cli(path.as_deref(), parent.as_deref())),
+                        ContextCmd::New { name, path, parent } => std::process::exit(cli::context_new_cli(name.as_deref(), path.as_deref(), parent.as_deref())),
                         ContextCmd::Open { path } => std::process::exit(cli::context_open_cli(path.as_deref())),
                         ContextCmd::SetRoot { path } => std::process::exit(cli::context_set_root_cli(path.as_deref())),
                         ContextCmd::Current => std::process::exit(cli::context_current_cli()),

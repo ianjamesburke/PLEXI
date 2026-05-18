@@ -36,6 +36,32 @@ pub(crate) fn paint_tab_dots(
     }
 }
 
+/// Per-pane summary carried in SubContext tile preview data.
+#[derive(Clone, Default)]
+pub struct ChildPaneSummary {
+    pub pane_name: Option<String>,
+    pub cwd: Option<String>,
+    pub app_type: String,
+}
+
+/// Preview data for a SubContext tile.
+#[derive(Clone)]
+pub struct SubContextPreview {
+    pub context_name: String,
+    pub panes: Vec<ChildPaneSummary>,
+    pub notification_count: usize,
+}
+
+impl Default for SubContextPreview {
+    fn default() -> Self {
+        SubContextPreview {
+            context_name: "(deleted)".to_string(),
+            panes: Vec::new(),
+            notification_count: 0,
+        }
+    }
+}
+
 pub struct PlexiBehavior<'a> {
     pub panes: &'a mut HashMap<PaneId, Pane>,
     pub focused_tile: Option<TileId>,
@@ -57,8 +83,8 @@ pub struct PlexiBehavior<'a> {
     /// Opacity applied to unfocused panes when ghost mode is active.
     /// `None` = no dimming. Values below 1.0 dim all non-focused panes.
     pub unfocused_opacity: Option<f32>,
-    /// Preview data for SubContext tiles: pane_id → (context_name, pane_count, notification_count).
-    pub sub_context_info: HashMap<PaneId, (String, usize, usize)>,
+    /// Preview data for SubContext tiles.
+    pub sub_context_info: HashMap<PaneId, SubContextPreview>,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -139,14 +165,12 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         } else if pane.as_sub_context().is_some() {
             // SubContext tile — responsive PGAP-rendered preview.
             ui.painter().rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
-            let (ctx_name, pane_count, notif_count) = self.sub_context_info
+            let preview = self.sub_context_info
                 .get(pane_id)
                 .cloned()
-                .unwrap_or_else(|| ("(deleted)".to_string(), 0, 0));
+                .unwrap_or_default();
 
-            let tiers = crate::tiling::sub_context_responsive_tiers(
-                &ctx_name, pane_count, notif_count, &self.colors,
-            );
+            let tiers = crate::tiling::sub_context_responsive_tiers(&preview, &self.colors);
             let avail_w = pane_rect.width();
             let avail_h = pane_rect.height();
             if let Some(tier) = crate::process_app::render::select_responsive_tier(
@@ -268,11 +292,12 @@ use crate::app_protocol::{LayoutChild, LayoutDirection, RenderCommand, Responsiv
 /// - Square: column with abbreviated info
 /// - Portrait: compact vertical stack
 pub(crate) fn sub_context_responsive_tiers(
-    ctx_name: &str,
-    pane_count: usize,
-    notif_count: usize,
+    preview: &SubContextPreview,
     colors: &Colors,
 ) -> Vec<ResponsiveTier> {
+    let ctx_name = &preview.context_name;
+    let pane_count = preview.panes.len();
+    let notif_count = preview.notification_count;
     let text_primary = format!("#{:02x}{:02x}{:02x}", colors.text_primary.r(), colors.text_primary.g(), colors.text_primary.b());
     let text_dim = format!("#{:02x}{:02x}{:02x}", colors.text_dim.r(), colors.text_dim.g(), colors.text_dim.b());
 
@@ -321,11 +346,35 @@ pub(crate) fn sub_context_responsive_tiers(
         }),
     };
 
+    // Wide/landscape: show last cwd segment per pane.
+    let pane_detail_leaves: Vec<LayoutChild> = preview.panes.iter().take(3).map(|p| {
+        let label = p.cwd.as_deref()
+            .and_then(|c| std::path::Path::new(c).file_name())
+            .map(|s| s.to_string_lossy().into_owned())
+            .or_else(|| p.pane_name.clone())
+            .unwrap_or_else(|| p.app_type.clone());
+        LayoutChild::Leaf {
+            command: Box::new(RenderCommand::Text {
+                x: 0.0, y: 0.0,
+                text: label,
+                size: style::TEXT_HINT,
+                color: text_dim.clone(),
+                monospace: true,
+                bold: false,
+                align: "top_left".to_string(),
+                max_width: None,
+                elide: false,
+                selectable: false,
+            }),
+        }
+    }).collect();
+
     let mut landscape_children = vec![
         name_leaf.clone(),
         pane_count_leaf.clone(),
-        shortcut_leaf.clone(),
     ];
+    landscape_children.extend(pane_detail_leaves);
+    landscape_children.push(shortcut_leaf.clone());
     if notif_count > 0 {
         landscape_children.push(LayoutChild::Leaf {
             command: Box::new(RenderCommand::Badge {

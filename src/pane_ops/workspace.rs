@@ -12,7 +12,7 @@ impl PlexiApp {
     /// pane into the new child context and replaces it with a SubContext tile. Falls
     /// back to a new terminal if no adoptable pane is focused. Depth is capped at 3.
     pub(crate) fn new_child_context(&mut self, parent_name: &str, path: PathBuf) -> Result<(), String> {
-        let parent_idx = self.router.position(|c| c.name == parent_name)
+        let parent_idx = self.router.position(|c| c.name.eq_ignore_ascii_case(parent_name))
             .ok_or_else(|| format!("no context named '{parent_name}'"))?;
         let parent_id = self.router.get(parent_idx).context_id;
         let parent_depth = self.router.get(parent_idx).depth;
