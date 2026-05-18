@@ -132,9 +132,6 @@ class LogsApp(App):
     def on_render(self, ctx: RenderContext) -> None:
         w, h = ctx.w, ctx.h
         filtered = self._filtered()
-        compact = ctx.size_class == "compact"
-        # In compact mode, omit the target column to save horizontal space.
-        target_w = 0.0 if compact else TARGET_W
 
         # ── background ──────────────────────────────────────────────────────
         ctx.rect(0, 0, w, h, BG)
@@ -200,12 +197,11 @@ class LogsApp(App):
                      ll.level[:4], size=TEXT_HINT, color=lc, bold=True, monospace=True)
             x += BADGE_W + PAD
 
-            # target (hidden in compact mode)
-            if not compact:
-                ctx.text(x, text_y, ll.target,
-                         size=TEXT_HINT, color=MUTED,
-                         max_width=target_w, elide=True)
-            x += target_w + (PAD if not compact else 0.0)
+            # target
+            ctx.text(x, text_y, ll.target,
+                     size=TEXT_HINT, color=MUTED,
+                     max_width=TARGET_W, elide=True)
+            x += TARGET_W + PAD
 
             # message
             ctx.text(x, text_y, ll.message,

@@ -10,4 +10,3 @@ entry = "logs.py"
 
 [launch]
 layout_hint = { side = "right", split = 0.5 }
-min_width = 150
