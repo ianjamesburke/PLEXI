@@ -160,26 +160,23 @@ def _build_dag(events: list[dict]) -> tuple[dict[str, FlowNode], list[FlowEdge]]
     return nodes, list(edges.values())
 
 
-def _layout_dag(
+def _compute_layers(
     nodes: dict[str, FlowNode],
     edges: list[FlowEdge],
-    canvas_w: float,
-    _canvas_h: float,
-    scroll_x: float,
-    scroll_y: float,
-) -> None:
+) -> dict[int, list[str]]:
+    """BFS layer assignment; returns {layer: [node_key, ...]} sorted by visits desc."""
     if not nodes:
-        return
+        return {}
 
-    # Build adjacency for layer assignment
-    out_edges: dict[str, list[str]] = {k: [] for k in nodes}
+    out_adj: dict[str, list[str]] = {k: [] for k in nodes}
+    in_adj: dict[str, list[str]] = {k: [] for k in nodes}
     in_degree: dict[str, int] = {k: 0 for k in nodes}
     for e in edges:
         if e.src in nodes and e.dst in nodes:
-            out_edges[e.src].append(e.dst)
-            in_degree[e.dst] = in_degree.get(e.dst, 0) + 1
+            out_adj[e.src].append(e.dst)
+            in_adj[e.dst].append(e.src)
+            in_degree[e.dst] += 1
 
-    # BFS layer assignment from sources
     layer: dict[str, int] = {}
     queue = [k for k, d in in_degree.items() if d == 0]
     if not queue:
@@ -189,12 +186,9 @@ def _layout_dag(
         nxt = queue.pop(0)
         if nxt in layer:
             continue
-        max_pred = -1
-        for e in edges:
-            if e.dst == nxt and e.src in layer:
-                max_pred = max(max_pred, layer[e.src])
+        max_pred = max((layer[p] for p in in_adj.get(nxt, []) if p in layer), default=-1)
         layer[nxt] = max_pred + 1
-        for succ in out_edges.get(nxt, []):
+        for succ in out_adj.get(nxt, []):
             queue.append(succ)
 
     max_layer = max(layer.values()) if layer else 0
@@ -202,22 +196,34 @@ def _layout_dag(
         if k not in layer:
             layer[k] = max_layer + 1
 
-    # Assign columns within each layer sorted by visits descending
     by_layer: dict[int, list[str]] = {}
     for k, l in layer.items():
         by_layer.setdefault(l, []).append(k)
     for l in by_layer:
         by_layer[l].sort(key=lambda k: -nodes[k].visits)
 
-    # Compute positions centered horizontally per layer
+    for l, keys in by_layer.items():
+        for col, k in enumerate(keys):
+            nodes[k].layer = l
+            nodes[k].col = col
+
+    return by_layer
+
+
+def _apply_positions(
+    nodes: dict[str, FlowNode],
+    by_layer: dict[int, list[str]],
+    canvas_w: float,
+    scroll_x: float,
+    scroll_y: float,
+) -> None:
+    """Assign pixel x/y from cached layer/col assignments and current scroll offset."""
     for l, keys in by_layer.items():
         row_count = len(keys)
         row_w = row_count * NODE_W + (row_count - 1) * NODE_H_GAP
         start_x = max(0.0, (canvas_w - row_w) / 2) + scroll_x
         for col, k in enumerate(keys):
             n = nodes[k]
-            n.layer = l
-            n.col = col
             n.x = start_x + col * (NODE_W + NODE_H_GAP)
             n.y = BREADCRUMB_H + 16 + l * (NODE_H + NODE_V_GAP) + scroll_y
 
@@ -229,6 +235,10 @@ class StatsApp(App):
     async def on_init(self, ctx: RenderContext) -> None:
         self.nodes: dict[str, FlowNode] = {}
         self.edges: list[FlowEdge] = []
+        self._by_layer: dict[int, list[str]] = {}
+        # Adjacency maps rebuilt whenever edges change (used by _build_chain)
+        self._succ: dict[str, list[str]] = {}
+        self._pred: dict[str, list[str]] = {}
         self.highlighted: str | None = None
         self.highlight_chain: set[str] = set()
         self.total_time = 0.0
@@ -271,7 +281,18 @@ class StatsApp(App):
         else:
             self.dominant = None
 
-        self._layout_w = 0.0  # trigger relayout on next render
+        # Rebuild adjacency maps for O(V+E) chain traversal
+        self._succ = {k: [] for k in self.nodes}
+        self._pred = {k: [] for k in self.nodes}
+        for e in self.edges:
+            if e.src in self._succ:
+                self._succ[e.src].append(e.dst)
+            if e.dst in self._pred:
+                self._pred[e.dst].append(e.src)
+
+        # Compute structural layout (cached; only x/y changes on scroll)
+        self._by_layer = _compute_layers(self.nodes, self.edges)
+        self._layout_w = 0.0  # trigger position recalc on next render
         self.highlighted = None
         self.highlight_chain = set()
 
@@ -283,12 +304,12 @@ class StatsApp(App):
 
     def _ensure_layout(self, ctx: RenderContext) -> None:
         if self._layout_w != ctx.w or self._layout_h != ctx.h:
-            _layout_dag(self.nodes, self.edges, ctx.w, ctx.h, self.scroll_x, self.scroll_y)
+            _apply_positions(self.nodes, self._by_layer, ctx.w, self.scroll_x, self.scroll_y)
             self._layout_w = ctx.w
             self._layout_h = ctx.h
 
     def _relayout(self, ctx: RenderContext) -> None:
-        _layout_dag(self.nodes, self.edges, ctx.w, ctx.h, self.scroll_x, self.scroll_y)
+        _apply_positions(self.nodes, self._by_layer, ctx.w, self.scroll_x, self.scroll_y)
         self._layout_w = ctx.w
         self._layout_h = ctx.h
 
@@ -301,10 +322,10 @@ class StatsApp(App):
             if cur in visited:
                 continue
             visited.add(cur)
-            for e in self.edges:
-                if e.dst == cur and e.src not in chain:
-                    chain.add(e.src)
-                    frontier.append(e.src)
+            for src in self._pred.get(cur, []):
+                if src not in chain:
+                    chain.add(src)
+                    frontier.append(src)
         visited = set()
         frontier = [path]
         while frontier:
@@ -312,10 +333,10 @@ class StatsApp(App):
             if cur in visited:
                 continue
             visited.add(cur)
-            for e in self.edges:
-                if e.src == cur and e.dst not in chain:
-                    chain.add(e.dst)
-                    frontier.append(e.dst)
+            for dst in self._succ.get(cur, []):
+                if dst not in chain:
+                    chain.add(dst)
+                    frontier.append(dst)
         return chain
 
     def on_render(self, ctx: RenderContext) -> None:
