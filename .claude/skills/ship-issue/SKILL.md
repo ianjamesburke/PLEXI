@@ -441,10 +441,12 @@ If the log already confirms pass or fail, state your finding directly rather tha
 - At the end, fires `plexi notify` to pull the user back to the ship pane with the result
 - Is deleted by the agent in Phase 5 (before the bump commit) — never committed
 
+**Binary path rule:** All subprocess calls in the test script must use the full absolute path to the PR binary — `CLI = "/usr/local/bin/plexi-pr-<N>"`, not the bare name. The agent's shell PATH does not include `/usr/local/bin`, so bare `"plexi-pr-<N>"` causes `FileNotFoundError`. The same applies to `plexi notify` at the end — use `/usr/local/bin/plexi-pr-<N> notify`, not `plexi notify` or `plexi-beta notify`.
+
 ```python
 # Template structure:
 import subprocess, json, sys
-CLI = "plexi-pr-<N>"
+CLI = "/usr/local/bin/plexi-pr-<N>"  # full path — bare name fails in agent's PATH
 PASS = "\033[32mPASS\033[0m"; FAIL = "\033[31mFAIL\033[0m"
 failures = []
 def check(label, ok, detail=""):
