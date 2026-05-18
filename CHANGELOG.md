@@ -1,6 +1,33 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.425] — 2026-05-18
+
+### Changes
+- refactor(sidebar): replace SidebarRow pixel math with ContextItem scope+shape layout (#1448) (#1454)
+- ux(install): replace 'restart your terminal' with 'close this terminal and open Plexi' (#1437) (#1452)
+- chore(examples): flatten examples/apps/ into examples/ root (#1450)
+- feat(install): bundle and install skills in user-install.sh (#1451)
+- fix(cli): unify plexi list / plexi app list and fix command discovery (#1440) (#1443)
+- Revert "feat(sidebar): unified context row with subtitle and pane dots (#1442)"
+- feat(sidebar): unified context row with subtitle and pane dots (#1442)
+- fix(install): add 'Check for success' button to CLI setup modal (#1439) (#1441)
+- feat(overlays): TextInputOverlay primitive + context root management (#1426) (#1433)
+- feat(website): surface install script as primary download CTA (#1431)
+- fix(install): replace in-app CLI Install button with copyable curl one-liner (#1427) (#1432)
+- feat(ui): pane dots below context names in sidebar (#1418)
+- docs(north-star): rewrite audience sections, update Phase 1
+- chore(github): add funding configuration
+- fix(ci): resolve SDK type errors, stale CLI docs, and install pipeline gaps
+- ui(welcome): move caution message above keyboard shortcuts
+- fix(layout): align split_h/split_v naming with tmux convention (#1312) (#1423)
+- feat(keys): H/L to cycle notifications, blocked in Choice kind (#1420) (#1421)
+- feat(scratchpad): replace egui overlay with terminal editor (#1282) (#1416)
+- fix(contexts): sub-context adopts focused pane instead of starting empty (#1384) (#1414)
+- fix(ui): context inspector delete via Backspace key (3×) (#1383) (#1413)
+- Extract app init template to standalone SDK v2 Python file (#1272)
+- fix(gh-projects): replace broken gh project CLI with raw GraphQL (#1319)
+- feat(examples): Bluesky feed browser app (PGAP) (#1343) (#1347)
 ## [0.0.424] — 2026-05-18
 
 ### Changes
