@@ -51,6 +51,7 @@ pub(crate) struct SchedulerEntry {
     pub routine: Routine,
     pub schedule: ParsedSchedule,
     pub last_fire: Option<chrono::DateTime<chrono::Local>>,
+    pub source_root: PathBuf,
 }
 
 pub(crate) struct Scheduler {
@@ -65,17 +66,21 @@ impl Scheduler {
     }
 
     /// Load (or reload) routines from `root/.plexi/routines.toml`.
-    /// Called once per context root. Re-reads if not yet loaded or file changed.
+    /// Called once per context root. Re-reads if not yet loaded or 60s have passed.
     pub fn load_from_root(&mut self, root: &Path) {
-        let path = root.join(ROUTINES_FILE);
-        if !path.exists() {
-            return;
-        }
-        // Only reload every 60 seconds per root
+        // Cache check first — avoids path.exists() syscall every second
         if let Some(last) = self.loaded_roots.get(root) {
             if last.elapsed().as_secs() < 60 {
                 return;
             }
+        }
+        self.loaded_roots.insert(root.to_path_buf(), std::time::Instant::now());
+
+        let path = root.join(ROUTINES_FILE);
+        if !path.exists() {
+            // Prune any entries that came from this root (file was deleted)
+            self.entries.retain(|e| e.source_root != root);
+            return;
         }
         let contents = match std::fs::read_to_string(&path) {
             Ok(c) => c,
@@ -91,12 +96,15 @@ impl Scheduler {
                 return;
             }
         };
-        // Remove old entries from this root (they may have been re-configured)
-        // For simplicity: remove all entries whose routine names are in the new config,
-        // then re-add them. Since we don't track source root per entry, just reload all.
-        // This is fine — routines.toml is small.
-        let new_names: std::collections::HashSet<&str> = config.routine.iter().map(|r| r.name.as_str()).collect();
-        self.entries.retain(|e| !new_names.contains(e.routine.name.as_str()));
+        // Preserve last_fire for routines that survive the reload (avoid re-firing immediately)
+        let mut last_fires: HashMap<String, Option<chrono::DateTime<chrono::Local>>> = HashMap::new();
+        for e in &self.entries {
+            if e.source_root == root {
+                last_fires.insert(e.routine.name.clone(), e.last_fire);
+            }
+        }
+        // Replace all entries from this root with the freshly parsed set
+        self.entries.retain(|e| e.source_root != root);
         let count = config.routine.len();
         for routine in config.routine {
             let schedule = match parse_schedule(&routine.schedule) {
@@ -106,10 +114,22 @@ impl Scheduler {
                     continue;
                 }
             };
-            self.entries.push(SchedulerEntry { routine, schedule, last_fire: None });
+            let last_fire = last_fires.get(&routine.name).copied().flatten();
+            self.entries.push(SchedulerEntry {
+                routine,
+                schedule,
+                last_fire,
+                source_root: root.to_path_buf(),
+            });
         }
-        self.loaded_roots.insert(root.to_path_buf(), std::time::Instant::now());
         log::info!("scheduler: loaded {count} routines from {}", path.display());
+    }
+
+    /// Remove all entries whose source root is no longer in the active context list.
+    /// Call this when a context is removed or closed.
+    pub fn prune_root(&mut self, root: &Path) {
+        self.entries.retain(|e| e.source_root != root);
+        self.loaded_roots.remove(root);
     }
 
     /// Check which routines are due. Returns their indices.
@@ -329,8 +349,14 @@ fn parse_cron_field_dow(s: &str) -> Option<CronField> {
         let n = if idx == 0 { 7 } else { idx as u32 };
         return Some(CronField::Single(n));
     }
-    // Numeric
-    parse_cron_field(s)
+    // Numeric — normalize 0 to 7 (both mean Sunday; chrono gives 7 for Sunday via num_days_from_monday+1)
+    let field = parse_cron_field(s)?;
+    Some(match field {
+        CronField::Single(0) => CronField::Single(7),
+        CronField::Range(0, b) => CronField::Range(7, b),
+        CronField::Range(a, 0) => CronField::Range(a, 7),
+        other => other,
+    })
 }
 
 /// Compute human-readable next-fire description for CLI display.
@@ -361,7 +387,7 @@ pub(crate) fn next_fire_description(schedule: &ParsedSchedule, last_fire: Option
             // Find the next minute that matches
             use chrono::Duration;
             let mut t = now + Duration::minutes(1);
-            for _ in 0..1500 {  // search up to ~24h
+            for _ in 0..10080 {  // search up to 7 days
                 if cron_matches(expr, &t) {
                     use chrono::Timelike;
                     return format!("at {:02}:{:02}", t.hour(), t.minute());
