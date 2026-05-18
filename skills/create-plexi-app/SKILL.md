@@ -288,9 +288,10 @@ Full `AppHarness` (headless event injection) is coming — see issue #865.
 Never place hint or breadcrumb text at a fixed coordinate near the right edge. It clips silently when the pane is narrower than the assumed minimum width — the left clip is the non-obvious failure.
 
 ```python
-# Bad:  ctx.text(w - 260, y, hint)       # clips when pane is narrow
-# Good: ctx.text(max(w / 2, w - 260), y, hint, align="right")
-# Or:   ctx.text(w - PAD, y, hint, align="right")   # right-align from edge
+# w = ctx.width (pane width)
+# Bad:  ctx.text(w - 260, y, hint, CAPTION, MUTED)                          # clips when pane is narrow
+# Good: ctx.text(max(w / 2, w - 260), y, hint, CAPTION, MUTED, align="right")
+# Or:   ctx.text(w - PAD, y, hint, CAPTION, MUTED, align="right")           # right-align from edge
 ```
 
 ### Rule 2 — Minimum text alpha
