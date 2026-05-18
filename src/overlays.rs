@@ -2667,22 +2667,13 @@ impl PlexiApp {
                             );
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if queue_len > 1 {
-                                    // Reversed order because the layout is
-                                    // right-to-left: trailing text first,
-                                    // then combos in reverse, then the
-                                    // position/total label on the far left.
+                                    // RTL layout: L first (rightmost), then H.
                                     crate::widgets::key_chip(
-                                        ui, "]", &self.colors,
+                                        ui, "L", &self.colors,
                                     );
+                                    ui.add_space(4.0);
                                     crate::widgets::key_chip(
-                                        ui, "\u{2318}", &self.colors,
-                                    );
-                                    ui.add_space(8.0);
-                                    crate::widgets::key_chip(
-                                        ui, "[", &self.colors,
-                                    );
-                                    crate::widgets::key_chip(
-                                        ui, "\u{2318}", &self.colors,
+                                        ui, "H", &self.colors,
                                     );
                                     ui.add_space(8.0);
                                     ui.label(
