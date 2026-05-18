@@ -45,7 +45,7 @@ pub fn run_list_commands() -> i32 {
     let config_path = cwd.join(COMMANDS_FILE);
     let contents = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
-        Err(_) => {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             println!("No workspace commands configured.");
             println!();
             println!("To set up commands, create {COMMANDS_FILE} in your project:");
@@ -55,6 +55,10 @@ pub fn run_list_commands() -> i32 {
             println!("  [commands.dev]");
             println!("  run = \"npm run dev\"");
             return 0;
+        }
+        Err(e) => {
+            eprintln!("error: could not read {}: {e}", config_path.display());
+            return 1;
         }
     };
 

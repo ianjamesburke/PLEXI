@@ -20,6 +20,7 @@ use clap::{Parser, Subcommand};
 \x1b[1mWorkspace (per-project):\x1b[0m
   plexi workspace init      Set up a .plexi/ workspace
   plexi secret set <name>   Store a secret in your keychain
+  plexi run                 List available workspace commands
   plexi run <command>       Run a command from .plexi/commands.toml
 "
 )]
