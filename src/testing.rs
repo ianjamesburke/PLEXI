@@ -638,4 +638,103 @@ mod tests {
         }
     }
 
+    /// Cmd+0 (quick note) must pass through the drain when any non-quick-note
+    /// overlay is active so poll_actions can open the quick note modal.
+    #[test]
+    fn drain_allows_quick_note_key_through_other_overlays() {
+        use crate::app::FocusLayer;
+
+        let non_quick_note_layers = vec![
+            FocusLayer::ContextInspector,
+            FocusLayer::CommandPalette,
+            FocusLayer::NotificationModal,
+            FocusLayer::ConfirmClose,
+            FocusLayer::RenamePane,
+            FocusLayer::TextInput,
+        ];
+
+        for layer in non_quick_note_layers {
+            let mut h = HostHarness::new();
+            h.app.push_focus_layer(layer.clone());
+
+            let event = egui::Event::Key {
+                key: egui::Key::Num0,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            };
+
+            h.app.ctx.input_mut(|i| {
+                i.events.push(event);
+            });
+
+            h.app.drain_captured_keyboard_input(&h.app.ctx.clone());
+
+            let mut found = false;
+            h.app.ctx.input(|i| {
+                found = i.events.iter().any(|e| matches!(
+                    e,
+                    egui::Event::Key { key: egui::Key::Num0, modifiers, .. }
+                        if modifiers.command && !modifiers.shift
+                ));
+            });
+            assert!(
+                found,
+                "Cmd+0 was incorrectly drained when {layer:?} was active — quick note should be reachable"
+            );
+        }
+    }
+
+    /// Cmd+0 must be drained when quick note is already the active overlay to
+    /// prevent resetting the modal state mid-edit.
+    #[test]
+    fn drain_blocks_quick_note_key_when_quick_note_active() {
+        use crate::app::FocusLayer;
+
+        let quick_note_layers = vec![
+            FocusLayer::QuickNote,
+            FocusLayer::QuickNoteDestination,
+            FocusLayer::QuickNoteSubDestination(vec![0]),
+        ];
+
+        for layer in quick_note_layers {
+            let mut h = HostHarness::new();
+            h.app.push_focus_layer(layer.clone());
+
+            let event = egui::Event::Key {
+                key: egui::Key::Num0,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            };
+
+            h.app.ctx.input_mut(|i| {
+                i.events.push(event);
+            });
+
+            h.app.drain_captured_keyboard_input(&h.app.ctx.clone());
+
+            let mut found = false;
+            h.app.ctx.input(|i| {
+                found = i.events.iter().any(|e| matches!(
+                    e,
+                    egui::Event::Key { key: egui::Key::Num0, modifiers, .. }
+                        if modifiers.command
+                ));
+            });
+            assert!(
+                !found,
+                "Cmd+0 leaked through drain when {layer:?} was active — quick note should stay open"
+            );
+        }
+    }
+
 }
