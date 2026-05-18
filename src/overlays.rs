@@ -150,9 +150,8 @@ fn render_inspector_pane_row(
     row: &PaneRow,
     is_selected: bool,
     colors: &Colors,
-) -> (egui::Response, Option<PaneId>) {
+) -> egui::Response {
     let row_id = row.id;
-    let mut close_pane: Option<PaneId> = None;
     let (row_resp, _) = crate::widgets::selectable_row(ui, is_selected, colors, |ui| {
         ui.horizontal_centered(|ui| {
             ui.label(
@@ -167,20 +166,6 @@ fn render_inspector_pane_row(
                     .color(colors.text_primary),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("✕")
-                                .size(style::TEXT_CAPTION)
-                                .color(colors.text_dim),
-                        )
-                        .frame(false),
-                    )
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .clicked()
-                {
-                    close_pane = Some(row_id);
-                }
                 let status_color = if matches!(row.status, "busy" | "running") {
                     colors.accent
                 } else {
@@ -208,7 +193,7 @@ fn render_inspector_pane_row(
             });
         });
     });
-    (row_resp, close_pane)
+    row_resp
 }
 
 /// Returns `true` if the user clicked "Set root..." or the edit button on an
@@ -305,6 +290,8 @@ fn render_inspector_hints(
         if pane_count > 0 {
             ui.add_space(style::SPACE_MD);
             crate::widgets::key_combo_list(ui, &[&["Enter"]], Some("focus pane"), colors);
+            ui.add_space(style::SPACE_MD);
+            crate::widgets::key_combo_list(ui, &[&["⌘", "W"]], Some("close pane"), colors);
         }
     });
     delete_context
@@ -1958,7 +1945,7 @@ impl PlexiApp {
         let mut open_root_overlay = false;
 
         let num_contexts = self.router.len();
-        let (nav_down, nav_up, enter_pressed, backspace_pressed) = ctx.input_mut(|i| {
+        let (nav_down, nav_up, enter_pressed, backspace_pressed, cmd_w_pressed) = ctx.input_mut(|i| {
             let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
             let down = i.consume_key(egui::Modifiers::NONE, egui::Key::J)
                 || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown);
@@ -1969,8 +1956,9 @@ impl PlexiApp {
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
                     || i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
             );
+            let cmd_w = i.consume_key(egui::Modifiers::COMMAND, egui::Key::W);
             if esc { dismissed = true; }
-            (down, up, enter, backspace)
+            (down, up, enter, backspace, cmd_w)
         });
 
         let (groups, all_pane_ids, all_context_ids) = self.collect_inspector_rows();
@@ -1996,6 +1984,10 @@ impl PlexiApp {
         }
         if enter_pressed && pane_count > 0 {
             focus_pane = Some(all_pane_ids[self.inspector_selected_pane]);
+        }
+        if cmd_w_pressed && pane_count > 0 {
+            log::info!("ContextInspector: ⌘W close pane {}", all_pane_ids[self.inspector_selected_pane]);
+            close_pane = Some(all_pane_ids[self.inspector_selected_pane]);
         }
         if backspace_pressed {
             let now = std::time::Instant::now();
@@ -2061,11 +2053,10 @@ impl PlexiApp {
                                         ui.label(RichText::new(group_name.as_str()).size(style::TEXT_CAPTION).color(colors.text_dim));
                                         ui.add_space(style::SPACE_SM);
                                         for row in rows {
-                                            let (resp, to_close) = render_inspector_pane_row(
+                                            let resp = render_inspector_pane_row(
                                                 ui, row, global_idx == selected, &colors,
                                             );
                                             global_idx += 1;
-                                            if let Some(pid) = to_close { close_pane = Some(pid); }
                                             if resp.clicked() { focus_pane = Some(row.id); }
                                         }
                                     }
