@@ -1,14 +1,14 @@
 use crate::context::WindowMenuAction;
 use crate::sidebar_row::{with_alpha, SidebarAction, SidebarRow, ROW_HEIGHT};
-use egui::{Align, Color32, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
+use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 use egui_tiles::Tile;
 
 use crate::app::PlexiApp;
 
+const PANE_DOT_HEIGHT: f32 = 11.0;
 const PANE_DOT_RADIUS: f32 = 2.5;
 const PANE_DOT_SPACING: f32 = 8.0;
 const PANE_DOT_MAX: usize = 6;
-const SUBTITLE_MAX_CHARS: usize = 24;
 
 fn drop_slot_from_rects(rects: &[Rect], mouse_y: f32) -> usize {
     for (i, rect) in rects.iter().enumerate() {
@@ -171,48 +171,15 @@ impl PlexiApp {
             }
 
             // --- Normal row via SidebarRow ---
-
-            // Derive subtitle: pty_title or CWD basename for the focused pane of this context.
-            let subtitle: Option<String> = {
-                let ctx_window = self.windows.iter()
-                    .find(|w| w.context_id == ctx_id && w.focused_pane.is_some());
-                ctx_window.and_then(|w| {
-                    let tile_id = w.focused_pane?;
-                    let pane_id = match w.tree.tiles.get(tile_id)? {
-                        Tile::Pane(pid) => *pid,
-                        _ => return None,
-                    };
-                    let pane = w.panes.get(&pane_id)?;
-                    if let Some(t) = pane.as_terminal() {
-                        t.name.clone()
-                            .or_else(|| t.pty_title.clone())
-                            .or_else(|| {
-                                crate::shell::get_pid_cwd(t.backend.child_pid())
-                                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                            })
-                    } else if let Some(app) = pane.as_app() {
-                        Some(app.name.clone())
-                    } else {
-                        None
-                    }
-                }).map(|s| {
-                    if s.chars().count() > SUBTITLE_MAX_CHARS {
-                        let mut truncated: String = s.chars().take(SUBTITLE_MAX_CHARS - 1).collect();
-                        truncated.push('\u{2026}');
-                        truncated
-                    } else {
-                        s
-                    }
-                })
-            };
-
-            // Fixed-height row: every context is the same size.
+            // Zones are declared here, before any rendering.
             let row = SidebarRow::new(ui, sidebar_width, num_contexts > 1 && !any_dragging)
                 .active(is_active)
                 .dragging(is_dragging, any_dragging);
 
+            // Snapshot the layout for drop-indicator tracking (must be before draw()).
             let row_full = row.layout.full;
 
+            // Prepare content data (borrows resolved before the closure).
             let text_color = with_alpha(
                 if is_active { self.colors.text_primary } else { self.colors.text_dim },
                 if is_dragging { 0.4 } else { 1.0 },
@@ -227,15 +194,10 @@ impl PlexiApp {
             let dim_color = self.colors.text_dim;
             let accent_color = self.colors.accent;
 
-            let show_dots = pane_count > 1;
-            let subtitle_text = subtitle.clone();
-            let indent = 20.0 + ctx_depth as f32 * 12.0;
-
             let (action, response) = row.draw(
                 ui,
                 egui::Id::new(("ctx", i)),
                 &self.colors,
-                // Line 1: context name + badge
                 |row_ui, _hovered| {
                     row_ui.add_space(20.0 + ctx_depth as f32 * 12.0);
                     if i < 9 {
@@ -255,54 +217,50 @@ impl PlexiApp {
                         });
                     }
                 },
-                // Line 2: subtitle path first, then pane dots to the right
-                |painter, subtitle_rect, row_alpha| {
-                    let cy = subtitle_rect.center().y;
-                    let mut cursor_x = subtitle_rect.min.x + indent;
-
-                    // Subtitle text (path/title) — always first
-                    if let Some(ref text) = subtitle_text {
-                        let text_galley = painter.layout_no_wrap(
-                            text.to_string(),
-                            egui::FontId::proportional(9.0),
-                            with_alpha(dim_color, 0.6 * row_alpha),
-                        );
-                        let text_width = text_galley.size().x;
-                        painter.galley(
-                            egui::pos2(cursor_x, cy - text_galley.size().y * 0.5),
-                            text_galley,
-                            Color32::TRANSPARENT,
-                        );
-                        cursor_x += text_width + 6.0;
-                    }
-
-                    // Pane dots (only when 2+ panes) — after the path
-                    if show_dots {
-                        let capped = pane_count.min(PANE_DOT_MAX);
-                        for dot_i in 0..capped {
-                            let cx = cursor_x + (dot_i as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS;
-                            let color = if focused_dot_idx == Some(dot_i) {
-                                with_alpha(accent_color, row_alpha)
-                            } else {
-                                with_alpha(dim_color, 0.35 * row_alpha)
-                            };
-                            painter.circle_filled(egui::pos2(cx, cy), PANE_DOT_RADIUS, color);
-                        }
-                        if pane_count > PANE_DOT_MAX {
-                            let overflow_x = cursor_x + (capped as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS * 0.5;
-                            painter.text(
-                                egui::pos2(overflow_x, cy),
-                                egui::Align2::LEFT_CENTER,
-                                format!("+{}", pane_count - PANE_DOT_MAX),
-                                egui::FontId::proportional(8.0),
-                                with_alpha(dim_color, 0.5 * row_alpha),
-                            );
-                        }
-                    }
-                },
             );
 
-            row_rects.push(row_full);
+            // Pane dots — shown when 2+ panes exist in this context
+            let dot_area_height = if pane_count > 1 { PANE_DOT_HEIGHT } else { 0.0 };
+            if pane_count > 1 {
+                let dots_origin = ui.cursor().min;
+                let dots_rect = Rect::from_min_size(dots_origin, Vec2::new(sidebar_width, PANE_DOT_HEIGHT));
+                ui.allocate_space(Vec2::new(sidebar_width, PANE_DOT_HEIGHT));
+
+                if is_active {
+                    ui.painter().rect_filled(dots_rect, CornerRadius::ZERO, with_alpha(self.colors.bg_active, if is_dragging { 0.4 } else { 1.0 }));
+                    ui.painter().rect_filled(
+                        Rect::from_min_size(dots_rect.min, Vec2::new(3.0, PANE_DOT_HEIGHT)),
+                        CornerRadius::ZERO,
+                        with_alpha(self.colors.accent, if is_dragging { 0.4 } else { 1.0 }),
+                    );
+                }
+
+                let indent = 20.0 + ctx_depth as f32 * 12.0;
+                let cy = dots_rect.center().y;
+                let capped = pane_count.min(PANE_DOT_MAX);
+                for dot_i in 0..capped {
+                    let cx = dots_rect.min.x + indent + (dot_i as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS;
+                    let color = if focused_dot_idx == Some(dot_i) {
+                        with_alpha(self.colors.accent, if is_dragging { 0.4 } else { 1.0 })
+                    } else {
+                        with_alpha(self.colors.text_dim, if is_dragging { 0.15 } else { 0.35 })
+                    };
+                    ui.painter().circle_filled(egui::pos2(cx, cy), PANE_DOT_RADIUS, color);
+                }
+                if pane_count > PANE_DOT_MAX {
+                    let overflow_x = dots_rect.min.x + indent + (capped as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS * 0.5;
+                    ui.painter().text(
+                        egui::pos2(overflow_x, cy),
+                        egui::Align2::LEFT_CENTER,
+                        format!("+{}", pane_count - PANE_DOT_MAX),
+                        egui::FontId::proportional(8.0),
+                        with_alpha(self.colors.text_dim, 0.5),
+                    );
+                }
+            }
+
+            let item_origin = row_full.min;
+            row_rects.push(Rect::from_min_size(item_origin, Vec2::new(sidebar_width, ROW_HEIGHT + dot_area_height)));
 
             match action {
                 SidebarAction::DragStart => { self.drag_context = Some(i); }
