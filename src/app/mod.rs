@@ -1285,8 +1285,9 @@ impl PlexiApp {
                             self.new_tab(initial_cmd.as_deref(), *ephemeral);
                         } else {
                             let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
-                            log::info!("pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
-                            self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral, cwd_override);
+                            let new_pane_first = matches!(layout_str, "split_above" | "split_left");
+                            log::info!("pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
+                            self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral, new_pane_first, cwd_override);
                         }
                     } else if let Some(path_str) = path {
                         self.launch_app_by_path_with_layout(path_str, layout.clone());
@@ -1563,8 +1564,9 @@ impl PlexiApp {
             if type_id == "terminal" {
                 let layout_str = layout.as_deref().unwrap_or("split_v");
                 let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
+                let new_pane_first = matches!(layout_str, "split_above" | "split_left");
                 let initial_cmd = cmd_from_args(&args);
-                self.split_focused(vertical, initial_cmd.as_deref(), ephemeral, cwd_override);
+                self.split_focused(vertical, initial_cmd.as_deref(), ephemeral, new_pane_first, cwd_override);
             } else if let Some(ref path_str) = path {
                 self.launch_app_by_path_with_layout(path_str, layout);
             } else {
@@ -2122,13 +2124,14 @@ impl eframe::App for PlexiApp {
                         //   split_focused(true)  → insert_vertical_tile   → stacked (BELOW)
                         // So: split_h/split_right (right) → false, split_v/split_below/split_above (below/above) → true.
                         let vertical = matches!(layout.as_str(), "split_v" | "split_below" | "split_above");
+                        let new_pane_first = matches!(layout.as_str(), "split_above" | "split_left");
                         let initial_cmd = cmd_from_args(&effective_args);
                         log::info!(
-                            "SpawnPane: terminal layout='{layout}' vertical={vertical} pane_id={new_pane_id} initial_cmd={initial_cmd:?}"
+                            "SpawnPane: terminal layout='{layout}' vertical={vertical} new_pane_first={new_pane_first} pane_id={new_pane_id} initial_cmd={initial_cmd:?}"
                         );
                         // SDK-spawned terminal with a cmd closes on exit (matches historical behavior).
                         // CLI terminal uses the ephemeral flag exclusively — cmd alone does not close.
-                        self.split_focused(vertical, initial_cmd.as_deref(), initial_cmd.is_some(), None);
+                        self.split_focused(vertical, initial_cmd.as_deref(), initial_cmd.is_some(), new_pane_first, None);
                     } else {
                         self.launch_app_by_id_with_layout(&type_id, Some(layout), &effective_args, None);
                         log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
@@ -2603,13 +2606,13 @@ impl eframe::App for PlexiApp {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].zoomed_pane = None;
                     self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
-                    self.split_focused(false, None, false, None);
+                    self.split_focused(false, None, false, false, None);
                     self.save_workspace();
                 }
                 Action::SplitVertical => {
                     self.windows[self.active_window].zoomed_pane = None;
                     self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
-                    self.split_focused(true, None, false, None);
+                    self.split_focused(true, None, false, false, None);
                     self.save_workspace();
                 }
                 Action::SplitRight => {

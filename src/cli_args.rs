@@ -158,7 +158,7 @@ pub enum Commands {
         /// Close the pane automatically when the command finishes
         #[arg(long, short = 'e')]
         ephemeral: bool,
-        /// Where to place the new pane: split_h (right), split_v (below), split_right, split_below, split_above, tab, or new_window
+        /// Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, or new_window
         #[arg(long)]
         layout: Option<String>,
         /// Open the new pane relative to this pane ID instead of the focused pane
@@ -189,7 +189,7 @@ pub enum Commands {
         /// Example: plexi open --cli git
         #[arg(long, value_name = "BINARY", conflicts_with = "mcp")]
         cli: Option<String>,
-        /// Where to place the new pane: split_h (right), split_v (below), split_right, split_below, split_above, tab, or new_window
+        /// Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, or new_window
         #[arg(long)]
         layout: Option<String>,
         /// Open the new pane relative to this pane ID instead of the focused pane

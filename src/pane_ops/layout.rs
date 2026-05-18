@@ -90,7 +90,8 @@ impl PlexiApp {
             {
                 if linear.dir == split_dir {
                     if let Some(pos) = linear.children.iter().position(|&c| c == split_target) {
-                        linear.children.insert(pos + 1, new_tile);
+                        let insert_pos = if new_pane_first { pos } else { pos + 1 };
+                        linear.children.insert(insert_pos, new_tile);
                         true
                     } else {
                         false
@@ -189,7 +190,7 @@ impl PlexiApp {
         match kind {
             Kind::Terminal => {
                 // Reuse the existing terminal split path.
-                self.split_focused(vertical, None, false, None);
+                self.split_focused(vertical, None, false, false, None);
             }
             Kind::App(manifest_id) => {
                 // Fresh instance of the same app at the requested placement.
@@ -207,7 +208,7 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn split_focused(&mut self, vertical: bool, initial_cmd: Option<&str>, close_on_exit: bool, cwd_override: Option<std::path::PathBuf>) {
+    pub(crate) fn split_focused(&mut self, vertical: bool, initial_cmd: Option<&str>, close_on_exit: bool, new_pane_first: bool, cwd_override: Option<std::path::PathBuf>) {
         let old_window_id = self.windows[self.active_window].window_id;
         let old_focus = self.windows[self.active_window].focused_pane;
         let Some(focused) = self.windows[self.active_window].focused_pane else {
@@ -220,7 +221,7 @@ impl PlexiApp {
             HostAction::SplitHorizontal
         };
         let effects = self.submit(cmd);
-        log::debug!("split_focused(vertical={vertical}) effects: {:?}", effects);
+        log::debug!("split_focused(vertical={vertical} new_pane_first={new_pane_first}) effects: {:?}", effects);
         let (new_id, vertical) = effects
             .iter()
             .find_map(|e| match e {
@@ -281,7 +282,8 @@ impl PlexiApp {
             {
                 if linear.dir == split_dir {
                     if let Some(pos) = linear.children.iter().position(|&c| c == split_target) {
-                        linear.children.insert(pos + 1, new_tile);
+                        let insert_pos = if new_pane_first { pos } else { pos + 1 };
+                        linear.children.insert(insert_pos, new_tile);
                         true
                     } else {
                         false
@@ -297,14 +299,15 @@ impl PlexiApp {
         };
 
         if !inserted_as_sibling {
-            let container_tile = if vertical {
-                ctx.tree
-                    .tiles
-                    .insert_vertical_tile(vec![split_target, new_tile])
+            let ordered = if new_pane_first {
+                vec![new_tile, split_target]
             } else {
-                ctx.tree
-                    .tiles
-                    .insert_horizontal_tile(vec![split_target, new_tile])
+                vec![split_target, new_tile]
+            };
+            let container_tile = if vertical {
+                ctx.tree.tiles.insert_vertical_tile(ordered)
+            } else {
+                ctx.tree.tiles.insert_horizontal_tile(ordered)
             };
 
             if let Some(parent_id) = parent {

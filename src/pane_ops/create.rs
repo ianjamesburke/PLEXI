@@ -60,8 +60,8 @@ impl PlexiApp {
         hint: Option<&str>,
         share: ShareRatio,
     ) -> (PaneId, ShareRatio, bool, bool) {
-        let new_pane_first = matches!(hint, Some("split_above"));
-        let vertical = matches!(hint, Some("split_h") | Some("split_right"));
+        let new_pane_first = matches!(hint, Some("split_above") | Some("split_left"));
+        let vertical = matches!(hint, Some("split_h") | Some("split_right") | Some("split_left"));
         let placement = if vertical {
             Placement::Right
         } else {
@@ -569,11 +569,12 @@ impl PlexiApp {
         if id == "terminal" {
             let layout_str = layout.as_deref().unwrap_or("split_v");
             let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
+            let new_pane_first = matches!(layout_str, "split_above" | "split_left");
             let initial_cmd = if args.is_empty() { None } else { Some(crate::shell::shell_join(args)) };
             log::info!(
-                "SpawnPane: terminal layout='{layout_str}' vertical={vertical} initial_cmd={initial_cmd:?}"
+                "SpawnPane: terminal layout='{layout_str}' vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?}"
             );
-            self.split_focused(vertical, initial_cmd.as_deref(), false, None);
+            self.split_focused(vertical, initial_cmd.as_deref(), false, new_pane_first, None);
             return;
         }
 
@@ -905,7 +906,7 @@ impl PlexiApp {
                 match position {
                     "context-end" => self.open_at_context_end(&cmd, stay_alive),
                     "context-start" => self.open_at_context_start(&cmd, stay_alive),
-                    _ => self.split_focused(false, Some(&cmd), !stay_alive, None),
+                    _ => self.split_focused(false, Some(&cmd), !stay_alive, false, None),
                 }
             }
             true
@@ -995,7 +996,7 @@ impl PlexiApp {
     pub(crate) fn open_at_context_end(&mut self, cmd: &str, stay_alive: bool) {
         let did_insert = self.try_insert_at_root(cmd, false, stay_alive);
         if !did_insert {
-            self.split_focused(false, Some(cmd), !stay_alive, None);
+            self.split_focused(false, Some(cmd), !stay_alive, false, None);
         }
     }
 
@@ -1003,7 +1004,7 @@ impl PlexiApp {
     pub(crate) fn open_at_context_start(&mut self, cmd: &str, stay_alive: bool) {
         let did_insert = self.try_insert_at_root(cmd, true, stay_alive);
         if !did_insert {
-            self.split_focused(false, Some(cmd), !stay_alive, None);
+            self.split_focused(false, Some(cmd), !stay_alive, false, None);
         }
     }
 
