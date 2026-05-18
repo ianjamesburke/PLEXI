@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.419"
+verified_version: "0.0.444"
 order: 7
 ---
 
@@ -19,7 +19,7 @@ Example: plexi run dev
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<command>` | string | yes |  |
+| `<command>` | string | no | Command name to run (omit to list available commands) |
 
 ## `plexi workspace`
 
@@ -95,12 +95,13 @@ Manage your Plexi apps — scaffold, install, list, and inspect
 |---|---|
 | `init` | Create a new app from a template |
 | `uninstall` | Remove an installed app by id |
-| `list` | Show all installed apps |
+| `list` | Show all installed apps (alias for `plexi list`) |
 | `render` | Render an app to a PNG image without opening the UI (useful for screenshots and testing) |
 | `info` | Show details about an installed app: id, name, version, and available tools |
 | `install` | Install a local app directory you are developing into Plexi |
 | `link` | Link a local app directory so Plexi can see it without copying files |
 | `unlink` | Unlink a previously linked app directory |
+| `run` | Run an app directly from a local directory without installing or linking |
 
 ### `plexi app init`
 
@@ -126,7 +127,7 @@ Example: plexi app uninstall github-tree
 
 ### `plexi app list`
 
-Show all installed apps
+Show all installed apps (alias for `plexi list`)
 
 ### `plexi app render`
 
@@ -174,6 +175,16 @@ Unlink a previously linked app directory
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<path>` | string | yes | Path to the app folder (the same path you passed to `link`) |
+
+### `plexi app run`
+
+Run an app directly from a local directory without installing or linking.
+
+Opens the app in a pane immediately. Edits to the app take effect on next launch. Replaces `plexi app link` for development workflows.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<path>` | string | yes | Path to the app folder containing manifest.toml |
 
 ## `plexi install`
 
@@ -349,6 +360,7 @@ Example: plexi pane capture --lines 50 42
 |---|---|---|---|
 | `<pane_id>` | string | no | Pane id to capture output from. Defaults to the current pane |
 | `--lines` | string | no | How many lines to read from the end of the output Default: `50`. |
+| `--full-output` | flag | no | Preserve trailing empty lines (by default they are stripped) |
 
 ### `plexi pane key`
 
@@ -373,7 +385,7 @@ Open a plain terminal pane
 |---|---|---|---|
 | `<cmd>` | string | no | Optional shell command to run inside the new terminal |
 | `--ephemeral` / `-e` | flag | no | Close the pane automatically when the command finishes |
-| `--layout` | string | no | Where to place the new pane: split_h (right), split_v (below), split_right, split_below, split_above, tab, or new_window |
+| `--layout` | string | no | Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, or new_window |
 | `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane |
 | `--cwd` | string | no | Directory to open the terminal in |
 | `--no-focus` | flag | no | Keep focus on the current pane instead of jumping to the new one |
@@ -389,7 +401,7 @@ Pass an app id (e.g. `plexi open snake`) to open an installed app. Use `--mcp` t
 | `<type_id>` | string | no | App id to open (mutually exclusive with --mcp and --cli) |
 | `--mcp` | string (repeatable) | no | Wrap a stdio MCP server in a Plexi pane.  Example: plexi open --mcp npx @modelcontextprotocol/server-filesystem /tmp |
 | `--cli` | string | no | Wrap a CLI tool in a Plexi pane with a visual UI.  Example: plexi open --cli git |
-| `--layout` | string | no | Where to place the new pane: split_h (right), split_v (below), split_right, split_below, split_above, tab, or new_window |
+| `--layout` | string | no | Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, or new_window |
 | `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane |
 | `<extra_args>` | string (repeatable) | no | Extra arguments passed through to the app (only valid with an app id) |
 
@@ -415,7 +427,7 @@ Manage the active context (the folder and project scope tied to the current pane
 
 | Subcommand | Description |
 |---|---|
-| `new` | Open a new context, optionally starting in a specific folder |
+| `new` | Open a new context with an optional name |
 | `open` | Switch the current pane to a context at the given path |
 | `set-root` | Change the root folder for the active context |
 | `current` | Print the id and name of the current pane's context as JSON |
@@ -424,12 +436,13 @@ Manage the active context (the folder and project scope tied to the current pane
 
 ### `plexi context new`
 
-Open a new context, optionally starting in a specific folder
+Open a new context with an optional name
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<path>` | string | no |  |
-| `--parent` | string | no | Create as a child of the named context (fractal sub-context) |
+| `<name>` | string | no | Name for the new context. Defaults to the directory basename |
+| `--path` | string | no | Root path for the new context. Defaults to current working directory |
+| `--parent` | string | no | Create as a child of the named context. Defaults to current context if inside one |
 
 ### `plexi context open`
 
@@ -481,6 +494,8 @@ Check your Plexi config file for errors
 |---|---|
 | `check` | Validate your config.toml and report any errors |
 | `edit` | Open config.toml in your $EDITOR |
+| `get` | Print the resolved value of a config key to stdout |
+| `reset` | Overwrite config.toml with the built-in default template |
 
 ### `plexi config check`
 
@@ -489,4 +504,64 @@ Validate your config.toml and report any errors
 ### `plexi config edit`
 
 Open config.toml in your $EDITOR
+
+### `plexi config get`
+
+Print the resolved value of a config key to stdout.
+
+Supports dotted keys: agents.low, agents.medium, agents.high. Returns the effective value (user setting or built-in default).
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<key>` | string | yes | Dotted key to retrieve (e.g. agents.medium) |
+
+### `plexi config reset`
+
+Overwrite config.toml with the built-in default template.
+
+Creates a backup at config.toml.bak before overwriting.
+
+## `plexi routine`
+
+Manage workspace routines — scheduled shell commands.
+
+Routines are declared in `.plexi/routines.toml` and run automatically on schedule. Use `plexi routine list` to see configured routines, or `plexi routine run <name>` to fire one manually.
+
+| Subcommand | Description |
+|---|---|
+| `list` | List routines defined in .plexi/routines.toml with their schedule and next fire time |
+| `run` | Manually trigger a named routine from .plexi/routines.toml |
+
+### `plexi routine list`
+
+List routines defined in .plexi/routines.toml with their schedule and next fire time
+
+### `plexi routine run`
+
+Manually trigger a named routine from .plexi/routines.toml
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Name of the routine to run |
+
+## `plexi notes`
+
+Browse and open scratchpad notes created with Cmd+Shift+Space.
+
+Each scratchpad session writes a timestamped file to `<config_dir>/notes/`. Use `plexi notes list` to print note paths, or `plexi notes open` to pick one with fzf.
+
+| Subcommand | Description |
+|---|---|
+| `list` | Print paths of all scratchpad notes, newest first |
+| `open` | Open a note picker with fzf in the focused terminal pane |
+
+### `plexi notes list`
+
+Print paths of all scratchpad notes, newest first
+
+### `plexi notes open`
+
+Open a note picker with fzf in the focused terminal pane.
+
+Requires fzf to be installed. Falls back to printing the notes directory when fzf is not available or PLEXI_SOCKET is not set.
 
