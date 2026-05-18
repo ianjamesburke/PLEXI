@@ -8,27 +8,16 @@ use crate::workspace::WorkspaceFile;
 use std::path::PathBuf;
 
 impl PlexiApp {
-    /// Create a child context nested inside `parent_name`. Moves the parent's focused
-    /// pane into the new child context and replaces it with a SubContext tile. Falls
-    /// back to a new terminal if no adoptable pane is focused. Depth is capped at 3.
+    /// Create a child context nested inside `parent_name`. Always creates a fresh
+    /// terminal in the child (portal model — no pane adoption). Inserts a SubContext
+    /// tile into the parent window as a sibling of the focused tile. No depth cap.
     pub(crate) fn new_child_context(&mut self, parent_name: &str, path: PathBuf) -> Result<(), String> {
         let parent_idx = self.router.position(|c| c.name.eq_ignore_ascii_case(parent_name))
             .ok_or_else(|| format!("no context named '{parent_name}'"))?;
         let parent_id = self.router.get(parent_idx).context_id;
         let parent_depth = self.router.get(parent_idx).depth;
-
-        if parent_depth >= 3 {
-            log::warn!(
-                "new_child_context: depth limit reached — parent '{}' is at depth {}",
-                parent_name, parent_depth
-            );
-            return Err(format!(
-                "depth limit: parent '{}' is already at depth {} (max 3)",
-                parent_name, parent_depth
-            ));
-        }
-
         let child_depth = parent_depth + 1;
+
         let ctx_id = self.next_window_id;
         self.next_window_id += 1;
         let win_id = self.next_window_id;
@@ -39,35 +28,47 @@ impl PlexiApp {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1));
 
-        // Find the parent's active window and the focused adoptable pane.
+        log::info!(
+            "new_child_context: parent_id={parent_id} parent_depth={parent_depth} \
+             child_depth={child_depth} name={ctx_name} path={}",
+            path.display()
+        );
+
+        // 1. Build the child window with a fresh terminal.
+        let Some((child_tree, child_panes, child_root_tile)) =
+            self.create_single_pane_tree(Some(path.clone()), None, false)
+        else {
+            log::error!("new_child_context: failed to create terminal for child context");
+            return Err("failed to create terminal for child context".to_string());
+        };
+
+        // 2. Insert SubContext tile into the parent window via the standard split path.
         let parent_win_idx = {
             let preferred = self.context_active_window.get(&parent_id).copied();
             preferred
                 .and_then(|wid| self.windows.iter().position(|w| w.window_id == wid && w.context_id == parent_id))
                 .or_else(|| self.windows.iter().position(|w| w.context_id == parent_id))
         };
+        let sub_ctx_pane_id = self.host.alloc_pane_id();
+        if let Some(parent_win_idx) = parent_win_idx {
+            let split_target = self.windows[parent_win_idx].focused_pane;
+            crate::pane_ops::layout::insert_split_tile(
+                &mut self.windows[parent_win_idx].tree,
+                split_target,
+                sub_ctx_pane_id,
+                true, // vertical = side-by-side
+                crate::host::command::ShareRatio { numerator: 1.0, denominator: 1.0 },
+                false,
+            );
+            self.windows[parent_win_idx].panes.insert(
+                sub_ctx_pane_id,
+                crate::pane::Pane::SubContext { pane_id: sub_ctx_pane_id, context_id: ctx_id },
+            );
+        } else {
+            log::warn!("new_child_context: parent ctx_id={parent_id} has no window — child context has no portal");
+        }
 
-        // (tile_id, pane_id) if the focused pane can be adopted (Terminal or App, not SubContext).
-        let adoption: Option<(egui_tiles::TileId, crate::tiling::PaneId)> = parent_win_idx
-            .and_then(|idx| {
-                let win = &self.windows[idx];
-                let tile_id = win.focused_pane?;
-                let pane_id = match win.tree.tiles.get(tile_id)? {
-                    egui_tiles::Tile::Pane(id) => *id,
-                    _ => return None,
-                };
-                if win.panes.get(&pane_id)?.as_sub_context().is_some() {
-                    return None;
-                }
-                Some((tile_id, pane_id))
-            });
-
-        log::info!(
-            "new_child_context: parent_id={parent_id} parent_depth={parent_depth} child_depth={child_depth} \
-             name={ctx_name} path={} adopt={:?}",
-            path.display(), adoption.map(|(_, pid)| pid)
-        );
-
+        // 3. Register the child context + window.
         self.router.push(crate::context::Context {
             name: ctx_name,
             path: path.clone(),
@@ -76,78 +77,6 @@ impl PlexiApp {
             parent_id: Some(parent_id),
             depth: child_depth,
         });
-
-        let (child_tree, child_panes, child_root_tile) = if let Some((adopt_tile_id, adopt_pane_id)) = adoption {
-            let parent_win_idx = parent_win_idx.unwrap();
-
-            // Remove the adopted pane from the parent.
-            let adopted_pane = self.windows[parent_win_idx].panes.remove(&adopt_pane_id)
-                .expect("adopt pane must exist in parent");
-
-            // Allocate a new pane_id for the SubContext tile that replaces it.
-            let sub_ctx_pane_id = self.host.alloc_pane_id();
-            log::info!("new_child_context: adopting pane_id={adopt_pane_id} → sub_ctx_pane_id={sub_ctx_pane_id} for child ctx_id={ctx_id}");
-
-            // Mutate the existing tile in-place: same TileId, new PaneId (SubContext).
-            {
-                let win = &mut self.windows[parent_win_idx];
-                if let Some(egui_tiles::Tile::Pane(ref mut id)) = win.tree.tiles.get_mut(adopt_tile_id) {
-                    *id = sub_ctx_pane_id;
-                }
-                // If the adopted pane was zoomed, clear it — zooming a SubContext tile is meaningless.
-                if win.zoomed_pane == Some(adopt_tile_id) {
-                    win.zoomed_pane = None;
-                }
-                win.panes.insert(sub_ctx_pane_id, crate::pane::Pane::SubContext {
-                    pane_id: sub_ctx_pane_id,
-                    context_id: ctx_id,
-                });
-            }
-
-            // Build the child window tree with the adopted pane as sole content.
-            let mut child_tiles = egui_tiles::Tiles::default();
-            let adopted_tile = child_tiles.insert_pane(adopt_pane_id);
-            let child_tree = egui_tiles::Tree::new("plexi", adopted_tile, child_tiles);
-            let mut child_panes = std::collections::HashMap::new();
-            child_panes.insert(adopt_pane_id, adopted_pane);
-
-            (child_tree, child_panes, adopted_tile)
-        } else {
-            // Fallback: create a fresh terminal pane for the child.
-            let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(path.clone()), None, false)
-            else {
-                log::error!("new_child_context: failed to create terminal for child context");
-                let new_idx = self.router.len() - 1;
-                self.router.remove_at(new_idx);
-                return Err("failed to create terminal for child context".to_string());
-            };
-            log::info!("new_child_context: no adoptable pane — creating terminal fallback for child ctx_id={ctx_id}");
-
-            // Add a SubContext tile alongside existing panes in the parent.
-            if let Some(parent_idx) = parent_win_idx {
-                let sub_ctx_pane_id = self.host.alloc_pane_id();
-                let new_tile_id = self.windows[parent_idx].tree.tiles.insert_pane(sub_ctx_pane_id);
-                let existing_root = self.windows[parent_idx].tree.root;
-                if let Some(root) = existing_root {
-                    let new_root = self.windows[parent_idx].tree.tiles.insert_container(
-                        egui_tiles::Linear::new(
-                            egui_tiles::LinearDir::Horizontal,
-                            vec![root, new_tile_id],
-                        ),
-                    );
-                    self.windows[parent_idx].tree.root = Some(new_root);
-                } else {
-                    self.windows[parent_idx].tree.root = Some(new_tile_id);
-                }
-                self.windows[parent_idx].panes.insert(sub_ctx_pane_id, crate::pane::Pane::SubContext {
-                    pane_id: sub_ctx_pane_id,
-                    context_id: ctx_id,
-                });
-            }
-
-            (tree, panes, root_tile)
-        };
-
         self.windows.push(crate::context::Window {
             name: String::new(),
             path: path.clone(),
@@ -333,35 +262,65 @@ impl PlexiApp {
         if self.router.len() <= 1 {
             return;
         }
-        let ws_id = self.router.get(ws_index).context_id;
+        let target_ctx_id = self.router.get(ws_index).context_id;
 
-        // Remove all windows belonging to this context.
-        self.windows.retain(|c| c.context_id != ws_id);
+        // 1+2. Collect target + all descendants (BFS via parent_id).
+        let mut deleted: Vec<u64> = vec![target_ctx_id];
+        let mut frontier: Vec<u64> = vec![target_ctx_id];
+        while let Some(cur) = frontier.pop() {
+            for ctx in self.router.iter() {
+                if ctx.parent_id == Some(cur) && !deleted.contains(&ctx.context_id) {
+                    deleted.push(ctx.context_id);
+                    frontier.push(ctx.context_id);
+                }
+            }
+        }
+        log::info!(
+            "delete_context: cascading delete of ctx_id={target_ctx_id} + {} descendants ({:?})",
+            deleted.len() - 1, &deleted[1..]
+        );
 
-        // Remove SubContext tiles that pointed to this deleted context from parent windows.
+        // 3. Remove all windows belonging to any deleted context.
+        self.windows.retain(|c| !deleted.contains(&c.context_id));
+
+        // 4. Remove SubContext tiles in surviving windows that point to any deleted ctx.
         for win in &mut self.windows {
             let sub_ctx_pane_ids: Vec<crate::tiling::PaneId> = win.panes.iter()
-                .filter(|(_, p)| p.as_sub_context() == Some(ws_id))
+                .filter(|(_, p)| p.as_sub_context().map(|cid| deleted.contains(&cid)).unwrap_or(false))
                 .map(|(id, _)| *id)
                 .collect();
             for pane_id in sub_ctx_pane_ids {
                 win.panes.remove(&pane_id);
-                // Remove from the tile tree too.
                 if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
                     win.tree.remove_recursively(tile_id);
                 }
             }
         }
 
-        self.router.remove_at(ws_index);
+        // 5. Remove from router. Iterate until none remain (positions shift after each removal).
+        loop {
+            let next = self.router.position(|c| deleted.contains(&c.context_id));
+            match next {
+                Some(idx) => { self.router.remove_at(idx); }
+                None => break,
+            }
+        }
 
-        // Pick a valid active window in the new active context.
+        // 6. Clean depth_stack: drop entries pointing to any deleted context.
+        let before = self.router.depth_stack.len();
+        self.router.retain_depth_stack(|cid| !deleted.contains(&cid));
+        let cleaned = before - self.router.depth_stack.len();
+        if cleaned > 0 {
+            log::info!("delete_context: removed {cleaned} stale depth_stack entries");
+        }
+
+        // 7. Pick a valid active window in the new active context.
         self.pick_active_context_from_workspace();
 
-        // Notifications scoped to this context are dropped.
+        // 8. Notifications scoped to any deleted context are dropped.
         self.pending_notifications.retain(|n| {
             !(matches!(n.scope, crate::app_protocol::NotifyScope::Context)
-                && n.source_context_id == ws_id)
+                && deleted.contains(&n.source_context_id))
         });
         self.save_notifications();
         if let Some(ref id) = self.current_notify_id.clone() {
@@ -371,7 +330,7 @@ impl PlexiApp {
             }
         }
 
-        // Restore minimap state for the context we landed on.
+        // 9. Restore minimap state for the context we landed on.
         let new_ws_id = self.router.active().context_id;
         let page_count = self.windows.iter().filter(|c| c.context_id == new_ws_id).count();
         self.minimap.visible = self

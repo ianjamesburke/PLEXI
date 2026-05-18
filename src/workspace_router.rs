@@ -142,6 +142,12 @@ impl WorkspaceRouter {
     pub(crate) fn current_depth(&self) -> usize {
         self.depth_stack.len()
     }
+
+    /// Retain only depth_stack entries whose context_id satisfies `keep`.
+    /// Used by `delete_context` to drop entries pointing to deleted contexts.
+    pub(crate) fn retain_depth_stack<F: Fn(u64) -> bool>(&mut self, keep: F) {
+        self.depth_stack.retain(|(ctx_id, _, _)| keep(*ctx_id));
+    }
 }
 
 #[cfg(test)]
@@ -175,5 +181,18 @@ mod tests {
     fn depth_stack_empty_pop_returns_none() {
         let mut router = WorkspaceRouter::new(vec![make_ctx(1, None, 0)], 0);
         assert_eq!(router.pop_depth(), None);
+    }
+
+    #[test]
+    fn retain_depth_stack_drops_matching_entries() {
+        let mut router = WorkspaceRouter::new(vec![make_ctx(1, None, 0)], 0);
+        router.push_depth(1, 10, None);
+        router.push_depth(2, 20, None);
+        router.push_depth(3, 30, None);
+        assert_eq!(router.current_depth(), 3);
+        router.retain_depth_stack(|cid| cid != 2);
+        assert_eq!(router.current_depth(), 2);
+        let remaining: Vec<u64> = router.depth_stack.iter().map(|(c, _, _)| *c).collect();
+        assert_eq!(remaining, vec![1, 3]);
     }
 }

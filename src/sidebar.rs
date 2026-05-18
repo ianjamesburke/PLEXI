@@ -47,14 +47,34 @@ impl PlexiApp {
                     .collect();
                 path_ids.push(self.router.active().context_id);
 
-                for (i, &ctx_id) in path_ids.iter().enumerate() {
-                    let name = self.router.iter()
-                        .find(|c| c.context_id == ctx_id)
-                        .map(|c| c.name.as_str())
-                        .unwrap_or("?");
-                    let _ = ui.small_button(name);
-                    if i < path_ids.len() - 1 {
-                        ui.label(egui::RichText::new("\u{203A}").color(self.colors.text_dim));
+                let dim = path_ids.len() >= 3;
+                let truncate = path_ids.len() >= 5;
+
+                // Indices into path_ids to display. usize::MAX is the ellipsis placeholder.
+                let display_indices: Vec<usize> = if truncate {
+                    let last = path_ids.len() - 1;
+                    vec![0, usize::MAX, last - 1, last]
+                } else {
+                    (0..path_ids.len()).collect()
+                };
+
+                for (pos, &idx) in display_indices.iter().enumerate() {
+                    if idx == usize::MAX {
+                        ui.label(RichText::new("…").color(self.colors.text_dim));
+                    } else {
+                        let name = self.router.iter()
+                            .find(|c| c.context_id == path_ids[idx])
+                            .map(|c| c.name.as_str())
+                            .unwrap_or("?");
+                        let text = if dim {
+                            RichText::new(name).color(self.colors.text_dim)
+                        } else {
+                            RichText::new(name)
+                        };
+                        let _ = ui.small_button(text);
+                    }
+                    if pos < display_indices.len() - 1 {
+                        ui.label(RichText::new("\u{203A}").color(self.colors.text_dim));
                     }
                 }
             });
