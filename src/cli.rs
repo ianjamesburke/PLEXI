@@ -674,8 +674,9 @@ pub fn workspace_secret_delete(friendly: &str) -> i32 {
 // ── plexi app subcommands ─────────────────────────────────────────────────────
 
 /// `plexi app init [--lang python|rust] <name>` — scaffold a new app.
-/// Inside a workspace: scaffolds in `./apps/<name>/` and auto-links.
-/// Without a workspace: scaffolds in `./<name>/`.
+/// Always scaffolds into `<cwd>/.plexi/apps/<name>/`, creating the directory
+/// structure if absent. The app is immediately discoverable by the registry
+/// without any additional install step, and hot reload watches the actual source.
 pub fn app_init(name: &str, lang: &str) -> i32 {
     if name.is_empty() {
         eprintln!("Usage: plexi app init [--lang python|rust] <name>");
@@ -690,12 +691,19 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
         }
     };
 
-    let has_workspace = crate::app_registry::resolve_workspace_root(&cwd).is_some();
-    let app_dir = if has_workspace {
-        cwd.join("apps").join(name)
-    } else {
-        cwd.join(name)
-    };
+    // Refuse home dir and root — same guard as workspace_init. Creating
+    // ~/.plexi/apps/ would collide with the stable channel profile dir.
+    let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
+    let is_home_or_root = cwd == std::path::Path::new("/")
+        || home.as_ref().map(|h| cwd == *h).unwrap_or(false);
+    if is_home_or_root {
+        log::warn!("app_init: rejected — home/root guard: {}", cwd.display());
+        eprintln!("error: cannot scaffold an app in your home or root directory — run from a project directory instead.");
+        return 1;
+    }
+
+    let app_dir = cwd.join(".plexi").join("apps").join(name);
+    log::info!("app_init: scaffold path={}", app_dir.display());
 
     if app_dir.exists() {
         eprintln!("error: {} already exists", app_dir.display());
@@ -720,9 +728,7 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
                 println!("  cd {}", app_dir.display());
                 println!("  cargo build --release");
                 println!("  # then run: plexi app run {}", app_dir.display());
-                print_tip("install your app globally with `plexi app install .` so you can open it from any context.");
             } else {
-                println!("  Run with: plexi app run {}", app_dir.display());
                 // Auto-open the app if PLEXI_SOCKET is set (running inside a pane).
                 if std::env::var("PLEXI_SOCKET").is_ok() {
                     let path_str = app_dir.to_string_lossy().to_string();
@@ -732,7 +738,7 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
                         eprintln!("warning: app created but could not auto-open (exit {exit_code}) — run: plexi app run {}", app_dir.display());
                     }
                 } else {
-                    print_tip("install your app globally with `plexi app install .` so you can open it from any context.");
+                    println!("  Run with: plexi app run {}", app_dir.display());
                 }
             }
             0
@@ -749,7 +755,7 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
 
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
-        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = [\"fs.read\"]\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
+        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = []\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
         name = name,
         display = to_title_case(name),
     ))?;
@@ -776,7 +782,7 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
 fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
-        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"bin/plexi-app\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = [\"fs.read\"]\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
+        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"bin/plexi-app\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\n\n[app.capabilities]\ncapabilities = []\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
         name = name,
         display = to_title_case(name),
     ))?;
