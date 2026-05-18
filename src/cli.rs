@@ -31,6 +31,62 @@ pub struct CommandDef {
 
 /// Entry point for `plexi run <command_name>`.
 /// Returns the exit code.
+/// `plexi run` with no argument — list available commands from .plexi/commands.toml.
+pub fn run_list_commands() -> i32 {
+    log::info!("cli: run called with no command, listing available workspace commands");
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error: could not determine current directory: {e}");
+            return 1;
+        }
+    };
+
+    let config_path = cwd.join(COMMANDS_FILE);
+    let contents = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => {
+            println!("No workspace commands configured.");
+            println!();
+            println!("To set up commands, create {COMMANDS_FILE} in your project:");
+            println!("  plexi workspace init");
+            println!();
+            println!("Then define commands in .plexi/commands.toml:");
+            println!("  [commands.dev]");
+            println!("  run = \"npm run dev\"");
+            return 0;
+        }
+    };
+
+    let config: PlexiCommands = match toml::from_str(&contents) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("error: failed to parse {COMMANDS_FILE}: {e}");
+            return 1;
+        }
+    };
+
+    if config.commands.is_empty() {
+        println!("No commands defined in {COMMANDS_FILE}.");
+        println!();
+        println!("Add a command:");
+        println!("  [commands.dev]");
+        println!("  run = \"npm run dev\"");
+        return 0;
+    }
+
+    println!("Available commands:");
+    let mut names: Vec<&String> = config.commands.keys().collect();
+    names.sort();
+    for name in names {
+        let cmd = &config.commands[name];
+        println!("  {:20} {}", name, cmd.run);
+    }
+    println!();
+    println!("Run one with: plexi run <command>");
+    0
+}
+
 pub fn run_command(command_name: &str) -> i32 {
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
@@ -922,23 +978,10 @@ pub fn app_info(id: &str) -> i32 {
     0
 }
 
-/// `plexi app list` — list installed apps.
+/// `plexi app list` — unified alias for `plexi list`.
 pub fn app_list() -> i32 {
-    let registry =
-        crate::app_registry::AppRegistry::load(&std::env::current_dir().unwrap_or_default());
-    let apps = registry.list();
-    if apps.is_empty() {
-        println!("No apps installed.");
-        println!("Install one with: plexi install github:owner/repo");
-    } else {
-        for app in apps {
-            println!(
-                "{:20} {}  {}",
-                app.manifest.id, app.manifest.version, app.manifest.description
-            );
-        }
-    }
-    0
+    log::info!("cli: app_list delegating to list_cli (unified)");
+    list_cli()
 }
 
 /// `plexi app render <id> --size WxH [--state state.json] [--output path.png]`
