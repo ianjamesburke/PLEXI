@@ -2359,6 +2359,172 @@ impl PlexiApp {
         }
     }
 
+    /// Context-close confirmation dialog. Shows pane inventory with three choices:
+    /// Close All (Enter), Dissolve (D), Cancel (Escape).
+    pub(crate) fn draw_context_close_confirm(&mut self, ctx: &egui::Context) {
+        let state = match self.pending_context_close.take() {
+            Some(s) => s,
+            None => return,
+        };
+
+        let mut close_all = false;
+        let mut dissolve = false;
+        let mut cancelled = false;
+
+        ctx.input_mut(|i| {
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+                close_all = true;
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::D) {
+                dissolve = true;
+            }
+            if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                cancelled = true;
+            }
+        });
+
+        let screen_rect = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("ctx_close_confirm_scrim"))
+            .fixed_pos(screen_rect.min)
+            .order(egui::Order::Middle)
+            .show(ctx, |ui| {
+                ui.painter().rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(120));
+                let scrim_resp = ui.allocate_rect(screen_rect, egui::Sense::click());
+                if scrim_resp.clicked() {
+                    cancelled = true;
+                }
+            });
+
+        let colors = self.colors;
+        egui::Area::new(egui::Id::new("ctx_close_confirm_modal"))
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(colors.bg_sidebar)
+                    .stroke(egui::Stroke::new(1.0, colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(20, 16))
+                    .show(ui, |ui| {
+                        ui.set_width(MODAL_WIDTH);
+
+                        let title = if state.context_name.is_empty() {
+                            "Close context?".to_string()
+                        } else {
+                            format!("Close \"{}\"?", state.context_name)
+                        };
+                        ui.label(
+                            RichText::new(&title)
+                                .size(13.0)
+                                .color(colors.text_primary)
+                                .strong(),
+                        );
+                        ui.add_space(8.0);
+
+                        for item in &state.items {
+                            let label = format!("{} — {}", item.kind, item.name);
+                            ui.label(
+                                RichText::new(&label)
+                                    .size(style::TEXT_HINT)
+                                    .color(colors.text_dim),
+                            );
+                        }
+
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Close all")
+                                            .size(12.0)
+                                            .color(colors.text_primary),
+                                    )
+                                    .fill(colors.bg_active),
+                                )
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                close_all = true;
+                            }
+                            ui.add_space(6.0);
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Dissolve")
+                                            .size(12.0)
+                                            .color(colors.text_primary),
+                                    )
+                                    .fill(colors.bg_active),
+                                )
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                dissolve = true;
+                            }
+                            ui.add_space(6.0);
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Cancel")
+                                            .size(12.0)
+                                            .color(colors.text_dim),
+                                    )
+                                    .frame(false),
+                                )
+                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                .clicked()
+                            {
+                                cancelled = true;
+                            }
+                        });
+
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            crate::widgets::key_chip(ui, "Enter", &colors);
+                            ui.label(
+                                RichText::new("close all")
+                                    .size(style::TEXT_HINT)
+                                    .color(colors.text_dim),
+                            );
+                            ui.add_space(style::SPACE_SM);
+                            crate::widgets::key_chip(ui, "D", &colors);
+                            ui.label(
+                                RichText::new("dissolve")
+                                    .size(style::TEXT_HINT)
+                                    .color(colors.text_dim),
+                            );
+                            ui.add_space(style::SPACE_SM);
+                            crate::widgets::key_chip(ui, "Esc", &colors);
+                            ui.label(
+                                RichText::new("cancel")
+                                    .size(style::TEXT_HINT)
+                                    .color(colors.text_dim),
+                            );
+                        });
+                    });
+            });
+
+        if close_all {
+            let idx = self.router.iter().position(|c| c.context_id == state.context_id);
+            if let Some(i) = idx {
+                log::info!("context_close: close_all ctx={} name={:?}", state.context_id, state.context_name);
+                self.delete_context(i);
+                self.save_workspace();
+            } else {
+                log::warn!("context_close: close_all ctx={} not found in router", state.context_id);
+            }
+        } else if dissolve {
+            log::info!("context_close: dissolve ctx={} name={:?}", state.context_id, state.context_name);
+            self.dissolve_sub_context(state.context_id);
+            self.save_workspace();
+        } else if cancelled {
+            log::info!("context_close: cancelled ctx={}", state.context_id);
+        } else {
+            // No input yet — put state back for the next frame.
+            self.pending_context_close = Some(state);
+        }
+    }
+
     /// Primary notification surface: a keyboard-first centered modal over the
     /// work area. Renders the front of the queue.
     ///

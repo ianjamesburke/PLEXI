@@ -560,6 +560,129 @@ impl PlexiApp {
         self.router.get_mut(idx).root = Some(root);
     }
 
+    /// Dissolve a sub-context: reparent all its panes into the parent window (the active
+    /// window that contains the SubContext tile), replace the SubContext tile with the
+    /// adopted panes, then delete the now-empty child context.
+    ///
+    /// Only promotes one level. Nested sub-contexts inside the dissolved context remain
+    /// intact — their tiles are moved to the parent window alongside the regular panes.
+    pub(crate) fn dissolve_sub_context(&mut self, child_ctx_id: u64) {
+        use egui_tiles::{Container, Tile};
+
+        // Find the SubContext tile in the active (parent) window.
+        let parent_idx = self.active_window;
+        let sub_ctx_pane_id = {
+            let win = &self.windows[parent_idx];
+            win.panes.iter()
+                .find(|(_, p)| p.as_sub_context() == Some(child_ctx_id))
+                .map(|(id, _)| *id)
+        };
+        let sub_ctx_pane_id = match sub_ctx_pane_id {
+            Some(id) => id,
+            None => {
+                log::warn!("dissolve_sub_context: no SubContext tile for ctx={child_ctx_id} in active window");
+                return;
+            }
+        };
+
+        let sub_ctx_tile_id = self.windows[parent_idx].tree.tiles.find_pane(&sub_ctx_pane_id);
+        let sub_ctx_tile_id = match sub_ctx_tile_id {
+            Some(id) => id,
+            None => {
+                log::warn!("dissolve_sub_context: SubContext pane {sub_ctx_pane_id} has no tile");
+                return;
+            }
+        };
+
+        // Collect panes from all child windows — extract them so we can move ownership.
+        let child_win_indices: Vec<usize> = self.windows.iter().enumerate()
+            .filter(|(_, w)| w.context_id == child_ctx_id)
+            .map(|(i, _)| i)
+            .collect();
+
+        // Drain panes from child windows into a staging list (sorted by ID for deterministic order).
+        let mut adopted: Vec<(crate::tiling::PaneId, crate::pane::Pane)> = Vec::new();
+        for &win_idx in &child_win_indices {
+            let mut pane_ids: Vec<crate::tiling::PaneId> = self.windows[win_idx].panes.keys().copied().collect();
+            pane_ids.sort();
+            for pane_id in pane_ids {
+                if let Some(pane) = self.windows[win_idx].panes.remove(&pane_id) {
+                    adopted.push((pane_id, pane));
+                }
+            }
+        }
+
+        log::info!("dissolve_sub_context: ctx={child_ctx_id} adopting {} panes into parent win={parent_idx}", adopted.len());
+
+        // Insert adopted panes into the parent window.
+        // Strategy: add each new tile alongside the SubContext tile.
+        // After all siblings are added, remove the SubContext tile.
+        for (pane_id, pane) in adopted {
+            let new_tile = self.windows[parent_idx].tree.tiles.insert_pane(pane_id);
+            self.windows[parent_idx].panes.insert(pane_id, pane);
+
+            // Add the new tile as a sibling of the SubContext tile.
+            let parent_of_sub = self.windows[parent_idx].tree.tiles.parent_of(sub_ctx_tile_id);
+            if let Some(parent_tile) = parent_of_sub {
+                if let Some(Tile::Container(Container::Linear(lin))) =
+                    self.windows[parent_idx].tree.tiles.get_mut(parent_tile)
+                {
+                    if let Some(pos) = lin.children.iter().position(|&c| c == sub_ctx_tile_id) {
+                        lin.children.insert(pos, new_tile);
+                    } else {
+                        lin.children.push(new_tile);
+                    }
+                } else {
+                    // Parent is Tabs or another container — append via a new horizontal split at root.
+                    let existing_root = self.windows[parent_idx].tree.root;
+                    if let Some(root) = existing_root {
+                        let new_root = self.windows[parent_idx].tree.tiles.insert_horizontal_tile(vec![root, new_tile]);
+                        self.windows[parent_idx].tree.root = Some(new_root);
+                    } else {
+                        self.windows[parent_idx].tree.root = Some(new_tile);
+                    }
+                }
+            } else {
+                // SubContext tile is the root — wrap everything in a horizontal container.
+                let new_root = self.windows[parent_idx].tree.tiles.insert_horizontal_tile(vec![new_tile, sub_ctx_tile_id]);
+                self.windows[parent_idx].tree.root = Some(new_root);
+            }
+        }
+
+        // Remove the SubContext tile from the parent window.
+        {
+            let win = &mut self.windows[parent_idx];
+            win.panes.remove(&sub_ctx_pane_id);
+            if let Some(parent_tile) = win.tree.tiles.parent_of(sub_ctx_tile_id) {
+                if let Some(Tile::Container(parent_container)) = win.tree.tiles.get_mut(parent_tile) {
+                    parent_container.remove_child(sub_ctx_tile_id);
+                }
+            }
+            win.tree.tiles.remove(sub_ctx_tile_id);
+            win.tree.simplify(&egui_tiles::SimplificationOptions {
+                all_panes_must_have_tabs: true,
+                ..egui_tiles::SimplificationOptions::default()
+            });
+        }
+
+        // Fix up active_window index BEFORE the retain shifts indices.
+        // Count how many child windows sit before parent_idx — each removal shifts the index down by 1.
+        let removed_before = child_win_indices.iter().filter(|&&i| i < parent_idx).count();
+
+        // Remove child context windows and router entry.
+        self.windows.retain(|w| w.context_id != child_ctx_id);
+        if let Some(idx) = self.router.position(|c| c.context_id == child_ctx_id) {
+            self.router.remove_at(idx);
+        }
+
+        self.active_window = parent_idx - removed_before;
+
+        // Focus the first pane in the parent window.
+        let new_focus = self.windows[self.active_window].tree.root
+            .and_then(|root| self.windows[self.active_window].find_first_pane_in(root));
+        self.windows[self.active_window].focused_pane = new_focus;
+    }
+
     pub(crate) fn save_workspace(&self) {
         let mut saved_contexts = Vec::new();
         let mut saved_windows = Vec::new();
