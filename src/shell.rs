@@ -9,15 +9,6 @@ use std::time::{Duration, Instant};
 // Foreground child detection — used by the context inspector for idle/busy status
 // ---------------------------------------------------------------------------
 
-#[cfg(target_os = "macos")]
-extern "C" {
-    fn proc_listchildpids(
-        ppid: libc::c_int,
-        buffer: *mut libc::c_void,
-        buffersize: libc::c_int,
-    ) -> libc::c_int;
-}
-
 static BUSY_CACHE: LazyLock<Mutex<HashMap<u32, (bool, Instant)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 const BUSY_CACHE_TTL: Duration = Duration::from_millis(500);
@@ -41,29 +32,20 @@ pub fn has_foreground_child(pid: u32) -> bool {
 }
 
 fn check_has_children(pid: u32) -> bool {
-    #[cfg(target_os = "macos")]
+    // pgrep -P <pid> exits 0 with child PIDs on stdout when children exist, 1 when none.
+    // Failure to run pgrep defaults to false (idle) — better UX than always showing busy.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        // proc_listchildpids with null buffer returns n_children * sizeof(pid_t) bytes needed.
-        // A positive return means at least one child exists.
-        // Negative return is an error — default to true (busy) to avoid false idle display.
-        let ret = unsafe {
-            proc_listchildpids(pid as libc::c_int, std::ptr::null_mut(), 0)
-        };
-        if ret < 0 { true } else { ret > 0 }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        // /proc/<pid>/task/<pid>/children lists immediate children space-separated.
-        // On read failure (kernel too old, pid gone) default to true to avoid false idle.
-        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(true)
+        Command::new("pgrep")
+            .args(["-P", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        // Detection not implemented for this platform — show busy to match old "running" behavior.
         let _ = pid;
-        true
+        false
     }
 }
 
