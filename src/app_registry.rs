@@ -209,6 +209,20 @@ pub struct LaunchSection {
     /// timers, and monitoring dashboards.
     #[serde(default)]
     pub notification_scope: DefaultNotifyScope,
+    /// Minimum pane width (logical px). Below this the host renders a "too small"
+    /// placeholder instead of the app. None = use host default (120).
+    #[serde(default)]
+    pub min_width: Option<f32>,
+    /// Minimum pane height (logical px). Rarely set — content scrolls vertically.
+    /// None = use host default (80).
+    #[serde(default)]
+    pub min_height: Option<f32>,
+    /// compact/regular size-class threshold (logical px). None = use SDK default (280).
+    #[serde(default)]
+    pub compact: Option<f32>,
+    /// regular/full size-class threshold (logical px). None = use SDK default (480).
+    #[serde(default)]
+    pub regular: Option<f32>,
 }
 
 /// Structured layout hint. `side` ∈ {`"right"`, `"below"`, `"overlay"`}.
@@ -690,6 +704,18 @@ impl AppRegistry {
         ) {
             Ok(mut app) => {
                 app.permissions.allowed_hosts = perms.allowed_hosts;
+                app.manifest_min_width = installed.launch.min_width.unwrap_or(120.0);
+                app.manifest_min_height = installed.launch.min_height.unwrap_or(80.0);
+                app.compact_threshold = installed.launch.compact.unwrap_or(280.0);
+                app.regular_threshold = installed.launch.regular.unwrap_or(480.0);
+                if installed.launch.min_width.is_some() || installed.launch.min_height.is_some() {
+                    log::info!(
+                        "AppRegistry: '{}' has layout guards min={}×{} compact={} regular={}",
+                        id,
+                        app.manifest_min_width, app.manifest_min_height,
+                        app.compact_threshold, app.regular_threshold,
+                    );
+                }
                 log::info!(
                     "AppRegistry: launched '{}' from {:?} (notification_scope={:?}, allowed_hosts={:?})",
                     id,

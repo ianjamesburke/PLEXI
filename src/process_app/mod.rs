@@ -247,6 +247,18 @@ pub struct ProcessApp {
     /// `DrawCommand::SetMouseTracking { enabled }`. Off by default to avoid
     /// flooding apps that don't need continuous pointer tracking.
     mouse_tracking_enabled: bool,
+    /// Minimum pane width from manifest [launch] section. Default: 120.0.
+    pub(crate) manifest_min_width: f32,
+    /// Minimum pane height from manifest [launch] section. Default: 80.0.
+    pub(crate) manifest_min_height: f32,
+    /// compact/regular threshold from manifest (or default 280.0).
+    pub(crate) compact_threshold: f32,
+    /// regular/full threshold from manifest (or default 480.0).
+    pub(crate) regular_threshold: f32,
+    /// Live minimum size override from DrawCommand::SetMinSize. Supersedes manifest when set.
+    live_min_size: Option<(f32, f32)>,
+    /// True while the pane is in "too small" state. Guards the transition log.
+    too_small: bool,
     /// Cached state for `egui_commonmark` markdown rendering. Persists across
     /// frames so the parser doesn't re-allocate on every repaint.
     commonmark_cache: egui_commonmark::CommonMarkCache,
@@ -687,6 +699,12 @@ impl ProcessApp {
             copied_feedback_until: None,
             pending_notification_count: 0,
             mouse_tracking_enabled: false,
+            manifest_min_width: 120.0,
+            manifest_min_height: 80.0,
+            compact_threshold: 280.0,
+            regular_threshold: 480.0,
+            live_min_size: None,
+            too_small: false,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             image_cache: image_cache::ImageCache::new(),
             render_session: RenderSession::new(),
@@ -823,6 +841,12 @@ impl ProcessApp {
             copied_feedback_until: None,
             pending_notification_count: 0,
             mouse_tracking_enabled: false,
+            manifest_min_width: 120.0,
+            manifest_min_height: 80.0,
+            compact_threshold: 280.0,
+            regular_threshold: 480.0,
+            live_min_size: None,
+            too_small: false,
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
             image_cache: image_cache::ImageCache::new(),
             render_session: RenderSession::new(),
@@ -858,6 +882,32 @@ impl ProcessApp {
         } else {
             String::new()
         }
+    }
+
+    fn effective_min_size(&self) -> (f32, f32) {
+        self.live_min_size.unwrap_or((self.manifest_min_width, self.manifest_min_height))
+    }
+
+    fn render_too_small_placeholder(&self, ui: &mut egui::Ui, pane_rect: egui::Rect, ctx: &AppRenderContext<'_>) {
+        let painter = ui.painter();
+        let cx = pane_rect.center();
+        let name_font = egui::FontId::proportional(crate::style::TEXT_CAPTION);
+        let (eff_w, eff_h) = self.effective_min_size();
+        painter.text(
+            cx - egui::vec2(0.0, 10.0),
+            egui::Align2::CENTER_CENTER,
+            &self.display_name,
+            name_font,
+            ctx.colors.text_dim,
+        );
+        let hint_font = egui::FontId::proportional(crate::style::TEXT_HINT);
+        painter.text(
+            cx + egui::vec2(0.0, 10.0),
+            egui::Align2::CENTER_CENTER,
+            &format!("needs {eff_w:.0} × {eff_h:.0} px"),
+            hint_font,
+            ctx.colors.text_dim,
+        );
     }
 
     pub(crate) fn send_event(&mut self, event: &PlexiEvent) {
@@ -1183,6 +1233,13 @@ impl ProcessApp {
                         height: sz.y,
                     });
             }
+            ControlCommand::SetMinSize { width, height } => {
+                self.live_min_size = Some((width, height));
+                log::info!(
+                    "ProcessApp[{}]: live min size set to {:.0}×{:.0}",
+                    self.type_id, width, height
+                );
+            }
         }
     }
 }
@@ -1242,6 +1299,8 @@ impl App for ProcessApp {
                 workspace_root: self.workspace_root.clone(),
                 capabilities: cap_strings,
                 feature_flags: vec!["pane_groups_v1".into()],
+                compact_threshold: self.compact_threshold,
+                regular_threshold: self.regular_threshold,
             });
             // Inject persisted state before first render so on_inject runs with data.
             let state = load_app_state(&self.type_id, &self.workspace_root);
@@ -1255,6 +1314,31 @@ impl App for ProcessApp {
                 width: size.x,
                 height: size.y,
             });
+        }
+
+        // Size-class guard: if the pane is below the effective minimum, render a
+        // host-owned placeholder and skip routing the render event to the app.
+        let (eff_min_w, eff_min_h) = self.effective_min_size();
+        let now_too_small = size.x < eff_min_w || size.y < eff_min_h;
+        if now_too_small != self.too_small {
+            self.too_small = now_too_small;
+            if now_too_small {
+                log::info!(
+                    "ProcessApp[{}]: pane too small ({:.0}×{:.0} < {:.0}×{:.0}) — placeholder",
+                    self.type_id, size.x, size.y, eff_min_w, eff_min_h
+                );
+            } else {
+                log::info!(
+                    "ProcessApp[{}]: pane restored ({:.0}×{:.0}) — resuming",
+                    self.type_id, size.x, size.y
+                );
+            }
+        }
+        if now_too_small {
+            let pane_rect = ui.available_rect_before_wrap();
+            ui.painter().rect_filled(pane_rect, 0.0, ctx.colors.terminal_bg);
+            self.render_too_small_placeholder(ui, pane_rect, ctx);
+            return;
         }
 
         self.frame_counter += 1;

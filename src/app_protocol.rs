@@ -59,6 +59,12 @@ pub enum PlexiEvent {
         /// Additive feature flags. Unknown flags are ignored.
         /// e.g. ["media_v1", "pane_groups_v1"]
         feature_flags: Vec<String>,
+        /// compact/regular threshold sent to SDK so ctx.size_class matches host behaviour.
+        /// Defaults match SDK constants COMPACT_DEFAULT (280) / REGULAR_DEFAULT (480).
+        #[serde(default = "default_compact_threshold")]
+        compact_threshold: f32,
+        #[serde(default = "default_regular_threshold")]
+        regular_threshold: f32,
     },
     /// Request a new frame. App replies with DrawCommands terminated by FrameDone.
     Render {
@@ -1494,6 +1500,10 @@ pub enum ControlCommand {
         #[serde(default)]
         monospace: bool,
     },
+    /// Override the manifest-declared minimum size at runtime.
+    /// Stored by the host and used as the live effective minimum from this
+    /// point forward, superseding the manifest `[launch]` values.
+    SetMinSize { width: f32, height: f32 },
 }
 
 /// Top-level wire type. The `type` field is globally unique across all three
@@ -1665,6 +1675,9 @@ pub struct ListItem {
 fn is_false(b: &bool) -> bool {
     !*b
 }
+
+fn default_compact_threshold() -> f32 { 280.0 }
+fn default_regular_threshold() -> f32 { 480.0 }
 
 fn default_stroke_width() -> f32 {
     1.0
@@ -2865,5 +2878,20 @@ mod tests {
         }
         let serialised = serde_json::to_string(&cmd).expect("serialise");
         assert!(serialised.contains(r#""type":"layout""#), "wire tag missing: {serialised}");
+    }
+
+    #[test]
+    fn set_min_size_round_trips_serde() {
+        let json = r#"{"type":"set_min_size","width":200.0,"height":100.0}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).unwrap();
+        match cmd {
+            DrawCommand::Control(ControlCommand::SetMinSize { width, height }) => {
+                assert_eq!(width, 200.0);
+                assert_eq!(height, 100.0);
+            }
+            other => panic!("expected SetMinSize, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&DrawCommand::Control(ControlCommand::SetMinSize { width: 200.0, height: 100.0 })).unwrap();
+        assert!(serialised.contains(r#""type":"set_min_size""#), "got: {serialised}");
     }
 }

@@ -109,6 +109,8 @@ class App:
         self.capabilities: list[str] = []
         self.feature_flags: list[str] = []
         self._rect: dict = {"x": 0.0, "y": 0.0, "w": 800.0, "h": 600.0}
+        self._compact_threshold: float = 280.0
+        self._regular_threshold: float = 480.0
         # The running asyncio event loop. Set by run() before hooks are called.
         # Background threads use this via emit.run_sync() to schedule coroutines.
         self._loop: "asyncio.AbstractEventLoop | None" = None
@@ -415,7 +417,7 @@ class App:
 
     def _make_ctx(self, frame_id: int = 0, elapsed: float = 0.0,
                   clicks: "list[tuple[float, float]] | None" = None) -> RenderContext:
-        return RenderContext(
+        ctx = RenderContext(
             frame_id=frame_id,
             rect=self._rect,
             workspace_root=self.workspace_root,
@@ -425,6 +427,9 @@ class App:
             elapsed=elapsed,
             clicks=clicks or [],
         )
+        ctx._compact_threshold = self._compact_threshold
+        ctx._regular_threshold = self._regular_threshold
+        return ctx
 
     def run(self) -> None:
         """Start the PGAP v3 asyncio event loop. Blocks until Shutdown.
@@ -741,6 +746,8 @@ class App:
                     self.workspace_root = ev.get("workspace_root", "")
                     self.capabilities = ev.get("capabilities", [])
                     self.feature_flags = ev.get("feature_flags", [])
+                    self._compact_threshold = ev.get("compact_threshold", 280.0)
+                    self._regular_threshold = ev.get("regular_threshold", 480.0)
                     # Send Ready
                     features_used = [f for f in self.feature_flags
                                       if f in ("pane_groups_v1",)]
