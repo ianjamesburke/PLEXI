@@ -1,14 +1,10 @@
 ---
 name: create-plexi-app
-description: Use when building, scaffolding, or modifying a Plexi Python app. Covers manifest, SDK surface, key-handling, the dev loop, testing, and logging requirements.
-skill_version: "3.5.122"
+description: Use when building, scaffolding, or modifying a Plexi Python app. Covers manifest, SDK surface, key-handling, the dev loop, render verification, and logging requirements.
+skill_version: "0.0.452"
 ---
 
 # Build a Plexi App
-
-**Plexi version this skill was written against:** `3.5.122`
-
-Check drift before using: `<plexi-binary> --version`. If the version differs, this skill may be stale — re-read the SDK source and update it.
 
 **Keeping this skill current:** Any PR that changes the SDK surface (`sdk/python/plexi_sdk/`), adds a new draw command, or modifies the manifest schema must also bump `skill_version` in this file's frontmatter and update the affected sections. The ship-issue cycle enforces this — see the "SDK changes" rule in `.claude/skills/ship-issue/SKILL.md`.
 
@@ -35,10 +31,11 @@ Never hand-write a `manifest.toml`. Always scaffold:
 
 ```bash
 <plexi-binary> app init <app-name>
-chmod +x <app-name>/app.py
 ```
 
-This produces a valid manifest with the correct `schema_version`. Editing an init-generated manifest is fine; writing one from scratch produces subtle schema errors.
+This creates `<cwd>/.plexi/apps/<app-name>/` with a valid manifest and `main.py`. The app is immediately registered in the workspace — no additional install step needed. Editing an init-generated manifest is fine; writing one from scratch produces subtle schema errors.
+
+After scaffolding, prune unused imports from `main.py` before implementing. The template imports several UI components; remove any you won't use (Pyright will flag them).
 
 ---
 
@@ -53,7 +50,7 @@ type = "app"
 name = "My App"
 version = "0.1.0"
 description = "One line."
-entry = "app.py"
+entry = "main.py"
 
 [app.capabilities]
 capabilities = []       # add: "net", "audio", "midi", "video" as needed
@@ -204,28 +201,30 @@ on_timer(ctx, timer_id)   task — from emit.set_timer()
 ## Dev loop
 
 ```bash
-# Start hot-reload dev server (rebuilds on file save):
-just dev <app-dir>
+# 1. Scaffold (app lands in <cwd>/.plexi/apps/<app-name>/ — registered immediately):
+<plexi-binary> app init <app-name>
 
-# Launch in a new split pane (--layout prevents reusing/replacing a running instance):
+# 2. Implement main.py
+
+# 3. Render to PNG and visually verify — REQUIRED before surfacing to user:
+<plexi-binary> app render <app-id> --output /tmp/<app-id>.png
+# Read /tmp/<app-id>.png with the Read tool. Inspect layout, text, colors.
+# Fix issues, re-render, repeat until the screenshot looks correct.
+
+# 4. Only after render passes — open for the user:
 <plexi-binary> open <app-id> --layout split_h
-
-# Headless render to PNG — no running host required:
-# Agent runs this, reads the PNG with the Read tool, iterates on code, re-renders to confirm.
-<plexi-binary> app render <app-id> --output /tmp/render.png
-
-**Before `app render` works**, the app must be registered. If no workspace exists yet:
-```bash
-<plexi-binary> workspace init   # run once from the repo root
-<plexi-binary> app link <app-dir>   # registers without moving files
-```
-`app link` is idempotent — safe to re-run.
 
 # Tail logs:
 tail -f ~/.plexi-<channel>/plexi.log
 ```
 
-**Never run `<plexi-binary> open` or `just dev` from a Claude Code pane** — it blocks the session. Use a separate terminal pane or instruct the user to open it. The `layout_hint` in the manifest handles the side-split automatically.
+**Render verify is mandatory.** Never surface an app to the user without first rendering it headlessly, reading the PNG, and confirming it looks correct. This is the agent's quality gate — not an optional step.
+
+**`app render` reads from the workspace where the app is registered** (the `<cwd>/.plexi/apps/` dir). Run it from the same directory you ran `app init`. If the render fails with a "skipping" warning, the app isn't registered — confirm you're running from the right directory.
+
+**Pyright variance warnings on SDK list types are benign.** `List[Component]` is invariant; passing `list[Label]` to `Card([...])` triggers Pyright but works at runtime. Do not restructure correct code to silence these warnings.
+
+**Never run `<plexi-binary> open` from a Claude Code pane** — it blocks the session. Instruct the user to open it from a separate terminal pane. The `layout_hint` in the manifest handles positioning automatically.
 
 ---
 
@@ -241,21 +240,6 @@ Every app must emit at least one `info`-level trace per meaningful state change:
 ---
 
 ## Testing
-
-### CLI render (agent feedback loop)
-
-Render the app to PNG headlessly — no running host required. The agent runs this, reads the PNG with the Read tool, edits the code, and re-renders to confirm. The user never needs to open the image.
-
-```bash
-<plexi-binary> app render <app-id> --output /tmp/render.png
-# then: Read /tmp/render.png to inspect visually, edit code, re-render
-```
-
-**Critical limitation: `app render` always pulls from the registered workspace (repo root), not from a worktree.** Re-rendering from a feature worktree will not pick up uncommitted changes — the binary finds the app via the workspace registry, not CWD. Options:
-- **For layout/design iteration on alpha directly:** edit in place, render, verify, then move to a worktree for the PR.
-- **For worktree changes:** install a PR build first (`just pr-install <N>`), then use `plexi-pr-<N> app render <app-id>`. Don't try to render worktree changes without a PR install — it will silently show stale output.
-
-If the render fails with a "skipping" warning, the app isn't registered — verify the manifest path and that the workspace or examples dir is indexed.
 
 ### SDK snapshot tests (`from plexi_sdk.testing import ...`)
 
@@ -312,6 +296,7 @@ Any alpha below 160 is effectively invisible on Catppuccin Mocha dark background
 
 | Mistake | Fix |
 |---|---|
+| Surfacing app to user without rendering first | Always `<plexi-binary> app render <app-id> --output /tmp/<id>.png`, Read the PNG, verify visually before opening |
 | `print()` inside handlers | Use `self.emit.info()` or `ctx.info()` — stdout is the host protocol pipe |
 | `time.sleep()` in a task handler | `await asyncio.sleep()` or `await asyncio.to_thread(fn)` |
 | Hand-writing `manifest.toml` | Always `<plexi-binary> app init <name>` |
@@ -320,3 +305,4 @@ Any alpha below 160 is effectively invisible on Catppuccin Mocha dark background
 | Using `ctrl` for primary shortcuts | Prefer `meta` (⌘) on macOS |
 | `ctx.text(w - N, y, hint, CAPTION, MUTED)` near right edge | Use `ctx.text(max(w/2, w - N), y, hint, CAPTION, MUTED, align="right")` — prevents left-clip in narrow panes |
 | `dim(FG, 80)` or `dim(FG, 120)` for labels | Minimum readable alpha is 160 — use `dim(FG, 160)` for de-emphasized text |
+| Pyright variance warnings on `list[Label]` in `Card([...])` | Benign — `List[Component]` invariance is a type stub issue, not a runtime error. Do not restructure correct code to silence it. |
