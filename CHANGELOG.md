@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.453] — 2026-05-18
+
+### Changes
+- fix(infra): override hardcoded target-dir in release workflow (#1522) (#1523)
+- fix(cli): app init scaffolds into <cwd>/.plexi/apps/<name>/ (#1519) (#1521)
 ## [0.0.452] — 2026-05-18
 
 ### Changes
