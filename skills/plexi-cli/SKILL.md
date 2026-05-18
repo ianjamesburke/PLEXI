@@ -27,7 +27,7 @@ plexi pane capture [pane_id] --lines N # read last N lines of scrollback as JSON
 
 By default (no `--ephemeral`), the pane will remain open after your command finishes—so if you’re used to shells like **zsh** staying interactive, you can assume that “the terminal stays around” unless you explicitly opt into `-e/--ephemeral`. 
 
-**Layout values:** `split_h` (right), `split_right` (alias for split_h), `split_v` (below), `split_below` (alias for split_v), `split_above`, `tab` (new tab in current window), `new_window` (new OS window).
+**Layout values:** `split_h` (right), `split_left` (left), `split_right` (alias for split_h), `split_v` (below), `split_below` (alias for split_v), `split_above`, `tab` (new tab in current window), `new_window` (new OS window).
 
 ```bash
 LANE=$(plexi terminal --layout split_h)                 # pane to the right
@@ -39,7 +39,7 @@ NEW=$(plexi terminal --layout new_window)                # separate OS window
 
 ## Apps
 
-`plexi open <app-id>` launches an installed app. Flags: `--layout <overlay|split_h|split_v|split_right|split_below|split_above>`, `--from-pane-id <id>` (split relative to a pane), `--mcp`, `--cli`.
+`plexi open <app-id>` launches an installed app. Flags: `--layout <overlay|split_h|split_left|split_v|split_right|split_below|split_above>`, `--from-pane-id <id>` (split relative to a pane), `--mcp`, `--cli`.
 
 ```bash
 plexi list                       # list installed apps
