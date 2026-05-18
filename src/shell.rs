@@ -5,6 +5,50 @@ use std::process::Command;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+// ---------------------------------------------------------------------------
+// Foreground child detection — used by the context inspector for idle/busy status
+// ---------------------------------------------------------------------------
+
+static BUSY_CACHE: LazyLock<Mutex<HashMap<u32, (bool, Instant)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+const BUSY_CACHE_TTL: Duration = Duration::from_millis(500);
+
+/// Returns true if `pid` has at least one immediate child process.
+/// Cached at 500 ms so the inspector can call it per-pane without per-frame syscall cost.
+pub fn has_foreground_child(pid: u32) -> bool {
+    if let Ok(cache) = BUSY_CACHE.lock() {
+        if let Some((busy, ts)) = cache.get(&pid) {
+            if ts.elapsed() < BUSY_CACHE_TTL {
+                return *busy;
+            }
+        }
+    }
+    let busy = check_has_children(pid);
+    log::debug!("shell::has_foreground_child: pid={pid} → busy={busy}");
+    if let Ok(mut cache) = BUSY_CACHE.lock() {
+        cache.insert(pid, (busy, Instant::now()));
+    }
+    busy
+}
+
+fn check_has_children(pid: u32) -> bool {
+    // pgrep -P <pid> exits 0 with child PIDs on stdout when children exist, 1 when none.
+    // Failure to run pgrep defaults to false (idle) — better UX than always showing busy.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        Command::new("pgrep")
+            .args(["-P", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 pub fn detect_shell() -> String {
     if let Ok(shell) = std::env::var("SHELL") {
         if Path::new(&shell).exists() {
