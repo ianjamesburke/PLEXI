@@ -170,6 +170,36 @@ pub(crate) fn key_combo_list(
     });
 }
 
+/// Renders a styled singleline text input with the standard modal visual treatment:
+/// accent cursor, accent active border, muted inactive border, `bg_active` fill,
+/// `Body` font, and `8×5` inner margin. Width fills available space.
+///
+/// Returns the egui `Response`; callers handle focus requests and key events themselves.
+pub(crate) fn styled_text_input(
+    ui: &mut egui::Ui,
+    buf: &mut String,
+    hint: impl Into<egui::WidgetText>,
+    id: egui::Id,
+    colors: &Colors,
+) -> egui::Response {
+    ui.scope(|ui| {
+        ui.visuals_mut().text_cursor.stroke.width = 1.5;
+        ui.visuals_mut().text_cursor.stroke.color = colors.accent;
+        ui.visuals_mut().extreme_bg_color = colors.bg_active;
+        ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
+        ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+        ui.add(
+            egui::TextEdit::singleline(buf)
+                .id(id)
+                .desired_width(f32::INFINITY)
+                .hint_text(hint)
+                .font(egui::TextStyle::Body)
+                .margin(egui::Margin::symmetric(8, 5)),
+        )
+    })
+    .inner
+}
+
 /// 📋 / ✓ copy-to-clipboard button. Shows the clipboard icon normally; switches
 /// to ✓ for 2 seconds after a successful copy. `id` must be unique per call site.
 pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::Response {

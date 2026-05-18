@@ -823,25 +823,13 @@ impl PlexiApp {
 
                         let te_id = egui::Id::new("text_input_overlay_field");
                         let (overlay, _target) = self.text_overlay.as_mut().unwrap();
-                        let te = ui
-                            .scope(|ui| {
-                                ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                                ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
-                                ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
-                                ui.visuals_mut().widgets.active.bg_stroke =
-                                    egui::Stroke::new(1.0, self.colors.accent);
-                                ui.visuals_mut().widgets.inactive.bg_stroke =
-                                    egui::Stroke::new(1.0, self.colors.border);
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut overlay.buffer)
-                                        .id(te_id)
-                                        .desired_width(MODAL_WIDTH)
-                                        .hint_text(&hint)
-                                        .font(egui::TextStyle::Body)
-                                        .margin(egui::Margin::symmetric(8, 5)),
-                                )
-                            })
-                            .inner;
+                        let te = crate::widgets::styled_text_input(
+                            ui,
+                            &mut overlay.buffer,
+                            hint.as_str(),
+                            te_id,
+                            &self.colors,
+                        );
 
                         // One-shot focus guard.
                         if !overlay.focus_requested {
@@ -995,21 +983,13 @@ impl PlexiApp {
                         ui.add_space(6.0);
 
                         let te_id = egui::Id::new("rename_pane_input");
-                        let te = ui.scope(|ui| {
-                            ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                            ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
-                            ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
-                            ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, self.colors.accent);
-                            ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.colors.border);
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.rename_buffer)
-                                    .id(te_id)
-                                    .desired_width(MODAL_WIDTH)
-                                    .hint_text("Pane name...")
-                                    .font(egui::TextStyle::Body)
-                                    .margin(egui::Margin::symmetric(8, 5)),
-                            )
-                        }).inner;
+                        let te = crate::widgets::styled_text_input(
+                            ui,
+                            &mut self.rename_buffer,
+                            "Pane name...",
+                            te_id,
+                            &self.colors,
+                        );
 
                         // One-shot focus: only request on the first render frame.
                         // Re-requesting every frame (guarded by `!te.has_focus()`) lets
@@ -1092,21 +1072,13 @@ impl PlexiApp {
                         ui.add_space(6.0);
 
                         let te_id = egui::Id::new("rename_context_input");
-                        let te = ui.scope(|ui| {
-                            ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                            ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
-                            ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
-                            ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, self.colors.accent);
-                            ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.colors.border);
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.rename_buffer)
-                                    .id(te_id)
-                                    .desired_width(MODAL_WIDTH)
-                                    .hint_text("Context name...")
-                                    .font(egui::TextStyle::Body)
-                                    .margin(egui::Margin::symmetric(8, 5)),
-                            )
-                        }).inner;
+                        let te = crate::widgets::styled_text_input(
+                            ui,
+                            &mut self.rename_buffer,
+                            "Context name...",
+                            te_id,
+                            &self.colors,
+                        );
 
                         if !te.has_focus() {
                             te.request_focus();
