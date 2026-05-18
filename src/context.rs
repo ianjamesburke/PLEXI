@@ -32,7 +32,7 @@ pub struct Context {
     pub context_id: u64,
     /// Parent context_id for sub-contexts. None = top-level.
     pub parent_id: Option<u64>,
-    /// Nesting depth. 0 = root level. Capped at 3.
+    /// Nesting depth. 0 = root level. No hard cap; a soft warning is emitted at depth 3+.
     pub depth: u32,
 }
 

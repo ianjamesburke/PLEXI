@@ -52,15 +52,47 @@ impl PlexiApp {
                     .collect();
                 path_ids.push(self.router.active().context_id);
 
-                for (i, &ctx_id) in path_ids.iter().enumerate() {
-                    let name = self.router.iter()
-                        .find(|c| c.context_id == ctx_id)
-                        .map(|c| c.name.as_str())
-                        .unwrap_or("?");
-                    let _ = ui.small_button(name);
-                    if i < path_ids.len() - 1 {
-                        ui.label(egui::RichText::new("\u{203A}").color(self.colors.text_dim));
+                // Truncate deep breadcrumbs: show first + ellipsis + last 2 when depth >= 4.
+                let total = path_ids.len();
+                let sep = egui::RichText::new("\u{203A}").color(self.colors.text_dim);
+                if total >= 5 {
+                    // first segment
+                    let first_name = self.router.iter()
+                        .find(|c| c.context_id == path_ids[0])
+                        .map(|c| c.name.clone())
+                        .unwrap_or_else(|| "?".to_string());
+                    let _ = ui.small_button(first_name);
+                    ui.label(sep.clone());
+                    ui.label(egui::RichText::new("\u{2026}").color(self.colors.text_dim));
+                    ui.label(sep.clone());
+                    // last 2 segments
+                    for (i, &ctx_id) in path_ids[total - 2..].iter().enumerate() {
+                        let name = self.router.iter()
+                            .find(|c| c.context_id == ctx_id)
+                            .map(|c| c.name.clone())
+                            .unwrap_or_else(|| "?".to_string());
+                        let _ = ui.small_button(name);
+                        if i == 0 {
+                            ui.label(sep.clone());
+                        }
                     }
+                } else {
+                    for (i, &ctx_id) in path_ids.iter().enumerate() {
+                        let name = self.router.iter()
+                            .find(|c| c.context_id == ctx_id)
+                            .map(|c| c.name.clone())
+                            .unwrap_or_else(|| "?".to_string());
+                        let _ = ui.small_button(name);
+                        if i < total - 1 {
+                            ui.label(sep.clone());
+                        }
+                    }
+                }
+
+                // Soft warning indicator at depth >= 3.
+                if total >= 3 {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new("deep").color(self.colors.text_dim).small());
                 }
             });
             ui.separator();

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 impl PlexiApp {
     /// Create a child context nested inside `parent_name`. Moves the parent's focused
     /// pane into the new child context and replaces it with a SubContext tile. Falls
-    /// back to a new terminal if no adoptable pane is focused. Depth is capped at 3.
+    /// back to a new terminal if no adoptable pane is focused. No hard depth limit.
     pub(crate) fn new_child_context(&mut self, parent_name: &str, path: PathBuf) -> Result<(), String> {
         let parent_idx = self.router.position(|c| c.name == parent_name)
             .ok_or_else(|| format!("no context named '{parent_name}'"))?;
@@ -18,14 +18,10 @@ impl PlexiApp {
         let parent_depth = self.router.get(parent_idx).depth;
 
         if parent_depth >= 3 {
-            log::warn!(
-                "new_child_context: depth limit reached — parent '{}' is at depth {}",
+            log::info!(
+                "new_child_context: deep nesting — parent '{}' is at depth {} (consider reorganizing)",
                 parent_name, parent_depth
             );
-            return Err(format!(
-                "depth limit: parent '{}' is already at depth {} (max 3)",
-                parent_name, parent_depth
-            ));
         }
 
         let child_depth = parent_depth + 1;
