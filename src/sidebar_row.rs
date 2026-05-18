@@ -13,13 +13,15 @@ pub(crate) fn with_alpha(c: Color32, alpha: f32) -> Color32 {
 
 fn shorten_path(path: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
-    let shortened = if !home.is_empty() && path.starts_with(&home) {
-        format!("~{}", &path[home.len()..])
+    let shortened = if !home.is_empty() {
+        path.strip_prefix(&home).map_or_else(|| path.to_string(), |rest| format!("~{rest}"))
     } else {
         path.to_string()
     };
-    if shortened.len() > 40 {
-        format!("\u{2026}{}", &shortened[shortened.len() - 39..])
+    let char_count = shortened.chars().count();
+    if char_count > 40 {
+        let tail: String = shortened.chars().rev().take(39).collect::<Vec<_>>().into_iter().rev().collect();
+        format!("\u{2026}{tail}")
     } else {
         shortened
     }
