@@ -11,10 +11,12 @@ pub(crate) fn with_alpha(c: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha) as u8)
 }
 
+static HOME_DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 fn shorten_path(path: &str) -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = HOME_DIR.get_or_init(|| std::env::var("HOME").unwrap_or_default());
     let shortened = if !home.is_empty() {
-        path.strip_prefix(&home).map_or_else(|| path.to_string(), |rest| format!("~{rest}"))
+        path.strip_prefix(home.as_str()).map_or_else(|| path.to_string(), |rest| format!("~{rest}"))
     } else {
         path.to_string()
     };
