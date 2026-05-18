@@ -1866,25 +1866,8 @@ impl PlexiApp {
         }
     }
 
-    /// Returns the flat ordered list of pane IDs as they appear in the context inspector,
-    /// matching the ordering produced by [`collect_inspector_rows`].
     pub(crate) fn inspector_pane_order(&self) -> Vec<PaneId> {
-        let mut result: Vec<PaneId> = Vec::new();
-        for ctx_entry in self.router.iter() {
-            let cid = ctx_entry.context_id;
-            let mut pane_ids: Vec<PaneId> = Vec::new();
-            for win in self.windows.iter() {
-                if win.context_id != cid {
-                    continue;
-                }
-                for (pane_id, _) in &win.panes {
-                    pane_ids.push(*pane_id);
-                }
-            }
-            pane_ids.sort_unstable();
-            result.extend(pane_ids);
-        }
-        result
+        self.collect_inspector_rows().1
     }
 
     fn collect_inspector_rows(&self) -> (Vec<(String, Vec<PaneRow>)>, Vec<PaneId>, Vec<u64>) {
