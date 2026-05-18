@@ -134,6 +134,24 @@ impl Capability {
             _ => None,
         }
     }
+
+    /// Returns true for capabilities that require explicit first-run user consent.
+    /// These are withheld (treated as Yellow) when no stored decision exists,
+    /// so the app must send a CapabilityRequest to trigger the consent modal.
+    pub fn is_sensitive(self) -> bool {
+        matches!(
+            self,
+            Self::PanesSpawn
+                | Self::SpawnApp
+                | Self::AiQuery
+                | Self::Llm
+                | Self::AudioRecord
+                | Self::TerminalBindings
+                | Self::FsWrite
+                | Self::SecretsGet
+                | Self::NetHttp
+        )
+    }
 }
 
 /// Error produced when a manifest or decision log names a capability that is not
@@ -431,7 +449,9 @@ impl PermissionStore {
 
     /// Apply stored state for a set of declared capabilities.
     /// Returns `(capabilities, blocked)` sets for constructing AppPermissions.
-    /// - Declared + not stored or Green → granted (capabilities set)
+    /// - Declared + Green → granted (capabilities set)
+    /// - Declared + not stored + non-sensitive → granted (capabilities set)
+    /// - Declared + not stored + sensitive → withheld (will prompt on CapabilityRequest)
     /// - Declared + Yellow → not pre-granted (will prompt on CapabilityRequest)
     /// - Declared + Red → blocked (blocked set)
     /// - Previously runtime-granted (Green, not in declared) → also added to capabilities
@@ -449,7 +469,16 @@ impl PermissionStore {
             match self.get(app_id, workspace_root, cap) {
                 Some(PermissionState::Yellow) => {}  // will prompt on use
                 Some(PermissionState::Red) => { blocked.insert(cap); }
-                _ => { capabilities.insert(cap); }  // Green or not stored → grant
+                Some(PermissionState::Green) => { capabilities.insert(cap); }
+                None if cap.is_sensitive() => {
+                    // Sensitive caps require explicit user consent on first launch.
+                    // The app must send CapabilityRequest to trigger the modal.
+                    log::info!(
+                        "permission_store: '{}' withheld for '{}' — first-run consent required",
+                        cap, app_id
+                    );
+                }
+                None => { capabilities.insert(cap); }
             }
         }
 
@@ -601,6 +630,87 @@ mod tests {
         // FsWrite: Yellow → not pre-granted, not blocked
         assert!(!caps.contains(&Capability::FsWrite));
         assert!(!blocked.contains(&Capability::FsWrite));
+    }
+
+    #[test]
+    fn sensitive_cap_withheld_on_first_launch() {
+        // Sensitive caps with no stored decision must NOT be pre-granted.
+        // The app must send a CapabilityRequest to trigger the consent modal.
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = std::path::Path::new("/test/project");
+        let store = PermissionStore::load_or_default(tmp.path());
+
+        let sensitive: HashSet<Capability> = [
+            Capability::PanesSpawn,
+            Capability::SpawnApp,
+            Capability::AiQuery,
+            Capability::Llm,
+            Capability::AudioRecord,
+            Capability::TerminalBindings,
+            Capability::FsWrite,
+            Capability::SecretsGet,
+            Capability::NetHttp,
+        ]
+        .into();
+
+        let (caps, blocked) = store.build_permission_sets("my-app", workspace, &sensitive);
+
+        for cap in &sensitive {
+            assert!(
+                !caps.contains(cap),
+                "sensitive cap '{}' must not be pre-granted on first launch",
+                cap
+            );
+            assert!(
+                !blocked.contains(cap),
+                "sensitive cap '{}' must not be blocked without a stored Red decision",
+                cap
+            );
+        }
+    }
+
+    #[test]
+    fn sensitive_cap_granted_when_stored_green() {
+        // A prior Green decision must still result in the cap being pre-granted.
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = std::path::Path::new("/test/project");
+        let mut store = PermissionStore::load_or_default(tmp.path());
+        store.set("my-app", workspace, Capability::PanesSpawn, PermissionState::Green);
+        store.set("my-app", workspace, Capability::AiQuery, PermissionState::Green);
+
+        let declared: HashSet<Capability> =
+            [Capability::PanesSpawn, Capability::AiQuery].into();
+        let (caps, _blocked) = store.build_permission_sets("my-app", workspace, &declared);
+
+        assert!(caps.contains(&Capability::PanesSpawn));
+        assert!(caps.contains(&Capability::AiQuery));
+    }
+
+    #[test]
+    fn non_sensitive_caps_still_auto_granted() {
+        // Non-sensitive caps with no stored decision must continue to be auto-granted
+        // (no regression for caps like fs.read, timer, pipe.open, etc.).
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = std::path::Path::new("/test/project");
+        let store = PermissionStore::load_or_default(tmp.path());
+
+        let non_sensitive: HashSet<Capability> = [
+            Capability::FsRead,
+            Capability::Timer,
+            Capability::PipeOpen,
+            Capability::AudioPlayback,
+        ]
+        .into();
+
+        let (caps, _blocked) = store.build_permission_sets("my-app", workspace, &non_sensitive);
+
+        for cap in &non_sensitive {
+            assert!(
+                caps.contains(cap),
+                "non-sensitive cap '{}' must be auto-granted when no stored decision",
+                cap
+            );
+        }
     }
 
     #[test]
