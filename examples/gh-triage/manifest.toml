@@ -1,0 +1,17 @@
+schema_version = 1
+
+[app]
+id = "gh-triage"
+type = "app"
+name = "GitHub Triage"
+entry = "main.py"
+version = "0.1.0"
+description = "Keyboard-driven one-at-a-time issue triage: add/remove labels rapidly with configurable criteria."
+watch = true
+mouse_tracking = true
+
+[app.capabilities]
+capabilities = ["fs.read"]
+
+[launch]
+layout_hint = { side = "right", split = 0.55 }
