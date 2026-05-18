@@ -2750,6 +2750,7 @@ impl PlexiApp {
                                     {
                                         self.pending_notifications
                                             .retain(|x| x.notify_id != current_id);
+                                        self.save_notifications();
                                         self.current_notify_id = None;
                                         if !n.notify_id.is_empty()
                                             && !n.notify_id.starts_with("__host__:")
@@ -3173,6 +3174,7 @@ impl PlexiApp {
             if !is_snooze {
                 // Real answer: remove from queue and deliver NotifyAction to app.
                 self.pending_notifications.retain(|n| n.notify_id != current_id);
+                self.save_notifications();
                 cmds.push(cmd);
             }
 

@@ -804,3 +804,68 @@ fn create_child_context_auto_zooms() {
     // Depth stack must have one entry (parent pushed).
     assert_eq!(app.router.current_depth(), 1);
 }
+
+#[test]
+fn persist_roundtrip() {
+    let dir = std::env::temp_dir().join(format!("plexi_test_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("notifications.json");
+
+    let n = PendingNotification {
+        notify_id: "test-id".into(),
+        sender_pane_id: 0,
+        source_context_id: 1,
+        level: "info".into(),
+        title: "Test".into(),
+        body: "body".into(),
+        kind: crate::app_protocol::NotifyKind::Message,
+        options: vec![],
+        input_prompt: None,
+        required: false,
+        priority: 50,
+        scope: crate::app_protocol::NotifyScope::Global,
+        image_inline: None,
+        image_pipe_id: None,
+        response_file: Some("/tmp/resp".into()),
+        timeout_secs: None,
+        on_dismiss: None,
+        enqueued_at: std::time::Instant::now(),
+        tombstoned: false,
+        deliver_after: None,
+    };
+
+    save_pending_notifications_to(&[n], &path);
+    let restored = load_pending_notifications_from(&path);
+
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].notify_id, "test-id");
+    assert_eq!(restored[0].title, "Test");
+    assert!(restored[0].tombstoned, "restored notification must be tombstoned");
+    assert!(restored[0].response_file.is_none(), "response_file must be cleared on restore");
+    assert!(restored[0].image_pipe_id.is_none(), "image_pipe_id must be cleared on restore");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn persist_ttl_drops_old_notifications() {
+    let dir = std::env::temp_dir().join(format!("plexi_test_ttl_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("notifications.json");
+
+    let now_sys = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let eight_days_ago = now_sys.saturating_sub(8 * 24 * 3600);
+    let json = format!(
+        r#"[{{"notify_id":"old","sender_pane_id":0,"source_context_id":1,"level":"info","title":"Old","body":"","kind":"message","options":[],"required":false,"priority":0,"scope":"global","enqueued_at_secs":{},"tombstoned":false}}]"#,
+        eight_days_ago
+    );
+    std::fs::write(&path, json).unwrap();
+
+    let restored = load_pending_notifications_from(&path);
+    assert!(restored.is_empty(), "notification older than 7 days must be dropped");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

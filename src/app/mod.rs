@@ -148,6 +148,38 @@ pub(crate) struct PendingNotification {
     pub deliver_after: Option<std::time::Instant>,
 }
 
+/// Serializable snapshot of a `PendingNotification`. Session-only handles
+/// (`image_pipe_id`, `response_file`, `deliver_after`) are dropped on save and
+/// restored as `None`; `tombstoned` is forced to `true` on load because the
+/// source pane is gone after a restart.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedNotification {
+    notify_id: String,
+    sender_pane_id: u64,
+    source_context_id: u64,
+    level: String,
+    title: String,
+    body: String,
+    kind: crate::app_protocol::NotifyKind,
+    options: Vec<crate::app_protocol::NotifyOption>,
+    #[serde(default)]
+    input_prompt: Option<String>,
+    required: bool,
+    priority: u32,
+    scope: crate::app_protocol::NotifyScope,
+    #[serde(default)]
+    image_inline: Option<crate::app_protocol::NotificationImage>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+    #[serde(default)]
+    on_dismiss: Option<String>,
+    /// Unix timestamp (seconds since UNIX_EPOCH) when the notification was enqueued.
+    enqueued_at_secs: u64,
+    tombstoned: bool,
+    // deliver_after (snooze) is session-only — not persisted.
+    // image_pipe_id and response_file are session handles — not persisted.
+}
+
 /// Render state for a notification's image attachment. Computed once and
 /// cached on `PlexiApp::notification_images` keyed by `notify_id`.
 #[derive(Clone)]
@@ -423,7 +455,130 @@ fn spawn_socket_listener(
     });
 }
 
+// ---------------------------------------------------------------------------
+// Notification persistence helpers
+// ---------------------------------------------------------------------------
+
+/// Write `notifications` to `path` atomically (write temp, then rename).
+/// Called at every mutation site so unread notifications survive restarts.
+pub(crate) fn save_pending_notifications_to(
+    notifications: &[PendingNotification],
+    path: &std::path::Path,
+) {
+    let now_sys = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let persisted: Vec<PersistedNotification> = notifications
+        .iter()
+        .map(|n| {
+            let age_secs = std::time::Instant::now()
+                .duration_since(n.enqueued_at)
+                .as_secs();
+            let enqueued_at_secs = now_sys.saturating_sub(age_secs);
+            PersistedNotification {
+                notify_id: n.notify_id.clone(),
+                sender_pane_id: n.sender_pane_id,
+                source_context_id: n.source_context_id,
+                level: n.level.clone(),
+                title: n.title.clone(),
+                body: n.body.clone(),
+                kind: n.kind.clone(),
+                options: n.options.clone(),
+                input_prompt: n.input_prompt.clone(),
+                required: n.required,
+                priority: n.priority,
+                scope: n.scope,
+                image_inline: n.image_inline.clone(),
+                timeout_secs: n.timeout_secs,
+                on_dismiss: n.on_dismiss.clone(),
+                enqueued_at_secs,
+                tombstoned: n.tombstoned,
+            }
+        })
+        .collect();
+    match serde_json::to_string(&persisted) {
+        Ok(json) => {
+            let tmp = path.with_extension("json.tmp");
+            match std::fs::write(&tmp, &json).and_then(|_| std::fs::rename(&tmp, path)) {
+                Ok(_) => log::info!(
+                    "notify:persist: saved {} notification(s)",
+                    notifications.len()
+                ),
+                Err(e) => log::warn!("notify:persist: failed to write {:?}: {e}", path),
+            }
+        }
+        Err(e) => log::warn!("notify:persist: failed to serialize: {e}"),
+    }
+}
+
+/// Load persisted notifications from `path`. Drops entries older than 7 days.
+/// All restored notifications are tombstoned — their source pane is gone.
+pub(crate) fn load_pending_notifications_from(
+    path: &std::path::Path,
+) -> Vec<PendingNotification> {
+    let Ok(json) = std::fs::read_to_string(path) else {
+        return vec![];
+    };
+    let Ok(persisted) = serde_json::from_str::<Vec<PersistedNotification>>(&json) else {
+        log::warn!("notify:persist: failed to deserialize {:?}", path);
+        return vec![];
+    };
+    let now_sys = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    const TTL_SECS: u64 = 7 * 24 * 3600;
+    let restored: Vec<PendingNotification> = persisted
+        .into_iter()
+        .filter_map(|p| {
+            let age_secs = now_sys.saturating_sub(p.enqueued_at_secs);
+            if age_secs > TTL_SECS {
+                return None;
+            }
+            let enqueued_at = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(age_secs))
+                .unwrap_or_else(std::time::Instant::now);
+            Some(PendingNotification {
+                notify_id: p.notify_id,
+                sender_pane_id: p.sender_pane_id,
+                source_context_id: p.source_context_id,
+                level: p.level,
+                title: p.title,
+                body: p.body,
+                kind: p.kind,
+                options: p.options,
+                input_prompt: p.input_prompt,
+                required: p.required,
+                priority: p.priority,
+                scope: p.scope,
+                image_inline: p.image_inline,
+                image_pipe_id: None,   // pipe handle gone after restart
+                response_file: None,   // file handle gone after restart
+                timeout_secs: p.timeout_secs,
+                on_dismiss: p.on_dismiss,
+                enqueued_at,
+                tombstoned: true,      // source pane is gone
+                deliver_after: None,   // snooze is session-only
+            })
+        })
+        .collect();
+    log::info!(
+        "notify:persist: restored {} notification(s) from disk",
+        restored.len()
+    );
+    restored
+}
+
 impl PlexiApp {
+    /// Persist current pending notifications to `config_dir()/notifications.json`.
+    pub(crate) fn save_notifications(&self) {
+        save_pending_notifications_to(
+            &self.pending_notifications,
+            &crate::config::config_dir().join("notifications.json"),
+        );
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>, frame_tick: crate::logging::FrameTick) -> Self {
         #[cfg(target_os = "macos")]
         crate::macos_menu::customize_app_menu();
@@ -715,7 +870,7 @@ impl PlexiApp {
                     text_overlay_browse_rx: None,
                     registry,
                     features: features.clone(),
-                    pending_notifications: Vec::new(),
+                    pending_notifications: load_pending_notifications_from(&crate::config::config_dir().join("notifications.json")),
                     show_notification_modal: false,
                     current_notify_id: None,
                     modal_focused_option: 0,
@@ -834,7 +989,7 @@ impl PlexiApp {
             text_overlay_browse_rx: None,
             registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
             features,
-            pending_notifications: Vec::new(),
+            pending_notifications: load_pending_notifications_from(&crate::config::config_dir().join("notifications.json")),
             show_notification_modal: false,
             current_notify_id: None,
             modal_focused_option: 0,
@@ -1455,6 +1610,7 @@ impl PlexiApp {
                         tombstoned: false,
                         deliver_after: None,
                     });
+                    self.save_notifications();
                     let should_auto_open = !self.notifications_focus_mode
                         && *priority >= self.notifications_interrupt_threshold;
                     if should_auto_open {
@@ -1858,8 +2014,8 @@ impl PlexiApp {
                 self.current_notify_id = self.select_highest_priority();
             }
         }
-        for id in expired_ids {
-            let Some(pos) = self.pending_notifications.iter().position(|n| n.notify_id == id) else {
+        for id in &expired_ids {
+            let Some(pos) = self.pending_notifications.iter().position(|n| &n.notify_id == id) else {
                 continue;
             };
             let n = self.pending_notifications.remove(pos);
@@ -1887,6 +2043,9 @@ impl PlexiApp {
                 self.current_notify_id = None;
             }
         }
+        if !expired_ids.is_empty() {
+            self.save_notifications();
+        }
     }
 
     /// Mark all pending notifications from `pane_id` as tombstoned. Called
@@ -1899,6 +2058,7 @@ impl PlexiApp {
                 log::info!("notification '{}' tombstoned (pane {pane_id} closed)", n.title);
             }
         }
+        self.save_notifications();
     }
 
     /// Count of window- or context-scoped notifications whose source_context_id == the id of ctx_idx.
@@ -2322,6 +2482,7 @@ impl eframe::App for PlexiApp {
                         tombstoned: false,
                         deliver_after: None,
                     });
+                    self.save_notifications();
                     // Auto-open rules:
                     //   1. Visibility — Global always; Window/Context only when
                     //      source_context_id == active context id.
@@ -4065,6 +4226,7 @@ impl PlexiApp {
                 tombstoned: false,
                 deliver_after: None,
             });
+            self.save_notifications();
             if !self.notifications_focus_mode {
                 self.show_notification_modal = true;
                 if self.current_notify_id.is_none() {
