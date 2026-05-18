@@ -225,3 +225,7 @@ low    = "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'
 medium = "claude --model claude-sonnet-4-6 --dangerously-skip-permissions '{cmd}'"
 high   = "claude --dangerously-skip-permissions '{cmd}'"
 
+# ── CLI Behavior ───────────────────────────────────────────────
+[cli]
+tips = true   # Set to false to suppress contextual tips after CLI commands.
+
