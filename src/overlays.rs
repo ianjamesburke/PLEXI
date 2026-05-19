@@ -314,8 +314,7 @@ fn render_inspector_hints(
     num_contexts: usize,
     colors: &Colors,
     renaming: bool,
-) -> bool {
-    let mut delete_context = false;
+) {
     ui.horizontal(|ui| {
         if renaming {
             crate::widgets::key_combo_list(ui, &[&["Enter"]], Some("save"), colors);
@@ -323,22 +322,7 @@ fn render_inspector_hints(
             crate::widgets::key_combo_list(ui, &[&["Esc"]], Some("cancel"), colors);
         } else {
             if num_contexts > 1 {
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("Delete context")
-                                .size(style::TEXT_CAPTION)
-                                .color(colors.text_primary),
-                        )
-                        .fill(colors.bg_active),
-                    )
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .clicked()
-                {
-                    delete_context = true;
-                }
-                ui.add_space(style::SPACE_XL);
-                crate::widgets::key_combo_list(ui, &[&["⌫"]], Some("delete (3×)"), colors);
+                crate::widgets::key_combo_list(ui, &[&["⌫"]], Some("delete"), colors);
                 ui.add_space(style::SPACE_XL);
             }
             crate::widgets::key_combo_list(ui, &[&["R"]], Some("rename"), colors);
@@ -354,7 +338,6 @@ fn render_inspector_hints(
             }
         }
     });
-    delete_context
 }
 
 impl PlexiApp {
@@ -2054,7 +2037,7 @@ impl PlexiApp {
                                     crate::process_app::LifecycleState::ProtocolError => "error",
                                 }
                             } else {
-                                "running"
+                                "active"
                             };
                             rows.push(PaneRow {
                                 id: a.id,
@@ -2250,9 +2233,7 @@ impl PlexiApp {
                             ui.separator();
                             ui.add_space(style::SPACE_MD);
                         }
-                        if render_inspector_hints(ui, pane_count, num_contexts, &colors, renaming) {
-                            delete_context = true;
-                        }
+                        render_inspector_hints(ui, pane_count, num_contexts, &colors, renaming);
                     });
             });
 
