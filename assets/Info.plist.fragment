@@ -1,5 +1,7 @@
 <key>NSMicrophoneUsageDescription</key>
 <string>Plexi needs access to the microphone for audio-capture apps you choose to run.</string>
+<key>NSCameraUsageDescription</key>
+<string>Plexi needs access to the camera for webcam and video-capture apps you choose to run.</string>
 <key>NSServices</key>
 <array>
   <dict>
