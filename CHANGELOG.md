@@ -1,6 +1,26 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.463] — 2026-05-19
+
+### Changes
+- feat(cli): simplify uninstall to single confirmation prompt (#1574) (#1578)
+- fix(cli): show help inside pane, hint on missing script (#1570, #1571) (#1580)
+- chore(skills): bump create-plexi-app skill_version to 0.0.461
+- fix(apps): replace misleading empty-state message in Backlog app (#1572) (#1579)
+- fix(inspector): fix non-Process app status, drop raw delete Button from footer (#1565)
+- fix(file-browser): open at ~ instead of / when launched as GUI app (#1561) (#1562)
+- chore(skills): add create-plexi-app gate to ship-issue Phase 3 (#1509) (#1564)
+- chore: throttle cargo build jobs to 3/10 cores for CPU headroom
+- feat(widgets): overlay layout primitives — section_header, pane_type_badge, status_chip, description_label (#1540) (#1541)
+- fix(ship-skill): block Phase 1 rebase if alpha has unpushed commits
+- chore(skills): rename dispatch-next → dispatch, add scripts, fix layout + channel handling
+- fix(pane-ops): Cmd+N from welcome screen now opens at context root (#1534) (#1536)
+- chore: restore dispatch pattern in CLAUDE.md (reverted by external edit)
+- docs: write CLI descriptor authoring guide (--plexi flag) (#1528) (#1535)
+- fix(terminal): always use TERM=xterm-256color, drop xterm-ghostty (#1533)
+- feat(context): context tree rework — unified types, portals, agent spawning, anchors (#1516, #1517, #1518, #1520) (#1525)
+- fix(cli): app init walks up to nearest channel-aware workspace dir (#1526)
 ## [0.0.462] — 2026-05-19
 
 ### Changes
