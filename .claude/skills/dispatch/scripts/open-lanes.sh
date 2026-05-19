@@ -21,7 +21,7 @@ for ISSUE in "$@"; do
   PANE_ID=$($PLEXI terminal --layout $LAYOUT --from-pane-id $PREV_ID --no-focus)
   $PLEXI pane name $PANE_ID "#${ISSUE}"
   $PLEXI pane send $PANE_ID "cd $REPO_DIR"$'\n'
-  $PLEXI pane send $PANE_ID 'c "/ship-issue '"$ISSUE"'"'$'\n'
+  $PLEXI pane send $PANE_ID 'c "/ship-issue '"$ISSUE"' --skip-review"'$'\n'
   echo "Lane opened: pane $PANE_ID → #$ISSUE"
   PREV_ID=$PANE_ID
   LAYOUT=split_v
