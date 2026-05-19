@@ -38,6 +38,13 @@ class AudioRecorderApp(App):
         self._status: str = "Loading devices..."
         self.emit.info("audio-recorder: starting")
 
+        granted = await self.emit.capability_request("audio.record")
+        if not granted:
+            self._status = "Microphone access denied. Grant audio.record to use this app."
+            self.emit.warn("audio-recorder: audio.record capability denied")
+            ctx.status_summary("Audio Recorder")
+            return
+
         try:
             device_list = await self.emit.list_audio_devices()
             self._devices = device_list.inputs
