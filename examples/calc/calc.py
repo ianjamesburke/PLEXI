@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Calculator — reference implementation for ctx.button() (#255).
 
-Demonstrates: ctx.button() hover + click detection, KeyMap shortcuts.
+Demonstrates: ctx.button() hover + click detection, keyboard input handling.
 """
 import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
 
 from plexi_sdk import App, RenderContext
-from plexi_sdk.widgets.keymap import KeyMap
 
 BG = "#1e1e2e"
 SURFACE = "#313244"
@@ -44,13 +43,6 @@ class CalcApp(App):
         self.pending_op: str | None = None
         self.pending_val: float | None = None
         self.fresh = True  # next digit starts a new number
-        self._km = KeyMap()
-        self._km.bind("return", "equals")
-        self._km.bind("enter", "equals")
-        self._km.bind("escape", "clear")
-        self._km.bind("*", "multiply")
-        self._km.bind("/", "divide")
-        self._km.bind("-", "minus")
         ctx.emit.set_mouse_tracking(True)
         ctx.info("CalcApp ready")
 
@@ -126,19 +118,33 @@ class CalcApp(App):
                 self._press(label)
 
         # Keyboard hint
-        ctx.text(PAD, ctx.h - 24, "keyboard: 0-9  + - * /  Enter=  Escape=C",
+        ctx.text(PAD, ctx.h - 24, "0-9  + - * /  Enter: equals  Backspace: delete  Esc: clear",
                  size=10.0, color=MUTED)
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
-        _ACTION_TO_LABEL = {
-            "equals": "=", "clear": "C",
-            "multiply": "×", "divide": "÷", "minus": "−",
-        }
-        action = self._km.handle(key, mods)
-        label = _ACTION_TO_LABEL.get(action, key) if action else key
-        valid = set("0123456789.±%÷×+−=C")
-        if label in valid:
-            self._press(label)
+    def _backspace(self) -> None:
+        if self.fresh or self.display == "0":
+            return
+        self.display = self.display[:-1] or "0"
+
+    def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
+        if key in "0123456789":
+            self._press(key)
+        elif key == ".":
+            self._press(".")
+        elif key == "+":
+            self._press("+")
+        elif key == "-":
+            self._press("−")
+        elif key == "*":
+            self._press("×")
+        elif key == "/":
+            self._press("÷")
+        elif key in ("=", "return", "enter"):
+            self._press("=")
+        elif key == "escape":
+            self._press("C")
+        elif key == "backspace":
+            self._backspace()
         else:
             ctx.debug(f"calc: unhandled key {key!r}")
 
