@@ -155,10 +155,11 @@ fn render_inspector_pane_row(
     let (row_resp, _) = crate::widgets::selectable_row(ui, is_selected, colors, |ui| {
         ui.horizontal_centered(|ui| {
             ui.label(
-                RichText::new(format!("#{} {}", row_id, row.kind))
+                RichText::new(format!("#{}", row_id))
                     .size(style::TEXT_CAPTION)
                     .color(colors.text_dim),
             );
+            crate::widgets::pane_type_badge(ui, row.kind, colors);
             let display_name: &str = if row.name.is_empty() { row.kind } else { &row.name };
             ui.label(
                 RichText::new(display_name)
@@ -166,16 +167,7 @@ fn render_inspector_pane_row(
                     .color(colors.text_primary),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let status_color = if matches!(row.status, "busy" | "running") {
-                    colors.accent
-                } else {
-                    colors.text_dim
-                };
-                ui.label(
-                    RichText::new(row.status)
-                        .size(style::TEXT_HINT)
-                        .color(status_color),
-                );
+                crate::widgets::status_chip(ui, row.status, colors);
                 if let Some(badge) = &row.osc_badge {
                     ui.label(
                         RichText::new(format!("· {badge}"))
@@ -184,11 +176,10 @@ fn render_inspector_pane_row(
                     );
                 }
                 if !row.detail.is_empty() {
-                    ui.label(
-                        RichText::new(row.detail.as_str())
-                            .size(style::TEXT_HINT)
-                            .color(colors.text_dim),
-                    );
+                    ui.scope(|ui| {
+                        ui.set_max_width(120.0);
+                        crate::widgets::description_label(ui, row.detail.as_str(), colors);
+                    });
                 }
             });
         });
@@ -312,7 +303,7 @@ fn render_inspector_header(
         }
     }
     ui.add_space(style::SPACE_XL);
-    ui.label(RichText::new("Panes").size(style::TEXT_CAPTION).color(colors.text_dim).strong());
+    crate::widgets::section_header(ui, "Panes", false, colors);
     ui.add_space(style::SPACE_SM);
     (open_root_overlay, open_description_overlay, start_rename)
 }

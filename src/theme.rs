@@ -31,6 +31,8 @@ pub struct Colors {
     // Accent / borders
     pub accent: Color32,
     pub border: Color32,
+    // Semantic state colors
+    pub danger: Color32,
     // Terminal fg/bg as bytes for dynamic colors
     pub terminal_fg_bytes: [u8; 3],
     pub terminal_bg_bytes: [u8; 3],
@@ -51,6 +53,8 @@ impl Colors {
             text_section: parse_hex_or(&cfg.text_section, Color32::from_rgb(0x58, 0x5b, 0x70)),
             accent: parse_hex_or(&cfg.accent, Color32::from_rgb(0x89, 0xb4, 0xfa)),
             border: parse_hex_or(&cfg.border, Color32::from_rgb(0x2a, 0x2a, 0x3c)),
+            // Derive from the theme's ANSI red; fallback matches the Dracula red used in event_log.rs.
+            danger: parse_hex_or(&cfg.red, Color32::from_rgb(0xff, 0x55, 0x55)),
             terminal_fg_bytes: hex_to_bytes(cfg.foreground.as_deref(), [0xe8, 0xe6, 0xed]),
             terminal_bg_bytes: hex_to_bytes(cfg.background.as_deref(), [0x29, 0x2a, 0x44]),
         }

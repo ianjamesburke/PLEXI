@@ -197,6 +197,12 @@ Before writing any keyboard shortcut display, badge, chip, or inline label widge
 
 **Use `key_combo_list` for any shortcut hint row.** Do not render key shortcuts as plain `Label` text — it produces a visually inconsistent result that requires a separate pass to fix.
 
+**Overlay layout primitives** — four shared widgets every overlay should use instead of inlining:
+- `section_header(ui, label, is_active, colors)` — group/context label at `TEXT_CAPTION` weight; `is_active` switches color from `text_dim` to `accent`.
+- `pane_type_badge(ui, kind, colors)` — renders `"term"` for Terminal, `"app"` for App as a `key_chip`. Compact vs. full word.
+- `status_chip(ui, status, colors)` — centralized status color mapping: `"busy"`/`"running"` → `accent`; `"crashed"`/`"hung"`/`"error"`/`"exited"` → `danger`; everything else → `text_dim`.
+- `description_label(ui, text, colors)` — single-line `TEXT_HINT` label with `truncate()`. **Always wrap in `ui.scope()` and set `ui.set_max_width(n)` inside the scope** — setting it on a shared `Ui` corrupts layout of other widgets in the same row.
+
 ## Channel-Agnostic CLI Rule
 
 Every CLI command and feature must work identically on alpha, beta, stable, and PR builds. This is non-negotiable — the release channel is an implementation detail, not something callers should need to know.
