@@ -165,6 +165,8 @@ Apps are Python processes that render native UI and communicate with the host ov
 
 A fresh install seeds a core set of apps automatically. Browse them with `Cmd+P` or manage them from the terminal.
 
+Any CLI can also get a rendered Plexi UI without writing an app — see the [CLI Descriptor Authoring Guide](docs/cli-descriptor-guide.md).
+
 ### Install an app
 
 ```bash
