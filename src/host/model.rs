@@ -204,12 +204,8 @@ impl HostModel {
         self.next_pane_id = id;
     }
 
-    /// Add a new context with the given ID and optional parent.
-    /// Used by the test harness to set up sub-context hierarchies.
+    #[cfg(test)]
     pub fn add_context(&mut self, context_id: u64, parent_id: Option<u64>) {
-        log::info!(
-            "HostModel::add_context(context_id={context_id}, parent_id={parent_id:?})"
-        );
         self.contexts.push(HostContext {
             context_id,
             parent_id,
@@ -225,9 +221,8 @@ impl HostModel {
         &mut self.contexts[self.active_context]
     }
 
-    /// Return context IDs whose `parent_id` matches the given `context_id`.
+    #[cfg(test)]
     pub fn children_of(&self, context_id: u64) -> Vec<u64> {
-        log::info!("HostModel::children_of(context_id={context_id})");
         self.contexts
             .iter()
             .filter(|c| c.parent_id == Some(context_id))
@@ -238,7 +233,6 @@ impl HostModel {
     /// Return the ancestor chain for `context_id`, from immediate parent to root.
     /// Returns an empty vec if `context_id` is top-level or not found.
     pub fn ancestors_of(&self, context_id: u64) -> Vec<u64> {
-        log::info!("HostModel::ancestors_of(context_id={context_id})");
         let mut result = Vec::new();
         let mut current = context_id;
         // Guard against cycles with a max depth.

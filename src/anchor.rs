@@ -27,8 +27,6 @@ pub struct ContextDefaults {
 pub struct Anchor {
     /// The project root directory (parent of `.plexi/`).
     pub root: PathBuf,
-    /// Workspace UUID from `workspace.toml`, if present.
-    pub workspace_id: Option<String>,
     /// Context defaults from `[context]` in `workspace.toml`.
     pub context_defaults: Option<ContextDefaults>,
 }
@@ -60,19 +58,18 @@ impl Anchor {
         // Try to read workspace.toml for ID and context defaults.
         // Reuse WorkspaceConfig from workspace_secrets to avoid duplicate
         // parsing structs and dead-code warnings.
-        let (workspace_id, context_defaults) =
+        let context_defaults =
             match crate::workspace_secrets::WorkspaceConfig::load(path) {
                 Ok(Some(cfg)) => {
-                    let defaults = cfg.context.map(|c| ContextDefaults {
+                    cfg.context.map(|c| ContextDefaults {
                         name: c.name,
                         description: c.description,
-                    });
-                    (Some(cfg.id), defaults)
+                    })
                 }
-                Ok(None) => (None, None),
+                Ok(None) => None,
                 Err(e) => {
                     log::warn!("anchor: workspace.toml parse error: {e}");
-                    (None, None)
+                    None
                 }
             };
 
@@ -86,7 +83,6 @@ impl Anchor {
 
         Some(Anchor {
             root: path.to_path_buf(),
-            workspace_id,
             context_defaults,
         })
     }
@@ -129,21 +125,7 @@ mod tests {
         std::fs::create_dir(dir.path().join(".plexi")).unwrap();
         let anchor = Anchor::detect(dir.path()).unwrap();
         assert_eq!(anchor.root, dir.path());
-        assert!(anchor.workspace_id.is_none());
         assert!(anchor.context_defaults.is_none());
-    }
-
-    #[test]
-    fn detect_reads_workspace_id() {
-        let dir = tempfile::tempdir().unwrap();
-        let dot_plexi = dir.path().join(".plexi");
-        std::fs::create_dir(&dot_plexi).unwrap();
-        std::fs::write(
-            dot_plexi.join("workspace.toml"),
-            "id = \"test-uuid-123\"\n",
-        ).unwrap();
-        let anchor = Anchor::detect(dir.path()).unwrap();
-        assert_eq!(anchor.workspace_id.as_deref(), Some("test-uuid-123"));
     }
 
     #[test]
