@@ -540,6 +540,14 @@ impl PlexiApp {
             let ctx = &self.windows[self.active_window];
             ctx.focused_pane
                 .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
+                .filter(|p| {
+                    if p == &PathBuf::from("/") {
+                        log::debug!("open_file_browser: CWD is /, falling back to home_dir (GUI launch)");
+                        false
+                    } else {
+                        true
+                    }
+                })
                 .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
         };
 
