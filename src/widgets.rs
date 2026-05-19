@@ -248,12 +248,16 @@ pub(crate) fn section_header(ui: &mut egui::Ui, label: &str, is_active: bool, co
     );
 }
 
-/// Renders the pane type as a single-letter monospace chip: `"T"` for Terminal,
-/// `"A"` for App, or the first uppercase character of any other kind string.
+/// Renders the pane type as a short lowercase chip: `"term"` for Terminal,
+/// `"app"` for App, or the lowercased kind string for anything else.
 /// Uses `key_chip` so the visual weight matches keyboard shortcut chips.
 pub(crate) fn pane_type_badge(ui: &mut egui::Ui, kind: &str, colors: &Colors) {
-    let letter = kind.chars().next().unwrap_or('?').to_uppercase().next().unwrap_or('?');
-    key_chip(ui, &letter.to_string(), colors);
+    let label = match kind {
+        "Terminal" => "term",
+        "App" => "app",
+        other => other,
+    };
+    key_chip(ui, label, colors);
 }
 
 /// Renders a status string with centralized color mapping:
