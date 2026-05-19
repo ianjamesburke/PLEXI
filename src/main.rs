@@ -527,7 +527,9 @@ fn main() -> eframe::Result {
             }
             dir = dir.parent().unwrap();
         }
-        eprintln!("plexi: already running inside Plexi. Use Cmd+T to open a new pane.");
+        use clap::CommandFactory;
+        let _ = Cli::command().print_help();
+        println!();
         std::process::exit(0);
     }
 

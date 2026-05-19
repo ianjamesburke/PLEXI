@@ -195,6 +195,12 @@ pub fn run_command(command_name: &str) -> i32 {
             let code = status.code().unwrap_or(1);
             if code == 0 {
                 print_tip("run `plexi run` to see all available commands.");
+            } else if code == 127 {
+                eprintln!(
+                    "hint: command exited with 'not found' (127). If your command references \
+                     $PLEXI_CONFIG_DIR, check that the script exists in {}scripts/",
+                    crate::config::config_dir().display()
+                );
             }
             code
         }

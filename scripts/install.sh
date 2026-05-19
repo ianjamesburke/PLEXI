@@ -123,7 +123,7 @@ if [[ ! "$channel" =~ ^pr- ]]; then
   fi
 fi
 
-mkdir -p "$profile_dir/sdk" "$profile_dir/apps"
+mkdir -p "$profile_dir/sdk" "$profile_dir/apps" "$profile_dir/scripts"
 rm -rf "$profile_dir/sdk/plexi_sdk.tmp" "$profile_dir/sdk/plexi_sdk.old"
 cp -R sdk/python/plexi_sdk "$profile_dir/sdk/plexi_sdk.tmp"
 mv "$profile_dir/sdk/plexi_sdk" "$profile_dir/sdk/plexi_sdk.old" 2>/dev/null || true
