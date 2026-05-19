@@ -341,6 +341,7 @@ fn default_colors() -> Colors {
         text_section: Color32::from_rgb(0x58, 0x5b, 0x70),
         accent: Color32::from_rgb(0x89, 0xb4, 0xfa),
         border: Color32::from_rgb(0x2a, 0x2a, 0x3c),
+        danger: Color32::from_rgb(0xff, 0x55, 0x55),
         terminal_fg_bytes: [0xe8, 0xe6, 0xed],
         terminal_bg_bytes: [0x29, 0x2a, 0x44],
     }

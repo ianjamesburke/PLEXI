@@ -225,6 +225,69 @@ pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::
     resp
 }
 
+// ── Overlay layout primitives ────────────────────────────────────────────
+//
+// Every overlay (inspector, sub-context UX, unified overlays) was hand-rolling
+// the same section label, pane-type badge, status chip, and truncating text
+// label. Each diverged in color logic and spacing. These four primitives
+// centralize that rendering so future overlays look identical with zero extra
+// work.
+//
+// Status color mapping lives here — not in individual overlays — so adding a
+// new status value is a one-line change that applies everywhere.
+
+/// Renders a section / group header label (context name, group title, etc.).
+/// `is_active` tints the label with `colors.accent` instead of `colors.text_dim`.
+pub(crate) fn section_header(ui: &mut egui::Ui, label: &str, is_active: bool, colors: &Colors) {
+    let color = if is_active { colors.accent } else { colors.text_dim };
+    ui.label(
+        egui::RichText::new(label)
+            .size(style::TEXT_CAPTION)
+            .color(color),
+    );
+}
+
+/// Renders the pane type as a single-letter monospace chip: `"T"` for Terminal,
+/// `"A"` for App, or the first uppercase character of any other kind string.
+/// Uses `key_chip` so the visual weight matches keyboard shortcut chips.
+pub(crate) fn pane_type_badge(ui: &mut egui::Ui, kind: &str, colors: &Colors) {
+    let letter = kind.chars().next().unwrap_or('?').to_uppercase().next().unwrap_or('?');
+    key_chip(ui, &letter.to_string(), colors);
+}
+
+/// Renders a status string with centralized color mapping:
+/// - `"busy"` / `"running"` → `colors.accent`
+/// - `"crashed"` / `"hung"` / `"error"` / `"exited"` → `colors.danger`
+/// - everything else (`"idle"`, `"booting"`, ...) → `colors.text_dim`
+pub(crate) fn status_chip(ui: &mut egui::Ui, status: &str, colors: &Colors) {
+    let color = match status {
+        "busy" | "running" => colors.accent,
+        "crashed" | "hung" | "error" | "exited" => colors.danger,
+        _ => colors.text_dim,
+    };
+    ui.label(
+        egui::RichText::new(status)
+            .size(style::TEXT_HINT)
+            .color(color),
+    );
+}
+
+/// Renders a single-line label that truncates with an ellipsis at the available
+/// width. **Callers must call `ui.set_max_width(n)` before calling this** (or
+/// use `ui.scope()` with a constrained width) — `egui::Label::truncate` clips
+/// at `available_width()`, so without a bound the label expands naturally and
+/// truncation never fires.
+pub(crate) fn description_label(ui: &mut egui::Ui, text: &str, colors: &Colors) {
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .size(style::TEXT_HINT)
+                .color(colors.text_dim),
+        )
+        .truncate(),
+    );
+}
+
 /// Renders a dismissable centered modal overlay. Handles Escape and click-outside.
 /// Returns `true` if the user dismissed it this frame. Callers guard with
 /// `if !open { return; }` and apply `if dismissed { open = false; }` after.
