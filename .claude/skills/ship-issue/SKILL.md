@@ -133,6 +133,20 @@ git fetch origin && git status --porcelain
   ```
 - **Clean:** `SHIP_STASHED=false`
 
+**Check for unpushed commits before rebasing:**
+```bash
+git log origin/alpha..HEAD --oneline
+```
+If any commits are listed: **STOP.** Do not proceed. Tell the user:
+```
+BLOCKED: alpha has N commit(s) not pushed to origin:
+  <hash> <message>
+  ...
+Push them first: git push origin alpha
+Rebase would silently lose them.
+```
+Remove the `in progress` label and pop the stash if set, then exit. Never proceed past this check with unpushed commits on alpha — the rebase will clobber them.
+
 Then: `git pull --rebase origin alpha` to confirm up-to-date, then proceed.
 
 Mark the issue in progress, capture the origin pane ID, and update the pane title:

@@ -4,6 +4,18 @@
 
 ---
 
+## [git · ship] Unpushed alpha commits are silently lost when ship-issue agents rebase
+
+`ship-issue` runs `git pull --rebase origin alpha` at Phase 1. If there are commits on the local alpha branch that haven't been pushed to origin, the rebase replays them on top of origin's HEAD — but if those commits touch files that were also changed by merged PRs (e.g. skill files, CLAUDE.md), they will conflict and be silently dropped or overwritten.
+
+**What NOT to do:** commit directly to alpha and leave without pushing. Any agent that starts a ship cycle will nuke those commits.
+
+**Fix in ship-issue skill:** Phase 1 now checks `git log origin/alpha..HEAD --oneline` before rebasing and hard-stops if unpushed commits exist.
+
+**Rule:** every direct commit to alpha must be followed immediately by `git push origin alpha`. No exceptions.
+
+---
+
 ## [egui] TextEdit focus in complex modal frames — two-layer focus problem
 
 `ctx.memory_mut(|m| m.request_focus(id))` is **last-caller-wins within a single frame**. Modal overlays face a two-layer focus problem:
