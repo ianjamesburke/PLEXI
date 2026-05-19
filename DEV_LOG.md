@@ -2,6 +2,14 @@
 
 Development log for PLEXI. Tracks root causes, non-obvious decisions, abandoned approaches, and environment quirks that git history won't capture. Entries are newest-first — most recent at the top.
 
+## 2026-05-19 — [FIX] Wikipedia key names and Bluesky capability consent (PR #1581 → alpha)
+
+**Wikipedia (#1567):** SDK PR #677 added key normalization (`Enter`→`return`, `Escape`→`escape`, `Backspace`→`backspace`) in `_app.py` but wikipedia.py was never updated. All five key handler branches were silently dead. Fixed by renaming all three key strings to match SDK canonical names. Also added `capability_request("net.http")` in `on_init` (converted to async) — on fresh profiles the permission store withholds net.http until the user grants consent, so HTTP calls fail before ever being tried.
+
+**Bluesky (#1569):** Same capability_request gap — `_fetch_discover` fired via `asyncio.create_task` before consent was prompted. Added `capability_request("net.http")` in `on_init` before creating the task. Also added explicit `data.get("error")` check in all three fetch paths: AT Proto API returns 4xx errors as valid JSON `{"error": "..."}` which json.loads() silently accepted, resulting in empty feed instead of error state.
+
+**Breaks if:** Opening either app on a fresh profile does not show a network consent dialog; or Wikipedia Enter/Backspace/Escape keys don't respond after consent is granted.
+
 ## 2026-05-13 — [CHANGED] Self-documenting SDK — AST-based doc generator (PR #1258 → alpha)
 
 Added `website/scripts/generate-sdk-docs.py` that parses SDK Python source via `ast` module and generates 5 Astro markdown pages (overview, App, RenderContext, Emitter, Widgets). Wired into `npm run build` so docs regenerate on every deploy. Docker build context moved from `website/` to repo root so Dockerfile can access both `website/` and `sdk/`.
