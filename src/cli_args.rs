@@ -94,7 +94,7 @@ pub enum Commands {
         /// Keep your profile directory (~/.plexi/) — your settings, secrets, and app data stay on disk
         #[arg(long = "keep-data")]
         keep_data: bool,
-        /// Skip confirmation prompts and proceed immediately
+        /// Skip the confirmation prompt and proceed immediately (removes data unless --keep-data is set)
         #[arg(long = "yes", short = 'y')]
         yes: bool,
     },
