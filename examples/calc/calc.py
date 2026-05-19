@@ -7,16 +7,7 @@ import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
 
-from plexi_sdk import App, RenderContext
-
-BG = "#1e1e2e"
-SURFACE = "#313244"
-FG = "#cdd6f4"
-ACCENT = "#89b4fa"
-RED = "#f38ba8"
-MUTED = "#6c7086"
-
-PAD = 16.0
+from plexi_sdk import App, RenderContext, BG, SURFACE, FG, ACCENT, RED, MUTED, PAD
 BTN_W = 64.0
 BTN_H = 48.0
 BTN_GAP = 8.0
@@ -95,8 +86,6 @@ class CalcApp(App):
                 self.fresh = True
 
     def on_render(self, ctx: RenderContext) -> None:
-        ctx.clear(BG)
-
         # Display
         ctx.rect(PAD, PAD, ctx.w - PAD * 2, 80.0, fill=SURFACE, radius=8.0)
         ctx.text(ctx.w - PAD - 8, PAD + 16, self.display,

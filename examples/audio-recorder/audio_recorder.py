@@ -13,7 +13,7 @@ import wave
 import pathlib
 from typing import TYPE_CHECKING
 
-from plexi_sdk import App, RenderContext, CapabilityDeniedError
+from plexi_sdk import App, RenderContext, CapabilityDeniedError, BG, FG, ACCENT, GREEN, RED, YELLOW
 
 if TYPE_CHECKING:
     from plexi_sdk import AudioDeviceInfo
@@ -165,7 +165,7 @@ class AudioRecorderApp(App):
         y = PAD
 
         # Title
-        ctx.text(PAD, y, "Audio Recorder", size=18.0, color="#cdd6f4", bold=True)
+        ctx.text(PAD, y, "Audio Recorder", size=18.0, color=FG, bold=True)
         y += 30
 
         # Device selector
@@ -174,7 +174,7 @@ class AudioRecorderApp(App):
         dev_idx_label = f" ({self._device_idx + 1}/{n_dev})" if n_dev > 1 else ""
         dev_name = (dev.name if dev else "(no devices)") + dev_idx_label
         ctx.text(PAD, y, "Device:", size=13.0, color="#a6adc8")
-        ctx.text(PAD + 65, y, dev_name, size=13.0, color="#cdd6f4")
+        ctx.text(PAD + 65, y, dev_name, size=13.0, color=FG)
         if not self._capturing:
             ctx.text(PAD, y + 18, "← → or [ ] to change device", size=11.0, color="#585b70")
         y += 45
@@ -182,26 +182,26 @@ class AudioRecorderApp(App):
         # Peak meter
         meter_w = ctx.w - PAD * 2
         meter_h = 18.0
-        ctx.rect(PAD, y, meter_w, meter_h, fill="#1e1e2e", radius=3.0)
+        ctx.rect(PAD, y, meter_w, meter_h, fill=BG, radius=3.0)
         peak = self._peak
         fill_w = meter_w * min(peak, 1.0)
         if fill_w > 0:
-            color = "#50c878" if peak < 0.6 else "#f9e2af" if peak < 0.85 else "#f38ba8"
+            color = "#50c878" if peak < 0.6 else YELLOW if peak < 0.85 else RED
             ctx.rect(PAD, y, fill_w, meter_h, fill=color, radius=3.0)
         ctx.text(PAD, y + meter_h + 4, f"Peak: {peak:.3f}", size=11.0, color="#585b70")
         y += meter_h + 22
 
         # Record button
-        rec_color = "#f38ba8" if self._capturing else "#a6e3a1"
+        rec_color = RED if self._capturing else GREEN
         rec_label = "Stop (r)" if self._capturing else "Record (r)"
         ctx.rect(PAD, y, 120, 28, fill=rec_color, radius=5.0)
-        ctx.text(PAD + 8, y + 7, rec_label, size=13.0, color="#1e1e2e")
+        ctx.text(PAD + 8, y + 7, rec_label, size=13.0, color=BG)
         y += 40
 
         # Save button (only when not capturing)
         if not self._capturing:
-            ctx.rect(PAD, y, 120, 28, fill="#89b4fa", radius=5.0)
-            ctx.text(PAD + 8, y + 7, "Save WAV (s)", size=13.0, color="#1e1e2e")
+            ctx.rect(PAD, y, 120, 28, fill=ACCENT, radius=5.0)
+            ctx.text(PAD + 8, y + 7, "Save WAV (s)", size=13.0, color=BG)
             y += 40
 
         # Status
