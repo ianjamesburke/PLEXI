@@ -7,7 +7,7 @@ import urllib.parse
 
 from plexi_sdk import (
     App, RenderContext,
-    FG, MUTED, ACCENT, SURFACE, BODY, CAPTION,
+    FG, MUTED, ACCENT, SURFACE, BODY, CAPTION, RED,
 )
 from plexi_sdk.ui import (
     Column, AppBar, Spacer, Footer, FooterKeys, Component,
@@ -24,7 +24,9 @@ class WikiApp(App):
         self._selected = 0
         self._extract = ""
         self._loading = False
+        self._error_msg = ""
         self._mode = "search"  # search | results | article
+        self.emit.info("wikipedia: ready")
 
     def on_inject(self, ctx: RenderContext, payload: dict) -> None:
         """Layer-1 test seam — seed mode/query/results/extract without network."""
@@ -41,10 +43,10 @@ class WikiApp(App):
 
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
         if self._mode == "search":
-            if key == "Enter":
+            if key == "return":
                 if self._query:
                     self._fetch_search(self._query)
-            elif key == "Backspace":
+            elif key == "backspace":
                 self._query = self._query[:-1]
             elif len(key) == 1:
                 self._query += key
@@ -53,17 +55,18 @@ class WikiApp(App):
                 self._selected = max(0, self._selected - 1)
             elif key == "down" or key == "j":
                 self._selected = min(len(self._results) - 1, self._selected + 1)
-            elif key == "Enter":
+            elif key == "return":
                 if self._results:
                     self._fetch_article(self._results[self._selected])
-            elif key == "Escape":
+            elif key == "escape":
                 self._mode = "search"
         elif self._mode == "article":
-            if key == "Escape":
+            if key == "escape":
                 self._mode = "results"
 
     def _fetch_search(self, query: str) -> None:
         self._loading = True
+        self._error_msg = ""
         self.emit.status_summary("Searching…")
         def run() -> None:
             try:
@@ -76,8 +79,10 @@ class WikiApp(App):
                 self._results = data[1] if len(data) > 1 else []
                 self._selected = 0
                 self._mode = "results"
+                self.emit.info(f"wikipedia: search '{query}' -> {len(self._results)} results")
             except Exception as e:
                 self.emit.error(f"wikipedia search failed: {e}")
+                self._error_msg = str(e)
                 self._results = []
             finally:
                 self._loading = False
@@ -86,6 +91,7 @@ class WikiApp(App):
 
     def _fetch_article(self, title: str) -> None:
         self._loading = True
+        self._error_msg = ""
         self.emit.status_summary(f"Loading {title}…")
         def run() -> None:
             try:
@@ -94,9 +100,11 @@ class WikiApp(App):
                 data = json.loads(body)
                 self._extract = data.get("extract", "No extract available.")
                 self._mode = "article"
+                self.emit.info(f"wikipedia: article '{title}' loaded")
             except Exception as e:
                 self.emit.error(f"wikipedia article fetch failed: {e}")
-                self._extract = f"Error: {e}"
+                self._error_msg = str(e)
+                self._extract = ""
             finally:
                 self._loading = False
                 self.emit.status_summary("")
@@ -122,8 +130,12 @@ class WikiApp(App):
                 ctx.rect(x, y + 24, w, 32, fill=SURFACE, radius=4.0)
                 ctx.text(x + 8, y + 32, app._query + "▌",
                          size=BODY, color=FG, monospace=True)
-                ctx.text(x, y + 72, "Type a query and press Enter",
-                         size=12, color=MUTED)
+                if app._error_msg:
+                    ctx.text(x, y + 72, f"Error: {app._error_msg}",
+                             size=12, color=RED, max_width=w)
+                else:
+                    ctx.text(x, y + 72, "Type a query and press Enter",
+                             size=12, color=MUTED)
             elif app._mode == "results":
                 ctx.text(x, y, f'Results for "{app._query}":', size=BODY, color=FG)
                 items = [{"label": r, "secondary": None} for r in app._results]
