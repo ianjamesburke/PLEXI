@@ -227,13 +227,13 @@ if len(sys.argv) == 2 and sys.argv[1] == "--plexi":
 
 If you can't modify a CLI to respond to `--plexi`, drop a descriptor at:
 
-```
+```text
 ~/.plexi-<channel>/registry/<cli>/latest.json
 ```
 
 Where `<channel>` matches the running binary (`alpha`, `beta`, or omitted for stable `~/.plexi/`). Example for the stable build:
 
-```
+```text
 ~/.plexi/registry/mytool/latest.json
 ```
 
@@ -247,13 +247,13 @@ Several CLIs ship descriptors in the embedded registry (gh, cargo, npm, git, doc
 
 After writing a descriptor or dropping a registry file, confirm Plexi resolves and parses it correctly:
 
-```
+```bash
 plexi descriptor probe <cli>
 ```
 
 Example output for parallax (via registry):
 
-```
+```text
 🎬 parallax v0.1.0  (descriptor 0.1)  (via registry)
   Video agent pipeline CLI
 commands: 3
@@ -266,6 +266,6 @@ live_state: File .parallax/manifest.yaml (poll 1000 ms, Yaml)
 If `probe` fails with "no descriptor found", check:
 1. Does `<cli> --plexi` print valid JSON to stdout and exit 0?
 2. Is the registry file at the right path with the right filename (`latest.json`)?
-3. Does the JSON pass schema validation? Run it through `cat <file> | jq .` to check syntax, then compare against `schemas/plexi-descriptor-schema.json`.
+3. Does the JSON pass schema validation? Run it through `jq . <file>` to check syntax, then compare against `schemas/plexi-descriptor-schema.json`.
 
 The schema file lives at `schemas/plexi-descriptor-schema.json` in the PLEXI repo and has inline field descriptions for every property.
