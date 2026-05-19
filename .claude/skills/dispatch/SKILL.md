@@ -38,7 +38,7 @@ STABILIZER_ID=$($PLEXI terminal --layout new_window --no-focus)
 $PLEXI pane name $STABILIZER_ID "stabilizer"
 $PLEXI pane send $STABILIZER_ID 'c "Stabilize alpha before dispatch. Do all of the following in order:
 1. git fetch origin
-2. Check git status — if alpha has uncommitted changes or unstaged diffs, STOP and report them; do not proceed.
+2. Check git status — if alpha has uncommitted changes or unstaged diffs, show the user what's dirty and ask: commit these changes now, stash them, or abort dispatch? Do not proceed until alpha is clean.
 3. git pull --rebase origin alpha — if conflicts, STOP and report.
 4. List open PRs targeting alpha: gh pr list --base alpha --json number,title,mergeable,statusCheckRollup. For any PR that is mergeable and all checks pass: report it as ready to merge — do NOT merge automatically.
 5. List worktrees: wtp list. Flag any worktree whose branch has no open PR as stale — do NOT delete.
