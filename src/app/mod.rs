@@ -260,6 +260,7 @@ pub struct PlexiApp {
     pub(crate) show_cli_setup_prompt: bool,
     /// `None` = idle/success (modal closes on success), `Some(false)` = not found.
     pub(crate) cli_setup_check_result: Option<bool>,
+    pub(crate) show_completions_banner: bool,
     pub(crate) quitting: bool,
     pub(crate) quit_press_count: u8,
     pub(crate) quit_last_press: Option<std::time::Instant>,
@@ -865,6 +866,7 @@ impl PlexiApp {
                     show_changelog: false,
                     show_cli_setup_prompt: crate::cli_setup::should_prompt(),
                     cli_setup_check_result: None,
+                    show_completions_banner: crate::cli_setup::should_prompt_completions(),
                     quitting: false,
                     quit_press_count: 0,
                     quit_last_press: None,
@@ -1023,6 +1025,7 @@ impl PlexiApp {
             show_changelog: false,
             show_cli_setup_prompt: crate::cli_setup::should_prompt(),
             cli_setup_check_result: None,
+            show_completions_banner: crate::cli_setup::should_prompt_completions(),
             quitting: false,
             quit_press_count: 0,
             quit_last_press: None,
@@ -1234,6 +1237,7 @@ impl PlexiApp {
             edge_pulse: None,
             show_cli_setup_prompt: false,
             cli_setup_check_result: None,
+            show_completions_banner: false,
             update_rx: None,
             update_available: None,
             pane_ipc_rx,
@@ -4123,6 +4127,9 @@ impl eframe::App for PlexiApp {
 
         // Changelog overlay
         self.draw_changelog_overlay(ctx);
+
+        // First-launch completions nudge
+        self.draw_completions_banner(ctx);
 
         // Minimap overlay — auto-hidden when current workspace has <2 windows.
         let ws_id = self.router.active().context_id;

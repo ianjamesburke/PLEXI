@@ -4074,6 +4074,86 @@ impl PlexiApp {
             self.show_cli_setup_prompt = false;
         }
     }
+
+    pub(crate) fn draw_completions_banner(&mut self, ctx: &egui::Context) {
+        if !self.show_completions_banner {
+            return;
+        }
+        let colors = self.colors;
+        let cmd = crate::cli_setup::INSTALL_COMMAND;
+
+        egui::Area::new(egui::Id::new("completions_banner"))
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -20.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::new()
+                    .fill(colors.bg_sidebar)
+                    .stroke(Stroke::new(1.0, colors.border))
+                    .corner_radius(R6)
+                    .inner_margin(egui::Margin::symmetric(16, 10))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Shell completions aren't set up.")
+                                    .size(style::TEXT_CAPTION)
+                                    .color(colors.text_dim),
+                            );
+                            ui.add_space(style::SPACE_SM);
+                            egui::Frame::new()
+                                .fill(colors.bg_darkest)
+                                .corner_radius(R6)
+                                .inner_margin(egui::Margin::symmetric(8, 4))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(cmd)
+                                                .size(style::TEXT_HINT)
+                                                .color(colors.text_primary)
+                                                .monospace(),
+                                        );
+                                        ui.add_space(4.0);
+                                        crate::widgets::copy_button(
+                                            ui,
+                                            egui::Id::new("completions_banner_copy"),
+                                            cmd,
+                                        );
+                                    });
+                                });
+                            ui.add_space(style::SPACE_SM);
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Done")
+                                            .size(style::TEXT_CAPTION)
+                                            .color(colors.text_primary),
+                                    )
+                                    .fill(colors.bg_active)
+                                    .min_size(egui::vec2(50.0, 22.0)),
+                                )
+                                .clicked()
+                            {
+                                log::info!("cli_setup: completions banner — user clicked Done, marking sentinel");
+                                crate::cli_setup::completions_mark_prompted();
+                                self.show_completions_banner = false;
+                            }
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Not now")
+                                            .size(style::TEXT_CAPTION)
+                                            .color(colors.text_dim),
+                                    )
+                                    .min_size(egui::vec2(60.0, 22.0)),
+                                )
+                                .clicked()
+                            {
+                                log::info!("cli_setup: completions banner — user clicked Not now (session-only dismiss)");
+                                self.show_completions_banner = false;
+                            }
+                        });
+                    });
+            });
+    }
 }
 
 fn parse_children_cmd_output(stdout: &str) -> Vec<crate::config::QuickNoteNode> {
