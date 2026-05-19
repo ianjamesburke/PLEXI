@@ -191,7 +191,7 @@ impl PlexiApp {
         let kind = match self.windows[active].panes.get(&focused_pane_id) {
             Some(Pane::Terminal(_)) => Kind::Terminal,
             Some(Pane::App(a)) => Kind::App(a.manifest_id.clone()),
-            Some(Pane::SubContext { .. }) | None => return,
+            Some(Pane::Portal(_)) | None => return,
         };
 
         // `vertical` here follows split_with_new_pane semantics (not split_focused):

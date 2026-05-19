@@ -671,7 +671,7 @@ fn split_with_new_pane_pushes_focus_history() {
 
 /// Issue #1392: creating a child context must NOT remove or replace the parent's
 /// focused pane (adoption branch was removed). The parent should have:
-/// (count_before + 1) panes — its original pane(s) plus the new SubContext tile.
+/// (count_before + 1) panes — its original pane(s) plus the new Portal tile.
 #[test]
 fn new_child_context_does_not_adopt_focused_pane() {
     let ctx = egui::Context::default();
@@ -694,17 +694,17 @@ fn new_child_context_does_not_adopt_focused_pane() {
     assert!(parent_win.panes.contains_key(&orig_pane_id),
         "original focused pane must NOT be adopted away");
 
-    // Pane count grew by exactly 1 (the new SubContext tile).
+    // Pane count grew by exactly 1 (the new Portal tile).
     assert_eq!(parent_win.panes.len(), orig_count + 1,
         "parent should have orig_count + 1 panes after new_child_context");
 
-    // The new pane is a SubContext.
-    let has_sub_ctx = parent_win.panes.values().any(|p| p.as_sub_context().is_some());
-    assert!(has_sub_ctx, "parent must contain a SubContext tile");
+    // The new pane is a Portal.
+    let has_sub_ctx = parent_win.panes.values().any(|p| p.portal_target().is_some());
+    assert!(has_sub_ctx, "parent must contain a Portal tile");
 }
 
 /// When no pane is focused, new_child_context still creates the child context with
-/// a fresh terminal. The parent gets a SubContext tile inserted as root (no focused
+/// a fresh terminal. The parent gets a Portal tile inserted as root (no focused
 /// split target). The parent's focused_pane remains None.
 #[test]
 fn new_child_context_no_focused_pane_inserts_sub_ctx() {
@@ -724,12 +724,12 @@ fn new_child_context_no_focused_pane_inserts_sub_ctx() {
     assert_eq!(app.windows[0].focused_pane, None, "parent focused_pane untouched");
 
     if result.is_ok() {
-        // Parent gained exactly 1 SubContext pane.
+        // Parent gained exactly 1 Portal pane.
         let parent_win = app.windows.iter().find(|w| w.context_id == parent_id).unwrap();
         assert_eq!(parent_win.panes.len(), parent_pane_count_before + 1,
             "parent pane count grew by 1");
-        let has_sub_ctx = parent_win.panes.values().any(|p| p.as_sub_context().is_some());
-        assert!(has_sub_ctx, "parent has a SubContext tile");
+        let has_sub_ctx = parent_win.panes.values().any(|p| p.portal_target().is_some());
+        assert!(has_sub_ctx, "parent has a Portal tile");
     } else {
         // PTY failed in test env — parent panes unchanged.
         assert_eq!(app.windows[0].panes.len(), parent_pane_count_before,
@@ -802,7 +802,7 @@ fn create_child_context_auto_zooms() {
 
 /// Issue #1392: unlimited nesting after killing the depth cap and adoption branch.
 /// Build a 4-level chain (root → A → B → C → D) and verify that each parent's
-/// window contains a SubContext tile pointing at the corresponding child.
+/// window contains a Portal tile pointing at the corresponding child.
 /// Note: new_child_context always creates a fresh terminal. In test envs without PTY
 /// this returns Err — if so, verify depth metadata still incremented correctly for
 /// any contexts that were created before the first failure.
@@ -839,17 +839,17 @@ fn depth_four_chain_has_portal_tiles() {
         assert_eq!(c.depth as usize, level, "context at chain[{level}] should have depth {level}");
     }
 
-    // Verify each parent's window has a SubContext tile pointing at its child.
+    // Verify each parent's window has a Portal tile pointing at its child.
     for i in 0..chain_ids.len().saturating_sub(1) {
         let parent_id = chain_ids[i];
         let child_id = chain_ids[i + 1];
         let parent_win = app.windows.iter().find(|w| w.context_id == parent_id)
             .expect("parent window must exist");
         let found = parent_win.panes.values()
-            .any(|p| p.as_sub_context() == Some(child_id));
+            .any(|p| p.portal_target() == Some(child_id));
         assert!(
             found,
-            "parent ctx_id={parent_id} must contain a SubContext tile pointing at child {child_id}"
+            "parent ctx_id={parent_id} must contain a Portal tile pointing at child {child_id}"
         );
     }
 }
@@ -949,12 +949,12 @@ fn delete_context_cascades_and_cleans_depth_stack() {
     assert!(app.router.depth_stack.iter().all(|(cid, _, _)| *cid != b_id),
         "depth_stack must not contain deleted ctx_id={b_id}");
 
-    // No SubContext tile pointing to A or B should remain in any window.
+    // No Portal tile pointing to A or B should remain in any window.
     for win in &app.windows {
         for pane in win.panes.values() {
-            if let Some(target) = pane.as_sub_context() {
-                assert_ne!(target, a_id, "stale SubContext tile pointing to deleted A");
-                assert_ne!(target, b_id, "stale SubContext tile pointing to deleted B");
+            if let Some(target) = pane.portal_target() {
+                assert_ne!(target, a_id, "stale Portal tile pointing to deleted A");
+                assert_ne!(target, b_id, "stale Portal tile pointing to deleted B");
             }
         }
     }

@@ -44,7 +44,7 @@ impl HostSnapshot {
                 let title = match pane {
                     Pane::App(p) => p.name.clone(),
                     Pane::Terminal(_) => "Terminal".to_string(),
-                    Pane::SubContext { context_id, .. } => format!("SubContext({context_id})"),
+                    Pane::Portal(p) => format!("Portal({})", p.target_context_id),
                 };
                 (*id, title)
             })

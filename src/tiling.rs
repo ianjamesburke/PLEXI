@@ -36,7 +36,7 @@ pub(crate) fn paint_tab_dots(
     }
 }
 
-/// Per-pane summary carried in SubContext tile preview data.
+/// Per-pane summary carried in Portal tile preview data.
 #[derive(Clone, Default)]
 pub struct ChildPaneSummary {
     pub pane_name: Option<String>,
@@ -44,17 +44,17 @@ pub struct ChildPaneSummary {
     pub app_type: String,
 }
 
-/// Preview data for a SubContext tile.
+/// Preview data for a Portal tile.
 #[derive(Clone)]
-pub struct SubContextPreview {
+pub struct PortalPreview {
     pub context_name: String,
     pub panes: Vec<ChildPaneSummary>,
     pub notification_count: usize,
 }
 
-impl Default for SubContextPreview {
+impl Default for PortalPreview {
     fn default() -> Self {
-        SubContextPreview {
+        PortalPreview {
             context_name: "(deleted)".to_string(),
             panes: Vec::new(),
             notification_count: 0,
@@ -83,8 +83,8 @@ pub struct PlexiBehavior<'a> {
     /// Opacity applied to unfocused panes when ghost mode is active.
     /// `None` = no dimming. Values below 1.0 dim all non-focused panes.
     pub unfocused_opacity: Option<f32>,
-    /// Preview data for SubContext tiles.
-    pub sub_context_info: HashMap<PaneId, SubContextPreview>,
+    /// Preview data for Portal tiles.
+    pub portal_info: HashMap<PaneId, PortalPreview>,
     /// True when an overlay or modal has captured keyboard input this frame.
     /// Prevents terminal panes from calling `request_focus()` and stealing
     /// egui focus from the active overlay (egui resolves focus last-caller-wins).
@@ -166,22 +166,22 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             if close_exited {
                 self.close_exited = Some(tile_id);
             }
-        } else if pane.as_sub_context().is_some() {
-            // SubContext tile — responsive PGAP-rendered preview.
+        } else if pane.as_portal().is_some() {
+            // Portal tile — responsive PGAP-rendered preview.
             ui.painter().rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
-            let preview = self.sub_context_info
+            let preview = self.portal_info
                 .get(pane_id)
                 .cloned()
                 .unwrap_or_default();
 
-            let tiers = crate::tiling::sub_context_responsive_tiers(&preview, &self.colors);
+            let tiers = crate::tiling::portal_responsive_tiers(&preview, &self.colors);
             let avail_w = pane_rect.width();
             let avail_h = pane_rect.height();
             if let Some(tier) = crate::process_app::render::select_responsive_tier(
                 &tiers, avail_w, avail_h,
             ) {
                 log::info!(
-                    "sub_context responsive: aspect={} for {}x{}",
+                    "portal responsive: aspect={} for {}x{}",
                     tier.aspect, avail_w, avail_h,
                 );
                 let clip = pane_rect;
@@ -286,17 +286,17 @@ pub(crate) fn write_dropped_paths_to_terminal(ui: &egui::Ui, t: &mut TerminalPan
     }
 }
 
-// ── SubContext responsive tier builder ─────────────────────────────────────────
+// ── Portal responsive tier builder ────────────────────────────────────────────
 
 use crate::app_protocol::{LayoutChild, LayoutDirection, RenderCommand, ResponsiveTier};
 
-/// Build the three responsive tiers for a SubContext preview card.
+/// Build the three responsive tiers for a Portal preview card.
 ///
 /// - Landscape: horizontal row with context name + pane count + notification badge
 /// - Square: column with abbreviated info
 /// - Portrait: compact vertical stack
-pub(crate) fn sub_context_responsive_tiers(
-    preview: &SubContextPreview,
+pub(crate) fn portal_responsive_tiers(
+    preview: &PortalPreview,
     colors: &Colors,
 ) -> Vec<ResponsiveTier> {
     let ctx_name = &preview.context_name;

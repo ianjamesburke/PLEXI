@@ -772,13 +772,14 @@ impl PlexiApp {
                         }
                     }
 
-                    // SubContext panes — restore the tile reference, no process to start.
-                    if matches!(saved_pane.kind, crate::workspace::SavedPaneKind::SubContext { .. }) {
-                        if let crate::workspace::SavedPaneKind::SubContext { context_id } = &saved_pane.kind {
-                            pane_entry = Some(Pane::SubContext {
+                    // Portal panes — restore the tile reference, no process to start.
+                    if matches!(saved_pane.kind, crate::workspace::SavedPaneKind::Portal { .. }) {
+                        if let crate::workspace::SavedPaneKind::Portal { context_id } = &saved_pane.kind {
+                            pane_entry = Some(Pane::Portal(Box::new(crate::pane::PortalPane {
                                 pane_id: saved_pane.id,
-                                context_id: *context_id,
-                            });
+                                target_context_id: *context_id,
+                                context_state: None,
+                            })));
                         }
                     }
 
@@ -1355,8 +1356,8 @@ impl PlexiApp {
                                     let cwd = Some(a.workspace_root.to_string_lossy().into_owned());
                                     ("app", a.name.clone(), cwd)
                                 }
-                                crate::pane::Pane::SubContext { context_id, .. } => {
-                                    ("sub_context", format!("sub_context:{context_id}"), None)
+                                crate::pane::Pane::Portal(p) => {
+                                    ("portal", format!("portal:{}", p.target_context_id), None)
                                 }
                             };
                             let focused = win_idx == active_win && focused_pane_id == Some(*pane_id);
@@ -1415,11 +1416,11 @@ impl PlexiApp {
                                         "manifest_id": a.manifest_id.clone(),
                                     })
                                 }
-                                crate::pane::Pane::SubContext { context_id, .. } => {
+                                crate::pane::Pane::Portal(p) => {
                                     serde_json::json!({
                                         "id": pane_id,
-                                        "type": "sub_context",
-                                        "context_id": context_id,
+                                        "type": "portal",
+                                        "context_id": p.target_context_id,
                                         "focused": focused,
                                     })
                                 }
@@ -2136,7 +2137,7 @@ impl PlexiApp {
     }
 
     /// Recursively sum notification count for a context and all its descendants.
-    /// Used for the notification badge on SubContext tiles.
+    /// Used for the notification badge on Portal tiles.
     pub(crate) fn context_notification_count_recursive(&self, ctx_id: u64) -> usize {
         self.context_notification_count_recursive_limited(ctx_id, 0)
     }
@@ -2700,7 +2701,7 @@ impl eframe::App for PlexiApp {
                         .map(|p| match p {
                             crate::pane::Pane::App(_) => "app",
                             crate::pane::Pane::Terminal(_) => "terminal",
-                            crate::pane::Pane::SubContext { .. } => "sub_context",
+                            crate::pane::Pane::Portal(_) => "portal",
                         });
                     match target_kind {
                         Some("app") => {
@@ -2996,7 +2997,7 @@ impl eframe::App for PlexiApp {
                     // (via PushNav), Escape routes NavBack to the app
                     // instead of closing the pane.
                     if !self.try_nav_back_focused() {
-                        if let Some(child_ctx_id) = self.get_focused_sub_context_id() {
+                        if let Some(child_ctx_id) = self.get_focused_portal_context_id() {
                             let state = self.build_context_close_state(child_ctx_id);
                             if state.items.is_empty() {
                                 // Empty context — close immediately, no dialog needed.
@@ -3246,7 +3247,7 @@ impl eframe::App for PlexiApp {
                             .and_then(|t| if let egui_tiles::Tile::Pane(p) = t { Some(*p) } else { None });
                         if let Some(pane_id) = focused_pane_id {
                             if let Some(child_ctx_id) = self.windows[self.active_window].panes.get(&pane_id)
-                                .and_then(|p| p.as_sub_context())
+                                .and_then(|p| p.portal_target())
                             {
                                 log::info!("ContextZoomIn: zooming into context_id={child_ctx_id}");
                                 let current_ctx_id = self.router.active().context_id;
@@ -3453,16 +3454,16 @@ impl eframe::App for PlexiApp {
                 let canvas_old_focus = self.windows[self.active_window].focused_pane;
                 let canvas_old_window_id = self.windows[self.active_window].window_id;
 
-                // Build sub-context preview data before taking the mutable ctx borrow.
-                let sub_context_info: std::collections::HashMap<crate::tiling::PaneId, crate::tiling::SubContextPreview> = {
+                // Build portal preview data before taking the mutable ctx borrow.
+                let portal_info: std::collections::HashMap<crate::tiling::PaneId, crate::tiling::PortalPreview> = {
                     let active_win = self.active_window;
                     let mut map = std::collections::HashMap::new();
-                    let sub_ctx_panes: Vec<(crate::tiling::PaneId, u64)> = self.windows[active_win]
+                    let portal_panes: Vec<(crate::tiling::PaneId, u64)> = self.windows[active_win]
                         .panes
                         .iter()
-                        .filter_map(|(pid, p)| p.as_sub_context().map(|cid| (*pid, cid)))
+                        .filter_map(|(pid, p)| p.portal_target().map(|cid| (*pid, cid)))
                         .collect();
-                    for (pane_id, child_ctx_id) in sub_ctx_panes {
+                    for (pane_id, child_ctx_id) in portal_panes {
                         let ctx_name = self.router.iter()
                             .find(|c| c.context_id == child_ctx_id)
                             .map(|c| c.name.clone())
@@ -3490,11 +3491,11 @@ impl eframe::App for PlexiApp {
                                         app_type: a.runtime.type_id().to_string(),
                                     })
                                 }
-                                crate::pane::Pane::SubContext { .. } => None,
+                                crate::pane::Pane::Portal(_) => None,
                             })
                             .collect();
                         let notif_count = self.context_notification_count_recursive(child_ctx_id);
-                        map.insert(pane_id, crate::tiling::SubContextPreview {
+                        map.insert(pane_id, crate::tiling::PortalPreview {
                             context_name: ctx_name,
                             panes: pane_summaries,
                             notification_count: notif_count,
@@ -3502,6 +3503,38 @@ impl eframe::App for PlexiApp {
                     }
                     map
                 };
+
+                // Update cached ContextState on portal panes (recomputed each frame for now;
+                // future: throttle to change events only).
+                {
+                    let contexts: Vec<crate::context::Context> = self.router.iter().cloned().collect();
+                    let active_win = self.active_window;
+                    let portal_pane_ids: Vec<(crate::tiling::PaneId, u64)> = self.windows[active_win]
+                        .panes
+                        .iter()
+                        .filter_map(|(pid, p)| p.portal_target().map(|cid| (*pid, cid)))
+                        .collect();
+                    for (pid, child_ctx_id) in portal_pane_ids {
+                        let state = crate::context_state::ContextState::compute(
+                            child_ctx_id,
+                            &contexts,
+                            &self.windows,
+                        );
+                        if let Some(portal) = self.windows[active_win].panes.get_mut(&pid)
+                            .and_then(|p| p.as_portal_mut())
+                        {
+                            let old_status = portal.context_state.as_ref().map(|s| s.status.clone());
+                            let new_status = state.status.clone();
+                            if old_status.as_ref() != Some(&new_status) {
+                                log::info!(
+                                    "portal state change: pane_id={pid} ctx={child_ctx_id} status={:?} panes={} agents={}",
+                                    new_status, state.pane_count, state.active_agents,
+                                );
+                            }
+                            portal.context_state = Some(state);
+                        }
+                    }
+                }
 
                 // Computed before the mutable borrow of `ctx` — needed by PlexiBehavior
                 // to prevent terminal panes from stealing egui focus while a modal is open.
@@ -3642,7 +3675,7 @@ impl eframe::App for PlexiApp {
                     hovered_files,
                     workspace_root: self.router.active().root.clone().or_else(crate::config::active_workspace_root),
                     unfocused_opacity,
-                    sub_context_info,
+                    portal_info,
                     modal_open,
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
@@ -4070,7 +4103,7 @@ impl PlexiApp {
                 let type_id = Some(a.manifest_id.clone());
                 (cwd, None, None, type_id)
             }
-            crate::pane::Pane::SubContext { .. } => {
+            crate::pane::Pane::Portal(_) => {
                 (None, None, None, None)
             }
         };
@@ -4431,15 +4464,15 @@ impl PlexiApp {
         }
     }
 
-    /// Returns the `context_id` of the child context if the focused pane is a SubContext tile.
-    pub(crate) fn get_focused_sub_context_id(&self) -> Option<u64> {
+    /// Returns the `context_id` of the child context if the focused pane is a Portal tile.
+    pub(crate) fn get_focused_portal_context_id(&self) -> Option<u64> {
         let win = &self.windows[self.active_window];
         let focused_tile = win.focused_pane?;
         let pane_id = match win.tree.tiles.get(focused_tile) {
             Some(egui_tiles::Tile::Pane(id)) => *id,
             _ => return None,
         };
-        win.panes.get(&pane_id)?.as_sub_context()
+        win.panes.get(&pane_id)?.portal_target()
     }
 
     /// Collect the pane inventory for a child context close dialog.
@@ -4469,13 +4502,13 @@ impl PlexiApp {
                     crate::pane::Pane::App(a) => {
                         items.push(ContextCloseItem { kind: "App", name: a.name.clone() });
                     }
-                    crate::pane::Pane::SubContext { context_id: child_id, .. } => {
+                    crate::pane::Pane::Portal(p) => {
                         let name = self
                             .router
                             .iter()
-                            .find(|c| c.context_id == *child_id)
+                            .find(|c| c.context_id == p.target_context_id)
                             .map(|c| c.name.clone())
-                            .unwrap_or_else(|| "Sub-context".to_string());
+                            .unwrap_or_else(|| "Portal".to_string());
                         items.push(ContextCloseItem { kind: "Context", name });
                     }
                 }
@@ -4881,7 +4914,7 @@ fn register_directed_pipe_on_target(pane: &mut crate::pane::Pane, pipe_id: &str)
             crate::pane::AppRuntime::Process(pa) => Some(pa.pipe_registry.clone()),
             crate::pane::AppRuntime::Builtin(_) => None,
         },
-        crate::pane::Pane::Terminal(_) | crate::pane::Pane::SubContext { .. } => None,
+        crate::pane::Pane::Terminal(_) | crate::pane::Pane::Portal(_) => None,
     };
     let Some(registry) = registry else {
         return false;

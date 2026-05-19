@@ -2074,11 +2074,11 @@ impl PlexiApp {
                                 osc_badge: None,
                             });
                         }
-                        crate::pane::Pane::SubContext { pane_id, context_id } => {
+                        crate::pane::Pane::Portal(p) => {
                             rows.push(PaneRow {
-                                id: *pane_id,
-                                kind: "SubContext",
-                                name: format!("sub_context:{context_id}"),
+                                id: p.pane_id,
+                                kind: "Portal",
+                                name: format!("portal:{}", p.target_context_id),
                                 detail: String::new(),
                                 status: "active",
                                 osc_badge: None,
@@ -2764,7 +2764,7 @@ impl PlexiApp {
             }
         } else if dissolve {
             log::info!("context_close: dissolve ctx={} name={:?}", state.context_id, state.context_name);
-            self.dissolve_sub_context(state.context_id);
+            self.dissolve_portal(state.context_id);
             self.save_workspace();
         } else if cancelled {
             log::info!("context_close: cancelled ctx={}", state.context_id);
