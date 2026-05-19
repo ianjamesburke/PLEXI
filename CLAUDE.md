@@ -33,7 +33,7 @@ Feature branch naming: `feature/<issue-number>-short-description`. Never push di
 
 The PLEXI project board has a **Status** field with these columns: `Idea → Backlog → Up Next → In Progress → In Review → Done`.
 
-**"Up Next"** is the dispatch staging area — issues staged here are ready for parallel agent dispatch. At session start, query the board to see what's queued. Dispatch command: `plexi-beta terminal "c '/ship-issue <num>'" --layout split_v`.
+**"Up Next"** is the dispatch staging area — issues staged here are ready for parallel agent dispatch. At session start, query the board to see what's queued. Use the `/dispatch` skill — or directly: `bash .claude/skills/dispatch/scripts/open-lanes.sh <issue1> [issue2...]`.
 
 **Status transitions:**
 - Triage → **Up Next**: issue is ready, unblocked, and parallelizable (doesn't conflict with other Up Next issues)
