@@ -108,6 +108,12 @@ class BlueskyApp(App):
 
         self.emit.info("bluesky: init")
         ctx.status_summary("Loading Discover feed…")
+        granted = await self.emit.capability_request("net.http")
+        if not granted:
+            self._loading = False
+            self._error = "Network access denied."
+            self.emit.warn("bluesky: net.http capability denied")
+            return
         asyncio.create_task(self._fetch_discover(None))
 
     # ── data ──────────────────────────────────────────────────────────────────
@@ -122,6 +128,8 @@ class BlueskyApp(App):
             url += f"&cursor={urllib.parse.quote(cursor)}"
         try:
             data = json.loads(await self.emit.http_get(url)) or {}
+            if data.get("error"):
+                raise RuntimeError(data["error"])
             self._feed     = [item["post"] for item in data.get("feed", []) if "post" in item]
             self._next_cur = data.get("cursor")
             self._sel      = 0
@@ -142,6 +150,8 @@ class BlueskyApp(App):
             url += f"&cursor={urllib.parse.quote(cursor)}"
         try:
             data  = json.loads(await self.emit.http_get(url)) or {}
+            if data.get("error"):
+                raise RuntimeError(data["error"])
             posts = [item["post"] for item in data.get("feed", []) if "post" in item]
             # drop replies so the profile view shows original posts only
             self._feed     = [p for p in posts if not (p.get("record") or {}).get("reply")]
@@ -161,6 +171,8 @@ class BlueskyApp(App):
         url = f"{BASE}/app.bsky.feed.getPostThread?uri={urllib.parse.quote(uri)}&depth=6"
         try:
             data  = json.loads(await self.emit.http_get(url)) or {}
+            if data.get("error"):
+                raise RuntimeError(data["error"])
             posts : list[dict] = []
             self._walk(data.get("thread", {}), posts, depth=0)
             self._thread   = posts
