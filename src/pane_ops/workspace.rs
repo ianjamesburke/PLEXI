@@ -287,8 +287,9 @@ impl PlexiApp {
     }
 
     pub(crate) fn reset_active_context(&mut self) {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(home.clone()), None, false)
+        let cwd = self.cwd_for_welcome_tab();
+        log::info!("reset_active_context: cwd={} context_root={:?}", cwd.display(), self.router.active().root);
+        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd), None, false)
         else {
             log::error!("Failed to create terminal for reset context");
             return;
