@@ -41,6 +41,7 @@ class BacklogApp(App):
         self.status = ""
         self._item_list = SelectList([])
         self._load()
+        self.emit.info("BacklogApp ready")
 
     # ── Data ────────────────────────────────────────────────────────────────────
 
@@ -170,9 +171,11 @@ class BacklogApp(App):
                  max_width=80)
 
         if not self.backlog_dir.exists():
-            ctx.text(12, TOP + 12, "No backlog directory found.", size=13, color=FG)
-            ctx.text(12, TOP + 34, f"mkdir -p {self.backlog_dir}",
-                     size=11, color=MUTED, monospace=True)
+            self.emit.info("backlog: dir not found — showing empty-state guide")
+            ctx.text(12, TOP + 12, "No notes yet.", size=13, color=FG)
+            ctx.text(12, TOP + 34,
+                     "Press ⌘0 to open Quick Note, then press Enter twice to send to your backlog.",
+                     size=11, color=MUTED, max_width=w - 24)
             return
 
         # Divider
