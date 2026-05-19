@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.449"
+verified_version: "0.0.463"
 order: 7
 ---
 
@@ -212,7 +212,7 @@ Example: plexi uninstall
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `--keep-data` | flag | no | Keep your profile directory (~/.plexi/) — your settings, secrets, and app data stay on disk |
-| `--yes` / `-y` | flag | no | Skip confirmation prompts and proceed immediately |
+| `--yes` / `-y` | flag | no | Skip the confirmation prompt and proceed immediately (removes data unless --keep-data is set) |
 
 ## `plexi update`
 
