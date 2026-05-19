@@ -328,6 +328,18 @@ impl SecretStore for InMemoryKeychain {
 #[derive(Deserialize, Debug, Clone)]
 pub struct WorkspaceConfig {
     pub id: String,
+    /// Optional `[context]` section — default name/description for the root
+    /// context when this workspace is first opened. User overrides always win.
+    #[serde(default)]
+    pub context: Option<WorkspaceContextConfig>,
+}
+
+/// `[context]` section in workspace.toml. Provides default name and
+/// description for the anchor's root context. Both fields are optional.
+#[derive(Deserialize, Debug, Clone)]
+pub struct WorkspaceContextConfig {
+    pub name: Option<String>,
+    pub description: Option<String>,
 }
 
 impl WorkspaceConfig {
@@ -361,7 +373,7 @@ impl WorkspaceConfig {
         let path = dir.join("workspace.toml");
         std::fs::write(&path, format!("id = \"{id}\"\n"))
             .map_err(|e| format!("write {}: {e}", path.display()))?;
-        Ok(Self { id })
+        Ok(Self { id, context: None })
     }
 }
 

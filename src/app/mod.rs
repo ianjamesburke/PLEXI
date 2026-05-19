@@ -948,11 +948,34 @@ impl PlexiApp {
         }
 
         // Default: empty context — welcome screen is shown until the user creates a pane.
+        // If CWD has a .plexi/ anchor, use its context defaults for name/description
+        // and set root to the anchor path.
         let panes: HashMap<u64, Pane> = HashMap::new();
         let tree = Tree::empty("plexi");
 
         let path = std::env::current_dir()
             .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+
+        let anchor = crate::anchor::Anchor::detect(&path);
+        let (default_name, default_description, default_root) = match anchor.as_ref() {
+            Some(a) => {
+                let defaults = a.context_defaults.as_ref();
+                let name = defaults
+                    .and_then(|d| d.name.clone())
+                    .unwrap_or_else(|| {
+                        path.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "Default".to_string())
+                    });
+                let desc = defaults.and_then(|d| d.description.clone());
+                log::info!(
+                    "anchor detected at CWD: name={:?} description={:?} root={}",
+                    name, desc, a.root.display()
+                );
+                (name, desc, Some(a.root.clone()))
+            }
+            None => ("Default".to_string(), None, None),
+        };
 
         Self {
             pty_event_rx: rx,
@@ -963,10 +986,10 @@ impl PlexiApp {
             ctx: cc.egui_ctx.clone(),
             router: crate::workspace_router::WorkspaceRouter::new(
                 vec![crate::context::Context {
-                    name: "Default".into(),
+                    name: default_name,
                     path: path.clone(),
-                    root: None,
-                    description: None,
+                    root: default_root,
+                    description: default_description,
                     context_id: 1,
                     parent_id: None,
                     depth: 0,
@@ -974,7 +997,7 @@ impl PlexiApp {
                 0,
             ),
             windows: vec![Window {
-                name: "Default".into(),
+                name: String::new(),
                 path,
                 tree,
                 panes,

@@ -23,10 +23,25 @@ impl PlexiApp {
         let win_id = self.next_window_id;
         self.next_window_id += 1;
 
-        let ctx_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1));
+        // Check for anchor defaults from .plexi/workspace.toml [context] section.
+        let anchor = crate::anchor::Anchor::detect(&path);
+        let (ctx_name, ctx_description) = match anchor.as_ref().and_then(|a| a.context_defaults.as_ref()) {
+            Some(defaults) => {
+                let name = defaults.name.clone().unwrap_or_else(|| {
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1))
+                });
+                (name, defaults.description.clone())
+            }
+            None => {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1));
+                (name, None)
+            }
+        };
 
         log::info!(
             "new_child_context: parent_id={parent_id} parent_depth={parent_depth} \
@@ -77,7 +92,7 @@ impl PlexiApp {
             name: ctx_name,
             path: path.clone(),
             root: Some(path.clone()),
-            description: None,
+            description: ctx_description,
             context_id: ctx_id,
             parent_id: Some(parent_id),
             depth: child_depth,
@@ -153,7 +168,8 @@ impl PlexiApp {
 
     /// Create a new context at a specific directory path. The terminal pane
     /// opens at `path` and the context root is set to it. Named after the
-    /// directory basename. Callers must call `save_workspace()` afterward.
+    /// directory basename, unless the path has a `.plexi/workspace.toml` with
+    /// `[context]` defaults. Callers must call `save_workspace()` afterward.
     pub(crate) fn new_context_at_path(&mut self, path: PathBuf) {
         log::info!("new_context_at_path: path={}", path.display());
         let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(path.clone()), None, false)
@@ -167,15 +183,35 @@ impl PlexiApp {
         let win_id = self.next_window_id;
         self.next_window_id += 1;
 
-        let ctx_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| format!("Context {}", self.router.len() + 1));
+        // Check for anchor defaults from .plexi/workspace.toml [context] section.
+        let anchor = crate::anchor::Anchor::detect(&path);
+        let (ctx_name, ctx_description) = match anchor.as_ref().and_then(|a| a.context_defaults.as_ref()) {
+            Some(defaults) => {
+                let name = defaults.name.clone().unwrap_or_else(|| {
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| format!("Context {}", self.router.len() + 1))
+                });
+                log::info!(
+                    "new_context_at_path: applying anchor defaults name={:?} description={:?}",
+                    name, defaults.description
+                );
+                (name, defaults.description.clone())
+            }
+            None => {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| format!("Context {}", self.router.len() + 1));
+                (name, None)
+            }
+        };
+
         self.router.push(crate::context::Context {
             name: ctx_name,
             path: path.clone(),
             root: Some(path.clone()),
-            description: None,
+            description: ctx_description,
             context_id: ctx_id,
             parent_id: None,
             depth: 0,
