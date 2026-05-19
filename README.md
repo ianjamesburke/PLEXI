@@ -11,7 +11,8 @@
 <p align="center">The last app you'll ever need.</p>
 
 <p align="center">
-  <img src="media/screenshot-3.png" width="96%" alt="Screenshot" />
+  <img src="media/screenshot-3.png" width="48%" alt="Screenshot" />
+  <img src="media/screenshot-4.png" width="48%" alt="Screenshot — code on the left, live app pane on the right" />
 </p>
 
 One binary. A tiling shell that brings Unix composability to the desktop — terminals, apps, and AI agents all speak the same protocol. Pipe output between processes, route notifications across panes, query any model from any context.

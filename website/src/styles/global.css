@@ -234,11 +234,12 @@ nav.top .cta { display: flex; gap: 10px; align-items: center; }
   background: radial-gradient(ellipse at center, rgba(147, 51, 234, 0.20), transparent 60%);
   filter: blur(55px); z-index: 0; pointer-events: none;
 }
-.preview {
+.preview-screenshot {
   position: relative; z-index: 1;
+  display: block;
+  width: 100%;
   border: 1px solid var(--border-2);
   border-radius: 12px;
-  background: var(--bg-2);
   overflow: hidden;
   transform: rotateX(2deg);
   transform-origin: center bottom;
