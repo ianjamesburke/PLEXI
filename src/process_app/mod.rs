@@ -2062,6 +2062,7 @@ fn cap_example_method(cap: &str) -> &'static str {
         "midi.in" => "open_midi_input",
         "midi.out" => "send_midi",
         "video.playback" => "open_video",
+        "video.capture" => "open_video",
         "audio.record" => "audio_capture",
         "audio.playback" => "audio_play",
         "timer" => "set_timer",
@@ -2181,9 +2182,21 @@ pub(crate) fn static_capability_check(
         }
     }
 
+    // `open_video` is used for both file playback and camera capture; at
+    // introspect time the SDK can't see the source URL so it reports
+    // `video.playback`. Accept `video.capture` as a substitute — the runtime
+    // routing enforces the correct gate per source prefix.
     let missing: Vec<&str> = required_caps.iter()
         .map(|s| s.as_str())
-        .filter(|s| !declared_strs.contains(s))
+        .filter(|s| {
+            if !declared_strs.contains(s) {
+                if *s == "video.playback" && declared_strs.contains("video.capture") {
+                    return false;
+                }
+                return true;
+            }
+            false
+        })
         .collect();
 
     if !missing.is_empty() {
