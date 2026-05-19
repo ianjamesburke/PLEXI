@@ -1636,36 +1636,25 @@ pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
         println!("  \u{2022} {} will be kept  (--keep-data)", profile_dir.display());
     }
 
-    // Data prompt (skip if --keep-data or --yes already set)
+    // Single confirmation prompt: keep data or remove everything?
     let keep_data = if keep_data || !profile_dir.exists() {
         keep_data
     } else if assume_yes {
         false // default: remove data when -y is passed without --keep-data
     } else {
-        eprint!("\nKeep your profile data (~/.plexi{suffix}/)? Your settings, secrets, and app configurations are stored here. [y/N]: ");
+        eprint!("\nKeep your ~/.plexi{suffix} data for future installs? [y/N]: ");
         let _ = io::stderr().flush();
         let mut answer = String::new();
         if io::stdin().read_line(&mut answer).is_err() {
             eprintln!("error: failed to read");
             return 1;
         }
-        matches!(answer.trim().to_lowercase().as_str(), "y" | "yes")
+        let keep = matches!(answer.trim().to_lowercase().as_str(), "y" | "yes");
+        if !keep {
+            eprintln!("Removing everything.");
+        }
+        keep
     };
-
-    // Confirmation
-    if !assume_yes {
-        eprint!("\nProceed? [y/N]: ");
-        let _ = io::stderr().flush();
-        let mut answer = String::new();
-        if io::stdin().read_line(&mut answer).is_err() {
-            eprintln!("error: failed to read");
-            return 1;
-        }
-        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
-            eprintln!("Aborted.");
-            return 0;
-        }
-    }
 
     let mut removed = false;
 
