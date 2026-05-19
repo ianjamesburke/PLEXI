@@ -228,6 +228,12 @@ Surface every match under a **Gotchas found:** heading in your context. Each mat
 
 If nothing matches, write "Gotchas found: none." and proceed. Do not skip this step.
 
+**If any changed file is a Python app under `examples/`** (new app, rewrite, or behavioral change to an existing app): invoke the `create-plexi-app` skill before writing any code. Then verify the skill is current:
+```bash
+plexi-alpha --version
+```
+Compare the version output against the `skill_version:` field in the frontmatter of `.claude/skills/create-plexi-app/SKILL.md`. If they differ: **stop**. File a `load:S` issue to update the skill, label it `P1 ready`, and surface it to the user before proceeding. Do not write any app code against a stale skill.
+
 **Assess scope:** count the files that will likely change.
 
 **If the issue involves a third-party library or framework** (egui, egui_tiles, tokio, etc.) and the expected behavior isn't immediately obvious from the code: invoke the `coding-conventions` skill and read the relevant section before speculating on the approach. Unexpected API behavior not yet documented there is a signal to add it via `/improve` after the session.
