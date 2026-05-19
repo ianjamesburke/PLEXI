@@ -318,6 +318,7 @@ impl AppRegistry {
     /// tests so they can stage a fake `~/.plexi-<channel>/apps/` without
     /// touching the real one.
     pub fn load_with_global(cwd: &Path, global_dir: &Path) -> Self {
+        let channel_dir = registry_config_dir();
         let mut registry = Self {
             apps: HashMap::new(),
             extension_map: HashMap::new(),
@@ -328,21 +329,21 @@ impl AppRegistry {
         }
 
         // Local apps + agents — only scanned when a workspace root exists.
-        // `.plexi/apps/` is scanned first, then `.plexi/agents/`; both shadow
-        // global, and a colliding id between local apps and local agents lets
-        // the agent win (scanned later).
-        if let Some(root) = resolve_workspace_root(cwd) {
-            let local_apps = root.join(".plexi").join("apps");
+        // `<channel_dir>/apps/` is scanned first, then `<channel_dir>/agents/`;
+        // both shadow global, and a colliding id between local apps and local
+        // agents lets the agent win (scanned later).
+        if let Some(root) = resolve_workspace_root_with_channel(cwd, &channel_dir) {
+            let local_apps = root.join(&channel_dir).join("apps");
             if local_apps.is_dir() {
                 registry.scan_dir(&local_apps, RegistrySource::LocalApp);
             }
-            let local_agents = root.join(".plexi").join("agents");
+            let local_agents = root.join(&channel_dir).join("agents");
             if local_agents.is_dir() {
                 registry.scan_dir(&local_agents, RegistrySource::LocalAgent);
             }
             // Linked apps — registered via `plexi app link`, stored as absolute paths in
-            // `.plexi/links.toml`. Scanned last — linked entries shadow all other sources.
-            let links_path = root.join(".plexi").join("links.toml");
+            // `<channel_dir>/links.toml`. Scanned last — linked entries shadow all other sources.
+            let links_path = root.join(&channel_dir).join("links.toml");
             if links_path.exists() {
                 registry.scan_links(&links_path);
             }
@@ -753,18 +754,42 @@ pub fn apps_dir() -> PathBuf {
     crate::config::config_dir().join("apps")
 }
 
+/// Detect the channel config dir name from the running binary name.
+/// Mirrors the logic in `config_dir_name()` (config.rs) but without the
+/// PROFILE_OVERRIDE global, which is private to that module.
+fn registry_config_dir() -> String {
+    let binary = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+    match binary.as_deref() {
+        Some(name) if name.contains("alpha") => ".plexi-alpha".to_string(),
+        Some(name) if name.contains("beta") => ".plexi-beta".to_string(),
+        Some(name) if name.contains("v3") => ".plexi-v3".to_string(),
+        Some(name) if name.contains("pr-") => {
+            let suffix = name.trim_start_matches("plexi-");
+            format!(".plexi-{suffix}")
+        }
+        _ => ".plexi".to_string(),
+    }
+}
+
 /// Walk up from `start` toward the filesystem root looking for the nearest
-/// ancestor that contains a `.plexi/` directory. Returns that ancestor (the
-/// workspace root), or `None` if no `.plexi/` is found before the root.
+/// ancestor that contains a channel config directory (e.g. `.plexi-alpha/`
+/// for the alpha build, `.plexi/` for stable). Returns that ancestor (the
+/// workspace root), or `None` if no matching directory is found before root.
 ///
 /// The home directory is **not** treated as a workspace root unless it
-/// contains a `.plexi/` itself — `~/.plexi-<channel>/` is the global config
-/// dir, which lives next to `~`, not inside it.
+/// contains the channel dir itself — `~/.plexi-<channel>/` is the global
+/// config dir, which lives next to `~`, not inside it.
 pub fn resolve_workspace_root(start: &Path) -> Option<PathBuf> {
+    resolve_workspace_root_with_channel(start, &registry_config_dir())
+}
+
+fn resolve_workspace_root_with_channel(start: &Path, channel_dir: &str) -> Option<PathBuf> {
     let home = dirs::home_dir();
     let mut current = start.to_path_buf();
     loop {
-        // Home dir is never a workspace root. Check this BEFORE .plexi so that
+        // Home dir is never a workspace root. Check this BEFORE the channel dir so that
         // ~/.plexi/ (the stable global config dir) doesn't trigger a false positive
         // when the focused pane is at ~/. Without this guard ordering, PR/alpha builds
         // would silently load stable app code from ~/.plexi/apps/ instead of their own
@@ -774,7 +799,7 @@ pub fn resolve_workspace_root(start: &Path) -> Option<PathBuf> {
                 return None;
             }
         }
-        if current.join(".plexi").is_dir() {
+        if current.join(channel_dir).is_dir() {
             return Some(current);
         }
         if !current.pop() {

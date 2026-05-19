@@ -673,10 +673,35 @@ pub fn workspace_secret_delete(friendly: &str) -> i32 {
 
 // ── plexi app subcommands ─────────────────────────────────────────────────────
 
+/// Detect the channel config dir name from the running binary name.
+/// Mirrors the logic in `config_dir_name()` (config.rs) without the
+/// PROFILE_OVERRIDE global, which is private to that module.
+fn app_init_config_dir() -> String {
+    let binary = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+    match binary.as_deref() {
+        Some(name) if name.contains("alpha") => ".plexi-alpha".to_string(),
+        Some(name) if name.contains("beta") => ".plexi-beta".to_string(),
+        Some(name) if name.contains("v3") => ".plexi-v3".to_string(),
+        Some(name) if name.contains("pr-") => {
+            let suffix = name.trim_start_matches("plexi-");
+            format!(".plexi-{suffix}")
+        }
+        _ => ".plexi".to_string(),
+    }
+}
+
 /// `plexi app init [--lang python|rust] <name>` — scaffold a new app.
-/// Always scaffolds into `<cwd>/.plexi/apps/<name>/`, creating the directory
-/// structure if absent. The app is immediately discoverable by the registry
-/// without any additional install step, and hot reload watches the actual source.
+///
+/// Placement: walks up from CWD looking for the nearest ancestor directory
+/// that contains the channel config dir (e.g. `.plexi-alpha/` for the alpha
+/// build, `.plexi/` for stable). If found, scaffolds into
+/// `<workspace_root>/<channel_dir>/apps/<name>/`. If no workspace root is
+/// found, falls back to `<cwd>/<channel_dir>/apps/<name>/`.
+///
+/// The app is immediately discoverable by the registry without any additional
+/// install step, and hot reload watches the actual source.
 pub fn app_init(name: &str, lang: &str) -> i32 {
     if name.is_empty() {
         eprintln!("Usage: plexi app init [--lang python|rust] <name>");
@@ -702,7 +727,36 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
         return 1;
     }
 
-    let app_dir = cwd.join(".plexi").join("apps").join(name);
+    let channel_dir = app_init_config_dir();
+
+    // Walk up from CWD looking for a dir named `channel_dir` (e.g. `.plexi-alpha`).
+    // Stop at home and root. If found, place the app there; otherwise fall back to CWD.
+    let workspace_root = {
+        let home_path = home.clone();
+        let mut current = cwd.clone();
+        let mut found: Option<std::path::PathBuf> = None;
+        loop {
+            if let Some(ref h) = home_path {
+                if current == *h {
+                    break;
+                }
+            }
+            if current == std::path::Path::new("/") {
+                break;
+            }
+            if current.join(&channel_dir).is_dir() {
+                found = Some(current);
+                break;
+            }
+            if !current.pop() {
+                break;
+            }
+        }
+        found
+    };
+
+    let base = workspace_root.unwrap_or_else(|| cwd.clone());
+    let app_dir = base.join(&channel_dir).join("apps").join(name);
     log::info!("app_init: scaffold path={}", app_dir.display());
 
     if app_dir.exists() {
