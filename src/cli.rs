@@ -1207,6 +1207,10 @@ pub fn app_run(path: &str) -> i32 {
                     Ok(content) => {
                         let _ = std::fs::remove_file(&response_path);
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
+                                eprintln!("error: {msg}");
+                                return 1;
+                            }
                             if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
                                 println!("{pid}");
                                 return 0;
@@ -2851,8 +2855,11 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_
                 match std::fs::read_to_string(&response_path) {
                     Ok(content) => {
                         let _ = std::fs::remove_file(&response_path);
-                        // Parse {"pane_id": N} and print just the number
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
+                                eprintln!("error: {msg}");
+                                return 1;
+                            }
                             if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
                                 println!("{pid}");
                                 return 0;

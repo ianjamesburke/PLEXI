@@ -1497,6 +1497,7 @@ impl PlexiApp {
                     }
 
                     let cwd_override: Option<std::path::PathBuf> = cwd.as_deref().map(std::path::PathBuf::from);
+                    let mut launch_result: Result<(), String> = Ok(());
                     if type_id == "terminal" {
                         let layout_str = layout.as_deref().unwrap_or("split_v");
                         let initial_cmd = cmd_from_args(args);
@@ -1522,9 +1523,9 @@ impl PlexiApp {
                             self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral, new_pane_first, cwd_override);
                         }
                     } else if let Some(path_str) = path {
-                        self.launch_app_by_path_with_layout(path_str, layout.clone());
+                        launch_result = self.launch_app_by_path_with_layout(path_str, layout.clone());
                     } else {
-                        self.launch_app_by_id_with_layout(type_id, layout.clone(), args, cwd_override);
+                        launch_result = self.launch_app_by_id_with_layout(type_id, layout.clone(), args, cwd_override);
                     }
 
                     // Restore original focus when no_focus is requested or from_pane_id overrode it.
@@ -1538,7 +1539,13 @@ impl PlexiApp {
                         self.windows[active].focused_pane = original_focused;
                     }
                     if let Some(rf) = response_file {
-                        let json = format!("{{\"pane_id\":{new_pane_id}}}");
+                        let json = match &launch_result {
+                            Ok(()) => format!("{{\"pane_id\":{new_pane_id}}}"),
+                            Err(msg) => {
+                                log::warn!("pane_ipc: spawn_pane: launch failed, returning error to caller: {msg}");
+                                format!("{{\"error\":{}}}", serde_json::to_string(msg).unwrap_or_else(|_| format!("\"{msg}\"")))
+                            }
+                        };
                         if let Err(e) = std::fs::write(rf, &json) {
                             log::error!("pane_ipc: spawn_pane: could not write response file: {e}");
                         }
@@ -1882,9 +1889,9 @@ impl PlexiApp {
                 let initial_cmd = cmd_from_args(&args);
                 self.split_focused(vertical, initial_cmd.as_deref(), ephemeral, new_pane_first, cwd_override);
             } else if let Some(ref path_str) = path {
-                self.launch_app_by_path_with_layout(path_str, layout);
+                let _ = self.launch_app_by_path_with_layout(path_str, layout);
             } else {
-                self.launch_app_by_id_with_layout(&type_id, layout, &args, cwd_override);
+                let _ = self.launch_app_by_id_with_layout(&type_id, layout, &args, cwd_override);
             }
             if no_focus {
                 log::info!("spawn-queue: no_focus=true, retaining focus on pane_id={original_focused:?}");
@@ -2357,7 +2364,7 @@ impl eframe::App for PlexiApp {
                         });
 
                     let new_pane_id = self.host.next_pane_id();
-                    self.launch_app_by_id_with_layout(&type_id, layout, &args, None);
+                    let _ = self.launch_app_by_id_with_layout(&type_id, layout, &args, None);
 
                     // Confirm back to the requesting app.
                     if let Some(req_pane_id) = requesting_pane_id {
@@ -2514,7 +2521,7 @@ impl eframe::App for PlexiApp {
                         // CLI terminal uses the ephemeral flag exclusively — cmd alone does not close.
                         self.split_focused(vertical, initial_cmd.as_deref(), initial_cmd.is_some(), new_pane_first, None);
                     } else {
-                        self.launch_app_by_id_with_layout(&type_id, Some(layout), &effective_args, None);
+                        let _ = self.launch_app_by_id_with_layout(&type_id, Some(layout), &effective_args, None);
                         log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
                     }
 

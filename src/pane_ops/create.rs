@@ -564,7 +564,7 @@ impl PlexiApp {
     /// Launch an installed app by id in the focused pane.
     /// Respects the `layout_hint` from the app's manifest.toml.
     pub(crate) fn launch_app_by_id(&mut self, id: &str) {
-        self.launch_app_by_id_with_layout(id, None, &[], None);
+        let _ = self.launch_app_by_id_with_layout(id, None, &[], None);
     }
 
     /// Launch an installed app with an explicit layout and args override.
@@ -578,7 +578,7 @@ impl PlexiApp {
         layout: Option<String>,
         args: &[String],
         cwd_override: Option<PathBuf>,
-    ) {
+    ) -> Result<(), String> {
         // "terminal" is a builtin pane type, not in the app registry.
         // Reached via SDK AppCommand::SpawnApp("terminal", ...) and legacy paths.
         // Socket IPC and spawn-queue handle terminal inline in app/mod.rs.
@@ -591,7 +591,7 @@ impl PlexiApp {
                 "SpawnPane: terminal layout='{layout_str}' vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?}"
             );
             self.split_focused(vertical, initial_cmd.as_deref(), false, new_pane_first, None);
-            return;
+            return Ok(());
         }
 
         let cwd_explicit = cwd_override.is_some();
@@ -614,7 +614,7 @@ impl PlexiApp {
                     Some("overlay".to_string())
                 });
             self.open_process_app_pane(id, *parked, cwd, group, hint.as_deref());
-            return;
+            return Ok(());
         }
 
         // Ensure the registry is up-to-date: rescan if the app was added mid-session
@@ -633,7 +633,7 @@ impl PlexiApp {
                 .or_else(|| self.registry.layout_hint_for(id))
                 .or_else(|| Some("overlay".to_string()));
             self.open_launch_failed_pane(id, fail_hint.as_deref(), missing, cwd);
-            return;
+            return Ok(());
         }
 
         // Try registry first; if it returns None, fall through to Tier 4.
@@ -655,14 +655,16 @@ impl PlexiApp {
                 );
             }
             self.open_process_app_pane(id, process, cwd, group, hint.as_deref());
-            return;
+            return Ok(());
         }
 
         // Tier 4 — CLI native descriptor (plexi_app field).
         if let Some(process) = self.try_launch_cli_pgap_app(id, &cwd) {
             self.open_process_app_pane(&format!("cli:{id}"), process, cwd, group, hint.as_deref());
+            Ok(())
         } else {
             log::warn!("launch_app_by_id: app '{id}' not found or failed to launch");
+            Err(format!("app '{id}' not found"))
         }
     }
 
@@ -674,7 +676,7 @@ impl PlexiApp {
         &mut self,
         app_path: &str,
         layout: Option<String>,
-    ) {
+    ) -> Result<(), String> {
         let app_dir = PathBuf::from(app_path);
         log::info!("launch_app_by_path_with_layout: path={app_path}");
 
@@ -682,7 +684,7 @@ impl PlexiApp {
             Ok(a) => a,
             Err(e) => {
                 log::warn!("launch_app_by_path_with_layout: failed to load manifest at {app_path}: {e}");
-                return;
+                return Err(format!("failed to load app at '{app_path}': {e}"));
             }
         };
 
@@ -725,9 +727,11 @@ impl PlexiApp {
                     "launch_app_by_path_with_layout: launched '{app_id}' from {app_path} group={group:?}"
                 );
                 self.open_process_app_pane(&app_id, process, app_dir, group, layout_hint.as_deref());
+                Ok(())
             }
             Err(e) => {
                 log::error!("launch_app_by_path_with_layout: failed to launch '{app_id}' from {app_path}: {e}");
+                Err(format!("failed to launch '{app_id}': {e}"))
             }
         }
     }
