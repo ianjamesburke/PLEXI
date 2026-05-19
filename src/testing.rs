@@ -784,4 +784,35 @@ mod tests {
         }
     }
 
+    // -- Context root CWD resolution ------------------------------------------
+
+    /// Regression guard for #1534: `reset_active_context` (Cmd+N from welcome
+    /// screen) must use `cwd_for_welcome_tab()` — which checks the context root
+    /// — rather than hardcoding `home_dir()`.
+    #[test]
+    fn cwd_for_welcome_tab_returns_context_root_when_set() {
+        let root = std::path::PathBuf::from("/tmp");
+        let mut h = HostHarness::new();
+        h.app.set_active_context_root(root.clone());
+        assert_eq!(
+            h.app.cwd_for_welcome_tab(),
+            root,
+            "cwd_for_welcome_tab must return the context root when one is set"
+        );
+    }
+
+    /// Regression guard for #1534: without a context root, `cwd_for_welcome_tab`
+    /// must fall back to the window launch path, not panic or return an arbitrary dir.
+    #[test]
+    fn cwd_for_welcome_tab_falls_back_to_window_path_when_no_root() {
+        let h = HostHarness::new();
+        let window_path = h.app.windows[0].path.clone();
+        // No root set — fallback chain: None → window.path
+        assert_eq!(
+            h.app.cwd_for_welcome_tab(),
+            window_path,
+            "cwd_for_welcome_tab must fall back to window.path when no context root is set"
+        );
+    }
+
 }
