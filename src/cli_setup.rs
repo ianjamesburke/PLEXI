@@ -1,5 +1,94 @@
 use std::path::PathBuf;
 
+pub fn completions_sentinel_path() -> PathBuf {
+    crate::config::config_dir().join("completions_setup_done")
+}
+
+pub fn completions_was_prompted() -> bool {
+    completions_sentinel_path().exists()
+}
+
+pub fn completions_mark_prompted() {
+    let _ = std::fs::write(completions_sentinel_path(), "");
+}
+
+/// Check whether shell completions for this build are installed.
+///
+/// Detects the current shell from `$SHELL` and checks the expected location.
+/// Returns `true` for unknown shells to avoid a spurious banner.
+pub fn completions_installed() -> bool {
+    let cli = cli_name();
+    let shell = std::env::var("SHELL").unwrap_or_default();
+
+    if shell.contains("zsh") {
+        // Prefer Homebrew site-functions; fall back to ~/.zfunc
+        let brew_ok = std::process::Command::new("brew")
+            .arg("--prefix")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|prefix| {
+                PathBuf::from(prefix.trim())
+                    .join("share/zsh/site-functions")
+                    .join(format!("_{cli}"))
+                    .exists()
+            })
+            .unwrap_or(false);
+        if brew_ok {
+            log::info!("cli_setup: completions found in brew site-functions for {cli}");
+            return true;
+        }
+        let zfunc_ok = dirs::home_dir()
+            .map(|h| h.join(".zfunc").join(format!("_{cli}")).exists())
+            .unwrap_or(false);
+        if zfunc_ok {
+            log::info!("cli_setup: completions found in ~/.zfunc for {cli}");
+        } else {
+            log::info!("cli_setup: zsh completions not found for {cli}");
+        }
+        zfunc_ok
+    } else if shell.contains("bash") {
+        let found = dirs::home_dir()
+            .map(|h| h.join(".bash_completion.d").join(&cli).exists())
+            .unwrap_or(false);
+        log::info!("cli_setup: bash completions found={found} for {cli}");
+        found
+    } else if shell.contains("fish") {
+        let found = dirs::home_dir()
+            .map(|h| {
+                h.join(".config/fish/completions")
+                    .join(format!("{cli}.fish"))
+                    .exists()
+            })
+            .unwrap_or(false);
+        log::info!("cli_setup: fish completions found={found} for {cli}");
+        found
+    } else {
+        log::info!("cli_setup: unknown shell {shell:?} — skipping completions check");
+        true
+    }
+}
+
+/// Show the completions banner once when the CLI is installed but completions are not.
+/// Dismissed permanently via sentinel; session-only via the banner's "Not now" button.
+pub fn should_prompt_completions() -> bool {
+    if completions_was_prompted() {
+        log::info!("cli_setup: completions sentinel present — skipping banner");
+        return false;
+    }
+    if !is_installed() {
+        // Wait until the CLI is installed before nudging about completions.
+        return false;
+    }
+    if completions_installed() {
+        log::info!("cli_setup: completions already installed — writing sentinel");
+        completions_mark_prompted();
+        return false;
+    }
+    log::info!("cli_setup: completions not installed — showing banner");
+    true
+}
+
 /// CLI name for the running build variant (e.g. `plexi`, `plexi-alpha`).
 pub fn cli_name() -> String {
     std::env::current_exe()
