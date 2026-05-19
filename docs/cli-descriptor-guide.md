@@ -145,7 +145,9 @@ Plexi splits `plexi_app` on whitespace — first token is the binary, rest are i
 
 The `parallax` video-pipeline CLI, fully annotated:
 
-```json
+> The block below uses `//` comments for readability. Remove all comments before using or validating the JSON — standard parsers (including `jq`) reject them.
+
+```jsonc
 {
   "plexi_version": "0.1",        // descriptor format version — always "0.1" for now
   "name": "parallax",
