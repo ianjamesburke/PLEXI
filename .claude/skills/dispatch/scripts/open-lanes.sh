@@ -12,6 +12,7 @@ fi
 
 PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}
 MY_PANE_ID=${PLEXI_PANE_ID:?PLEXI_PANE_ID not set — must run inside a Plexi pane}
+REPO_DIR=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
 
 PREV_ID=$MY_PANE_ID
 LAYOUT=split_h
@@ -19,6 +20,7 @@ LAYOUT=split_h
 for ISSUE in "$@"; do
   PANE_ID=$($PLEXI terminal --layout $LAYOUT --from-pane-id $PREV_ID --no-focus)
   $PLEXI pane name $PANE_ID "#${ISSUE}"
+  $PLEXI pane send $PANE_ID "cd $REPO_DIR"$'\n'
   $PLEXI pane send $PANE_ID 'c "/ship-issue '"$ISSUE"'"'$'\n'
   echo "Lane opened: pane $PANE_ID → #$ISSUE"
   PREV_ID=$PANE_ID
