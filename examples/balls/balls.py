@@ -56,6 +56,8 @@ def _new_ball(x: float, y: float, idx: int,
 
 
 class BallsApp(App):
+    # Override the default dark background with the physics demo's deep-space color.
+    default_background = "#0d0d1a"
 
     def on_init(self, ctx: RenderContext) -> None:
         count = int(self.args[0]) if self.args else 10
@@ -138,8 +140,6 @@ class BallsApp(App):
                 b.vy += impulse * a.mass * ny
 
         # ── Render ────────────────────────────────────────────────────────────
-        ctx.clear("#0d0d1a")
-
         # Draw shadows first so they don't overlap other balls' bodies
         for ball in self.balls:
             ctx.circle(ball.x + 3, ball.y + 4, ball.r, dim("#000000", 60))

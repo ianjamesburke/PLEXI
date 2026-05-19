@@ -7,7 +7,7 @@ import sys
 from typing import Any, Coroutine
 
 from ._protocol import PROTOCOL_VERSION
-from ._constants import _SDK_VERSION
+from ._constants import _SDK_VERSION, BG as _DEFAULT_BG
 from ._emitter import Emitter, _emit, _sync_hook_scope
 from ._pipe import Pipe
 from ._render_context import RenderContext
@@ -101,6 +101,10 @@ class App:
     Fire-and-forget handlers do not receive a RenderContext because they are
     dispatched outside a render frame.
     """
+
+    # Background color applied automatically before each on_render call.
+    # Set to None to disable the default background and manage clearing manually.
+    default_background: "str | None" = _DEFAULT_BG
 
     def __init__(self) -> None:
         self._sdk_initialized: bool = True
@@ -761,6 +765,7 @@ class App:
                     features_used = [f for f in self.feature_flags
                                       if f in ("pane_groups_v1",)]
                     _emit({"type": "ready", "sdk": SDK_ID, "features_used": features_used})
+                    self.emit.info(f"sdk: default_background={self.default_background!r}")
                     await self._dispatch_hook(self.on_init, self._make_ctx())
 
                 elif t == "render":
@@ -778,6 +783,8 @@ class App:
                     pending_clicks = list(self._click_buf)
                     self._click_buf.clear()
                     ctx = self._make_ctx(frame_id, elapsed=elapsed, clicks=pending_clicks)
+                    if self.default_background is not None:
+                        ctx.clear(self.default_background)
                     try:
                         await self._dispatch_hook(self.on_render, ctx)
                         self._consecutive_render_errors = 0
