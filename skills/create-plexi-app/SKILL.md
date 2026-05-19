@@ -1,7 +1,7 @@
 ---
 name: create-plexi-app
 description: Use when building, scaffolding, or modifying a Plexi Python app. Covers manifest, SDK surface, key-handling, the dev loop, render verification, and logging requirements.
-skill_version: "0.0.452"
+skill_version: "0.0.461"
 ---
 
 # Build a Plexi App
