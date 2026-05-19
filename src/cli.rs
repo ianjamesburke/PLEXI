@@ -1626,35 +1626,50 @@ pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
     let app_bundle  = std::path::PathBuf::from(format!("/Applications/Plexi{cap}.app"));
     let cli_binary  = std::path::PathBuf::from(format!("/usr/local/bin/plexi{suffix}"));
 
-    // Print what will be removed
+    // Single confirmation prompt: keep data or remove everything?
+    // Resolved before the banner so the preview accurately reflects the outcome.
+    let keep_data = if keep_data || !profile_dir.exists() {
+        log::info!("uninstall: keep_data=flag({keep_data}) profile_exists={}", profile_dir.exists());
+        keep_data
+    } else if assume_yes {
+        log::info!("uninstall: keep_data=false (assume_yes, no --keep-data)");
+        false
+    } else {
+        eprint!("Keep your ~/.plexi{suffix} data for future installs? [y/n, Enter=abort]: ");
+        let _ = io::stderr().flush();
+        let mut answer = String::new();
+        if let Err(e) = io::stdin().read_line(&mut answer) {
+            log::warn!("uninstall: failed to read keep-data confirmation: {e}");
+            eprintln!("error: failed to read: {e}");
+            return 1;
+        }
+        match answer.trim().to_lowercase().as_str() {
+            "y" | "yes" => {
+                log::info!("uninstall: keep_data=true (user chose y)");
+                true
+            }
+            "n" | "no" => {
+                log::info!("uninstall: keep_data=false (user chose n)");
+                eprintln!("Removing everything.");
+                false
+            }
+            other => {
+                log::info!("uninstall: aborted (user input {:?})", other);
+                eprintln!("Aborted.");
+                return 0;
+            }
+        }
+    };
+
+    // Print what will be removed (after keep_data is resolved so the preview is accurate)
     println!("This will remove:");
     if app_bundle.exists()  { println!("  \u{2022} {}", app_bundle.display()); }
     if cli_binary.exists()  { println!("  \u{2022} {}", cli_binary.display()); }
     if !keep_data && profile_dir.exists() {
         println!("  \u{2022} {}  (settings, secrets, app configs)", profile_dir.display());
     } else if profile_dir.exists() {
-        println!("  \u{2022} {} will be kept  (--keep-data)", profile_dir.display());
+        println!("  \u{2022} {} will be kept", profile_dir.display());
     }
-
-    // Single confirmation prompt: keep data or remove everything?
-    let keep_data = if keep_data || !profile_dir.exists() {
-        keep_data
-    } else if assume_yes {
-        false // default: remove data when -y is passed without --keep-data
-    } else {
-        eprint!("\nKeep your ~/.plexi{suffix} data for future installs? [y/N]: ");
-        let _ = io::stderr().flush();
-        let mut answer = String::new();
-        if io::stdin().read_line(&mut answer).is_err() {
-            eprintln!("error: failed to read");
-            return 1;
-        }
-        let keep = matches!(answer.trim().to_lowercase().as_str(), "y" | "yes");
-        if !keep {
-            eprintln!("Removing everything.");
-        }
-        keep
-    };
 
     let mut removed = false;
 
