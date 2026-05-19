@@ -133,6 +133,9 @@ class App:
         # v3.4 audio device enumeration (#341): awaits PlexiEvent::AudioDevicesListed keyed
         # on request_id. Each entry is consumed by a single list_audio_devices() call.
         self._pending_audio_devices: "dict[str, asyncio.Queue]" = {}
+        # v3.5 camera device enumeration (#1505): awaits PlexiEvent::CameraDevicesListed keyed
+        # on request_id. Each entry is consumed by a single list_camera_devices() call.
+        self._pending_camera_devices: "dict[str, asyncio.Queue]" = {}
         # v3.4 video substrate (#345): awaits PlexiEvent::VideoOpenAck /
         # VideoOpenError keyed on request_id. Each entry is consumed by a
         # single open_video() call.
@@ -607,6 +610,13 @@ class App:
                     # v3.4 audio device enumeration (#341). Forward to Emitter.list_audio_devices.
                     req_id = ev.get("request_id", "")
                     q = self._pending_audio_devices.pop(req_id, None)
+                    if q:
+                        q.put_nowait(ev)
+
+                elif t == "camera_devices_listed":
+                    # v3.5 camera device enumeration (#1505). Forward to Emitter.list_camera_devices.
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_camera_devices.pop(req_id, None)
                     if q:
                         q.put_nowait(ev)
 

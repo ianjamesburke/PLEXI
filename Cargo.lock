@@ -2833,6 +2833,7 @@ dependencies = [
  "cpal",
  "crossbeam-queue",
  "dirs",
+ "dispatch2",
  "eframe",
  "egui",
  "egui-wgpu",

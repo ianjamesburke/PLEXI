@@ -57,6 +57,13 @@ pub enum VideoState {
     Seek { position_ms: u64 },
 }
 
+/// Info for one camera device returned by `VideoDecoder::list_camera_devices`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraDeviceInfo {
+    pub id: String,
+    pub name: String,
+}
+
 /// Result of `VideoDecoder::open` on success. Reported back to the app as
 /// `PlexiEvent::VideoOpenAck`.
 #[derive(Debug, Clone, PartialEq)]
@@ -142,6 +149,11 @@ pub trait VideoDecoder: Send + Sync {
         source: &str,
         frame_ring: Arc<ArrayQueue<Vec<u8>>>,
     ) -> Result<(VideoOpenAck, VideoHandle), VideoError>;
+
+    /// Enumerate available camera devices. Returns an empty vec on non-macOS
+    /// or when no cameras are attached. Capability checking is enforced by
+    /// the routing layer, not here.
+    fn list_camera_devices(&self) -> Vec<CameraDeviceInfo>;
 }
 
 // ─── Production impl: AvfVideoDecoder ────────────────────────────────────────
@@ -212,6 +224,10 @@ impl VideoDecoder for AvfVideoDecoder {
     ) -> Result<(VideoOpenAck, VideoHandle), VideoError> {
         avf_impl::open(self, source, frame_ring)
     }
+
+    fn list_camera_devices(&self) -> Vec<CameraDeviceInfo> {
+        unsafe { avf_impl::enumerate_cameras() }
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -225,6 +241,10 @@ impl VideoDecoder for AvfVideoDecoder {
         // surfaces an explicit error rather than panicking.
         Err(VideoError::NotImplemented)
     }
+
+    fn list_camera_devices(&self) -> Vec<CameraDeviceInfo> {
+        vec![]
+    }
 }
 
 
@@ -235,20 +255,32 @@ impl VideoDecoder for AvfVideoDecoder {
 // variant: this code runs on a dedicated worker thread that already owns the
 // AVAssetReader, so blocking-on-track-load is correct. Switching to the
 // async API would force a Tokio / dispatch_queue wrapper for no behavioural
-// gain. Localised `#[allow]` keeps the rest of the crate honest.
+// gain.
+//
+// `AVCaptureDevice::devicesWithMediaType` is deprecated in favour of
+// `AVCaptureDeviceDiscoverySession` on newer OS versions. We use the sync
+// variant for simplicity; the discovery session requires more setup.
+// Localised `#[allow]` keeps the rest of the crate honest.
 mod avf_impl {
     //! macOS-only AVFoundation backing. Isolated so non-mac builds don't see
     //! the obj-c symbols and the rest of `video.rs` stays portable.
 
     use super::{
-        AvfVideoDecoder, VideoError, VideoHandle, VideoHandleGuard, VideoHandleInner,
-        VideoOpenAck, VideoState,
+        AvfVideoDecoder, CameraDeviceInfo, VideoError, VideoHandle, VideoHandleGuard,
+        VideoHandleInner, VideoOpenAck, VideoState,
     };
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, OnceLock};
 
     use crossbeam_queue::ArrayQueue;
+    use dispatch2::{DispatchQueue, DispatchQueueAttr, DispatchRetained};
+    use objc2::declare::ClassBuilder;
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyObject, NSObject, Sel};
+    use objc2::{sel, ClassType};
     use objc2_av_foundation::{
-        AVAssetReader, AVAssetReaderTrackOutput, AVMediaTypeVideo, AVURLAsset,
+        AVAssetReader, AVAssetReaderTrackOutput, AVCaptureDevice, AVCaptureDeviceInput,
+        AVCaptureSession, AVCaptureVideoDataOutput, AVMediaTypeVideo, AVURLAsset,
     };
     use objc2_core_media::{CMTime, CMTimeRange};
     use objc2_core_video::{
@@ -259,14 +291,18 @@ mod avf_impl {
     };
     use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
 
-    /// Top-level entry from the trait `open()`. Resolves the path, opens the
-    /// asset, queries metadata, allocates a handle id, then spawns the
-    /// worker thread.
+    /// Top-level entry from the trait `open()`. Dispatches on `camera://`
+    /// sources to the camera capture path; otherwise resolves the file path
+    /// and opens the AVFoundation asset pipeline.
     pub(super) fn open(
         decoder: &AvfVideoDecoder,
         source: &str,
         frame_ring: Arc<ArrayQueue<Vec<u8>>>,
     ) -> Result<(VideoOpenAck, VideoHandle), VideoError> {
+        if source.starts_with("camera://") {
+            return open_camera(decoder, source, frame_ring);
+        }
+
         let path = AvfVideoDecoder::resolve_path(source)?;
 
         // Construct AVURLAsset on the calling thread to query metadata
@@ -639,6 +675,374 @@ mod avf_impl {
         EndOfStream,
     }
 
+    // ── Camera capture (#1505) ────────────────────────────────────────────
+
+    /// Shared state threaded from the camera worker into the ObjC delegate.
+    /// Heap-allocated so we can pass a raw pointer into the ObjC ivar.
+    struct CameraShared {
+        frame_ring: Arc<ArrayQueue<Vec<u8>>>,
+        paused: Arc<AtomicBool>,
+        out_width: u32,
+        out_height: u32,
+    }
+
+    /// Enumerate connected camera devices via AVCaptureDevice. Returns an
+    /// empty vec when no cameras are found or `AVMediaTypeVideo` is unbound.
+    pub(super) unsafe fn enumerate_cameras() -> Vec<CameraDeviceInfo> {
+        let video_type = match AVMediaTypeVideo {
+            Some(t) => t,
+            None => return vec![],
+        };
+        let devices = AVCaptureDevice::devicesWithMediaType(video_type);
+        let count = devices.count();
+        let mut result = Vec::with_capacity(count);
+        for i in 0..count {
+            let dev = devices.objectAtIndex(i);
+            let id = dev.uniqueID().to_string();
+            let name = dev.localizedName().to_string();
+            result.push(CameraDeviceInfo { id, name });
+        }
+        result
+    }
+
+    /// Register `PlexiCameraDelegate` with the ObjC runtime once.
+    ///
+    /// The delegate stores a `*mut CameraShared` in its ivar. On each
+    /// `captureOutput:didOutputSampleBuffer:fromConnection:` callback it
+    /// reads the shared state, converts the pixel buffer BGRA→RGBA, and
+    /// pushes the frame into the ring. The shared pointer is valid for the
+    /// lifetime of the camera worker thread (which owns the `Box<CameraShared>`).
+    fn get_camera_delegate_class() -> &'static objc2::runtime::AnyClass {
+        static CLASS: OnceLock<&'static objc2::runtime::AnyClass> = OnceLock::new();
+        CLASS.get_or_init(|| {
+            let superclass = NSObject::class();
+            let mut builder = ClassBuilder::new(c"PlexiCameraDelegate", superclass)
+                .expect("PlexiCameraDelegate already registered");
+
+            builder.add_ivar::<*mut std::ffi::c_void>(c"sharedPtr");
+
+            unsafe extern "C" fn did_output_sample_buffer(
+                this: &AnyObject,
+                _cmd: Sel,
+                _output: *mut AnyObject,
+                sample_buffer: *mut AnyObject,
+                _connection: *mut AnyObject,
+            ) {
+                // Load the shared pointer from the ivar.
+                let cls = objc2::runtime::AnyClass::get(c"PlexiCameraDelegate")
+                    .expect("PlexiCameraDelegate not registered");
+                let ivar = cls.instance_variable(c"sharedPtr")
+                    .expect("sharedPtr ivar missing");
+                let raw_ptr: *mut std::ffi::c_void = *ivar.load_ptr::<*mut std::ffi::c_void>(this);
+                if raw_ptr.is_null() {
+                    return;
+                }
+                let shared = &*(raw_ptr as *const CameraShared);
+
+                if shared.paused.load(Ordering::Acquire) {
+                    return;
+                }
+
+                if sample_buffer.is_null() {
+                    return;
+                }
+
+                // Extract pixel buffer from CMSampleBuffer.
+                let pixel_buffer: *mut AnyObject =
+                    objc2::msg_send![&*sample_buffer, imageBuffer];
+                if pixel_buffer.is_null() {
+                    return;
+                }
+
+                let lock_flags = CVPixelBufferLockFlags::ReadOnly;
+                let lock_status = CVPixelBufferLockBaseAddress(
+                    &*(pixel_buffer as *const objc2_core_video::CVPixelBuffer),
+                    lock_flags,
+                );
+                if lock_status != 0 {
+                    return;
+                }
+
+                let pxbuf = &*(pixel_buffer as *const objc2_core_video::CVPixelBuffer);
+                let buf_width = CVPixelBufferGetWidth(pxbuf) as u32;
+                let buf_height = CVPixelBufferGetHeight(pxbuf) as u32;
+                let bytes_per_row = CVPixelBufferGetBytesPerRow(pxbuf);
+                let base = CVPixelBufferGetBaseAddress(pxbuf);
+
+                if !base.is_null() && buf_width > 0 && buf_height > 0 {
+                    let frame = copy_bgra_to_rgba(
+                        base.cast::<u8>(),
+                        bytes_per_row,
+                        buf_width,
+                        buf_height,
+                        shared.out_width,
+                        shared.out_height,
+                    );
+                    let _ = shared.frame_ring.push(frame);
+                }
+
+                let _ = CVPixelBufferUnlockBaseAddress(pxbuf, lock_flags);
+            }
+
+            unsafe {
+                builder.add_method(
+                    sel!(captureOutput:didOutputSampleBuffer:fromConnection:),
+                    did_output_sample_buffer as unsafe extern "C" fn(_, _, _, _, _),
+                );
+            }
+
+            builder.register()
+        })
+    }
+
+    /// Open a `camera://` source and return a `VideoHandle` that delivers
+    /// live RGBA8 frames via the binary pipe ring.
+    ///
+    /// `camera://0` or `camera://` → the system default video device.
+    /// `camera://<device-id>` → the device with that unique ID.
+    pub(super) fn open_camera(
+        decoder: &AvfVideoDecoder,
+        source: &str,
+        frame_ring: Arc<ArrayQueue<Vec<u8>>>,
+    ) -> Result<(VideoOpenAck, VideoHandle), VideoError> {
+        let (width, height, fps) = (640u32, 480u32, 30.0f32);
+        let handle_id = decoder
+            .next_handle_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        let paused = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(AtomicBool::new(false));
+        let paused_thread = Arc::clone(&paused);
+        let stop_thread = Arc::clone(&stop);
+
+        // Parse device id from `camera://<id>`. Empty string / "0" → default.
+        let device_id = source
+            .strip_prefix("camera://")
+            .unwrap_or("")
+            .to_string();
+
+        let join = std::thread::Builder::new()
+            .name(format!("avf-camera-{handle_id}"))
+            .spawn(move || {
+                camera_worker(
+                    device_id,
+                    width,
+                    height,
+                    fps,
+                    handle_id,
+                    paused_thread,
+                    stop_thread,
+                    frame_ring,
+                );
+            })
+            .map_err(|e| VideoError::Decoder(format!("camera worker spawn: {e}")))?;
+
+        let ack = VideoOpenAck {
+            handle_id,
+            width,
+            height,
+            fps,
+            duration_ms: 0,
+        };
+
+        struct CameraGuard {
+            stop: Arc<AtomicBool>,
+            join: Option<std::thread::JoinHandle<()>>,
+        }
+        impl VideoHandleGuard for CameraGuard {}
+        impl Drop for CameraGuard {
+            fn drop(&mut self) {
+                self.stop.store(true, Ordering::Release);
+                if let Some(h) = self.join.take() {
+                    let _ = h.join();
+                }
+            }
+        }
+
+        struct CameraInner {
+            paused: Arc<AtomicBool>,
+        }
+        impl VideoHandleInner for CameraInner {
+            fn set_state(&mut self, new_state: VideoState) -> Result<(), VideoError> {
+                match new_state {
+                    VideoState::Play => self.paused.store(false, Ordering::Release),
+                    VideoState::Pause => self.paused.store(true, Ordering::Release),
+                    VideoState::Seek { .. } => {
+                        log::warn!("camera: Seek is a no-op for live sources");
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let video_handle = VideoHandle {
+            handle_id,
+            width,
+            height,
+            fps,
+            duration_ms: 0,
+            _guard: Box::new(CameraGuard { stop, join: Some(join) }),
+            inner: Box::new(CameraInner { paused }),
+        };
+
+        Ok((ack, video_handle))
+    }
+
+    /// Camera worker thread. Creates AVCaptureSession with the specified
+    /// device, registers an ObjC delegate that forwards frames into the
+    /// frame ring, then polls until the stop flag is set.
+    ///
+    /// Delegate callbacks are delivered on a private serial dispatch queue,
+    /// so no NSRunLoop spin is required on this thread.
+    fn camera_worker(
+        device_id: String,
+        width: u32,
+        height: u32,
+        fps: f32,
+        handle_id: u64,
+        paused: Arc<AtomicBool>,
+        stop: Arc<AtomicBool>,
+        frame_ring: Arc<ArrayQueue<Vec<u8>>>,
+    ) {
+        // Box the shared state and keep it alive for the duration of the
+        // session. The raw pointer is stored in the ObjC delegate ivar.
+        let shared = Box::new(CameraShared {
+            frame_ring,
+            paused,
+            out_width: width,
+            out_height: height,
+        });
+        let shared_ptr = Box::into_raw(shared) as *mut std::ffi::c_void;
+
+        let result = unsafe {
+            run_capture_session(device_id, handle_id, fps, shared_ptr, &stop)
+        };
+
+        // Restore ownership so the Box is dropped and its Arc members
+        // are decremented.
+        let _shared = unsafe { Box::from_raw(shared_ptr as *mut CameraShared) };
+
+        if let Err(e) = result {
+            log::error!("camera worker[{handle_id}]: {e}");
+        }
+    }
+
+    /// Builds and runs the AVCaptureSession, then polls until `stop` is set.
+    unsafe fn run_capture_session(
+        device_id: String,
+        handle_id: u64,
+        fps: f32,
+        shared_ptr: *mut std::ffi::c_void,
+        stop: &AtomicBool,
+    ) -> Result<(), VideoError> {
+        objc2::rc::autoreleasepool(|_pool| {
+            let video_type = AVMediaTypeVideo
+                .ok_or_else(|| VideoError::Decoder("AVMediaTypeVideo unbound".to_owned()))?;
+
+            // Find the camera device.
+            let device: Retained<AVCaptureDevice> = if device_id.is_empty() || device_id == "0" {
+                AVCaptureDevice::defaultDeviceWithMediaType(video_type)
+                    .ok_or_else(|| VideoError::Decoder("no default camera device".to_owned()))?
+            } else {
+                let devices = AVCaptureDevice::devicesWithMediaType(video_type);
+                let mut found: Option<Retained<AVCaptureDevice>> = None;
+                for i in 0..devices.count() {
+                    let dev = devices.objectAtIndex(i);
+                    if dev.uniqueID().to_string() == device_id {
+                        found = Some(dev);
+                        break;
+                    }
+                }
+                found.ok_or_else(|| VideoError::Decoder(format!(
+                    "camera device not found: {device_id:?}"
+                )))?
+            };
+
+            log::info!(
+                "camera worker[{handle_id}]: using device '{}'",
+                device.localizedName()
+            );
+
+            // Build session.
+            let session = AVCaptureSession::new();
+
+            // Add device input.
+            let input = AVCaptureDeviceInput::deviceInputWithDevice_error(&device)
+                .map_err(|e| VideoError::Decoder(format!("AVCaptureDeviceInput: {e:?}")))?;
+
+            if session.canAddInput(&input) {
+                session.addInput(&input);
+            } else {
+                return Err(VideoError::Decoder(
+                    "cannot add device input to capture session".to_owned(),
+                ));
+            }
+
+            // Build video data output.
+            let video_output = AVCaptureVideoDataOutput::new();
+            video_output.setAlwaysDiscardsLateVideoFrames(true);
+
+            // Create delegate object.
+            let delegate_cls = get_camera_delegate_class();
+            let delegate: Retained<NSObject> = {
+                let obj: Retained<NSObject> = objc2::msg_send_id![delegate_cls, new];
+                // Store the shared pointer in the ivar.
+                let ivar = delegate_cls
+                    .instance_variable(c"sharedPtr")
+                    .expect("sharedPtr ivar");
+                ivar.load_ptr::<*mut std::ffi::c_void>(obj.as_ref()).write(shared_ptr);
+                obj
+            };
+
+            // Create a serial dispatch queue for delegate callbacks.
+            let queue: DispatchRetained<DispatchQueue> =
+                DispatchQueue::new("plexi.camera.delegate", DispatchQueueAttr::SERIAL);
+
+            if session.canAddOutput(&video_output) {
+                session.addOutput(&video_output);
+            } else {
+                return Err(VideoError::Decoder(
+                    "cannot add video output to capture session".to_owned(),
+                ));
+            }
+
+            // Wire the delegate.
+            let delegate_ptr = Retained::as_ptr(&delegate) as *const AnyObject;
+            video_output.setSampleBufferDelegate_queue(
+                Some(&*(delegate_ptr
+                    as *const objc2::runtime::ProtocolObject<
+                        dyn objc2_av_foundation::AVCaptureVideoDataOutputSampleBufferDelegate,
+                    >)),
+                Some(&queue),
+            );
+
+            let _ = fps; // fps is advisory; AVCapture delivers at device rate
+            session.startRunning();
+            log::info!("camera worker[{handle_id}]: session started");
+
+            // Poll until stop is signalled.
+            let poll = std::time::Duration::from_millis(50);
+            loop {
+                if stop.load(Ordering::Acquire) {
+                    break;
+                }
+                std::thread::sleep(poll);
+            }
+
+            session.stopRunning();
+            log::info!("camera worker[{handle_id}]: session stopped");
+
+            // Nil out the delegate ivar before the shared pointer is freed.
+            let ivar = delegate_cls
+                .instance_variable(c"sharedPtr")
+                .expect("sharedPtr ivar");
+            ivar.load_ptr::<*mut std::ffi::c_void>(delegate.as_ref())
+                .write(std::ptr::null_mut());
+
+            Ok(())
+        })
+    }
+
     /// Copy a BGRA pixel buffer into an `[R,G,B,A,...]` packed `Vec<u8>` of
     /// size `out_width * out_height * 4`. `bytes_per_row` may be larger
     /// than `width * 4` due to row alignment — we only copy `width * 4`
@@ -729,11 +1133,11 @@ impl MockVideoDecoder {
                 "source URL is empty".to_owned(),
             ));
         }
-        // Mock decoder accepts only mock:// URLs. Real-file paths must be
-        // routed through AvfVideoDecoder (which today returns NotImplemented).
-        if !source.starts_with("mock://") {
+        // Mock decoder accepts mock:// URLs and camera:// sources (for tests
+        // that exercise the camera path without real hardware).
+        if !source.starts_with("mock://") && !source.starts_with("camera://") {
             return Err(VideoError::InvalidSource(format!(
-                "MockVideoDecoder requires a mock:// URL, got {source:?}"
+                "MockVideoDecoder requires a mock:// or camera:// URL, got {source:?}"
             )));
         }
         Ok(())
@@ -856,6 +1260,13 @@ impl VideoDecoder for MockVideoDecoder {
         };
 
         Ok((ack, video_handle))
+    }
+
+    fn list_camera_devices(&self) -> Vec<CameraDeviceInfo> {
+        vec![CameraDeviceInfo {
+            id: "mock-cam-0".into(),
+            name: "Mock Camera".into(),
+        }]
     }
 }
 

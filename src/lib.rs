@@ -75,4 +75,11 @@ pub mod video {
         /// Absolute position in milliseconds from the start of the video.
         Seek { position_ms: u64 },
     }
+
+    /// One camera device. Stub for the lib target (full impl in binary target).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct CameraDeviceInfo {
+        pub id: String,
+        pub name: String,
+    }
 }

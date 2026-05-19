@@ -46,3 +46,16 @@ class AudioDeviceList:
     """Result of Emitter.list_audio_devices."""
     inputs: list
     outputs: list
+
+
+@dataclass
+class CameraDeviceInfo:
+    """One camera device. Mirrors CameraDeviceWire in the Rust protocol."""
+    id: str
+    name: str
+
+
+@dataclass
+class CameraDeviceList:
+    """Result of Emitter.list_camera_devices."""
+    cameras: list

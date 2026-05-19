@@ -4,7 +4,7 @@
 //! (media, pipes, capabilities, secrets, runs, notifications) are routed here.
 
 use crate::app_permissions::{check, is_blocked, Capability, PermissionCheck};
-use crate::app_protocol::{AudioDeviceWire, AppRequest, MidiPortWire, PlexiEvent, StreamChannel};
+use crate::app_protocol::{AudioDeviceWire, AppRequest, CameraDeviceWire, MidiPortWire, PlexiEvent, StreamChannel};
 use crate::app_trait::AppCommand;
 use crate::audio::AudioCaptureRequest;
 use crate::event_log::{self, HostEvent};
@@ -1245,6 +1245,45 @@ impl ProcessApp {
                     });
                 }).expect("failed to spawn midi-devices thread");
             }
+            AppRequest::ListCameraDevices { request_id } => {
+                // Camera device names are gated behind video.capture — unlike
+                // audio/MIDI device names, they are not visible in public system
+                // UIs without camera permission.
+                if let PermissionCheck::Denied(reason) =
+                    check(&self.permissions, Capability::VideoCapture)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: ListCameraDevices denied — {reason}",
+                        self.type_id
+                    );
+                    let _ = self.http_tx.send(PlexiEvent::CameraDevicesListed {
+                        request_id,
+                        cameras: vec![],
+                        error: Some(format!("capability denied: {reason}")),
+                    });
+                    return;
+                }
+                let video = std::sync::Arc::clone(&self.video_device);
+                let tx = self.http_tx.clone();
+                let type_id = self.type_id.clone();
+                std::thread::Builder::new()
+                    .name(format!("camera-devices-{type_id}"))
+                    .spawn(move || {
+                        let cameras = video
+                            .list_camera_devices()
+                            .into_iter()
+                            .map(CameraDeviceWire::from)
+                            .collect();
+                        log::info!("ProcessApp[{type_id}]: ListCameraDevices complete");
+                        let _ = tx.send(PlexiEvent::CameraDevicesListed {
+                            request_id,
+                            cameras,
+                            error: None,
+                        });
+                    })
+                    .expect("failed to spawn camera-devices thread");
+            }
+
             AppRequest::OpenMidiInput { port_id, pipe_id } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::MidiIn)
@@ -1298,11 +1337,17 @@ impl ProcessApp {
                 source,
                 pipe_id,
             } => {
+                // camera:// sources require video.capture; file sources require video.playback.
+                let required_cap = if source.starts_with("camera://") {
+                    Capability::VideoCapture
+                } else {
+                    Capability::VideoPlayback
+                };
                 if let PermissionCheck::Denied(reason) =
-                    check(&self.permissions, Capability::VideoPlayback)
+                    check(&self.permissions, required_cap)
                 {
                     log::warn!(
-                        "ProcessApp[{}]: OpenVideo denied — {reason}",
+                        "ProcessApp[{}]: OpenVideo denied (cap={required_cap}) — {reason}",
                         self.type_id
                     );
                     self.outbound_events.push_back(PlexiEvent::VideoOpenError {

@@ -36,6 +36,9 @@ pub enum Capability {
     AudioPlayback,
     /// Decode and display video via host broker.
     VideoPlayback,
+    /// Capture live camera video via host AVFoundation broker (#1505).
+    /// Requires explicit TCC camera consent.
+    VideoCapture,
     /// Make LLM API calls via host broker (reads OPENROUTER_API_KEY from environment).
     Llm,
     /// Set and cancel one-shot timers that fire PlexiEvent::Timer.
@@ -84,6 +87,7 @@ impl Capability {
             Self::AudioRecord => "audio.record",
             Self::AudioPlayback => "audio.playback",
             Self::VideoPlayback => "video.playback",
+            Self::VideoCapture => "video.capture",
             Self::Llm => "llm",
             Self::Timer => "timer",
             Self::AiQuery => "ai.query",
@@ -106,6 +110,7 @@ impl Capability {
             "audio.record",
             "audio.playback",
             "video.playback",
+            "video.capture",
             "llm",
             "timer",
             "ai.query",
@@ -146,6 +151,7 @@ impl Capability {
                 | Self::AiQuery
                 | Self::Llm
                 | Self::AudioRecord
+                | Self::VideoCapture
                 | Self::TerminalBindings
                 | Self::FsWrite
                 | Self::SecretsGet
@@ -194,6 +200,7 @@ impl<'a> TryFrom<&'a str> for Capability {
             "audio.record" => Ok(Self::AudioRecord),
             "audio.playback" => Ok(Self::AudioPlayback),
             "video.playback" => Ok(Self::VideoPlayback),
+            "video.capture" => Ok(Self::VideoCapture),
             "llm" => Ok(Self::Llm),
             "timer" => Ok(Self::Timer),
             "ai.query" => Ok(Self::AiQuery),

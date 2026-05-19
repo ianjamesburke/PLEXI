@@ -9,7 +9,7 @@ import uuid
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, Iterator
 
-from ._protocol import AiResponse, MidiPortInfo, MidiDeviceList, AudioDeviceInfo, AudioDeviceList
+from ._protocol import AiResponse, MidiPortInfo, MidiDeviceList, AudioDeviceInfo, AudioDeviceList, CameraDeviceInfo, CameraDeviceList
 from ._types import CapabilityDeniedError, VideoHandle
 
 if TYPE_CHECKING:
@@ -38,6 +38,7 @@ CAPABILITY_REGISTRY: dict[str, str] = {
     "open_video": "video.playback",
     "set_video_state": "video.playback",
     "close_video": "video.playback",
+    "list_camera_devices": "video.capture",
     "audio_capture": "audio.record",
     "stop_audio_capture": "audio.record",
     "audio_play": "audio.playback",
@@ -1127,6 +1128,41 @@ class Emitter:
                 )
                 for p in ev.get("outputs", [])
             ],
+        )
+
+    @_blocking_emit_method
+    async def list_camera_devices(self, timeout: float = 5.0) -> "CameraDeviceList":
+        """Enumerate camera devices via host AVFoundation broker (#1505).
+        Requires ``video.capture`` capability — camera names are gated by TCC.
+
+        Returns a CameraDeviceList with a ``cameras`` list of CameraDeviceInfo (id, name).
+
+        Raises RuntimeError on host enumeration failure, capability denial, or timeout.
+
+        From background threads:
+        ``self.emit.run_sync(self.emit.list_camera_devices())``.
+        """
+        req_id = str(uuid.uuid4())
+        q: asyncio.Queue[dict] = _make_async_queue()
+        self._app._pending_camera_devices[req_id] = q
+        _emit({"type": "list_camera_devices", "request_id": req_id})
+        try:
+            ev = await asyncio.wait_for(q.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            self._app._pending_camera_devices.pop(req_id, None)
+            raise RuntimeError(
+                f"list_camera_devices timed out after {timeout}s — host did not respond"
+            )
+        if ev.get("error"):
+            raise RuntimeError(f"list_camera_devices failed: {ev.get('error')}")
+        return CameraDeviceList(
+            cameras=[
+                CameraDeviceInfo(
+                    id=str(c.get("id", "")),
+                    name=str(c.get("name", "")),
+                )
+                for c in ev.get("cameras", [])
+            ]
         )
 
     def open_midi_input(self, port_id: str, pipe_id: str) -> "Pipe":

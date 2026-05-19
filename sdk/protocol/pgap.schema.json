@@ -1263,6 +1263,23 @@
           "type": "object"
         },
         {
+          "description": "Request enumeration of camera devices (#1505). Host responds with PlexiEvent::CameraDevicesListed { request_id, cameras }. Requires video.capture capability.",
+          "properties": {
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "list_camera_devices",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Open a MIDI input port and forward every incoming message as a binary\npipe frame on `pipe_id`. Each frame is a single MIDI 1.0 byte stream\n(1–3 bytes for channel-voice / system real-time). Requires `midi.in`.\nHost emits `PlexiEvent::PipeOpened` then `PlexiEvent::MidiInputOpened`\non success, or `PlexiEvent::MidiInputError` on failure (port not found,\ncapability denied, CoreMIDI error).",
           "properties": {
             "pipe_id": {
@@ -1914,6 +1931,22 @@
             "id",
             "name",
             "default"
+          ],
+          "type": "object"
+        },
+        "CameraDeviceWire": {
+          "description": "One camera device returned by ListCameraDevices (#1505).",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "name"
           ],
           "type": "object"
         },
@@ -2937,6 +2970,36 @@
             "request_id",
             "inputs",
             "outputs"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Response to DrawCommand::ListCameraDevices (#1505). cameras is always present — empty when no cameras found.",
+          "properties": {
+            "cameras": {
+              "items": {
+                "$ref": "#/$defs/CameraDeviceWire"
+              },
+              "type": "array"
+            },
+            "error": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "camera_devices_listed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "cameras"
           ],
           "type": "object"
         },

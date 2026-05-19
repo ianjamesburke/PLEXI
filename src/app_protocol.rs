@@ -247,6 +247,15 @@ pub enum PlexiEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// Response to a `DrawCommand::ListCameraDevices` request (#1505).
+    /// `cameras` is always present — empty when no cameras are found.
+    /// `error` is set only when enumeration itself failed.
+    CameraDevicesListed {
+        request_id: String,
+        cameras: Vec<CameraDeviceWire>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// Sent when a `DrawCommand::AudioCapture` successfully opened the device
     /// and started delivering PCM frames on `pipe_id`. The `sample_rate`,
     /// `channels`, and `buffer_size` are the actual negotiated values — the
@@ -413,6 +422,21 @@ impl From<crate::audio::AudioDeviceInfo> for AudioDeviceWire {
             name: info.name,
             default: info.default,
         }
+    }
+}
+
+/// On-the-wire shape of one camera device. Mirrors `video::CameraDeviceInfo`
+/// but lives on the protocol surface so SDKs can map it without depending on
+/// the video module.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
+pub struct CameraDeviceWire {
+    pub id: String,
+    pub name: String,
+}
+
+impl From<crate::video::CameraDeviceInfo> for CameraDeviceWire {
+    fn from(info: crate::video::CameraDeviceInfo) -> Self {
+        Self { id: info.id, name: info.name }
     }
 }
 
@@ -1244,6 +1268,12 @@ pub enum AppRequest {
     /// capability gate — enumeration discloses only port names already
     /// visible in Audio MIDI Setup.
     ListMidiDevices { request_id: String },
+
+    /// Request enumeration of camera devices (#1505). Host responds with
+    /// `PlexiEvent::CameraDevicesListed { request_id, cameras }`.
+    /// Requires `video.capture` capability — camera names are not public.
+    ListCameraDevices { request_id: String },
+
     /// Open a MIDI input port and forward every incoming message as a binary
     /// pipe frame on `pipe_id`. Each frame is a single MIDI 1.0 byte stream
     /// (1–3 bytes for channel-voice / system real-time). Requires `midi.in`.
@@ -1267,17 +1297,21 @@ pub enum AppRequest {
     /// app exits.
     SendMidi { port_id: String, bytes: Vec<u8> },
 
-    /// Open a video decoder (#345). The host responds with
-    /// `PlexiEvent::VideoOpenAck { request_id, handle_id, width, height,
+    /// Open a video decoder (#345) or live camera (#1505). The host responds
+    /// with `PlexiEvent::VideoOpenAck { request_id, handle_id, width, height,
     /// fps, duration_ms }` on success or `PlexiEvent::VideoOpenError
     /// { request_id, error }` on failure (capability denied, source not
-    /// found, decoder error, NotImplemented from the production stub).
+    /// found, decoder error).
     /// Decoded RGBA8 frames flow over the binary pipe at `pipe_id`; one
     /// pipe frame = one video frame, packed `[R,G,B,A,...]` of length
     /// `width * height * 4`.
     ///
-    /// Requires `video.playback` capability. All fields required —
-    /// no `serde(default)`.
+    /// `source` may be:
+    /// - An absolute path or `file://` URL (requires `video.playback`)
+    /// - `camera://0` or `camera://<device-id>` for live capture (requires
+    ///   `video.capture`)
+    ///
+    /// All fields required — no `serde(default)`.
     OpenVideo {
         request_id: String,
         source: String,
@@ -2935,6 +2969,50 @@ mod tests {
         assert!(
             serde_json::from_str::<DrawCommand>(bad).is_err(),
             "must fail without required description field"
+        );
+    }
+
+    // ── v3.5 camera capture wire shape (#1505) ────────────────────────────
+
+    #[test]
+    fn list_camera_devices_drawcommand_round_trips_serde() {
+        let json = r#"{"type":"list_camera_devices","request_id":"req-cam-1"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).unwrap();
+        match cmd {
+            DrawCommand::Host(AppRequest::ListCameraDevices { request_id }) => {
+                assert_eq!(request_id, "req-cam-1");
+            }
+            other => panic!("expected ListCameraDevices, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(
+            &serde_json::from_str::<DrawCommand>(json).unwrap()
+        ).unwrap();
+        assert!(
+            serialised.contains(r#""type":"list_camera_devices""#),
+            "got: {serialised}"
+        );
+    }
+
+    #[test]
+    fn camera_devices_listed_event_round_trips_serde() {
+        let json = r#"{"type":"camera_devices_listed","request_id":"req-cam-1","cameras":[{"id":"abc123","name":"FaceTime HD Camera"}]}"#;
+        let evt: PlexiEvent = serde_json::from_str(json).unwrap();
+        match evt {
+            PlexiEvent::CameraDevicesListed { request_id, cameras, error } => {
+                assert_eq!(request_id, "req-cam-1");
+                assert_eq!(cameras.len(), 1);
+                assert_eq!(cameras[0].id, "abc123");
+                assert_eq!(cameras[0].name, "FaceTime HD Camera");
+                assert!(error.is_none());
+            }
+            other => panic!("expected CameraDevicesListed, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(
+            &serde_json::from_str::<PlexiEvent>(json).unwrap()
+        ).unwrap();
+        assert!(
+            serialised.contains(r#""type":"camera_devices_listed""#),
+            "got: {serialised}"
         );
     }
 }

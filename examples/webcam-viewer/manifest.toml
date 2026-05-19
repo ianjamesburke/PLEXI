@@ -1,0 +1,17 @@
+schema_version = 1
+
+[app]
+id = "webcam-viewer"
+type = "app"
+name = "Webcam Viewer"
+entry = "main.py"
+version = "0.1.0"
+description = "POC for #1505 — live camera capture via camera://0. Enumerates cameras, opens the default device, and renders RGBA frames via DrawCommand::Image."
+watch = true
+
+[app.capabilities]
+capabilities = ["video.capture", "pipe.open"]
+
+[launch]
+layout_hint = { side = "right", split = 0.5 }
+notification_scope = "context"
