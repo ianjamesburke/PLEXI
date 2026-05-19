@@ -619,6 +619,7 @@ class Emitter:
         pipe_id: "str | None" = None,
         from_pane_id: "int | None" = None,
         request_id: "str | None" = None,
+        target_context: "int | None" = None,
     ) -> None:
         """Request the host to open a new pane with the given app (#592).
 
@@ -637,6 +638,8 @@ class Emitter:
                           currently focused pane.
             request_id: Optional correlation id echoed back in on_pane_spawned /
                         on_pane_spawn_error.
+            target_context: Optional context_id to spawn the pane into. Must be
+                            the calling pane's own context or a descendant (#1518).
         """
         cmd: "dict[str, object]" = {
             "type": "spawn_pane",
@@ -650,7 +653,22 @@ class Emitter:
             cmd["from_pane_id"] = from_pane_id
         if request_id is not None:
             cmd["request_id"] = request_id
+        if target_context is not None:
+            cmd["target_context"] = target_context
         _emit(cmd)
+
+    def query_context_state(self, context_id: int) -> None:
+        """Query the state of a context (#1518).
+
+        The host responds with ``on_context_state(state)`` containing pane
+        count, child contexts, and aggregate status. The requesting pane must
+        be in the queried context itself or in an ancestor context (visibility
+        boundary). Non-descendant queries are silently denied.
+
+        Args:
+            context_id: The context to query.
+        """
+        _emit({"type": "query_context_state", "context_id": context_id})
 
     def cd_to(self, cwd: str) -> None:
         """Request the host to cd all terminals in the same pane group to `cwd`."""

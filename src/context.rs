@@ -3,6 +3,7 @@ use crate::pane::Pane;
 use crate::shell;
 use crate::tiling::PaneId;
 use egui_tiles::{Container, Tile, TileId, Tree};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -23,19 +24,30 @@ pub(crate) enum WindowMenuAction {
 /// A context is a sidebar item — a project or directory scope.
 /// It does not own panes directly; pane layouts live in `Window` pages
 /// that reference this context via `context_id`.
+///
+/// This is the canonical context type used everywhere: live GUI state,
+/// persistence (workspace save/restore), and test harness. Replaces the
+/// former `SavedContext` and unifies with `HostContext`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Context {
     pub name: String,
     pub path: PathBuf,
     /// Optional project root. When set, new panes in this context open at
     /// this directory rather than inheriting the focused pane's CWD.
+    #[serde(default)]
     pub root: Option<PathBuf>,
     /// Optional description — ambient intent for what you're doing in this context.
+    #[serde(default)]
     pub description: Option<String>,
     /// Stable unique ID, assigned at creation and never reused.
     pub context_id: u64,
     /// Parent context_id for sub-contexts. None = top-level.
+    #[serde(default)]
     pub parent_id: Option<u64>,
     /// Nesting depth. 0 = root level. Capped at 3.
+    /// Kept for backward-compatible deserialization but should be derived
+    /// from `parent_id` chain at runtime.
+    #[serde(default)]
     pub depth: u32,
 }
 

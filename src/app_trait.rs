@@ -25,6 +25,7 @@ pub enum AppCommand {
         pipe_id: Option<String>,
         from_pane_id: Option<u64>,
         request_id: Option<String>,
+        target_context: Option<u64>,
     },
     /// Request the host to cd sibling terminals (same split container) to `cwd`.
     CdRequest { cwd: String, sender_pane_id: u64 },
@@ -152,6 +153,12 @@ pub enum AppCommand {
         sender_pane_id: u64,
         path: String,
         mode: crate::app_protocol::ArtifactOpenMode,
+    },
+    /// Query rolled-up ContextState for a context (#1518).
+    /// Forwarded to the host because only it has the full context tree.
+    QueryContextState {
+        sender_pane_id: u64,
+        context_id: u64,
     },
 }
 

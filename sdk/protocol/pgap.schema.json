@@ -654,6 +654,15 @@
                 "null"
               ]
             },
+            "target_context": {
+              "description": "When set, spawn the pane into this child context instead of the\nrequesting app's own context. The target context must exist and be\na descendant of the requesting app's context (#1518).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "type": {
               "const": "spawn_pane",
               "type": "string"
@@ -973,6 +982,25 @@
           },
           "required": [
             "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Query the rolled-up `ContextState` for a context (#1518).\nThe requesting app must be in an ancestor (or the same) context.\nHost responds with `PlexiEvent::ContextStateResponse`.",
+          "properties": {
+            "context_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "query_context_state",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "context_id"
           ],
           "type": "object"
         },
@@ -1889,6 +1917,63 @@
           ],
           "type": "object"
         },
+        "ContextState": {
+          "description": "Rolled-up status for a single context. Stub for lib target.",
+          "properties": {
+            "active_agents": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "children": {
+              "items": {
+                "$ref": "#/$defs/ContextState"
+              },
+              "type": "array"
+            },
+            "context_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "label": {
+              "type": "string"
+            },
+            "pane_count": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "pane_summaries": {
+              "items": {
+                "$ref": "#/$defs/PaneSummary"
+              },
+              "type": "array"
+            },
+            "status": {
+              "$ref": "#/$defs/ContextStatus"
+            }
+          },
+          "required": [
+            "context_id",
+            "label",
+            "pane_count",
+            "active_agents",
+            "status",
+            "pane_summaries",
+            "children"
+          ],
+          "type": "object"
+        },
+        "ContextStatus": {
+          "enum": [
+            "Idle",
+            "Working",
+            "Error",
+            "Done"
+          ],
+          "type": "string"
+        },
         "MidiPortWire": {
           "description": "On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives\non the protocol surface so SDKs in other languages can map it without\ndepending on the midi module.",
           "properties": {
@@ -1936,6 +2021,35 @@
           "enum": [
             "primary",
             "secondary"
+          ],
+          "type": "string"
+        },
+        "PaneSummary": {
+          "properties": {
+            "label": {
+              "type": "string"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "status": {
+              "$ref": "#/$defs/PaneSummaryStatus"
+            }
+          },
+          "required": [
+            "pane_id",
+            "label",
+            "status"
+          ],
+          "type": "object"
+        },
+        "PaneSummaryStatus": {
+          "enum": [
+            "Idle",
+            "Active",
+            "Error"
           ],
           "type": "string"
         },
@@ -2450,6 +2564,23 @@
           "required": [
             "type",
             "reason"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Response to `AppRequest::QueryContextState` (#1518).",
+          "properties": {
+            "state": {
+              "$ref": "#/$defs/ContextState"
+            },
+            "type": {
+              "const": "context_state_response",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "state"
           ],
           "type": "object"
         },

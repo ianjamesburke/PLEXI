@@ -131,6 +131,10 @@ pub enum PlexiEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<String>,
     },
+    /// Response to `AppRequest::QueryContextState` (#1518).
+    ContextStateResponse {
+        state: crate::context_state::ContextState,
+    },
     /// Binary pipe opened — app connects to `socket_path` as a unix socket client.
     PipeOpened {
         pipe_id: String,
@@ -1041,6 +1045,11 @@ pub enum AppRequest {
         /// rather than looking it up in the registry by type_id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
+        /// When set, spawn the pane into this child context instead of the
+        /// requesting app's own context. The target context must exist and be
+        /// a descendant of the requesting app's context (#1518).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_context: Option<u64>,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`
@@ -1134,6 +1143,13 @@ pub enum AppRequest {
     },
     /// Zoom out of a sub-context. Pops depth stack. Sent by `plexi context zoom-out`.
     ZoomOutOfContext,
+
+    /// Query the rolled-up `ContextState` for a context (#1518).
+    /// The requesting app must be in an ancestor (or the same) context.
+    /// Host responds with `PlexiEvent::ContextStateResponse`.
+    QueryContextState {
+        context_id: u64,
+    },
 
     // ── Media + HTTP primitives ──────────────────────────────────────────
     /// Host-brokered HTTP request. Requires `net.http` capability.

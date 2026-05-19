@@ -35,7 +35,9 @@ fi
 
 display="Plexi${cap}"
 bundle_id="com.ianjamesburke.plexi${suffix}"
-app_src="target/release/bundle/osx/Plexi.app"
+# Resolve target-dir from .cargo/config.toml (worktrees share a single target/).
+_target_dir="$(cargo metadata --format-version=1 --no-deps 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])' 2>/dev/null || echo "target")"
+app_src="${_target_dir}/release/bundle/osx/Plexi.app"
 app_dest="/Applications/${display}.app"
 bin_dest="/usr/local/bin/plexi${suffix}"
 profile_dir="$HOME/.plexi${suffix}"

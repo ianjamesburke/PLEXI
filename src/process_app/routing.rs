@@ -773,6 +773,7 @@ impl ProcessApp {
                 cwd: _,
                 no_focus: _,
                 path: _,
+                target_context,
             } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::PanesSpawn)
@@ -784,7 +785,7 @@ impl ProcessApp {
                 }
                 let layout_str = layout.unwrap_or_else(|| "overlay".to_string());
                 log::info!(
-                    "ProcessApp[{}]: SpawnPane type_id='{type_id}' layout='{layout_str}' args={args:?} pipe_id={pipe_id:?} from_pane_id={from_pane_id:?} request_id={request_id:?}",
+                    "ProcessApp[{}]: SpawnPane type_id='{type_id}' layout='{layout_str}' args={args:?} pipe_id={pipe_id:?} from_pane_id={from_pane_id:?} request_id={request_id:?} target_context={target_context:?}",
                     self.type_id
                 );
                 self.pending_commands.push(AppCommand::SpawnPane {
@@ -794,6 +795,7 @@ impl ProcessApp {
                     pipe_id,
                     from_pane_id,
                     request_id,
+                    target_context,
                 });
             }
 
@@ -1714,6 +1716,18 @@ impl ProcessApp {
                     "ProcessApp[{}]: CapturePane pane_id={pane_id} received in app routing — ignored (use PLEXI_SOCKET instead)",
                     self.type_id
                 );
+            }
+
+            // ── Query context state (#1518) ───────────────────────────────
+            AppRequest::QueryContextState { context_id } => {
+                log::info!(
+                    "ProcessApp[{}]: QueryContextState context_id={context_id}",
+                    self.type_id
+                );
+                self.pending_commands.push(AppCommand::QueryContextState {
+                    sender_pane_id: self.pane_id,
+                    context_id,
+                });
             }
         }
     }

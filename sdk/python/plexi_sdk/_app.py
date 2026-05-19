@@ -85,6 +85,7 @@ class App:
         on_app_spawned(pane_id, type_id)             — app spawn succeeded
         on_pane_spawned(pane_id, request_id)         — pane spawn succeeded
         on_pane_spawn_error(reason, request_id)      — pane spawn failed
+        on_context_state(state)                      — context state query result
         on_midi_input_opened(pipe_id, port_id, port_name) — MIDI input opened
 
     Task handlers are dispatched as asyncio tasks — the event loop does not
@@ -221,6 +222,14 @@ class App:
 
     def on_pane_spawn_error(self, _reason: str, _request_id: "str | None" = None) -> None:
         """Called when a SpawnPane request failed (#592). Override to handle the error."""
+
+    def on_context_state(self, _state: dict) -> None:
+        """Called when a QueryContextState response arrives (#1518).
+
+        ``_state`` is a dict with keys: context_id, name, path, status,
+        pane_count, panes (list of pane summaries), children (list of child
+        context ids).
+        """
 
     def on_timer(self, _ctx: RenderContext, _timer_id: str) -> "Coroutine[Any, Any, None] | None": return None
     def on_scroll(self, _ctx: RenderContext, _id: str, _offset_y: float) -> "Coroutine[Any, Any, None] | None": return None
@@ -905,6 +914,12 @@ class App:
                         self.on_pane_spawn_error,
                         str(ev.get("reason", "")),
                         str(req_id) if req_id is not None else None,
+                    )
+
+                elif t == "context_state_response":
+                    self._dispatch_hook_task(
+                        self.on_context_state,
+                        ev.get("state", {}),
                     )
 
                 elif t == "nav_back":

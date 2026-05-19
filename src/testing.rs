@@ -44,7 +44,7 @@ impl HostSnapshot {
                 let title = match pane {
                     Pane::App(p) => p.name.clone(),
                     Pane::Terminal(_) => "Terminal".to_string(),
-                    Pane::SubContext { context_id, .. } => format!("SubContext({context_id})"),
+                    Pane::Portal(p) => format!("Portal({})", p.target_context_id),
                 };
                 (*id, title)
             })
@@ -206,6 +206,13 @@ impl HostHarness {
             }],
             ..Default::default()
         })
+    }
+
+    // ── Context management ────────────────────────────────────────────────────
+
+    /// Add a sub-context under the given parent context in the host model.
+    pub fn add_sub_context(&mut self, context_id: u64, parent_id: u64) {
+        self.app.host.add_context(context_id, Some(parent_id));
     }
 
     // ── State inspection ─────────────────────────────────────────────────────

@@ -6,19 +6,24 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
 // ---------------------------------------------------------------------------
-// Pane ADT (spec §2) — Terminal | App | SubContext.
-// Issue #1374 is the spec amendment for the SubContext variant.
+// Pane ADT (spec §2) — Terminal | App | Portal.
+// Issue #1374 added the Portal variant (formerly SubContext).
 // ---------------------------------------------------------------------------
 
 pub enum Pane {
     Terminal(Box<TerminalPane>),
     App(Box<AppPane>),
     /// A tile that represents a child context nested inside this one.
-    /// Renders a wireframe preview; Cmd+Shift+Enter zooms in.
-    SubContext {
-        pane_id: PaneId,
-        context_id: u64,
-    },
+    /// Renders a summary card with pane count, status, and per-pane summaries.
+    /// Cmd+Shift+Enter zooms in.
+    Portal(Box<PortalPane>),
+}
+
+/// A portal pane points at a child context and caches its rolled-up state.
+pub struct PortalPane {
+    pub pane_id: PaneId,
+    pub target_context_id: u64,
+    pub context_state: Option<crate::context_state::ContextState>,
 }
 
 impl Pane {
@@ -26,7 +31,7 @@ impl Pane {
         match self {
             Pane::Terminal(t) => t.id,
             Pane::App(a) => a.id,
-            Pane::SubContext { pane_id, .. } => *pane_id,
+            Pane::Portal(p) => p.pane_id,
         }
     }
 
@@ -58,9 +63,24 @@ impl Pane {
         }
     }
 
-    pub fn as_sub_context(&self) -> Option<u64> {
+    pub fn as_portal(&self) -> Option<&PortalPane> {
         match self {
-            Pane::SubContext { context_id, .. } => Some(*context_id),
+            Pane::Portal(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    pub fn as_portal_mut(&mut self) -> Option<&mut PortalPane> {
+        match self {
+            Pane::Portal(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Returns the target context_id if this is a Portal pane.
+    pub fn portal_target(&self) -> Option<u64> {
+        match self {
+            Pane::Portal(p) => Some(p.target_context_id),
             _ => None,
         }
     }

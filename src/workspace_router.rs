@@ -49,6 +49,10 @@ impl WorkspaceRouter {
         self.contexts.iter()
     }
 
+    pub(crate) fn as_slice(&self) -> &[Context] {
+        &self.contexts
+    }
+
     pub(crate) fn position<F: Fn(&Context) -> bool>(&self, f: F) -> Option<usize> {
         self.contexts.iter().position(f)
     }

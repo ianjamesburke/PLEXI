@@ -1176,6 +1176,7 @@ mod tests {
             cwd: None,
             no_focus: false,
             path: None,
+            target_context: None,
         });
         h.run_frames(2);
 
@@ -1214,6 +1215,7 @@ mod tests {
             cwd: None,
             no_focus: false,
             path: None,
+            target_context: None,
         });
         h.run_frames(2);
 
@@ -1255,6 +1257,7 @@ mod tests {
             cwd: None,
             no_focus: false,
             path: None,
+            target_context: None,
         });
         h.run_frames(2);
 
@@ -1295,6 +1298,7 @@ mod tests {
             cwd: None,
             no_focus: false,
             path: None,
+            target_context: None,
         });
         h.run_frames(2);
 
@@ -1345,6 +1349,7 @@ mod tests {
             cwd: None,
             no_focus: false,
             path: None,
+            target_context: None,
         });
         h.run_frames(2);
 
@@ -1393,6 +1398,7 @@ mod tests {
                 cwd: None,
                 no_focus: false,
                 path: None,
+                target_context: None,
             });
             h.run_frames(2);
         }
@@ -1592,6 +1598,92 @@ mod quick_note_tests {
         let result = PlexiApp::substitute_note_tokens_static("echo {context_root}", "note", &c);
         // When context_root is None, {context_root} substitutes to shell_quote("") = ''
         assert!(result.contains("''") || result.ends_with("echo "), "unexpected result: {result}");
+    }
+
+    // ── Agent context spawning tests (#1518) ─────────────────────────────────
+
+    /// Verify that QueryContextState for the pane's own context produces
+    /// the correct AppCommand via route_command.
+    #[test]
+    fn query_context_state_routes_to_pending_commands() {
+        use crate::app_protocol::{AppRequest, DrawCommand};
+        use crate::pane::{AppRuntime, Pane};
+        use crate::testing::HostHarness;
+
+        let mut h = HostHarness::new();
+        let pane = h.add_test_pane();
+
+        h.inject(pane, DrawCommand::Host(
+            AppRequest::QueryContextState { context_id: 1 },
+        ));
+        // Drain the draw channel via background_tick.
+        {
+            let win = &mut h.app.windows[0];
+            let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+                panic!("expected App pane");
+            };
+            let AppRuntime::Process(ref mut proc) = app_pane.runtime else {
+                panic!("expected Process runtime");
+            };
+            proc.background_tick();
+        }
+
+        // Verify pending_commands contains QueryContextState with the
+        // correct sender_pane_id.
+        let win = &mut h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+            panic!("expected App pane");
+        };
+        let AppRuntime::Process(ref mut proc) = app_pane.runtime else {
+            panic!("expected Process runtime");
+        };
+        let has_cmd = proc.pending_commands.iter().any(|c| {
+            matches!(c, crate::app_trait::AppCommand::QueryContextState {
+                sender_pane_id, context_id
+            } if *sender_pane_id == pane && *context_id == 1)
+        });
+        assert!(
+            has_cmd,
+            "QueryContextState should be in pending_commands after route_command"
+        );
+    }
+
+    #[test]
+    fn spawn_pane_target_context_invalid_returns_error() {
+        use crate::testing::HostHarness;
+
+        let mut h = HostHarness::new();
+        let pane = h.add_test_pane();
+        let root = h.app.windows[0].tree.root.expect("root tile");
+        h.app.windows[0].focused_pane = Some(root);
+
+        // Spawn into a non-existent context via the PGAP draw channel
+        // (inject, not inject_ipc) so it routes through ProcessApp ->
+        // pending_commands -> deferred dispatch with target_context validation.
+        h.inject(pane, crate::app_protocol::DrawCommand::Host(
+            crate::app_protocol::AppRequest::SpawnPane {
+                type_id: "terminal".to_string(),
+                layout: Some("split_v".to_string()),
+                args: vec![],
+                pipe_id: None,
+                from_pane_id: None,
+                request_id: Some("req-ctx-bad".to_string()),
+                response_file: None,
+                ephemeral: false,
+                cwd: None,
+                no_focus: false,
+                path: None,
+                target_context: Some(999),
+            },
+        ));
+        h.run_frames(1);
+
+        // The pane count should NOT have increased (spawn was rejected).
+        let snap = h.state();
+        assert_eq!(
+            snap.open_panes.len(), 1,
+            "SpawnPane with invalid target_context must not create a pane"
+        );
     }
 }
 

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 impl PlexiApp {
     /// Create a child context nested inside `parent_name`. Always creates a fresh
-    /// terminal in the child (portal model — no pane adoption). Inserts a SubContext
+    /// terminal in the child (portal model — no pane adoption). Inserts a Portal
     /// tile into the parent window as a sibling of the focused tile. No depth cap.
     pub(crate) fn new_child_context(&mut self, parent_name: &str, path: PathBuf) -> Result<(), String> {
         let parent_idx = self.router.position(|c| c.name.eq_ignore_ascii_case(parent_name))
@@ -23,10 +23,25 @@ impl PlexiApp {
         let win_id = self.next_window_id;
         self.next_window_id += 1;
 
-        let ctx_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1));
+        // Check for anchor defaults from .plexi/workspace.toml [context] section.
+        let anchor = crate::anchor::Anchor::detect(&path);
+        let (ctx_name, ctx_description) = match anchor.as_ref().and_then(|a| a.context_defaults.as_ref()) {
+            Some(defaults) => {
+                let name = defaults.name.clone().unwrap_or_else(|| {
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1))
+                });
+                (name, defaults.description.clone())
+            }
+            None => {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1));
+                (name, None)
+            }
+        };
 
         log::info!(
             "new_child_context: parent_id={parent_id} parent_depth={parent_depth} \
@@ -42,7 +57,7 @@ impl PlexiApp {
             return Err("failed to create terminal for child context".to_string());
         };
 
-        // 2. Insert SubContext tile into the parent window via the standard split path.
+        // 2. Insert Portal tile into the parent window via the standard split path.
         let parent_win_idx = {
             let preferred = self.context_active_window.get(&parent_id).copied();
             preferred
@@ -62,10 +77,14 @@ impl PlexiApp {
             );
             self.windows[parent_win_idx].panes.insert(
                 sub_ctx_pane_id,
-                crate::pane::Pane::SubContext { pane_id: sub_ctx_pane_id, context_id: ctx_id },
+                crate::pane::Pane::Portal(Box::new(crate::pane::PortalPane {
+                    pane_id: sub_ctx_pane_id,
+                    target_context_id: ctx_id,
+                    context_state: None,
+                })),
             );
         } else {
-            log::warn!("new_child_context: parent ctx_id={parent_id} has no window — child context has no portal");
+            log::warn!("new_child_context: parent ctx_id={parent_id} has no window — child context has no Portal tile");
         }
 
         // 3. Register the child context + window.
@@ -73,7 +92,7 @@ impl PlexiApp {
             name: ctx_name,
             path: path.clone(),
             root: Some(path.clone()),
-            description: None,
+            description: ctx_description,
             context_id: ctx_id,
             parent_id: Some(parent_id),
             depth: child_depth,
@@ -149,7 +168,8 @@ impl PlexiApp {
 
     /// Create a new context at a specific directory path. The terminal pane
     /// opens at `path` and the context root is set to it. Named after the
-    /// directory basename. Callers must call `save_workspace()` afterward.
+    /// directory basename, unless the path has a `.plexi/workspace.toml` with
+    /// `[context]` defaults. Callers must call `save_workspace()` afterward.
     pub(crate) fn new_context_at_path(&mut self, path: PathBuf) {
         log::info!("new_context_at_path: path={}", path.display());
         let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(path.clone()), None, false)
@@ -163,15 +183,35 @@ impl PlexiApp {
         let win_id = self.next_window_id;
         self.next_window_id += 1;
 
-        let ctx_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| format!("Context {}", self.router.len() + 1));
+        // Check for anchor defaults from .plexi/workspace.toml [context] section.
+        let anchor = crate::anchor::Anchor::detect(&path);
+        let (ctx_name, ctx_description) = match anchor.as_ref().and_then(|a| a.context_defaults.as_ref()) {
+            Some(defaults) => {
+                let name = defaults.name.clone().unwrap_or_else(|| {
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| format!("Context {}", self.router.len() + 1))
+                });
+                log::info!(
+                    "new_context_at_path: applying anchor defaults name={:?} description={:?}",
+                    name, defaults.description
+                );
+                (name, defaults.description.clone())
+            }
+            None => {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| format!("Context {}", self.router.len() + 1));
+                (name, None)
+            }
+        };
+
         self.router.push(crate::context::Context {
             name: ctx_name,
             path: path.clone(),
             root: Some(path.clone()),
-            description: None,
+            description: ctx_description,
             context_id: ctx_id,
             parent_id: None,
             depth: 0,
@@ -286,13 +326,13 @@ impl PlexiApp {
         // 3. Remove all windows belonging to any deleted context.
         self.windows.retain(|c| !deleted.contains(&c.context_id));
 
-        // 4. Remove SubContext tiles in surviving windows that point to any deleted ctx.
+        // 4. Remove Portal tiles in surviving windows that point to any deleted ctx.
         for win in &mut self.windows {
-            let sub_ctx_pane_ids: Vec<crate::tiling::PaneId> = win.panes.iter()
-                .filter(|(_, p)| p.as_sub_context().map(|cid| deleted.contains(&cid)).unwrap_or(false))
+            let portal_pane_ids: Vec<crate::tiling::PaneId> = win.panes.iter()
+                .filter(|(_, p)| p.portal_target().map(|cid| deleted.contains(&cid)).unwrap_or(false))
                 .map(|(id, _)| *id)
                 .collect();
-            for pane_id in sub_ctx_pane_ids {
+            for pane_id in portal_pane_ids {
                 win.panes.remove(&pane_id);
                 if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
                     win.tree.remove_recursively(tile_id);
@@ -522,36 +562,36 @@ impl PlexiApp {
         self.router.get_mut(idx).root = Some(root);
     }
 
-    /// Dissolve a sub-context: reparent all its panes into the parent window (the active
-    /// window that contains the SubContext tile), replace the SubContext tile with the
+    /// Dissolve a portal: reparent all its panes into the parent window (the active
+    /// window that contains the Portal tile), replace the Portal tile with the
     /// adopted panes, then delete the now-empty child context.
     ///
-    /// Only promotes one level. Nested sub-contexts inside the dissolved context remain
+    /// Only promotes one level. Nested portals inside the dissolved context remain
     /// intact — their tiles are moved to the parent window alongside the regular panes.
-    pub(crate) fn dissolve_sub_context(&mut self, child_ctx_id: u64) {
+    pub(crate) fn dissolve_portal(&mut self, child_ctx_id: u64) {
         use egui_tiles::{Container, Tile};
 
-        // Find the SubContext tile in the active (parent) window.
+        // Find the Portal tile in the active (parent) window.
         let parent_idx = self.active_window;
-        let sub_ctx_pane_id = {
+        let portal_pane_id = {
             let win = &self.windows[parent_idx];
             win.panes.iter()
-                .find(|(_, p)| p.as_sub_context() == Some(child_ctx_id))
+                .find(|(_, p)| p.portal_target() == Some(child_ctx_id))
                 .map(|(id, _)| *id)
         };
-        let sub_ctx_pane_id = match sub_ctx_pane_id {
+        let portal_pane_id = match portal_pane_id {
             Some(id) => id,
             None => {
-                log::warn!("dissolve_sub_context: no SubContext tile for ctx={child_ctx_id} in active window");
+                log::warn!("dissolve_portal: no Portal tile for ctx={child_ctx_id} in active window");
                 return;
             }
         };
 
-        let sub_ctx_tile_id = self.windows[parent_idx].tree.tiles.find_pane(&sub_ctx_pane_id);
-        let sub_ctx_tile_id = match sub_ctx_tile_id {
+        let portal_tile_id = self.windows[parent_idx].tree.tiles.find_pane(&portal_pane_id);
+        let portal_tile_id = match portal_tile_id {
             Some(id) => id,
             None => {
-                log::warn!("dissolve_sub_context: SubContext pane {sub_ctx_pane_id} has no tile");
+                log::warn!("dissolve_portal: Portal pane {portal_pane_id} has no tile");
                 return;
             }
         };
@@ -574,22 +614,22 @@ impl PlexiApp {
             }
         }
 
-        log::info!("dissolve_sub_context: ctx={child_ctx_id} adopting {} panes into parent win={parent_idx}", adopted.len());
+        log::info!("dissolve_portal: ctx={child_ctx_id} adopting {} panes into parent win={parent_idx}", adopted.len());
 
         // Insert adopted panes into the parent window.
-        // Strategy: add each new tile alongside the SubContext tile.
-        // After all siblings are added, remove the SubContext tile.
+        // Strategy: add each new tile alongside the Portal tile.
+        // After all siblings are added, remove the Portal tile.
         for (pane_id, pane) in adopted {
             let new_tile = self.windows[parent_idx].tree.tiles.insert_pane(pane_id);
             self.windows[parent_idx].panes.insert(pane_id, pane);
 
-            // Add the new tile as a sibling of the SubContext tile.
-            let parent_of_sub = self.windows[parent_idx].tree.tiles.parent_of(sub_ctx_tile_id);
-            if let Some(parent_tile) = parent_of_sub {
+            // Add the new tile as a sibling of the Portal tile.
+            let parent_of_portal = self.windows[parent_idx].tree.tiles.parent_of(portal_tile_id);
+            if let Some(parent_tile) = parent_of_portal {
                 if let Some(Tile::Container(Container::Linear(lin))) =
                     self.windows[parent_idx].tree.tiles.get_mut(parent_tile)
                 {
-                    if let Some(pos) = lin.children.iter().position(|&c| c == sub_ctx_tile_id) {
+                    if let Some(pos) = lin.children.iter().position(|&c| c == portal_tile_id) {
                         lin.children.insert(pos, new_tile);
                     } else {
                         lin.children.push(new_tile);
@@ -605,22 +645,22 @@ impl PlexiApp {
                     }
                 }
             } else {
-                // SubContext tile is the root — wrap everything in a horizontal container.
-                let new_root = self.windows[parent_idx].tree.tiles.insert_horizontal_tile(vec![new_tile, sub_ctx_tile_id]);
+                // Portal tile is the root — wrap everything in a horizontal container.
+                let new_root = self.windows[parent_idx].tree.tiles.insert_horizontal_tile(vec![new_tile, portal_tile_id]);
                 self.windows[parent_idx].tree.root = Some(new_root);
             }
         }
 
-        // Remove the SubContext tile from the parent window.
+        // Remove the Portal tile from the parent window.
         {
             let win = &mut self.windows[parent_idx];
-            win.panes.remove(&sub_ctx_pane_id);
-            if let Some(parent_tile) = win.tree.tiles.parent_of(sub_ctx_tile_id) {
+            win.panes.remove(&portal_pane_id);
+            if let Some(parent_tile) = win.tree.tiles.parent_of(portal_tile_id) {
                 if let Some(Tile::Container(parent_container)) = win.tree.tiles.get_mut(parent_tile) {
-                    parent_container.remove_child(sub_ctx_tile_id);
+                    parent_container.remove_child(portal_tile_id);
                 }
             }
-            win.tree.tiles.remove(sub_ctx_tile_id);
+            win.tree.tiles.remove(portal_tile_id);
             win.tree.simplify(&egui_tiles::SimplificationOptions {
                 all_panes_must_have_tabs: true,
                 ..egui_tiles::SimplificationOptions::default()
@@ -650,15 +690,7 @@ impl PlexiApp {
         let mut saved_windows = Vec::new();
 
         for ctx in self.router.iter() {
-            saved_contexts.push(crate::workspace::SavedContext {
-                name: ctx.name.clone(),
-                path: ctx.path.clone(),
-                root: ctx.root.clone(),
-                description: ctx.description.clone(),
-                context_id: ctx.context_id,
-                parent_id: ctx.parent_id,
-                depth: ctx.depth,
-            });
+            saved_contexts.push(ctx.clone());
         }
 
         for win in &self.windows {
@@ -685,10 +717,10 @@ impl PlexiApp {
                         app_id: Some(a.runtime.type_id().to_string()),
                         app_state: a.runtime.serialize_state(),
                     });
-                } else if let Some(child_ctx_id) = pane.as_sub_context() {
+                } else if let Some(child_ctx_id) = pane.portal_target() {
                     saved_panes.push(crate::workspace::SavedPane {
                         id,
-                        kind: crate::workspace::SavedPaneKind::SubContext { context_id: child_ctx_id },
+                        kind: crate::workspace::SavedPaneKind::Portal { context_id: child_ctx_id },
                         cwd: std::path::PathBuf::new(),
                         name: None,
                         app_id: None,

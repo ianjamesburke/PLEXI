@@ -13,12 +13,28 @@ pub struct HostPane {
     pub group: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct HostContext {
     pub panes: Vec<HostPane>,
     pub focused_pane: Option<PaneId>,
     /// group name → member pane IDs
     pub groups: HashMap<String, Vec<PaneId>>,
+    /// Stable unique ID matching `Context::context_id`.
+    pub context_id: u64,
+    /// Parent context_id for sub-contexts. None = top-level.
+    pub parent_id: Option<u64>,
+}
+
+impl Default for HostContext {
+    fn default() -> Self {
+        Self {
+            panes: Vec::new(),
+            focused_pane: None,
+            groups: HashMap::new(),
+            context_id: 0,
+            parent_id: None,
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -188,12 +204,50 @@ impl HostModel {
         self.next_pane_id = id;
     }
 
+    #[cfg(test)]
+    pub fn add_context(&mut self, context_id: u64, parent_id: Option<u64>) {
+        self.contexts.push(HostContext {
+            context_id,
+            parent_id,
+            ..Default::default()
+        });
+    }
+
     fn context(&self) -> &HostContext {
         &self.contexts[self.active_context]
     }
 
     fn context_mut(&mut self) -> &mut HostContext {
         &mut self.contexts[self.active_context]
+    }
+
+    #[cfg(test)]
+    pub fn children_of(&self, context_id: u64) -> Vec<u64> {
+        self.contexts
+            .iter()
+            .filter(|c| c.parent_id == Some(context_id))
+            .map(|c| c.context_id)
+            .collect()
+    }
+
+    /// Return the ancestor chain for `context_id`, from immediate parent to root.
+    /// Returns an empty vec if `context_id` is top-level or not found.
+    pub fn ancestors_of(&self, context_id: u64) -> Vec<u64> {
+        let mut result = Vec::new();
+        let mut current = context_id;
+        // Guard against cycles with a max depth.
+        for _ in 0..16 {
+            let parent = self.contexts.iter().find(|c| c.context_id == current)
+                .and_then(|c| c.parent_id);
+            match parent {
+                Some(pid) => {
+                    result.push(pid);
+                    current = pid;
+                }
+                None => break,
+            }
+        }
+        result
     }
 }
 
@@ -250,5 +304,53 @@ mod tests {
             })
             .expect("SplitOpened effect must be emitted");
         assert_eq!(placement, Placement::Right);
+    }
+
+    #[test]
+    fn add_context_stores_hierarchy_fields() {
+        let mut model = HostModel::new();
+        model.add_context(10, None);
+        model.add_context(20, Some(10));
+
+        assert_eq!(model.contexts.len(), 3); // default + 2 added
+        assert_eq!(model.contexts[1].context_id, 10);
+        assert_eq!(model.contexts[1].parent_id, None);
+        assert_eq!(model.contexts[2].context_id, 20);
+        assert_eq!(model.contexts[2].parent_id, Some(10));
+    }
+
+    #[test]
+    fn children_of_returns_direct_children() {
+        let mut model = HostModel::new();
+        model.add_context(1, None);
+        model.add_context(2, Some(1));
+        model.add_context(3, Some(1));
+        model.add_context(4, Some(2));
+
+        let children = model.children_of(1);
+        assert_eq!(children.len(), 2);
+        assert!(children.contains(&2));
+        assert!(children.contains(&3));
+
+        let grandchildren = model.children_of(2);
+        assert_eq!(grandchildren, vec![4]);
+
+        assert!(model.children_of(99).is_empty());
+    }
+
+    #[test]
+    fn ancestors_of_returns_parent_chain() {
+        let mut model = HostModel::new();
+        model.add_context(1, None);
+        model.add_context(2, Some(1));
+        model.add_context(3, Some(2));
+
+        let ancestors = model.ancestors_of(3);
+        assert_eq!(ancestors, vec![2, 1]);
+
+        let ancestors_of_root = model.ancestors_of(1);
+        assert!(ancestors_of_root.is_empty());
+
+        assert!(model.ancestors_of(99).is_empty());
     }
 }
