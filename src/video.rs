@@ -728,60 +728,74 @@ mod avf_impl {
                 sample_buffer: *mut AnyObject,
                 _connection: *mut AnyObject,
             ) {
-                // Load the shared pointer from the ivar.
-                let cls = objc2::runtime::AnyClass::get(c"PlexiCameraDelegate")
-                    .expect("PlexiCameraDelegate not registered");
-                let ivar = cls.instance_variable(c"sharedPtr")
-                    .expect("sharedPtr ivar missing");
-                let raw_ptr: *mut std::ffi::c_void = *ivar.load_ptr::<*mut std::ffi::c_void>(this);
-                if raw_ptr.is_null() {
-                    return;
-                }
-                let shared = &*(raw_ptr as *const CameraShared);
+                // Wrap the entire callback in catch_unwind. Panics must not
+                // cross the extern "C" boundary — they become abort() otherwise.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let cls = match objc2::runtime::AnyClass::get(c"PlexiCameraDelegate") {
+                        Some(c) => c,
+                        None => return,
+                    };
+                    let ivar = match cls.instance_variable(c"sharedPtr") {
+                        Some(v) => v,
+                        None => return,
+                    };
+                    let raw_ptr: *mut std::ffi::c_void =
+                        unsafe { *ivar.load_ptr::<*mut std::ffi::c_void>(this) };
+                    if raw_ptr.is_null() {
+                        return;
+                    }
+                    let shared = unsafe { &*(raw_ptr as *const CameraShared) };
 
-                if shared.paused.load(Ordering::Acquire) {
-                    return;
-                }
+                    if shared.paused.load(Ordering::Acquire) {
+                        return;
+                    }
 
-                if sample_buffer.is_null() {
-                    return;
-                }
+                    if sample_buffer.is_null() {
+                        return;
+                    }
 
-                // Extract pixel buffer from CMSampleBuffer.
-                let pixel_buffer: *mut AnyObject =
-                    objc2::msg_send![&*sample_buffer, imageBuffer];
-                if pixel_buffer.is_null() {
-                    return;
-                }
+                    // Extract pixel buffer from CMSampleBuffer.
+                    let pixel_buffer: *mut AnyObject =
+                        unsafe { objc2::msg_send![&*sample_buffer, imageBuffer] };
+                    if pixel_buffer.is_null() {
+                        return;
+                    }
 
-                let lock_flags = CVPixelBufferLockFlags::ReadOnly;
-                let lock_status = CVPixelBufferLockBaseAddress(
-                    &*(pixel_buffer as *const objc2_core_video::CVPixelBuffer),
-                    lock_flags,
-                );
-                if lock_status != 0 {
-                    return;
-                }
+                    let lock_flags = CVPixelBufferLockFlags::ReadOnly;
+                    let lock_status = unsafe {
+                        CVPixelBufferLockBaseAddress(
+                            &*(pixel_buffer as *const objc2_core_video::CVPixelBuffer),
+                            lock_flags,
+                        )
+                    };
+                    if lock_status != 0 {
+                        return;
+                    }
 
-                let pxbuf = &*(pixel_buffer as *const objc2_core_video::CVPixelBuffer);
-                let buf_width = CVPixelBufferGetWidth(pxbuf) as u32;
-                let buf_height = CVPixelBufferGetHeight(pxbuf) as u32;
-                let bytes_per_row = CVPixelBufferGetBytesPerRow(pxbuf);
-                let base = CVPixelBufferGetBaseAddress(pxbuf);
+                    let pxbuf = unsafe {
+                        &*(pixel_buffer as *const objc2_core_video::CVPixelBuffer)
+                    };
+                    let buf_width = CVPixelBufferGetWidth(pxbuf) as u32;
+                    let buf_height = CVPixelBufferGetHeight(pxbuf) as u32;
+                    let bytes_per_row = CVPixelBufferGetBytesPerRow(pxbuf);
+                    let base = CVPixelBufferGetBaseAddress(pxbuf);
 
-                if !base.is_null() && buf_width > 0 && buf_height > 0 {
-                    let frame = copy_bgra_to_rgba(
-                        base.cast::<u8>(),
-                        bytes_per_row,
-                        buf_width,
-                        buf_height,
-                        shared.out_width,
-                        shared.out_height,
-                    );
-                    let _ = shared.frame_ring.push(frame);
-                }
+                    if !base.is_null() && buf_width > 0 && buf_height > 0 {
+                        let frame = unsafe {
+                            copy_bgra_to_rgba(
+                                base.cast::<u8>(),
+                                bytes_per_row,
+                                buf_width,
+                                buf_height,
+                                shared.out_width,
+                                shared.out_height,
+                            )
+                        };
+                        let _ = shared.frame_ring.push(frame);
+                    }
 
-                let _ = CVPixelBufferUnlockBaseAddress(pxbuf, lock_flags);
+                    unsafe { let _ = CVPixelBufferUnlockBaseAddress(pxbuf, lock_flags); }
+                }));
             }
 
             unsafe {
