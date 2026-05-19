@@ -18,7 +18,7 @@ EXTRACT_API = "https://en.wikipedia.org/api/rest_v1/page/summary/"
 
 
 class WikiApp(App):
-    def on_init(self, ctx: RenderContext) -> None:
+    async def on_init(self, ctx: RenderContext) -> None:
         self._query = ""
         self._results: list[str] = []
         self._selected = 0
@@ -27,6 +27,10 @@ class WikiApp(App):
         self._error_msg = ""
         self._mode = "search"  # search | results | article
         self.emit.info("wikipedia: ready")
+        granted = await self.emit.capability_request("net.http")
+        if not granted:
+            self._error_msg = "Network access denied. Search requires net.http."
+            self.emit.warn("wikipedia: net.http capability denied")
 
     def on_inject(self, ctx: RenderContext, payload: dict) -> None:
         """Layer-1 test seam — seed mode/query/results/extract without network."""

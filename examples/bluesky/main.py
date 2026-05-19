@@ -108,6 +108,12 @@ class BlueskyApp(App):
 
         self.emit.info("bluesky: init")
         ctx.status_summary("Loading Discover feed…")
+        granted = await self.emit.capability_request("net.http")
+        if not granted:
+            self._loading = False
+            self._error = "Network access denied."
+            self.emit.warn("bluesky: net.http capability denied")
+            return
         asyncio.create_task(self._fetch_discover(None))
 
     # ── data ──────────────────────────────────────────────────────────────────
