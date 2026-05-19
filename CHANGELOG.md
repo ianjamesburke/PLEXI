@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.455] — 2026-05-19
+
+### Changes
+- feat(context): context tree rework — unified types, portals, agent spawning, anchors (#1516, #1517, #1518, #1520) (#1525)
+- fix(cli): app init walks up to nearest channel-aware workspace dir (#1526)
 ## [0.0.454] — 2026-05-18
 
 ### Changes
