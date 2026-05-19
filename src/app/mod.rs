@@ -2357,6 +2357,7 @@ impl eframe::App for PlexiApp {
                     pipe_id,
                     from_pane_id,
                     request_id,
+                    target_context,
                 } => {
                     // "background" layout is not yet implemented (blocked on #291).
                     if layout == "background" {
@@ -2393,6 +2394,59 @@ impl eframe::App for PlexiApp {
                     let mut effective_args = args;
                     if let Some(ref pid) = pipe_id {
                         effective_args.push(format!("--pipe={pid}"));
+                    }
+
+                    // target_context validation (#1518): if set, verify the
+                    // target exists and is a descendant of the requester's
+                    // context. Switch active_window temporarily so the spawn
+                    // lands in the right context.
+                    let original_active_window = self.active_window;
+                    if let Some(target_ctx_id) = target_context {
+                        let requester_context_id = self.windows[self.active_window].context_id;
+                        let target_exists = self.router.iter().any(|c| c.context_id == target_ctx_id);
+                        let is_descendant = self.host.ancestors_of(target_ctx_id).contains(&requester_context_id);
+
+                        if !target_exists || (!is_descendant && requester_context_id != target_ctx_id) {
+                            log::warn!(
+                                "SpawnPane: target_context={target_ctx_id} invalid or not a descendant of requester context {requester_context_id}"
+                            );
+                            // Send error back to requesting pane.
+                            let active = self.active_window;
+                            let requesting_pane_id = self.windows[active]
+                                .focused_pane
+                                .and_then(|tile| self.windows[active].tree.tiles.get(tile))
+                                .and_then(|tile| {
+                                    if let egui_tiles::Tile::Pane(pid) = tile { Some(*pid) } else { None }
+                                });
+                            if let Some(req_pane_id) = requesting_pane_id {
+                                if let Some(pane) = self.windows[active].panes.get_mut(&req_pane_id) {
+                                    if let Some(a) = pane.as_app_mut() {
+                                        a.runtime.queue_outbound_event(
+                                            crate::app_protocol::PlexiEvent::PaneSpawnError {
+                                                reason: format!(
+                                                    "target_context {target_ctx_id} is not a descendant of context {requester_context_id}"
+                                                ),
+                                                request_id: request_id.clone(),
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+
+                        // Switch to a window in the target context for the spawn.
+                        if let Some(win_idx) = self.windows.iter().position(|w| w.context_id == target_ctx_id) {
+                            log::info!(
+                                "SpawnPane: target_context={target_ctx_id} — switching to window index {win_idx}"
+                            );
+                            self.active_window = win_idx;
+                        } else {
+                            log::warn!(
+                                "SpawnPane: target_context={target_ctx_id} exists but has no window"
+                            );
+                            continue;
+                        }
                     }
 
                     // Capture requesting_pane_id from the CURRENT focused pane (the calling app pane).
@@ -2444,17 +2498,23 @@ impl eframe::App for PlexiApp {
                     // Restore focused_pane after the split so the coordinator app keeps focus.
                     self.windows[active].focused_pane = original_focused;
 
-                    // Send PaneSpawned back to the requesting pane.
+                    // Restore active_window if we switched for target_context.
+                    self.active_window = original_active_window;
+
+                    // Send PaneSpawned back to the requesting pane (may be
+                    // in a different window than where the spawn landed).
                     if let Some(req_pane_id) = requesting_pane_id {
-                        let active = self.active_window;
-                        if let Some(pane) = self.windows[active].panes.get_mut(&req_pane_id) {
-                            if let Some(a) = pane.as_app_mut() {
-                                a.runtime.queue_outbound_event(
-                                    crate::app_protocol::PlexiEvent::PaneSpawned {
-                                        pane_id: new_pane_id,
-                                        request_id,
-                                    },
-                                );
+                        let win_idx = self.windows.iter().position(|w| w.panes.contains_key(&req_pane_id));
+                        if let Some(wi) = win_idx {
+                            if let Some(pane) = self.windows[wi].panes.get_mut(&req_pane_id) {
+                                if let Some(a) = pane.as_app_mut() {
+                                    a.runtime.queue_outbound_event(
+                                        crate::app_protocol::PlexiEvent::PaneSpawned {
+                                            pane_id: new_pane_id,
+                                            request_id,
+                                        },
+                                    );
+                                }
                             }
                         }
                     }
@@ -2778,6 +2838,53 @@ impl eframe::App for PlexiApp {
                 }
                 AppCommand::OpenArtifact { sender_pane_id, path, mode } => {
                     self.dispatch_open_artifact(sender_pane_id, path, mode);
+                }
+                AppCommand::QueryContextState { sender_pane_id, context_id } => {
+                    // Visibility check: the requesting pane must be in the
+                    // queried context itself or in an ancestor of it.
+                    let requester_context_id = self.windows.iter()
+                        .find(|w| w.panes.contains_key(&sender_pane_id))
+                        .map(|w| w.context_id)
+                        .unwrap_or(0);
+
+                    let is_self = requester_context_id == context_id;
+                    let is_ancestor = if !is_self {
+                        self.host.ancestors_of(context_id).contains(&requester_context_id)
+                    } else {
+                        false
+                    };
+
+                    if !is_self && !is_ancestor {
+                        log::warn!(
+                            "QueryContextState: pane {sender_pane_id} in context {requester_context_id} \
+                             cannot query context {context_id} — not an ancestor"
+                        );
+                        continue;
+                    }
+
+                    let state = crate::context_state::ContextState::compute(
+                        context_id,
+                        self.router.as_slice(),
+                        &self.windows,
+                    );
+                    log::info!(
+                        "QueryContextState: context_id={context_id} pane_count={} children={} status={:?}",
+                        state.pane_count,
+                        state.children.len(),
+                        state.status,
+                    );
+
+                    // Send response back to the requesting pane.
+                    let window_idx = self.windows.iter().position(|w| w.panes.contains_key(&sender_pane_id));
+                    if let Some(win_idx) = window_idx {
+                        if let Some(pane) = self.windows[win_idx].panes.get_mut(&sender_pane_id) {
+                            if let Some(app) = pane.as_app_mut() {
+                                app.runtime.queue_outbound_event(
+                                    crate::app_protocol::PlexiEvent::ContextStateResponse { state },
+                                );
+                            }
+                        }
+                    }
                 }
                 AppCommand::DeliverRunUpdate { originator_type_id, event } => {
                     let active = self.active_window;

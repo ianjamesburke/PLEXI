@@ -232,7 +232,8 @@ impl PlexiApp {
                     | AppCommand::RunInLinkedTerminal { .. }
                     | AppCommand::InsertPathToken { .. }
                     | AppCommand::RequestCommandPreview { .. }
-                    | AppCommand::OpenArtifact { .. } => deferred.push(cmd),
+                    | AppCommand::OpenArtifact { .. }
+                    | AppCommand::QueryContextState { .. } => deferred.push(cmd),
                     AppCommand::CdRequest { cwd, .. } => {
                         deferred.push(AppCommand::CdRequest { cwd, sender_pane_id: pane_id });
                     }
@@ -378,5 +379,68 @@ mod ownership_tests {
         // Should not panic; shell_open is a no-op in cfg(test) environments
         // because no real shell is available — we just verify clean exit.
         h.run_frames(1);
+    }
+
+    /// QueryContextState for own context: drain_all_app_commands collects
+    /// the command with the correct sender_pane_id and context_id.
+    #[test]
+    fn query_context_state_own_context_collected() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_test_pane();
+
+        push_command(
+            &mut h,
+            pane_id,
+            AppCommand::QueryContextState {
+                sender_pane_id: pane_id,
+                context_id: 1,
+            },
+        );
+
+        let cmds = h.app.drain_all_app_commands();
+        let found = cmds.iter().any(|c| {
+            matches!(c, AppCommand::QueryContextState {
+                sender_pane_id: sid, context_id: cid
+            } if *sid == pane_id && *cid == 1)
+        });
+        assert!(found, "QueryContextState must appear in drained commands");
+    }
+
+    /// QueryContextState for non-descendant context: the dispatch handler
+    /// must NOT produce a ContextStateResponse (visibility denied).
+    /// We run a full frame so the deferred dispatch executes, then verify
+    /// outbound_events is empty (the frame flush sends events to a dead
+    /// stdin channel which is harmless in tests, but even if something
+    /// slipped through, the denial path skips queue_outbound_event entirely).
+    #[test]
+    fn query_context_state_non_descendant_produces_no_response() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_test_pane();
+
+        // Context 99 is a sibling (parent=None), not a descendant of context 1.
+        h.app.host.add_context(99, None);
+
+        push_command(
+            &mut h,
+            pane_id,
+            AppCommand::QueryContextState {
+                sender_pane_id: pane_id,
+                context_id: 99,
+            },
+        );
+
+        h.run_frames(1);
+
+        // After the frame, outbound_events should be empty. Even though
+        // flush_outbound_events() runs during the frame, the denial path
+        // never queues anything, so nothing gets sent.
+        let effects = h.effects_drain(pane_id);
+        let has_response = effects.iter().any(|e| {
+            matches!(e, crate::app_protocol::PlexiEvent::ContextStateResponse { .. })
+        });
+        assert!(
+            !has_response,
+            "non-descendant QueryContextState must not produce ContextStateResponse"
+        );
     }
 }

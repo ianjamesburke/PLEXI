@@ -6,7 +6,7 @@
 use crate::tiling::PaneId;
 
 /// Rolled-up status for a single context, including recursive children.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ContextState {
     pub context_id: u64,
     pub label: String,
@@ -18,7 +18,7 @@ pub struct ContextState {
 }
 
 /// Overall status of a context, derived from its pane summaries.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub enum ContextStatus {
     Idle,
     Working,
@@ -27,7 +27,7 @@ pub enum ContextStatus {
 }
 
 /// Summary of a single pane within a context.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct PaneSummary {
     pub pane_id: PaneId,
     pub label: String,
@@ -35,7 +35,7 @@ pub struct PaneSummary {
 }
 
 /// Status of an individual pane.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub enum PaneSummaryStatus {
     Idle,
     Active,

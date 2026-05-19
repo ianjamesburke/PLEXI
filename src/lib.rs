@@ -29,6 +29,42 @@ pub mod audio {
     }
 }
 
+pub mod context_state {
+    /// Rolled-up status for a single context. Stub for lib target.
+    #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+    pub struct ContextState {
+        pub context_id: u64,
+        pub label: String,
+        pub pane_count: u32,
+        pub active_agents: u32,
+        pub status: ContextStatus,
+        pub pane_summaries: Vec<PaneSummary>,
+        pub children: Vec<ContextState>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+    pub enum ContextStatus {
+        Idle,
+        Working,
+        Error,
+        Done,
+    }
+
+    #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+    pub struct PaneSummary {
+        pub pane_id: u64,
+        pub label: String,
+        pub status: PaneSummaryStatus,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+    pub enum PaneSummaryStatus {
+        Idle,
+        Active,
+        Error,
+    }
+}
+
 pub mod video {
     /// Video playback state. Stub for the lib target (full impl in binary target).
     #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]

@@ -718,10 +718,16 @@ class RenderContext:
                    args: "list[str] | None" = None,
                    pipe_id: "str | None" = None,
                    from_pane_id: "int | None" = None,
-                   request_id: "str | None" = None) -> None:
+                   request_id: "str | None" = None,
+                   target_context: "int | None" = None) -> None:
         """Request the host to open a new pane. Requires panes.spawn capability."""
         self.emit.spawn_pane(type_id, layout=layout, args=args, pipe_id=pipe_id,
-                             from_pane_id=from_pane_id, request_id=request_id)
+                             from_pane_id=from_pane_id, request_id=request_id,
+                             target_context=target_context)
+
+    def query_context_state(self, context_id: int) -> None:
+        """Query the state of a context. Host responds via on_context_state."""
+        self.emit.query_context_state(context_id)
 
     # ── Declarative layout ──────────────────────────────────────────────────────
 
