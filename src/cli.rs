@@ -198,8 +198,8 @@ pub fn run_command(command_name: &str) -> i32 {
             } else if code == 127 {
                 eprintln!(
                     "hint: command exited with 'not found' (127). If your command references \
-                     $PLEXI_CONFIG_DIR, check that the script exists in {}scripts/",
-                    crate::config::config_dir().display()
+                     $PLEXI_CONFIG_DIR, check that the script exists in '{}'",
+                    crate::config::config_dir().join("scripts").display()
                 );
             }
             code
