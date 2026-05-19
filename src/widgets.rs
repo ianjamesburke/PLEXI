@@ -243,7 +243,8 @@ pub(crate) fn section_header(ui: &mut egui::Ui, label: &str, is_active: bool, co
     ui.label(
         egui::RichText::new(label)
             .size(style::TEXT_CAPTION)
-            .color(color),
+            .color(color)
+            .strong(),
     );
 }
 
@@ -273,10 +274,19 @@ pub(crate) fn status_chip(ui: &mut egui::Ui, status: &str, colors: &Colors) {
 }
 
 /// Renders a single-line label that truncates with an ellipsis at the available
-/// width. **Callers must call `ui.set_max_width(n)` before calling this** (or
-/// use `ui.scope()` with a constrained width) — `egui::Label::truncate` clips
-/// at `available_width()`, so without a bound the label expands naturally and
-/// truncation never fires.
+/// width. `egui::Label::truncate` clips at `available_width()`, so without a
+/// constraint the label expands naturally and truncation never fires.
+///
+/// **Always wrap in `ui.scope()`** and set `ui.set_max_width(n)` inside the
+/// scope — setting max_width on a shared `Ui` corrupts the layout of other
+/// widgets already rendered in the same row (especially inside right_to_left
+/// layouts):
+/// ```ignore
+/// ui.scope(|ui| {
+///     ui.set_max_width(120.0);
+///     description_label(ui, text, colors);
+/// });
+/// ```
 pub(crate) fn description_label(ui: &mut egui::Ui, text: &str, colors: &Colors) {
     ui.add(
         egui::Label::new(

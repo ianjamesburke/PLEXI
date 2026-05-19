@@ -201,7 +201,7 @@ Before writing any keyboard shortcut display, badge, chip, or inline label widge
 - `section_header(ui, label, is_active, colors)` — group/context label at `TEXT_CAPTION` weight; `is_active` switches color from `text_dim` to `accent`.
 - `pane_type_badge(ui, kind, colors)` — renders `"T"` for Terminal, `"A"` for App (first letter of kind) as a `key_chip`. Saves horizontal space vs. full word.
 - `status_chip(ui, status, colors)` — centralized status color mapping: `"busy"`/`"running"` → `accent`; `"crashed"`/`"hung"`/`"error"`/`"exited"` → `danger`; everything else → `text_dim`.
-- `description_label(ui, text, colors)` — single-line `TEXT_HINT` label with `truncate()`. **Caller must call `ui.set_max_width(n)` first** or truncation never fires.
+- `description_label(ui, text, colors)` — single-line `TEXT_HINT` label with `truncate()`. **Always wrap in `ui.scope()` and set `ui.set_max_width(n)` inside the scope** — setting it on a shared `Ui` corrupts layout of other widgets in the same row.
 
 ## Channel-Agnostic CLI Rule
 

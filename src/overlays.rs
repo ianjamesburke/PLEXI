@@ -176,8 +176,10 @@ fn render_inspector_pane_row(
                     );
                 }
                 if !row.detail.is_empty() {
-                    ui.set_max_width(120.0);
-                    crate::widgets::description_label(ui, row.detail.as_str(), colors);
+                    ui.scope(|ui| {
+                        ui.set_max_width(120.0);
+                        crate::widgets::description_label(ui, row.detail.as_str(), colors);
+                    });
                 }
             });
         });
