@@ -31,6 +31,13 @@ class WebcamViewerApp(App):
         self._height: int = 480
         self._status: str = "Opening camera..."
 
+        granted = await self.emit.capability_request("video.capture")
+        if not granted:
+            self._status = "Camera access denied."
+            self.emit.warn("webcam-viewer: video.capture denied by user")
+            ctx.status_summary("Webcam Viewer — access denied")
+            return
+
         self.emit.info("webcam-viewer: enumerating cameras")
         try:
             cam_list = await self.emit.list_camera_devices()  # type: ignore[attr-defined]
