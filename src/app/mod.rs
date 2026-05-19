@@ -953,8 +953,17 @@ impl PlexiApp {
         let panes: HashMap<u64, Pane> = HashMap::new();
         let tree = Tree::empty("plexi");
 
-        let path = std::env::current_dir()
-            .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        let path = {
+            let cwd = std::env::current_dir()
+                .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+            // macOS GUI apps launch with CWD = /. Use home_dir instead so
+            // the initial context and all derived CWDs start at ~.
+            if cwd == PathBuf::from("/") {
+                dirs::home_dir().unwrap_or(cwd)
+            } else {
+                cwd
+            }
+        };
 
         let anchor = crate::anchor::Anchor::detect(&path);
         let (default_name, default_description, default_root) = match anchor.as_ref() {

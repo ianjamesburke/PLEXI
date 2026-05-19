@@ -120,6 +120,7 @@ impl PlexiApp {
         let cwd = self.windows[self.active_window]
             .focused_pane
             .and_then(|t| self.windows[self.active_window].get_focused_pane_cwd(t))
+            .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or_else(|| home.clone());
         log::info!("new_context: cwd={}", cwd.display());
         let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd.clone()), None, false)
@@ -257,6 +258,7 @@ impl PlexiApp {
         let old_focus = self.windows[self.active_window].focused_pane;
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let cwd = self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
+            .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
         log::info!("create_page_at({grid_x},{grid_y}): cwd={} context_root={:?} initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}", cwd.display(), self.router.active().root);
         let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd.clone()), initial_cmd, close_on_exit)
