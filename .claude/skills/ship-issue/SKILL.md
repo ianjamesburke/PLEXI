@@ -546,6 +546,7 @@ Surface the testing block — output EXACTLY this format:
 
 ```
 [TESTING] PR #<n> — <title>
+PR: <pr-url>
 
 Instructions:
 1. <exact step>
