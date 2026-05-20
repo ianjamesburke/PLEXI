@@ -67,7 +67,20 @@ pub fn get_secret_scoped(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn get_secret_scoped(
+    key: &str,
+    app_id: &str,
+    workspace_root: &Path,
+) -> Option<Zeroizing<String>> {
+    if !validate_workspace_root(workspace_root, "get_secret_scoped", app_id, key) {
+        return None;
+    }
+    let account = account_key_scoped(key, workspace_root);
+    crate::secrets_win::cred_read(&account)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn get_secret_scoped(
     key: &str,
     app_id: &str,
@@ -284,25 +297,93 @@ pub fn resolve_secret(key: &str, app_id: &str, launch_dir: &str) -> Option<Zeroi
 
 // ── Non-macOS stubs ────────────────────────────────────────────────────
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub fn store_secret(key: &str, value: &str, app_id: &str, directory: &str) -> bool {
+    let account = account_key(key, app_id, directory);
+    match crate::secrets_win::cred_write(&account, value) {
+        Ok(()) => {
+            index_add(key, app_id, directory);
+            true
+        }
+        Err(e) => {
+            error!("secrets::store_secret failed for account={account}: {e}");
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<Zeroizing<String>> {
+    let account = account_key(key, app_id, directory);
+    crate::secrets_win::cred_read(&account)
+}
+
+#[cfg(target_os = "windows")]
+pub fn delete_secret(key: &str, app_id: &str, directory: &str) -> bool {
+    let account = account_key(key, app_id, directory);
+    match crate::secrets_win::cred_delete(&account) {
+        Ok(()) => {
+            index_remove(key, app_id, directory);
+            true
+        }
+        Err(e) => {
+            error!("secrets::delete_secret failed for account={account}: {e}");
+            false
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub fn resolve_secret(key: &str, app_id: &str, launch_dir: &str) -> Option<Zeroizing<String>> {
+    use std::path::PathBuf;
+
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => {
+            warn!("secrets::resolve_secret: could not determine home directory");
+            return None;
+        }
+    };
+
+    let mut current = PathBuf::from(launch_dir);
+    loop {
+        let dir_str = current.to_string_lossy();
+        if let Some(value) = retrieve_secret(key, app_id, &dir_str) {
+            return Some(value);
+        }
+
+        if current == home {
+            break;
+        }
+
+        match current.parent() {
+            Some(parent) if parent != current => current = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+
+    None
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn store_secret(key: &str, _value: &str, app_id: &str, directory: &str) -> bool {
     warn!("secrets::store_secret({key}, {app_id}, {directory}): Keychain not available on this platform");
     false
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<Zeroizing<String>> {
     warn!("secrets::retrieve_secret({key}, {app_id}, {directory}): Keychain not available on this platform");
     None
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn delete_secret(key: &str, app_id: &str, directory: &str) -> bool {
     warn!("secrets::delete_secret({key}, {app_id}, {directory}): Keychain not available on this platform");
     false
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub fn resolve_secret(key: &str, app_id: &str, launch_dir: &str) -> Option<Zeroizing<String>> {
     warn!("secrets::resolve_secret({key}, {app_id}, {launch_dir}): Keychain not available on this platform");
     None

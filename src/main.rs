@@ -52,6 +52,8 @@ mod protocol;
 mod runs;
 mod secrets;
 mod secrets_app;
+#[cfg(windows)]
+mod secrets_win;
 mod workspace_router;
 mod workspace_secrets;
 mod scheduler;
