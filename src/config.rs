@@ -642,6 +642,34 @@ pub fn config_dir() -> PathBuf {
         .join(config_dir_name())
 }
 
+/// The IPC endpoint a Plexi pane uses to talk to the host (the value of
+/// `PLEXI_SOCKET` injected into every pane's environment).
+///
+/// - Unix: a filesystem path under the profile dir (`~/.plexi[-channel]/notify.sock`)
+///   that `UnixListener::bind` / `UnixStream::connect` use directly.
+/// - Windows: a Win32 named-pipe name (`\\.\pipe\plexi-notify[-channel]`) that
+///   `CreateNamedPipeW` / `CreateFileW` consume. There is no filesystem entry
+///   under the profile dir on Windows.
+///
+/// Both the host (when binding the listener) and the CLI client (when reading
+/// `PLEXI_SOCKET`) call this so the strings agree by construction.
+pub fn ipc_endpoint() -> String {
+    #[cfg(unix)]
+    {
+        config_dir()
+            .join("notify.sock")
+            .to_string_lossy()
+            .into_owned()
+    }
+    #[cfg(windows)]
+    {
+        match build_channel() {
+            Some(channel) => format!(r"\\.\pipe\plexi-notify-{channel}"),
+            None => r"\\.\pipe\plexi-notify".to_string(),
+        }
+    }
+}
+
 pub const CONFIG_TEMPLATE: &str = include_str!("../scripts/default-config.toml");
 
 /// Ensures the config file exists, creating it from the default template if not.

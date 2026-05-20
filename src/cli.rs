@@ -4063,8 +4063,9 @@ fn resolve_path(path: Option<&str>) -> Result<std::path::PathBuf, String> {
 
 /// Send a JSON payload to PLEXI_SOCKET. Returns 0 on success, 1 on error.
 ///
-/// Currently Unix-only; the Windows IPC path lands with the named-pipe / AF_UNIX
-/// transport in Phase 6 of the Windows port.
+/// Unix: connects to the AF_UNIX path. Windows: opens the named pipe via
+/// CreateFileW. The string in `PLEXI_SOCKET` is platform-shaped — see
+/// `crate::config::ipc_endpoint()` for the format used by the host listener.
 fn send_to_socket(payload: serde_json::Value) -> i32 {
     let socket_path = match std::env::var("PLEXI_SOCKET") {
         Ok(v) => v,
@@ -4091,11 +4092,45 @@ fn send_to_socket(payload: serde_json::Value) -> i32 {
         }
         0
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = (socket_path, payload);
-        eprintln!("error: PLEXI_SOCKET IPC is not yet wired up on this platform (Windows port: pending Phase 6)");
-        1
+        use std::io::Write;
+        use std::os::windows::io::{FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        };
+
+        let wide: Vec<u16> = socket_path
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        // GENERIC_WRITE — we only send JSON requests; responses (when needed)
+        // arrive via the response_file polling pattern, not this socket.
+        let raw = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if raw == INVALID_HANDLE_VALUE {
+            let err = std::io::Error::last_os_error();
+            eprintln!("error: could not open PLEXI_SOCKET pipe {socket_path:?}: {err}");
+            return 1;
+        }
+        let owned = unsafe { OwnedHandle::from_raw_handle(raw as _) };
+        let mut file = std::fs::File::from(owned);
+        let line = format!("{payload}\n");
+        if let Err(e) = file.write_all(line.as_bytes()) {
+            eprintln!("error: could not write to pipe: {e}");
+            return 1;
+        }
+        0
     }
 }
 
