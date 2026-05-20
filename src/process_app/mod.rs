@@ -18,6 +18,8 @@ pub(crate) mod prompts;
 pub(crate) mod render;
 mod render_session;
 mod routing;
+#[cfg(windows)]
+mod win;
 
 pub(crate) use lifecycle::{LifecycleState, LifecycleTracker};
 use render_session::RenderSession;
@@ -611,11 +613,9 @@ impl ProcessApp {
         // race and get ECHILD if we win — that's harmless since shutdown
         // discards the result with `let _ = child.wait()`.
         //
-        // Windows: no reaper here. Children are auto-reaped by the OS and we
-        // do not yet have a process-wait equivalent wired up. Pending Phase 6:
-        // OpenProcess(SYNCHRONIZE) + WaitForSingleObject on `reaper_pid`, then
-        // call `lifecycle_reaper.on_process_exited()`. Until that lands, app
-        // exit detection on Windows relies on the shutdown path only.
+        // Windows: equivalent reaper using OpenProcess(SYNCHRONIZE) +
+        // WaitForSingleObject(INFINITE). The shutdown path's `child.wait()`
+        // may race and observe the process already-gone — also harmless.
         #[cfg(unix)]
         {
             let reaper_type_id = type_id.clone();
@@ -634,7 +634,29 @@ impl ProcessApp {
                 })
                 .expect("failed to spawn app-reaper thread");
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            let reaper_type_id = type_id.clone();
+            thread::Builder::new()
+                .name(format!("app-reaper-{reaper_type_id}"))
+                .spawn(move || {
+                    match win::wait(reaper_pid) {
+                        Ok(()) => {
+                            log::info!(
+                                "ProcessApp[{reaper_type_id}]: child exited (pid {reaper_pid}) — reaper signaling lifecycle via Win32 WaitForSingleObject"
+                            );
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                "ProcessApp[{reaper_type_id}]: Win32 wait failed for pid {reaper_pid}: {err} — signaling lifecycle anyway"
+                            );
+                        }
+                    }
+                    lifecycle_reaper.on_process_exited();
+                })
+                .expect("failed to spawn app-reaper thread");
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (reaper_pid, &type_id, lifecycle_reaper);
             log::warn!("ProcessApp[{type_id}]: app-reaper not wired on this platform — exit detection limited to shutdown path");
@@ -2162,10 +2184,16 @@ pub(crate) fn static_capability_check(
             log::warn!("ProcessApp[{type_id}]: static capability check timed out (pid {pid}) — killing and skipping");
             #[cfg(unix)]
             unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL); }
-            #[cfg(not(unix))]
+            #[cfg(windows)]
             {
-                let _ = pid; // Windows: pending Phase 6 — terminate via OpenProcess+TerminateProcess
-                log::warn!("ProcessApp[{type_id}]: static-cap-check kill skipped on this platform (pid {pid} left running until shutdown)");
+                match win::terminate(pid) {
+                    Ok(()) => log::info!(
+                        "ProcessApp[{type_id}]: terminated pid {pid} via Win32 TerminateProcess (static-cap-check timeout)"
+                    ),
+                    Err(err) => log::warn!(
+                        "ProcessApp[{type_id}]: TerminateProcess failed for pid {pid}: {err}"
+                    ),
+                }
             }
             return Ok(());
         }
@@ -2270,10 +2298,23 @@ impl Drop for ProcessApp {
                         libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG);
                     }
                 });
-            #[cfg(not(unix))]
+            #[cfg(windows)]
             {
-                // Windows: pending Phase 6. Stream subprocess termination on
-                // drop will be wired via OpenProcess+TerminateProcess.
+                // Win32 TerminateProcess is unconditional — the Unix
+                // "SIGTERM then SIGKILL after 1s" escalation collapses to
+                // a single call here. No background thread needed.
+                let type_id = &self.type_id;
+                match win::terminate(pid) {
+                    Ok(()) => log::info!(
+                        "ProcessApp[{type_id}]: drop — terminated stream pid {pid} via Win32 TerminateProcess"
+                    ),
+                    Err(err) => log::warn!(
+                        "ProcessApp[{type_id}]: drop — TerminateProcess failed for stream pid {pid}: {err}"
+                    ),
+                }
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
                 log::warn!("ProcessApp: stream drop-kill skipped on this platform (pid {pid} left running until host exits)");
             }
         }

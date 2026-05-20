@@ -693,10 +693,24 @@ impl ProcessApp {
                             }
                         }).expect("failed to spawn sigkill thread");
                     }
-                    #[cfg(not(unix))]
+                    #[cfg(windows)]
                     {
-                        // Windows: pending Phase 6. CancelProcess termination
-                        // will route through OpenProcess+TerminateProcess.
+                        // Win32 TerminateProcess is unconditional — no
+                        // graceful-then-force escalation needed.
+                        let pid = handle.pid;
+                        match crate::process_app::win::terminate(pid) {
+                            Ok(()) => log::info!(
+                                "ProcessApp[{}]: CancelProcess — terminated pid {pid} via Win32 TerminateProcess",
+                                self.type_id
+                            ),
+                            Err(err) => log::warn!(
+                                "ProcessApp[{}]: CancelProcess — TerminateProcess failed for pid {pid}: {err}",
+                                self.type_id
+                            ),
+                        }
+                    }
+                    #[cfg(not(any(unix, windows)))]
+                    {
                         log::warn!("ProcessApp: CancelProcess termination skipped on this platform (pid {} left running)", handle.pid);
                     }
                 }
