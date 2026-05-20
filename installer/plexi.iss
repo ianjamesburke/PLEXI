@@ -113,10 +113,15 @@ Source: "..\assets\app-icon.ico";             DestDir: "{app}";                 
 #endif
 
 [Icons]
+; WorkingDir defaults to {app} (the install dir) if omitted, which makes Plexi
+; spawn new terminal panes inside %LOCALAPPDATA%\Plexi[-channel]\. Setting it
+; to {userprofile} (~) gives terminals a sane default CWD when launched via
+; the Start Menu shortcut. Terminal launches of `plexi` still honor the
+; caller's CWD.
 #if HasIcon
-Name: "{group}\Plexi{#MyAppNameSuffix}"; Filename: "{app}\bin\{#MyBinaryName}"; IconFilename: "{app}\app-icon.ico"
+Name: "{group}\Plexi{#MyAppNameSuffix}"; Filename: "{app}\bin\{#MyBinaryName}"; WorkingDir: "{userprofile}"; IconFilename: "{app}\app-icon.ico"
 #else
-Name: "{group}\Plexi{#MyAppNameSuffix}"; Filename: "{app}\bin\{#MyBinaryName}"
+Name: "{group}\Plexi{#MyAppNameSuffix}"; Filename: "{app}\bin\{#MyBinaryName}"; WorkingDir: "{userprofile}"
 #endif
 
 [Run]
