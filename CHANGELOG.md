@@ -1,6 +1,18 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.472] — 2026-05-20
+
+### Changes
+- fix(backlog): channel-aware quick-note backlog (#1595) (#1597)
+- feat(host): emit SESSION START/END log markers on process app lifecycle (#1511) (#1589)
+- chore(skill): bump create-plexi-app skill_version to 0.0.470 (#1510)
+- fix(cli): plexi open exits 0 with pane ID when app launch silently fails (#1590)
+- fix: bundle — inspector Cmd+R rename, skill version, registry rename (#1508, #1510, #1537) (#1588)
+- docs(dispatch): add lane recovery rules and mandatory stabilizer note
+- fix(dispatch): add dirty-tree guard and shell-ready delays to open-lanes.sh
+- docs(website): update SDK reference pages
+- feat(website): replace hero placeholder with real screenshot
 ## [0.0.471] — 2026-05-20
 
 ### Changes
