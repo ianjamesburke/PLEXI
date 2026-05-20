@@ -50,25 +50,67 @@ fn check_has_children(pid: u32) -> bool {
 }
 
 pub fn detect_shell() -> String {
-    if let Ok(shell) = std::env::var("SHELL") {
-        if Path::new(&shell).exists() {
-            return shell;
+    #[cfg(unix)]
+    {
+        if let Ok(shell) = std::env::var("SHELL") {
+            if Path::new(&shell).exists() {
+                return shell;
+            }
+        }
+
+        for shell in [
+            "/bin/zsh",
+            "/usr/bin/zsh",
+            "/bin/bash",
+            "/usr/bin/bash",
+            "/bin/sh",
+        ] {
+            if Path::new(shell).exists() {
+                return shell.to_string();
+            }
+        }
+
+        "/bin/sh".to_string()
+    }
+    #[cfg(windows)]
+    {
+        // Prefer pwsh.exe (PowerShell 7+) if it's on PATH — modern, cross-platform
+        // syntax, better UTF-8 default. Fall back to ComSpec (usually cmd.exe).
+        // Users can force a specific shell via the SHELL env var.
+        if let Ok(shell) = std::env::var("SHELL") {
+            if !shell.is_empty() && Path::new(&shell).exists() {
+                log::info!("detect_shell: using $SHELL override → {shell}");
+                return shell;
+            }
+        }
+        for candidate in ["pwsh.exe", "powershell.exe"] {
+            if let Some(path) = which_on_path(candidate) {
+                log::info!("detect_shell: found {candidate} on PATH → {path}");
+                return path;
+            }
+        }
+        if let Ok(comspec) = std::env::var("ComSpec") {
+            if Path::new(&comspec).exists() {
+                log::info!("detect_shell: falling back to %ComSpec% → {comspec}");
+                return comspec;
+            }
+        }
+        log::warn!("detect_shell: no pwsh/powershell/ComSpec found, returning bare \"cmd.exe\"");
+        "cmd.exe".to_string()
+    }
+}
+
+/// Walk %PATH% looking for `name` (or `name.exe`). Windows only.
+#[cfg(windows)]
+fn which_on_path(name: &str) -> Option<String> {
+    let path_env = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_env) {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate.to_string_lossy().into_owned());
         }
     }
-
-    for shell in [
-        "/bin/zsh",
-        "/usr/bin/zsh",
-        "/bin/bash",
-        "/usr/bin/bash",
-        "/bin/sh",
-    ] {
-        if Path::new(shell).exists() {
-            return shell.to_string();
-        }
-    }
-
-    "/bin/sh".to_string()
+    None
 }
 
 /// Resolve the user's login-shell PATH and install it as the process PATH.
@@ -86,15 +128,27 @@ pub fn detect_shell() -> String {
 /// Idempotent — safe to call when already launched from a terminal (the
 /// login-shell probe returns the same PATH we already have).
 pub fn install_login_shell_path() {
-    let resolved = probe_login_shell_path().or_else(fallback_path_with_homebrew);
-    if let Some(new_path) = resolved {
-        log::info!("Resolved login-shell PATH: {new_path}");
-        // SAFETY: called once, early in `main()`, before any subprocess spawns
-        // and before any thread reads PATH. All downstream reads see the new
-        // value. On non-macOS platforms the fallback returns None and we
-        // leave the inherited PATH untouched.
-        unsafe {
-            std::env::set_var("PATH", new_path);
+    // Windows: no analog. cmd.exe / pwsh.exe inherit the user PATH from the
+    // shell that launched us (or the system+user PATH if launched from the
+    // Start menu / Explorer), which is exactly what we want. The macOS GUI
+    // bundle workaround does not apply.
+    #[cfg(windows)]
+    {
+        log::info!("install_login_shell_path: no-op on Windows (PATH already correct)");
+        return;
+    }
+    #[cfg(not(windows))]
+    {
+        let resolved = probe_login_shell_path().or_else(fallback_path_with_homebrew);
+        if let Some(new_path) = resolved {
+            log::info!("Resolved login-shell PATH: {new_path}");
+            // SAFETY: called once, early in `main()`, before any subprocess spawns
+            // and before any thread reads PATH. All downstream reads see the new
+            // value. On non-macOS platforms the fallback returns None and we
+            // leave the inherited PATH untouched.
+            unsafe {
+                std::env::set_var("PATH", new_path);
+            }
         }
     }
 }
@@ -111,38 +165,48 @@ pub fn install_login_shell_path() {
 /// never overwrites existing values so the GUI context wins on conflicts.
 /// Called after `install_login_shell_path` since PATH is already handled.
 pub fn install_login_shell_env() {
-    // System/terminal vars that are either already correct in the GUI context
-    // or that build_env() sets explicitly later. Never adopt these from the shell.
-    const SKIP: &[&str] = &[
-        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR",
-        "TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM", "TERMINFO",
-        "SHLVL", "OLDPWD", "PWD", "_", "PS1", "PS2",
-        "XPC_FLAGS", "XPC_SERVICE_NAME",
-        "APPLE_SECURITY_ASSESSMENT", "COMMAND_MODE",
-        "SECURITYSESSIONID", "SSH_AUTH_SOCK",
-    ];
-
-    let Some(vars) = probe_login_shell_env() else { return };
-    let mut adopted_keys: Vec<&str> = Vec::new();
-    for (k, v) in &vars {
-        if SKIP.contains(&k.as_str()) {
-            continue;
-        }
-        if std::env::var(k).is_err() {
-            // SAFETY: called once, early in main(), before any threads read env.
-            unsafe { std::env::set_var(k, v); }
-            adopted_keys.push(k.as_str());
-        }
+    // Windows: no analog. Environment is inherited from the launching shell
+    // or the user profile; no login-shell probe is needed.
+    #[cfg(windows)]
+    {
+        log::info!("install_login_shell_env: no-op on Windows");
     }
-    if !adopted_keys.is_empty() {
-        log::info!(
-            "Adopted {} env vars from login shell: [{}]",
-            adopted_keys.len(),
-            adopted_keys.join(", ")
-        );
+    #[cfg(not(windows))]
+    {
+        // System/terminal vars that are either already correct in the GUI context
+        // or that build_env() sets explicitly later. Never adopt these from the shell.
+        const SKIP: &[&str] = &[
+            "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR",
+            "TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM", "TERMINFO",
+            "SHLVL", "OLDPWD", "PWD", "_", "PS1", "PS2",
+            "XPC_FLAGS", "XPC_SERVICE_NAME",
+            "APPLE_SECURITY_ASSESSMENT", "COMMAND_MODE",
+            "SECURITYSESSIONID", "SSH_AUTH_SOCK",
+        ];
+
+        let Some(vars) = probe_login_shell_env() else { return };
+        let mut adopted_keys: Vec<&str> = Vec::new();
+        for (k, v) in &vars {
+            if SKIP.contains(&k.as_str()) {
+                continue;
+            }
+            if std::env::var(k).is_err() {
+                // SAFETY: called once, early in main(), before any threads read env.
+                unsafe { std::env::set_var(k, v); }
+                adopted_keys.push(k.as_str());
+            }
+        }
+        if !adopted_keys.is_empty() {
+            log::info!(
+                "Adopted {} env vars from login shell: [{}]",
+                adopted_keys.len(),
+                adopted_keys.join(", ")
+            );
+        }
     }
 }
 
+#[cfg(not(windows))]
 fn probe_login_shell_env() -> Option<HashMap<String, String>> {
     let shell = detect_shell();
     // `-i -l`: interactive + login. Login alone loads `~/.zprofile` /
@@ -174,6 +238,7 @@ fn probe_login_shell_env() -> Option<HashMap<String, String>> {
     Some(map)
 }
 
+#[cfg(not(windows))]
 fn probe_login_shell_path() -> Option<String> {
     let shell = detect_shell();
     let output = Command::new(&shell)
@@ -195,6 +260,7 @@ fn probe_login_shell_path() -> Option<String> {
     Some(path)
 }
 
+#[cfg(not(windows))]
 fn fallback_path_with_homebrew() -> Option<String> {
     if !cfg!(target_os = "macos") {
         return None;

@@ -1,7 +1,14 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[cfg(unix)]
 const DEFAULT_SHELL: &str = "/bin/bash";
+// Windows default: cmd.exe always exists at the COMSPEC location. The host
+// usually overrides this via `shell::detect_shell()` (which prefers
+// pwsh.exe / Windows Terminal's profile defaults), so this is only a safety
+// net for code paths that take `BackendSettings::default()` directly.
+#[cfg(windows)]
+const DEFAULT_SHELL: &str = "cmd.exe";
 
 #[derive(Debug, Clone)]
 pub struct BackendSettings {

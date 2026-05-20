@@ -1353,9 +1353,19 @@ impl PlexiApp {
         env.insert("PLEXI_CONTEXT_ID".into(), context_id.to_string());
         env.insert("PLEXI_CONTEXT_NAME".into(), context_name.to_string());
         env.insert("PLEXI_CONTEXT_DESCRIPTION".into(), context_description.to_string());
+        // Default args:
+        //   Unix login shells get `-l` so .zprofile / .bash_profile run.
+        //   Windows shells (cmd.exe, pwsh.exe) have no equivalent: cmd treats
+        //   `-l` as an invalid switch and aborts, pwsh treats it as a script
+        //   path. For an interactive terminal pane on Windows, no args is
+        //   exactly right — cmd opens a prompt, pwsh starts its REPL.
+        #[cfg(unix)]
+        let default_args = vec!["-l".to_string()];
+        #[cfg(windows)]
+        let default_args: Vec<String> = Vec::new();
         BackendSettings {
             shell: shell::detect_shell(),
-            args: vec!["-l".to_string()],
+            args: default_args,
             env,
             dynamic_colors: theme::terminal_dynamic_colors(colors),
             working_directory,
