@@ -378,7 +378,7 @@ fn render_inspector_hints(
                 ui.add_space(style::SPACE_MD);
                 crate::widgets::key_combo_list(ui, &[&["Enter"]], Some("focus pane"), colors);
                 ui.add_space(style::SPACE_MD);
-                crate::widgets::key_combo_list(ui, &[&["⌘", "W"]], Some("close pane"), colors);
+                crate::widgets::key_combo_list(ui, &[&[crate::widgets::CMD, "W"]], Some("close pane"), colors);
             }
         }
     });
@@ -2232,7 +2232,7 @@ impl PlexiApp {
             focus_pane = Some(all_pane_ids[self.inspector_selected_pane]);
         }
         if cmd_w_pressed && pane_count > 0 {
-            log::info!("ContextInspector: ⌘W close pane {}", all_pane_ids[self.inspector_selected_pane]);
+            log::info!("ContextInspector: {}+W close pane {}", crate::widgets::CMD, all_pane_ids[self.inspector_selected_pane]);
             close_pane = Some(all_pane_ids[self.inspector_selected_pane]);
         }
         if backspace_pressed {
@@ -4066,11 +4066,13 @@ impl PlexiApp {
 
                     // Each entry: (chip groups for one combo, description).
                     // Every modifier/key is a separate chip — no combined strings.
+                    let cmd = crate::widgets::CMD;
+                    let shift = crate::widgets::SHIFT;
                     let shortcuts: &[(&[&str], &str)] = &[
-                        (&["⌘", "P"], "command palette"),
-                        (&["⌘", "N"], "new terminal"),
-                        (&["⌘", "⇧", "N"], "new context"),
-                        (&["⌘", "/"], "keyboard shortcuts"),
+                        (&[cmd, "P"], "command palette"),
+                        (&[cmd, "N"], "new terminal"),
+                        (&[cmd, shift, "N"], "new context"),
+                        (&[cmd, "/"], "keyboard shortcuts"),
                     ];
 
                     for (keys, desc) in shortcuts {
@@ -4095,9 +4097,17 @@ impl PlexiApp {
                     );
                     ui.add_space(style::SPACE_SM);
 
+                    // Tips are full sentences, so the modifier prefix has a
+                    // platform-specific format: ⌘P on macOS, Ctrl+P elsewhere.
+                    #[cfg(target_os = "macos")]
                     let tips: &[&str] = &[
                         "⌘P opens the command palette — jump to any pane or launch an installed app",
                         "⌘⇧N opens a fresh context — use it like a virtual desktop",
+                    ];
+                    #[cfg(not(target_os = "macos"))]
+                    let tips: &[&str] = &[
+                        "Ctrl+P opens the command palette — jump to any pane or launch an installed app",
+                        "Ctrl+Shift+N opens a fresh context — use it like a virtual desktop",
                     ];
                     for tip in tips {
                         ui.horizontal(|ui| {

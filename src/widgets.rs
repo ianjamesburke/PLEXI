@@ -77,6 +77,21 @@ pub(crate) fn selectable_row<R>(
 //     key_combo(ui, &["⌘", "["], colors);        // single shortcut
 //     key_combo_list(ui, &[["⌘", "["], ["⌘", "]"]], colors, "to cycle");
 
+/// Display label for the primary command modifier. macOS uses the ⌘ glyph;
+/// Windows/Linux conventions write out "Ctrl". Used as a chip label so the
+/// keycap renderer is unchanged across platforms.
+#[cfg(target_os = "macos")]
+pub(crate) const CMD: &str = "⌘";
+#[cfg(not(target_os = "macos"))]
+pub(crate) const CMD: &str = "Ctrl";
+
+/// Display label for the shift modifier. macOS uses the ⇧ glyph; everywhere
+/// else writes "Shift".
+#[cfg(target_os = "macos")]
+pub(crate) const SHIFT: &str = "⇧";
+#[cfg(not(target_os = "macos"))]
+pub(crate) const SHIFT: &str = "Shift";
+
 /// Padding around the key label text inside the chip.
 const KEYCAP_PAD_H: f32 = 6.0;
 const KEYCAP_PAD_V: f32 = 3.0;
