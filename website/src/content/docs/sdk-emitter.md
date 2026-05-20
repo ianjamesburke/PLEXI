@@ -93,6 +93,26 @@ Raises ``RuntimeError`` if there is no running event loop to dispatch to
 
 ---
 
+### `schedule_task`
+
+```python
+def schedule_task(coro: 'Any') -> Any
+```
+
+Schedule a coroutine as a background asyncio task from any context.
+
+Safe to call from sync hooks (on_render, on_key, etc.) or background
+threads. Returns immediately without blocking. The coroutine runs in
+the background; use this when you don't need the return value:
+
+    def on_render(self, ctx: RenderContext) -> None:
+        if self._btn.render(ctx):
+            self.emit.schedule_task(self._do_query())
+
+Raises ``RuntimeError`` if the event loop hasn't started yet.
+
+---
+
 ### `notify_choice`
 
 ```python
@@ -178,6 +198,64 @@ Await this from async hooks. From background threads use
 
 ---
 
+### `notify_async`
+
+```python
+def notify_async(title: str, priority: int, body: str = '', level: str = 'info', actions: 'list | None' = None, image_inline: 'dict | None' = None, image_pipe_id: 'str | None' = None, timeout_secs: 'int | None' = None, on_dismiss: 'str | None' = None, on_response: 'Any' = None) -> str
+```
+
+Non-blocking notify_and_wait. Returns immediately with notify_id.
+
+If on_response is None, behaves like fire-and-forget notify() — returns "".
+If on_response is set, registers the callback; it receives "acknowledge"
+or "__cancel__" when the user interacts.
+
+`priority` is required (int, higher = more urgent).
+
+---
+
+### `notify_choice_async`
+
+```python
+def notify_choice_async(title: str, options: list, priority: int, body: str = '', level: str = 'info', required: bool = False, image_inline: 'dict | None' = None, image_pipe_id: 'str | None' = None, timeout_secs: 'int | None' = None, on_dismiss: 'str | None' = None, on_response: 'Any' = None) -> str
+```
+
+Non-blocking notify_choice. Returns immediately with notify_id.
+
+`on_response` receives the chosen option's value (or label if no value
+set), or "__cancel__" if the user dismissed (required=False only).
+`priority` is required (int, higher = more urgent).
+
+---
+
+### `notify_input_async`
+
+```python
+def notify_input_async(title: str, priority: int, prompt: str = '', body: str = '', level: str = 'info', required: bool = False, timeout_secs: 'int | None' = None, on_dismiss: 'str | None' = None, on_response: 'Any' = None) -> str
+```
+
+Non-blocking notify_input. Returns immediately with notify_id.
+
+`on_response` receives the typed text (possibly empty), or "__cancel__"
+if the user dismissed (required=False only).
+`priority` is required (int, higher = more urgent).
+
+---
+
+### `notify_and_wait_async`
+
+```python
+def notify_and_wait_async(title: str, priority: int, body: str = '', level: str = 'info', actions: 'list | None' = None, timeout_secs: 'int | None' = None, on_dismiss: 'str | None' = None, on_response: 'Any' = None) -> str
+```
+
+Non-blocking notify_and_wait. Returns immediately with notify_id.
+
+`on_response` receives "acknowledge" on Enter/Space/button, or
+"__cancel__" on Esc.
+`priority` is required (int, higher = more urgent).
+
+---
+
 ### `run_in_terminal`
 
 ```python
@@ -259,7 +337,7 @@ Args:
 ### `spawn_pane`
 
 ```python
-def spawn_pane(type_id: str, layout: str = 'split_v', args: 'list[str] | None' = None, pipe_id: 'str | None' = None, from_pane_id: 'int | None' = None, request_id: 'str | None' = None) -> None
+def spawn_pane(type_id: str, layout: str = 'split_v', args: 'list[str] | None' = None, pipe_id: 'str | None' = None, from_pane_id: 'int | None' = None, request_id: 'str | None' = None, target_context: 'int | None' = None) -> None
 ```
 
 Request the host to open a new pane with the given app (#592).
@@ -279,6 +357,26 @@ Args:
                   currently focused pane.
     request_id: Optional correlation id echoed back in on_pane_spawned /
                 on_pane_spawn_error.
+    target_context: Optional context_id to spawn the pane into. Must be
+                    the calling pane's own context or a descendant (#1518).
+
+---
+
+### `query_context_state`
+
+```python
+def query_context_state(context_id: int) -> None
+```
+
+Query the state of a context (#1518).
+
+The host responds with ``on_context_state(state)`` containing pane
+count, child contexts, and aggregate status. The requesting pane must
+be in the queried context itself or in an ancestor context (visibility
+boundary). Non-descendant queries are silently denied.
+
+Args:
+    context_id: The context to query.
 
 ---
 
@@ -481,6 +579,26 @@ Supports custom method, headers, and body. Raises RuntimeError on failure.
 
 From background threads:
 ``self.emit.run_sync(self.emit.http_request(...))``.
+
+---
+
+### `load_image`
+
+```python
+async def load_image(src: str) -> str
+```
+
+Request an async image fetch brokered through the host. Requires net.http capability.
+
+Returns a stable handle ID. Pass the handle to ``ctx.image(handle, x, y, w, h)``
+to render. While loading, ``ctx.image()`` renders a placeholder rect. On load
+completion the host fires ``PlexiEvent::ImageLoaded`` which triggers a re-render.
+
+Raises ``RuntimeError`` immediately if ``net.http`` is not declared in the manifest.
+Raises ``RuntimeError`` if the fetch fails (network error, bad URL, decode error).
+
+From background threads:
+``self.emit.run_sync(self.emit.load_image(url))``.
 
 ---
 

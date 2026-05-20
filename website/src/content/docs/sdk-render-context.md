@@ -27,6 +27,21 @@ Passed to on_render. Accumulate draw commands; FrameDone is auto-emitted.
 
 ## Methods
 
+### `declare_min_size`
+
+```python
+def declare_min_size(width: float, height: float) -> None
+```
+
+Override the manifest-declared minimum size at runtime.
+
+Emits DrawCommand::SetMinSize. The host stores this and uses it as the
+live effective minimum for this pane going forward, superseding the
+manifest value. Use when a view mode needs more space than the default
+(e.g. a detail view vs a list view).
+
+---
+
 ### `clear`
 
 ```python
@@ -567,6 +582,50 @@ See Emitter.notify_and_wait. Use with ``await``.
 
 ---
 
+### `notify_async`
+
+```python
+def notify_async(title: str, priority: int, body: str = '', level: str = 'info', actions: 'list | None' = None, image_inline: 'dict | None' = None, image_pipe_id: 'str | None' = None, timeout_secs: 'int | None' = None, on_dismiss: 'str | None' = None, on_response: 'Any' = None) -> str
+```
+
+Non-blocking notify_and_wait. Returns immediately with notify_id.
+`priority` is required. See Emitter.notify_async.
+
+---
+
+### `notify_choice_async`
+
+```python
+def notify_choice_async(title: str, options: list, priority: int, body: str = '', level: str = 'info', required: bool = False, image_inline: 'dict | None' = None, image_pipe_id: 'str | None' = None, timeout_secs: 'int | None' = None, on_dismiss: 'str | None' = None, on_response: 'Any' = None) -> str
+```
+
+Non-blocking notify_choice. Returns immediately with notify_id.
+`priority` is required. See Emitter.notify_choice_async.
+
+---
+
+### `notify_input_async`
+
+```python
+def notify_input_async(title: str, priority: int, prompt: str = '', body: str = '', level: str = 'info', required: bool = False, timeout_secs: 'int | None' = None, on_dismiss: 'str | None' = None, on_response: 'Any' = None) -> str
+```
+
+Non-blocking notify_input. Returns immediately with notify_id.
+`priority` is required. See Emitter.notify_input_async.
+
+---
+
+### `notify_and_wait_async`
+
+```python
+def notify_and_wait_async(title: str, priority: int, body: str = '', level: str = 'info', actions: 'list | None' = None, timeout_secs: 'int | None' = None, on_dismiss: 'str | None' = None, on_response: 'Any' = None) -> str
+```
+
+Non-blocking notify_and_wait. Returns immediately with notify_id.
+`priority` is required. See Emitter.notify_and_wait_async.
+
+---
+
 ### `status_summary`
 
 ```python
@@ -668,10 +727,20 @@ AI broker call through the host. Requires ai.query capability. Use with ``await`
 ### `spawn_pane`
 
 ```python
-def spawn_pane(type_id: str, layout: str = 'split_v', args: 'list[str] | None' = None, pipe_id: 'str | None' = None, from_pane_id: 'int | None' = None, request_id: 'str | None' = None) -> None
+def spawn_pane(type_id: str, layout: str = 'split_v', args: 'list[str] | None' = None, pipe_id: 'str | None' = None, from_pane_id: 'int | None' = None, request_id: 'str | None' = None, target_context: 'int | None' = None) -> None
 ```
 
 Request the host to open a new pane. Requires panes.spawn capability.
+
+---
+
+### `query_context_state`
+
+```python
+def query_context_state(context_id: int) -> None
+```
+
+Query the state of a context. Host responds via on_context_state.
 
 ---
 
@@ -765,6 +834,37 @@ def stack(x: float, y: float, children: 'list[dict]') -> None
 Emit a declarative stack layout — all children rendered at the same origin.
 
 Use for layering (background rect behind text, etc.).
+
+---
+
+### `responsive`
+
+```python
+def responsive(x: float, y: float, tiers: 'list[dict]') -> None
+```
+
+Emit a responsive layout that adapts to the available pane aspect ratio.
+
+The host evaluates tiers in order and renders the first match:
+- "landscape": pane is wider than tall (ratio > 1.2)
+- "portrait": pane is taller than wide (ratio < 0.83)
+- "square": fallback for balanced aspect ratios
+
+Each tier dict has: aspect (str), direction (str), children (list), gap (float).
+
+Example:
+
+    ctx.responsive(
+        x=0.0, y=0.0,
+        tiers=[
+            {"aspect": "landscape", "direction": "row",
+             "children": [ctx.text_child("wide view")], "gap": 6.0},
+            {"aspect": "portrait", "direction": "column",
+             "children": [ctx.text_child("tall view")], "gap": 4.0},
+            {"aspect": "square", "direction": "column",
+             "children": [ctx.text_child("default")], "gap": 4.0},
+        ],
+    )
 
 ---
 

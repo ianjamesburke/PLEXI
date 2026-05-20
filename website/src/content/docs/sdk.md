@@ -151,10 +151,9 @@ Color helpers:
 NOTIFICATIONS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Four kinds. All are posted via ctx.notify* and render in the central
-notification modal (ctx.notify(...) returns immediately; the other three
-block the calling thread until the user responds — run them on a worker
-thread if the app needs to stay interactive).
+Eight methods across two groups: blocking (await) and non-blocking (callback).
+
+Blocking — await these from async hooks, or call via emit.run_sync() from threads:
 
   ctx.notify(title, priority, body="", level="info")
       Fire-and-forget message. Enter / Space acknowledge, Esc dismisses.
@@ -177,6 +176,26 @@ thread if the app needs to stay interactive).
       this is fire-and-forget (returns None); with `choices` set it routes
       to notify_choice and blocks for the user's pick. `mime` must be
       "image/png" or "image/jpeg".
+
+Non-blocking (#310) — return immediately with notify_id (str); `on_response`
+callback fires on the event thread when the user responds. No worker thread
+needed. The callback registry is cleaned up after first invocation.
+
+  ctx.notify_async(title, priority, body="", on_response=None) -> str
+      Non-blocking message. on_response=None → pure fire-and-forget (returns "").
+      on_response=fn → callback receives "acknowledge" or "__cancel__".
+
+  ctx.notify_and_wait_async(title, priority, body="", on_response=None) -> str
+      Non-blocking variant of notify_and_wait. Callback receives "acknowledge"
+      or "__cancel__".
+
+  ctx.notify_choice_async(title, options, priority, body="", on_response=None) -> str
+      Non-blocking variant of notify_choice. Callback receives the chosen value
+      (or label), or "__cancel__".
+
+  ctx.notify_input_async(title, priority, prompt="", body="", on_response=None) -> str
+      Non-blocking variant of notify_input. Callback receives typed text or
+      "__cancel__".
 
 Image attachments (#74) — pass `image_inline={"mime", "base64"}` to any of
 the notify* methods, or use `notify_with_image` for the convenience wrap.
@@ -224,10 +243,10 @@ per-app in the app's manifest.toml under [launch]:
 The user controls which scope a given app uses by editing its manifest.
 Apps do not see or set scope at the SDK level.
 
-Round-trip response — notify_choice / notify_input / notify_and_wait all
-block for the user's answer. For fire-and-forget notifications that still
-need a response, set notify_id explicitly and handle PlexiEvent::NotifyAction
-in your event loop. The blocking helpers handle this plumbing internally.
+Round-trip response — the blocking helpers (notify_choice / notify_input /
+notify_and_wait) park a queue and await the response. The _async variants
+register an on_response callback instead — no thread required, no await
+needed. Both paths use the same host-side notify_id / NotifyAction plumbing.
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
