@@ -210,7 +210,7 @@ impl PlexiApp {
                 //   Placement::Right → "split_h" (side-by-side, new pane right)
                 //   Placement::Below → "split_v" (stacked,      new pane below)
                 let layout = if vertical { "split_h" } else { "split_v" };
-                self.launch_app_by_id_with_layout(
+                let _ = self.launch_app_by_id_with_layout(
                     &manifest_id,
                     Some(layout.to_string()),
                     &[],
