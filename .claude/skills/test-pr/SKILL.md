@@ -73,7 +73,8 @@ Skip install if all changed files are non-Rust, test-only, or diff-verifiable. O
 
 **Install (run from feature worktree):**
 ```bash
-cd /Users/ianburke/Documents/GitHub/PLEXI/worktrees/$BRANCH
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT/worktrees/$BRANCH"
 just pr-install $PR_NUMBER
 ```
 

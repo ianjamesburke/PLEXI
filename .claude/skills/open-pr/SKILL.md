@@ -96,8 +96,9 @@ _PROJ_ITEM=$(gh api graphql -f query='query($n:Int!){repository(owner:"ianjamesb
 
 **Skip gate:**
 ```bash
-CHANGED_LINES=$(gh pr diff $PR_NUMBER --stat | tail -1 | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+')
-DELETED_LINES=$(gh pr diff $PR_NUMBER --stat | tail -1 | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+')
+STAT_LINE=$(gh pr diff "$PR_NUMBER" --stat | tail -1)
+CHANGED_LINES=$(printf '%s\n' "$STAT_LINE" | grep -oE '[0-9]+ insertions?' | grep -oE '[0-9]+')
+DELETED_LINES=$(printf '%s\n' "$STAT_LINE" | grep -oE '[0-9]+ deletions?' | grep -oE '[0-9]+')
 TOTAL_CHANGED=$(( ${CHANGED_LINES:-0} + ${DELETED_LINES:-0} ))
 if [ "$TOTAL_CHANGED" -le 10 ]; then
   echo "[AI REVIEW] Skipped — diff is $TOTAL_CHANGED lines (threshold: 10)."

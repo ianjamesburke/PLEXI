@@ -38,7 +38,11 @@ Read current attempt count from issue body:
 ```bash
 gh issue view $ISSUE_NUMBER --json body --jq '.body'
 ```
-Count `### Attempt` entries in `## Ship Log`. Set `ATTEMPT_COUNT` = that number (0 if no log yet).
+Count `**Validate attempt` entries in `## Ship Log`. Set `ATTEMPT_COUNT` = that number (0 if no log yet).
+```bash
+ATTEMPT_COUNT=$(gh issue view $ISSUE_NUMBER --json body --jq '.body' \
+  | grep -cE '^\*\*Validate attempt [0-9]+:' || true)
+```
 
 ---
 
@@ -63,7 +67,8 @@ If install not needed → use diff-review testing block (see below). Skip instal
 
 Run from inside the feature worktree:
 ```bash
-cd /Users/ianburke/Documents/GitHub/PLEXI/worktrees/$BRANCH
+REPO_ROOT=$(git rev-parse --show-toplevel)
+cd "$REPO_ROOT/worktrees/$BRANCH"
 just pr-install $PR_NUMBER
 ```
 
@@ -158,9 +163,9 @@ Valid only if pass criteria were **not** fully met. If criteria were met and use
 
 Fix the specific change on the feature branch, commit, push:
 ```bash
-git -C /Users/ianburke/Documents/GitHub/PLEXI/worktrees/$BRANCH add <files>
-git -C /Users/ianburke/Documents/GitHub/PLEXI/worktrees/$BRANCH commit -m "fix: <description>"
-git -C /Users/ianburke/Documents/GitHub/PLEXI/worktrees/$BRANCH push
+git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" add <files>
+git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" commit -m "fix: <description>"
+git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" push
 ```
 
 Re-run `just pr-install $PR_NUMBER` from the feature worktree. Re-surface the testing block. Do not expand scope.
@@ -189,9 +194,9 @@ Report what the log shows.
 
 Apply the targeted fix to the feature branch, commit, push:
 ```bash
-git -C /Users/ianburke/Documents/GitHub/PLEXI/worktrees/$BRANCH add <files>
-git -C /Users/ianburke/Documents/GitHub/PLEXI/worktrees/$BRANCH commit -m "fix: <description from failure>"
-git -C /Users/ianburke/Documents/GitHub/PLEXI/worktrees/$BRANCH push
+git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" add <files>
+git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" commit -m "fix: <description from failure>"
+git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" push
 ```
 
 Re-run `just pr-install $PR_NUMBER` from the feature worktree.

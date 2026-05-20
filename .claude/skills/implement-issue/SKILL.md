@@ -241,10 +241,16 @@ After pushing, append this section to the issue body. If a `## Ship Log` section
 Append with:
 ```bash
 CURRENT_BODY=$(gh issue view <number> --json body --jq '.body')
-NEW_BODY=$(printf '%s\n\n## Ship Log\n\n### Attempt 1 — %s\n**Branch:** feature/<branch>\n**Files changed:** <files>\n**Spec summary:** <summary>' "$CURRENT_BODY" "$(date +%Y-%m-%d)")
+ATTEMPT_N=$(printf '%s' "$CURRENT_BODY" | grep -c '^### Attempt ' || true)
+ATTEMPT_N=$((ATTEMPT_N + 1))
+ATTEMPT_BLOCK=$(printf '### Attempt %s — %s\n**Branch:** feature/<branch>\n**Files changed:** <files>\n**Spec summary:** <summary>' "$ATTEMPT_N" "$(date +%Y-%m-%d)")
+if printf '%s' "$CURRENT_BODY" | grep -q '^## Ship Log$'; then
+  NEW_BODY=$(printf '%s\n\n%s' "$CURRENT_BODY" "$ATTEMPT_BLOCK")
+else
+  NEW_BODY=$(printf '%s\n\n## Ship Log\n\n%s' "$CURRENT_BODY" "$ATTEMPT_BLOCK")
+fi
 gh issue edit <number> --body "$NEW_BODY"
 ```
-If `## Ship Log` already exists in the body, append only the new `### Attempt N` block (don't duplicate the section header).
 
 ---
 

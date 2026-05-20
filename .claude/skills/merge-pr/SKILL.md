@@ -38,7 +38,7 @@ Extract:
 
 **CWD for all steps: the repo root. Set it now:**
 ```bash
-cd /Users/ianburke/Documents/GitHub/PLEXI
+cd "$(git rev-parse --show-toplevel)"
 ```
 
 ---
