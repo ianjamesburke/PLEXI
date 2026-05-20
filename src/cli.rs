@@ -4469,8 +4469,9 @@ pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
         "zsh" => { print!("{}", zsh_completion(binary_name)); 0 }
         "bash" => { print!("{}", bash_completion(binary_name)); 0 }
         "fish" => { print!("{}", fish_completion(binary_name)); 0 }
+        "powershell" | "pwsh" => { print!("{}", powershell_completion(binary_name)); 0 }
         other => {
-            eprintln!("error: unsupported shell {other:?} — supported shells: zsh, bash, fish");
+            eprintln!("error: unsupported shell {other:?} — supported shells: zsh, bash, fish, powershell");
             1
         }
     }
@@ -4495,6 +4496,17 @@ fn bash_completion(binary: &str) -> String {
 
 fn fish_completion(binary: &str) -> String {
     FISH_COMPLETION.replace("-c plexi", &format!("-c {binary}"))
+}
+
+fn powershell_completion(binary: &str) -> String {
+    // Minimal Native completer for top-level subcommands. PowerShell registers
+    // it via `Register-ArgumentCompleter -Native`. Source the output from your
+    // $PROFILE so completion is active on every new session:
+    //
+    //   plexi completions powershell | Out-String | Invoke-Expression
+    //
+    // (the installer at scripts/install-windows.ps1 wires this up for you).
+    POWERSHELL_COMPLETION.replace("__BINARY__", binary)
 }
 
 const ZSH_COMPLETION: &str = r#"#compdef plexi
@@ -4938,6 +4950,58 @@ complete -c plexi -n "__fish_seen_subcommand_from open" -l layout -d "Layout hin
 complete -c plexi -n "__fish_seen_subcommand_from open" -l from-pane-id -d "Split relative to this pane ID"
 complete -c plexi -n "__fish_seen_subcommand_from open" -l mcp -d "Wrap stdio MCP server command in mcp-renderer"
 complete -c plexi -n "__fish_seen_subcommand_from open" -l cli -d "Wrap CLI binary in descriptor-renderer" -a "(__fish_complete_command)"
+"#;
+
+// PowerShell completer registered via Register-ArgumentCompleter -Native.
+// Minimal — completes top-level subcommands and a few common second-level
+// nouns. Source from $PROFILE for persistent shell coverage:
+//   plexi completions powershell | Out-String | Invoke-Expression
+// __BINARY__ is substituted at runtime so plexi-alpha / plexi-beta etc.
+// each register their own completer instead of fighting over the same name.
+const POWERSHELL_COMPLETION: &str = r#"# Plexi PowerShell completions
+Register-ArgumentCompleter -Native -CommandName __BINARY__ -ScriptBlock {
+    param($wordToComplete, $commandAst, $cursorPosition)
+
+    $tokens = $commandAst.CommandElements | ForEach-Object { $_.Extent.Text }
+    $depth = $tokens.Count
+    $prev = if ($depth -ge 2) { $tokens[$depth - 1] } else { '' }
+    $sub = if ($depth -ge 2) { $tokens[1] } else { '' }
+
+    $topLevel = @(
+        'run','workspace','secret','app','install','uninstall','update','list',
+        'validate','pack','notify','pane','terminal','open','descriptor',
+        'registry','context','completions','config','notes'
+    )
+
+    function Out-Completions($candidates, $word) {
+        foreach ($c in $candidates) {
+            if ($c -like "$word*") {
+                [System.Management.Automation.CompletionResult]::new(
+                    $c, $c, 'ParameterValue', $c)
+            }
+        }
+    }
+
+    # First positional after the binary → top-level subcommand.
+    if ($depth -le 1 -or ($depth -eq 2 -and -not $wordToComplete.StartsWith('-'))) {
+        Out-Completions $topLevel $wordToComplete
+        return
+    }
+
+    switch ($sub) {
+        'workspace'   { Out-Completions @('init','status') $wordToComplete }
+        'secret'      { Out-Completions @('set','get','list','delete') $wordToComplete }
+        'app'         { Out-Completions @('init','install','uninstall','list','info','render','link','unlink','run') $wordToComplete }
+        'update'      { Out-Completions @('apps','self') $wordToComplete }
+        'pack'        { Out-Completions @('export') $wordToComplete }
+        'pane'        { Out-Completions @('name','set-title','list','self','focus','close','send','info','capture','key') $wordToComplete }
+        'context'     { Out-Completions @('new','zoom','zoom-out','open','set-root','describe','current') $wordToComplete }
+        'config'      { Out-Completions @('check','edit','get','reset') $wordToComplete }
+        'completions' { Out-Completions @('zsh','bash','fish','powershell') $wordToComplete }
+        'notes'       { Out-Completions @('list','open') $wordToComplete }
+        default       { }
+    }
+}
 "#;
 
 #[cfg(test)]
