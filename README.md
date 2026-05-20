@@ -177,7 +177,7 @@ plexi install git+https://example.com/repo.git    # explicit git URL
 plexi install --pack path/to/pack.toml     # apply a whole pack at once
 ```
 
-Registry IDs resolve against the [Plexi app registry](https://github.com/ianjamesburke/plexi-registry). Git URLs clone the repo directly — no registry needed.
+Registry IDs resolve against the [Plexi app registry](https://github.com/ianjamesburke/plexi-app-registry). Git URLs clone the repo directly — no registry needed.
 
 ### Manage installed apps
 
@@ -236,7 +236,7 @@ emit.info("App starting up")    # outside frames / at module level
 
 App logs forward into the host log tagged `app::<app_id>`. Check `~/.plexi/plexi.log` (or `~/.plexi-alpha/plexi.log` on alpha) when debugging.
 
-To share your app: push the repo to GitHub, then anyone can install it with `plexi install github:you/your-app`. To add it to the public registry, open a PR against [plexi-registry](https://github.com/ianjamesburke/plexi-registry).
+To share your app: push the repo to GitHub, then anyone can install it with `plexi install github:you/your-app`. To add it to the public registry, open a PR against [plexi-app-registry](https://github.com/ianjamesburke/plexi-app-registry).
 
 ---
 
