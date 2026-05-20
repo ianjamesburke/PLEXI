@@ -95,10 +95,29 @@ pub(super) fn show_prompt_modal(
         return;
     };
 
-    let mut grant_once = false;
-    let mut grant_forever = false;
-    let mut deny_once = false;
-    let mut deny_forever = false;
+    // Detect keys at frame level — before any window or button rendering — so
+    // egui button focus cannot intercept Enter/Escape and misfire an action.
+    let (mut grant_once, grant_forever, mut deny_once, deny_forever) =
+        match prompt {
+            PendingPrompt::Capability { .. } => {
+                ui.ctx().input_mut(|i| {
+                    // Shift variants first — they overlap plain Enter/Esc.
+                    let shift_enter = i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter);
+                    let shift_esc = i.consume_key(egui::Modifiers::SHIFT, egui::Key::Escape);
+                    let key_a = i.consume_key(egui::Modifiers::NONE, egui::Key::A);
+                    let key_d = i.consume_key(egui::Modifiers::NONE, egui::Key::D);
+                    let plain_enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                    let plain_esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                    (plain_enter, shift_enter || key_a, plain_esc, shift_esc || key_d)
+                })
+            }
+            PendingPrompt::Secret { .. } => {
+                let esc = ui
+                    .ctx()
+                    .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+                (false, false, esc, false)
+            }
+        };
 
     egui::Window::new("Plexi needs permission")
         .collapsible(false)
@@ -116,40 +135,7 @@ pub(super) fn show_prompt_modal(
                             .small(),
                     );
                     ui.add_space(12.0);
-
-                    // Consume keys so host shortcuts (Cmd+D, Cmd+A) don't fire.
-                    let (kb_grant_once, kb_grant_forever, kb_deny_once, kb_deny_forever) =
-                        ui.ctx().input_mut(|i| {
-                            let shift_enter =
-                                i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter);
-                            let shift_esc =
-                                i.consume_key(egui::Modifiers::SHIFT, egui::Key::Escape);
-                            let key_a = i.consume_key(egui::Modifiers::NONE, egui::Key::A);
-                            let key_d = i.consume_key(egui::Modifiers::NONE, egui::Key::D);
-                            let plain_enter =
-                                i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-                            let plain_esc =
-                                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-                            (plain_enter, shift_enter || key_a, plain_esc, shift_esc || key_d)
-                        });
-
-                    ui.horizontal(|ui| {
-                        if ui.button("Grant once").clicked() || kb_grant_once {
-                            grant_once = true;
-                        }
-                        if ui.button("Grant forever").clicked() || kb_grant_forever {
-                            grant_forever = true;
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        if ui.button("Deny once").clicked() || kb_deny_once {
-                            deny_once = true;
-                        }
-                        if ui.button("Deny forever").clicked() || kb_deny_forever {
-                            deny_forever = true;
-                        }
-                    });
-                    ui.add_space(6.0);
+                    // Keyboard-only — no buttons. key_combo_list rows are the UI.
                     crate::widgets::key_combo_list(ui, &[&["↵"]], Some("grant once"), colors);
                     crate::widgets::key_combo_list(
                         ui,
@@ -179,26 +165,29 @@ pub(super) fn show_prompt_modal(
                             egui::Stroke::new(1.0, colors.accent);
                         ui.visuals_mut().widgets.inactive.bg_stroke =
                             egui::Stroke::new(1.0, colors.border);
-                        ui.add(
+                        let response = ui.add(
                             egui::TextEdit::singleline(secret_input_buf)
                                 .password(true)
                                 .margin(egui::Margin::symmetric(8, 5)),
                         );
+                        if response.lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                        {
+                            grant_once = true;
+                        }
                     });
-                    ui.add_space(12.0);
-
-                    let esc_kb = ui
-                        .ctx()
-                        .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-
+                    ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ui.button("Submit").clicked() {
                             grant_once = true;
                         }
-                        if ui.button("Cancel").clicked() || esc_kb {
+                        if ui.button("Cancel").clicked() {
                             deny_once = true;
                         }
                     });
+                    ui.add_space(4.0);
+                    crate::widgets::key_combo_list(ui, &[&["↵"]], Some("submit"), colors);
+                    crate::widgets::key_combo_list(ui, &[&["⎋"]], Some("cancel"), colors);
                 }
             }
         });
