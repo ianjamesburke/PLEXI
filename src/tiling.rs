@@ -340,7 +340,10 @@ pub(crate) fn portal_responsive_tiers(
     let shortcut_leaf = LayoutChild::Leaf {
         command: Box::new(RenderCommand::Text {
             x: 0.0, y: 0.0,
-            text: "\u{2318}\u{21E7}\u{21B5} zoom in".to_string(),
+            text: {
+                #[cfg(target_os = "macos")] { "\u{2318}\u{21E7}\u{21B5} zoom in" }
+                #[cfg(not(target_os = "macos"))] { "Ctrl+Shift+Enter zoom in" }
+            }.to_string(),
             size: style::TEXT_HINT,
             color: text_dim.clone(),
             monospace: false,
