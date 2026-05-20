@@ -70,3 +70,80 @@ jobs:
           files: target/release/bundle/osx/Plexi-${{ github.ref_name }}.zip
           body: ${{ steps.notes.outputs.body }}
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+  build-windows:
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      CARGO_TARGET_DIR: target
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-x64-cargo-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
+
+      - name: Build release binary
+        run: cargo build --release --bin plexi
+
+      - name: Locate ISCC.exe
+        id: iscc
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Output "Inno Setup not pre-installed on runner, installing via Chocolatey..."
+            choco install innosetup --no-progress --yes
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw "ISCC.exe not found after install attempt" }
+          "path=$iscc" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Output "Using $iscc"
+
+      - name: Derive version
+        id: ver
+        shell: pwsh
+        run: |
+          # The workflow triggers on v* tags — strip the leading 'v'.
+          $ver = "${{ github.ref_name }}" -replace '^v',''
+          "value=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Output "Version: $ver"
+
+      - name: Compile installers (stable, alpha, beta)
+        shell: pwsh
+        run: |
+          $iscc = "${{ steps.iscc.outputs.path }}"
+          $ver  = "${{ steps.ver.outputs.value }}"
+          & $iscc /DMyAppVersion=$ver installer\plexi.iss
+          if ($LASTEXITCODE -ne 0) { throw "Stable installer compile failed" }
+          & $iscc /DMyAppVersion=$ver /DMyChannel=alpha installer\plexi.iss
+          if ($LASTEXITCODE -ne 0) { throw "Alpha installer compile failed" }
+          & $iscc /DMyAppVersion=$ver /DMyChannel=beta  installer\plexi.iss
+          if ($LASTEXITCODE -ne 0) { throw "Beta installer compile failed" }
+          Get-ChildItem dist\
+
+      - name: Upload installers to release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/plexi-setup.exe
+            dist/plexi-alpha-setup.exe
+            dist/plexi-beta-setup.exe
+          prerelease: ${{ contains(github.ref_name, '-') }}
