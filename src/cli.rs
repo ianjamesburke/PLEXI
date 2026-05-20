@@ -1431,7 +1431,7 @@ fn is_github_shorthand(s: &str) -> bool {
 /// `github:owner/repo`.
 fn resolve_registry_id(id: &str) -> Result<String, String> {
     const REGISTRY_URL: &str =
-        "https://raw.githubusercontent.com/ianjamesburke/plexi-registry/main/registry.json";
+        "https://raw.githubusercontent.com/ianjamesburke/plexi-app-registry/main/registry.json";
 
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(10))

@@ -325,7 +325,7 @@ fn render_inspector_hints(
                 crate::widgets::key_combo_list(ui, &[&["⌫"]], Some("delete"), colors);
                 ui.add_space(style::SPACE_XL);
             }
-            crate::widgets::key_combo_list(ui, &[&["R"]], Some("rename"), colors);
+            crate::widgets::key_combo_list(ui, &[&["⌘", "R"]], Some("rename"), colors);
             ui.add_space(style::SPACE_MD);
             crate::widgets::key_combo_list(ui, &[&["Esc"]], Some("close"), colors);
             ui.add_space(style::SPACE_MD);
@@ -2102,7 +2102,7 @@ impl PlexiApp {
                 let up = i.consume_key(egui::Modifiers::NONE, egui::Key::K)
                     || i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp);
                 let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-                let r = i.consume_key(egui::Modifiers::NONE, egui::Key::R);
+                let r = i.consume_key(egui::Modifiers::COMMAND, egui::Key::R);
                 let backspace = num_contexts > 1 && (
                     i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
                         || i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
