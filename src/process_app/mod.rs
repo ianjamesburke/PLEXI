@@ -643,6 +643,7 @@ impl ProcessApp {
             pane_id: 0,
             timestamp: event_log::now_timestamp(),
         });
+        log::info!("app::{}: === SESSION START ===", type_id);
 
         Ok(Self {
             type_id,
@@ -2242,6 +2243,7 @@ impl Drop for ProcessApp {
             reason: None,
             timestamp: event_log::now_timestamp(),
         });
+        log::info!("app::{}: === SESSION END ===", self.type_id);
         if let Some(mut child) = self.process.take() {
             // Three-phase shutdown escalation (#83):
             //   1. Wait up to 2s for the child to exit cleanly after the
