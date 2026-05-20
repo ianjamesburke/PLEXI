@@ -184,8 +184,20 @@ fn cmd() -> egui::Modifiers { egui::Modifiers::COMMAND }
 fn cmd_shift() -> egui::Modifiers {
     egui::Modifiers { shift: true, ..egui::Modifiers::COMMAND }
 }
+// On macOS this is Cmd+Ctrl — a distinct chord from Cmd alone. On non-macOS
+// `Modifiers::COMMAND` already maps to ctrl, so `{ ctrl: true, ..COMMAND }`
+// would collapse to a plain Ctrl chord and become indistinguishable from
+// `cmd()`. That breaks egui's subset-matching: a Ctrl+H binding for
+// swap_pane_left would consume Ctrl+Shift+H presses before prev_tab gets a
+// chance. Substitute Ctrl+Alt on non-mac platforms to keep the modifier
+// distinct from Ctrl-only and Ctrl+Shift bindings.
+#[cfg(target_os = "macos")]
 fn cmd_ctrl() -> egui::Modifiers {
     egui::Modifiers { ctrl: true, ..egui::Modifiers::COMMAND }
+}
+#[cfg(not(target_os = "macos"))]
+fn cmd_ctrl() -> egui::Modifiers {
+    egui::Modifiers { ctrl: true, alt: true, ..egui::Modifiers::default() }
 }
 fn cmd_alt() -> egui::Modifiers {
     egui::Modifiers { alt: true, ..egui::Modifiers::COMMAND }
