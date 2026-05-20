@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Backlog viewer — browse, preview, open, archive, delete, and add .plexi/backlog items.
+"""Backlog viewer — browse, preview, open, archive, delete, and add backlog items.
 
 hjkl navigation. e/Enter opens in default app. a archives. d deletes (confirm).
 n creates a new item via host TextInput (issue #283). r refreshes. / searches.
-Items are markdown files inside <workspace>/.plexi/backlog/.
+Shows items from two sources merged by mtime:
+  - workspace backlog: <workspace>/.plexi/backlog/
+  - channel backlog:   $PLEXI_CONFIG_DIR/backlog/ (quick notes from host ⌘0)
+Items from the channel backlog are prefixed with [ch] in the list.
 """
 
 import os
@@ -15,6 +18,20 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
 from plexi_sdk import App, RenderContext, BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, RED, GREEN
 from plexi_sdk.ui import SelectList
+
+def _detect_channel_backlog_dir() -> "Path | None":
+    """Return the channel-level backlog dir, or None if none exists."""
+    env = os.environ.get("PLEXI_CONFIG_DIR")
+    if env:
+        p = Path(env) / "backlog"
+        return p if p.exists() else None
+    candidates = [
+        Path.home() / d / "backlog"
+        for d in (".plexi-alpha", ".plexi-beta", ".plexi")
+    ]
+    existing = [(p.stat().st_mtime, p) for p in candidates if p.exists()]
+    return max(existing)[1] if existing else None
+
 
 LIST_FRAC = 0.38   # fraction of width for the item list
 # Chrome — where the list/preview body starts and ends vertically. These
@@ -28,8 +45,9 @@ class BacklogApp(App):
 
     def on_init(self, ctx: RenderContext) -> None:
         self.backlog_dir = Path(ctx.workspace_root) / ".plexi" / "backlog"
-        self.archived_dir = self.backlog_dir / "archived"
+        self.channel_dir = _detect_channel_backlog_dir()
         self.items: list = []         # list[Path]
+        self._source: dict = {}       # Path -> "ws" | "channel"
         self.filtered: list = []
         self.selected = 0
         self.search_query = ""
@@ -41,21 +59,28 @@ class BacklogApp(App):
         self.status = ""
         self._item_list = SelectList([])
         self._load()
-        self.emit.info("BacklogApp ready")
+        self.emit.info(
+            f"BacklogApp ready — workspace: {self.backlog_dir}, channel: {self.channel_dir}"
+        )
 
     # ── Data ────────────────────────────────────────────────────────────────────
 
     def _load(self) -> None:
-        self.items = []
-        if not self.backlog_dir.exists():
-            self.filtered = []
-            return
-        files = [
-            f for f in self.backlog_dir.iterdir()
-            if f.is_file() and not f.name.startswith(".")
-        ]
-        files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-        self.items = files
+        self._source = {}
+        all_files: list = []
+
+        def _collect(directory: "Path | None", source: str) -> None:
+            if directory is None or not directory.exists():
+                return
+            for f in directory.iterdir():
+                if f.is_file() and not f.name.startswith(".") and f.suffix == ".md":
+                    all_files.append(f)
+                    self._source[f] = source
+
+        _collect(self.backlog_dir, "ws")
+        _collect(self.channel_dir, "channel")
+        all_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+        self.items = all_files
         self._refilter()
 
     def _refilter(self) -> None:
@@ -65,7 +90,10 @@ class BacklogApp(App):
             if not q or q in f.stem.lower() or q in f.name.lower()
         ]
         self.selected = min(self.selected, max(0, len(self.filtered) - 1))
-        self._item_list.items = [{"name": p.stem} for p in self.filtered]
+        self._item_list.items = [
+            {"name": f"[ch] {p.stem}" if self._source.get(p) == "channel" else p.stem}
+            for p in self.filtered
+        ]
         self._item_list.selected_idx = self.selected
         self._cache_preview()
 
@@ -96,8 +124,9 @@ class BacklogApp(App):
         if not self.filtered:
             return
         path = self.filtered[self.selected]
-        self.archived_dir.mkdir(parents=True, exist_ok=True)
-        dest = self.archived_dir / path.name
+        archived_dir = path.parent / "archived"
+        archived_dir.mkdir(parents=True, exist_ok=True)
+        dest = archived_dir / path.name
         try:
             shutil.move(str(path), str(dest))
             self.status = f"Archived {path.name}"
@@ -163,15 +192,18 @@ class BacklogApp(App):
         list_h = h - TOP - BOTTOM_BAR_H
 
         # Header
-        ctx.text(12, 10, ".plexi/backlog", size=12, color=ACCENT, bold=True,
+        ctx.text(12, 10, "backlog", size=12, color=ACCENT, bold=True,
                  max_width=list_w - 100)
         item_count = len(self.filtered)
         count_label = f"{item_count} item{'s' if item_count != 1 else ''}"
         ctx.text(list_w - 80, 10, count_label, size=11, color=MUTED,
                  max_width=80)
 
-        if not self.backlog_dir.exists():
-            self.emit.info("backlog: dir not found — showing empty-state guide")
+        has_any_dir = self.backlog_dir.exists() or (
+            self.channel_dir is not None and self.channel_dir.exists()
+        )
+        if not has_any_dir:
+            self.emit.info("backlog: no dirs found — showing empty-state guide")
             ctx.text(12, TOP + 12, "No notes yet.", size=13, color=FG)
             ctx.text(12, TOP + 34,
                      "Press ⌘0 to open Quick Note, then press Enter twice to send to your backlog.",
