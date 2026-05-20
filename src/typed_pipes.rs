@@ -6,16 +6,20 @@ use std::path::PathBuf;
 extern crate libc;
 /// Typed pipe registry for Plexi v3 — binary side channel and JSON metadata pipes.
 ///
-/// Binary pipes use unix domain sockets with u32-BE length-prefixed frames.
-/// A lock-free ring (ArrayQueue) decouples the write path from the socket drain
-/// thread so the audio callback can enqueue frames without blocking or allocating.
-/// JSON pipes are metadata-only registrations; routing is handled by the PGAP wire.
+/// Binary pipes use a length-prefixed `u32 BE + payload` framing carried over a
+/// platform-native transport:
 ///
-/// Windows port note (Phase 6): binary pipes will move to Win32 named pipes
-/// (`\\.\pipe\plexi-<uuid>`) with `windows-sys::Win32::System::Pipes`. For now
-/// `open_binary` returns `BindFailed` on Windows so the host still compiles and
-/// boots; apps that request audio/video binary capabilities will see a clear
-/// error from the host.
+/// * Unix: an AF_UNIX listener backed by `UnixListener` at a path under the
+///   private `pipes_dir`.
+/// * Windows: a Win32 named pipe at `\\.\pipe\plexi-<uuid>` created with
+///   `CreateNamedPipeW` (`PIPE_ACCESS_OUTBOUND | FILE_FLAG_OVERLAPPED`,
+///   `PIPE_TYPE_BYTE | PIPE_WAIT`). The pipe name IS the value stored in
+///   `BinaryPipeAllocation::socket_path` — apps connect to it via `CreateFileW`.
+///   There is no filesystem entry to clean up on close.
+///
+/// A lock-free ring (ArrayQueue) decouples the write path from the drain thread
+/// so the audio callback can enqueue frames without blocking or allocating.
+/// JSON pipes are metadata-only registrations; routing is handled by the PGAP wire.
 #[cfg(unix)]
 use std::os::unix::net::UnixListener;
 use std::sync::{
@@ -242,12 +246,243 @@ impl TypedPipeRegistry {
             Ok(BinaryPipeAllocation { socket_path })
         }
 
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            // Pipe name format: \\.\pipe\plexi-<uuid>. This string IS the
+            // `BinaryPipeAllocation.socket_path` — the app connects to it via
+            // `CreateFileW(name, GENERIC_READ, 0, null, OPEN_EXISTING, 0, null)`.
+            // There is no filesystem entry created on disk.
+            let pipe_name = format!("\\\\.\\pipe\\plexi-{}", uuid::Uuid::new_v4());
+            log::info!("typed_pipes: opening binary pipe {pipe_id} at {pipe_name}");
+
+            // Wide-string buffer must outlive the CreateNamedPipeW call.
+            let wide_name: Vec<u16> = pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
+
+            // SAFETY: `wide_name.as_ptr()` is a valid NUL-terminated UTF-16 pointer.
+            // `lpSecurityAttributes` = null requests the default ACL — only the
+            // current user can connect under default Windows pipe security.
+            let pipe_handle = unsafe {
+                windows_sys::Win32::System::Pipes::CreateNamedPipeW(
+                    wide_name.as_ptr(),
+                    windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_OUTBOUND
+                        | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED,
+                    windows_sys::Win32::System::Pipes::PIPE_TYPE_BYTE
+                        | windows_sys::Win32::System::Pipes::PIPE_WAIT,
+                    1,            // nMaxInstances: one app per pipe
+                    64 * 1024,    // nOutBufferSize: 64 KiB frame buffer
+                    64 * 1024,    // nInBufferSize: unused (outbound only) but allocated
+                    0,            // nDefaultTimeOut: 0 = default (50ms wait semantics)
+                    std::ptr::null(),
+                )
+            };
+
+            if pipe_handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+                // SAFETY: GetLastError reads thread-local kernel state; always safe.
+                let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+                return Err(PipeError::BindFailed(format!(
+                    "CreateNamedPipeW({pipe_name}) failed: GetLastError={err}"
+                )));
+            }
+
+            let ring: Arc<ArrayQueue<Vec<u8>>> = Arc::new(ArrayQueue::new(DEFAULT_RING_CAPACITY));
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let error_flag = Arc::new(AtomicBool::new(false));
+
+            let ring_drain = Arc::clone(&ring);
+            let shutdown_drain = Arc::clone(&shutdown);
+            let error_flag_drain = Arc::clone(&error_flag);
+            let pipe_id_log = pipe_id.clone();
+            let pipe_name_drain = pipe_name.clone();
+
+            // Move the raw HANDLE into the drain thread as a usize. HANDLE is a
+            // `*mut c_void` typedef, which Rust treats as !Send. Kernel handles
+            // are opaque pointer-sized identifiers safe to transfer between
+            // threads — we just need to bypass the auto-trait check. Casting to
+            // usize for the move and back inside the thread is the
+            // documented-stdlib pattern (see std::os::windows::io::OwnedHandle).
+            let pipe_handle_raw = pipe_handle as usize;
+
+            let drain_handle = thread::Builder::new()
+                .name(format!("pipe-drain-{pipe_id}"))
+                .spawn(move || {
+                    let pipe_handle = pipe_handle_raw
+                        as windows_sys::Win32::Foundation::HANDLE;
+                    log::info!("typed_pipes: drain thread started for pipe {pipe_id_log}");
+
+                    // Create a manual-reset event used as the OVERLAPPED.hEvent.
+                    // SAFETY: null security attrs, manual-reset = TRUE, initial = FALSE,
+                    // no name — well-defined Win32 calling convention.
+                    let event = unsafe {
+                        windows_sys::Win32::System::Threading::CreateEventW(
+                            std::ptr::null(),
+                            1, // bManualReset = TRUE
+                            0, // bInitialState = FALSE
+                            std::ptr::null(),
+                        )
+                    };
+                    if event == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
+                        || event.is_null()
+                    {
+                        log::error!(
+                            "typed_pipes: CreateEventW failed for pipe {pipe_id_log} at {pipe_name_drain}"
+                        );
+                        // SAFETY: pipe_handle was returned by CreateNamedPipeW above.
+                        unsafe {
+                            windows_sys::Win32::Foundation::CloseHandle(pipe_handle);
+                        }
+                        error_flag_drain.store(true, Ordering::Release);
+                        return;
+                    }
+
+                    let mut overlapped = windows_sys::Win32::System::IO::OVERLAPPED::default();
+                    overlapped.hEvent = event;
+
+                    // Accept loop. Overlapped ConnectNamedPipe returns immediately;
+                    // we poll the event with WaitForSingleObject so we can observe
+                    // the shutdown flag and exit cleanly if the app never connects.
+                    let connected = {
+                        // SAFETY: pipe was created OVERLAPPED; overlapped is valid for
+                        // the lifetime of the wait. We never move `overlapped` until
+                        // the I/O has been observed to complete or has been cancelled.
+                        let rc = unsafe {
+                            windows_sys::Win32::System::Pipes::ConnectNamedPipe(
+                                pipe_handle,
+                                &mut overlapped,
+                            )
+                        };
+                        if rc != 0 {
+                            // Synchronous success path (rare for OVERLAPPED pipes,
+                            // but documented possibility).
+                            true
+                        } else {
+                            // SAFETY: GetLastError reads thread-local kernel state.
+                            let err = unsafe {
+                                windows_sys::Win32::Foundation::GetLastError()
+                            };
+                            if err == windows_sys::Win32::Foundation::ERROR_PIPE_CONNECTED {
+                                // Client connected between CreateNamedPipeW and
+                                // ConnectNamedPipe — this is success, not failure.
+                                true
+                            } else if err == windows_sys::Win32::Foundation::ERROR_IO_PENDING {
+                                // Normal async path: poll until connected or shutdown.
+                                let mut connected = false;
+                                loop {
+                                    // SAFETY: `event` is a valid manual-reset event handle.
+                                    let wait = unsafe {
+                                        windows_sys::Win32::System::Threading::WaitForSingleObject(
+                                            event, 50,
+                                        )
+                                    };
+                                    if wait == windows_sys::Win32::Foundation::WAIT_OBJECT_0 {
+                                        connected = true;
+                                        break;
+                                    }
+                                    if wait == windows_sys::Win32::Foundation::WAIT_TIMEOUT {
+                                        if shutdown_drain.load(Ordering::Acquire) {
+                                            // Cancel pending I/O before we abandon
+                                            // the OVERLAPPED. SAFETY: same pipe_handle,
+                                            // matching overlapped struct still live.
+                                            unsafe {
+                                                windows_sys::Win32::System::IO::CancelIoEx(
+                                                    pipe_handle,
+                                                    &overlapped,
+                                                );
+                                            }
+                                            break;
+                                        }
+                                        continue;
+                                    }
+                                    // Any other wait result (WAIT_FAILED, abandoned)
+                                    // is a hard error.
+                                    log::error!(
+                                        "typed_pipes: WaitForSingleObject returned {wait} for pipe {pipe_id_log}"
+                                    );
+                                    break;
+                                }
+                                connected
+                            } else {
+                                log::error!(
+                                    "typed_pipes: ConnectNamedPipe failed for {pipe_id_log}: GetLastError={err}"
+                                );
+                                false
+                            }
+                        }
+                    };
+
+                    if !connected {
+                        // SAFETY: handles were created above and are still owned by us.
+                        unsafe {
+                            windows_sys::Win32::Foundation::CloseHandle(event);
+                            windows_sys::Win32::Foundation::CloseHandle(pipe_handle);
+                        }
+                        if !shutdown_drain.load(Ordering::Acquire) {
+                            // Connect failed for a reason other than clean shutdown.
+                            error_flag_drain.store(true, Ordering::Release);
+                        }
+                        return;
+                    }
+
+                    // Drain loop. We use synchronous WriteFile (lpOverlapped = null)
+                    // even though the pipe was created OVERLAPPED — this is allowed
+                    // and the system serializes per-call. Frames are small (<= 64 KiB)
+                    // and we already decoupled producers via the ring.
+                    let mut write_err: Option<u32> = None;
+                    loop {
+                        if let Some(frame) = ring_drain.pop() {
+                            if let Err(e) = win32_write_frame(pipe_handle, &frame) {
+                                log::warn!(
+                                    "typed_pipes: drain write error on {pipe_id_log}: GetLastError={e}"
+                                );
+                                write_err = Some(e);
+                                break;
+                            }
+                        } else if shutdown_drain.load(Ordering::Acquire) {
+                            break;
+                        } else {
+                            thread::sleep(std::time::Duration::from_millis(1));
+                        }
+                    }
+
+                    if write_err.is_some() {
+                        // Any write error (ERROR_BROKEN_PIPE / ERROR_NO_DATA
+                        // for peer-gone, or anything else) surfaces via the
+                        // same error_flag path the Unix branch uses.
+                        error_flag_drain.store(true, Ordering::Release);
+                    } else {
+                        // Clean shutdown: send the length-0 EOS sentinel so the
+                        // client knows the host is done. Ignore write errors here —
+                        // the peer may already be gone.
+                        let _ = win32_write_frame(pipe_handle, &[]);
+                    }
+
+                    // SAFETY: we own both handles; close them on the way out.
+                    unsafe {
+                        windows_sys::Win32::Foundation::CloseHandle(event);
+                        windows_sys::Win32::Foundation::CloseHandle(pipe_handle);
+                    }
+                })
+                .map_err(|e| PipeError::BindFailed(format!("thread spawn: {e}")))?;
+
+            let entry = BinaryPipeEntry {
+                direction,
+                socket_path: pipe_name.clone(),
+                shutdown,
+                drain_handle: Some(drain_handle),
+                ring: Arc::clone(&ring),
+                error_flag,
+            };
+
+            self.pipes.insert(pipe_id.clone(), PipeEntry::Binary(entry));
+
+            return Ok(BinaryPipeAllocation { socket_path: pipe_name });
+        }
+
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (pipe_id, direction);
-            log::warn!("typed_pipes: open_binary requested on a platform without AF_UNIX support — apps requiring binary capabilities (audio.record, video.decode) will fail until Phase 6 wires Win32 named pipes");
+            log::warn!("typed_pipes: open_binary requested on an unsupported platform");
             Err(PipeError::BindFailed(
-                "binary pipes are not yet supported on this platform".to_owned(),
+                "binary pipes are not supported on this platform".to_owned(),
             ))
         }
     }
@@ -267,14 +502,24 @@ impl TypedPipeRegistry {
     }
 
     /// Close a pipe by id. Signals the drain thread to flush and exit (binary),
-    /// then joins it. Cleans up the socket file.
+    /// then joins it. On Unix this also removes the socket file; on Windows the
+    /// named pipe has no filesystem entry — the kernel reclaims the name as
+    /// soon as the last handle is closed by the drain thread.
     pub fn close(&mut self, pipe_id: &str) {
         if let Some(PipeEntry::Binary(mut b)) = self.pipes.remove(pipe_id) {
             b.shutdown.store(true, Ordering::Release);
             if let Some(handle) = b.drain_handle.take() {
                 let _ = handle.join();
             }
-            let _ = std::fs::remove_file(&b.socket_path);
+            #[cfg(unix)]
+            {
+                let _ = std::fs::remove_file(&b.socket_path);
+            }
+            #[cfg(not(unix))]
+            {
+                // No filesystem entry on Windows; pipe handle closed by drain thread.
+                let _ = &b.socket_path;
+            }
         }
     }
 
@@ -363,14 +608,75 @@ fn write_eos(writer: &mut impl Write) -> std::io::Result<()> {
     writer.write_all(&0u32.to_be_bytes())
 }
 
+/// Write a length-prefixed frame to a Win32 named-pipe HANDLE.
+///
+/// Mirrors the Unix `write_frame`: emits `u32 BE length || payload` (length-0
+/// for the EOS sentinel). On failure returns the raw `GetLastError()` value so
+/// the caller can distinguish `ERROR_BROKEN_PIPE` / `ERROR_NO_DATA` (peer gone)
+/// from other failures.
+///
+/// Uses synchronous `WriteFile` (lpOverlapped = null). The pipe was created
+/// OVERLAPPED so the accept loop could poll without blocking, but per-frame
+/// writes serialize cleanly without overlapped state.
+#[cfg(windows)]
+fn win32_write_frame(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    payload: &[u8],
+) -> Result<(), u32> {
+    let len_be = (payload.len() as u32).to_be_bytes();
+    win32_write_all(handle, &len_be)?;
+    if !payload.is_empty() {
+        win32_write_all(handle, payload)?;
+    }
+    Ok(())
+}
+
+/// Loop `WriteFile` until every byte of `buf` has been written. Short writes
+/// on byte-mode pipes are rare but possible under buffer pressure; mirroring
+/// `write_all` is the correct way to handle them.
+#[cfg(windows)]
+fn win32_write_all(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    buf: &[u8],
+) -> Result<(), u32> {
+    let mut offset = 0usize;
+    while offset < buf.len() {
+        let mut written: u32 = 0;
+        let remaining = (buf.len() - offset).min(u32::MAX as usize) as u32;
+        // SAFETY: `buf` is a valid slice for `remaining` bytes from `offset`.
+        // `written` is a valid mut u32. `handle` is a kernel pipe HANDLE owned
+        // by the calling thread. `lpOverlapped` = null requests synchronous I/O.
+        let rc = unsafe {
+            windows_sys::Win32::Storage::FileSystem::WriteFile(
+                handle,
+                buf.as_ptr().add(offset),
+                remaining,
+                &mut written,
+                std::ptr::null_mut(),
+            )
+        };
+        if rc == 0 {
+            // SAFETY: GetLastError reads thread-local kernel state.
+            let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+            return Err(err);
+        }
+        if written == 0 {
+            // Defensive: WriteFile reported success but wrote nothing. Treat as
+            // a broken pipe rather than spinning forever.
+            return Err(windows_sys::Win32::Foundation::ERROR_BROKEN_PIPE);
+        }
+        offset += written as usize;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-// The unit tests exercise the AF_UNIX drain path directly via
-// `std::os::unix::net::UnixStream`. They are gated to Unix until the Win32
-// named-pipe transport lands in Phase 6 of the Windows port (at which point
-// they'll grow a `#[cfg(windows)]` parallel suite).
+// The Unix tests exercise the AF_UNIX drain path directly via
+// `std::os::unix::net::UnixStream`. The Windows tests below exercise the
+// `\\.\pipe\plexi-<uuid>` drain path via `CreateFileW`.
 #[cfg(all(test, unix))]
 mod tests {
     //! Unit tests for the typed-pipe registry primitives that the directed
@@ -537,6 +843,171 @@ mod tests {
             alloc.socket_path.ends_with(".sock"),
             "socket path must end with .sock: got {}",
             alloc.socket_path
+        );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    //! Windows transport tests — exercise the Win32 named-pipe drain path.
+    //! Mirrors the Unix `drain_failed_*` coverage and adds an end-to-end
+    //! round trip via `CreateFileW`.
+    use super::*;
+
+    fn test_registry() -> (TypedPipeRegistry, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let reg = TypedPipeRegistry::new(dir.path().to_path_buf());
+        (reg, dir)
+    }
+
+    fn pipe_name_to_wide(name: &str) -> Vec<u16> {
+        name.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    #[test]
+    fn pipe_name_uses_kernel_namespace() {
+        let (mut reg, _dir) = test_registry();
+        let alloc = reg
+            .open_binary("normal-id".to_string(), PipeDirection::In)
+            .expect("open_binary");
+        assert!(
+            alloc.socket_path.starts_with(r"\\.\pipe\plexi-"),
+            "Windows pipe name must live in the kernel namespace: got {}",
+            alloc.socket_path
+        );
+    }
+
+    #[test]
+    fn end_to_end_frame_round_trip() {
+        // Open a binary pipe, connect a client via CreateFileW from another
+        // thread, push a frame, and verify the client sees `u32 BE length`
+        // followed by the payload bytes.
+        let (mut reg, _dir) = test_registry();
+        let alloc = reg
+            .open_binary("test-roundtrip".to_string(), PipeDirection::In)
+            .expect("open_binary");
+
+        let pipe_name = alloc.socket_path.clone();
+        let client_thread = std::thread::spawn(move || {
+            // Give the host drain thread a moment to enter ConnectNamedPipe.
+            // The pipe was created OVERLAPPED so this isn't strictly required
+            // (ERROR_PIPE_CONNECTED handles the race), but it avoids a
+            // tight-loop retry on the client.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
+            let wide = pipe_name_to_wide(&pipe_name);
+            // SAFETY: wide is NUL-terminated UTF-16; null security attrs;
+            // OPEN_EXISTING because the server (us) already created it.
+            let client = unsafe {
+                windows_sys::Win32::Storage::FileSystem::CreateFileW(
+                    wide.as_ptr(),
+                    windows_sys::Win32::Foundation::GENERIC_READ,
+                    0,
+                    std::ptr::null(),
+                    windows_sys::Win32::Storage::FileSystem::OPEN_EXISTING,
+                    0,
+                    std::ptr::null_mut(),
+                )
+            };
+            assert_ne!(
+                client,
+                windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE,
+                "client CreateFileW failed: GetLastError={}",
+                // SAFETY: thread-local kernel state.
+                unsafe { windows_sys::Win32::Foundation::GetLastError() }
+            );
+
+            // Read 4-byte BE length prefix.
+            let mut len_buf = [0u8; 4];
+            let mut total = 0usize;
+            while total < len_buf.len() {
+                let mut read: u32 = 0;
+                // SAFETY: client handle live, len_buf valid for writes.
+                let rc = unsafe {
+                    windows_sys::Win32::Storage::FileSystem::ReadFile(
+                        client,
+                        len_buf.as_mut_ptr().add(total),
+                        (len_buf.len() - total) as u32,
+                        &mut read,
+                        std::ptr::null_mut(),
+                    )
+                };
+                assert_ne!(rc, 0, "ReadFile (length prefix) failed");
+                assert!(read > 0, "ReadFile (length prefix) returned 0 bytes");
+                total += read as usize;
+            }
+            let payload_len = u32::from_be_bytes(len_buf) as usize;
+
+            // Read the payload.
+            let mut payload = vec![0u8; payload_len];
+            let mut total = 0usize;
+            while total < payload_len {
+                let mut read: u32 = 0;
+                // SAFETY: payload valid for writes through payload_len.
+                let rc = unsafe {
+                    windows_sys::Win32::Storage::FileSystem::ReadFile(
+                        client,
+                        payload.as_mut_ptr().add(total),
+                        (payload_len - total) as u32,
+                        &mut read,
+                        std::ptr::null_mut(),
+                    )
+                };
+                assert_ne!(rc, 0, "ReadFile (payload) failed");
+                assert!(read > 0, "ReadFile (payload) returned 0 bytes");
+                total += read as usize;
+            }
+
+            // SAFETY: we own the client handle.
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(client);
+            }
+
+            payload
+        });
+
+        // Producer side: push a frame into the ring.
+        let ring = reg.binary_ring("test-roundtrip").expect("ring");
+        let frame: Vec<u8> = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x42];
+        // Ring may briefly be unavailable if the drain thread is still
+        // initialising; spin a few times.
+        let mut attempt = 0;
+        let mut last = Some(frame.clone());
+        while let Some(f) = last.take() {
+            match ring.push(f) {
+                Ok(()) => break,
+                Err(f) => {
+                    last = Some(f);
+                    attempt += 1;
+                    if attempt > 100 {
+                        panic!("ring full after 100 retries");
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        }
+
+        let received = client_thread
+            .join()
+            .expect("client thread should complete");
+        assert_eq!(received, vec![0xDE, 0xAD, 0xBE, 0xEF, 0x42]);
+
+        // Clean shutdown: close() signals the drain thread to exit and joins it.
+        reg.close("test-roundtrip");
+    }
+
+    #[test]
+    fn drain_failed_false_for_healthy_pipe() {
+        let (mut reg, _dir) = test_registry();
+        reg.open_binary("test-healthy".to_string(), PipeDirection::In)
+            .expect("open_binary");
+        assert!(
+            !reg.drain_failed("test-healthy"),
+            "drain_failed should be false before any write error"
+        );
+        assert!(
+            !reg.drain_failed("nonexistent"),
+            "drain_failed should be false for unknown pipe"
         );
     }
 }
