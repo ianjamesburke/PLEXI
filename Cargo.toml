@@ -115,5 +115,20 @@ objc2-core-foundation = { version = "0.3", features = [
     "objc2",
 ] }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+# Direct Win32 access for the Windows port (Phases 5.1, 6, 7).
+# Features unioned across consumers:
+#   - process termination (process_app/*): OpenProcess, TerminateProcess, WaitForSingleObject, CloseHandle
+#   - typed-pipe transport (typed_pipes.rs): CreateNamedPipeW, ConnectNamedPipe, ReadFile, WriteFile, OVERLAPPED
+#   - secret storage (secrets.rs, workspace_secrets.rs): CredReadW, CredWriteW, CredDeleteW, CredEnumerateW, CredFree
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_Storage_FileSystem",
+    "Win32_Security_Credentials",
+] }
+
 [dev-dependencies]
 tempfile = "3"
