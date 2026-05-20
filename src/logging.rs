@@ -165,7 +165,16 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
         .level_for("plexi", level)
         .level_for("plexi_v3", level)
         .level_for("plexi_alpha", level)
-        .level_for("app", level);
+        .level_for("app", level)
+        // wgpu 24 on Windows + a modern Vulkan loader emits a per-frame Warn
+        // for `Unrecognized present mode 1000361000` (which is
+        // VK_PRESENT_MODE_FIFO_LATEST_READY_EXT, a newer Vulkan extension
+        // wgpu doesn't enumerate yet). The fallback to FIFO works correctly,
+        // but the warning floods the log with hundreds of identical lines per
+        // second. Clamp this one module to Error so the real signal is
+        // legible. Remove once the wgpu upgrade that handles this present
+        // mode lands.
+        .level_for("wgpu_hal::vulkan::conv", log::LevelFilter::Error);
 
     let dispatch = match file_result {
         Ok(file) => {
