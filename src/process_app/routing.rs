@@ -695,8 +695,8 @@ impl ProcessApp {
                     }
                     #[cfg(windows)]
                     {
-                        // Win32 TerminateProcess is unconditional — no
-                        // graceful-then-force escalation needed.
+                        // TerminateProcess is unconditional — single call
+                        // replaces the Unix SIGTERM-then-SIGKILL escalation.
                         let pid = handle.pid;
                         match crate::process_app::win::terminate(pid) {
                             Ok(()) => log::info!(

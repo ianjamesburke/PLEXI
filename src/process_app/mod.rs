@@ -608,14 +608,8 @@ impl ProcessApp {
         // per-frame try_wait() poll that was causing 600 syscalls/sec with 10 panes open.
         let reaper_pid = child.id();
         let lifecycle_reaper = Arc::clone(&lifecycle_tracker);
-        // Unix: spawn a reaper thread that blocks in waitpid until the child
-        // exits, then signals lifecycle. The shutdown path's child.wait() may
-        // race and get ECHILD if we win — that's harmless since shutdown
-        // discards the result with `let _ = child.wait()`.
-        //
-        // Windows: equivalent reaper using OpenProcess(SYNCHRONIZE) +
-        // WaitForSingleObject(INFINITE). The shutdown path's `child.wait()`
-        // may race and observe the process already-gone — also harmless.
+        // Reaper races with the shutdown path's child.wait(); whichever side wins
+        // observes the exit, the other gets ECHILD / already-gone — both harmless.
         #[cfg(unix)]
         {
             let reaper_type_id = type_id.clone();
@@ -2300,9 +2294,8 @@ impl Drop for ProcessApp {
                 });
             #[cfg(windows)]
             {
-                // Win32 TerminateProcess is unconditional — the Unix
-                // "SIGTERM then SIGKILL after 1s" escalation collapses to
-                // a single call here. No background thread needed.
+                // TerminateProcess is unconditional — single call replaces the
+                // Unix SIGTERM-then-SIGKILL escalation.
                 let type_id = &self.type_id;
                 match win::terminate(pid) {
                     Ok(()) => log::info!(

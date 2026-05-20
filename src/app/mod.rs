@@ -493,40 +493,34 @@ fn spawn_socket_listener(
     let endpoint = crate::config::ipc_endpoint();
     log::info!("pane_ipc: listening on {endpoint}");
 
-    // Pre-convert to a UTF-16 wide string + NUL once; we'll re-use it for every
-    // CreateNamedPipeW call (one per client connection).
     let wide: Vec<u16> = endpoint.encode_utf16().chain(std::iter::once(0)).collect();
 
     std::thread::Builder::new()
         .name("plexi-pane-ipc".into())
         .spawn(move || loop {
-            // Each ConnectNamedPipe handles ONE client. To accept more, recreate
-            // a new pipe instance after each connection. With
-            // PIPE_UNLIMITED_INSTANCES the OS allows concurrent listeners under
-            // the same name.
+            // Each ConnectNamedPipe accepts one client. Recreate the instance
+            // per connection; PIPE_UNLIMITED_INSTANCES lets concurrent listeners
+            // coexist under the same name.
             let raw = unsafe {
                 CreateNamedPipeW(
                     wide.as_ptr(),
                     PIPE_ACCESS_DUPLEX,
                     PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
                     PIPE_UNLIMITED_INSTANCES,
-                    64 * 1024, // out buffer
-                    64 * 1024, // in buffer
-                    0,         // default timeout
+                    64 * 1024,
+                    64 * 1024,
+                    0,
                     std::ptr::null(),
                 )
             };
             if raw == INVALID_HANDLE_VALUE {
                 let err = std::io::Error::last_os_error();
                 log::error!("pane_ipc: CreateNamedPipeW failed for {endpoint}: {err}");
-                // Back off so a permission / config issue doesn't pin a CPU.
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 continue;
             }
 
-            // Block until a client connects. Win32 returns FALSE with
-            // ERROR_PIPE_CONNECTED when the client beat us to the call —
-            // that's still success.
+            // ERROR_PIPE_CONNECTED: the client beat us here. Still success.
             let connected = unsafe { ConnectNamedPipe(raw, std::ptr::null_mut()) };
             let ok = connected != 0
                 || std::io::Error::last_os_error().raw_os_error()
@@ -538,8 +532,6 @@ fn spawn_socket_listener(
                 continue;
             }
 
-            // Hand the handle to a per-client reader thread. OwnedHandle takes
-            // care of CloseHandle when the thread exits.
             let owned = unsafe { OwnedHandle::from_raw_handle(raw as _) };
             let tx = tx.clone();
             std::thread::spawn(move || {
@@ -551,8 +543,6 @@ fn spawn_socket_listener(
         .expect("failed to spawn pane_ipc listener thread");
 }
 
-/// Read line-delimited JSON from `reader` and forward each parsed `AppRequest`
-/// into the host's command queue. Used by both transports.
 fn dispatch_lines<R: std::io::BufRead>(
     reader: R,
     tx: &std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
@@ -1420,19 +1410,13 @@ impl PlexiApp {
         log::info!("make_backend_settings: pane_id={pane_id} context_id={context_id} context_name={context_name:?}");
         let mut env = shell::build_env();
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
-        // PLEXI_SOCKET: AF_UNIX path on Unix, Win32 named-pipe name on Windows.
-        // The CLI client reads this and connects to whichever transport matches
-        // the running host. See crate::config::ipc_endpoint().
         env.insert("PLEXI_SOCKET".into(), crate::config::ipc_endpoint());
         env.insert("PLEXI_CONTEXT_ID".into(), context_id.to_string());
         env.insert("PLEXI_CONTEXT_NAME".into(), context_name.to_string());
         env.insert("PLEXI_CONTEXT_DESCRIPTION".into(), context_description.to_string());
-        // Default args:
-        //   Unix login shells get `-l` so .zprofile / .bash_profile run.
-        //   Windows shells (cmd.exe, pwsh.exe) have no equivalent: cmd treats
-        //   `-l` as an invalid switch and aborts, pwsh treats it as a script
-        //   path. For an interactive terminal pane on Windows, no args is
-        //   exactly right — cmd opens a prompt, pwsh starts its REPL.
+        // `-l` makes Unix login shells source .zprofile / .bash_profile. cmd
+        // rejects it and pwsh treats it as a script path, so Windows passes
+        // no args — interactive panes get a plain REPL.
         #[cfg(unix)]
         let default_args = vec!["-l".to_string()];
         #[cfg(windows)]
@@ -3665,10 +3649,8 @@ impl eframe::App for PlexiApp {
         // have crashed, after a 2s delay so the developer can read the traceback.
         self.drain_crash_restarts();
 
-        // Reload configuration from disk when the user clicks
-        // "Reload Configuration" in the app menu.
-        // macOS-only: the NSMenu hook lives in `macos_menu`. Other platforms
-        // surface "Reload Configuration" via the command palette (Cmd+P).
+        // NSMenu hook for "Reload Configuration". Other platforms surface it
+        // via the command palette.
         #[cfg(target_os = "macos")]
         {
             crate::macos_menu::apply_version_title_once();

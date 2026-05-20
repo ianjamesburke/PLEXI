@@ -49,26 +49,23 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# --- Resolve source binary -----------------------------------------------
 if (-not (Test-Path $Source)) {
     Write-Error "Source binary not found: $Source`nBuild first with 'cargo build --release --bin plexi'."
 }
 
-# --- Compute target name + install dir -----------------------------------
 $installRoot = Join-Path $env:LOCALAPPDATA 'Plexi'
 $binaryName  = 'plexi.exe'
 if ($Channel) {
     $installRoot = "$installRoot-$Channel"
     $binaryName  = "plexi-$Channel.exe"
 }
-$binDir   = Join-Path $installRoot 'bin'
-$dest     = Join-Path $binDir $binaryName
+$binDir = Join-Path $installRoot 'bin'
+$dest   = Join-Path $binDir $binaryName
 
 New-Item -ItemType Directory -Path $binDir -Force | Out-Null
 Copy-Item -Path $Source -Destination $dest -Force
 Write-Output "Installed: $dest"
 
-# --- PATH update (user scope) --------------------------------------------
 if (-not $NoPath) {
     $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
     $segments = if ($userPath) { $userPath -split ';' } else { @() }
@@ -82,7 +79,6 @@ if (-not $NoPath) {
     }
 }
 
-# --- PowerShell completions ----------------------------------------------
 if (-not $NoCompletions) {
     $profileDir = Split-Path -Parent $PROFILE.CurrentUserAllHosts
     if (-not (Test-Path $profileDir)) {
@@ -93,8 +89,8 @@ if (-not $NoCompletions) {
         New-Item -ItemType File -Path $profileFile -Force | Out-Null
     }
 
-    # We tag our block with sentinel lines so a re-install replaces the
-    # previous block atomically rather than appending duplicates.
+    # Sentinel-tagged block so re-installs replace atomically; non-greedy so
+    # other channels' blocks survive untouched.
     $beginTag = "# >>> plexi completions ($binaryName) >>>"
     $endTag   = "# <<< plexi completions ($binaryName) <<<"
     $block = @"
@@ -107,9 +103,6 @@ $endTag
 
     $existing = Get-Content $profileFile -Raw -ErrorAction SilentlyContinue
     if ($null -eq $existing) { $existing = '' }
-    # Strip any prior block delimited by the same tags, then append the fresh
-    # one. Pattern is non-greedy so multiple unrelated tagged blocks (other
-    # channels, hand-edits) survive untouched.
     $pattern = [Regex]::Escape($beginTag) + '[\s\S]*?' + [Regex]::Escape($endTag) + '\r?\n?'
     $stripped = [Regex]::Replace($existing, $pattern, '')
     $appendNewline = if ($stripped.EndsWith("`n") -or [string]::IsNullOrEmpty($stripped)) { '' } else { "`n" }

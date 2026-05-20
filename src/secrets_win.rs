@@ -1,27 +1,13 @@
-//! Windows Credential Manager backend for the `secrets` API.
+//! Windows Credential Manager backend for the `secrets` API. Windows analogue
+//! of the macOS `security_framework` calls in `secrets.rs` and
+//! `workspace_secrets.rs`. All `unsafe` Win32 FFI is encapsulated here.
 //!
-//! This module is the Windows analogue of the macOS `security_framework`
-//! calls scattered across `secrets.rs` and `workspace_secrets.rs`. All
-//! `unsafe` Win32 FFI is encapsulated here; callers see only safe
-//! `Option`/`Result` returns.
-//!
-//! ## TargetName convention
-//!
-//! The macOS path uses Keychain `service="plexi"` plus an `account` string
-//! built by helpers like `account_key` / `account_key_scoped` /
-//! `keychain_workspace_name` / `keychain_user_name`. Win32 has only a
-//! single flat `TargetName` namespace per user, so we prefix every account
-//! with the literal string `"plexi/"` to (a) keep PLEXI's credentials
-//! visually grouped in the Windows Credential Manager UI and (b) enable
-//! `CredEnumerateW` filtering with the prefix `"plexi/*"`.
-//!
-//! For workspace-scoped secrets the account already starts with `"plexi/"`
-//! (e.g. `"plexi/<workspace_root>/<key>"`), which produces the redundant
-//! `"plexi/plexi/<workspace_root>/<key>"` TargetName. That double-prefix
-//! is intentional: the redundancy is invisible to users (they don't see
-//! TargetName), and pushing the prefix in only one place keeps the rule
-//! trivial — every caller passes its account string verbatim and we
-//! prepend `"plexi/"`.
+//! TargetName: every account string is prefixed with `"plexi/"` so PLEXI's
+//! credentials group visually in the Credential Manager UI and so
+//! `CredEnumerateW("plexi/*")` enumerates the set. Workspace-scoped accounts
+//! already begin with `"plexi/"`, producing a redundant
+//! `"plexi/plexi/<workspace_root>/<key>"` — kept intentionally so the prefix
+//! rule is a one-liner and callers pass their account strings verbatim.
 
 #![cfg(windows)]
 
@@ -38,34 +24,29 @@ use windows_sys::Win32::Security::Credentials::{
 /// Win32 Credential Manager TargetName. See the module-level doc.
 const TARGET_PREFIX: &str = "plexi/";
 
-/// Build the full TargetName (caller-facing account string with the
-/// PLEXI prefix prepended).
 fn target_name(account: &str) -> String {
     format!("{TARGET_PREFIX}{account}")
 }
 
-/// Encode a `&str` as a UTF-16 null-terminated buffer suitable for the
-/// `PCWSTR` / `PWSTR` arguments of the Win32 API.
+/// UTF-16 NUL-terminated buffer for Win32 PCWSTR / PWSTR arguments.
 fn to_wide_nul(s: &str) -> Vec<u16> {
     let mut v: Vec<u16> = s.encode_utf16().collect();
     v.push(0);
     v
 }
 
-/// Decode a null-terminated UTF-16 buffer (as returned in `CREDENTIALW`
-/// fields like `TargetName`) into a Rust `String`. Reads word-by-word
-/// until the first null. Safe to call on any non-null `*const u16`.
+/// Decode a NUL-terminated UTF-16 buffer (e.g. `CREDENTIALW.TargetName`)
+/// into a `String`. Length is capped at 4096 to defend against a missing
+/// terminator; real TargetNames are well under that.
 ///
 /// # Safety
-/// `ptr` must be either null or a valid null-terminated UTF-16 string
-/// owned by the OS for the duration of this call.
+/// `ptr` must be either null or a valid NUL-terminated UTF-16 string
+/// owned by the OS for the duration of the call.
 unsafe fn read_wide_nul(ptr: *const u16) -> String {
     if ptr.is_null() {
         return String::new();
     }
     let mut len = 0usize;
-    // Cap at 4096 to defend against a missing terminator. Any real
-    // TargetName is well under that.
     while len < 4096 && unsafe { *ptr.add(len) } != 0 {
         len += 1;
     }
@@ -73,10 +54,8 @@ unsafe fn read_wide_nul(ptr: *const u16) -> String {
     String::from_utf16_lossy(slice)
 }
 
-/// Read the credential at `account` (after the `"plexi/"` prefix is
-/// applied). Returns the secret as a `Zeroizing<String>` on success, or
-/// `None` if no credential exists OR any other error occurred. Errors
-/// other than `ERROR_NOT_FOUND` are logged as warnings.
+/// Returns the secret bytes, or `None` if no credential exists or any
+/// other error occurred (errors other than `ERROR_NOT_FOUND` are logged).
 pub fn cred_read(account: &str) -> Option<Zeroizing<String>> {
     let target = target_name(account);
     let wide = to_wide_nul(&target);
@@ -107,17 +86,11 @@ pub fn cred_read(account: &str) -> Option<Zeroizing<String>> {
     Some(Zeroizing::new(value))
 }
 
-/// Write `value` to the credential at `account` (with `"plexi/"` prefix
-/// applied). Persists at `CRED_PERSIST_LOCAL_MACHINE`. Returns `Ok` on
-/// success; otherwise an `Err` with a human-readable description.
+/// Persists at `CRED_PERSIST_LOCAL_MACHINE`.
 pub fn cred_write(account: &str, value: &str) -> Result<(), String> {
     let target = target_name(account);
-    // Wide TargetName must live until CredWriteW returns. The function
-    // declares the field as a mutable `PWSTR`, but it does not modify
-    // the buffer — we just need a stable pointer.
+    // Both buffers must outlive CredWriteW — they're pointed at by `credential`.
     let mut wide_target = to_wide_nul(&target);
-    // CredentialBlob is a `*mut u8` pointing at UTF-8 bytes of `value`.
-    // The buffer must outlive CredWriteW.
     let blob: Vec<u8> = value.as_bytes().to_vec();
 
     let mut credential: CREDENTIALW = unsafe { std::mem::zeroed() };
@@ -128,7 +101,8 @@ pub fn cred_write(account: &str, value: &str) -> Result<(), String> {
     credential.Persist = CRED_PERSIST_LOCAL_MACHINE;
 
     let ok = unsafe { CredWriteW(&credential, 0) };
-    // Tie the buffer lifetimes to here so they cannot be dropped early.
+    // Explicit drops tie the buffer lifetimes past the FFI call (NLL would
+    // otherwise release them earlier).
     drop(blob);
     drop(wide_target);
     if ok == 0 {
@@ -140,9 +114,8 @@ pub fn cred_write(account: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Delete the credential at `account`. `ERROR_NOT_FOUND` is treated as
-/// success (consistent with the macOS path which folds errSecItemNotFound
-/// into success in `delete_secret`).
+/// `ERROR_NOT_FOUND` is treated as success (matches the macOS path's
+/// errSecItemNotFound handling in `delete_secret`).
 pub fn cred_delete(account: &str) -> Result<(), String> {
     let target = target_name(account);
     let wide = to_wide_nul(&target);
@@ -159,11 +132,8 @@ pub fn cred_delete(account: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Enumerate credentials whose TargetName matches `filter` (a prefix +
-/// `*`, e.g. `"plexi/*"`). Returns the matching TargetName strings with
-/// the leading `"plexi/"` already stripped — callers work in account
-/// space, not TargetName space. Returns an empty `Vec` on
-/// `ERROR_NOT_FOUND` or any other failure (failures are logged).
+/// `filter` is a TargetName prefix wildcard (e.g. `"plexi/*"`). Returns
+/// account strings — the `"plexi/"` prefix is stripped before return.
 pub fn cred_list(filter: &str) -> Vec<String> {
     let wide = to_wide_nul(filter);
     let mut count: u32 = 0;
@@ -179,9 +149,8 @@ pub fn cred_list(filter: &str) -> Vec<String> {
         return Vec::new();
     }
     let mut out = Vec::with_capacity(count as usize);
-    // SAFETY: `credentials` points at an array of `count` pointers to
-    // CREDENTIALW. The whole array is a single OS-allocated block and
-    // must be freed exactly once via CredFree(credentials).
+    // SAFETY: `credentials` is a single OS-allocated block of `count` CREDENTIALW
+    // pointers; freed once below via CredFree.
     for i in 0..(count as usize) {
         unsafe {
             let entry = *credentials.add(i);
@@ -189,7 +158,6 @@ pub fn cred_list(filter: &str) -> Vec<String> {
                 continue;
             }
             let target = read_wide_nul((*entry).TargetName);
-            // Strip the PLEXI prefix so callers receive account strings.
             let account = target
                 .strip_prefix(TARGET_PREFIX)
                 .map(str::to_string)

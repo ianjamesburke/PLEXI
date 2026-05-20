@@ -74,9 +74,7 @@ pub fn detect_shell() -> String {
     }
     #[cfg(windows)]
     {
-        // Prefer pwsh.exe (PowerShell 7+) if it's on PATH — modern, cross-platform
-        // syntax, better UTF-8 default. Fall back to ComSpec (usually cmd.exe).
-        // Users can force a specific shell via the SHELL env var.
+        // Priority: $SHELL override → pwsh on PATH → powershell on PATH → %ComSpec%.
         if let Ok(shell) = std::env::var("SHELL") {
             if !shell.is_empty() && Path::new(&shell).exists() {
                 log::info!("detect_shell: using $SHELL override → {shell}");
@@ -100,7 +98,6 @@ pub fn detect_shell() -> String {
     }
 }
 
-/// Walk %PATH% looking for `name` (or `name.exe`). Windows only.
 #[cfg(windows)]
 fn which_on_path(name: &str) -> Option<String> {
     let path_env = std::env::var_os("PATH")?;
@@ -128,13 +125,11 @@ fn which_on_path(name: &str) -> Option<String> {
 /// Idempotent — safe to call when already launched from a terminal (the
 /// login-shell probe returns the same PATH we already have).
 pub fn install_login_shell_path() {
-    // Windows: no analog. cmd.exe / pwsh.exe inherit the user PATH from the
-    // shell that launched us (or the system+user PATH if launched from the
-    // Start menu / Explorer), which is exactly what we want. The macOS GUI
-    // bundle workaround does not apply.
+    // Windows inherits user PATH from the launching shell or user profile;
+    // the macOS GUI-bundle workaround does not apply.
     #[cfg(windows)]
     {
-        log::info!("install_login_shell_path: no-op on Windows (PATH already correct)");
+        log::info!("install_login_shell_path: no-op on Windows");
         return;
     }
     #[cfg(not(windows))]
@@ -165,8 +160,6 @@ pub fn install_login_shell_path() {
 /// never overwrites existing values so the GUI context wins on conflicts.
 /// Called after `install_login_shell_path` since PATH is already handled.
 pub fn install_login_shell_env() {
-    // Windows: no analog. Environment is inherited from the launching shell
-    // or the user profile; no login-shell probe is needed.
     #[cfg(windows)]
     {
         log::info!("install_login_shell_env: no-op on Windows");

@@ -642,17 +642,9 @@ pub fn config_dir() -> PathBuf {
         .join(config_dir_name())
 }
 
-/// The IPC endpoint a Plexi pane uses to talk to the host (the value of
-/// `PLEXI_SOCKET` injected into every pane's environment).
-///
-/// - Unix: a filesystem path under the profile dir (`~/.plexi[-channel]/notify.sock`)
-///   that `UnixListener::bind` / `UnixStream::connect` use directly.
-/// - Windows: a Win32 named-pipe name (`\\.\pipe\plexi-notify[-channel]`) that
-///   `CreateNamedPipeW` / `CreateFileW` consume. There is no filesystem entry
-///   under the profile dir on Windows.
-///
-/// Both the host (when binding the listener) and the CLI client (when reading
-/// `PLEXI_SOCKET`) call this so the strings agree by construction.
+/// Value of `PLEXI_SOCKET` for every pane — an AF_UNIX path on Unix, a Win32
+/// named-pipe name on Windows. Both the host (binding) and the CLI client
+/// (connecting) call this so the strings agree by construction.
 pub fn ipc_endpoint() -> String {
     #[cfg(unix)]
     {

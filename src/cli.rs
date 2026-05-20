@@ -812,17 +812,15 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
 }
 
 fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
-    // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
         "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = []\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
         name = name,
         display = to_title_case(name),
     ))?;
 
-    // main.py — plexi_sdk is injected via PYTHONPATH by the host at launch;
-    // do NOT copy plexi_sdk.py alongside (the package uses relative imports
-    // that break when imported as a flat single file).
-    // __CLASS_NAME__ and __DISPLAY_NAME__ are substituted below.
+    // plexi_sdk is injected via PYTHONPATH by the host at launch; do NOT copy
+    // plexi_sdk.py alongside — its package uses relative imports that break
+    // when imported as a flat single file.
     let template = include_str!("../sdk/python/plexi_sdk/templates/app_init.py");
     let main_py = template
         .replace("__CLASS_NAME__", &to_struct_name(name))
@@ -830,8 +828,6 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     let main_path = app_dir.join("main.py");
     std::fs::write(&main_path, main_py)?;
 
-    // chmod +x main.py — Unix only. NTFS has no executable bit; Python files
-    // are dispatched by extension association on Windows.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -2080,9 +2076,8 @@ pub fn self_update_cli() -> i32 {
         return 1;
     }
 
-    // Re-symlink the CLI binary at /usr/local/bin/plexi (non-fatal if missing).
-    // Unix-only: the macOS updater path. The Windows installer will manage
-    // PATH entries directly under %LOCALAPPDATA%\Plexi rather than symlinking.
+    // Re-symlink /usr/local/bin/plexi on macOS. Windows uses the PATH entry
+    // dropped by scripts/install-windows.ps1 instead.
     #[cfg(unix)]
     if let Some(bin_name) = current_exe.file_name().and_then(|n| n.to_str()) {
         let new_binary = app_bundle.join("Contents/MacOS").join(bin_name);
@@ -2095,7 +2090,7 @@ pub fn self_update_cli() -> i32 {
         }
     }
     #[cfg(not(unix))]
-    let _ = current_exe; // suppress unused on Windows until installer is wired up
+    let _ = current_exe;
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
     println!("Installed v{latest_version}. Restart Plexi to apply.");
@@ -2274,8 +2269,6 @@ pub fn notify_cli(
         choices.len(), scope, response_file_str
     );
 
-    // socket_path was resolved earlier; route through the centralized helper so
-    // every PLEXI_SOCKET caller hits the same transport (Phase 6 swaps the body).
     let _ = &socket_path;
     let rc = send_to_socket(payload);
     if rc != 0 {
@@ -4062,10 +4055,6 @@ fn resolve_path(path: Option<&str>) -> Result<std::path::PathBuf, String> {
 }
 
 /// Send a JSON payload to PLEXI_SOCKET. Returns 0 on success, 1 on error.
-///
-/// Unix: connects to the AF_UNIX path. Windows: opens the named pipe via
-/// CreateFileW. The string in `PLEXI_SOCKET` is platform-shaped — see
-/// `crate::config::ipc_endpoint()` for the format used by the host listener.
 fn send_to_socket(payload: serde_json::Value) -> i32 {
     let socket_path = match std::env::var("PLEXI_SOCKET") {
         Ok(v) => v,
@@ -4105,8 +4094,7 @@ fn send_to_socket(payload: serde_json::Value) -> i32 {
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
-        // GENERIC_WRITE — we only send JSON requests; responses (when needed)
-        // arrive via the response_file polling pattern, not this socket.
+        // Write-only: responses use the response_file polling pattern.
         let raw = unsafe {
             CreateFileW(
                 wide.as_ptr(),
@@ -4499,13 +4487,6 @@ fn fish_completion(binary: &str) -> String {
 }
 
 fn powershell_completion(binary: &str) -> String {
-    // Minimal Native completer for top-level subcommands. PowerShell registers
-    // it via `Register-ArgumentCompleter -Native`. Source the output from your
-    // $PROFILE so completion is active on every new session:
-    //
-    //   plexi completions powershell | Out-String | Invoke-Expression
-    //
-    // (the installer at scripts/install-windows.ps1 wires this up for you).
     POWERSHELL_COMPLETION.replace("__BINARY__", binary)
 }
 
@@ -4952,12 +4933,8 @@ complete -c plexi -n "__fish_seen_subcommand_from open" -l mcp -d "Wrap stdio MC
 complete -c plexi -n "__fish_seen_subcommand_from open" -l cli -d "Wrap CLI binary in descriptor-renderer" -a "(__fish_complete_command)"
 "#;
 
-// PowerShell completer registered via Register-ArgumentCompleter -Native.
-// Minimal — completes top-level subcommands and a few common second-level
-// nouns. Source from $PROFILE for persistent shell coverage:
-//   plexi completions powershell | Out-String | Invoke-Expression
-// __BINARY__ is substituted at runtime so plexi-alpha / plexi-beta etc.
-// each register their own completer instead of fighting over the same name.
+// Native ArgumentCompleter registration script. `__BINARY__` is substituted
+// at runtime so each channel registers its own completer under its own name.
 const POWERSHELL_COMPLETION: &str = r#"# Plexi PowerShell completions
 Register-ArgumentCompleter -Native -CommandName __BINARY__ -ScriptBlock {
     param($wordToComplete, $commandAst, $cursorPosition)

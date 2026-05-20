@@ -1,30 +1,20 @@
-//! Windows process termination helpers — Phase 6c port of the Unix
-//! `libc::kill` / `libc::waitpid` sites in `process_app/`.
+//! Windows analogues of `libc::kill` / `libc::waitpid` for `process_app/`.
 //!
-//! All `unsafe` Win32 calls live in this module behind safe `Result<(), String>`
-//! wrappers. Callers must not invoke `windows_sys::Win32::*` directly elsewhere
-//! in `process_app/` — keeping the surface narrow makes the unsafe contract
-//! auditable in one place.
+//! All `unsafe` Win32 calls live behind the safe `Result<(), String>`
+//! wrappers below — keep callers from touching `windows_sys::Win32::*`
+//! directly so the unsafe surface stays auditable in one file.
 //!
-//! Semantics map roughly to Unix:
-//!
-//! | Unix                         | Windows                                 |
-//! | ---------------------------- | --------------------------------------- |
-//! | `libc::kill(pid, SIGKILL)`   | `TerminateProcess(handle, 1)` (this mod) |
-//! | `libc::waitpid(pid, _, 0)`  | `WaitForSingleObject(handle, INFINITE)` |
-//!
-//! `TerminateProcess` is unconditional — there is no Win32 SIGTERM, and the
-//! Unix "polite SIGTERM then SIGKILL after 1s" pattern collapses to a single
-//! terminate call here.
+//! There is no Win32 SIGTERM, so the Unix "polite SIGTERM then SIGKILL after
+//! 1s" pattern collapses to a single `terminate` call (TerminateProcess is
+//! unconditional).
 
 #![cfg(windows)]
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, FALSE, WAIT_FAILED,
 };
-// SYNCHRONIZE is a standard access right (Winnt.h); in windows-sys 0.61 it
-// lives under Storage::FileSystem alongside the other ACCESS_MASK constants
-// that share the FILE_ACCESS_RIGHTS bag.
+// SYNCHRONIZE lives under Storage::FileSystem in windows-sys 0.61 (it's an
+// ACCESS_MASK constant, grouped there with FILE_ACCESS_RIGHTS).
 use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows_sys::Win32::System::Threading::{
     OpenProcess, TerminateProcess, WaitForSingleObject, INFINITE, PROCESS_TERMINATE,
@@ -38,28 +28,24 @@ use windows_sys::Win32::System::Threading::{
 /// with a descriptive string on any other `OpenProcess` failure or on
 /// `TerminateProcess` failure.
 pub fn terminate(pid: u32) -> Result<(), String> {
-    // SAFETY: OpenProcess accepts any u32 pid; on failure it returns a null
-    // HANDLE and we never dereference. Treat a null return as already-gone
-    // when GetLastError() == ERROR_INVALID_PARAMETER (the process is no
-    // longer reachable by pid), which matches the "process is dead" goal.
+    // SAFETY: OpenProcess returns null on failure; we never deref a null handle.
     let handle = unsafe { OpenProcess(PROCESS_TERMINATE, FALSE, pid) };
     if handle.is_null() {
         let err = unsafe { GetLastError() };
+        // pid already gone satisfies the "process is dead" goal.
         if err == ERROR_INVALID_PARAMETER {
             return Ok(());
         }
         return Err(format!("OpenProcess(PROCESS_TERMINATE, pid={pid}) failed: GetLastError={err}"));
     }
 
-    // SAFETY: handle is a valid process handle from OpenProcess; exit code 1
-    // mirrors the historical `SIGKILL` semantics (non-zero = abnormal exit).
+    // Exit code 1 mirrors SIGKILL semantics (non-zero = abnormal exit).
+    // SAFETY: handle came from a successful OpenProcess.
     let ok = unsafe { TerminateProcess(handle, 1) };
     let terminate_err = if ok == 0 { Some(unsafe { GetLastError() }) } else { None };
 
-    // Always close the handle, even on TerminateProcess failure — leaking
-    // it keeps the kernel object alive and prevents the process record from
-    // being released after exit.
-    // SAFETY: handle is the same valid handle returned by OpenProcess.
+    // Close on every path; leaked handles keep the kernel object alive after exit.
+    // SAFETY: same valid handle.
     unsafe {
         CloseHandle(handle);
     }
@@ -79,12 +65,12 @@ pub fn terminate(pid: u32) -> Result<(), String> {
 /// being gone). Returns `Err` on `OpenProcess` failure (other than
 /// already-gone) or on `WaitForSingleObject` returning `WAIT_FAILED`.
 pub fn wait(pid: u32) -> Result<(), String> {
-    // SAFETY: OpenProcess accepts any u32; on null return we never use it.
+    // SAFETY: OpenProcess returns null on failure; we never deref a null handle.
     let handle = unsafe { OpenProcess(SYNCHRONIZE, FALSE, pid) };
     if handle.is_null() {
         let err = unsafe { GetLastError() };
+        // pid already gone satisfies the wait.
         if err == ERROR_INVALID_PARAMETER {
-            // pid is gone — by definition the wait is satisfied.
             return Ok(());
         }
         return Err(format!(
@@ -92,8 +78,7 @@ pub fn wait(pid: u32) -> Result<(), String> {
         ));
     }
 
-    // SAFETY: handle is a valid process handle with SYNCHRONIZE access;
-    // INFINITE blocks until the process object becomes signaled (exits).
+    // SAFETY: handle came from a successful OpenProcess with SYNCHRONIZE.
     let result = unsafe { WaitForSingleObject(handle, INFINITE) };
     let wait_err = if result == WAIT_FAILED {
         Some(unsafe { GetLastError() })
@@ -101,7 +86,7 @@ pub fn wait(pid: u32) -> Result<(), String> {
         None
     };
 
-    // SAFETY: handle is the same valid handle returned by OpenProcess.
+    // SAFETY: same valid handle.
     unsafe {
         CloseHandle(handle);
     }

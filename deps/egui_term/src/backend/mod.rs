@@ -166,10 +166,8 @@ impl TerminalBackend {
         let config = term::Config::default();
         let terminal_size = TerminalSize::default();
         let pty = tty::new(&pty_config, terminal_size.into(), id)?;
-        // Windows ConPTY does not expose a child handle the way Unix fork+exec does —
-        // alacritty_terminal::tty::Pty on Windows has no `.child()` method.
-        // Downstream uses of `child_pid` (busy detection, cwd via lsof/pgrep) are
-        // already cfg-gated to Unix in `shell.rs`, so 0 is a safe sentinel here.
+        // Windows ConPTY exposes no child handle; downstream pid consumers
+        // (lsof / pgrep / busy detection) are already Unix-gated in shell.rs.
         #[cfg(unix)]
         let child_pid = pty.child().id();
         #[cfg(not(unix))]
