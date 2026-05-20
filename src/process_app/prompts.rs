@@ -97,7 +97,7 @@ pub(super) fn show_prompt_modal(
 
     // Detect keys at frame level — before any window or button rendering — so
     // egui button focus cannot intercept Enter/Escape and misfire an action.
-    let (mut grant_once, grant_forever, mut deny_once, deny_forever) =
+    let (mut grant_once, mut grant_forever, mut deny_once, mut deny_forever) =
         match prompt {
             PendingPrompt::Capability { .. } => {
                 ui.ctx().input_mut(|i| {
@@ -135,7 +135,24 @@ pub(super) fn show_prompt_modal(
                             .small(),
                     );
                     ui.add_space(12.0);
-                    // Keyboard-only — no buttons. key_combo_list rows are the UI.
+                    ui.horizontal(|ui| {
+                        if ui.button("Grant Once").clicked() {
+                            grant_once = true;
+                        }
+                        if ui.button("Grant Forever").clicked() {
+                            grant_forever = true;
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Deny Once").clicked() {
+                            deny_once = true;
+                        }
+                        if ui.button("Deny Forever").clicked() {
+                            deny_forever = true;
+                        }
+                    });
+                    ui.add_space(8.0);
                     crate::widgets::key_combo_list(ui, &[&["↵"]], Some("grant once"), colors);
                     crate::widgets::key_combo_list(
                         ui,
