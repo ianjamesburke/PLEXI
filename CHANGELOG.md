@@ -1,6 +1,15 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.470] — 2026-05-20
+
+### Changes
+- fix(cli): plexi open exits 0 with pane ID when app launch silently fails (#1590)
+- fix: bundle — inspector Cmd+R rename, skill version, registry rename (#1508, #1510, #1537) (#1588)
+- docs(dispatch): add lane recovery rules and mandatory stabilizer note
+- fix(dispatch): add dirty-tree guard and shell-ready delays to open-lanes.sh
+- docs(website): update SDK reference pages
+- feat(website): replace hero placeholder with real screenshot
 ## [0.0.469] — 2026-05-19
 
 ### Changes
