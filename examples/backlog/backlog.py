@@ -24,7 +24,7 @@ def _detect_channel_backlog_dir() -> "Path | None":
     env = os.environ.get("PLEXI_CONFIG_DIR")
     if env:
         p = Path(env) / "backlog"
-        return p if p.exists() else None
+        return p if p.is_dir() else None
     candidates = [
         Path.home() / d / "backlog"
         for d in (".plexi-alpha", ".plexi-beta", ".plexi")
@@ -32,7 +32,7 @@ def _detect_channel_backlog_dir() -> "Path | None":
     existing: list = []
     for p in candidates:
         try:
-            if p.exists():
+            if p.is_dir():
                 existing.append((p.stat().st_mtime, p))
         except OSError:
             pass
@@ -76,12 +76,13 @@ class BacklogApp(App):
         all_files: list = []
 
         def _collect(directory: "Path | None", source: str) -> None:
-            if directory is None or not directory.exists():
+            if directory is None or not directory.is_dir():
                 return
             for f in directory.iterdir():
                 if f.is_file() and not f.name.startswith(".") and f.suffix == ".md":
-                    all_files.append(f)
-                    self._source[f] = source
+                    if f not in self._source:
+                        all_files.append(f)
+                        self._source[f] = source
 
         _collect(self.backlog_dir, "ws")
         _collect(self.channel_dir, "channel")
@@ -134,6 +135,10 @@ class BacklogApp(App):
         try:
             archived_dir.mkdir(parents=True, exist_ok=True)
             dest = archived_dir / path.name
+            n = 2
+            while dest.exists():
+                dest = archived_dir / f"{path.stem}-{n}{path.suffix}"
+                n += 1
             shutil.move(str(path), str(dest))
             self.status = f"Archived {path.name}"
         except OSError as e:
@@ -205,8 +210,8 @@ class BacklogApp(App):
         ctx.text(list_w - 80, 10, count_label, size=11, color=MUTED,
                  max_width=80)
 
-        has_any_dir = self.backlog_dir.exists() or (
-            self.channel_dir is not None and self.channel_dir.exists()
+        has_any_dir = self.backlog_dir.is_dir() or (
+            self.channel_dir is not None and self.channel_dir.is_dir()
         )
         if not has_any_dir:
             self.emit.info("backlog: no dirs found — showing empty-state guide")
