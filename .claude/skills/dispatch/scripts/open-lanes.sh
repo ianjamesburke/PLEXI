@@ -10,9 +10,16 @@ if [[ $# -eq 0 ]]; then
   exit 1
 fi
 
+REPO_DIR=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
+
+if [[ -n $(git -C "$REPO_DIR" status --porcelain) ]]; then
+  echo "ERROR: alpha has uncommitted changes. Commit or stash before dispatching." >&2
+  git -C "$REPO_DIR" status --short >&2
+  exit 1
+fi
+
 PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}
 MY_PANE_ID=${PLEXI_PANE_ID:?PLEXI_PANE_ID not set — must run inside a Plexi pane}
-REPO_DIR=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
 
 PREV_ID=$MY_PANE_ID
 LAYOUT=split_h
@@ -20,7 +27,9 @@ LAYOUT=split_h
 for ISSUE in "$@"; do
   PANE_ID=$($PLEXI terminal --layout $LAYOUT --from-pane-id $PREV_ID --no-focus)
   $PLEXI pane name $PANE_ID "#${ISSUE}"
+  sleep 1  # wait for shell to initialize before sending commands
   $PLEXI pane send $PANE_ID "cd $REPO_DIR"$'\n'
+  sleep 0.5
   $PLEXI pane send $PANE_ID 'c "/ship-issue '"$ISSUE"' --skip-review"'$'\n'
   echo "Lane opened: pane $PANE_ID → #$ISSUE"
   PREV_ID=$PANE_ID
