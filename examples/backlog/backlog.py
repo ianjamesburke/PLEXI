@@ -29,7 +29,13 @@ def _detect_channel_backlog_dir() -> "Path | None":
         Path.home() / d / "backlog"
         for d in (".plexi-alpha", ".plexi-beta", ".plexi")
     ]
-    existing = [(p.stat().st_mtime, p) for p in candidates if p.exists()]
+    existing: list = []
+    for p in candidates:
+        try:
+            if p.exists():
+                existing.append((p.stat().st_mtime, p))
+        except OSError:
+            pass
     return max(existing)[1] if existing else None
 
 
@@ -125,9 +131,9 @@ class BacklogApp(App):
             return
         path = self.filtered[self.selected]
         archived_dir = path.parent / "archived"
-        archived_dir.mkdir(parents=True, exist_ok=True)
-        dest = archived_dir / path.name
         try:
+            archived_dir.mkdir(parents=True, exist_ok=True)
+            dest = archived_dir / path.name
             shutil.move(str(path), str(dest))
             self.status = f"Archived {path.name}"
         except OSError as e:
