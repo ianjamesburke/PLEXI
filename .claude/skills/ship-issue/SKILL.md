@@ -1,12 +1,25 @@
 ---
 name: ship-issue
-description: "Full PLEXI ship cycle. Four modes: /ship-issue (auto-find next issue), /ship-issue <issue-number> (specific issue), /ship-issue <priority> (e.g. /ship-issue P1), /ship-issue <n> <m> [...] (bundle multiple issues in one PR)."
+description: "Full PLEXI ship cycle — monolithic legacy skill. Prefer the pipeline skills for new sessions: /implement-issue → /open-pr → /validate-pr → /merge-pr. Use ship-issue only when you need the full cycle in one uninterrupted session."
 risk: medium
 source: local
 date_added: "2026-05-03"
 ---
 
 # Ship
+
+> **Pipeline alternative:** The ship cycle is now split into composable skills that are independently resumable. Prefer them for new sessions:
+> - `/implement-issue [<n>]` — find issue, set up worktree, write code, push branch
+> - `/open-pr [<branch>]` — create PR, run AI review
+> - `/validate-pr <pr-number>` — install, test, handle pass/fail/modify (max 3 soft rejects, then hard reject)
+> - `/merge-pr <pr-number>` — squash merge, bump, install, close issue
+> - `/test-pr <pr-number>` — standalone: install any PR and get test instructions
+>
+> The issue body is the state store. Each skill appends a `## Ship Log` entry so any agent can resume mid-cycle cold.
+>
+> Use `/ship-issue` only when you want the full cycle without manual handoffs.
+
+
 
 The full development lifecycle for PLEXI. One skill, four entry points:
 
