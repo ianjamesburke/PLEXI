@@ -126,14 +126,14 @@ class LogsApp(App):
         self._lines = _read_log()
         ctx.set_timer(TIMER_ID, POLL_MS)
 
-    def on_text_submitted(self, ctx: RenderContext, id: str, text: str) -> None:
+    def on_text_submitted(self, _ctx: RenderContext, id: str, text: str) -> None:  # noqa: ARG002
         if id == "search":
             self._search_q    = text.strip()
             self._search_mode = False
             self._scroll      = 0.0
             self._copy_row    = 0
 
-    def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
+    def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:  # noqa: ARG002
         # ── search mode: only Esc is handled here; host owns the text field ──
         if self._search_mode:
             if key == "escape":
