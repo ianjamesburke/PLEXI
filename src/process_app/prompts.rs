@@ -96,19 +96,16 @@ pub(super) fn show_prompt_modal(
     };
 
     // Detect keys at frame level — before any window or button rendering — so
-    // egui button focus cannot intercept Enter/Escape and misfire an action.
+    // egui button focus cannot intercept Enter and misfire an action.
     let (mut grant_once, mut grant_forever, mut deny_once, mut deny_forever) =
         match prompt {
             PendingPrompt::Capability { .. } => {
                 ui.ctx().input_mut(|i| {
-                    // Shift variants first — they overlap plain Enter/Esc.
                     let shift_enter = i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter);
-                    let shift_esc = i.consume_key(egui::Modifiers::SHIFT, egui::Key::Escape);
                     let key_a = i.consume_key(egui::Modifiers::NONE, egui::Key::A);
                     let key_d = i.consume_key(egui::Modifiers::NONE, egui::Key::D);
                     let plain_enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-                    let plain_esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-                    (plain_enter, shift_enter || key_a, plain_esc, shift_esc || key_d)
+                    (plain_enter, shift_enter || key_a, false, key_d)
                 })
             }
             PendingPrompt::Secret { .. } => {
@@ -160,13 +157,7 @@ pub(super) fn show_prompt_modal(
                         Some("grant forever"),
                         colors,
                     );
-                    crate::widgets::key_combo_list(ui, &[&["⎋"]], Some("deny once"), colors);
-                    crate::widgets::key_combo_list(
-                        ui,
-                        &[&["⇧", "⎋"], &["D"]],
-                        Some("deny forever"),
-                        colors,
-                    );
+                    crate::widgets::key_combo_list(ui, &[&["D"]], Some("deny forever"), colors);
                 }
                 PendingPrompt::Secret { key } => {
                     ui.label(format!("App \"{}\" needs a secret value for:", type_id));
