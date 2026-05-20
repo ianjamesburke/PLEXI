@@ -64,6 +64,11 @@
 #define MyAppPublisher "Plexi"
 #define MyAppURL "https://github.com/zachristmas/PLEXI"
 
+; Single source of truth for whether the icon asset is available, used to
+; gate SetupIconFile, the bundled [Files] entry, [Icons] IconFilename, and
+; UninstallDisplayIcon. Path is relative to the .iss file.
+#define HasIcon FileExists(AddBackslash(SourcePath) + "..\assets\app-icon.ico")
+
 [Setup]
 AppId={{#MyAppId}}
 AppName=Plexi{#MyAppNameSuffix}
@@ -84,11 +89,13 @@ SolidCompression=yes
 OutputDir=..\dist
 OutputBaseFilename={#MyOutputBase}
 UninstallDisplayName=Plexi{#MyAppNameSuffix} {#MyAppVersion}
-UninstallDisplayIcon={app}\bin\{#MyBinaryName}
 WizardStyle=modern
 ChangesEnvironment=yes
-#if FileExists(AddBackslash(SourcePath) + "..\assets\app-icon.ico")
+#if HasIcon
 SetupIconFile=..\assets\app-icon.ico
+UninstallDisplayIcon={app}\app-icon.ico
+#else
+UninstallDisplayIcon={app}\bin\{#MyBinaryName}
 #endif
 
 [Languages]
@@ -101,9 +108,16 @@ Name: "completions"; Description: "Register PowerShell tab-completions in your $
 [Files]
 Source: "{#SourceExe}";                       DestDir: "{app}\bin"; DestName: "{#MyBinaryName}"; Flags: ignoreversion
 Source: "plexi-completions-helper.ps1";       DestDir: "{app}";                                  Flags: ignoreversion
+#if HasIcon
+Source: "..\assets\app-icon.ico";             DestDir: "{app}";                                  Flags: ignoreversion
+#endif
 
 [Icons]
+#if HasIcon
+Name: "{group}\Plexi{#MyAppNameSuffix}"; Filename: "{app}\bin\{#MyBinaryName}"; IconFilename: "{app}\app-icon.ico"
+#else
 Name: "{group}\Plexi{#MyAppNameSuffix}"; Filename: "{app}\bin\{#MyBinaryName}"
+#endif
 
 [Run]
 Filename: "powershell.exe"; \

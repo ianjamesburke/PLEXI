@@ -128,5 +128,12 @@ windows-sys = { version = "0.61", features = [
     "Win32_Security_Credentials",
 ] }
 
+[target.'cfg(target_os = "windows")'.build-dependencies]
+# Embed assets/app-icon.ico into plexi.exe so the icon appears in Explorer,
+# the taskbar, Task Manager, Start Menu shortcuts, and the Add/Remove Programs
+# entry. Build-dep is host-scoped (build.rs runs on host), so it's only pulled
+# in on Windows builds.
+winresource = "0.1"
+
 [dev-dependencies]
 tempfile = "3"
