@@ -17,7 +17,7 @@ import urllib.parse
 import webbrowser
 
 from plexi_sdk import (
-    App, RenderContext,
+    App, RenderContext, CapabilityDeniedError,
     BG, SURFACE, FG, ACCENT, MUTED, HIGHLIGHT,
     BODY, CAPTION, HEADING, HINT, HEADER_H,
     RED,
@@ -108,8 +108,9 @@ class BlueskyApp(App):
 
         self.emit.info("bluesky: init")
         ctx.status_summary("Loading Discover feed…")
-        granted = await self.emit.capability_request("net.http")
-        if not granted:
+        try:
+            await self.emit.capability_request("net.http")
+        except CapabilityDeniedError:
             self._loading = False
             self._error = "Network access denied."
             self.emit.warn("bluesky: net.http capability denied")

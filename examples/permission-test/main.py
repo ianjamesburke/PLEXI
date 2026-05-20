@@ -13,7 +13,7 @@ Expected first-run flow:
   5. On second launch, both show "Granted" immediately (stored Green).
 """
 from plexi_sdk import (
-    App, RenderContext,
+    App, RenderContext, CapabilityDeniedError,
     BG, SURFACE, FG, ACCENT, MUTED, GREEN,
     CAPTION, HEADING, HINT,
     PAD,
@@ -74,12 +74,19 @@ class PermissionTest(App):
 
     async def _request(self, cap: str) -> None:
         self.emit.info(f"permission-test: requesting {cap}")
-        granted = await self.emit.capability_request(cap)
-        if cap == "panes.spawn":
-            self.panes_spawn_state = "granted" if granted else "denied"
-        elif cap == "ai.query":
-            self.ai_query_state = "granted" if granted else "denied"
-        self.emit.info(f"permission-test: {cap} -> {'granted' if granted else 'denied'}")
+        try:
+            await self.emit.capability_request(cap)
+            if cap == "panes.spawn":
+                self.panes_spawn_state = "granted"
+            elif cap == "ai.query":
+                self.ai_query_state = "granted"
+            self.emit.info(f"permission-test: {cap} -> granted")
+        except CapabilityDeniedError:
+            if cap == "panes.spawn":
+                self.panes_spawn_state = "denied"
+            elif cap == "ai.query":
+                self.ai_query_state = "denied"
+            self.emit.warn(f"permission-test: {cap} -> denied")
         self.requesting = False
 
 

@@ -6,7 +6,7 @@ import threading
 import urllib.parse
 
 from plexi_sdk import (
-    App, RenderContext,
+    App, RenderContext, CapabilityDeniedError,
     FG, MUTED, ACCENT, SURFACE, BODY, CAPTION, RED,
 )
 from plexi_sdk.ui import (
@@ -27,8 +27,9 @@ class WikiApp(App):
         self._error_msg = ""
         self._mode = "search"  # search | results | article
         self.emit.info("wikipedia: ready")
-        granted = await self.emit.capability_request("net.http")
-        if not granted:
+        try:
+            await self.emit.capability_request("net.http")
+        except CapabilityDeniedError:
             self._error_msg = "Network access denied. Search requires net.http."
             self.emit.warn("wikipedia: net.http capability denied")
 
