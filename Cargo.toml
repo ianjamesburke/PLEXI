@@ -67,7 +67,12 @@ egui_commonmark = "0.20"
 rfd = "0.17"
 # Headless app render (#850). Already transitive via eframe; declared directly for explicit use.
 pollster = "0.4"
-wgpu = { version = "24", default-features = false, features = ["wgsl", "metal"] }
+# wgpu backends: WGSL shader compiler is the common path. Per-API backends
+# (`metal`, `dx12`, `vulkan`) are no-ops on platforms where their API isn't
+# present, so listing all three here is the standard portable arrangement.
+# Without at least one matching backend, `wgpu::Instance` will find no
+# adapter at startup and the host fails to launch.
+wgpu = { version = "24", default-features = false, features = ["wgsl", "metal", "dx12"] }
 egui-wgpu = "0.31"
 png = "0.17"
 taffy = "0.5"

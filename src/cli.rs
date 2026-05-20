@@ -812,8 +812,6 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
 }
 
 fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
     // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
         "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = []\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
@@ -832,10 +830,15 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     let main_path = app_dir.join("main.py");
     std::fs::write(&main_path, main_py)?;
 
-    // chmod +x main.py
-    let mut perms = std::fs::metadata(&main_path)?.permissions();
-    perms.set_mode(perms.mode() | 0o111);
-    std::fs::set_permissions(&main_path, perms)?;
+    // chmod +x main.py — Unix only. NTFS has no executable bit; Python files
+    // are dispatched by extension association on Windows.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&main_path)?.permissions();
+        perms.set_mode(perms.mode() | 0o111);
+        std::fs::set_permissions(&main_path, perms)?;
+    }
 
     Ok(())
 }
@@ -2078,6 +2081,9 @@ pub fn self_update_cli() -> i32 {
     }
 
     // Re-symlink the CLI binary at /usr/local/bin/plexi (non-fatal if missing).
+    // Unix-only: the macOS updater path. The Windows installer will manage
+    // PATH entries directly under %LOCALAPPDATA%\Plexi rather than symlinking.
+    #[cfg(unix)]
     if let Some(bin_name) = current_exe.file_name().and_then(|n| n.to_str()) {
         let new_binary = app_bundle.join("Contents/MacOS").join(bin_name);
         let bin_link = std::path::Path::new("/usr/local/bin").join(bin_name);
@@ -2088,6 +2094,8 @@ pub fn self_update_cli() -> i32 {
             }
         }
     }
+    #[cfg(not(unix))]
+    let _ = current_exe; // suppress unused on Windows until installer is wired up
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
     println!("Installed v{latest_version}. Restart Plexi to apply.");
@@ -2266,19 +2274,12 @@ pub fn notify_cli(
         choices.len(), scope, response_file_str
     );
 
-    use std::io::Write;
-    use std::os::unix::net::UnixStream;
-    let mut stream = match UnixStream::connect(&socket_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
-            return 1;
-        }
-    };
-    let line = format!("{payload}\n");
-    if let Err(e) = stream.write_all(line.as_bytes()) {
-        eprintln!("error: could not write to socket: {e}");
-        return 1;
+    // socket_path was resolved earlier; route through the centralized helper so
+    // every PLEXI_SOCKET caller hits the same transport (Phase 6 swaps the body).
+    let _ = &socket_path;
+    let rc = send_to_socket(payload);
+    if rc != 0 {
+        return rc;
     }
 
     // Fire-and-forget path — command is delivered, nothing to wait for.
@@ -2388,21 +2389,8 @@ pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
         "pane_id": resolved_pane_id,
         "name": name,
     });
-    use std::io::Write;
-    use std::os::unix::net::UnixStream;
-    let mut stream = match UnixStream::connect(&socket_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
-            return 1;
-        }
-    };
-    let line = format!("{}\n", payload);
-    if let Err(e) = stream.write_all(line.as_bytes()) {
-        eprintln!("error: could not write to socket: {e}");
-        return 1;
-    }
-    0
+    let _ = &socket_path;
+    send_to_socket(payload)
 }
 
 /// Prints JSON to stdout. If `jq` is in PATH, pipes through `jq .` for
@@ -4074,6 +4062,9 @@ fn resolve_path(path: Option<&str>) -> Result<std::path::PathBuf, String> {
 }
 
 /// Send a JSON payload to PLEXI_SOCKET. Returns 0 on success, 1 on error.
+///
+/// Currently Unix-only; the Windows IPC path lands with the named-pipe / AF_UNIX
+/// transport in Phase 6 of the Windows port.
 fn send_to_socket(payload: serde_json::Value) -> i32 {
     let socket_path = match std::env::var("PLEXI_SOCKET") {
         Ok(v) => v,
@@ -4082,21 +4073,30 @@ fn send_to_socket(payload: serde_json::Value) -> i32 {
             return 1;
         }
     };
-    use std::io::Write;
-    use std::os::unix::net::UnixStream;
-    let mut stream = match UnixStream::connect(&socket_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+        let mut stream = match UnixStream::connect(&socket_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
+                return 1;
+            }
+        };
+        let line = format!("{}\n", payload);
+        if let Err(e) = stream.write_all(line.as_bytes()) {
+            eprintln!("error: could not write to socket: {e}");
             return 1;
         }
-    };
-    let line = format!("{}\n", payload);
-    if let Err(e) = stream.write_all(line.as_bytes()) {
-        eprintln!("error: could not write to socket: {e}");
-        return 1;
+        0
     }
-    0
+    #[cfg(not(unix))]
+    {
+        let _ = (socket_path, payload);
+        eprintln!("error: PLEXI_SOCKET IPC is not yet wired up on this platform (Windows port: pending Phase 6)");
+        1
+    }
 }
 
 /// `plexi context new [name] [--path <path>] [--parent <parent>]`

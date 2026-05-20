@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+#[cfg(unix)]
 use std::io::Write;
 use std::path::PathBuf;
+#[cfg(unix)]
 extern crate libc;
 /// Typed pipe registry for Plexi v3 — binary side channel and JSON metadata pipes.
 ///
@@ -8,6 +10,13 @@ extern crate libc;
 /// A lock-free ring (ArrayQueue) decouples the write path from the socket drain
 /// thread so the audio callback can enqueue frames without blocking or allocating.
 /// JSON pipes are metadata-only registrations; routing is handled by the PGAP wire.
+///
+/// Windows port note (Phase 6): binary pipes will move to Win32 named pipes
+/// (`\\.\pipe\plexi-<uuid>`) with `windows-sys::Win32::System::Pipes`. For now
+/// `open_binary` returns `BindFailed` on Windows so the host still compiles and
+/// boots; apps that request audio/video binary capabilities will see a clear
+/// error from the host.
+#[cfg(unix)]
 use std::os::unix::net::UnixListener;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -136,98 +145,111 @@ impl TypedPipeRegistry {
             )
             .map_err(|e| PipeError::BindFailed(format!("secure pipes dir: {e}")))?;
         }
-        let socket_name = format!("{}.sock", uuid::Uuid::new_v4());
-        let socket_path = self
-            .pipes_dir
-            .join(&socket_name)
-            .to_string_lossy()
-            .into_owned();
-        log::info!("typed_pipes: opening binary pipe {pipe_id} at {socket_path}");
 
-        let listener = UnixListener::bind(&socket_path)
-            .map_err(|e| PipeError::BindFailed(format!("{socket_path}: {e}")))?;
-        // Prevent child processes (app subprocesses) from inheriting this socket FD.
-        unsafe {
-            use std::os::unix::io::AsRawFd;
-            libc::fcntl(listener.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC);
-        }
-        // Non-blocking so the drain thread's accept loop can observe `shutdown`
-        // and exit if the app never connects (e.g. start_capture failed and no
-        // PipeOpened was ever sent). Otherwise close() -> join() deadlocks.
-        listener
-            .set_nonblocking(true)
-            .map_err(|e| PipeError::BindFailed(format!("set_nonblocking: {e}")))?;
+        #[cfg(unix)]
+        {
+            let socket_name = format!("{}.sock", uuid::Uuid::new_v4());
+            let socket_path = self
+                .pipes_dir
+                .join(&socket_name)
+                .to_string_lossy()
+                .into_owned();
+            log::info!("typed_pipes: opening binary pipe {pipe_id} at {socket_path}");
 
-        let ring: Arc<ArrayQueue<Vec<u8>>> = Arc::new(ArrayQueue::new(DEFAULT_RING_CAPACITY));
-        let shutdown = Arc::new(AtomicBool::new(false));
-        let error_flag = Arc::new(AtomicBool::new(false));
+            let listener = UnixListener::bind(&socket_path)
+                .map_err(|e| PipeError::BindFailed(format!("{socket_path}: {e}")))?;
+            // Prevent child processes (app subprocesses) from inheriting this socket FD.
+            unsafe {
+                use std::os::unix::io::AsRawFd;
+                libc::fcntl(listener.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC);
+            }
+            // Non-blocking so the drain thread's accept loop can observe `shutdown`
+            // and exit if the app never connects (e.g. start_capture failed and no
+            // PipeOpened was ever sent). Otherwise close() -> join() deadlocks.
+            listener
+                .set_nonblocking(true)
+                .map_err(|e| PipeError::BindFailed(format!("set_nonblocking: {e}")))?;
 
-        let ring_drain = Arc::clone(&ring);
-        let shutdown_drain = Arc::clone(&shutdown);
-        let error_flag_drain = Arc::clone(&error_flag);
-        let socket_path_drain = socket_path.clone();
-        let pipe_id_log = pipe_id.clone();
+            let ring: Arc<ArrayQueue<Vec<u8>>> = Arc::new(ArrayQueue::new(DEFAULT_RING_CAPACITY));
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let error_flag = Arc::new(AtomicBool::new(false));
 
-        // Drain thread: blocks waiting for the app to connect, then drains the
-        // ring into the socket. Exits when `shutdown` is set and ring is empty.
-        let drain_handle = thread::Builder::new()
-            .name(format!("pipe-drain-{pipe_id}"))
-            .spawn(move || {
-                log::info!("typed_pipes: drain thread started for pipe {pipe_id_log}");
-                // Poll for a client connection. Listener is non-blocking so we
-                // can observe `shutdown` and exit if the app never connects
-                // (e.g. start_capture failed before PipeOpened was sent).
-                let stream = loop {
-                    match listener.accept() {
-                        Ok((s, _)) => break s,
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            if shutdown_drain.load(Ordering::Acquire) {
+            let ring_drain = Arc::clone(&ring);
+            let shutdown_drain = Arc::clone(&shutdown);
+            let error_flag_drain = Arc::clone(&error_flag);
+            let socket_path_drain = socket_path.clone();
+            let pipe_id_log = pipe_id.clone();
+
+            // Drain thread: blocks waiting for the app to connect, then drains the
+            // ring into the socket. Exits when `shutdown` is set and ring is empty.
+            let drain_handle = thread::Builder::new()
+                .name(format!("pipe-drain-{pipe_id}"))
+                .spawn(move || {
+                    log::info!("typed_pipes: drain thread started for pipe {pipe_id_log}");
+                    // Poll for a client connection. Listener is non-blocking so we
+                    // can observe `shutdown` and exit if the app never connects
+                    // (e.g. start_capture failed before PipeOpened was sent).
+                    let stream = loop {
+                        match listener.accept() {
+                            Ok((s, _)) => break s,
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                if shutdown_drain.load(Ordering::Acquire) {
+                                    let _ = std::fs::remove_file(&socket_path_drain);
+                                    return;
+                                }
+                                thread::sleep(std::time::Duration::from_millis(50));
+                            }
+                            Err(e) => {
+                                log::error!("typed_pipes: accept failed on {socket_path_drain}: {e}");
                                 let _ = std::fs::remove_file(&socket_path_drain);
                                 return;
                             }
-                            thread::sleep(std::time::Duration::from_millis(50));
                         }
-                        Err(e) => {
-                            log::error!("typed_pipes: accept failed on {socket_path_drain}: {e}");
-                            let _ = std::fs::remove_file(&socket_path_drain);
-                            return;
-                        }
-                    }
-                };
-                // Switch to blocking mode for the write loop.
-                let _ = stream.set_nonblocking(false);
-                let mut writer = stream;
-                loop {
-                    if let Some(frame) = ring_drain.pop() {
-                        if let Err(e) = write_frame(&mut writer, &frame) {
-                            log::warn!("typed_pipes: drain write error: {e}");
-                            error_flag_drain.store(true, Ordering::Release);
+                    };
+                    // Switch to blocking mode for the write loop.
+                    let _ = stream.set_nonblocking(false);
+                    let mut writer = stream;
+                    loop {
+                        if let Some(frame) = ring_drain.pop() {
+                            if let Err(e) = write_frame(&mut writer, &frame) {
+                                log::warn!("typed_pipes: drain write error: {e}");
+                                error_flag_drain.store(true, Ordering::Release);
+                                break;
+                            }
+                        } else if shutdown_drain.load(Ordering::Acquire) {
                             break;
+                        } else {
+                            thread::sleep(std::time::Duration::from_millis(1));
                         }
-                    } else if shutdown_drain.load(Ordering::Acquire) {
-                        break;
-                    } else {
-                        thread::sleep(std::time::Duration::from_millis(1));
                     }
-                }
-                // Signal end-of-stream.
-                let _ = write_eos(&mut writer);
-                let _ = std::fs::remove_file(&socket_path_drain);
-            })
-            .map_err(|e| PipeError::BindFailed(format!("thread spawn: {e}")))?;
+                    // Signal end-of-stream.
+                    let _ = write_eos(&mut writer);
+                    let _ = std::fs::remove_file(&socket_path_drain);
+                })
+                .map_err(|e| PipeError::BindFailed(format!("thread spawn: {e}")))?;
 
-        let entry = BinaryPipeEntry {
-            direction,
-            socket_path: socket_path.clone(),
-            shutdown,
-            drain_handle: Some(drain_handle),
-            ring: Arc::clone(&ring),
-            error_flag,
-        };
+            let entry = BinaryPipeEntry {
+                direction,
+                socket_path: socket_path.clone(),
+                shutdown,
+                drain_handle: Some(drain_handle),
+                ring: Arc::clone(&ring),
+                error_flag,
+            };
 
-        self.pipes.insert(pipe_id.clone(), PipeEntry::Binary(entry));
+            self.pipes.insert(pipe_id.clone(), PipeEntry::Binary(entry));
 
-        Ok(BinaryPipeAllocation { socket_path })
+            Ok(BinaryPipeAllocation { socket_path })
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = (pipe_id, direction);
+            log::warn!("typed_pipes: open_binary requested on a platform without AF_UNIX support — apps requiring binary capabilities (audio.record, video.decode) will fail until Phase 6 wires Win32 named pipes");
+            Err(PipeError::BindFailed(
+                "binary pipes are not yet supported on this platform".to_owned(),
+            ))
+        }
     }
 
     /// Register a JSON pipe. No socket — routing is handled by the PGAP wire.
@@ -323,10 +345,11 @@ impl Drop for TypedPipeRegistry {
 }
 
 // ---------------------------------------------------------------------------
-// Frame I/O helpers
+// Frame I/O helpers (Unix-only — used by the AF_UNIX drain thread)
 // ---------------------------------------------------------------------------
 
 /// Write a length-prefixed frame: `u32 BE length || payload`.
+#[cfg(unix)]
 fn write_frame(writer: &mut impl Write, payload: &[u8]) -> std::io::Result<()> {
     let len = payload.len() as u32;
     writer.write_all(&len.to_be_bytes())?;
@@ -335,6 +358,7 @@ fn write_frame(writer: &mut impl Write, payload: &[u8]) -> std::io::Result<()> {
 }
 
 /// Write a length-0 EOS sentinel.
+#[cfg(unix)]
 fn write_eos(writer: &mut impl Write) -> std::io::Result<()> {
     writer.write_all(&0u32.to_be_bytes())
 }
@@ -343,7 +367,11 @@ fn write_eos(writer: &mut impl Write) -> std::io::Result<()> {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+// The unit tests exercise the AF_UNIX drain path directly via
+// `std::os::unix::net::UnixStream`. They are gated to Unix until the Win32
+// named-pipe transport lands in Phase 6 of the Windows port (at which point
+// they'll grow a `#[cfg(windows)]` parallel suite).
+#[cfg(all(test, unix))]
 mod tests {
     //! Unit tests for the typed-pipe registry primitives that the directed
     //! inter-agent pipe routing (#286) builds on.

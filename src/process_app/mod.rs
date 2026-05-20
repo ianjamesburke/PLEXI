@@ -606,24 +606,39 @@ impl ProcessApp {
         // per-frame try_wait() poll that was causing 600 syscalls/sec with 10 panes open.
         let reaper_pid = child.id();
         let lifecycle_reaper = Arc::clone(&lifecycle_tracker);
-        let reaper_type_id = type_id.clone();
-        thread::Builder::new()
-            .name(format!("app-reaper-{reaper_type_id}"))
-            .spawn(move || {
-                let mut status = 0i32;
-                // SAFETY: reaper_pid is a valid child PID obtained from Command::spawn().
-                // We block until the child exits. The shutdown path's child.wait() may
-                // race and get ECHILD if we win — that's harmless since shutdown discards
-                // the result with `let _ = child.wait()`.
-                unsafe {
-                    libc::waitpid(reaper_pid as libc::pid_t, &mut status, 0);
-                }
-                log::info!(
-                    "ProcessApp[{reaper_type_id}]: child exited — reaper signaling lifecycle"
-                );
-                lifecycle_reaper.on_process_exited();
-            })
-            .expect("failed to spawn app-reaper thread");
+        // Unix: spawn a reaper thread that blocks in waitpid until the child
+        // exits, then signals lifecycle. The shutdown path's child.wait() may
+        // race and get ECHILD if we win — that's harmless since shutdown
+        // discards the result with `let _ = child.wait()`.
+        //
+        // Windows: no reaper here. Children are auto-reaped by the OS and we
+        // do not yet have a process-wait equivalent wired up. Pending Phase 6:
+        // OpenProcess(SYNCHRONIZE) + WaitForSingleObject on `reaper_pid`, then
+        // call `lifecycle_reaper.on_process_exited()`. Until that lands, app
+        // exit detection on Windows relies on the shutdown path only.
+        #[cfg(unix)]
+        {
+            let reaper_type_id = type_id.clone();
+            thread::Builder::new()
+                .name(format!("app-reaper-{reaper_type_id}"))
+                .spawn(move || {
+                    let mut status = 0i32;
+                    // SAFETY: reaper_pid is a valid child PID obtained from Command::spawn().
+                    unsafe {
+                        libc::waitpid(reaper_pid as libc::pid_t, &mut status, 0);
+                    }
+                    log::info!(
+                        "ProcessApp[{reaper_type_id}]: child exited — reaper signaling lifecycle"
+                    );
+                    lifecycle_reaper.on_process_exited();
+                })
+                .expect("failed to spawn app-reaper thread");
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (reaper_pid, &type_id, lifecycle_reaper);
+            log::warn!("ProcessApp[{type_id}]: app-reaper not wired on this platform — exit detection limited to shutdown path");
+        }
 
         let config_dir = crate::config::config_dir();
         let store = crate::app_permissions::PermissionStore::load_or_default(&config_dir);
@@ -2145,7 +2160,13 @@ pub(crate) fn static_capability_check(
         }
         Err(_) => {
             log::warn!("ProcessApp[{type_id}]: static capability check timed out (pid {pid}) — killing and skipping");
+            #[cfg(unix)]
             unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL); }
+            #[cfg(not(unix))]
+            {
+                let _ = pid; // Windows: pending Phase 6 — terminate via OpenProcess+TerminateProcess
+                log::warn!("ProcessApp[{type_id}]: static-cap-check kill skipped on this platform (pid {pid} left running until shutdown)");
+            }
             return Ok(());
         }
     };
@@ -2234,10 +2255,12 @@ impl Drop for ProcessApp {
                 handle.pid
             );
             handle.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            #[cfg(unix)]
             unsafe {
                 libc::kill(handle.pid as libc::pid_t, libc::SIGTERM);
             }
             let pid = handle.pid;
+            #[cfg(unix)]
             let _ = std::thread::Builder::new()
                 .name(format!("drop-sigkill-{pid}"))
                 .spawn(move || {
@@ -2247,6 +2270,12 @@ impl Drop for ProcessApp {
                         libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG);
                     }
                 });
+            #[cfg(not(unix))]
+            {
+                // Windows: pending Phase 6. Stream subprocess termination on
+                // drop will be wired via OpenProcess+TerminateProcess.
+                log::warn!("ProcessApp: stream drop-kill skipped on this platform (pid {pid} left running until host exits)");
+            }
         }
         // Unregister any tools this pane exposed so the global registry stays clean.
         crate::plexi_ai::tool_dispatch::unregister(self.pane_id);

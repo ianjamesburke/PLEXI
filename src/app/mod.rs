@@ -445,6 +445,7 @@ fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
     theme::setup_style(ctx, colors, true);
 }
 
+#[cfg(unix)]
 fn spawn_socket_listener(
     tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
 ) {
@@ -485,6 +486,17 @@ fn spawn_socket_listener(
             });
         }
     });
+}
+
+// Windows stub — IPC will land in Phase 6 of the Windows port via either
+// AF_UNIX-on-Windows (Win10 1803+ Winsock) or a Win32 named-pipe server. Until
+// then, panes that depend on PLEXI_SOCKET (CLI commands invoked from a pane)
+// will print a clear "not yet wired up" error from the CLI side.
+#[cfg(not(unix))]
+fn spawn_socket_listener(
+    _tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
+) {
+    log::warn!("pane_ipc: socket listener is not yet implemented on this platform — PLEXI_SOCKET commands will fail");
 }
 
 // ---------------------------------------------------------------------------
@@ -3571,9 +3583,14 @@ impl eframe::App for PlexiApp {
 
         // Reload configuration from disk when the user clicks
         // "Reload Configuration" in the app menu.
-        crate::macos_menu::apply_version_title_once();
-        if crate::macos_menu::take_reload_config_flag() {
-            self.reload_config();
+        // macOS-only: the NSMenu hook lives in `macos_menu`. Other platforms
+        // surface "Reload Configuration" via the command palette (Cmd+P).
+        #[cfg(target_os = "macos")]
+        {
+            crate::macos_menu::apply_version_title_once();
+            if crate::macos_menu::take_reload_config_flag() {
+                self.reload_config();
+            }
         }
 
         // Config hot-reload (#1115): drain filesystem watcher signals.

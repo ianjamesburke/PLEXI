@@ -676,20 +676,29 @@ impl ProcessApp {
                     );
                     handle.cancel.store(true, Ordering::Relaxed);
                     // SIGTERM first; reader thread exits when the pipe closes.
-                    unsafe {
-                        libc::kill(handle.pid as libc::pid_t, libc::SIGTERM);
-                    }
                     // Escalate to SIGKILL after a 1s grace period on a
                     // background thread so the UI never blocks.
-                    let pid = handle.pid;
-                    std::thread::Builder::new()
-                        .name(format!("sigkill-{pid}"))
-                        .spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_secs(1));
+                    #[cfg(unix)]
+                    {
                         unsafe {
-                            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                            libc::kill(handle.pid as libc::pid_t, libc::SIGTERM);
                         }
-                    }).expect("failed to spawn sigkill thread");
+                        let pid = handle.pid;
+                        std::thread::Builder::new()
+                            .name(format!("sigkill-{pid}"))
+                            .spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                            unsafe {
+                                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                            }
+                        }).expect("failed to spawn sigkill thread");
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        // Windows: pending Phase 6. CancelProcess termination
+                        // will route through OpenProcess+TerminateProcess.
+                        log::warn!("ProcessApp: CancelProcess termination skipped on this platform (pid {} left running)", handle.pid);
+                    }
                 }
                 // else: stream already ended — no-op, no error event.
             }
