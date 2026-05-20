@@ -95,8 +95,10 @@ pub(super) fn show_prompt_modal(
         return;
     };
 
-    let mut granted = false;
-    let mut denied = false;
+    let mut grant_once = false;
+    let mut grant_forever = false;
+    let mut deny_once = false;
+    let mut deny_forever = false;
 
     egui::Window::new("Plexi needs permission")
         .collapsible(false)
@@ -113,6 +115,55 @@ pub(super) fn show_prompt_modal(
                         egui::RichText::new(format!("Workspace: {}", workspace_root.display()))
                             .small(),
                     );
+                    ui.add_space(12.0);
+
+                    // Consume keys so host shortcuts (Cmd+D, Cmd+A) don't fire.
+                    let (kb_grant_once, kb_grant_forever, kb_deny_once, kb_deny_forever) =
+                        ui.ctx().input_mut(|i| {
+                            let shift_enter =
+                                i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter);
+                            let shift_esc =
+                                i.consume_key(egui::Modifiers::SHIFT, egui::Key::Escape);
+                            let key_a = i.consume_key(egui::Modifiers::NONE, egui::Key::A);
+                            let key_d = i.consume_key(egui::Modifiers::NONE, egui::Key::D);
+                            let plain_enter =
+                                i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                            let plain_esc =
+                                i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                            (plain_enter, shift_enter || key_a, plain_esc, shift_esc || key_d)
+                        });
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Grant once").clicked() || kb_grant_once {
+                            grant_once = true;
+                        }
+                        if ui.button("Grant forever").clicked() || kb_grant_forever {
+                            grant_forever = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Deny once").clicked() || kb_deny_once {
+                            deny_once = true;
+                        }
+                        if ui.button("Deny forever").clicked() || kb_deny_forever {
+                            deny_forever = true;
+                        }
+                    });
+                    ui.add_space(6.0);
+                    crate::widgets::key_combo_list(ui, &[&["↵"]], Some("grant once"), colors);
+                    crate::widgets::key_combo_list(
+                        ui,
+                        &[&["⇧", "↵"], &["A"]],
+                        Some("grant forever"),
+                        colors,
+                    );
+                    crate::widgets::key_combo_list(ui, &[&["⎋"]], Some("deny once"), colors);
+                    crate::widgets::key_combo_list(
+                        ui,
+                        &[&["⇧", "⎋"], &["D"]],
+                        Some("deny forever"),
+                        colors,
+                    );
                 }
                 PendingPrompt::Secret { key } => {
                     ui.label(format!("App \"{}\" needs a secret value for:", type_id));
@@ -124,76 +175,111 @@ pub(super) fn show_prompt_modal(
                         ui.visuals_mut().text_cursor.stroke.width = 1.5;
                         ui.visuals_mut().text_cursor.stroke.color = colors.accent;
                         ui.visuals_mut().extreme_bg_color = colors.bg_active;
-                        ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
-                        ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+                        ui.visuals_mut().widgets.active.bg_stroke =
+                            egui::Stroke::new(1.0, colors.accent);
+                        ui.visuals_mut().widgets.inactive.bg_stroke =
+                            egui::Stroke::new(1.0, colors.border);
                         ui.add(
                             egui::TextEdit::singleline(secret_input_buf)
                                 .password(true)
                                 .margin(egui::Margin::symmetric(8, 5)),
                         );
                     });
+                    ui.add_space(12.0);
+
+                    let esc_kb = ui
+                        .ctx()
+                        .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+
+                    ui.horizontal(|ui| {
+                        if ui.button("Submit").clicked() {
+                            grant_once = true;
+                        }
+                        if ui.button("Cancel").clicked() || esc_kb {
+                            deny_once = true;
+                        }
+                    });
                 }
             }
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui.button("Grant").clicked() {
-                    granted = true;
-                }
-                if ui.button("Deny").clicked() {
-                    denied = true;
-                }
-            });
         });
 
-    if granted || denied {
+    if grant_once || grant_forever || deny_once || deny_forever {
         use crate::app_permissions::Capability;
+        let actually_granted = grant_once || grant_forever;
         match pending_prompts.pop_front() {
             Some(PendingPrompt::Capability {
                 request_id,
                 capability,
             }) => {
-                if granted {
+                if grant_once || grant_forever {
                     match Capability::try_from(capability.as_str()) {
                         Ok(cap) => {
                             permissions.capabilities.insert(cap);
-                            permission_store.set(type_id, workspace_root, cap, crate::app_permissions::PermissionState::Green);
-                            permission_store.save();
-                            log::info!(
-                                "permission_store: granted {} for {} in {}",
-                                cap, type_id, workspace_root.display()
-                            );
+                            if grant_forever {
+                                permission_store.set(
+                                    type_id,
+                                    workspace_root,
+                                    cap,
+                                    crate::app_permissions::PermissionState::Green,
+                                );
+                                permission_store.save();
+                                log::info!(
+                                    "prompts: granted {} for {} forever in {}",
+                                    cap,
+                                    type_id,
+                                    workspace_root.display()
+                                );
+                            } else {
+                                log::info!(
+                                    "prompts: granted {} for {} (once, session only)",
+                                    cap,
+                                    type_id
+                                );
+                            }
                         }
                         Err(e) => {
-                            log::warn!(
-                                "prompts: cannot grant {e}; capability string not recognized"
-                            );
+                            log::warn!("prompts: cannot grant {e}; capability string not recognized");
                         }
                     }
                 }
-                if denied {
+                if deny_forever {
                     if let Ok(cap) = Capability::try_from(capability.as_str()) {
                         permissions.blocked.insert(cap);
-                        permission_store.set(type_id, workspace_root, cap, crate::app_permissions::PermissionState::Red);
+                        permission_store.set(
+                            type_id,
+                            workspace_root,
+                            cap,
+                            crate::app_permissions::PermissionState::Red,
+                        );
                         permission_store.save();
                         log::info!(
-                            "permission_store: permanently blocked {} for {} in {}",
-                            cap, type_id, workspace_root.display()
+                            "prompts: denied {} for {} forever in {}",
+                            cap,
+                            type_id,
+                            workspace_root.display()
                         );
                     }
+                }
+                if deny_once {
+                    log::info!(
+                        "prompts: denied {} for {} (once, will reprompt on next request)",
+                        capability,
+                        type_id
+                    );
                 }
                 event_log::emit(HostEvent::PermissionDecision {
                     app_id: type_id.to_string(),
                     capability: capability.clone(),
-                    granted,
+                    granted: actually_granted,
                     timestamp: event_log::now_timestamp(),
                 });
                 outbound_events.push_back(PlexiEvent::CapabilityDecision {
                     request_id,
-                    granted,
+                    granted: actually_granted,
                 });
             }
             Some(PendingPrompt::Secret { key }) => {
-                let value = if granted && !secret_input_buf.is_empty() {
+                let value = if actually_granted && !secret_input_buf.is_empty() {
                     Some(secret_input_buf.clone())
                 } else {
                     None
@@ -219,7 +305,12 @@ pub(super) fn show_prompt_modal(
                     event_log::emit(HostEvent::SecretDenied {
                         app_id: type_id.to_string(),
                         key: key.clone(),
-                        reason: if denied { "user_denied" } else { "empty_value" }.to_string(),
+                        reason: if deny_once || deny_forever {
+                            "user_denied"
+                        } else {
+                            "empty_value"
+                        }
+                        .to_string(),
                         timestamp: event_log::now_timestamp(),
                     });
                 }

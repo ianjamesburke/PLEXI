@@ -847,8 +847,11 @@ class Emitter:
     # self.emit.run_sync(self.emit.method(...)) from a background thread.
 
     @_blocking_emit_method
-    async def capability_request(self, capability: str) -> bool:
-        """Await until host grants or denies the capability. Returns True if granted.
+    async def capability_request(self, capability: str) -> None:
+        """Request a runtime capability grant from the user. Returns None if granted.
+
+        Raises CapabilityDeniedError if the user denies the request. Callers should
+        wrap this in try/except CapabilityDeniedError to handle denial gracefully.
 
         Await from async hooks. From background threads:
         ``self.emit.run_sync(self.emit.capability_request(capability))``.
@@ -858,7 +861,11 @@ class Emitter:
         self._app._pending_capability[req_id] = q
         _emit({"type": "capability_request", "request_id": req_id,
                "capability": capability})
-        return await q.get()
+        granted = await q.get()
+        if not granted:
+            raise CapabilityDeniedError(
+                f"capability_denied: user denied '{capability}'"
+            )
 
     @_blocking_emit_method
     async def secret_get(self, key: str) -> "str | None":
