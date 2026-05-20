@@ -149,15 +149,6 @@ pub(super) fn show_prompt_modal(
                             deny_forever = true;
                         }
                     });
-                    ui.add_space(8.0);
-                    crate::widgets::key_combo_list(ui, &[&["↵"]], Some("grant once"), colors);
-                    crate::widgets::key_combo_list(
-                        ui,
-                        &[&["⇧", "↵"], &["A"]],
-                        Some("grant forever"),
-                        colors,
-                    );
-                    crate::widgets::key_combo_list(ui, &[&["D"]], Some("deny forever"), colors);
                 }
                 PendingPrompt::Secret { key } => {
                     ui.label(format!("App \"{}\" needs a secret value for:", type_id));
