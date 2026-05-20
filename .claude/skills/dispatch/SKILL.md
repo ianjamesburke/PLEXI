@@ -146,8 +146,19 @@ bash .claude/skills/dispatch/scripts/add-to-dispatch.sh <existing_pane_id> <issu
 
 ---
 
+## Recovering failed lanes
+
+Before re-sending commands to an existing pane, **always capture its scrollback first** to check if a Claude session is already active:
+
+```bash
+$PLEXI pane capture $PANE_ID --lines 20
+```
+
+If the pane has an active Claude session, close it and open a fresh one. Never `pane send` a ship command into a pane that already has Claude running — it types the command as literal user input into the active session.
+
 ## Notes
 
+- **Step -1 is mandatory.** Never skip the stabilizer. If alpha is dirty, dispatch will fail across all lanes.
 - **Channel binary:** `PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}` — stable sets no `$PLEXI_CHANNEL`, resolves to `plexi`. Never hardcode a channel name.
 - **Scripts** in `scripts/` own all pane mechanics. Run them; don't reconstruct bash by hand.
 - `c` is a zsh alias (login shell) — available in all interactive panes opened by Plexi.
