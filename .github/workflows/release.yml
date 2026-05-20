@@ -5,6 +5,12 @@ on:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  # Manual trigger for ad-hoc validation of the build jobs without cutting a
+  # real release tag. Run from the Actions tab on any branch. Build steps run
+  # in full; release-creation and upload steps are skipped (gated on
+  # startsWith(github.ref, 'refs/tags/')) so no release artifacts appear on
+  # the releases page.
+  workflow_dispatch:
 
 jobs:
   build:
@@ -52,11 +58,13 @@ jobs:
           zip -r Plexi-${{ github.ref_name }}.zip Plexi.app skills
 
       - name: Install git-cliff
+        if: startsWith(github.ref, 'refs/tags/')
         uses: taiki-e/install-action@v2
         with:
           tool: git-cliff
 
       - name: Extract release notes
+        if: startsWith(github.ref, 'refs/tags/')
         id: notes
         run: |
           notes=$(git-cliff --latest --strip header)
@@ -65,6 +73,7 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
           files: target/release/bundle/osx/Plexi-${{ github.ref_name }}.zip
@@ -121,8 +130,14 @@ jobs:
         id: ver
         shell: pwsh
         run: |
-          # The workflow triggers on v* tags — strip the leading 'v'.
-          $ver = "${{ github.ref_name }}" -replace '^v',''
+          # Prefer the tag (strip leading 'v') for tag-triggered runs so the
+          # tag and AppVersion can't drift. Fall back to Cargo.toml on
+          # workflow_dispatch (no tag exists yet).
+          if ("${{ github.ref }}" -like 'refs/tags/v*') {
+            $ver = "${{ github.ref_name }}" -replace '^v',''
+          } else {
+            $ver = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          }
           "value=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Output "Version: $ver"
 
@@ -140,6 +155,7 @@ jobs:
           Get-ChildItem dist\
 
       - name: Upload installers to release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
           files: |
