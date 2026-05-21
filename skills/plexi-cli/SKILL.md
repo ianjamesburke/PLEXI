@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: Operating inside Plexi — spawn/name panes, focus, launch apps, surface notifications. Use when working in a Plexi pane or orchestrating other panes.
-skill_version: "3.6.59"
+skill_version: "3.6.60"
 ---
 
 # Plexi CLI
@@ -44,12 +44,15 @@ NEW=$(plexi terminal --layout new_window)                # separate OS window
 ```bash
 plexi list                       # list installed apps (use this to find the app ID before render/open)
 plexi app init                   # scaffold a new app in cwd
-plexi install <path>             # install from local dir
+plexi app run <path>             # run a local app dir in a pane — no install required (preferred for dev)
+plexi install <path>             # install from local dir (for stable/permanent installs)
 plexi uninstall <app-id>         # uninstall
 plexi update                     # update apps or self
 plexi validate [path]            # validate app dir
 plexi app render <id>            # render installed app to PNG — takes app ID, not a file path
 ```
+
+**`app link` is deprecated** — use `plexi app run <path>` instead. `app link` required a workspace and left stale pointers; `app run` works directly from any path.
 
 **Always `plexi open` for installed apps** — never `plexi pane send <id> "app\n"`. Never create terminal panes as placeholders; `plexi open` supports `--from-pane-id` and `--layout` directly.
 
