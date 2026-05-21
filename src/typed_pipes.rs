@@ -29,7 +29,7 @@ use crossbeam_queue::ArrayQueue;
 // Public types
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum PipeDirection {
     In,
     Out,
@@ -241,6 +241,20 @@ impl TypedPipeRegistry {
 
         #[cfg(windows)]
         {
+            // Only Out is wired up (drain thread writes ring → pipe). In and
+            // Duplex would need a fill thread reading pipe → ring; not in this
+            // port. Reject explicitly rather than silently misbehaving.
+            let access_flag = match direction {
+                PipeDirection::Out => {
+                    windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_OUTBOUND
+                }
+                PipeDirection::In | PipeDirection::Duplex => {
+                    return Err(PipeError::BindFailed(format!(
+                        "binary pipe direction {direction:?} not yet implemented on Windows (only Out is wired up)"
+                    )));
+                }
+            };
+
             let pipe_name = format!("\\\\.\\pipe\\plexi-{}", uuid::Uuid::new_v4());
             log::info!("typed_pipes: opening binary pipe {pipe_id} at {pipe_name}");
 
@@ -251,7 +265,7 @@ impl TypedPipeRegistry {
             let pipe_handle = unsafe {
                 windows_sys::Win32::System::Pipes::CreateNamedPipeW(
                     wide_name.as_ptr(),
-                    windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_OUTBOUND
+                    access_flag
                         | windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED,
                     windows_sys::Win32::System::Pipes::PIPE_TYPE_BYTE
                         | windows_sys::Win32::System::Pipes::PIPE_WAIT,
@@ -388,8 +402,8 @@ impl TypedPipeRegistry {
                         return;
                     }
 
-                    // Synchronous WriteFile is fine on an OVERLAPPED pipe — producers
-                    // are already decoupled via the ring, and frames are <=64 KiB.
+                    // `win32_write_all` does its own OVERLAPPED + GetOverlappedResult
+                    // wait so the drain loop sees synchronous-looking writes.
                     let mut write_err: Option<u32> = None;
                     loop {
                         if let Some(frame) = ring_drain.pop() {
@@ -578,35 +592,72 @@ fn win32_write_frame(
 }
 
 /// Loop `WriteFile` over short writes (rare on byte-mode pipes but possible
-/// under buffer pressure).
+/// under buffer pressure). The pipe was created with `FILE_FLAG_OVERLAPPED`,
+/// so `WriteFile` must be issued through an `OVERLAPPED` struct — passing
+/// null is UB per the Win32 docs. We then block on `GetOverlappedResult` to
+/// keep this call synchronous from the caller's perspective.
 #[cfg(windows)]
 fn win32_write_all(
     handle: windows_sys::Win32::Foundation::HANDLE,
     buf: &[u8],
 ) -> Result<(), u32> {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, GetLastError, HANDLE,
+        INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::Storage::FileSystem::WriteFile;
+    use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
+    use windows_sys::Win32::System::Threading::CreateEventW;
+
+    struct EventGuard(HANDLE);
+    impl Drop for EventGuard {
+        fn drop(&mut self) {
+            if !self.0.is_null() && self.0 != INVALID_HANDLE_VALUE {
+                unsafe { CloseHandle(self.0) };
+            }
+        }
+    }
+
+    // Manual-reset event, initially non-signaled. Reused across chunks.
+    let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+    if event.is_null() || event == INVALID_HANDLE_VALUE {
+        return Err(unsafe { GetLastError() });
+    }
+    let _event_guard = EventGuard(event);
+
     let mut offset = 0usize;
     while offset < buf.len() {
-        let mut written: u32 = 0;
         let remaining = (buf.len() - offset).min(u32::MAX as usize) as u32;
-        // SAFETY: buf is valid for `remaining` bytes from `offset`; lpOverlapped
-        // = null requests synchronous I/O.
+        let mut overlapped = OVERLAPPED::default();
+        overlapped.hEvent = event;
+
+        // SAFETY: buf valid for `remaining` bytes from `offset`. The pipe was
+        // opened with FILE_FLAG_OVERLAPPED, so lpOverlapped must be non-null;
+        // we pass &overlapped and wait on it via GetOverlappedResult below.
         let rc = unsafe {
-            windows_sys::Win32::Storage::FileSystem::WriteFile(
+            WriteFile(
                 handle,
                 buf.as_ptr().add(offset),
                 remaining,
-                &mut written,
                 std::ptr::null_mut(),
+                &mut overlapped,
             )
         };
         if rc == 0 {
-            let err = unsafe { windows_sys::Win32::Foundation::GetLastError() };
-            return Err(err);
+            let err = unsafe { GetLastError() };
+            if err != ERROR_IO_PENDING {
+                return Err(err);
+            }
+        }
+
+        let mut written: u32 = 0;
+        // bWait = TRUE → block until the I/O completes.
+        let ok = unsafe { GetOverlappedResult(handle, &overlapped, &mut written, 1) };
+        if ok == 0 {
+            return Err(unsafe { GetLastError() });
         }
         if written == 0 {
-            // WriteFile claimed success without writing — treat as broken pipe
-            // rather than spinning.
-            return Err(windows_sys::Win32::Foundation::ERROR_BROKEN_PIPE);
+            return Err(ERROR_BROKEN_PIPE);
         }
         offset += written as usize;
     }
