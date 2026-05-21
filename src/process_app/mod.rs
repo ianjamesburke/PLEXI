@@ -1234,6 +1234,31 @@ impl ProcessApp {
                         height: sz.y,
                     });
             }
+            ControlCommand::MeasureTextWrapped {
+                request_id,
+                text,
+                font_size,
+                max_width,
+                max_lines,
+            } => {
+                let font_id = egui::FontId::proportional(font_size);
+                let galley = ui.fonts(|f| {
+                    f.layout(text.clone(), font_id, egui::Color32::WHITE, max_width)
+                });
+                let n_rows = max_lines
+                    .map(|n| (n as usize).min(galley.rows.len()))
+                    .unwrap_or(galley.rows.len());
+                let height = if n_rows == 0 {
+                    0.0
+                } else {
+                    galley.rows[n_rows - 1].rect.max.y
+                };
+                self.outbound_events
+                    .push_back(crate::app_protocol::PlexiEvent::TextWrappedMeasured {
+                        request_id: request_id.clone(),
+                        height,
+                    });
+            }
             ControlCommand::SetMinSize { width, height } => {
                 self.live_min_size = Some((width, height));
                 log::info!(

@@ -188,6 +188,13 @@ pub enum PlexiEvent {
         width: f32,
         height: f32,
     },
+    /// Response to a `ControlCommand::MeasureTextWrapped` request.
+    /// `height` is the pixel height of the text when wrapped at the requested width,
+    /// clamped to `max_lines` rows if specified.
+    TextWrappedMeasured {
+        request_id: String,
+        height: f32,
+    },
     /// User pressed Enter inside a `DrawCommand::TextInput` field.
     ///
     /// `id` matches the `id` the app supplied on the `TextInput` command.
@@ -585,6 +592,8 @@ pub enum RenderCommand {
         max_width: Option<f32>,
         elide: bool,
         selectable: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_lines: Option<u32>,
     },
     /// Draw a line segment.
     Line {
@@ -753,6 +762,27 @@ pub enum RenderCommand {
         /// One of: "contain" | "cover" | "fill". Default: "contain".
         #[serde(default = "default_image_fit")]
         fit: String,
+    },
+
+    /// Circular clipped image. `src` accepts a load_image handle (UUID) or local path.
+    /// `cx`, `cy` are the circle centre in pane-local coordinates.
+    /// `radius` is the circle radius in logical pixels.
+    Avatar {
+        src: String,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+    },
+
+    /// Animated shimmer placeholder rect for loading states.
+    /// The host drives a subtle pulsing animation at ~20fps using request_repaint_after.
+    Skeleton {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        #[serde(default = "default_skeleton_radius")]
+        radius: f32,
     },
 
     /// Render an amplitude meter reading from a binary pipe.
@@ -1524,6 +1554,17 @@ pub enum ControlCommand {
         #[serde(default)]
         monospace: bool,
     },
+    /// Measure the height of `text` wrapped at `max_width` using real host font metrics.
+    /// If `max_lines` is Some(n), clamps the measurement to n rows.
+    /// Replies with `PlexiEvent::TextWrappedMeasured { request_id, height }`.
+    MeasureTextWrapped {
+        request_id: String,
+        text: String,
+        font_size: f32,
+        max_width: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_lines: Option<u32>,
+    },
     /// Override the manifest-declared minimum size at runtime.
     /// Stored by the host and used as the live effective minimum from this
     /// point forward, superseding the manifest `[launch]` values.
@@ -1727,6 +1768,9 @@ fn default_text_input_h() -> f32 {
     24.0
 }
 
+fn default_skeleton_radius() -> f32 {
+    4.0
+}
 
 #[cfg(test)]
 mod tests {
