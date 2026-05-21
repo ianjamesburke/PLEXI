@@ -4839,7 +4839,10 @@ impl PlexiApp {
             .focus_stack
             .iter()
             .any(|l| *l == FocusLayer::CapabilityModal);
-        if should_own && !has_layer {
+        let is_top = matches!(self.focus_stack.last(), Some(FocusLayer::CapabilityModal));
+        if should_own && !is_top {
+            // Push to top (re-promoting from buried position if already in stack).
+            self.focus_stack.retain(|l| *l != FocusLayer::CapabilityModal);
             log::info!("capability_modal: focus captured — pending prompts on focused pane");
             self.push_focus_layer(FocusLayer::CapabilityModal);
         } else if !should_own && has_layer {
