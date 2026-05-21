@@ -39,6 +39,10 @@ pub(super) fn apply_initial_cmd(
         .and_then(|n| n.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
+    // Strip `.exe` so POSIX shells (Git Bash, MSYS) match the bash/zsh/fish
+    // arms below when configured on Windows. cmd.exe and powershell.exe match
+    // explicitly with the suffix, so a separate branch covers them.
+    let shell_name = shell_name_lower.trim_end_matches(".exe");
 
     // Windows shells: use native stay-open flags, skip the exec suffix.
     // cmd.exe and pwsh don't understand `-c` / `-i` / `-l`, and they have no
@@ -75,14 +79,14 @@ pub(super) fn apply_initial_cmd(
         let shell_path = &settings.shell;
         let trimmed = cmd.trim().trim_end_matches([';', ' ']);
         let sep = if trimmed.is_empty() { "" } else { "; " };
-        match shell_name_lower.as_str() {
+        match shell_name {
             "fish" => format!("{trimmed}{sep}exec \"{shell_path}\" --login -i"),
             _ => format!("{trimmed}{sep}exec \"{shell_path}\" -i -l"),
         }
     } else {
         cmd.to_string()
     };
-    settings.args = match shell_name_lower.as_str() {
+    settings.args = match shell_name {
         "zsh" | "bash" => vec!["-i".to_string(), "-l".to_string(), "-c".to_string(), effective_cmd],
         "fish" => vec!["--login".to_string(), "-c".to_string(), effective_cmd],
         _ => vec!["-l".to_string(), "-c".to_string(), effective_cmd],
