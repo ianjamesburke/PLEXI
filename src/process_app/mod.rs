@@ -403,9 +403,10 @@ impl ProcessApp {
         }
         // Set PLEXI_SOCKET so the app can invoke `plexi` CLI commands against
         // the running host. macOS GUI apps don't inherit shell env, so this
-        // is never present via PLEXI_* passthrough above.
-        let socket_path = crate::config::config_dir().join("notify.sock");
-        cmd.env("PLEXI_SOCKET", &socket_path);
+        // is never present via PLEXI_* passthrough above. Route through
+        // `ipc_endpoint()` so Windows gets the named-pipe string (the host
+        // listener binds the same name) and Unix gets the same socket path.
+        cmd.env("PLEXI_SOCKET", crate::config::ipc_endpoint());
 
         // Start the MCP server when the manifest declares [app.mcp].
         let mcp_server_handle = mcp.map(|section| {

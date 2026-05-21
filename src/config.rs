@@ -655,9 +655,19 @@ pub fn ipc_endpoint() -> String {
     }
     #[cfg(windows)]
     {
-        match build_channel() {
-            Some(channel) => format!(r"\\.\pipe\plexi-notify-{channel}"),
-            None => r"\\.\pipe\plexi-notify".to_string(),
+        // Derive from config_dir_name() so `--profile foo` and PR builds get
+        // distinct pipes — matching the per-profile isolation Unix already
+        // gets via config_dir()/notify.sock. Strip the `.plexi-` prefix
+        // (or `.plexi` → empty) so the pipe name reads cleanly:
+        //   .plexi        -> \\.\pipe\plexi-notify
+        //   .plexi-alpha  -> \\.\pipe\plexi-notify-alpha
+        //   .plexi-pr-783 -> \\.\pipe\plexi-notify-pr-783
+        let dir_name = config_dir_name();
+        let suffix = dir_name.strip_prefix(".plexi-").unwrap_or("");
+        if suffix.is_empty() {
+            r"\\.\pipe\plexi-notify".to_string()
+        } else {
+            format!(r"\\.\pipe\plexi-notify-{suffix}")
         }
     }
 }
