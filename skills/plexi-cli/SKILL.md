@@ -1,12 +1,15 @@
 ---
 name: plexi-cli
 description: Operating inside Plexi — spawn/name panes, focus, launch apps, surface notifications. Use when working in a Plexi pane or orchestrating other panes.
-skill_version: "3.6.60"
+skill_version: "3.6.61"
+plexi_version: "0.0.475"
 ---
 
 # Plexi CLI
 
 You are running inside a Plexi pane. `PLEXI_SOCKET` is set automatically — every `plexi` command routes to the correct running instance.
+
+**Before using any subcommand you haven't used this session**, run `plexi <noun> --help` to confirm it exists and check its args signature. Subcommands change across releases — never assume.
 
 ## Panes
 
@@ -25,7 +28,7 @@ plexi pane capture [pane_id] --lines N # read last N lines of scrollback as JSON
 
 `plexi terminal [cmd]` opens a terminal pane, returns pane ID on stdout. Flags: `-e/--ephemeral` (close the pane when the command process exits), `--layout <LAYOUT>`, `--from-pane-id <id>`, `--cwd <path>`, `--no-focus`.
 
-By default (no `--ephemeral`), the pane will remain open after your command finishes—so if you’re used to shells like **zsh** staying interactive, you can assume that “the terminal stays around” unless you explicitly opt into `-e/--ephemeral`. 
+By default (no `--ephemeral`), the pane will remain open after your command finishes.
 
 **Layout values:** `split_h` (right), `split_left` (left), `split_right` (alias for split_h), `split_v` (below), `split_below` (alias for split_v), `split_above`, `tab` (new tab in current window), `new_window` (new OS window).
 
@@ -42,21 +45,24 @@ NEW=$(plexi terminal --layout new_window)                # separate OS window
 `plexi open <app-id>` launches an installed app. Flags: `--layout <overlay|split_h|split_left|split_v|split_right|split_below|split_above>`, `--from-pane-id <id>` (split relative to a pane), `--mcp`, `--cli`.
 
 ```bash
-plexi list                       # list installed apps (use this to find the app ID before render/open)
-plexi app init                   # scaffold a new app in cwd
-plexi app run <path>             # run a local app dir in a pane — no install required (preferred for dev)
-plexi install <path>             # install from local dir (for stable/permanent installs)
-plexi uninstall <app-id>         # uninstall
-plexi update                     # update apps or self
-plexi validate [path]            # validate app dir
-plexi app render <id>            # render installed app to PNG — takes app ID, not a file path
+plexi list                           # list installed apps (use to find IDs before open/render)
+plexi app list                       # same as above (alias)
+plexi app init <name>                # scaffold a new app
+plexi app run <path>                 # run a local app dir in a pane — no install required (dev workflow)
+plexi app install <path>             # install a local app dir permanently
+plexi install <source>               # install from remote source or pack file (e.g. github:owner/repo)
+plexi app uninstall <app-id>         # uninstall an installed app
+plexi uninstall                      # uninstall Plexi itself (prompts for confirmation)
+plexi update                         # update installed apps or Plexi itself
+plexi validate [path]                # validate app dir for errors
+plexi app info <app-id>              # show id, name, version, available tools for an installed app
+plexi app render <id>                # render installed app to PNG — takes app ID, not a file path
+                                     # flags: --size WxH (default 800x600), --output <file.png>, --state <json>
 ```
 
-**`app link` is deprecated** — use `plexi app run <path>` instead. `app link` required a workspace and left stale pointers; `app run` works directly from any path.
+**`app link`/`app unlink` are deprecated** — use `plexi app run <path>` for dev. `app link` required a workspace and left stale pointers; `app run` works directly from any path.
 
 **Always `plexi open` for installed apps** — never `plexi pane send <id> "app\n"`. Never create terminal panes as placeholders; `plexi open` supports `--from-pane-id` and `--layout` directly.
-
-**Before using any `plexi` subcommand you haven't used this session**, run `plexi <noun> --help` to confirm the subcommand exists and check its args signature. Subcommands change frequently — `app open`, `app link`, and path-based render have all been wrong or deprecated at various points.
 
 **`plexi app render` takes an installed app ID**, not a file path. Run `plexi list` first to find the ID, then `plexi app render <id> --output <file.png>`.
 
@@ -71,7 +77,7 @@ plexi open snake --layout split_v --from-pane-id $BALLS
 
 Requires `PLEXI_SOCKET`. Flags: `--level info|warn|error`, `--timeout <seconds>` (0 = no timeout), `--scope <window|context|global>` (default: global).
 
-Choices via `--choice "key:Label"` (returns key). For host-side actions, add `--host-action "key:pane_focus:$PANE"`. Snooze: `--choice "snooze:300:Remind me in 5m"`. Labels: 3–5 words, verb + object.
+Choices via `--choice "key:Label"` (returns key). For host-side actions, add `--host-action "key:pane_focus:$PANE"`. Labels: 3–5 words, verb + object.
 
 **Blocking** (decision gate — cycle waits for user):
 ```bash
@@ -101,7 +107,10 @@ plexi workspace init             # initialise a .plexi/ workspace in the current
 plexi context new [path]         # create a new context, optionally at a path
 plexi context open <path>        # open a context at a path
 plexi context set-root <path>    # set the root directory for the active context
-plexi context current            # print context ID and name as JSON (reads env vars set at pane spawn)
+plexi context current            # print context ID and name as JSON
+plexi context describe           # set the description for the active context
+plexi context zoom <context_id>  # zoom into a sub-context by numeric ID
+plexi context zoom-out           # zoom out to the parent context
 ```
 
 Every terminal pane has two env vars set at spawn time:
@@ -113,24 +122,39 @@ Every terminal pane has two env vars set at spawn time:
 ## Secrets
 
 ```bash
-plexi secret set <NAME>          # prompts for value; scoped to nearest .plexi/ workspace
-plexi secret set <NAME> --global # store cross-workspace (global fallback)
+plexi secret set <NAME>             # prompts for value; scoped to nearest .plexi/ workspace
+plexi secret set <NAME> --global    # store cross-workspace (global fallback)
 plexi secret set <NAME> --from-env  # read value from env var NAME instead of prompting
-plexi secret list                # list stored secrets
-plexi secret delete <NAME>       # delete a secret
+plexi secret get <NAME>             # print a stored secret's value to stdout
+plexi secret list                   # list stored secrets
+plexi secret delete <NAME>          # delete a secret
 ```
 
-## Commands
+## Commands & Routines
 
 ```bash
+plexi run                        # list available commands from .plexi/commands.toml
 plexi run <command>              # run a named command from .plexi/commands.toml
+
+plexi routine list               # list routines from .plexi/routines.toml with schedule + next fire time
+plexi routine run <name>         # manually trigger a named routine
 ```
+
+## Notes
+
+```bash
+plexi notes list                 # print paths of all scratchpad notes, newest first
+plexi notes open                 # open note picker with fzf in the focused terminal pane
+```
+
+Notes live at `<config_dir>/notes/` — one timestamped file per scratchpad session (Cmd+Shift+Space).
 
 ## Pack & Registry
 
 ```bash
 plexi pack export                # export current apps as a pack file
 plexi registry watch             # watch installed CLIs for descriptor drift
+plexi config                     # check config.toml for errors
 ```
 
 ## Orchestration Pattern (parallel ship sessions)
