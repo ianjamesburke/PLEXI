@@ -91,7 +91,7 @@ pub fn cred_write(account: &str, value: &str) -> Result<(), String> {
     let target = target_name(account);
     // Both buffers must outlive CredWriteW — they're pointed at by `credential`.
     let mut wide_target = to_wide_nul(&target);
-    let blob: Vec<u8> = value.as_bytes().to_vec();
+    let blob = Zeroizing::new(value.as_bytes().to_vec());
 
     let mut credential: CREDENTIALW = unsafe { std::mem::zeroed() };
     credential.Type = CRED_TYPE_GENERIC;
