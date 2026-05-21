@@ -76,7 +76,7 @@ gh issue list --label "ready" --state open \
 3. Has an open PR referencing this issue:
    ```bash
    gh pr list --state open --json headRefName \
-     | jq --arg n "<N>" '[.[] | select(.headRefName | test("feature/\($n)-"))] | length > 0'
+     | jq --arg n "<N>" '[.[] | select(.headRefName | test("^feature/\($n)-"))] | length > 0'
    ```
 4. Body contains "Do not implement here" (epic tracker)
 
