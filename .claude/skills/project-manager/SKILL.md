@@ -26,7 +26,6 @@ Fail immediately if not inside a Plexi pane. Never skip this check.
 
 | Signal | Weight |
 |---|---|
-| Issue is in Up Next column | +0.30 |
 | P0 priority label | +0.40 |
 | P1 priority label | +0.30 |
 | P2 priority label | +0.15 |
@@ -54,15 +53,6 @@ If the file does not exist or is from a previous date: treat all candidates as c
 ---
 
 ## Step 2 — Fetch candidates
-
-### Primary: Up Next column
-
-```bash
-gh project item-list 7 --owner ianjamesburke --format json \
-  | jq '[.items[] | select(.status == "Up Next") | {number: .content.number, title: .title, labels: [.labels // [] | .[].name]}]'
-```
-
-### Fallback: `ready` label (if Up Next is empty or has < 4 issues)
 
 ```bash
 gh issue list --label "ready" --state open \
@@ -97,7 +87,6 @@ Apply the weight table from the config:
 
 ```
 score = 0.0
-score += 0.30  if issue is in Up Next list
 score += 0.40 / 0.30 / 0.15  for P0 / P1 / P2 (pick at most one)
 score += 0.10  if any label matches area:*
 score += 0.10  if body contains "## Done When" or "- [ ]" checklist
@@ -106,7 +95,7 @@ score -= 0.20  if body contains "## Prior Attempts"
 ```
 
 Record per-issue reasoning as a breakdown string, e.g.:
-`"Up Next +0.30, P1 +0.30, area +0.10, AC +0.10 = 0.80"`
+`"P1 +0.30, area +0.10, AC +0.10 = 0.50"`
 
 ---
 
@@ -189,7 +178,7 @@ Last run: <ISO timestamp>
 
 | Issue | Score | Breakdown | Dispatched |
 |-------|-------|-----------|------------|
-| #<N> | 0.80 | Up Next +0.30, P1 +0.30, area +0.10, AC +0.10 | yes |
+| #<N> | 0.50 | P1 +0.30, area +0.10, AC +0.10 | yes |
 | #<N> | 0.45 | P2 +0.15, area +0.10, AC +0.10, Prior Attempts −0.20, conflict −0.25 | no |
 ```
 
@@ -201,6 +190,5 @@ Include every candidate that was scored this run (dispatched or not). The cache 
 
 - **open-lanes.sh requires alpha to be clean.** It checks `git status --porcelain` and aborts with an error if dirty. Fix alpha state before invoking.
 - **Channel binary** is auto-detected by open-lanes.sh via `$PLEXI_CHANNEL`. Never hardcode a channel name.
-- **Up Next column** is the primary source because issues staged there have already been reviewed for dispatch-readiness. The `ready` fallback is for sessions where the board hasn't been curated.
 - **Area conflict penalty (−0.25)** is applied during selection (Step 4), not during scoring (Step 3). A conflicting P1 shows its penalized score (e.g. 0.55 = 0.80 raw − 0.25) in the review table and is excluded from the selected set. The penalty appears in the breakdown column for audit.
 - **Second invocation same session:** cache hits from Step 1 skip the `gh issue view` fetch in Step 3, making the second run faster. The cache does not expire within a session day.
