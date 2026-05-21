@@ -90,13 +90,16 @@ if (-not $NoCompletions) {
     }
 
     # Sentinel-tagged block so re-installs replace atomically; non-greedy so
-    # other channels' blocks survive untouched.
+    # other channels' blocks survive untouched. Pin to the absolute installed
+    # path ($dest) so a same-named binary earlier on PATH can't intercept
+    # completion generation at shell startup.
     $beginTag = "# >>> plexi completions ($binaryName) >>>"
     $endTag   = "# <<< plexi completions ($binaryName) <<<"
+    $escapedDest = $dest.Replace("'", "''")
     $block = @"
 $beginTag
-if (Get-Command $binaryName -ErrorAction SilentlyContinue) {
-    $binaryName completions powershell | Out-String | Invoke-Expression
+if (Test-Path '$escapedDest') {
+    & '$escapedDest' completions powershell | Out-String | Invoke-Expression
 }
 $endTag
 "@

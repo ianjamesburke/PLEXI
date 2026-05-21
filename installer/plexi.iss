@@ -125,15 +125,16 @@ Name: "{group}\Plexi{#MyAppNameSuffix}"; Filename: "{app}\bin\{#MyBinaryName}"; 
 #endif
 
 [Run]
-Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\plexi-completions-helper.ps1"" -Action register -BinaryName ""{#MyBinaryName}"""; \
+; Absolute powershell.exe path avoids relying on PATH order at install time.
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\plexi-completions-helper.ps1"" -Action register -BinaryName ""{#MyBinaryName}"" -BinaryPath ""{app}\bin\{#MyBinaryName}"""; \
   Tasks: completions; \
   StatusMsg: "Registering PowerShell completions..."; \
   Flags: runhidden
 
 [UninstallRun]
-Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\plexi-completions-helper.ps1"" -Action unregister -BinaryName ""{#MyBinaryName}"""; \
+Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\plexi-completions-helper.ps1"" -Action unregister -BinaryName ""{#MyBinaryName}"" -BinaryPath ""{app}\bin\{#MyBinaryName}"""; \
   Flags: runhidden
 
 [Code]

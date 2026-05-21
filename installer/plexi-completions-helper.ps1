@@ -28,7 +28,13 @@ param(
     [string]$Action,
 
     [Parameter(Mandatory)]
-    [string]$BinaryName
+    [string]$BinaryName,
+
+    # Absolute path to the installed binary. Used in the generated profile
+    # block so completion-generation runs against the install we just made,
+    # not whatever same-named binary happens to be earlier on PATH.
+    [Parameter()]
+    [string]$BinaryPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -66,13 +72,25 @@ if ($Action -eq 'unregister') {
     return
 }
 
-$block = @"
+if (-not [string]::IsNullOrEmpty($BinaryPath)) {
+    $escapedPath = $BinaryPath.Replace("'", "''")
+    $block = @"
+$beginTag
+if (Test-Path '$escapedPath') {
+    & '$escapedPath' completions powershell | Out-String | Invoke-Expression
+}
+$endTag
+"@
+} else {
+    # Fallback for callers that don't supply -BinaryPath (older installers).
+    $block = @"
 $beginTag
 if (Get-Command $BinaryName -ErrorAction SilentlyContinue) {
     $BinaryName completions powershell | Out-String | Invoke-Expression
 }
 $endTag
 "@
+}
 
 $tail = if ($stripped.EndsWith("`n") -or [string]::IsNullOrEmpty($stripped)) { '' } else { "`n" }
 Set-Content -Path $profileFile -Value "$stripped$tail$block`n" -NoNewline
