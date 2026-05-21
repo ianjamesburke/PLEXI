@@ -463,14 +463,28 @@ fn spawn_socket_listener(
         }
     };
     log::info!("pane_ipc: listening on {endpoint}");
+    let endpoint_log = endpoint.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            let Ok(stream) = stream else { break };
+            let stream = match stream {
+                Ok(s) => s,
+                Err(e) => {
+                    // Log and continue — one transient accept failure must
+                    // not take IPC offline for the rest of the session.
+                    log::warn!("pane_ipc: accept failed on {endpoint_log}: {e}");
+                    continue;
+                }
+            };
             let tx = tx.clone();
-            std::thread::spawn(move || {
-                let reader = BufReader::new(stream);
-                dispatch_lines(reader, &tx);
-            });
+            if let Err(e) = std::thread::Builder::new()
+                .name("plexi-pane-ipc-conn".into())
+                .spawn(move || {
+                    let reader = BufReader::new(stream);
+                    dispatch_lines(reader, &tx);
+                })
+            {
+                log::warn!("pane_ipc: failed to spawn connection thread: {e}");
+            }
         }
     });
 }
@@ -495,7 +509,7 @@ fn spawn_socket_listener(
 
     let wide: Vec<u16> = endpoint.encode_utf16().chain(std::iter::once(0)).collect();
 
-    std::thread::Builder::new()
+    let spawn_result = std::thread::Builder::new()
         .name("plexi-pane-ipc".into())
         .spawn(move || loop {
             // Each ConnectNamedPipe accepts one client. Recreate the instance
@@ -534,13 +548,24 @@ fn spawn_socket_listener(
 
             let owned = unsafe { OwnedHandle::from_raw_handle(raw as _) };
             let tx = tx.clone();
-            std::thread::spawn(move || {
-                let file = std::fs::File::from(owned);
-                let reader = BufReader::new(file);
-                dispatch_lines(reader, &tx);
-            });
-        })
-        .expect("failed to spawn pane_ipc listener thread");
+            if let Err(e) = std::thread::Builder::new()
+                .name("plexi-pane-ipc-conn".into())
+                .spawn(move || {
+                    let file = std::fs::File::from(owned);
+                    let reader = BufReader::new(file);
+                    dispatch_lines(reader, &tx);
+                })
+            {
+                log::warn!("pane_ipc: failed to spawn connection thread: {e}");
+                // `owned` was moved into the closure on success; on failure
+                // it's dropped here, closing the pipe handle automatically.
+            }
+        });
+    if let Err(e) = spawn_result {
+        // Listener is essential for in-pane CLI calls but not for host startup;
+        // log and degrade rather than aborting.
+        log::error!("pane_ipc: listener thread spawn failed; in-pane CLI calls will not work: {e}");
+    }
 }
 
 fn dispatch_lines<R: std::io::BufRead>(
