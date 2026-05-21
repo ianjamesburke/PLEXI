@@ -684,6 +684,7 @@ impl PlexiApp {
         &mut self,
         app_path: &str,
         layout: Option<String>,
+        workspace_root_override: Option<std::path::PathBuf>,
     ) -> Result<(), String> {
         let app_dir = PathBuf::from(app_path);
         log::info!("launch_app_by_path_with_layout: path={app_path}");
@@ -717,13 +718,18 @@ impl PlexiApp {
             .resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
 
+        let workspace_root = workspace_root_override.unwrap_or_else(|| app_dir.clone());
+        log::info!(
+            "launch_app_by_path_with_layout: workspace_root={}",
+            workspace_root.display()
+        );
         match crate::process_app::ProcessApp::launch(
             installed.manifest.id.clone(),
             installed.manifest.name.clone(),
             &installed.bin_path,
             &cwd,
             &[],
-            app_dir.clone(),
+            workspace_root,
             caps,
             keyboard_capture,
             installed.manifest.mcp.as_ref(),
@@ -1188,6 +1194,7 @@ mod tests {
             cwd: None,
             no_focus: false,
             path: None,
+            workspace_root: None,
             target_context: None,
         });
         h.run_frames(2);
@@ -1227,6 +1234,7 @@ mod tests {
             cwd: None,
             no_focus: false,
             path: None,
+            workspace_root: None,
             target_context: None,
         });
         h.run_frames(2);
@@ -1269,6 +1277,7 @@ mod tests {
             cwd: None,
             no_focus: false,
             path: None,
+            workspace_root: None,
             target_context: None,
         });
         h.run_frames(2);
@@ -1310,6 +1319,7 @@ mod tests {
             cwd: None,
             no_focus: false,
             path: None,
+            workspace_root: None,
             target_context: None,
         });
         h.run_frames(2);
@@ -1361,6 +1371,7 @@ mod tests {
             cwd: None,
             no_focus: false,
             path: None,
+            workspace_root: None,
             target_context: None,
         });
         h.run_frames(2);
@@ -1410,6 +1421,7 @@ mod tests {
                 cwd: None,
                 no_focus: false,
                 path: None,
+                workspace_root: None,
                 target_context: None,
             });
             h.run_frames(2);
@@ -1685,6 +1697,7 @@ mod quick_note_tests {
                 cwd: None,
                 no_focus: false,
                 path: None,
+                workspace_root: None,
                 target_context: Some(999),
             },
         ));

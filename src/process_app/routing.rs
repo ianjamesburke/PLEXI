@@ -773,6 +773,7 @@ impl ProcessApp {
                 cwd: _,
                 no_focus: _,
                 path: _,
+                workspace_root: _,
                 target_context,
             } => {
                 if let PermissionCheck::Denied(reason) =

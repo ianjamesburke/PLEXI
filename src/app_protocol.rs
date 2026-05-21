@@ -1045,6 +1045,10 @@ pub enum AppRequest {
         /// rather than looking it up in the registry by type_id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
+        /// When set, use this path as the workspace root for app state scoping
+        /// instead of defaulting to the app directory. Sent by `plexi open github:`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_root: Option<String>,
         /// When set, spawn the pane into this child context instead of the
         /// requesting app's own context. The target context must exist and be
         /// a descendant of the requesting app's context (#1518).
@@ -2755,6 +2759,38 @@ mod tests {
         }
         let serialised_default = serde_json::to_string(&cmd_default).expect("serialise default");
         assert!(!serialised_default.contains("no_focus"), "no_focus should be omitted when false: {serialised_default}");
+    }
+
+    #[test]
+    fn spawn_pane_with_workspace_root_round_trips_serde() {
+        let json = r#"{"type":"spawn_pane","type_id":"terminal","workspace_root":"/tmp/github-repo"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Host(AppRequest::SpawnPane { workspace_root, .. }) => {
+                assert_eq!(workspace_root.as_deref(), Some("/tmp/github-repo"));
+            }
+            other => panic!("expected SpawnPane, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""workspace_root":"/tmp/github-repo""#),
+            "workspace_root missing: {serialised}"
+        );
+
+        // None should be omitted from serialised output.
+        let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
+        let cmd_absent: DrawCommand = serde_json::from_str(json_absent).expect("deserialise absent");
+        match &cmd_absent {
+            DrawCommand::Host(AppRequest::SpawnPane { workspace_root, .. }) => {
+                assert!(workspace_root.is_none(), "absent workspace_root must deserialise to None");
+            }
+            other => panic!("expected SpawnPane, got {other:?}"),
+        }
+        let serialised_absent = serde_json::to_string(&cmd_absent).expect("serialise absent");
+        assert!(
+            !serialised_absent.contains("workspace_root"),
+            "workspace_root should be omitted when None: {serialised_absent}"
+        );
     }
 
     #[test]
