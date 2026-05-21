@@ -761,9 +761,10 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
         found
     };
 
-    let base = workspace_root.unwrap_or_else(|| cwd.clone());
+    let placement = if workspace_root.is_some() { "workspace" } else { "global" };
+    let base = workspace_root.unwrap_or_else(|| home.clone().unwrap_or_else(|| cwd.clone()));
     let app_dir = base.join(&channel_dir).join("apps").join(name);
-    log::info!("app_init: scaffold path={}", app_dir.display());
+    log::info!("app_init: placement={placement} path={}", app_dir.display());
 
     if app_dir.exists() {
         eprintln!("error: {} already exists", app_dir.display());
