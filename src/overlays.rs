@@ -2580,6 +2580,78 @@ impl PlexiApp {
         }
     }
 
+    /// Capability / secret consent modal for the focused ProcessApp pane.
+    /// Called from step 2 of `update()` so it holds exclusive keyboard
+    /// ownership before `dispatch_app_key_events` runs.
+    pub(crate) fn draw_capability_modal(&mut self, ctx: &egui::Context) {
+        let active = self.active_window;
+        let colors = self.colors;
+
+        // Resolve focused pane id — bail if it's not a ProcessApp.
+        // Use find_pane_in_tile so we traverse through any Container wrapper that
+        // egui_tiles may have inserted around a bare-pane root after first render.
+        let pane_id = {
+            let win = &self.windows[active];
+            let focused_tile = match win.focused_pane {
+                Some(t) => t,
+                None => return,
+            };
+            match crate::app::PlexiApp::find_pane_in_tile(&win.tree, focused_tile) {
+                Some(id) => id,
+                None => return,
+            }
+        };
+
+        // Take fields out of the ProcessApp, call the modal, put them back.
+        // Two separate borrows so Rust doesn't see a conflict.
+        let (mut pending_prompts, mut outbound_events, mut permissions,
+             mut secret_input_buf, mut permission_store, type_id, workspace_root) = {
+            let pane = match self.windows[active].panes.get_mut(&pane_id) {
+                Some(crate::pane::Pane::App(a)) => a,
+                _ => return,
+            };
+            let crate::pane::AppRuntime::Process(ref mut proc) = pane.runtime else { return };
+            if proc.pending_prompts.is_empty() {
+                return;
+            }
+            (
+                std::mem::take(&mut proc.pending_prompts),
+                std::mem::take(&mut proc.outbound_events),
+                std::mem::take(&mut proc.permissions),
+                std::mem::take(&mut proc.secret_input_buf),
+                std::mem::take(&mut proc.permission_store),
+                proc.type_id.clone(),
+                proc.workspace_root.clone(),
+            )
+        };
+
+        let config_dir = crate::config::config_dir();
+        crate::process_app::prompts::show_prompt_modal(
+            ctx,
+            &mut pending_prompts,
+            &mut outbound_events,
+            &mut permissions,
+            &type_id,
+            &workspace_root,
+            &mut secret_input_buf,
+            &config_dir,
+            &mut permission_store,
+            &colors,
+        );
+
+        // Put the data back.
+        let pane = match self.windows[active].panes.get_mut(&pane_id) {
+            Some(crate::pane::Pane::App(a)) => a,
+            _ => return,
+        };
+        let crate::pane::AppRuntime::Process(ref mut proc) = pane.runtime else { return };
+        proc.pending_prompts = pending_prompts;
+        proc.outbound_events = outbound_events;
+        proc.permissions = permissions;
+        proc.secret_input_buf = secret_input_buf;
+        proc.permission_store = permission_store;
+    }
+
     /// Context-close confirmation dialog. Shows pane inventory with three choices:
     /// Close All (Enter), Dissolve (D), Cancel (Escape).
     pub(crate) fn draw_context_close_confirm(&mut self, ctx: &egui::Context) {

@@ -78,9 +78,10 @@ pub fn persist_granted_secret(
 }
 
 /// Show a modal for the first pending prompt (capability or secret).
-/// Blocks user interaction with the pane until the user grants or denies.
-pub(super) fn show_prompt_modal(
-    ui: &mut egui::Ui,
+/// Called from the host's early-modal path (step 2 of `update()`) so the
+/// modal owns keyboard input before `dispatch_app_key_events` runs.
+pub(crate) fn show_prompt_modal(
+    ctx: &egui::Context,
     pending_prompts: &mut VecDeque<PendingPrompt>,
     outbound_events: &mut VecDeque<PlexiEvent>,
     permissions: &mut AppPermissions,
@@ -100,17 +101,18 @@ pub(super) fn show_prompt_modal(
     let (mut grant_once, mut grant_forever, mut deny_once, mut deny_forever) =
         match prompt {
             PendingPrompt::Capability { .. } => {
-                ui.ctx().input_mut(|i| {
+                ctx.input_mut(|i| {
                     let shift_enter = i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter);
                     let key_a = i.consume_key(egui::Modifiers::NONE, egui::Key::A);
                     let key_d = i.consume_key(egui::Modifiers::NONE, egui::Key::D);
+                    let shift_esc = i.consume_key(egui::Modifiers::SHIFT, egui::Key::Escape);
                     let plain_enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-                    (plain_enter, shift_enter || key_a, false, key_d)
+                    let plain_esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                    (plain_enter, shift_enter || key_a, plain_esc, shift_esc || key_d)
                 })
             }
             PendingPrompt::Secret { .. } => {
-                let esc = ui
-                    .ctx()
+                let esc = ctx
                     .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
                 (false, false, esc, false)
             }
@@ -120,7 +122,7 @@ pub(super) fn show_prompt_modal(
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .show(ui.ctx(), |ui| {
+        .show(ctx, |ui| {
             match prompt {
                 PendingPrompt::Capability { capability, .. } => {
                     ui.label(format!("App \"{}\" is requesting access to:", type_id));
