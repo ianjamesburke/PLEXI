@@ -1253,6 +1253,10 @@ impl ProcessApp {
                 } else {
                     galley.rows[n_rows - 1].rect.max.y
                 };
+                log::debug!(
+                    "ProcessApp[{}]: MeasureTextWrapped request_id={} max_width={:.1} max_lines={:?} rows={} height={:.1}",
+                    self.type_id, request_id, max_width, max_lines, n_rows, height
+                );
                 self.outbound_events
                     .push_back(crate::app_protocol::PlexiEvent::TextWrappedMeasured {
                         request_id: request_id.clone(),

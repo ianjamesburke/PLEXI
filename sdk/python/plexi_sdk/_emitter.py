@@ -947,6 +947,7 @@ class Emitter:
             raise RuntimeError(f"load_image {src!r}: {message}")
         return handle
 
+    @_blocking_emit_method
     async def measure_text_wrapped(self, text: str, font_size: float,
                                     max_width: float,
                                     max_lines: "int | None" = None) -> float:
@@ -963,7 +964,13 @@ class Emitter:
         if max_lines is not None:
             payload["max_lines"] = max_lines
         _emit(payload)
-        return await q.get()
+        try:
+            return await asyncio.wait_for(q.get(), timeout=10.0)
+        except asyncio.TimeoutError:
+            self._app._pending_measure_text_wrapped.pop(request_id, None)
+            raise RuntimeError(
+                f"measure_text_wrapped timed out after 10s (request_id={request_id!r})"
+            )
 
     @_blocking_emit_method
     async def ai_query(self, model_tier: str, system: str,

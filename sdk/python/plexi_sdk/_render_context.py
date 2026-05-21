@@ -401,7 +401,13 @@ class RenderContext:
         if max_lines is not None:
             payload["max_lines"] = max_lines
         _emit(payload)
-        return await q.get()
+        try:
+            return await asyncio.wait_for(q.get(), timeout=10.0)
+        except asyncio.TimeoutError:
+            self._app._pending_measure_text_wrapped.pop(request_id, None)
+            raise RuntimeError(
+                f"measure_text_wrapped timed out after 10s (request_id={request_id!r})"
+            )
 
     def avatar(self, src: str, x: float, y_center: float, radius: float) -> None:
         """Render a circular clipped image.

@@ -193,7 +193,8 @@ class BlueskyApp(App):
                         body, CAPTION, text_w, max_lines=MAX_LINES
                     )
                     heights.append(ROW_BASE + max(0.0, h - CAPTION))
-                except Exception:
+                except Exception as exc:
+                    self.emit.warn(f"bluesky: measure_text_wrapped failed: {exc}")
                     heights.append(ROW_BASE + LINE_H * MAX_LINES)
             else:
                 heights.append(ROW_BASE)
@@ -207,8 +208,9 @@ class BlueskyApp(App):
                 try:
                     handle = await self.emit.load_image(url)
                     self._avatar_handles[did] = handle
-                except Exception:
-                    pass  # placeholder circle renders fine
+                except Exception as exc:
+                    self.emit.warn(f"bluesky: avatar load failed for {did}: {exc}")
+                    # placeholder circle renders fine
 
     async def _fetch_thread(self, uri: str) -> None:
         self._loading = True

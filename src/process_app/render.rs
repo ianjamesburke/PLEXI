@@ -108,6 +108,9 @@ pub(crate) fn render_draw_commands(
 
                 // max_lines: wrap text at max_width (or pane width) and clip to n rows with "…"
                 if let Some(n) = max_lines {
+                    if *n == 0 {
+                        continue;
+                    }
                     let wrap_w = max_width
                         .filter(|w| *w > 0.0)
                         .unwrap_or((pane_rect.max.x - (origin.x + x)).max(1.0));
