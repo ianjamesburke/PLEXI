@@ -569,7 +569,7 @@ impl PlexiApp {
         );
 
         if !keep_focus {
-            self.windows[win_idx].focused_pane = Some(new_tile);
+            self.set_window_focused_pane(win_idx, new_tile);
         }
         new_id
     }

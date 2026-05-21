@@ -1546,7 +1546,12 @@ impl PlexiApp {
                             }
                         } else if layout_str == "tab" {
                             log::info!("pane_ipc: spawn_pane terminal layout=tab initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
+                            let original_focused = self.windows[active].focused_pane;
                             self.new_tab(initial_cmd.as_deref(), *ephemeral);
+                            if *no_focus {
+                                self.active_window = active;
+                                self.restore_window_focused_pane(active, original_focused);
+                            }
                         } else {
                             let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
                             let new_pane_first = matches!(layout_str, "split_above" | "split_left");
@@ -1579,13 +1584,14 @@ impl PlexiApp {
                                         }
                                     }
                                 }
-                            } else if let Some(tile) = self.windows[active].focused_pane {
+                            } else if let Some(tile) = self.windows[active].focused_pane
+                                .or(self.windows[active].tree.root)
+                            {
                                 (active, tile)
                             } else {
-                                // No focused pane — fall back to split_focused which handles empty context
+                                // Truly empty window — fall back to split_focused
                                 log::info!("pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
                                 self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral, new_pane_first, cwd_override);
-                                // split_focused does not need restore since there was no focused pane to begin with
                                 if *no_focus {
                                     self.active_window = active;
                                 }
@@ -1975,13 +1981,16 @@ impl PlexiApp {
                 let initial_cmd = cmd_from_args(&args);
                 if no_focus {
                     // Use explicit targeting so we never need to restore focused_pane.
-                    if let Some(tile) = self.windows[active].focused_pane {
+                    if let Some(tile) = self.windows[active].focused_pane
+                        .or(self.windows[active].tree.root)
+                    {
                         log::info!("spawn-queue: no_focus=true, spawning terminal at current focused pane");
                         let _ = self.spawn_terminal_pane_at(
                             active, tile, vertical, new_pane_first,
                             initial_cmd.as_deref(), ephemeral, cwd_override, true,
                         );
                     } else {
+                        // Truly empty window — split_focused handles initialization
                         self.split_focused(vertical, initial_cmd.as_deref(), ephemeral, new_pane_first, cwd_override);
                     }
                 } else {
