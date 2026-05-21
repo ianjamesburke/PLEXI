@@ -116,8 +116,8 @@ If `stash pop` conflicts: take squash version (`git checkout --theirs <file>`).
 ```bash
 rm -f test_pr$PR_NUMBER.py
 just pr-clean $PR_NUMBER        # skip if no pr-install was run (diff-review path)
-wtp remove $BRANCH --force
-git push origin --delete $BRANCH
+wtp remove $BRANCH --force --with-branch
+git push origin --delete $BRANCH 2>/dev/null || true  # remote may already be gone
 ```
 
 ---
