@@ -79,6 +79,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -120,9 +121,11 @@ jobs:
         run: |
           # Prefer the tag (strip leading 'v') for tag-triggered runs so the
           # tag and AppVersion can't drift. Fall back to Cargo.toml on
-          # workflow_dispatch (no tag exists yet).
-          if ("${{ github.ref }}" -like 'refs/tags/v*') {
-            $ver = "${{ github.ref_name }}" -replace '^v',''
+          # workflow_dispatch (no tag exists yet). Read refs from runner env
+          # vars rather than ${{ github.ref* }} interpolation to avoid
+          # template-injection in the pwsh script body.
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $ver = $env:GITHUB_REF_NAME -replace '^v',''
           } else {
             $ver = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           }
