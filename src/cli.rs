@@ -2827,7 +2827,7 @@ pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize, full_output: bool) -
 ///
 /// Clones to a channel-scoped cache dir and sends a path-based spawn_pane,
 /// passing the user's workspace root so app state is scoped correctly.
-fn open_github_ephemeral(source: &str, layout: Option<&str>, from_pane_id: Option<u64>) -> i32 {
+fn open_github_ephemeral(source: &str, layout: Option<&str>, from_pane_id: Option<u64>, cwd: Option<&str>) -> i32 {
     let rest = source.strip_prefix("github:").unwrap_or(source);
     let parts: Vec<&str> = rest.splitn(2, '/').collect();
     if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
@@ -2842,12 +2842,23 @@ fn open_github_ephemeral(source: &str, layout: Option<&str>, from_pane_id: Optio
         .join(owner)
         .join(repo);
 
+    // Ensure the parent directory exists before cloning.
+    if let Some(parent) = cache_dir.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!("error: could not create cache directory {}: {e}", parent.display());
+            return 1;
+        }
+    }
+
     if !cache_dir.exists() {
         let url = format!("https://github.com/{owner}/{repo}.git");
         log::info!("open_github_ephemeral: cloning {url} → {}", cache_dir.display());
         eprintln!("Cloning github:{owner}/{repo}...");
         match std::process::Command::new("git")
-            .args(["clone", "--depth=1", &url, &cache_dir.to_string_lossy()])
+            .arg("clone")
+            .arg("--depth=1")
+            .arg(&url)
+            .arg(&cache_dir)
             .status()
         {
             Ok(s) if s.success() => {}
@@ -2864,16 +2875,14 @@ fn open_github_ephemeral(source: &str, layout: Option<&str>, from_pane_id: Optio
         log::info!("open_github_ephemeral: reusing cache at {}", cache_dir.display());
     }
 
-    // Walk up from CWD to find a Plexi workspace root.
-    let workspace_root: Option<String> = std::env::current_dir().ok().and_then(|cwd| {
-        let mut dir: &std::path::Path = cwd.as_path();
-        loop {
-            if dir.join(".plexi").join("workspace.toml").exists() {
-                return Some(dir.to_string_lossy().into_owned());
-            }
-            dir = dir.parent()?;
-        }
-    });
+    // Resolve workspace root from the provided cwd, falling back to current_dir.
+    let start_dir = cwd
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::current_dir().ok());
+    let workspace_root: Option<String> = start_dir
+        .as_deref()
+        .and_then(|d| crate::app_registry::resolve_workspace_root(d))
+        .map(|p| p.to_string_lossy().into_owned());
 
     let abs_path = cache_dir.to_string_lossy().into_owned();
     log::info!(
@@ -2898,6 +2907,9 @@ fn open_github_ephemeral(source: &str, layout: Option<&str>, from_pane_id: Optio
         }
         if let Some(ref ws) = workspace_root {
             payload["workspace_root"] = serde_json::Value::String(ws.clone());
+        }
+        if let Some(cwd_str) = cwd {
+            payload["cwd"] = serde_json::Value::String(cwd_str.to_string());
         }
         log::info!("open_github_ephemeral: sending via socket response_file={response_file:?}");
         let code = send_to_socket(payload);
@@ -2948,6 +2960,7 @@ fn open_github_ephemeral(source: &str, layout: Option<&str>, from_pane_id: Optio
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
+    let queue_id = uuid::Uuid::new_v4();
     let mut queue_payload = serde_json::json!({
         "type_id": "",
         "path": abs_path,
@@ -2956,7 +2969,10 @@ fn open_github_ephemeral(source: &str, layout: Option<&str>, from_pane_id: Optio
     if let Some(ref ws) = workspace_root {
         queue_payload["workspace_root"] = serde_json::Value::String(ws.clone());
     }
-    let file = queue_dir.join(format!("{ts}.json"));
+    if let Some(cwd_str) = cwd {
+        queue_payload["cwd"] = serde_json::Value::String(cwd_str.to_string());
+    }
+    let file = queue_dir.join(format!("{ts}-{queue_id}.json"));
     if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {
         eprintln!("error: could not write spawn request: {e}");
         return 1;
@@ -2974,7 +2990,7 @@ fn open_github_ephemeral(source: &str, layout: Option<&str>, from_pane_id: Optio
 pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_id: Option<u64>, cwd: Option<&str>) -> i32 {
     // Intercept github: prefix for ephemeral open-without-install.
     if type_id.starts_with("github:") {
-        return open_github_ephemeral(type_id, layout, from_pane_id);
+        return open_github_ephemeral(type_id, layout, from_pane_id, cwd);
     }
 
     if type_id == "terminal" {

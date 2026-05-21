@@ -2762,6 +2762,38 @@ mod tests {
     }
 
     #[test]
+    fn spawn_pane_with_workspace_root_round_trips_serde() {
+        let json = r#"{"type":"spawn_pane","type_id":"terminal","workspace_root":"/tmp/github-repo"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Host(AppRequest::SpawnPane { workspace_root, .. }) => {
+                assert_eq!(workspace_root.as_deref(), Some("/tmp/github-repo"));
+            }
+            other => panic!("expected SpawnPane, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""workspace_root":"/tmp/github-repo""#),
+            "workspace_root missing: {serialised}"
+        );
+
+        // None should be omitted from serialised output.
+        let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
+        let cmd_absent: DrawCommand = serde_json::from_str(json_absent).expect("deserialise absent");
+        match &cmd_absent {
+            DrawCommand::Host(AppRequest::SpawnPane { workspace_root, .. }) => {
+                assert!(workspace_root.is_none(), "absent workspace_root must deserialise to None");
+            }
+            other => panic!("expected SpawnPane, got {other:?}"),
+        }
+        let serialised_absent = serde_json::to_string(&cmd_absent).expect("serialise absent");
+        assert!(
+            !serialised_absent.contains("workspace_root"),
+            "workspace_root should be omitted when None: {serialised_absent}"
+        );
+    }
+
+    #[test]
     fn pane_spawned_with_request_id_round_trips_serde() {
         let json = r#"{"type":"pane_spawned","pane_id":99,"request_id":"req-abc"}"#;
         let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
