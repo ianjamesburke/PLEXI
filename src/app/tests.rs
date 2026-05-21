@@ -374,7 +374,7 @@ fn navigate_down_at_vertical_boundary_jumps_to_last_window() {
 #[test]
 fn navigate_up_at_vertical_boundary_jumps_to_first_window() {
     let mut h = HostHarness::new();
-    let pane_a = h.add_test_pane();
+    let _pane_a = h.add_test_pane();
     h.app.windows.push(same_workspace_window_below(2, 9910));  // grid_y=1
     h.app.windows.push(same_workspace_window_bottom(3, 9911)); // grid_y=2
 
@@ -654,7 +654,7 @@ fn split_with_new_pane_pushes_focus_history() {
     // Split — this should record tile_a in focus history before moving focus.
     let new_pane_id = 50000;
     let share = crate::host::command::ShareRatio { numerator: 1.0, denominator: 1.0 };
-    let new_tile = app.split_with_new_pane(new_pane_id, true, share, false);
+    let new_tile = app.split_with_new_pane(new_pane_id, true, share, false, false);
     assert!(new_tile.is_some(), "split_with_new_pane should succeed");
 
     // Focus should now be on the new tile.
@@ -1023,4 +1023,42 @@ fn persist_ttl_drops_old_notifications() {
     assert!(restored.is_empty(), "notification older than 7 days must be dropped");
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
+    let ctx = egui::Context::default();
+    let ft = crate::logging::new_frame_tick();
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, ft);
+
+    // Window 0 is created by new_for_test. Add a pane to it.
+    let (tile_in_w0, pane_in_w0) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_in_w0);
+
+    // Add a second window and focus it.
+    let ctx_id = app.router.active().context_id;
+    app.windows.push(crate::context::Window {
+        name: "Window 1".into(),
+        path: std::env::temp_dir(),
+        tree: egui_tiles::Tree::empty("w1"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: 2,
+        context_id: ctx_id,
+    });
+    app.active_window = 1; // focus second window
+
+    // Verify pane is in window 0's tree, not window 1's.
+    assert!(app.windows[0].tree.tiles.find_pane(&pane_in_w0).is_some());
+    assert!(app.windows[1].tree.tiles.find_pane(&pane_in_w0).is_none());
+
+    // find_pane_in_any_window should locate it in window 0.
+    let loc = app.find_pane_in_any_window(pane_in_w0);
+    assert!(loc.is_some(), "pane should be found in any window");
+    let (found_win_idx, found_tile) = loc.unwrap();
+    assert_eq!(found_win_idx, 0, "pane should be in window 0");
+    assert_eq!(found_tile, tile_in_w0);
 }

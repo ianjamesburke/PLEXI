@@ -91,20 +91,20 @@ impl PlexiApp {
             .panes
             .insert(new_id, Pane::Terminal(Box::new(term)));
 
-        // Split next to the sender. Save current focus, point focus at the
-        // sender so `split_with_new_pane` (which splits relative to
-        // `focused_pane`) inserts the terminal as the sender's neighbour,
-        // then restore focus afterwards. Side-by-side (vertical=true) on
-        // the right: feels right for a Canvas-app-on-left, terminal-on-
-        // right layout, which is the common case.
-        let prev_focus = self.windows[active].focused_pane;
-        self.windows[active].focused_pane = Some(sender_tile);
+        // Split the tree directly, adjacent to sender_tile, without touching focused_pane.
+        // Side-by-side (vertical=true) on the right: Canvas app left, terminal right.
+        // focused_pane is deliberately NOT updated — the Canvas app retains keyboard focus
+        // so the user doesn't lose input mid-flow.
         let share = crate::host::command::ShareRatio::new(1.0, 1.0)
             .expect("1:1 is a valid ShareRatio");
-        let _ = self.split_with_new_pane(new_id, true, share, false);
-        // Don't snap focus to the new terminal — the user clicked a button
-        // in the Canvas app and would lose keyboard focus mid-flow.
-        self.windows[active].focused_pane = prev_focus;
+        let _new_tile = crate::pane_ops::insert_split_tile(
+            &mut self.windows[active].tree,
+            Some(sender_tile),
+            new_id,
+            true,  // vertical = side-by-side on right
+            share,
+            false, // new_pane_first = false
+        );
 
         // Update the sender's linked_pane_id so legacy CdRequest also
         // routes to this terminal.

@@ -150,7 +150,7 @@ impl PlexiApp {
                 pane_id,
                 new_app_pane(pane_id, process, workspace_root, group, None, Some(Box::new(replaced_pane))),
             );
-            self.windows[active].focused_pane = Some(focused_tile);
+            self.set_window_focused_pane(active, focused_tile);
             log::info!("app::{app_id}: launched as overlay on pane {pane_id}");
             return;
         }
@@ -190,7 +190,7 @@ impl PlexiApp {
             return;
         }
 
-        let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first);
+        let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first, false);
 
         if let (Some(msg), Some(term_id)) =
             (self.registry.startup_message_for(app_id), linked_pane_id)
@@ -249,7 +249,7 @@ impl PlexiApp {
             log::info!("app::{app_id}: launch-failed tile inserted as root pane {new_id}");
             return;
         }
-        let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first);
+        let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first, false);
         log::info!("app::{app_id}: launch-failed tile inserted as pane {new_id}");
     }
 
@@ -445,7 +445,7 @@ impl PlexiApp {
                 pane_id,
                 new_app_pane(pane_id, app, workspace_root, group, None, Some(Box::new(replaced_pane))),
             );
-            self.windows[active].focused_pane = Some(focused_tile);
+            self.set_window_focused_pane(active, focused_tile);
             log::info!("builtin::{app_name}: launched as overlay on pane {pane_id}");
             return;
         }
@@ -478,7 +478,7 @@ impl PlexiApp {
             return;
         }
 
-        let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first);
+        let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first, false);
     }
 
     pub(super) fn create_single_pane_tree(
@@ -514,6 +514,64 @@ impl PlexiApp {
         let tree = Tree::new("plexi", root_tile, tiles);
 
         Some((tree, panes, root_tile))
+    }
+
+    /// Spawn a terminal pane adjacent to `target_tile` in `win_idx`.
+    /// Does NOT read or write `active_window` or `focused_pane` — all targeting is explicit.
+    /// Returns the newly allocated PaneId.
+    /// `keep_focus`: if true, `focused_pane` in the target window is NOT changed.
+    pub(crate) fn spawn_terminal_pane_at(
+        &mut self,
+        win_idx: usize,
+        target_tile: egui_tiles::TileId,
+        vertical: bool,
+        new_pane_first: bool,
+        initial_cmd: Option<&str>,
+        close_on_exit: bool,
+        cwd_override: Option<std::path::PathBuf>,
+        keep_focus: bool,
+    ) -> crate::tiling::PaneId {
+        let new_id = self.host.alloc_pane_id();
+        let ctx_id = self.windows[win_idx].context_id;
+        let ctx_name = self.context_name_for(ctx_id);
+        let ctx_desc = self.context_description_for(ctx_id);
+        let cwd = cwd_override.or_else(|| self.windows[win_idx].get_focused_pane_cwd(target_tile));
+        log::info!(
+            "spawn_terminal_pane_at: win_idx={win_idx} target_tile={target_tile:?} new_id={new_id} \
+             vertical={vertical} keep_focus={keep_focus} initial_cmd={initial_cmd:?}"
+        );
+        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc);
+        if let Some(cmd) = initial_cmd {
+            super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
+        }
+        let Some(mut pane) = TerminalPane::new(
+            new_id,
+            self.ctx.clone(),
+            self.pty_event_tx.clone(),
+            settings,
+            self.default_font_size,
+        ) else {
+            log::error!("spawn_terminal_pane_at: TerminalPane::new failed for pane_id={new_id}");
+            return new_id;
+        };
+        pane.ephemeral = close_on_exit;
+        self.windows[win_idx].panes.insert(new_id, Pane::Terminal(Box::new(pane)));
+
+        let share = crate::host::command::ShareRatio::new(1.0, 1.0)
+            .expect("1:1 is a valid ShareRatio");
+        let new_tile = super::layout::insert_split_tile(
+            &mut self.windows[win_idx].tree,
+            Some(target_tile),
+            new_id,
+            vertical,
+            share,
+            new_pane_first,
+        );
+
+        if !keep_focus {
+            self.windows[win_idx].focused_pane = Some(new_tile);
+        }
+        new_id
     }
 
     /// Toggle the file browser: if the focused pane has a file browser open,
