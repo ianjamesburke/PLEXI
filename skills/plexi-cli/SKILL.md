@@ -1,7 +1,7 @@
 ---
 name: plexi-cli
 description: Operating inside Plexi — spawn/name panes, focus, launch apps, surface notifications. Use when working in a Plexi pane or orchestrating other panes.
-skill_version: "3.6.58"
+skill_version: "3.6.59"
 ---
 
 # Plexi CLI
@@ -42,15 +42,20 @@ NEW=$(plexi terminal --layout new_window)                # separate OS window
 `plexi open <app-id>` launches an installed app. Flags: `--layout <overlay|split_h|split_left|split_v|split_right|split_below|split_above>`, `--from-pane-id <id>` (split relative to a pane), `--mcp`, `--cli`.
 
 ```bash
-plexi list                       # list installed apps
+plexi list                       # list installed apps (use this to find the app ID before render/open)
 plexi app init                   # scaffold a new app in cwd
 plexi install <path>             # install from local dir
 plexi uninstall <app-id>         # uninstall
 plexi update                     # update apps or self
 plexi validate [path]            # validate app dir
+plexi app render <id>            # render installed app to PNG — takes app ID, not a file path
 ```
 
 **Always `plexi open` for installed apps** — never `plexi pane send <id> "app\n"`. Never create terminal panes as placeholders; `plexi open` supports `--from-pane-id` and `--layout` directly.
+
+**Before using any `plexi` subcommand you haven't used this session**, run `plexi <noun> --help` to confirm the subcommand exists and check its args signature. Subcommands change frequently — `app open`, `app link`, and path-based render have all been wrong or deprecated at various points.
+
+**`plexi app render` takes an installed app ID**, not a file path. Run `plexi list` first to find the ID, then `plexi app render <id> --output <file.png>`.
 
 2×2 grid example (apps in 3 quadrants):
 ```bash
