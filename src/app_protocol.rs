@@ -1045,6 +1045,10 @@ pub enum AppRequest {
         /// rather than looking it up in the registry by type_id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
+        /// When set, use this path as the workspace root for app state scoping
+        /// instead of defaulting to the app directory. Sent by `plexi open github:`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace_root: Option<String>,
         /// When set, spawn the pane into this child context instead of the
         /// requesting app's own context. The target context must exist and be
         /// a descendant of the requesting app's context (#1518).

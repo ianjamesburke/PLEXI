@@ -2823,11 +2823,160 @@ pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize, full_output: bool) -
 /// spawn_pane command directly via the socket — channel-agnostic, works on
 /// alpha, beta, stable, and PR builds without caring which binary is on PATH.
 ///
+/// `plexi open github:owner/repo` — clone and run ephemerally, without installing.
+///
+/// Clones to a channel-scoped cache dir and sends a path-based spawn_pane,
+/// passing the user's workspace root so app state is scoped correctly.
+fn open_github_ephemeral(source: &str, layout: Option<&str>, from_pane_id: Option<u64>) -> i32 {
+    let rest = source.strip_prefix("github:").unwrap_or(source);
+    let parts: Vec<&str> = rest.splitn(2, '/').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        eprintln!("error: invalid github source '{source}'; expected 'github:owner/repo'");
+        return 1;
+    }
+    let owner = parts[0];
+    let repo = parts[1].trim_end_matches(".git");
+
+    let cache_dir = crate::config::config_dir()
+        .join("github-cache")
+        .join(owner)
+        .join(repo);
+
+    if !cache_dir.exists() {
+        let url = format!("https://github.com/{owner}/{repo}.git");
+        log::info!("open_github_ephemeral: cloning {url} → {}", cache_dir.display());
+        eprintln!("Cloning github:{owner}/{repo}...");
+        match std::process::Command::new("git")
+            .args(["clone", "--depth=1", &url, &cache_dir.to_string_lossy()])
+            .status()
+        {
+            Ok(s) if s.success() => {}
+            Ok(s) => {
+                eprintln!("error: git clone failed (exit {})", s.code().unwrap_or(-1));
+                return 1;
+            }
+            Err(e) => {
+                eprintln!("error: could not run git: {e}");
+                return 1;
+            }
+        }
+    } else {
+        log::info!("open_github_ephemeral: reusing cache at {}", cache_dir.display());
+    }
+
+    // Walk up from CWD to find a Plexi workspace root.
+    let workspace_root: Option<String> = std::env::current_dir().ok().and_then(|cwd| {
+        let mut dir: &std::path::Path = cwd.as_path();
+        loop {
+            if dir.join(".plexi").join("workspace.toml").exists() {
+                return Some(dir.to_string_lossy().into_owned());
+            }
+            dir = dir.parent()?;
+        }
+    });
+
+    let abs_path = cache_dir.to_string_lossy().into_owned();
+    log::info!(
+        "open_github_ephemeral: launching from {abs_path} workspace_root={workspace_root:?}"
+    );
+
+    if std::env::var("PLEXI_SOCKET").is_ok() {
+        let id = uuid::Uuid::new_v4();
+        let response_file = crate::config::config_dir()
+            .join(format!("spawn-pane-response-{id}.json"))
+            .to_string_lossy()
+            .into_owned();
+        let mut payload = serde_json::json!({
+            "type": "spawn_pane",
+            "type_id": "",
+            "path": abs_path,
+            "layout": layout,
+            "response_file": response_file,
+        });
+        if let Some(pid) = from_pane_id {
+            payload["from_pane_id"] = serde_json::Value::Number(pid.into());
+        }
+        if let Some(ref ws) = workspace_root {
+            payload["workspace_root"] = serde_json::Value::String(ws.clone());
+        }
+        log::info!("open_github_ephemeral: sending via socket response_file={response_file:?}");
+        let code = send_to_socket(payload);
+        if code != 0 {
+            return code;
+        }
+        let response_path = std::path::PathBuf::from(&response_file);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if response_path.exists() {
+                match std::fs::read_to_string(&response_path) {
+                    Ok(content) => {
+                        let _ = std::fs::remove_file(&response_path);
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
+                                eprintln!("error: {msg}");
+                                return 1;
+                            }
+                            if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
+                                println!("{pid}");
+                                return 0;
+                            }
+                        }
+                        print!("{content}");
+                        return 0;
+                    }
+                    Err(e) => {
+                        eprintln!("error: could not read response file: {e}");
+                        return 1;
+                    }
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                eprintln!("error: timed out waiting for open response");
+                return 1;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    // Fallback: spawn-queue (outside a Plexi pane).
+    let queue_dir = crate::config::config_dir().join("spawn-queue");
+    if let Err(e) = std::fs::create_dir_all(&queue_dir) {
+        eprintln!("error: could not create spawn queue: {e}");
+        return 1;
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut queue_payload = serde_json::json!({
+        "type_id": "",
+        "path": abs_path,
+        "layout": layout,
+    });
+    if let Some(ref ws) = workspace_root {
+        queue_payload["workspace_root"] = serde_json::Value::String(ws.clone());
+    }
+    let file = queue_dir.join(format!("{ts}.json"));
+    if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {
+        eprintln!("error: could not write spawn request: {e}");
+        return 1;
+    }
+    log::info!("open_github_ephemeral: queued path={abs_path}");
+    println!("queued: open github:{owner}/{repo}");
+    println!("(running outside a Plexi pane — Plexi will pick this up within a second)");
+    0
+}
+
 /// When called from outside Plexi, falls back to the spawn-queue directory
 /// which the running host drains each second.
 ///
 /// Returns 0 on success, 1 on error.
 pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_id: Option<u64>, cwd: Option<&str>) -> i32 {
+    // Intercept github: prefix for ephemeral open-without-install.
+    if type_id.starts_with("github:") {
+        return open_github_ephemeral(type_id, layout, from_pane_id);
+    }
+
     if type_id == "terminal" {
         log::warn!("open:cli: 'plexi open terminal' is deprecated — use 'plexi terminal' instead");
         eprintln!("warning: 'plexi open terminal' is deprecated — use 'plexi terminal' instead");
