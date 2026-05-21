@@ -114,7 +114,7 @@ Record per-issue reasoning as a breakdown string, e.g.:
 
 1. Sort all scored candidates by score descending, then issue number ascending (tiebreak).
 2. Walk the sorted list. For each candidate:
-   - If it shares an `area:*` label with any already-selected candidate: apply −0.25 penalty to its score and skip it (it conflicts — queue behind the selected one instead).
+   - If it shares an `area:*` label with any already-selected candidate: record a −0.25 conflict penalty in its breakdown, subtract it from its displayed score, and skip it (it conflicts — queue behind the selected one instead).
    - Otherwise: add to the selected set.
 3. Stop when 4 are selected or the list is exhausted.
 
@@ -202,5 +202,5 @@ Include every candidate that was scored this run (dispatched or not). The cache 
 - **open-lanes.sh requires alpha to be clean.** It checks `git status --porcelain` and aborts with an error if dirty. Fix alpha state before invoking.
 - **Channel binary** is auto-detected by open-lanes.sh via `$PLEXI_CHANNEL`. Never hardcode a channel name.
 - **Up Next column** is the primary source because issues staged there have already been reviewed for dispatch-readiness. The `ready` fallback is for sessions where the board hasn't been curated.
-- **Area conflict penalty (−0.25)** is applied during selection (Step 4), not during scoring (Step 3). This means a P1 issue that conflicts with a P0 still shows its raw score in the table but is excluded from the selected set.
+- **Area conflict penalty (−0.25)** is applied during selection (Step 4), not during scoring (Step 3). A conflicting P1 shows its penalized score (e.g. 0.55 = 0.80 raw − 0.25) in the review table and is excluded from the selected set. The penalty appears in the breakdown column for audit.
 - **Second invocation same session:** cache hits from Step 1 skip the `gh issue view` fetch in Step 3, making the second run faster. The cache does not expire within a session day.
