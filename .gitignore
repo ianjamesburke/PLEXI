@@ -52,4 +52,10 @@ sdk/python/*.egg-info/
 
 # Local config
 .plexi/
+.plexi-alpha/
+.plexi-beta/
+.plexi-pr-*/
 .superpowers/
+
+# Claude agent memory (local, not shared)
+.claude/agent-memory/
