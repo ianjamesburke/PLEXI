@@ -667,9 +667,35 @@ pub fn open_config_file() {
         let _ = std::fs::write(&path, CONFIG_TEMPLATE);
     }
 
-    if let Err(e) = std::process::Command::new("open").arg(&path).status() {
-        log::error!("open_config_file: failed to open {}: {e}", path.display());
+    if !open_file_with_fallback(&path) {
+        log::error!("open_config_file: could not open {} with any available editor", path.display());
     }
+}
+
+/// Opens `path` with a fallback chain: VS Code → system default → TextEdit.
+/// Returns `true` if any opener succeeded.
+pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
+    let candidates: &[&[&str]] = &[
+        &["-a", "Visual Studio Code"],
+        &[],
+        &["-a", "TextEdit"],
+    ];
+    for args in candidates {
+        let ok = std::process::Command::new("open")
+            .args(*args)
+            .arg(path)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            log::info!("open_file_with_fallback: opened {} (args: {:?})", path.display(), args);
+            return true;
+        }
+        if !args.is_empty() {
+            log::warn!("open_file_with_fallback: opener {:?} failed for {}, trying next", args, path.display());
+        }
+    }
+    false
 }
 
 impl PlexiConfig {
