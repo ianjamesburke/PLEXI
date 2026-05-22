@@ -140,7 +140,7 @@ impl ContextItem {
 
             // --- Section 3: Pane dots ---
             if let Some(ref dots) = pane_dots {
-                if dots.count > 1 {
+                if dots.count > 0 {
                     ui.horizontal(|ui| {
                         ui.add_space(indent);
                         let capped = dots.count.min(PANE_DOT_MAX);
