@@ -156,23 +156,13 @@ class LogsApp(App):
             if key == "escape":
                 self._copy_mode   = False
                 self._copy_anchor = None
-            elif key in ("j", "down"):
-                if shift:
-                    if self._copy_anchor is None:
-                        self._copy_anchor = self._copy_row
-                    self._copy_row = min(len(filtered) - 1, self._copy_row + 1)
-                else:
+            elif key in ("j", "down", "k", "up"):
+                if shift and self._copy_anchor is None:
+                    self._copy_anchor = self._copy_row
+                elif not shift:
                     self._copy_anchor = None
-                    self._copy_row = min(len(filtered) - 1, self._copy_row + 1)
-                self._ensure_copy_row_visible()
-            elif key in ("k", "up"):
-                if shift:
-                    if self._copy_anchor is None:
-                        self._copy_anchor = self._copy_row
-                    self._copy_row = max(0, self._copy_row - 1)
-                else:
-                    self._copy_anchor = None
-                    self._copy_row = max(0, self._copy_row - 1)
+                delta = 1 if key in ("j", "down") else -1
+                self._copy_row = max(0, min(len(filtered) - 1, self._copy_row + delta))
                 self._ensure_copy_row_visible()
             elif key == "y":
                 if filtered:
@@ -252,16 +242,14 @@ class LogsApp(App):
 
     def _copy_range(self, total: int) -> "tuple[int, int]":
         """Return (lo, hi) inclusive row indices for the current selection."""
+        if total == 0:
+            return 0, -1
         if self._copy_anchor is None:
             r = max(0, min(total - 1, self._copy_row))
             return r, r
         lo = max(0, min(self._copy_anchor, self._copy_row))
         hi = min(total - 1, max(self._copy_anchor, self._copy_row))
         return lo, hi
-
-    def _is_in_selection(self, i: int, total: int) -> bool:
-        lo, hi = self._copy_range(total)
-        return lo <= i <= hi
 
     def _ensure_copy_row_visible(self) -> None:
         row_top = self._copy_row * ROW_H
@@ -393,12 +381,13 @@ class LogsApp(App):
         target_w = 140.0
         first    = int(self._scroll / ROW_H)
         count    = int(list_h / ROW_H) + 2
+        sel_lo, sel_hi = self._copy_range(n)
 
         for i in range(first, min(first + count, n)):
             ll    = filtered[i]
             row_y = list_y + i * ROW_H - self._scroll
 
-            in_selection  = self._copy_mode and self._is_in_selection(i, n)
+            in_selection  = self._copy_mode and sel_lo <= i <= sel_hi
             is_cursor_row = self._copy_mode and i == self._copy_row
 
             if is_cursor_row:
