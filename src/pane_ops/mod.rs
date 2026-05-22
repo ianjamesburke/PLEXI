@@ -16,6 +16,7 @@ mod layout;
 mod workspace;
 
 pub(crate) use layout::SwapResult;
+pub(crate) use layout::insert_split_tile;
 
 /// Apply `initial_cmd` to `settings`, using the same shell-suffix injection
 /// logic as `split_focused`. Call before `TerminalPane::new`.

@@ -133,6 +133,7 @@ impl PlexiApp {
         vertical: bool,
         share: crate::host::command::ShareRatio,
         new_pane_first: bool,
+        keep_focus: bool,
     ) -> Option<egui_tiles::TileId> {
         let old_window_id = self.windows[self.active_window].window_id;
         let old_focus = self.windows[self.active_window].focused_pane;
@@ -146,7 +147,9 @@ impl PlexiApp {
         let ctx = &mut self.windows[self.active_window];
         let new_tile = insert_split_tile(&mut ctx.tree, Some(split_target), new_pane_id, vertical, share, new_pane_first);
 
-        ctx.focused_pane = Some(new_tile);
+        if !keep_focus {
+            ctx.focused_pane = Some(new_tile);
+        }
         Some(new_tile)
     }
 
@@ -168,7 +171,7 @@ impl PlexiApp {
                 if let Some((tree, panes, root_tile)) = self.create_single_pane_tree(None, None, false) {
                     self.windows[active].tree = tree;
                     self.windows[active].panes = panes;
-                    self.windows[active].focused_pane = Some(root_tile);
+                    self.set_window_focused_pane(active, root_tile);
                 }
             }
             return;
@@ -1952,7 +1955,7 @@ mod context_root_cwd_tests {
 
     #[test]
     fn welcome_tab_never_returns_root_slash() {
-        let mut app = test_app();
+        let app = test_app();
         // root is None, window.path is temp_dir (set by new_for_test)
         assert!(app.router.active().root.is_none());
         let cwd = app.cwd_for_welcome_tab();

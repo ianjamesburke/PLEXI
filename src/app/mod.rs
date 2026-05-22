@@ -1111,6 +1111,28 @@ impl PlexiApp {
         }
     }
 
+    /// Search ALL windows (not just the active one) for a pane by ID.
+    /// Returns (window_index, tile_id). O(n*m) but n is typically 1-3.
+    pub(crate) fn find_pane_in_any_window(&self, pane_id: crate::tiling::PaneId) -> Option<(usize, egui_tiles::TileId)> {
+        self.windows.iter().enumerate().find_map(|(idx, win)| {
+            win.tree.tiles.find_pane(&pane_id).map(|tile| (idx, tile))
+        })
+    }
+
+    /// Set focused pane in a specific window.
+    /// Use this everywhere instead of `self.windows[i].focused_pane = Some(...)` directly
+    /// so that the grep pattern `windows[active].focused_pane = ` has zero matches outside tests.
+    pub(crate) fn set_window_focused_pane(&mut self, win_idx: usize, tile: egui_tiles::TileId) {
+        self.windows[win_idx].focused_pane = Some(tile);
+    }
+
+    /// Restore focused pane in a specific window from a saved `Option<TileId>`.
+    /// Use instead of `self.windows[i].focused_pane = saved_opt` so the grep
+    /// pattern `windows[active].focused_pane = ` has zero matches outside tests.
+    pub(crate) fn restore_window_focused_pane(&mut self, win_idx: usize, saved: Option<egui_tiles::TileId>) {
+        self.windows[win_idx].focused_pane = saved;
+    }
+
     /// Create a `PlexiApp` for headless tests. No workspace restore, no macOS
     /// menu setup, no PTY or audio hardware. Initialises a single empty window
     /// so `state().open_panes` is empty and the harness can add panes via
@@ -1501,19 +1523,7 @@ impl PlexiApp {
                     log::info!("pane_ipc: kind=spawn_pane type_id={type_id} path={path:?} layout={layout:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} workspace_root={workspace_root:?} response_file={response_file:?}");
                     let new_pane_id = self.host.next_pane_id();
 
-                    // Override focused_pane for the split if from_pane_id is specified,
-                    // so the new pane splits the origin pane regardless of which pane has focus.
                     let active = self.active_window;
-                    let original_focused = self.windows[active].focused_pane;
-                    if let Some(from_id) = from_pane_id {
-                        if let Some(tile) = self.windows[active].tree.tiles.find_pane(from_id) {
-                            log::info!("pane_ipc: spawn_pane: splitting relative to from_pane_id={from_id}");
-                            self.windows[active].focused_pane = Some(tile);
-                        } else {
-                            log::warn!("pane_ipc: spawn_pane: from_pane_id={from_id} not found, using focused pane");
-                        }
-                    }
-
                     let cwd_override: Option<std::path::PathBuf> = cwd.as_deref().map(std::path::PathBuf::from);
                     let mut launch_result: Result<(), String> = Ok(());
                     if type_id == "terminal" {
@@ -1531,31 +1541,94 @@ impl PlexiApp {
                             let new_x = max_x.map(|x| x + 1).unwrap_or(1);
                             log::info!("pane_ipc: spawn_pane terminal layout=new_window grid=({new_x},{active_y}) initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
                             self.create_page_at(new_x, active_y, initial_cmd.as_deref(), *ephemeral);
+                            if *no_focus {
+                                self.active_window = active;
+                            }
                         } else if layout_str == "tab" {
                             log::info!("pane_ipc: spawn_pane terminal layout=tab initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
+                            let original_focused = self.windows[active].focused_pane;
                             self.new_tab(initial_cmd.as_deref(), *ephemeral);
+                            if *no_focus {
+                                self.active_window = active;
+                                self.restore_window_focused_pane(active, original_focused);
+                            }
                         } else {
                             let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
                             let new_pane_first = matches!(layout_str, "split_above" | "split_left");
-                            log::info!("pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
-                            self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral, new_pane_first, cwd_override);
+                            // Resolve target window and tile: from_pane_id wins (cross-window),
+                            // then fall back to the active window's focused pane.
+                            let (target_win, target_tile) = if let Some(from_id) = from_pane_id {
+                                match self.find_pane_in_any_window(*from_id) {
+                                    Some(loc) => {
+                                        log::info!("pane_ipc: spawn_pane: targeting from_pane_id={from_id} in win_idx={}", loc.0);
+                                        loc
+                                    }
+                                    None => {
+                                        log::warn!("pane_ipc: spawn_pane: from_pane_id={from_id} not found in any window, using focused pane");
+                                        if let Some(tile) = self.windows[active].focused_pane
+                                            .or(self.windows[active].tree.root)
+                                        {
+                                            (active, tile)
+                                        } else {
+                                            // Window is empty — let split_focused handle it
+                                            log::info!("pane_ipc: spawn_pane terminal layout={layout_str} (empty context fallback)");
+                                            self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral, new_pane_first, cwd_override);
+                                            if *no_focus { self.active_window = active; }
+                                            if let Some(rf) = response_file {
+                                                let json = format!("{{\"pane_id\":{new_pane_id}}}");
+                                                if let Err(e) = std::fs::write(rf, &json) {
+                                                    log::error!("pane_ipc: spawn_pane: could not write response file: {e}");
+                                                }
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                }
+                            } else if let Some(tile) = self.windows[active].focused_pane
+                                .or(self.windows[active].tree.root)
+                            {
+                                (active, tile)
+                            } else {
+                                // Truly empty window — fall back to split_focused
+                                log::info!("pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?} ephemeral={ephemeral}");
+                                self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral, new_pane_first, cwd_override);
+                                if *no_focus {
+                                    self.active_window = active;
+                                }
+                                // Skip rest of split path
+                                if let Some(rf) = response_file {
+                                    let json = format!("{{\"pane_id\":{new_pane_id}}}");
+                                    if let Err(e) = std::fs::write(rf, &json) {
+                                        log::error!("pane_ipc: spawn_pane: could not write response file: {e}");
+                                    }
+                                }
+                                continue;
+                            };
+                            let keep_focus = *no_focus || from_pane_id.is_some();
+                            log::info!("pane_ipc: spawn_pane terminal layout={layout_str} vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?} ephemeral={ephemeral} target_win={target_win} keep_focus={keep_focus}");
+                            let _ = self.spawn_terminal_pane_at(
+                                target_win, target_tile, vertical, new_pane_first,
+                                initial_cmd.as_deref(), *ephemeral, cwd_override, keep_focus,
+                            );
+                            if *no_focus {
+                                self.active_window = active;
+                            }
                         }
                     } else if let Some(path_str) = path {
                         let ws_root = workspace_root.as_deref().map(std::path::PathBuf::from);
+                        let original_focused = self.windows[active].focused_pane;
                         launch_result = self.launch_app_by_path_with_layout(path_str, layout.clone(), ws_root);
-                    } else {
-                        launch_result = self.launch_app_by_id_with_layout(type_id, layout.clone(), args, cwd_override);
-                    }
-
-                    // Restore original focus when no_focus is requested or from_pane_id overrode it.
-                    if *no_focus || from_pane_id.is_some() {
-                        let reason = if *no_focus { "no_focus=true" } else { "from_pane_id override" };
-                        log::info!("pane_ipc: spawn_pane: {reason}, retaining focus on pane_id={original_focused:?}");
-                        // Also restore active_window — new_window layout switches it to the new window.
                         if *no_focus {
                             self.active_window = active;
+                            self.restore_window_focused_pane(active, original_focused);
                         }
-                        self.windows[active].focused_pane = original_focused;
+                    } else {
+                        let original_focused = self.windows[active].focused_pane;
+                        launch_result = self.launch_app_by_id_with_layout(type_id, layout.clone(), args, cwd_override);
+                        if *no_focus {
+                            self.active_window = active;
+                            self.restore_window_focused_pane(active, original_focused);
+                        }
                     }
                     if let Some(rf) = response_file {
                         let json = match &launch_result {
@@ -1901,24 +1974,46 @@ impl PlexiApp {
             let ws_root_override = val["workspace_root"].as_str().map(std::path::PathBuf::from);
             log::info!("spawn-queue: launching '{type_id}' path={path:?} layout={layout:?} ephemeral={ephemeral} no_focus={no_focus} cwd={cwd_override:?} workspace_root={ws_root_override:?}");
             let active = self.active_window;
-            let original_focused = self.windows[active].focused_pane;
             if type_id == "terminal" {
                 let layout_str = layout.as_deref().unwrap_or("split_v");
                 let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
                 let new_pane_first = matches!(layout_str, "split_above" | "split_left");
                 let initial_cmd = cmd_from_args(&args);
-                self.split_focused(vertical, initial_cmd.as_deref(), ephemeral, new_pane_first, cwd_override);
+                if no_focus {
+                    // Use explicit targeting so we never need to restore focused_pane.
+                    if let Some(tile) = self.windows[active].focused_pane
+                        .or(self.windows[active].tree.root)
+                    {
+                        log::info!("spawn-queue: no_focus=true, spawning terminal at current focused pane");
+                        let _ = self.spawn_terminal_pane_at(
+                            active, tile, vertical, new_pane_first,
+                            initial_cmd.as_deref(), ephemeral, cwd_override, true,
+                        );
+                    } else {
+                        // Truly empty window — split_focused handles initialization
+                        self.split_focused(vertical, initial_cmd.as_deref(), ephemeral, new_pane_first, cwd_override);
+                    }
+                } else {
+                    self.split_focused(vertical, initial_cmd.as_deref(), ephemeral, new_pane_first, cwd_override);
+                }
             } else if let Some(ref path_str) = path {
+                let original_focused = self.windows[active].focused_pane;
                 if let Err(e) = self.launch_app_by_path_with_layout(path_str, layout, ws_root_override) {
                     log::warn!("spawn-queue: launch_app_by_path_with_layout failed for path={path_str:?}: {e}");
                 }
+                if no_focus {
+                    log::info!("spawn-queue: no_focus=true, retaining focus on pane_id={original_focused:?}");
+                    self.active_window = active;
+                    self.restore_window_focused_pane(active, original_focused);
+                }
             } else {
+                let original_focused = self.windows[active].focused_pane;
                 let _ = self.launch_app_by_id_with_layout(&type_id, layout, &args, cwd_override);
-            }
-            if no_focus {
-                log::info!("spawn-queue: no_focus=true, retaining focus on pane_id={original_focused:?}");
-                self.active_window = active;
-                self.windows[active].focused_pane = original_focused;
+                if no_focus {
+                    log::info!("spawn-queue: no_focus=true, retaining focus on pane_id={original_focused:?}");
+                    self.active_window = active;
+                    self.restore_window_focused_pane(active, original_focused);
+                }
             }
         }
     }
@@ -2519,41 +2614,58 @@ impl eframe::App for PlexiApp {
                             }
                         });
 
-                    // Override focused_pane for the split if from_pane_id is specified.
-                    let original_focused = self.windows[active].focused_pane;
-                    if let Some(from_id) = from_pane_id {
-                        if let Some(tile) = self.windows[active].tree.tiles.find_pane(&from_id) {
-                            log::info!("SpawnPane: splitting relative to pane_id={from_id}");
-                            self.windows[active].focused_pane = Some(tile);
-                        } else {
-                            log::warn!("SpawnPane: from_pane_id={from_id} not found, using focused pane");
-                        }
-                    }
-
                     // Predict the pane id that will be allocated (next_pane_id peeks without allocating).
                     let new_pane_id = self.host.next_pane_id();
                     if type_id == "terminal" {
                         // "terminal" is a builtin pane type, not in the app registry.
-                        // split_focused uses inverted LinearDir vs split_with_new_pane:
-                        //   split_focused(false) → insert_horizontal_tile → side-by-side (RIGHT)
-                        //   split_focused(true)  → insert_vertical_tile   → stacked (BELOW)
-                        // So: split_h/split_right (right) → false, split_v/split_below/split_above (below/above) → true.
+                        // Resolve target window+tile from from_pane_id (cross-window search)
+                        // or fall back to the active window's focused pane.
                         let vertical = matches!(layout.as_str(), "split_v" | "split_below" | "split_above");
                         let new_pane_first = matches!(layout.as_str(), "split_above" | "split_left");
                         let initial_cmd = cmd_from_args(&effective_args);
+                        let close_on_exit = initial_cmd.is_some();
+                        let (target_win, target_tile) = if let Some(from_id) = from_pane_id {
+                            match self.find_pane_in_any_window(from_id) {
+                                Some(loc) => {
+                                    log::info!("SpawnPane: targeting from_pane_id={from_id} in win_idx={}", loc.0);
+                                    loc
+                                }
+                                None => {
+                                    log::warn!("SpawnPane: from_pane_id={from_id} not found in any window, using focused pane");
+                                    let Some(tile) = self.windows[active].focused_pane
+                                        .or(self.windows[active].tree.root)
+                                    else {
+                                        log::warn!("SpawnPane: no target tile — window is empty, skipping");
+                                        self.active_window = original_active_window;
+                                        continue;
+                                    };
+                                    (active, tile)
+                                }
+                            }
+                        } else if let Some(tile) = self.windows[active].focused_pane {
+                            (active, tile)
+                        } else {
+                            let Some(tile) = self.windows[active].tree.root else {
+                                log::warn!("SpawnPane: no focused pane and empty tree — skipping");
+                                self.active_window = original_active_window;
+                                continue;
+                            };
+                            (active, tile)
+                        };
                         log::info!(
-                            "SpawnPane: terminal layout='{layout}' vertical={vertical} new_pane_first={new_pane_first} pane_id={new_pane_id} initial_cmd={initial_cmd:?}"
+                            "SpawnPane: terminal layout='{layout}' vertical={vertical} new_pane_first={new_pane_first} pane_id={new_pane_id} initial_cmd={initial_cmd:?} target_win={target_win}"
                         );
                         // SDK-spawned terminal with a cmd closes on exit (matches historical behavior).
                         // CLI terminal uses the ephemeral flag exclusively — cmd alone does not close.
-                        self.split_focused(vertical, initial_cmd.as_deref(), initial_cmd.is_some(), new_pane_first, None);
+                        // keep_focus=true: coordinator app always retains focus after spawning a terminal.
+                        let _ = self.spawn_terminal_pane_at(
+                            target_win, target_tile, vertical, new_pane_first,
+                            initial_cmd.as_deref(), close_on_exit, None, true,
+                        );
                     } else {
                         let _ = self.launch_app_by_id_with_layout(&type_id, Some(layout), &effective_args, None);
                         log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
                     }
-
-                    // Restore focused_pane after the split so the coordinator app keeps focus.
-                    self.windows[active].focused_pane = original_focused;
 
                     // Restore active_window if we switched for target_context.
                     self.active_window = original_active_window;
