@@ -1254,6 +1254,54 @@ impl PlexiApp {
             return;
         }
 
+        // Explicitly consume paste events before the TextEdit renders.
+        // egui::TextEdit processes Paste via filtered_events(), which requires
+        // settled egui focus. When the zoom overlay is active it calls
+        // set_focus(true) unconditionally, stealing focus from the TextEdit and
+        // leaving paste unhandled — the event then falls through to the terminal
+        // backend. Consuming here is consistent with how Esc and Enter are
+        // handled above and guarantees paste lands in QuickNote every frame.
+        let pasted: String = ctx.input_mut(|i| {
+            let mut text = String::new();
+            i.events.retain(|e| {
+                if let egui::Event::Paste(t) = e {
+                    text.push_str(t);
+                    false
+                } else {
+                    true
+                }
+            });
+            text
+        });
+        if !pasted.is_empty() {
+            let te_id = egui::Id::new("quick_note_text");
+            let inserted = if let Some(mut state) = egui::TextEdit::load_state(ctx, te_id) {
+                if let Some(range) = state.cursor.char_range() {
+                    let lo = range.primary.index.min(range.secondary.index);
+                    let hi = range.primary.index.max(range.secondary.index);
+                    let chars: Vec<char> = self.quick_note_text.chars().collect();
+                    let mut new_chars: Vec<char> = chars[..lo].to_vec();
+                    new_chars.extend(pasted.chars());
+                    new_chars.extend(chars[hi..].iter().copied());
+                    self.quick_note_text = new_chars.into_iter().collect();
+                    let new_pos = lo + pasted.chars().count();
+                    state.cursor.set_char_range(Some(egui::text::CCursorRange::one(
+                        egui::text::CCursor::new(new_pos),
+                    )));
+                    state.store(ctx, te_id);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if !inserted {
+                self.quick_note_text.push_str(&pasted);
+            }
+            log::info!("QuickNote: pasted {} chars", pasted.len());
+        }
+
         // Plain Enter (no shift) → advance to destination picker.
         let advance = ctx.input_mut(|i| {
             if !i.modifiers.shift && !i.modifiers.command {
