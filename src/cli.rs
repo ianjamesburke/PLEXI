@@ -5080,16 +5080,37 @@ pub fn kill_cli() -> i32 {
     let my_pid = std::process::id();
 
     // Collect PIDs matching the binary name, excluding this CLI process.
+    // pgrep exits 0 when matches found, 1 when no matches, 2+ on error.
     let output = match std::process::Command::new("pgrep")
         .args(["-x", &binary_name])
         .output()
     {
         Ok(o) => o,
         Err(e) => {
+            log::error!("kill:cli: pgrep failed to spawn: {e}");
             eprintln!("error: could not run pgrep: {e}");
             return 1;
         }
     };
+
+    match output.status.code() {
+        Some(0) => {} // matches found — proceed
+        Some(1) => {
+            eprintln!("error: no running {binary_name} instance found");
+            return 1;
+        }
+        Some(code) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log::error!("kill:cli: pgrep exited with code {code}: {stderr}");
+            eprintln!("error: pgrep failed (exit {code}): {stderr}");
+            return 1;
+        }
+        None => {
+            log::error!("kill:cli: pgrep terminated by signal");
+            eprintln!("error: pgrep terminated unexpectedly");
+            return 1;
+        }
+    }
 
     let pids: Vec<u32> = String::from_utf8_lossy(&output.stdout)
         .lines()
@@ -5112,10 +5133,12 @@ pub fn kill_cli() -> i32 {
                 log::info!("kill:cli: sent SIGTERM to pid={pid}");
             }
             Ok(s) => {
+                log::error!("kill:cli: kill pid={pid} exited with {:?}", s.code());
                 eprintln!("error: kill {pid} exited with {:?}", s.code());
                 any_failed = true;
             }
             Err(e) => {
+                log::error!("kill:cli: could not kill pid={pid}: {e}");
                 eprintln!("error: could not kill pid {pid}: {e}");
                 any_failed = true;
             }
