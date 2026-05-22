@@ -7,12 +7,13 @@ Views:
   FEED    — Discover / What's Hot feed (or author feed after profile lookup)
   THREAD  — Full thread for the selected post
 
-Keys (FEED): j/k nav · Enter thread · p profile · r refresh · o browser · n/N page
+Keys (FEED): j/k nav · Enter thread · p profile · r refresh · o browser · n/N page · Esc close
 Keys (THREAD): Esc back · o browser
 """
 
 import asyncio
 import json
+import sys
 import urllib.parse
 import webbrowser
 
@@ -323,7 +324,7 @@ class BlueskyApp(App):
             if self._view == self.VIEW_THREAD else
             [(["j", "k"], "nav"), ("↩", "thread"),
              ("p", "profile"), ("r", "refresh"),
-             ("o", "browser"), (["n", "N"], "page")]
+             ("o", "browser"), (["n", "N"], "page"), ("esc", "close")]
         )
         ctx.shortcuts(x=ctx.w / 3, y=mid_y - HINT / 2,
                       max_width=ctx.w * 2 / 3 - PAD, pairs=pairs)
@@ -473,7 +474,10 @@ class BlueskyApp(App):
             return
 
         if self._view == self.VIEW_FEED:
-            if key in ("j", "down"):
+            if key == "escape":
+                self.emit.info("bluesky: close via Escape")
+                sys.exit(0)
+            elif key in ("j", "down"):
                 self._sel = min(self._sel + 1, max(0, len(self._feed) - 1))
                 self.emit.schedule_render()
             elif key in ("k", "up"):
