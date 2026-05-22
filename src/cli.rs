@@ -5061,6 +5061,116 @@ mod secret_set_tests {
     }
 }
 
+/// `plexi kill` — terminate the running Plexi GUI for this channel.
+///
+/// Sends SIGTERM to all processes matching the current binary name, excluding
+/// the calling process. Works without `PLEXI_SOCKET` so it's usable from SSH
+/// sessions where the user got trapped in the GUI.
+#[cfg(unix)]
+pub fn kill_cli() -> i32 {
+    // Use current_exe() — not args[0] — so an alias or symlink can't cause
+    // the binary name to match a system utility like `sh` or `ls`.
+    let binary_name = match std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+    {
+        Some(name) if name.starts_with("plexi") => name,
+        Some(name) => {
+            log::error!("kill:cli: refusing to kill non-plexi binary name={name:?}");
+            eprintln!("error: binary name {name:?} does not start with 'plexi' — refusing to kill");
+            return 1;
+        }
+        None => {
+            log::error!("kill:cli: could not determine binary name from current_exe");
+            eprintln!("error: could not determine binary name");
+            return 1;
+        }
+    };
+
+    log::info!("kill:cli: sending SIGTERM to {binary_name}");
+
+    let my_pid = std::process::id();
+
+    // Collect PIDs matching the binary name, excluding this CLI process.
+    // pgrep exits 0 when matches found, 1 when no matches, 2+ on error.
+    let output = match std::process::Command::new("pgrep")
+        .args(["-x", &binary_name])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            log::error!("kill:cli: pgrep failed to spawn: {e}");
+            eprintln!("error: could not run pgrep: {e}");
+            return 1;
+        }
+    };
+
+    match output.status.code() {
+        Some(0) => {} // matches found — proceed
+        Some(1) => {
+            eprintln!("error: no running {binary_name} instance found");
+            return 1;
+        }
+        Some(code) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log::error!("kill:cli: pgrep exited with code {code}: {stderr}");
+            eprintln!("error: pgrep failed (exit {code}): {stderr}");
+            return 1;
+        }
+        None => {
+            log::error!("kill:cli: pgrep terminated by signal");
+            eprintln!("error: pgrep terminated unexpectedly");
+            return 1;
+        }
+    }
+
+    let pids: Vec<u32> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .filter(|&pid| pid != my_pid)
+        .collect();
+
+    if pids.is_empty() {
+        eprintln!("error: no running {binary_name} instance found");
+        return 1;
+    }
+
+    let mut any_failed = false;
+    for pid in &pids {
+        let status = std::process::Command::new("kill")
+            .args([pid.to_string()])
+            .status();
+        match status {
+            Ok(s) if s.success() => {
+                log::info!("kill:cli: sent SIGTERM to pid={pid}");
+            }
+            Ok(s) => {
+                log::error!("kill:cli: kill pid={pid} exited with {:?}", s.code());
+                eprintln!("error: kill {pid} exited with {:?}", s.code());
+                any_failed = true;
+            }
+            Err(e) => {
+                log::error!("kill:cli: could not kill pid={pid}: {e}");
+                eprintln!("error: could not kill pid {pid}: {e}");
+                any_failed = true;
+            }
+        }
+    }
+
+    if any_failed {
+        1
+    } else {
+        println!("Plexi stopped.");
+        0
+    }
+}
+
+#[cfg(not(unix))]
+pub fn kill_cli() -> i32 {
+    eprintln!("error: plexi kill is not supported on this platform");
+    1
+}
+
 #[cfg(test)]
 mod app_run_tests {
     use tempfile::TempDir;
