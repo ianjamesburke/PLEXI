@@ -1454,3 +1454,13 @@ class Emitter:
         """
         _emit({"type": "pipe_send", "pipe_id": pipe_id, "payload": payload})
 
+    def close_self(self) -> None:
+        """Ask the host to close this app's pane gracefully.
+
+        Prefer this over sys.exit() — sys.exit() exits the process but the
+        host marks the pane as Crashed and restart-loops watched apps.
+        close_self() sends ControlCommand::CloseSelf; the host closes the
+        pane via the normal wants_close path on the next frame.
+        """
+        _emit({"type": "close_self"})
+

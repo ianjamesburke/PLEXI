@@ -1569,6 +1569,10 @@ pub enum ControlCommand {
     /// Stored by the host and used as the live effective minimum from this
     /// point forward, superseding the manifest `[launch]` values.
     SetMinSize { width: f32, height: f32 },
+    /// Request the host to close this app's pane gracefully.
+    /// The host closes the pane on the next frame via the wants_close path.
+    /// Use instead of sys.exit() to avoid triggering crash-restart on watched panes.
+    CloseSelf,
 }
 
 /// Top-level wire type. The `type` field is globally unique across all three

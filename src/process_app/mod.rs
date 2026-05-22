@@ -285,6 +285,10 @@ pub struct ProcessApp {
     /// Pending MCP tool call responses awaiting `AppRequest::McpToolResult`.
     /// Key = call_id, value = channel to the blocked HTTP handler thread.
     pub(crate) mcp_pending: std::collections::HashMap<String, std::sync::mpsc::SyncSender<mcp_server::McpToolResponse>>,
+    /// Set to true when the app emits ControlCommand::CloseSelf. The host
+    /// checks wants_close() each frame and calls close_pane gracefully,
+    /// avoiding the crash-restart path that sys.exit() would trigger.
+    wants_close_self: bool,
 }
 
 impl ProcessApp {
@@ -714,6 +718,7 @@ impl ProcessApp {
             active_stream_threads: Arc::new(AtomicUsize::new(0)),
             mcp_server: mcp_server_handle,
             mcp_pending: std::collections::HashMap::new(),
+            wants_close_self: false,
         })
     }
 
@@ -858,6 +863,7 @@ impl ProcessApp {
             file_picker_rx,
             mcp_server: None,
             mcp_pending: std::collections::HashMap::new(),
+            wants_close_self: false,
         };
         (app, draw_tx)
     }
@@ -1270,6 +1276,10 @@ impl ProcessApp {
                     self.type_id, width, height
                 );
             }
+            ControlCommand::CloseSelf => {
+                log::info!("ProcessApp[{}]: CloseSelf — pane will close on next frame", self.type_id);
+                self.wants_close_self = true;
+            }
         }
     }
 }
@@ -1285,6 +1295,10 @@ impl App for ProcessApp {
 
     fn keyboard_capture(&self) -> bool {
         self.keyboard_capture
+    }
+
+    fn wants_close(&self) -> bool {
+        self.wants_close_self
     }
 
     fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {

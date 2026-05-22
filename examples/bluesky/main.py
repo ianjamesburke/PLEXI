@@ -13,7 +13,6 @@ Keys (THREAD): Esc back · o browser
 
 import asyncio
 import json
-import sys
 import urllib.parse
 import webbrowser
 
@@ -476,7 +475,7 @@ class BlueskyApp(App):
         if self._view == self.VIEW_FEED:
             if key == "escape":
                 self.emit.info("bluesky: close via Escape")
-                sys.exit(0)
+                self.emit.close_self()
             elif key in ("j", "down"):
                 self._sel = min(self._sel + 1, max(0, len(self._feed) - 1))
                 self.emit.schedule_render()
