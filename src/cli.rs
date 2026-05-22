@@ -5061,6 +5061,75 @@ mod secret_set_tests {
     }
 }
 
+/// `plexi kill` — terminate the running Plexi GUI for this channel.
+///
+/// Sends SIGTERM to all processes matching the current binary name, excluding
+/// the calling process. Works without `PLEXI_SOCKET` so it's usable from SSH
+/// sessions where the user got trapped in the GUI.
+pub fn kill_cli() -> i32 {
+    let binary_name = std::env::args()
+        .next()
+        .as_deref()
+        .and_then(|p| std::path::Path::new(p).file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("plexi")
+        .to_string();
+
+    log::info!("kill:cli: sending SIGTERM to {binary_name}");
+
+    let my_pid = std::process::id();
+
+    // Collect PIDs matching the binary name, excluding this CLI process.
+    let output = match std::process::Command::new("pgrep")
+        .args(["-x", &binary_name])
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("error: could not run pgrep: {e}");
+            return 1;
+        }
+    };
+
+    let pids: Vec<u32> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .filter(|&pid| pid != my_pid)
+        .collect();
+
+    if pids.is_empty() {
+        eprintln!("error: no running {binary_name} instance found");
+        return 1;
+    }
+
+    let mut any_failed = false;
+    for pid in &pids {
+        let status = std::process::Command::new("kill")
+            .args([pid.to_string()])
+            .status();
+        match status {
+            Ok(s) if s.success() => {
+                log::info!("kill:cli: sent SIGTERM to pid={pid}");
+            }
+            Ok(s) => {
+                eprintln!("error: kill {pid} exited with {:?}", s.code());
+                any_failed = true;
+            }
+            Err(e) => {
+                eprintln!("error: could not kill pid {pid}: {e}");
+                any_failed = true;
+            }
+        }
+    }
+
+    if any_failed {
+        1
+    } else {
+        println!("Plexi stopped.");
+        0
+    }
+}
+
 #[cfg(test)]
 mod app_run_tests {
     use tempfile::TempDir;

@@ -243,6 +243,13 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: Option<NotesCmd>,
     },
+    /// Terminate the running Plexi instance for this channel.
+    ///
+    /// Sends SIGTERM to the running GUI process for this build channel.
+    /// Use this when Plexi is unreachable (e.g. after an SSH session where it launched).
+    ///
+    /// Example: plexi kill
+    Kill,
 }
 
 #[derive(Subcommand)]
