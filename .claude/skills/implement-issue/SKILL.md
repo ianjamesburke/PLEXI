@@ -17,18 +17,22 @@ Phase 1 of the ship pipeline. Output: a pushed feature branch ready for `/open-p
 | `/implement-issue P1` | First unblocked at that priority |
 | `/implement-issue <n> <m> [...]` | Bundle — implement multiple issues in one branch |
 
-On completion, **append a Ship Log entry to the issue body** (see Ship Log Format below) and output:
+On completion, **append a Ship Log entry to the issue body**, set pipeline labels (see Pipeline Labels below), and output:
 
 ```
 [IMPLEMENTED] Issue #<n>
 Branch: feature/<n>-short-description
 Files changed: <N>
-Next: /open-pr feature/<n>-short-description
+Pipeline: pipeline:open-pr + ready set — PM will dispatch /open-pr on next run
 ```
+
+> **Labels are the live state.** Never read the Ship Log to determine pipeline stage — read the issue labels. Ship Log is audit trail only.
 
 ---
 
 ## Phase 0 — Find the Issue
+
+> **Skip this phase entirely when a specific issue number is provided as the argument.** Go directly to Phase 1 with that number — no git log, no in-progress scan.
 
 Run in parallel:
 ```bash
@@ -79,15 +83,15 @@ If `CLOSED`: stop. "Issue #<n> is already closed — nothing to do."
 
 If labeled `in progress`: surface existing worktree + PR before proceeding. Ask for takeover confirmation — do not proceed until user confirms.
 
-**Check if already done:**
+**Check if already done** (skip if issue is labeled `ready` — PM pre-screened it):
 ```bash
 gh issue view <number> --json body --jq '.body'
 ```
 Grep `src/` on alpha and `git log --oneline -20` against Done When criteria. If all criteria met: close the issue and stop.
 
-**Sync alpha:**
+**Sync alpha + check unpushed (batched):**
 ```bash
-git fetch origin && git status --porcelain
+git fetch origin && git status --porcelain && git log origin/alpha..HEAD --oneline
 ```
 
 If dirty: auto-stash:
@@ -96,19 +100,14 @@ git stash push -m "implement-issue auto-stash before #<number>"
 IMPL_STASHED=true
 ```
 
-**Check for unpushed commits:**
-```bash
-git log origin/alpha..HEAD --oneline
-```
-If any listed: STOP. Tell user to push first. Pop stash, exit.
+If any unpushed commits listed: STOP. Tell user to push first. Pop stash, exit.
 
 Then: `git pull --rebase origin alpha`
 
 **Label + pane setup:**
 ```bash
-gh issue edit <number> --add-label "in progress"
+gh issue edit <number> --add-label "in progress" --add-label "pipeline:implement"
 IMPL_PANE=$PLEXI_PANE_ID
-plexi pane name "#<number> — <short-title>"
 _PROJ_ITEM=$(gh api graphql -f query='query($n:Int!){repository(owner:"ianjamesburke",name:"PLEXI"){issue(number:$n){projectItems(first:5){nodes{id project{id}}}}}}' -F n=<number> --jq '.data.repository.issue.projectItems.nodes[]|select(.project.id=="PVT_kwHOAkOgys4BXaQY")|.id')
 [ -n "$_PROJ_ITEM" ] && gh api graphql -f query='mutation($i:ID!,$v:String!){updateProjectV2ItemFieldValue(input:{projectId:"PVT_kwHOAkOgys4BXaQY",itemId:$i,fieldId:"PVTSSF_lAHOAkOgys4BXaQYzhSnRw8",value:{singleSelectOptionId:$v}}){projectV2Item{id}}}' -f i="$_PROJ_ITEM" -f v="47fc9ee4" > /dev/null
 ```
@@ -116,6 +115,8 @@ _PROJ_ITEM=$(gh api graphql -f query='query($n:Int!){repository(owner:"ianjamesb
 ---
 
 ## Phase 1b — Implementation Audit
+
+**Skip if issue is labeled `ready` and was dispatched with a specific number** — PM already screened it and implementation has not started. Proceed directly to Phase 2.
 
 Re-read Done When criteria against alpha `src/` and `git log --oneline -20`.
 
@@ -254,6 +255,22 @@ gh issue edit <number> --body "$NEW_BODY"
 
 ---
 
+## Pipeline Labels
+
+After pushing and writing the Ship Log, set pipeline state:
+
+```bash
+gh issue edit <number> \
+  --add-label "pipeline:open-pr" \
+  --add-label "ready" \
+  --remove-label "pipeline:implement" \
+  --remove-label "in progress"
+```
+
+This is the only handoff mechanism. Never spawn a new pane or output "Next: /open-pr" as an instruction — PM reads the label and dispatches.
+
+---
+
 ## Abort / Stash Pop
 
 At every exit point (success, blocked, fail):
@@ -265,6 +282,8 @@ At every exit point (success, blocked, fail):
 
 ## Rules
 
+- When a specific issue number is given, skip Phase 0 entirely and skip Phase 1b
+- If the issue body contains a complete `## Action Plan` with named files, trust it. Do not re-read and re-grep those files to re-derive the plan.
 - Never branch from main — always from repo root (alpha)
 - Never skip base verification after `wtp add`
 - No `todo!()` or `unimplemented!()` outside `#[cfg(test)]`
