@@ -674,6 +674,7 @@ pub fn open_config_file() {
 
 /// Opens `path` with a fallback chain: VS Code → system default → TextEdit.
 /// Returns `true` if any opener succeeded.
+#[cfg(target_os = "macos")]
 pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
     let candidates: &[&[&str]] = &[
         &["-a", "Visual Studio Code"],
@@ -694,6 +695,12 @@ pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
         let opener_desc = if args.is_empty() { "system default".to_string() } else { format!("{:?}", args) };
         log::warn!("open_file_with_fallback: opener {} failed for {}, trying next", opener_desc, path.display());
     }
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
+    log::warn!("open_file_with_fallback: no platform implementation for {}", path.display());
     false
 }
 

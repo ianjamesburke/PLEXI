@@ -4247,18 +4247,22 @@ pub fn config_edit() -> i32 {
     log::info!("config_edit: opening {} in editor", path.display());
 
     if let Ok(editor_env) = std::env::var("EDITOR") {
-        let mut parts = editor_env.split_whitespace();
-        let editor_bin = parts.next().unwrap_or("open");
-        let args: Vec<&str> = parts.collect();
-        match std::process::Command::new(editor_bin).args(&args).arg(&path).status() {
-            Ok(status) if status.success() => return 0,
-            Ok(status) => {
-                eprintln!("error: editor {editor_bin:?} exited with status {}", status.code().unwrap_or(1));
-                return status.code().unwrap_or(1);
-            }
-            Err(e) => {
-                eprintln!("error: could not launch editor {editor_bin:?}: {e}");
-                return 1;
+        if editor_env.trim().is_empty() {
+            log::warn!("config_edit: EDITOR is set but empty, falling through to system default");
+        } else {
+            let mut parts = editor_env.split_whitespace();
+            let editor_bin = parts.next().unwrap_or("open");
+            let args: Vec<&str> = parts.collect();
+            match std::process::Command::new(editor_bin).args(&args).arg(&path).status() {
+                Ok(status) if status.success() => return 0,
+                Ok(status) => {
+                    eprintln!("error: editor {editor_bin:?} exited with status {}", status.code().unwrap_or(1));
+                    return status.code().unwrap_or(1);
+                }
+                Err(e) => {
+                    eprintln!("error: could not launch editor {editor_bin:?}: {e}");
+                    return 1;
+                }
             }
         }
     }
