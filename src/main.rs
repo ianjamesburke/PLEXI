@@ -533,6 +533,12 @@ fn main() -> eframe::Result {
         std::process::exit(0);
     }
 
+    // When invoked with no arguments outside Plexi, print a brief launch
+    // notice so the terminal isn't silent for first-time users (#1515).
+    if !cli_mode && adopted_root.is_none() {
+        println!("Starting Plexi — run 'plexi --help' to see available commands.");
+    }
+
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))
         .expect("failed to load app icon");
 
