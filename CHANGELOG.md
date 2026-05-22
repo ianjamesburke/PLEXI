@@ -1,6 +1,48 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.488] — 2026-05-22
+
+### Changes
+- P0: `plexi open config.toml` does nothing on machines without VS Code (#1545) (#1667)
+- fix(apps/bluesky): Esc key does not close the Bluesky app (#1654) (#1663)
+- chore(skills): simplify dispatch gate, skip review for bundle PRs
+- chore(skills): pass origin/alpha base to wtp add; add V1_ROADMAP
+- fix(dispatch): simplify open-lanes.sh — use plexi terminal cmd directly, tighten dirty check to tracked files only
+- fix(ui/sidebar): show dot when context has exactly one pane (#1662)
+- docs(skill): update create-plexi-app dev loop and scaffold guidance
+- chore: gitignore channel profile dirs and agent memory
+- fix(host/terminal): QuickNote paste falls through to terminal behind (#1637)
+- docs: log QuickNote paste-through fix in DEV_LOG
+- fix(cli): print launch notice when plexi is run with no arguments (#1515) (#1657)
+- docs: log NSWindow appearance fix for black title in light mode
+- fix(host): sync NSWindow appearance with Plexi theme to fix black title in light mode (#1656)
+- fix(host): use retain in all sync_*_focus methods to remove stale buried layers (#1598) (#1655)
+- feat(sdk): feed-quality primitives — max_lines, avatar, skeleton, measure_text_wrapped (#1607) (#1610)
+- feat(infra/agents): pick-parallel skill for selecting parallelizable issues
+- feat(infra/agents): project-manager skill — conviction-scored parallel dispatch (#1618) (#1619)
+- refactor(host): explicit pane targeting — eliminate focused_pane save/restore in IPC handlers (#1613) (#1620)
+- docs: log CapabilityModal FocusLayer fix and egui_tiles bare-pane-root gotcha
+- fix(host): promote CapabilityModal to FocusLayer for exclusive keyboard input (#1596)
+- feat(cli): plexi open github:owner/repo — ephemeral launch without install (#1530) (#1617)
+- fix(icon): replace stale terminal-grid PNG with current pane-layout icon (#1615)
+- fix(cli): app init no-workspace fallback uses global profile dir instead of CWD (#1614)
+- improve(plexi-cli): sync skill to live binary v0.0.475
+- improve(plexi-cli): replace deprecated app link with app run <path>
+- improve(plexi-cli): add app render ID requirement and --help-first rule
+- fix(merge-pr): handle remote branch already deleted during cleanup
+- feat(logs): search, copy mode, and row/badge spacing polish (#1593)
+- feat(skills): composable ship pipeline — implement-issue, open-pr, validate-pr, merge-pr, test-pr (#1602)
+- feat(permissions): capability grant/deny modal — 4-action logic, SDK typed error, example apps (#1582)
+- fix(backlog): channel-aware quick-note backlog (#1595) (#1597)
+- feat(host): emit SESSION START/END log markers on process app lifecycle (#1511) (#1589)
+- chore(skill): bump create-plexi-app skill_version to 0.0.470 (#1510)
+- fix(cli): plexi open exits 0 with pane ID when app launch silently fails (#1590)
+- fix: bundle — inspector Cmd+R rename, skill version, registry rename (#1508, #1510, #1537) (#1588)
+- docs(dispatch): add lane recovery rules and mandatory stabilizer note
+- fix(dispatch): add dirty-tree guard and shell-ready delays to open-lanes.sh
+- docs(website): update SDK reference pages
+- feat(website): replace hero placeholder with real screenshot
 ## [0.0.487] — 2026-05-22
 
 ### Changes
