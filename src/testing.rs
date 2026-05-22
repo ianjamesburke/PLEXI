@@ -901,4 +901,53 @@ mod tests {
         );
     }
 
+    /// A buried sync-managed layer must be removed even when another layer sits on top.
+    ///
+    /// Regression guard for the `pop_focus_layer` → `retain` fix: `pop_focus_layer` only
+    /// removes the top entry, so a buried entry would survive until it accidentally
+    /// became top again — causing a closed overlay to regain keyboard ownership.
+    #[test]
+    fn buried_stale_focus_layer_is_removed_by_sync() {
+        use crate::app::FocusLayer;
+
+        let mut h = HostHarness::new();
+
+        // Push ConfirmClose by activating its source state and running sync.
+        h.app.pending_close = true;
+        h.app.sync_confirm_close_focus();
+        assert!(
+            h.app.focus_stack.iter().any(|l| *l == FocusLayer::ConfirmClose),
+            "ConfirmClose must be pushed when pending_close is true"
+        );
+
+        // Push CommandPalette on top — now ConfirmClose is buried.
+        h.app.show_command_palette = true;
+        h.app.sync_command_palette_focus();
+        assert_eq!(
+            h.app.focus_stack.last(),
+            Some(&FocusLayer::CommandPalette),
+            "CommandPalette must be at the top after its source state becomes true"
+        );
+        assert!(
+            h.app.focus_stack.iter().any(|l| *l == FocusLayer::ConfirmClose),
+            "ConfirmClose must still be in the stack (buried beneath CommandPalette)"
+        );
+
+        // Clear ConfirmClose source state — sync must remove the buried entry.
+        h.app.pending_close = false;
+        h.app.sync_confirm_close_focus();
+
+        assert!(
+            !h.app.focus_stack.iter().any(|l| *l == FocusLayer::ConfirmClose),
+            "ConfirmClose must be removed from the stack even though CommandPalette was on top. \
+             If this fails, sync_confirm_close_focus used pop_focus_layer (top-only) instead of retain."
+        );
+
+        // The layer that was on top must still be present — we only removed ConfirmClose.
+        assert!(
+            h.app.focus_stack.iter().any(|l| *l == FocusLayer::CommandPalette),
+            "CommandPalette must remain in the stack after removing the buried ConfirmClose layer"
+        );
+    }
+
 }
