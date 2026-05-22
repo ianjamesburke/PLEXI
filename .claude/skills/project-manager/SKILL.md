@@ -90,7 +90,7 @@ For each result, map label → skill and dispatch immediately (skip the scoring/
 | Label found | Skill to dispatch | Notes |
 |---|---|---|
 | `pipeline:implement` + `ready` | `/implement-issue <N>` | Re-implement (prior attempt failed) |
-| `pipeline:open-pr` + `ready` | `/open-pr feature/<N>-...` | Detect branch via `gh pr list` |
+| `pipeline:open-pr` + `ready` | `/open-pr feature/<N>-...` | Detect branch via `git ls-remote origin "refs/heads/feature/<N>-*"` |
 | `pipeline:validate` + `ready` | `/validate-pr <PR#>` | Detect PR# via `gh pr list --json number,headRefName` |
 | `pipeline:merge` + `ready` | `/merge-pr <PR#>` | Detect PR# via `gh pr list --json number,headRefName` |
 
@@ -103,7 +103,7 @@ gh pr list --state open --json number,headRefName \
 
 **Testing notification ownership for validate dispatch:** When dispatching `/validate-pr`, inject `PM_PANE_ID=$PLEXI_PANE_ID` into the worker pane's environment so the pass/fail notification routes back to the PM pane. The `open-lanes.sh` script passes env vars via the command prefix — prepend `PM_PANE_ID=$PLEXI_PANE_ID` before the `c` command.
 
-If any pipeline-labeled issues are found and dispatched, report them as resumed lanes and skip to Step 6 for the non-pipeline work (they run in parallel).
+If any pipeline-labeled issues are found and dispatched, subtract the number of resumed lanes from the 4-lane capacity and continue to Step 3 to fill remaining slots with fresh issues. Example: 2 resumed lanes → capacity for 2 more from scoring. If resumed lanes already fill all 4 slots, end the run after dispatch.
 
 ---
 

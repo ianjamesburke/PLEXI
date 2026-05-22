@@ -106,9 +106,8 @@ EOF
 PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
 ```
 
-Update pane title and pipeline label:
+Update pipeline label:
 ```bash
-plexi pane name "#<number> / PR #${PR_NUMBER} — <short-title>"
 gh issue edit <number> --add-label "in progress" --remove-label "pipeline:implement" --add-label "pipeline:open-pr" 2>/dev/null || true
 ```
 
