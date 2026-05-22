@@ -38,9 +38,10 @@ LEVEL_BADGE_FILL: dict[str, str] = {
     "TRACE": "#45475a",
 }
 
-ROW_ALT     = "#1a1a2a"
-COPY_ROW_BG = "#1e2d1e"   # subtle green tint for copy-mode cursor row
-COPY_ROW_FG = "#a6e3a1"   # soft green text for selected row
+ROW_ALT        = "#1a1a2a"
+COPY_ROW_BG    = "#1e2d1e"   # subtle green tint for copy-mode selected rows
+COPY_CURSOR_BG = "#253525"   # slightly brighter for the active cursor row
+COPY_ROW_FG    = "#a6e3a1"   # soft green text for selected row
 
 _LOG_RE = re.compile(
     r"^\[(\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2}))\] \[(\w+)\] \[([^\]]+)\] (.*)$"
@@ -113,8 +114,10 @@ class LogsApp(App):
         self._search_mode: bool = False
         self._search_q:    str  = ""
         # copy mode
-        self._copy_mode:   bool = False
-        self._copy_row:    int  = 0   # index into filtered list
+        self._copy_mode:   bool           = False
+        self._copy_row:    int            = 0    # active cursor / drag end
+        self._copy_anchor: "int | None"   = None  # selection start; None = single row
+        self._is_dragging: bool           = False
         ctx.emit.set_mouse_tracking(True)
         ctx.status_summary("Logs")
         ctx.set_timer(TIMER_ID, 50)
@@ -132,8 +135,11 @@ class LogsApp(App):
             self._search_mode = False
             self._scroll      = 0.0
             self._copy_row    = 0
+            self._copy_anchor = None
 
-    def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:  # noqa: ARG002
+    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+        shift = mods.get("shift", False)
+
         # ── search mode: only Esc is handled here; host owns the text field ──
         if self._search_mode:
             if key == "escape":
@@ -141,23 +147,41 @@ class LogsApp(App):
                 self._search_q    = ""
                 self._scroll      = 0.0
                 self._copy_row    = 0
+                self._copy_anchor = None
             return
 
         # ── copy mode ─────────────────────────────────────────────────────
         if self._copy_mode:
             filtered = self._filtered()
             if key == "escape":
-                self._copy_mode = False
+                self._copy_mode   = False
+                self._copy_anchor = None
             elif key in ("j", "down"):
-                self._copy_row = min(len(filtered) - 1, self._copy_row + 1)
+                if shift:
+                    if self._copy_anchor is None:
+                        self._copy_anchor = self._copy_row
+                    self._copy_row = min(len(filtered) - 1, self._copy_row + 1)
+                else:
+                    self._copy_anchor = None
+                    self._copy_row = min(len(filtered) - 1, self._copy_row + 1)
                 self._ensure_copy_row_visible()
             elif key in ("k", "up"):
-                self._copy_row = max(0, self._copy_row - 1)
+                if shift:
+                    if self._copy_anchor is None:
+                        self._copy_anchor = self._copy_row
+                    self._copy_row = max(0, self._copy_row - 1)
+                else:
+                    self._copy_anchor = None
+                    self._copy_row = max(0, self._copy_row - 1)
                 self._ensure_copy_row_visible()
             elif key == "y":
-                if filtered and 0 <= self._copy_row < len(filtered):
-                    ctx.copy_to_clipboard(filtered[self._copy_row].as_text())
-                self._copy_mode = False
+                if filtered:
+                    lo, hi = self._copy_range(len(filtered))
+                    text = "\n".join(filtered[i].as_text() for i in range(lo, hi + 1))
+                    ctx.copy_to_clipboard(text)
+                    self.emit.info(f"logs: copied {hi - lo + 1} line(s) to clipboard")
+                self._copy_mode   = False
+                self._copy_anchor = None
             return
 
         # ── normal mode ───────────────────────────────────────────────────
@@ -174,19 +198,70 @@ class LogsApp(App):
             self._clamp()
         elif key in FILTER_KEY:
             self._filter_idx = FILTER_KEY[key]
-            self._scroll = 0.0
-            self._copy_row = 0
+            self._scroll      = 0.0
+            self._copy_row    = 0
+            self._copy_anchor = None
         elif key == "/":
             self._search_mode = True
         elif key == "escape" and self._search_q:
-            self._search_q = ""
-            self._scroll   = 0.0
-            self._copy_row = 0
+            self._search_q    = ""
+            self._scroll      = 0.0
+            self._copy_row    = 0
+            self._copy_anchor = None
         elif key == "y":
             filtered = self._filtered()
             if filtered:
-                self._copy_mode = True
-                self._copy_row  = min(self._copy_row, len(filtered) - 1)
+                self._copy_mode   = True
+                self._copy_row    = min(self._copy_row, len(filtered) - 1)
+                self._copy_anchor = None
+
+    def on_mouse_down(self, _ctx: RenderContext, _x: float, y: float, button: str) -> None:  # noqa: ARG002
+        if button != "left":
+            return
+        row = self._row_at_y(y)
+        if row is None:
+            return
+        self._copy_mode   = True
+        self._copy_anchor = row
+        self._copy_row    = row
+        self._is_dragging = True
+        self.emit.info(f"logs: mouse select started at row {row}")
+
+    def on_mouse_move(self, _ctx: RenderContext, _x: float, y: float, buttons: list) -> None:
+        if not self._is_dragging or "left" not in buttons:
+            self._is_dragging = False
+            return
+        row = self._row_at_y(y)
+        if row is not None:
+            self._copy_row = row
+            self._ensure_copy_row_visible()
+
+    def on_mouse_up(self, _ctx: RenderContext, _x: float, _y: float, button: str) -> None:  # noqa: ARG002
+        if button == "left":
+            self._is_dragging = False
+
+    def _row_at_y(self, y: float) -> "int | None":
+        list_y = BAR_H
+        if y < list_y or y > list_y + self._viewport_h:
+            return None
+        row = int((y - list_y + self._scroll) / ROW_H)
+        filtered = self._filtered()
+        if 0 <= row < len(filtered):
+            return row
+        return None
+
+    def _copy_range(self, total: int) -> "tuple[int, int]":
+        """Return (lo, hi) inclusive row indices for the current selection."""
+        if self._copy_anchor is None:
+            r = max(0, min(total - 1, self._copy_row))
+            return r, r
+        lo = max(0, min(self._copy_anchor, self._copy_row))
+        hi = min(total - 1, max(self._copy_anchor, self._copy_row))
+        return lo, hi
+
+    def _is_in_selection(self, i: int, total: int) -> bool:
+        lo, hi = self._copy_range(total)
+        return lo <= i <= hi
 
     def _ensure_copy_row_visible(self) -> None:
         row_top = self._copy_row * ROW_H
@@ -237,6 +312,7 @@ class LogsApp(App):
                 self._search_mode = False
                 self._scroll      = 0.0
                 self._copy_row    = 0
+                self._copy_anchor = None
         else:
             ctx.text(PAD, BAR_H / 2 - TEXT_CAPTION / 2, "Logs",
                      size=TEXT_CAPTION, color=FG, bold=True)
@@ -254,8 +330,9 @@ class LogsApp(App):
                     radius=5.0,
                 ):
                     self._filter_idx = i
-                    self._scroll = 0.0
-                    self._copy_row = 0
+                    self._scroll      = 0.0
+                    self._copy_row    = 0
+                    self._copy_anchor = None
                 chip_x += CHIP_W + CHIP_GAP
 
             if self._search_q:
@@ -268,13 +345,17 @@ class LogsApp(App):
         ctx.rect(0, foot_y, w, FOOT_H, SURFACE)
 
         if self._copy_mode:
+            lo, hi = self._copy_range(len(filtered))
+            n_sel = hi - lo + 1
             ctx.shortcuts(PAD, foot_y + 5.0, w - PAD * 2, [
                 (["j", "k"], "move"),
-                (["y"], "copy line"),
+                (["⇧j", "⇧k"], "extend"),
+                (["y"], "copy"),
                 (["esc"], "exit"),
             ], font_size=10.0)
+            label = f"COPY — {n_sel} line{'s' if n_sel != 1 else ''}"
             ctx.text(w - PAD, foot_y + FOOT_H / 2 - TEXT_HINT / 2,
-                     "COPY MODE", size=TEXT_HINT, color=COPY_ROW_FG,
+                     label, size=TEXT_HINT, color=COPY_ROW_FG,
                      align="right")
         elif self._search_mode:
             ctx.shortcuts(PAD, foot_y + 5.0, w - PAD * 2, [
@@ -307,26 +388,30 @@ class LogsApp(App):
 
         ctx.push_clip(0, list_y, w, list_h)
 
+        n        = len(filtered)
         time_w   = 66.0
         target_w = 140.0
         first    = int(self._scroll / ROW_H)
         count    = int(list_h / ROW_H) + 2
 
-        for i in range(first, min(first + count, len(filtered))):
+        for i in range(first, min(first + count, n)):
             ll    = filtered[i]
             row_y = list_y + i * ROW_H - self._scroll
 
-            is_copy_cursor = self._copy_mode and i == self._copy_row
+            in_selection  = self._copy_mode and self._is_in_selection(i, n)
+            is_cursor_row = self._copy_mode and i == self._copy_row
 
-            if is_copy_cursor:
+            if is_cursor_row:
+                ctx.rect(0, row_y, w, ROW_H, COPY_CURSOR_BG)
+            elif in_selection:
                 ctx.rect(0, row_y, w, ROW_H, COPY_ROW_BG)
             elif i % 2 == 0:
                 ctx.rect(0, row_y, w, ROW_H, ROW_ALT)
 
             x      = PAD
             text_y = row_y + ROW_H / 2 - TEXT_HINT / 2
-            dim_fg = COPY_ROW_FG if is_copy_cursor else MUTED
-            msg_fg = COPY_ROW_FG if is_copy_cursor else FG
+            dim_fg = COPY_ROW_FG if in_selection else MUTED
+            msg_fg = COPY_ROW_FG if in_selection else FG
 
             # timestamp
             ctx.text(x, text_y, ll.time,
