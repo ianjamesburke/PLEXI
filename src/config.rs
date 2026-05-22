@@ -678,7 +678,7 @@ pub fn open_config_file() {
 pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
     let candidates: &[&[&str]] = &[
         &["-a", "Visual Studio Code"],
-        &[],
+        &["-t"],
         &["-a", "TextEdit"],
     ];
     for args in candidates {
