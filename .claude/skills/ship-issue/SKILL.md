@@ -200,7 +200,7 @@ Tell the user: "Issue #<n> already has a remote branch — another agent claimed
 
 Run from the repo root:
 ```bash
-wtp add -b feature/<issue-number>-short-description
+wtp add -b feature/<issue-number>-short-description origin/alpha
 ```
 
 **If `wtp add -b` fails with "branch already exists":** check whether a worktree is already open for it (`git worktree list`). If not, add without `-b`: `wtp add feature/<issue-number>-short-description`. Then run `git log --oneline -5` on the branch to surface any prior commits — treat them as partial implementation to review in Phase 3 rather than starting from scratch.

@@ -134,7 +134,7 @@ If non-empty: another agent owns this. Surface branch + any existing PR, then st
 
 Create worktree:
 ```bash
-wtp add -b feature/<issue-number>-short-description
+wtp add -b feature/<issue-number>-short-description origin/alpha
 ```
 
 If "branch already exists": check `git worktree list`. If no worktree, `wtp add` without `-b`. Check for prior commits.
