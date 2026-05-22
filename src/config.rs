@@ -667,9 +667,41 @@ pub fn open_config_file() {
         let _ = std::fs::write(&path, CONFIG_TEMPLATE);
     }
 
-    if let Err(e) = std::process::Command::new("open").arg(&path).status() {
-        log::error!("open_config_file: failed to open {}: {e}", path.display());
+    if !open_file_with_fallback(&path) {
+        log::error!("open_config_file: could not open {} with any available editor", path.display());
     }
+}
+
+/// Opens `path` with a fallback chain: VS Code → system default → TextEdit.
+/// Returns `true` if any opener succeeded.
+#[cfg(target_os = "macos")]
+pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
+    let candidates: &[&[&str]] = &[
+        &["-a", "Visual Studio Code"],
+        &["-t"],
+        &["-a", "TextEdit"],
+    ];
+    for args in candidates {
+        let ok = std::process::Command::new("open")
+            .args(*args)
+            .arg(path)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            log::info!("open_file_with_fallback: opened {} (args: {:?})", path.display(), args);
+            return true;
+        }
+        let opener_desc = if args.is_empty() { "system default".to_string() } else { format!("{:?}", args) };
+        log::warn!("open_file_with_fallback: opener {} failed for {}, trying next", opener_desc, path.display());
+    }
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
+    log::warn!("open_file_with_fallback: no platform implementation for {}", path.display());
+    false
 }
 
 impl PlexiConfig {

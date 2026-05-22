@@ -4246,17 +4246,34 @@ pub fn config_edit() -> i32 {
     let path = crate::config::ensure_config_exists();
     log::info!("config_edit: opening {} in editor", path.display());
 
-    let editor_env = std::env::var("EDITOR").unwrap_or_else(|_| "open".to_string());
-    let mut parts = editor_env.split_whitespace();
-    let editor_bin = parts.next().unwrap_or("open");
-    match std::process::Command::new(editor_bin).args(parts).arg(&path).status() {
-        Ok(status) => {
-            if status.success() { 0 } else { status.code().unwrap_or(1) }
+    if let Ok(editor_env) = std::env::var("EDITOR") {
+        if editor_env.trim().is_empty() {
+            log::warn!("config_edit: EDITOR is set but empty, falling through to system default");
+        } else {
+            let mut parts = editor_env.split_whitespace();
+            if let Some(editor_bin) = parts.next() {
+                let args: Vec<&str> = parts.collect();
+                match std::process::Command::new(editor_bin).args(&args).arg(&path).status() {
+                    Ok(status) if status.success() => return 0,
+                    Ok(status) => {
+                        eprintln!("error: editor {editor_bin:?} exited with status {}", status.code().unwrap_or(1));
+                        return status.code().unwrap_or(1);
+                    }
+                    Err(e) => {
+                        eprintln!("error: could not launch editor {editor_bin:?}: {e}");
+                        return 1;
+                    }
+                }
+            }
         }
-        Err(e) => {
-            eprintln!("error: could not launch editor {editor_bin:?}: {e}");
-            1
-        }
+    }
+
+    // No $EDITOR set — use the fallback chain: VS Code → system default → TextEdit
+    if crate::config::open_file_with_fallback(&path) {
+        0
+    } else {
+        eprintln!("error: could not open {:?} — install VS Code, set $EDITOR, or ensure a default text editor is configured", path);
+        1
     }
 }
 
