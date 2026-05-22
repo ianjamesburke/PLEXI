@@ -2,6 +2,14 @@
 
 Development log for PLEXI. Tracks root causes, non-obvious decisions, abandoned approaches, and environment quirks that git history won't capture. Entries are newest-first — most recent at the top.
 
+## 2026-05-22 — [FIX] QuickNote Cmd+V paste falls through to terminal when zoom overlay active (PR #1658 → alpha)
+
+When QuickNote is open and the zoom overlay is also visible, `TerminalView::set_focus(true)` is called unconditionally inside the CentralPanel render pass (`app/mod.rs:3999`). This `request_focus()` on the zoom terminal runs before the re-focus block at line 4312 reclaims focus for `quick_note_text`. On those frames, egui's TextEdit skips paste processing because `mem.has_focus(id)` is false — so `egui::Event::Paste` falls through to the terminal.
+
+Fix: explicit paste handler in `draw_quick_note_modal` consuming `egui::Event::Paste` via `ctx.input_mut`, cursor-aware insertion via `TextEdit::load_state` + `CCursorRange`, `push_str` fallback. Same pattern as the Esc/Enter handlers — guaranteed to fire regardless of egui focus state on any given frame.
+
+**Breaks if:** Cmd+V with QuickNote open sends text to the terminal instead of the note input.
+
 ## 2026-05-22 — [FIX] Sync NSWindow appearance with Plexi theme to fix black title in light mode (PR #1656 → alpha)
 
 `with_titlebar_shown(false)` makes the title bar transparent but the OS still renders native title text using the window's `NSAppearance`. In system light mode, `NSWindow` defaults to light appearance, rendering the title text black — visible against Plexi's dark content showing through.
