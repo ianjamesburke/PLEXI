@@ -4727,7 +4727,8 @@ impl PlexiApp {
         if should_own && !has_layer {
             self.push_focus_layer(FocusLayer::ConfirmClose);
         } else if !should_own && has_layer {
-            self.pop_focus_layer(&FocusLayer::ConfirmClose);
+            log::info!("focus: ConfirmClose layer removed by sync (retain)");
+            self.focus_stack.retain(|l| *l != FocusLayer::ConfirmClose);
         }
     }
 
@@ -4740,7 +4741,8 @@ impl PlexiApp {
         if should_own && !has_layer {
             self.push_focus_layer(FocusLayer::ContextCloseConfirm);
         } else if !should_own && has_layer {
-            self.pop_focus_layer(&FocusLayer::ContextCloseConfirm);
+            log::info!("focus: ContextCloseConfirm layer removed by sync (retain)");
+            self.focus_stack.retain(|l| *l != FocusLayer::ContextCloseConfirm);
         }
     }
 
@@ -4807,7 +4809,8 @@ impl PlexiApp {
         if should_own && !has_layer {
             self.push_focus_layer(FocusLayer::NotificationModal);
         } else if !should_own && has_layer {
-            self.pop_focus_layer(&FocusLayer::NotificationModal);
+            log::info!("focus: NotificationModal layer removed by sync (retain)");
+            self.focus_stack.retain(|l| *l != FocusLayer::NotificationModal);
         }
     }
 
@@ -4854,7 +4857,8 @@ impl PlexiApp {
         if should_own && !has_layer {
             self.push_focus_layer(FocusLayer::CommandPalette);
         } else if !should_own && has_layer {
-            self.pop_focus_layer(&FocusLayer::CommandPalette);
+            log::info!("focus: CommandPalette layer removed by sync (retain)");
+            self.focus_stack.retain(|l| *l != FocusLayer::CommandPalette);
             // Explicitly surrender egui focus from palette_search so AccessKit
             // doesn't hold a stale focused node ID after the widget is gone.
             self.ctx.memory_mut(|m| {
@@ -4911,7 +4915,8 @@ impl PlexiApp {
         if should_own && !has_layer {
             self.push_focus_layer(FocusLayer::RenamePane);
         } else if !should_own && has_layer {
-            self.pop_focus_layer(&FocusLayer::RenamePane);
+            log::info!("focus: RenamePane layer removed by sync (retain)");
+            self.focus_stack.retain(|l| *l != FocusLayer::RenamePane);
         }
     }
 
@@ -4927,7 +4932,8 @@ impl PlexiApp {
         if should_own && !has_layer {
             self.push_focus_layer(FocusLayer::ContextRename);
         } else if !should_own && has_layer {
-            self.pop_focus_layer(&FocusLayer::ContextRename);
+            log::info!("focus: ContextRename layer removed by sync (retain)");
+            self.focus_stack.retain(|l| *l != FocusLayer::ContextRename);
         }
     }
 
@@ -4941,7 +4947,8 @@ impl PlexiApp {
         if should_own && !has_layer {
             self.push_focus_layer(FocusLayer::TextInput);
         } else if !should_own && has_layer {
-            self.pop_focus_layer(&FocusLayer::TextInput);
+            log::info!("focus: TextInput layer removed by sync (retain)");
+            self.focus_stack.retain(|l| *l != FocusLayer::TextInput);
         }
     }
 
