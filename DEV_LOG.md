@@ -2,6 +2,16 @@
 
 Development log for PLEXI. Tracks root causes, non-obvious decisions, abandoned approaches, and environment quirks that git history won't capture. Entries are newest-first — most recent at the top.
 
+## 2026-05-21 — [FIX] CapabilityModal promoted to FocusLayer (PR #1621 → alpha)
+
+Pressing Escape (or any key) inside the capability consent modal had no effect. Root cause: `show_prompt_modal` was called in step 5 (pane render), after `dispatch_app_key_events` (step 4) had already consumed any key — the modal never saw the keystroke.
+
+Fix: add `FocusLayer::CapabilityModal` and render the modal in step 2 (early-modal path, before step 4). `sync_capability_modal_focus()` pushes/pops the layer based on whether the focused pane has pending prompts.
+
+**Breaks if:** Pressing Escape inside the capability modal has no effect (app's key handler ate it first), or the modal fails to appear at all when a capability is requested.
+
+**GOTCHA — egui_tiles restructures bare-pane roots on first render:** When a `Tree<PaneId>` has a bare `Tile::Pane` as root (no container wrapper), egui_tiles converts that tile ID to a `Tile::Container` on the first frame render, pushing the actual pane to a child tile. Any `TileId` stored before that first render (e.g. `focused_pane`) now points to a Container. Added `find_pane_in_tile()` — descends through any Container to reach the actual pane — and use it everywhere we resolve `focused_pane` to a `PaneId`. In tests, always run at least one idle frame before reading tile structure or setting focused_pane to a final value.
+
 ## 2026-05-19 — [FIX] Wikipedia key names and Bluesky capability consent (PR #1581 → alpha)
 
 **Wikipedia (#1567):** SDK PR #677 added key normalization (`Enter`→`return`, `Escape`→`escape`, `Backspace`→`backspace`) in `_app.py` but wikipedia.py was never updated. All five key handler branches were silently dead. Fixed by renaming all three key strings to match SDK canonical names. Also added `capability_request("net.http")` in `on_init` (converted to async) — on fresh profiles the permission store withholds net.http until the user grants consent, so HTTP calls fail before ever being tried.
