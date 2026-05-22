@@ -206,28 +206,10 @@ fn render_inspector_header(
     let mut want_close = false;
     let mut use_pane_dir = false;
 
+    // Render the RTL close button BEFORE the greedy title/input widget so egui's
+    // left-to-right layout doesn't let the greedy widget consume all available width
+    // and push the close button off-screen.
     ui.horizontal(|ui| {
-        if renaming {
-            let te_id = egui::Id::new("inspector_rename_input");
-            // Do NOT call request_focus() here — focus is managed via the one-shot
-            // inspector_rename_focus_requested flag in draw_context_inspector, called
-            // AFTER all UI renders so it wins egui's last-caller-wins focus contest.
-            crate::widgets::styled_text_input(ui, rename_buffer, "Context name...", te_id, colors);
-        } else {
-            let name_resp = ui.add(
-                egui::Label::new(
-                    RichText::new(ctx_name)
-                        .size(style::TEXT_TITLE_XL)
-                        .color(colors.text_primary)
-                        .strong(),
-                )
-                .sense(egui::Sense::click()),
-            );
-            if name_resp.clicked() {
-                start_rename = true;
-            }
-            name_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .add(
@@ -243,6 +225,27 @@ fn render_inspector_header(
                 .clicked()
             {
                 want_close = true;
+            }
+            if renaming {
+                let te_id = egui::Id::new("inspector_rename_input");
+                // Do NOT call request_focus() here — focus is managed via the one-shot
+                // inspector_rename_focus_requested flag in draw_context_inspector, called
+                // AFTER all UI renders so it wins egui's last-caller-wins focus contest.
+                crate::widgets::styled_text_input(ui, rename_buffer, "Context name...", te_id, colors);
+            } else {
+                let name_resp = ui.add(
+                    egui::Label::new(
+                        RichText::new(ctx_name)
+                            .size(style::TEXT_TITLE_XL)
+                            .color(colors.text_primary)
+                            .strong(),
+                    )
+                    .sense(egui::Sense::click()),
+                );
+                if name_resp.clicked() {
+                    start_rename = true;
+                }
+                name_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
             }
         });
     });
