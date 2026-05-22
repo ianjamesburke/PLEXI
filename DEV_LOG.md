@@ -2,6 +2,22 @@
 
 Development log for PLEXI. Tracks root causes, non-obvious decisions, abandoned approaches, and environment quirks that git history won't capture. Entries are newest-first — most recent at the top.
 
+## 2026-05-22 — [FIX] Sync NSWindow appearance with Plexi theme to fix black title in light mode (PR #1656 → alpha)
+
+`with_titlebar_shown(false)` makes the title bar transparent but the OS still renders native title text using the window's `NSAppearance`. In system light mode, `NSWindow` defaults to light appearance, rendering the title text black — visible against Plexi's dark content showing through.
+
+Fix: send `ViewportCommand::SetTheme(Dark/Light)` after `setup_style()` on startup and config hot-reload. This calls winit's `window.set_theme()` → `[window setAppearance: NSAppearanceNameDarkAqua]`, forcing white title text (hidden against dark background).
+
+**Breaks if:** Title text appears black/visible in the titlebar area when macOS system is set to light mode.
+
+## 2026-05-22 — [FIX] FocusLayer sync methods switched from pop to retain (PR #1655 → alpha)
+
+Seven `sync_*_focus()` methods used `pop_focus_layer()` to remove their layer on close. `pop_focus_layer` only removes the top entry — if another layer was pushed above the target before its source state cleared, the buried entry survived and could later regain keyboard ownership after the top layer was dismissed.
+
+Fixed by replacing `pop_focus_layer` with `focus_stack.retain(|l| *l != <layer>)` in all seven methods. `sync_cli_setup_prompt_focus`, `sync_context_inspector_focus`, and `sync_capability_modal_focus` already used `retain` — this brings the remaining methods into alignment.
+
+**Breaks if:** Closing an overlay (command palette, rename pane, close confirmation, etc.) leaves keyboard input blocked in the terminal — the old buried layer entry regained ownership.
+
 ## 2026-05-21 — [FIX] CapabilityModal promoted to FocusLayer (PR #1621 → alpha)
 
 Pressing Escape (or any key) inside the capability consent modal had no effect. Root cause: `show_prompt_modal` was called in step 5 (pane render), after `dispatch_app_key_events` (step 4) had already consumed any key — the modal never saw the keystroke.
