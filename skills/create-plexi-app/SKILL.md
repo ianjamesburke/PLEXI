@@ -200,31 +200,60 @@ on_timer(ctx, timer_id)   task — from emit.set_timer()
 
 ## Dev loop
 
+### Where apps live
+
+Three populations — three locations:
+
+| Population | Location | Notes |
+|---|---|---|
+| Core (ships with Plexi) | `~/Documents/GitHub/PLEXI/apps/` | Checked in, bundled at build time |
+| Personal daily-use | `~/.plexi-alpha/apps/<name>/` | Global registry, never git-cleaned |
+| Third-party / published | future `plexi app install` | Not yet implemented |
+
+**Personal apps must never be scaffolded inside a git repo.** The PLEXI workspace root shadows the global registry — if `.plexi-alpha/apps/<name>/` exists inside the repo, it wins over `~/.plexi-alpha/apps/<name>/` and gets wiped by git clean.
+
+### Scaffolding personal apps (correct pattern)
+
+The home/root guard blocks `plexi app init` in `~/` directly. Use a neutral staging dir:
+
 ```bash
-# 1. Scaffold (app lands in <cwd>/.plexi/apps/<app-name>/ — registered immediately):
+mkdir -p /tmp/plexi-scaffold && cd /tmp/plexi-scaffold
 <plexi-binary> app init <app-name>
-
-# 2. Implement main.py
-
-# 3. Render to PNG and visually verify — REQUIRED before surfacing to user:
-<plexi-binary> app render <app-id> --output /tmp/<app-id>.png
-# Read /tmp/<app-id>.png with the Read tool. Inspect layout, text, colors.
-# Fix issues, re-render, repeat until the screenshot looks correct.
-
-# 4. Only after render passes — open for the user:
-<plexi-binary> open <app-id> --layout split_h
-
-# Tail logs:
-tail -f ~/.plexi-<channel>/plexi.log
+# App lands in ~/.plexi-alpha/apps/<app-name>/ — global registry, always accessible
 ```
 
-**Render verify is mandatory.** Never surface an app to the user without first rendering it headlessly, reading the PNG, and confirming it looks correct. This is the agent's quality gate — not an optional step.
+Do NOT scaffold from inside `~/Documents/GitHub/PLEXI` or any other git workspace — it creates a local shadow entry.
 
-**`app render` reads from the workspace where the app is registered** (the `<cwd>/.plexi/apps/` dir). Run it from the same directory you ran `app init`. If the render fails with a "skipping" warning, the app isn't registered — confirm you're running from the right directory.
+### Scaffolding core apps (correct pattern)
 
-**Pyright variance warnings on SDK list types are benign.** `List[Component]` is invariant; passing `list[Label]` to `Card([...])` triggers Pyright but works at runtime. Do not restructure correct code to silence these warnings.
+```bash
+mkdir -p ~/Documents/GitHub/PLEXI/apps/<app-name>
+# Hand-scaffold is fine here since it's source code, not a runtime registry entry
+# Copy an existing app as template
+```
 
-**Never run `<plexi-binary> open` from a Claude Code pane** — it blocks the session. Instruct the user to open it from a separate terminal pane. The `layout_hint` in the manifest handles positioning automatically.
+### After scaffolding — open immediately
+
+After `app init`, always open the app in a split pane so the user sees hot reload working:
+
+```bash
+# In a separate terminal pane (not Claude Code's pane — it blocks):
+<plexi-binary> open <app-id>
+```
+
+Tell the user: "Open this in your terminal pane — do NOT run it from Claude Code's pane or it will block."
+
+`watch = true` in the manifest handles file-change hot reload automatically. The dev loop is: edit `main.py` → save → pane updates.
+
+### Render verify (mandatory before surfacing to user)
+
+```bash
+<plexi-binary> app render <app-id> --output /tmp/<app-id>.png
+# Read /tmp/<app-id>.png with the Read tool. Inspect layout, text, colors.
+# Fix issues, re-render, repeat until correct.
+```
+
+**Never surface an app to the user without passing render verify first.**
 
 ---
 
