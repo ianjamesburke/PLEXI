@@ -255,26 +255,25 @@ impl<'a> TerminalView<'a> {
                     } = &event
                     {
                         // Cmd+A: select all content from scrollback top to current cursor,
-                        // copy to clipboard, then restore scroll position. No-op in alt-screen
-                        // (vim, less, etc.) where the full screen is a TUI, not scrollback.
-                        if key_mods.command && !key_mods.shift && !key_mods.ctrl && !key_mods.alt {
-                            let (is_alt_screen, display_offset, cursor_line, screen_lines, cell_height) = {
+                        // copy to clipboard, then restore the user's original scroll position.
+                        // In alt-screen (vim, less, TUIs) pass the key through unchanged.
+                        if key_mods.command_only() {
+                            let (is_alt_screen, display_offset, cursor_line, cell_height) = {
                                 let content = self.backend.last_content();
                                 (
                                     content.terminal_mode.contains(TermMode::ALT_SCREEN),
                                     content.grid.display_offset(),
                                     content.grid.cursor.point.line.0,
-                                    content.terminal_size.screen_lines(),
                                     content.terminal_size.cell_height as f32,
                                 )
                             };
                             let ppp = layout.ctx.pixels_per_point();
                             if !is_alt_screen {
-                                let line_in_viewport =
-                                    ((cursor_line + display_offset as i32).max(0) as usize)
-                                        .min(screen_lines.saturating_sub(1));
-                                let cursor_y = line_in_viewport as f32 * cell_height;
-                                // Anchor selection at cursor (bottom of content to copy).
+                                // Scroll to bottom first so the cursor is in the viewport at its
+                                // natural position (display_offset=0 → cursor_y = cursor_line * cell_h).
+                                self.backend.process_command(BackendCommand::ScrollToBottom);
+                                let cursor_y = cursor_line as f32 * cell_height;
+                                // Anchor selection at the cursor row.
                                 self.backend.process_command(BackendCommand::SelectStart(
                                     SelectionType::Lines, 0.0, cursor_y, ppp,
                                 ));
@@ -289,9 +288,21 @@ impl<'a> TerminalView<'a> {
                                     layout.ctx.copy_text(text);
                                 }
                                 self.backend.process_command(BackendCommand::ClearSelection);
+                                // Restore original scroll position.
                                 self.backend.process_command(BackendCommand::ScrollToBottom);
+                                if display_offset > 0 {
+                                    self.backend.process_command(BackendCommand::Scroll(display_offset as i32));
+                                }
+                                input_actions.push(InputAction::Ignore);
+                            } else {
+                                // Alt-screen: let the key reach the TUI.
+                                input_actions.push(process_keyboard_event(
+                                    event,
+                                    self.backend,
+                                    &self.bindings_layout,
+                                    modifiers,
+                                ));
                             }
-                            input_actions.push(InputAction::Ignore);
                         } else {
                             input_actions.push(process_keyboard_event(
                                 event,
