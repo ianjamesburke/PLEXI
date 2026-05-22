@@ -53,6 +53,33 @@ gh issue view <number> --json title,body,labels --jq '{title: .title, body: .bod
 
 ## Step 2 — Create PR
 
+**Lightweight PR detection:**
+```bash
+ISSUE_LABELS=$(gh issue view <number> --json labels --jq '[.labels[].name] | join(",")')
+LIGHTWEIGHT=false
+if echo "$ISSUE_LABELS" | grep -q "bundle"; then
+  LIGHTWEIGHT=true
+fi
+```
+
+**PR body — lightweight path:** When `LIGHTWEIGHT=true`, add the CodeRabbit ignore directive and a minimal body:
+```bash
+PR_URL=$(gh pr create \
+  --base alpha \
+  --head <branch> \
+  --title "<issue-title> (#<number>)" \
+  --body "$(cat <<'EOF'
+<!-- coderabbitai:ignore -->
+Closes #<number>
+
+## Summary
+
+<2-3 bullet points summarizing what changed and why>
+EOF
+)")
+```
+
+**PR body — standard path:** Full body with Done When and Notes:
 ```bash
 PR_URL=$(gh pr create \
   --base alpha \
@@ -94,7 +121,15 @@ _PROJ_ITEM=$(gh api graphql -f query='query($n:Int!){repository(owner:"ianjamesb
 
 ## Step 3 — AI Review
 
-**Skip gate:**
+**Skip gate — lightweight PRs bypass AI review entirely:**
+```bash
+if [ "$LIGHTWEIGHT" = "true" ]; then
+  echo "[AI REVIEW] Skipped — bundle/lightweight PR. CodeRabbit suppressed via <!-- coderabbitai:ignore -->."
+  # Skip to Ship Log Append
+fi
+```
+
+**Skip gate — small diffs:**
 ```bash
 STAT_LINE=$(gh pr diff "$PR_NUMBER" --stat | tail -1)
 CHANGED_LINES=$(printf '%s\n' "$STAT_LINE" | grep -oE '[0-9]+ insertions?' | grep -oE '[0-9]+')

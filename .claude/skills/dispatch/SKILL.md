@@ -28,26 +28,22 @@ Auto-computes lane assignments from live GitHub issue state, writes `NEXT.md`, t
 
 ---
 
-## Step -1 — Stabilize alpha
+## Step -1 — Alpha gate check (inline, non-interactive)
 
-Before computing lanes, dispatch a stabilizer agent in a dedicated pane. The stabilizer must complete before any lane panes open.
+Run these two commands directly. If either returns output, STOP immediately — do not open any panes.
 
 ```bash
-PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}
-STABILIZER_ID=$($PLEXI terminal --layout new_window --no-focus)
-$PLEXI pane name $STABILIZER_ID "stabilizer"
-$PLEXI pane send $STABILIZER_ID 'c "Stabilize alpha before dispatch. Do all of the following in order:
-1. git fetch origin
-2. Check git status — if alpha has uncommitted changes or unstaged diffs, show the user what's dirty and ask: commit these changes now, stash them, or abort dispatch? Do not proceed until alpha is clean.
-3. git pull --rebase origin alpha — if conflicts, STOP and report.
-4. List open PRs targeting alpha: gh pr list --base alpha --json number,title,mergeable,statusCheckRollup. For any PR that is mergeable and all checks pass: report it as ready to merge — do NOT merge automatically.
-5. List worktrees: wtp list. Flag any worktree whose branch has no open PR as stale — do NOT delete.
-6. Run: cargo check --quiet 2>&1 | tail -5 to confirm alpha compiles.
-7. Print ALPHA READY if all checks pass, or ALPHA BLOCKED with a summary.
-"\n'
+git status --porcelain
+git log origin/alpha..HEAD --oneline
 ```
 
-Do not proceed until the stabilizer pane prints `ALPHA READY`.
+If `git status --porcelain` has output: print `ALPHA BLOCKED — working tree is dirty. Run stabilize-alpha first.` and stop.
+
+If `git log origin/alpha..HEAD` has output: print `ALPHA BLOCKED — unpushed commits on alpha. Run stabilize-alpha first.` and stop.
+
+If both return empty: proceed to Step 0.
+
+> This is a gate, not a fixer. Stabilize-alpha is the separate pre-dispatch command that handles commits, rebases, PR review, and cargo check. Dispatch trusts that gate was already cleared.
 
 ---
 
@@ -158,7 +154,7 @@ If the pane has an active Claude session, close it and open a fresh one. Never `
 
 ## Notes
 
-- **Step -1 is mandatory.** Never skip the stabilizer. If alpha is dirty, dispatch will fail across all lanes.
+- **Step -1 is mandatory.** If alpha is dirty or has unpushed commits, dispatch stops immediately. Run `stabilize-alpha` first — it's a separate command that handles commits, rebases, and cargo check.
 - **Channel binary:** `PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}` — stable sets no `$PLEXI_CHANNEL`, resolves to `plexi`. Never hardcode a channel name.
 - **Scripts** in `scripts/` own all pane mechanics. Run them; don't reconstruct bash by hand.
 - `c` is a zsh alias (login shell) — available in all interactive panes opened by Plexi.
