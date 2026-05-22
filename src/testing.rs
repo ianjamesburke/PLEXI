@@ -950,4 +950,76 @@ mod tests {
         );
     }
 
+    // -- QuickNote paste (#1637) -----------------------------------------------
+
+    /// Regression guard for #1637: Cmd+V (paste) while QuickNote is open must
+    /// land in `quick_note_text`, not fall through to the terminal pane behind
+    /// the overlay.
+    ///
+    /// The fix: `draw_quick_note_modal` explicitly consumes `egui::Event::Paste`
+    /// via `ctx.input_mut` and inserts the text at the cursor position, rather
+    /// than relying on the TextEdit's internal event processing (which depends on
+    /// focus being fully settled by the time the TextEdit renders).
+    #[test]
+    fn quick_note_paste_inserts_into_note_text() {
+        let mut h = HostHarness::new();
+
+        // Open QuickNote.
+        h.app.push_focus_layer(crate::app::FocusLayer::QuickNote);
+
+        // Run two idle frames so the overlay and focus fully settle.
+        h.run_frames(2);
+
+        // Inject a paste event in the next frame.
+        h.frame(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1280.0, 800.0),
+            )),
+            events: vec![egui::Event::Paste("hello world".into())],
+            ..Default::default()
+        });
+
+        assert_eq!(
+            h.app.quick_note_text,
+            "hello world",
+            "Pasted text must appear in quick_note_text after a Paste event with QuickNote open"
+        );
+    }
+
+    /// After a paste event with QuickNote open, `quick_note_text` must be
+    /// updated AND the `Paste` event must not be present in the queue for
+    /// downstream readers (terminal backends, poll_actions).
+    #[test]
+    fn quick_note_paste_consumed_from_queue() {
+        let mut h = HostHarness::new();
+
+        h.app.push_focus_layer(crate::app::FocusLayer::QuickNote);
+        h.run_frames(2);
+
+        // Inject paste + a non-input event that must survive.
+        h.app.ctx.input_mut(|i| {
+            i.events.push(egui::Event::Paste("test".into()));
+            i.events.push(egui::Event::PointerMoved(egui::pos2(50.0, 50.0)));
+        });
+
+        // Run the overlay draw + drain directly (same path as a full frame).
+        let ctx = h.app.ctx.clone();
+        h.app.draw_quick_note_modal(&ctx);
+        h.app.drain_captured_keyboard_input(&ctx);
+
+        // Paste event must be gone.
+        h.app.ctx.input(|i| {
+            assert!(
+                !i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))),
+                "Paste event must be consumed before terminal backends see it"
+            );
+            // Non-input event must survive.
+            assert!(
+                i.events.iter().any(|e| matches!(e, egui::Event::PointerMoved(_))),
+                "Non-input events must not be drained"
+            );
+        });
+    }
+
 }
