@@ -5066,14 +5066,26 @@ mod secret_set_tests {
 /// Sends SIGTERM to all processes matching the current binary name, excluding
 /// the calling process. Works without `PLEXI_SOCKET` so it's usable from SSH
 /// sessions where the user got trapped in the GUI.
+#[cfg(unix)]
 pub fn kill_cli() -> i32 {
-    let binary_name = std::env::args()
-        .next()
-        .as_deref()
-        .and_then(|p| std::path::Path::new(p).file_name())
-        .and_then(|n| n.to_str())
-        .unwrap_or("plexi")
-        .to_string();
+    // Use current_exe() — not args[0] — so an alias or symlink can't cause
+    // the binary name to match a system utility like `sh` or `ls`.
+    let binary_name = match std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+    {
+        Some(name) if name.starts_with("plexi") => name,
+        Some(name) => {
+            log::error!("kill:cli: refusing to kill non-plexi binary name={name:?}");
+            eprintln!("error: binary name {name:?} does not start with 'plexi' — refusing to kill");
+            return 1;
+        }
+        None => {
+            log::error!("kill:cli: could not determine binary name from current_exe");
+            eprintln!("error: could not determine binary name");
+            return 1;
+        }
+    };
 
     log::info!("kill:cli: sending SIGTERM to {binary_name}");
 
@@ -5151,6 +5163,12 @@ pub fn kill_cli() -> i32 {
         println!("Plexi stopped.");
         0
     }
+}
+
+#[cfg(not(unix))]
+pub fn kill_cli() -> i32 {
+    eprintln!("error: plexi kill is not supported on this platform");
+    1
 }
 
 #[cfg(test)]

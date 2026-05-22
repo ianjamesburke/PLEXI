@@ -535,10 +535,10 @@ fn main() -> eframe::Result {
         std::process::exit(0);
     }
 
-    // Bare `plexi` with no subcommand and no workspace path: show help and
-    // exit. Prevents trapping SSH users in the TUI with no escape hatch.
-    // `plexi <path>` still launches the GUI (adopted_root is Some).
-    if !cli_mode && adopted_root.is_none() {
+    // Bare `plexi` with no args: show help and exit. Prevents trapping SSH
+    // users in the TUI with no escape hatch. Guard on args.len() == 1 so
+    // `plexi --profile alpha` (global flag, no path) still launches the GUI.
+    if !cli_mode && adopted_root.is_none() && args.len() == 1 {
         use clap::CommandFactory;
         let _ = Cli::command().print_help();
         println!();
