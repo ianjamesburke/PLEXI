@@ -100,10 +100,48 @@ pub(crate) fn render_draw_commands(
                 max_width,
                 elide,
                 selectable,
+                max_lines,
             } => {
                 let color = parse_color(color).unwrap_or(colors.text_primary);
                 let family = font_family_for_text(*monospace);
                 let font_id = egui::FontId::new(*size, family.clone());
+
+                // max_lines: wrap text at max_width (or pane width) and clip to n rows with "…"
+                if let Some(n) = max_lines {
+                    if *n == 0 {
+                        continue;
+                    }
+                    let wrap_w = max_width
+                        .filter(|w| *w > 0.0)
+                        .unwrap_or((pane_rect.max.x - (origin.x + x)).max(1.0));
+                    let galley = ui.fonts(|f| {
+                        f.layout(text.clone(), font_id.clone(), color, wrap_w)
+                    });
+                    let final_text: std::borrow::Cow<str> = if galley.rows.len() > *n as usize {
+                        let mut lo = 0usize;
+                        let mut hi = text.chars().count();
+                        while lo + 1 < hi {
+                            let mid = (lo + hi) / 2;
+                            let candidate: String = text.chars().take(mid).collect::<String>() + "…";
+                            let g = ui.fonts(|f| f.layout(candidate, font_id.clone(), color, wrap_w));
+                            if g.rows.len() <= *n as usize {
+                                lo = mid;
+                            } else {
+                                hi = mid;
+                            }
+                        }
+                        std::borrow::Cow::Owned(text.chars().take(lo).collect::<String>() + "…")
+                    } else {
+                        std::borrow::Cow::Borrowed(text.as_str())
+                    };
+                    let final_galley = ui.fonts(|f| {
+                        f.layout(final_text.to_string(), font_id.clone(), color, wrap_w)
+                    });
+                    let pos = egui::pos2(origin.x + x, origin.y + y);
+                    ui.painter().with_clip_rect(clip).galley(pos, final_galley, color);
+                    continue;
+                }
+
                 let pos = egui::pos2(origin.x + x, origin.y + y);
                 let anchor = match align.as_str() {
                     "center" => egui::Align2::CENTER_CENTER,
@@ -484,6 +522,65 @@ pub(crate) fn render_draw_commands(
                     );
                     painter.galley(text_pos, galley, colors.text_dim);
                 }
+            }
+
+            RenderCommand::Avatar { src, cx, cy, radius } => {
+                if src.starts_with("http://") || src.starts_with("https://") {
+                    image_cache.request_url(src, net_http_granted);
+                } else {
+                    image_cache.request(src, workspace_root);
+                }
+                let center = egui::pos2(origin.x + cx, origin.y + cy);
+                let painter = ui.painter().with_clip_rect(clip);
+                if let Some(handle) = image_cache.get(src) {
+                    let tex_id = handle.id();
+                    let n_segs: u32 = 48;
+                    let mut mesh = egui::Mesh::with_texture(tex_id);
+                    // Centre vertex (UV 0.5, 0.5)
+                    mesh.vertices.push(egui::epaint::Vertex {
+                        pos: center,
+                        uv: egui::pos2(0.5, 0.5),
+                        color: egui::Color32::WHITE,
+                    });
+                    // Perimeter vertices
+                    for i in 0..=n_segs {
+                        let angle = i as f32 / n_segs as f32 * std::f32::consts::TAU;
+                        let cos = angle.cos();
+                        let sin = angle.sin();
+                        mesh.vertices.push(egui::epaint::Vertex {
+                            pos: egui::pos2(center.x + cos * radius, center.y + sin * radius),
+                            uv: egui::pos2(0.5 + cos * 0.5, 0.5 + sin * 0.5),
+                            color: egui::Color32::WHITE,
+                        });
+                    }
+                    // Triangle fan: centre=0, perimeter i+1..i+2
+                    for i in 0..n_segs {
+                        mesh.indices.push(0);
+                        mesh.indices.push(i + 1);
+                        mesh.indices.push(i + 2);
+                    }
+                    painter.add(egui::Shape::Mesh(std::sync::Arc::new(mesh)));
+                } else {
+                    // Placeholder: filled circle with muted color
+                    painter.circle_filled(center, *radius, egui::Color32::from_rgb(0x3a, 0x3a, 0x4a));
+                }
+            }
+
+            RenderCommand::Skeleton { x, y, w, h, radius } => {
+                let t = ui.input(|i| i.time) as f32;
+                let alpha = 0.4 + 0.25 * (t * std::f32::consts::TAU * 0.8).sin();
+                let fill = egui::Color32::from_rgba_unmultiplied(0x45, 0x47, 0x5a, (alpha * 255.0) as u8);
+                let rect = egui::Rect::from_min_size(
+                    egui::pos2(origin.x + x, origin.y + y),
+                    egui::vec2(*w, *h),
+                );
+                ui.painter().with_clip_rect(clip).rect_filled(
+                    rect,
+                    egui::CornerRadius::same(*radius as u8),
+                    fill,
+                );
+                // Drive animation — request repaint at ~20fps while skeleton is visible
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
             }
 
             // AudioMeter (#341): renders a live peak-amplitude bar driven by

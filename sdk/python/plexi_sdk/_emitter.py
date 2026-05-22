@@ -948,6 +948,31 @@ class Emitter:
         return handle
 
     @_blocking_emit_method
+    async def measure_text_wrapped(self, text: str, font_size: float,
+                                    max_width: float,
+                                    max_lines: "int | None" = None) -> float:
+        """Measure the height of text wrapped at max_width using real host font metrics.
+
+        If `max_lines` is set, clamps the result to that many rows.
+        Returns height in logical pixels. Requires a running app loop.
+        """
+        request_id = str(uuid.uuid4())
+        q: asyncio.Queue[float] = _make_async_queue()
+        self._app._pending_measure_text_wrapped[request_id] = q
+        payload: dict = {"type": "measure_text_wrapped", "request_id": request_id,
+                         "text": text, "font_size": font_size, "max_width": max_width}
+        if max_lines is not None:
+            payload["max_lines"] = max_lines
+        _emit(payload)
+        try:
+            return await asyncio.wait_for(q.get(), timeout=10.0)
+        except asyncio.TimeoutError:
+            self._app._pending_measure_text_wrapped.pop(request_id, None)
+            raise RuntimeError(
+                f"measure_text_wrapped timed out after 10s (request_id={request_id!r})"
+            )
+
+    @_blocking_emit_method
     async def ai_query(self, model_tier: str, system: str,
                        messages: "list[dict]",
                        tools: "list[dict] | None" = None) -> AiResponse:

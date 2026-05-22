@@ -188,6 +188,13 @@ pub enum PlexiEvent {
         width: f32,
         height: f32,
     },
+    /// Response to a `ControlCommand::MeasureTextWrapped` request.
+    /// `height` is the pixel height of the text when wrapped at the requested width,
+    /// clamped to `max_lines` rows if specified.
+    TextWrappedMeasured {
+        request_id: String,
+        height: f32,
+    },
     /// User pressed Enter inside a `DrawCommand::TextInput` field.
     ///
     /// `id` matches the `id` the app supplied on the `TextInput` command.
@@ -585,6 +592,8 @@ pub enum RenderCommand {
         max_width: Option<f32>,
         elide: bool,
         selectable: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_lines: Option<u32>,
     },
     /// Draw a line segment.
     Line {
@@ -753,6 +762,27 @@ pub enum RenderCommand {
         /// One of: "contain" | "cover" | "fill". Default: "contain".
         #[serde(default = "default_image_fit")]
         fit: String,
+    },
+
+    /// Circular clipped image. `src` accepts a load_image handle (UUID) or local path.
+    /// `cx`, `cy` are the circle centre in pane-local coordinates.
+    /// `radius` is the circle radius in logical pixels.
+    Avatar {
+        src: String,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+    },
+
+    /// Animated shimmer placeholder rect for loading states.
+    /// The host drives a subtle pulsing animation at ~20fps using request_repaint_after.
+    Skeleton {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        #[serde(default = "default_skeleton_radius")]
+        radius: f32,
     },
 
     /// Render an amplitude meter reading from a binary pipe.
@@ -1524,6 +1554,17 @@ pub enum ControlCommand {
         #[serde(default)]
         monospace: bool,
     },
+    /// Measure the height of `text` wrapped at `max_width` using real host font metrics.
+    /// If `max_lines` is Some(n), clamps the measurement to n rows.
+    /// Replies with `PlexiEvent::TextWrappedMeasured { request_id, height }`.
+    MeasureTextWrapped {
+        request_id: String,
+        text: String,
+        font_size: f32,
+        max_width: f32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_lines: Option<u32>,
+    },
     /// Override the manifest-declared minimum size at runtime.
     /// Stored by the host and used as the live effective minimum from this
     /// point forward, superseding the manifest `[launch]` values.
@@ -1727,6 +1768,9 @@ fn default_text_input_h() -> f32 {
     24.0
 }
 
+fn default_skeleton_radius() -> f32 {
+    4.0
+}
 
 #[cfg(test)]
 mod tests {
@@ -2972,5 +3016,155 @@ mod tests {
             serde_json::from_str::<DrawCommand>(bad).is_err(),
             "must fail without required description field"
         );
+    }
+
+    // ── feed-quality primitives wire shape (#1607) ────────────────────────
+    // Pin wire contracts for TextWrappedMeasured, MeasureTextWrapped, Avatar,
+    // Skeleton, and Text::max_lines.
+
+    #[test]
+    fn text_wrapped_measured_event_round_trips_serde() {
+        let json = r#"{"type":"text_wrapped_measured","request_id":"req-wrap-1","height":48.5}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::TextWrappedMeasured { request_id, height } => {
+                assert_eq!(request_id, "req-wrap-1");
+                assert!((height - 48.5).abs() < 0.001);
+            }
+            other => panic!("expected TextWrappedMeasured, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(serialised.contains(r#""type":"text_wrapped_measured""#), "wire tag missing: {serialised}");
+        assert!(serialised.contains(r#""request_id":"req-wrap-1""#), "request_id missing: {serialised}");
+        assert!(serialised.contains(r#""height":"#), "height missing: {serialised}");
+    }
+
+    #[test]
+    fn text_wrapped_measured_missing_height_fails_deserialise() {
+        let json = r#"{"type":"text_wrapped_measured","request_id":"req-wrap-2"}"#;
+        let result: Result<PlexiEvent, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "must fail without required height field");
+    }
+
+    #[test]
+    fn measure_text_wrapped_command_round_trips_serde() {
+        let json = r#"{"type":"measure_text_wrapped","request_id":"req-mw-1","text":"hello world","font_size":14.0,"max_width":300.0,"max_lines":3}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Control(ControlCommand::MeasureTextWrapped {
+                request_id, text, font_size, max_width, max_lines,
+            }) => {
+                assert_eq!(request_id, "req-mw-1");
+                assert_eq!(text, "hello world");
+                assert!((font_size - 14.0).abs() < 0.001);
+                assert!((max_width - 300.0).abs() < 0.001);
+                assert_eq!(*max_lines, Some(3));
+            }
+            other => panic!("expected MeasureTextWrapped, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""type":"measure_text_wrapped""#), "wire tag missing: {serialised}");
+    }
+
+    #[test]
+    fn measure_text_wrapped_without_max_lines_round_trips_serde() {
+        let json = r#"{"type":"measure_text_wrapped","request_id":"req-mw-2","text":"hi","font_size":12.0,"max_width":200.0}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Control(ControlCommand::MeasureTextWrapped { max_lines, .. }) => {
+                assert_eq!(*max_lines, None, "max_lines should be absent");
+            }
+            other => panic!("expected MeasureTextWrapped, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn measure_text_wrapped_missing_required_field_fails_deserialise() {
+        // No `max_width` field — required, must fail.
+        let json = r#"{"type":"measure_text_wrapped","request_id":"r","text":"hi","font_size":12.0}"#;
+        let result: Result<DrawCommand, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "must fail without required max_width field");
+    }
+
+    #[test]
+    fn avatar_render_command_round_trips_serde() {
+        let json = r#"{"type":"avatar","src":"abc-handle","cx":24.0,"cy":36.0,"radius":20.0}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Render(RenderCommand::Avatar { src, cx, cy, radius }) => {
+                assert_eq!(src, "abc-handle");
+                assert!((cx - 24.0).abs() < 0.001);
+                assert!((cy - 36.0).abs() < 0.001);
+                assert!((radius - 20.0).abs() < 0.001);
+            }
+            other => panic!("expected Avatar, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""type":"avatar""#), "wire tag missing: {serialised}");
+        assert!(serialised.contains(r#""src":"abc-handle""#), "src missing: {serialised}");
+    }
+
+    #[test]
+    fn avatar_missing_required_field_fails_deserialise() {
+        // No `radius` — required, must fail.
+        let json = r#"{"type":"avatar","src":"h","cx":0.0,"cy":0.0}"#;
+        let result: Result<DrawCommand, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "must fail without required radius field");
+    }
+
+    #[test]
+    fn skeleton_render_command_round_trips_serde() {
+        let json = r#"{"type":"skeleton","x":10.0,"y":20.0,"w":200.0,"h":16.0}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Render(RenderCommand::Skeleton { x, y, w, h, radius }) => {
+                assert!((x - 10.0).abs() < 0.001);
+                assert!((y - 20.0).abs() < 0.001);
+                assert!((w - 200.0).abs() < 0.001);
+                assert!((h - 16.0).abs() < 0.001);
+                assert!((radius - 4.0).abs() < 0.001, "default radius should be 4.0");
+            }
+            other => panic!("expected Skeleton, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""type":"skeleton""#), "wire tag missing: {serialised}");
+    }
+
+    #[test]
+    fn skeleton_with_explicit_radius_round_trips_serde() {
+        let json = r#"{"type":"skeleton","x":0.0,"y":0.0,"w":100.0,"h":8.0,"radius":8.0}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Render(RenderCommand::Skeleton { radius, .. }) => {
+                assert!((radius - 8.0).abs() < 0.001);
+            }
+            other => panic!("expected Skeleton, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn text_max_lines_present_round_trips_serde() {
+        let json = r##"{"type":"text","x":0.0,"y":0.0,"text":"hello","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"top_left","max_width":null,"elide":false,"selectable":false,"max_lines":3}"##;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Render(RenderCommand::Text { max_lines, text, .. }) => {
+                assert_eq!(*max_lines, Some(3));
+                assert_eq!(text, "hello");
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn text_max_lines_absent_deserialises_to_none() {
+        // max_lines is #[serde(default)] so absence → None, not an error.
+        let json = r##"{"type":"text","x":0.0,"y":0.0,"text":"hi","size":14.0,"color":"#fff","monospace":false,"bold":false,"align":"top_left","max_width":null,"elide":false,"selectable":false}"##;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Render(RenderCommand::Text { max_lines, .. }) => {
+                assert_eq!(*max_lines, None, "absent max_lines should be None");
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
     }
 }

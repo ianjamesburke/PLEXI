@@ -317,6 +317,7 @@ pub(crate) fn portal_responsive_tiers(
             max_width: None,
             elide: false,
             selectable: false,
+            max_lines: None,
         }),
     };
 
@@ -332,6 +333,7 @@ pub(crate) fn portal_responsive_tiers(
             max_width: None,
             elide: false,
             selectable: false,
+            max_lines: None,
         }),
     };
 
@@ -347,6 +349,7 @@ pub(crate) fn portal_responsive_tiers(
             max_width: None,
             elide: false,
             selectable: false,
+            max_lines: None,
         }),
     };
 
@@ -369,6 +372,7 @@ pub(crate) fn portal_responsive_tiers(
                 max_width: None,
                 elide: false,
                 selectable: false,
+                max_lines: None,
             }),
         }
     }).collect();
@@ -422,6 +426,7 @@ pub(crate) fn portal_responsive_tiers(
                 max_width: None,
                 elide: false,
                 selectable: false,
+                max_lines: None,
             }),
         },
         LayoutChild::Leaf {
@@ -436,6 +441,7 @@ pub(crate) fn portal_responsive_tiers(
                 max_width: None,
                 elide: false,
                 selectable: false,
+                max_lines: None,
             }),
         },
     ];
@@ -452,6 +458,7 @@ pub(crate) fn portal_responsive_tiers(
                 max_width: None,
                 elide: false,
                 selectable: false,
+                max_lines: None,
             }),
         });
     }

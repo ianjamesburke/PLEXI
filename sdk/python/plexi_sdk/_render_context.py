@@ -135,7 +135,8 @@ class RenderContext:
              align: str = "top_left",
              max_width: "float | None" = None,
              elide: bool = True,
-             selectable: bool = False) -> None:
+             selectable: bool = False,
+             max_lines: "int | None" = None) -> None:
         """Draw text. `align` controls how `(x, y)` maps to the text box:
 
           - "top_left" (default) — (x, y) is the top-left corner.
@@ -159,10 +160,13 @@ class RenderContext:
         so the host always has required fields (no serde defaults). The SDK
         fills in None / True / False when the caller omits them.
         """
-        self._queue({"type": "text", "x": x, "y": y, "text": text, "size": size,
-                     "color": color, "monospace": monospace, "bold": bold,
-                     "align": align, "max_width": max_width, "elide": elide,
-                     "selectable": selectable})
+        d: dict = {"type": "text", "x": x, "y": y, "text": text, "size": size,
+                   "color": color, "monospace": monospace, "bold": bold,
+                   "align": align, "max_width": max_width, "elide": elide,
+                   "selectable": selectable}
+        if max_lines is not None:
+            d["max_lines"] = max_lines
+        self._queue(d)
 
     def markdown(self, x: float, y: float, w: float, text: str,
                  base_size: float = 14.0, color: str = FG) -> None:
@@ -370,6 +374,60 @@ class RenderContext:
         _emit({"type": "measure_text", "request_id": request_id,
                "text": text, "font_size": font_size, "monospace": monospace})
         return await q.get()
+
+    async def measure_text_wrapped(self, text: str, font_size: float,
+                                    max_width: float,
+                                    max_lines: "int | None" = None) -> float:
+        """Measure the height of `text` wrapped at `max_width` using real host font metrics.
+
+        If `max_lines` is set, clamps the result to that many rows.
+        Returns height in logical pixels.
+
+        Call at data-load time (once per item), not inside on_render() — each call
+        is an async IPC roundtrip.
+        """
+        import uuid as _uuid
+        request_id = str(_uuid.uuid4())
+        from ._emitter import _make_async_queue
+        q: asyncio.Queue[float] = _make_async_queue()
+        self._app._pending_measure_text_wrapped[request_id] = q
+        if self._buf:
+            with _LOCK:
+                sys.stdout.write("".join(self._buf))
+                sys.stdout.flush()
+            self._buf.clear()
+        payload: dict = {"type": "measure_text_wrapped", "request_id": request_id,
+                         "text": text, "font_size": font_size, "max_width": max_width}
+        if max_lines is not None:
+            payload["max_lines"] = max_lines
+        _emit(payload)
+        try:
+            return await asyncio.wait_for(q.get(), timeout=10.0)
+        except asyncio.TimeoutError:
+            self._app._pending_measure_text_wrapped.pop(request_id, None)
+            raise RuntimeError(
+                f"measure_text_wrapped timed out after 10s (request_id={request_id!r})"
+            )
+
+    def avatar(self, src: str, x: float, y_center: float, radius: float) -> None:
+        """Render a circular clipped image.
+
+        `src` accepts a handle from `emit.load_image()` or a local file path.
+        `x` is the left edge of the circle's bounding box (circle centre = x + radius).
+        `y_center` is the vertical centre of the circle.
+        `radius` is the circle radius in logical pixels.
+        """
+        self._queue({"type": "avatar", "src": src,
+                     "cx": x + radius, "cy": y_center, "radius": radius})
+
+    def skeleton(self, x: float, y: float, w: float, h: float,
+                 radius: float = 4.0) -> None:
+        """Render an animated shimmer placeholder rect for loading states.
+
+        The host drives a ~20fps pulsing animation — no app-side timer needed.
+        """
+        self._queue({"type": "skeleton", "x": x, "y": y, "w": w, "h": h,
+                     "radius": radius})
 
     def push_clip(self, x: float, y: float, w: float, h: float) -> None:
         """Push a clip rect onto the host's clip stack.

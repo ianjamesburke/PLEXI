@@ -153,6 +153,8 @@ class App:
         self._pending_command_preview: "dict[str, asyncio.Queue]" = {}
         # RenderContext.measure_text: awaits PlexiEvent::TextMeasured keyed on request_id.
         self._pending_measure_text: "dict[str, asyncio.Queue]" = {}
+        # RenderContext.measure_text_wrapped: awaits PlexiEvent::TextWrappedMeasured.
+        self._pending_measure_text_wrapped: "dict[str, asyncio.Queue]" = {}
         self._pipes: dict[str, Pipe] = {}
         self._last_render_time: "float | None" = None
         self._consecutive_render_errors: int = 0
@@ -685,6 +687,12 @@ class App:
                             float(ev.get("width", 0.0)),
                             float(ev.get("height", 0.0)),
                         ))
+
+                elif t == "text_wrapped_measured":
+                    req_id = ev.get("request_id", "")
+                    q = self._pending_measure_text_wrapped.pop(req_id, None)
+                    if q:
+                        q.put_nowait(float(ev.get("height", 0.0)))
 
                 # ── Inline non-hook events (fast, no user code) ──────────────
 
