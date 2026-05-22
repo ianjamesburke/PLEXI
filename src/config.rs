@@ -691,9 +691,8 @@ pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
             log::info!("open_file_with_fallback: opened {} (args: {:?})", path.display(), args);
             return true;
         }
-        if !args.is_empty() {
-            log::warn!("open_file_with_fallback: opener {:?} failed for {}, trying next", args, path.display());
-        }
+        let opener_desc = if args.is_empty() { "system default".to_string() } else { format!("{:?}", args) };
+        log::warn!("open_file_with_fallback: opener {} failed for {}, trying next", opener_desc, path.display());
     }
     false
 }
