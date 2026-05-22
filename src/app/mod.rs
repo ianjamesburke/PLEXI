@@ -667,6 +667,9 @@ impl PlexiApp {
         let colors = Colors::from_config(&theme_cfg);
         let dark_mode = !theme::is_light_preset(config.theme_preset.as_deref().unwrap_or(""));
         theme::setup_style(&cc.egui_ctx, &colors, dark_mode);
+        let window_theme = if dark_mode { egui::SystemTheme::Dark } else { egui::SystemTheme::Light };
+        cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(window_theme));
+        log::info!("theme: set_window_theme dark_mode={dark_mode}");
 
         let (tx, rx) = mpsc::channel();
 
@@ -4656,6 +4659,9 @@ impl PlexiApp {
             self.colors = new_colors.clone();
             let dark_mode = !crate::theme::is_light_preset(fresh.theme_preset.as_deref().unwrap_or(""));
             crate::theme::setup_style(&self.ctx, &new_colors, dark_mode);
+            let window_theme = if dark_mode { egui::SystemTheme::Dark } else { egui::SystemTheme::Light };
+            self.ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(window_theme));
+            log::info!("theme: set_window_theme dark_mode={dark_mode} (config reload)");
         }
 
         // Terminal theme
