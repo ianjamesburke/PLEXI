@@ -14,7 +14,7 @@
 pub(crate) mod image_cache;
 mod lifecycle;
 pub(crate) mod mcp_server;
-mod prompts;
+pub(crate) mod prompts;
 pub(crate) mod render;
 mod render_session;
 mod routing;
@@ -1406,34 +1406,6 @@ impl App for ProcessApp {
                 DrawCommand::Host(h) => self.route_command(h),
                 DrawCommand::Render(r) => self.pending_frame.push(r),
             }
-        }
-
-        if !self.pending_prompts.is_empty() {
-            let mut pending_prompts = std::mem::take(&mut self.pending_prompts);
-            let mut outbound_events = std::mem::take(&mut self.outbound_events);
-            let mut permissions = std::mem::take(&mut self.permissions);
-            let mut secret_input_buf = std::mem::take(&mut self.secret_input_buf);
-            let mut permission_store = std::mem::take(&mut self.permission_store);
-            let type_id = self.type_id.clone();
-            let workspace_root = self.workspace_root.clone();
-            let config_dir = crate::config::config_dir();
-            prompts::show_prompt_modal(
-                ui,
-                &mut pending_prompts,
-                &mut outbound_events,
-                &mut permissions,
-                &type_id,
-                &workspace_root,
-                &mut secret_input_buf,
-                &config_dir,
-                &mut permission_store,
-                ctx.colors,
-            );
-            self.pending_prompts = pending_prompts;
-            self.outbound_events = outbound_events;
-            self.permissions = permissions;
-            self.secret_input_buf = secret_input_buf;
-            self.permission_store = permission_store;
         }
 
         // Render the current committed frame.

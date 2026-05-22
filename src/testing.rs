@@ -815,4 +815,90 @@ mod tests {
         );
     }
 
+    // -- Capability modal focus layer -----------------------------------------
+
+    /// Regression guard for #1596: Escape must reach the capability consent
+    /// modal and fire deny_once. Before the fix, `dispatch_app_key_events` ran
+    /// in step 3 of `update()`, the focused app consumed any key (returning
+    /// `consumed = true`), which caused the host to steal Escape from the
+    /// input state — the modal in step 4 saw nothing. After the fix the modal
+    /// renders in step 2 with exclusive keyboard ownership.
+    ///
+    /// Observable invariants checked (all follow from a successful deny_once):
+    /// 1. `CapabilityModal` is on the focus stack while a prompt is queued.
+    /// 2. After Escape, `pending_prompts` is empty (prompt was popped).
+    /// 3. After Escape, `CapabilityModal` is removed from the focus stack
+    ///    (sync_capability_modal_focus pops it when the queue drains).
+    #[test]
+    fn capability_modal_escape_fires_deny_once() {
+        use crate::app::FocusLayer;
+        use crate::process_app::PendingPrompt;
+        use crate::pane::AppRuntime;
+
+        let mut h = HostHarness::new();
+        let pane = h.add_test_pane();
+
+        // Set the pane as the focused pane so sync_capability_modal_focus finds it.
+        let tile_id = {
+            let win = &h.app.windows[0];
+            win.tree.tiles.iter()
+                .find_map(|(id, tile)| match tile {
+                    egui_tiles::Tile::Pane(p) if *p == pane => Some(id),
+                    _ => None,
+                })
+                .expect("test pane must have a tile")
+        };
+        h.app.windows[0].focused_pane = Some(*tile_id);
+
+        // Queue a capability prompt directly on the pane's ProcessApp.
+        {
+            let win = &mut h.app.windows[0];
+            let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+                panic!("expected App pane");
+            };
+            let AppRuntime::Process(ref mut proc) = app_pane.runtime else {
+                panic!("expected Process runtime");
+            };
+            proc.pending_prompts.push_back(PendingPrompt::Capability {
+                request_id: "req-cap-1".to_string(),
+                capability: "net.http".to_string(),
+            });
+        }
+
+        // One idle frame: sync_capability_modal_focus should push the layer.
+        h.run_frames(1);
+        assert!(
+            h.app.focus_stack.iter().any(|l| *l == FocusLayer::CapabilityModal),
+            "CapabilityModal must be on the focus stack when the focused pane has pending prompts"
+        );
+
+        // Send Escape. The modal must consume it and pop the prompt (deny_once).
+        h.key(egui::Key::Escape, egui::Modifiers::NONE);
+
+        // pending_prompts must be empty — Escape triggered deny_once, which pops
+        // the front of the queue. If it's still non-empty, the modal didn't see Escape.
+        let prompts_empty = {
+            let win = &h.app.windows[0];
+            let Some(Pane::App(app_pane)) = win.panes.get(&pane) else {
+                panic!("expected App pane");
+            };
+            let AppRuntime::Process(ref proc) = app_pane.runtime else {
+                panic!("expected Process runtime");
+            };
+            proc.pending_prompts.is_empty()
+        };
+        assert!(
+            prompts_empty,
+            "pending_prompts must be empty after Escape — deny_once must have consumed the prompt. \
+             If non-empty, dispatch_app_key_events stole Escape before the modal could read it."
+        );
+
+        // CapabilityModal must have been popped from the focus stack since
+        // sync_capability_modal_focus removes it when pending_prompts drains.
+        assert!(
+            !h.app.focus_stack.iter().any(|l| *l == FocusLayer::CapabilityModal),
+            "CapabilityModal must be removed from the focus stack after deny_once drains the queue"
+        );
+    }
+
 }

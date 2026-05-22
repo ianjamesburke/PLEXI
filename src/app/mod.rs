@@ -88,6 +88,11 @@ pub(crate) enum FocusLayer {
     TextInput,
     /// Close-context confirmation dialog with pane inventory and dissolve option.
     ContextCloseConfirm,
+    /// Capability / secret consent modal for a focused ProcessApp pane.
+    /// Promoted to the focus stack when the focused pane has pending prompts,
+    /// so the modal renders in step 2 of `update()` with exclusive keyboard
+    /// ownership — before `dispatch_app_key_events` can steal Escape.
+    CapabilityModal,
 }
 
 /// What a `TextInputOverlay` commit should do.
@@ -2273,6 +2278,7 @@ impl eframe::App for PlexiApp {
         self.sync_cli_setup_prompt_focus();
         self.sync_context_inspector_focus();
         self.sync_text_input_focus();
+        self.sync_capability_modal_focus();
 
         // If an overlay owns input, render it FIRST so its widgets (the
         // notification modal's TextEdit for the `input` kind, the palette's
@@ -2324,6 +2330,9 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::ContextCloseConfirm) => {
                     self.draw_context_close_confirm(ctx);
                 }
+                Some(FocusLayer::CapabilityModal) => {
+                    self.draw_capability_modal(ctx);
+                }
                 None => {}
             }
             self.drain_captured_keyboard_input(ctx);
@@ -2340,6 +2349,7 @@ impl eframe::App for PlexiApp {
             self.sync_cli_setup_prompt_focus();
             self.sync_context_inspector_focus();
             self.sync_text_input_focus();
+            self.sync_capability_modal_focus();
         }
 
         // Apps only receive key input if nothing is capturing above them.
@@ -4300,6 +4310,7 @@ impl PlexiApp {
                 | Some(FocusLayer::ContextInspector)
                 | Some(FocusLayer::TextInput)
                 | Some(FocusLayer::ContextCloseConfirm)
+                | Some(FocusLayer::CapabilityModal)
         )
     }
 
@@ -4819,6 +4830,71 @@ impl PlexiApp {
             self.push_focus_layer(FocusLayer::TextInput);
         } else if !should_own && has_layer {
             self.pop_focus_layer(&FocusLayer::TextInput);
+        }
+    }
+
+    /// Push/pop `FocusLayer::CapabilityModal` based on whether the focused
+    /// ProcessApp pane has pending prompts. Called every frame (both before
+    /// and after the overlay render block) so the layer tracks prompt state
+    /// without polling lag.
+    pub(crate) fn sync_capability_modal_focus(&mut self) {
+        let should_own = self.focused_pane_has_pending_prompts();
+        let has_layer = self
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::CapabilityModal);
+        let is_top = matches!(self.focus_stack.last(), Some(FocusLayer::CapabilityModal));
+        if should_own && !is_top {
+            // Push to top (re-promoting from buried position if already in stack).
+            self.focus_stack.retain(|l| *l != FocusLayer::CapabilityModal);
+            log::info!("capability_modal: focus captured — pending prompts on focused pane");
+            self.push_focus_layer(FocusLayer::CapabilityModal);
+        } else if !should_own && has_layer {
+            log::info!("capability_modal: focus released — prompt queue drained");
+            self.focus_stack.retain(|l| *l != FocusLayer::CapabilityModal);
+        }
+    }
+
+    /// Returns true when the focused ProcessApp pane has at least one pending prompt.
+    ///
+    /// `win.focused_pane` holds a `TileId`. After egui_tiles renders a bare-pane
+    /// root for the first time it wraps that tile in a Container, so the stored
+    /// TileId may now refer to a Container instead of a Pane. `find_pane_in_tile`
+    /// descends through any Container layer to reach the actual pane.
+    fn focused_pane_has_pending_prompts(&self) -> bool {
+        let win = &self.windows[self.active_window];
+        let focused_tile = match win.focused_pane {
+            Some(t) => t,
+            None => return false,
+        };
+        let pane_id = match Self::find_pane_in_tile(&win.tree, focused_tile) {
+            Some(id) => id,
+            None => return false,
+        };
+        match win.panes.get(&pane_id) {
+            Some(crate::pane::Pane::App(app_pane)) => {
+                match &app_pane.runtime {
+                    crate::pane::AppRuntime::Process(proc) => !proc.pending_prompts.is_empty(),
+                    crate::pane::AppRuntime::Builtin(_) => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Walk a tile tree node and return the first `PaneId` found within it.
+    /// Handles the case where `tile_id` is a Container wrapping the actual pane
+    /// (egui_tiles normalises bare-pane roots into containers on first render).
+    pub(crate) fn find_pane_in_tile(
+        tree: &egui_tiles::Tree<crate::tiling::PaneId>,
+        tile_id: egui_tiles::TileId,
+    ) -> Option<crate::tiling::PaneId> {
+        match tree.tiles.get(tile_id)? {
+            egui_tiles::Tile::Pane(id) => Some(*id),
+            egui_tiles::Tile::Container(c) => c
+                .children()
+                .copied()
+                .find_map(|child| Self::find_pane_in_tile(tree, child)),
         }
     }
 
