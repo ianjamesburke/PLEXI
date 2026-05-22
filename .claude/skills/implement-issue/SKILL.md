@@ -17,14 +17,16 @@ Phase 1 of the ship pipeline. Output: a pushed feature branch ready for `/open-p
 | `/implement-issue P1` | First unblocked at that priority |
 | `/implement-issue <n> <m> [...]` | Bundle — implement multiple issues in one branch |
 
-On completion, **append a Ship Log entry to the issue body** (see Ship Log Format below) and output:
+On completion, **append a Ship Log entry to the issue body**, set pipeline labels (see Pipeline Labels below), and output:
 
 ```
 [IMPLEMENTED] Issue #<n>
 Branch: feature/<n>-short-description
 Files changed: <N>
-Next: /open-pr feature/<n>-short-description
+Pipeline: pipeline:open-pr + ready set — PM will dispatch /open-pr on next run
 ```
+
+> **Labels are the live state.** Never read the Ship Log to determine pipeline stage — read the issue labels. Ship Log is audit trail only.
 
 ---
 
@@ -106,7 +108,7 @@ Then: `git pull --rebase origin alpha`
 
 **Label + pane setup:**
 ```bash
-gh issue edit <number> --add-label "in progress"
+gh issue edit <number> --add-label "in progress" --add-label "pipeline:implement"
 IMPL_PANE=$PLEXI_PANE_ID
 plexi pane name "#<number> — <short-title>"
 _PROJ_ITEM=$(gh api graphql -f query='query($n:Int!){repository(owner:"ianjamesburke",name:"PLEXI"){issue(number:$n){projectItems(first:5){nodes{id project{id}}}}}}' -F n=<number> --jq '.data.repository.issue.projectItems.nodes[]|select(.project.id=="PVT_kwHOAkOgys4BXaQY")|.id')
@@ -251,6 +253,22 @@ else
 fi
 gh issue edit <number> --body "$NEW_BODY"
 ```
+
+---
+
+## Pipeline Labels
+
+After pushing and writing the Ship Log, set pipeline state:
+
+```bash
+gh issue edit <number> \
+  --add-label "pipeline:open-pr" \
+  --add-label "ready" \
+  --remove-label "pipeline:implement" \
+  --remove-label "in progress"
+```
+
+This is the only handoff mechanism. Never spawn a new pane or output "Next: /open-pr" as an instruction — PM reads the label and dispatches.
 
 ---
 

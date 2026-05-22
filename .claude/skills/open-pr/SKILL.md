@@ -15,14 +15,16 @@ Phase 2 of the ship pipeline. Input: a pushed feature branch. Output: PR URL rea
 - `/open-pr <branch-name>` — explicit branch (e.g. `feature/1234-something`)
 - `/open-pr <pr-number>` — re-run AI review on an existing PR, skip PR creation
 
-On completion, **append to the issue body's Ship Log** (see Ship Log Append below) and output:
+On completion, **append to the issue body's Ship Log**, set pipeline labels (see Pipeline Labels below), and output:
 
 ```
 [PR OPENED] PR #<n> — <title>
 PR: <url>
 AI Review: <N> fixes applied | no changes needed
-Next: /validate-pr <pr-number>
+Pipeline: pipeline:validate + ready set — PM will dispatch /validate-pr on next run
 ```
+
+> **Labels are the live state.** Never read the Ship Log to determine pipeline stage — read the issue labels. Ship Log is audit trail only.
 
 ---
 
@@ -104,9 +106,10 @@ EOF
 PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
 ```
 
-Update pane title:
+Update pane title and pipeline label:
 ```bash
 plexi pane name "#<number> / PR #${PR_NUMBER} — <short-title>"
+gh issue edit <number> --add-label "in progress" --remove-label "pipeline:implement" --add-label "pipeline:open-pr" 2>/dev/null || true
 ```
 
 Update project board to "In Review":
@@ -210,6 +213,22 @@ CURRENT_BODY=$(gh issue view <number> --json body --jq '.body')
 # Append the PR line to the most recent Ship Log entry
 gh issue edit <number> --body "<updated body>"
 ```
+
+---
+
+## Pipeline Labels
+
+After writing the Ship Log, set pipeline state:
+
+```bash
+gh issue edit <number> \
+  --add-label "pipeline:validate" \
+  --add-label "ready" \
+  --remove-label "pipeline:open-pr" \
+  --remove-label "in progress"
+```
+
+This is the only handoff mechanism. Never spawn a new pane or output "Next: /validate-pr" as an instruction — PM reads the label and dispatches.
 
 ---
 
