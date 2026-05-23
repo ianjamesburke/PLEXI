@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.493"
+verified_version: "0.0.494"
 order: 7
 ---
 
@@ -305,7 +305,14 @@ With one argument, renames the current pane: plexi pane name "My Project" With t
 
 ### `plexi pane list`
 
-List all open panes as a JSON array
+List all open panes as a JSON array.
+
+Filter by context with --context <id> or --current (reads PLEXI_CONTEXT_ID).
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--context` | string | no | Only return panes belonging to this context ID |
+| `--current` | flag | no | Only return panes in the caller's context (reads PLEXI_CONTEXT_ID from env) |
 
 ### `plexi pane focus`
 
