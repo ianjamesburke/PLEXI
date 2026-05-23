@@ -31,7 +31,9 @@ last_marker() {
 
 pane_alive() {
   local pane_id=$1
-  plexi pane list | jq -e ".[] | select(.id == $pane_id)" > /dev/null 2>&1
+  local output
+  output=$(plexi pane list 2>/dev/null) || return 0  # host busy/timeout → assume still alive
+  echo "$output" | jq -e ".[] | select(.id == $pane_id)" > /dev/null 2>&1
 }
 
 wait_for_pane_exit() {
