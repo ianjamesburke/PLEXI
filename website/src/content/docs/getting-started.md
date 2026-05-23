@@ -22,7 +22,7 @@ You'll be asked for your password. The script installs Plexi.app to /Application
 
 Download the `.dmg` from the [GitHub releases page](https://github.com/ianjamesburke/PLEXI/releases/latest), open it, and drag Plexi to your Applications folder.
 
-Note: the install script also sets up the CLI and shell completions automatically. If you install manually, you'll need to run `plexi cli install` after first launch.
+Note: the install script also sets up the CLI and shell completions automatically. If you install manually, open Plexi after dragging it to Applications — it will prompt you to install the CLI on first launch.
 </details>
 
 On first launch, Plexi will request Accessibility permission. This is required for context-aware features.
