@@ -13,7 +13,10 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-VERIFIED_VERSION = "3.6.54"
+VERIFIED_VERSION = "0.0.496"
+
+# Methods removed from the public API — excluded from generated docs.
+EXCLUDED_METHODS: set[str] = {"on_app_spawned"}
 
 
 def get_sdk_source() -> Path:
@@ -57,6 +60,8 @@ class DocExtractor:
         for node in class_node.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 if node.name.startswith("_"):
+                    continue
+                if node.name in EXCLUDED_METHODS:
                     continue
                 is_prop = any(
                     (isinstance(d, ast.Name) and d.id == "property")

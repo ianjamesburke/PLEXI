@@ -358,10 +358,10 @@ All methods are thread-safe (protected by a global write lock).
       `ai.query`, or RuntimeError on any other backend failure. Call from a
       background thread — the host may take seconds to reply.
 
-  emit.capability_request(capability) -> bool  [BLOCKING]
+  emit.capability_request(capability) -> None  [BLOCKING]
       Request a runtime capability (e.g. "net.http", "fs.write"). The host
       may show a permission prompt to the user. Blocks until granted or denied.
-      Returns True if granted. Call once at startup, not on every render.
+      Raises CapabilityDeniedError if denied. Call once at startup, not on every render.
 
   emit.cd_to(cwd)
       Request the host to cd all terminals in the same pane group to cwd.

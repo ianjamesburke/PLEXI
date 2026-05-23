@@ -70,7 +70,6 @@ PlexiEvent  (host → app):
   PipeOpened         — binary pipe ready; carries pipe_id and socket_path (Unix socket)
   PipeOverrun        — host dropped frames on a pipe; carries pipe_id and dropped_frames count
   PathChanged        — terminal cwd broadcast; carries cwd string
-  AppSpawned         — confirmation that a SpawnApp request completed; carries pane_id and type_id
   PaneSpawned        — confirmation that a SpawnPane request completed; carries pane_id
   PaneSpawnError     — SpawnPane could not be fulfilled; carries reason
   InjectState        — host-initiated state injection; carries payload dict
@@ -101,7 +100,6 @@ DrawCommand (app → host):
   PipeSend      — send a JSON payload on a json-mode pipe
   StatusSummary — set the status bar summary text for this pane
   ScheduleRender — ask the host to send a Render event after N milliseconds
-  SpawnApp      — [DEPRECATED: use SpawnPane instead] request the host to open a new pane with a given app type
   SpawnPane     — request the host to open a pane with given app, layout, args, and optional pipe_id
   CdRequest     — request the host to cd all terminals in the pane group to a path
   Ready         — sent automatically after Init; do not emit manually
@@ -415,7 +413,6 @@ App EVENT HANDLERS (override in your subclass)
   on_pipe_message(self, ctx, pipe_id, payload)  — on PipeMessage (json-mode pipe)
   on_path_changed(self, ctx, cwd)               — on PathChanged broadcast
   on_inject(self, ctx, payload)                 — on InjectState from the host
-  on_app_spawned(self, pane_id, type_id)        — on AppSpawned confirmation
   on_suspend(self)                              — on Suspend (app hidden/backgrounded)
   on_resume(self)                               — on Resume (app visible again)
   on_shutdown(self)                             — on Shutdown (clean up before exit)

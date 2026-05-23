@@ -101,7 +101,7 @@ Example pie slice: arc(cx, cy, r, 0, math.pi * 0.5, fill="#ff0000")
 ### `text`
 
 ```python
-def text(x: float, y: float, text: str, size: float, color: str, monospace: bool = False, bold: bool = False, align: str = 'top_left', max_width: 'float | None' = None, elide: bool = True, selectable: bool = False) -> None
+def text(x: float, y: float, text: str, size: float, color: str, monospace: bool = False, bold: bool = False, align: str = 'top_left', max_width: 'float | None' = None, elide: bool = True, selectable: bool = False, max_lines: 'int | None' = None) -> None
 ```
 
 Draw text. `align` controls how `(x, y)` maps to the text box:
@@ -165,7 +165,10 @@ DrawCommand::Image for this to render.
 def copy_to_clipboard(text: str) -> None
 ```
 
-Convenience shortcut for `emit.copy_to_clipboard(text)` (#146).
+Write `text` to the OS clipboard via the host.
+
+Uses _emit (immediate write) rather than _queue so this works from
+on_key and other hook handlers where frame_done() is never called.
 
 ---
 
@@ -308,6 +311,49 @@ multiple badges horizontally). Avoid on hot render paths — prefer
 passing `max_width` on `ctx.text()` for simple truncation.
 
 Must be called with ``await`` from an async hook.
+
+---
+
+### `measure_text_wrapped`
+
+```python
+async def measure_text_wrapped(text: str, font_size: float, max_width: float, max_lines: 'int | None' = None) -> float
+```
+
+Measure the height of `text` wrapped at `max_width` using real host font metrics.
+
+If `max_lines` is set, clamps the result to that many rows.
+Returns height in logical pixels.
+
+Call at data-load time (once per item), not inside on_render() — each call
+is an async IPC roundtrip.
+
+---
+
+### `avatar`
+
+```python
+def avatar(src: str, x: float, y_center: float, radius: float) -> None
+```
+
+Render a circular clipped image.
+
+`src` accepts a handle from `emit.load_image()` or a local file path.
+`x` is the left edge of the circle's bounding box (circle centre = x + radius).
+`y_center` is the vertical centre of the circle.
+`radius` is the circle radius in logical pixels.
+
+---
+
+### `skeleton`
+
+```python
+def skeleton(x: float, y: float, w: float, h: float, radius: float = 4.0) -> None
+```
+
+Render an animated shimmer placeholder rect for loading states.
+
+The host drives a ~20fps pulsing animation — no app-side timer needed.
 
 ---
 
