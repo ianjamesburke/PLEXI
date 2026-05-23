@@ -146,7 +146,6 @@ fn main() -> eframe::Result {
             "run", "secret", "app", "workspace", "notify", "pane", "terminal",
             "open", "install", "uninstall", "update", "list", "pack",
             "descriptor", "registry", "validate", "context", "completions", "config",
-            "kill",
         ];
         !a.starts_with('-') && CLI_SUBCOMMANDS.contains(&a.as_str())
     });
@@ -499,7 +498,6 @@ fn main() -> eframe::Result {
                         Some(NotesCmd::List) | None => std::process::exit(cli::notes_list_cli()),
                         Some(NotesCmd::Open) => std::process::exit(cli::notes_open_cli()),
                     },
-                    Commands::Kill => std::process::exit(cli::kill_cli()),
                 }
             }
             // No subcommand — fall through to workspace path check, then GUI
@@ -535,18 +533,10 @@ fn main() -> eframe::Result {
         std::process::exit(0);
     }
 
-    // Bare `plexi` with no args: show help and exit. Prevents trapping SSH
-    // users in the TUI with no escape hatch. Guard on args.len() == 1 so
-    // `plexi --profile alpha` (global flag, no path) still launches the GUI.
-    // Only trigger when stdin is a TTY — when macOS launches the app bundle
-    // from Finder/Spotlight/Dock, stdin is /dev/null (not a TTY), so we skip
-    // this branch and let the GUI start normally.
-    use std::io::IsTerminal;
-    if !cli_mode && adopted_root.is_none() && args.len() == 1 && std::io::stdin().is_terminal() {
-        use clap::CommandFactory;
-        let _ = Cli::command().print_help();
-        println!();
-        std::process::exit(0);
+    // When invoked with no arguments outside Plexi, print a brief launch
+    // notice so the terminal isn't silent for first-time users (#1515).
+    if !cli_mode && adopted_root.is_none() {
+        println!("Starting Plexi — run 'plexi --help' to see available commands.");
     }
 
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))
@@ -622,7 +612,6 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         "config",
         "routine",
         "notes",
-        "kill",
     ];
     let mut iter = args.iter().enumerate();
     // Skip argv[0] (binary name).
@@ -633,7 +622,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
             let _ = iter.next();
             continue;
         }
-        if a.starts_with('-') {
+        if a.starts_with("--") {
             continue;
         }
         if SUBCOMMANDS.contains(&a.as_str()) {
@@ -795,21 +784,6 @@ mod cli_tests {
         // `plexi --profile alpha` must not treat "alpha" as a path.
         let resolved = parse_workspace_path_arg(&argv(&["--profile", "alpha"]))
             .expect("flag-only argv should resolve");
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn plexi_dash_h_does_not_error_as_path() {
-        // `plexi -h` must be skipped as a flag, not treated as a workspace path.
-        let resolved = parse_workspace_path_arg(&argv(&["-h"]))
-            .expect("-h should be skipped as a flag, not error as a missing path");
-        assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn plexi_kill_subcommand_skipped_as_path() {
-        let resolved = parse_workspace_path_arg(&argv(&["kill"]))
-            .expect("kill subcommand should be recognized and skipped");
         assert!(resolved.is_none());
     }
 }
