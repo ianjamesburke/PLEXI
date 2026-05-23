@@ -1213,6 +1213,8 @@ impl ProcessApp {
             // owns the clipboard backend selection (pasteboard / X11 /
             // Wayland / Win32) — we just hand egui the string.
             ControlCommand::CopyToClipboard { text } => {
+                let preview = text.chars().take(80).collect::<String>();
+                log::info!(target: &format!("app::{}", self.type_id), "copy_to_clipboard: {} chars: {:?}", text.len(), preview);
                 ui.ctx().copy_text(text);
             }
             // MeasureText is handled here (not in routing.rs) because it

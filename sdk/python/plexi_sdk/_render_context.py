@@ -193,8 +193,12 @@ class RenderContext:
                      "fit": fit})
 
     def copy_to_clipboard(self, text: str) -> None:
-        """Convenience shortcut for `emit.copy_to_clipboard(text)` (#146)."""
-        self._queue({"type": "copy_to_clipboard", "text": text})
+        """Write `text` to the OS clipboard via the host.
+
+        Uses _emit (immediate write) rather than _queue so this works from
+        on_key and other hook handlers where frame_done() is never called.
+        """
+        _emit({"type": "copy_to_clipboard", "text": text})
 
     def badge(self, x: float, y_center: float, label: str,
               fill: str = ACCENT, fg: str = BG,
