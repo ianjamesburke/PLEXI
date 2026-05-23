@@ -12,14 +12,7 @@ Phase 4 of the ship pipeline. Input: approved PR number. Output: clean alpha at 
 
 **Entry:** `/merge-pr <pr-number>`
 
-On completion, appends final entry to the issue's Ship Log and outputs:
-
-```
-[COMPLETE]
-- Merged: PR #<n> — <title>
-- Closed: Issue #<n> — <title>
-- Version: v<x.y.z>
-```
+On completion, appends final entry to the issue's Ship Log, fires a notify, closes the pane, and outputs `[COMPLETE]` as the last line before close — never before.
 
 ---
 
@@ -183,11 +176,23 @@ Report any issues unblocked.
 
 ---
 
-## Step 10 — Notify and Close Pane
+## Step 10 — Complete and Close Pane
+
+`[COMPLETE]` is output here, as part of the close sequence — never earlier. Run this block in full before stopping.
 
 ```bash
 git status  # must be clean
 ```
+
+Print the completion marker:
+```
+[COMPLETE]
+- Merged: PR #<n> — <title>
+- Closed: Issue #<n> — <title>
+- Version: v<x.y.z>
+```
+
+Then immediately close — no stopping after the marker:
 
 **Clean exit (no deferred threads):**
 ```bash
@@ -208,6 +213,7 @@ plexi notify \
   --choice "a:Talk to Claude:pane_focus:$PLEXI_PANE_ID" \
   --choice "b:Approve all" \
   --choice "c:Skip all"
+# pane stays alive for user interaction — do NOT call plexi pane close here
 ```
 
 ---
