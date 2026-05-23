@@ -15,7 +15,7 @@ Phase 3 of the ship pipeline. Manages the test loop and all rejection paths.
 - `/validate-pr <pr-number> --attempt <n>` — resume at attempt N (used internally on soft-reject retry)
 
 **Outcomes:**
-- **Pass** → output `[VALIDATED] PR #<n>` → proceed to `/merge-pr <pr-number>`
+- **Pass** → append Ship Log, output `[VALIDATED]`, then immediately invoke `/merge-pr <pr-number>` — never stop between the two
 - **Soft reject** → push a fix commit, reinstall, re-run (max 3 attempts total)
 - **Hard reject** → close PR, rewrite issue body, clean up
 
@@ -150,11 +150,14 @@ Append to issue Ship Log:
 **Test date:** <YYYY-MM-DD>
 ```
 
-Output:
+Output the marker, then immediately invoke merge-pr — do not stop:
 ```
 [VALIDATED] PR #<n> — <title>
 Attempt: <N>/3
-Next: /merge-pr <n>
+```
+
+```
+/merge-pr <n>
 ```
 
 ### Modify
