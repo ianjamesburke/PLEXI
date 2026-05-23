@@ -666,7 +666,10 @@ pub fn apply_examples_pack_if_empty(
 ) -> Option<Vec<InstallOutcome>> {
     let is_empty = match std::fs::read_dir(target_root) {
         Ok(d) => d.flatten().next().is_none(),
-        Err(_) => true,
+        Err(e) => {
+            log::warn!("examples pack: cannot read apps dir {}: {e}", target_root.display());
+            true
+        }
     };
     if !is_empty {
         return None;
