@@ -1096,6 +1096,9 @@ pub enum AppRequest {
     /// List all open panes. Host writes a JSON array to `response_file`. Sent by `plexi pane list`.
     ListPanes {
         response_file: String,
+        /// When Some, only panes in this context are returned.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_id: Option<u64>,
     },
 
     /// Query info for a specific pane by ID. Host writes JSON object to `response_file`.

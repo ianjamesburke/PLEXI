@@ -1385,11 +1385,16 @@ impl PlexiApp {
                         log::warn!("pane_ipc: set_pane_title: pane_id={pane_id} not found");
                     }
                 }
-                crate::app_protocol::AppRequest::ListPanes { response_file } => {
-                    log::info!("pane_ipc: kind=list_panes response_file={:?}", response_file);
+                crate::app_protocol::AppRequest::ListPanes { response_file, context_id: filter_context_id } => {
+                    log::info!("pane_ipc: kind=list_panes context_id={:?} response_file={:?}", filter_context_id, response_file);
                     let active_win = self.active_window;
                     let mut entries: Vec<serde_json::Value> = Vec::new();
                     for (win_idx, win) in self.windows.iter().enumerate() {
+                        if let Some(cid) = filter_context_id {
+                            if win.context_id != *cid {
+                                continue;
+                            }
+                        }
                         let focused_pane_id = win.focused_pane
                             .and_then(|t| win.tree.tiles.get(t))
                             .and_then(|tile| {
