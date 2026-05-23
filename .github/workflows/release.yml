@@ -57,15 +57,27 @@ jobs:
           cd target/release/bundle/osx
           zip -r Plexi-${{ github.ref_name }}.zip Plexi.app skills
 
+      - name: Install git-cliff
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
+
+      - name: Extract release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        id: notes
+        run: |
+          notes=$(git-cliff --latest --strip header)
+          echo "body<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$notes" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
           files: target/release/bundle/osx/Plexi-${{ github.ref_name }}.zip
-          # Body intentionally omitted — git-cliff was producing 70+ commits of
-          # noise on fork releases (no upstream tag to bound `--latest` against).
-          # Curate manually after the run with:
-          #   gh release edit <tag> --repo zachristmas/PLEXI --notes-file notes.md
+          body: ${{ steps.notes.outputs.body }}
           prerelease: ${{ contains(github.ref_name, '-') }}
 
   build-windows:
