@@ -25,7 +25,7 @@ PREV_ID=$MY_PANE_ID
 LAYOUT=split_h
 
 for ISSUE in "$@"; do
-  PANE_ID=$($PLEXI terminal "c '/implement-issue $ISSUE'" \
+  PANE_ID=$($PLEXI terminal "c '/dispatch-issue $ISSUE'" \
     --layout $LAYOUT \
     --from-pane-id $PREV_ID \
     --cwd "$REPO_DIR" \
