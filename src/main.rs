@@ -538,7 +538,11 @@ fn main() -> eframe::Result {
     // Bare `plexi` with no args: show help and exit. Prevents trapping SSH
     // users in the TUI with no escape hatch. Guard on args.len() == 1 so
     // `plexi --profile alpha` (global flag, no path) still launches the GUI.
-    if !cli_mode && adopted_root.is_none() && args.len() == 1 {
+    // Only trigger when stdin is a TTY — when macOS launches the app bundle
+    // from Finder/Spotlight/Dock, stdin is /dev/null (not a TTY), so we skip
+    // this branch and let the GUI start normally.
+    use std::io::IsTerminal;
+    if !cli_mode && adopted_root.is_none() && args.len() == 1 && std::io::stdin().is_terminal() {
         use clap::CommandFactory;
         let _ = Cli::command().print_help();
         println!();
