@@ -1,7 +1,7 @@
 ---
 title: "Emitter"
 description: "Host commands, notifications, HTTP, secrets, and device APIs"
-verified_version: "3.6.54"
+verified_version: "0.0.496"
 ---
 
 # Emitter

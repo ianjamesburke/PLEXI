@@ -1,7 +1,7 @@
 ---
 title: Quick Note
 description: A scratch overlay for capturing thoughts without leaving your layout.
-verified_version: "3.6.19"
+verified_version: "0.0.496"
 order: 2
 ---
 

@@ -1,7 +1,7 @@
 ---
 title: Panes
 description: The Plexi layout model — panes and how to navigate them.
-verified_version: "3.6.19"
+verified_version: "0.0.496"
 order: 4
 ---
 
