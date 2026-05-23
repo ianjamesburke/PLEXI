@@ -255,19 +255,11 @@ gh issue edit <number> --body "$NEW_BODY"
 
 ---
 
-## Pipeline Labels
+## Chain to open-pr
 
-After pushing and writing the Ship Log, set pipeline state:
+After pushing and writing the Ship Log, invoke `/open-pr` inline — read and follow the open-pr skill now, in this same session. Pass the branch name explicitly.
 
-```bash
-gh issue edit <number> \
-  --add-label "pipeline:open-pr" \
-  --add-label "ready" \
-  --remove-label "pipeline:implement" \
-  --remove-label "in progress"
-```
-
-This is the only handoff mechanism. Never spawn a new pane or output "Next: /open-pr" as an instruction — PM reads the label and dispatches.
+Do not set pipeline labels. Do not stop. The chain continues: implement → open-pr → hand-off to validate-pr.
 
 ---
 

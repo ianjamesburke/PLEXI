@@ -213,6 +213,18 @@ gh issue edit <number> --body "<updated body>"
 
 ---
 
+## Exit — Hand Off to Validate
+
+After the Ship Log entry is written, immediately hand off to validate-pr in a new pane and close self:
+
+```
+/hand-off /validate-pr <pr-number>
+```
+
+The new pane starts fresh — clean context for reviewing the PR without implementation baggage. Do not hand off on error or hard-reject paths — those stop here.
+
+---
+
 ## Rules
 
 - Never push to alpha, beta, or main directly
