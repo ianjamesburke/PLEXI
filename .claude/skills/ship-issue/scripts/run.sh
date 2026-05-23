@@ -31,7 +31,7 @@ last_marker() {
 
 pane_alive() {
   local pane_id=$1
-  plexi pane list --json | jq -e ".[] | select(.id == $pane_id)" > /dev/null 2>&1
+  plexi pane list | jq -e ".[] | select(.id == $pane_id)" > /dev/null 2>&1
 }
 
 wait_for_pane_exit() {
@@ -46,9 +46,9 @@ wait_for_pane_exit() {
 
 spawn() {
   local cmd=$1
-  local pane_id
-  pane_id=$(plexi terminal -- bash -c "c '$cmd'; echo '[dispatch] pane done'; sleep 2" 2>/dev/null)
-  echo "$pane_id"
+  local repo_dir
+  repo_dir=$(git rev-parse --show-toplevel)
+  plexi terminal "c '$cmd'" --cwd "$repo_dir" --no-focus
 }
 
 notify_orch() {
