@@ -2458,19 +2458,41 @@ fn print_json_output(json_str: &str) -> i32 {
 /// Sends a `list_panes` command to PLEXI_SOCKET. The host writes a JSON array
 /// to a response file; this function polls for it and prints it to stdout.
 /// Returns 0 on success, 1 on error.
-pub fn pane_list_cli() -> i32 {
+pub fn pane_list_cli(context: Option<u64>, current: bool) -> i32 {
+    let context_id: Option<u64> = if current {
+        let raw = match std::env::var("PLEXI_CONTEXT_ID") {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("error: PLEXI_CONTEXT_ID is not set — run this inside a Plexi terminal pane");
+                return 1;
+            }
+        };
+        match raw.parse::<u64>() {
+            Ok(n) => Some(n),
+            Err(_) => {
+                eprintln!("error: PLEXI_CONTEXT_ID is not a valid number: {raw}");
+                return 1;
+            }
+        }
+    } else {
+        context
+    };
+
     let id = uuid::Uuid::new_v4();
     let response_file = crate::config::config_dir()
         .join(format!("pane-list-response-{id}.json"))
         .to_string_lossy()
         .into_owned();
 
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "type": "list_panes",
         "response_file": response_file,
     });
+    if let Some(cid) = context_id {
+        payload["context_id"] = serde_json::json!(cid);
+    }
 
-    log::info!("pane_list:cli: sending via socket response_file={:?}", response_file);
+    log::info!("pane_list:cli: sending via socket context_id={:?} response_file={:?}", context_id, response_file);
 
     let code = send_to_socket(payload);
     if code != 0 {

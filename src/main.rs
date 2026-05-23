@@ -367,7 +367,7 @@ fn main() -> eframe::Result {
                             };
                             std::process::exit(cli::pane_set_title_cli(pane_id, &name))
                         }
-                        PaneCmd::List => std::process::exit(cli::pane_list_cli()),
+                        PaneCmd::List { context, current } => std::process::exit(cli::pane_list_cli(context, current)),
                         PaneCmd::Focus { pane_id } => std::process::exit(cli::pane_focus_cli(pane_id)),
                         PaneCmd::Close { pane_id } => {
                             let id = match pane_id {

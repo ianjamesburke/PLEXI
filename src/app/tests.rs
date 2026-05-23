@@ -211,6 +211,7 @@ fn pane_list_excludes_orphaned_panes_and_navigate_succeeds() {
     let resp_file = std::env::temp_dir().join("plexi_test_pane_list_996.json");
     h.inject_ipc(crate::app_protocol::AppRequest::ListPanes {
         response_file: resp_file.to_string_lossy().to_string(),
+        context_id: None,
     });
     h.app.drain_pane_cmd_channel();
 

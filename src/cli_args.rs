@@ -403,7 +403,16 @@ pub enum PaneCmd {
         second: Option<String>,
     },
     /// List all open panes as a JSON array.
-    List,
+    ///
+    /// Filter by context with --context <id> or --current (reads PLEXI_CONTEXT_ID).
+    List {
+        /// Only return panes belonging to this context ID.
+        #[arg(long, conflicts_with = "current")]
+        context: Option<u64>,
+        /// Only return panes in the caller's context (reads PLEXI_CONTEXT_ID from env).
+        #[arg(long)]
+        current: bool,
+    },
     /// Move the visible focus to a specific pane.
     ///
     /// This moves what the user sees on screen — it does not change which pane an agent is running in.
