@@ -81,25 +81,40 @@ fn main() -> eframe::Result {
     let raw_args: Vec<String> = std::env::args().collect();
     let profile = parse_profile_flag(&raw_args);
     crate::config::set_profile(profile);
-    crate::config::ensure_profile_initialized();
+    let is_first_launch = crate::config::ensure_profile_initialized();
 
-    // #308 Phase 2: idempotently apply the bundled core pack to a freshly-
-    // empty apps dir. `ensure_profile_initialized` already seeds the dir on
-    // first profile creation; this catches the secondary case where someone
-    // wiped their apps dir but kept the rest of the profile config.
     {
         let apps_dir = crate::app_registry::apps_dir();
         let cloner = crate::install::GitCloner;
-        if let Some(outcomes) = crate::install::apply_core_pack_if_empty(&cloner, &apps_dir) {
-            let n_ok = outcomes
-                .iter()
-                .filter(|o| matches!(o.status, crate::install::InstallStatus::Installed(_)))
-                .count();
-            eprintln!("core pack: applied {} apps to {}", n_ok, apps_dir.display());
-            for o in &outcomes {
-                if let crate::install::InstallStatus::Failed(msg) = &o.status {
-                    eprintln!("core pack: FAILED {}: {msg}", o.id);
-                }
+
+        // On first launch, also seed the example apps.
+        if is_first_launch {
+            if let Some(outcomes) =
+                crate::install::apply_examples_pack_if_empty(&cloner, &apps_dir)
+            {
+                let n_ok = outcomes
+                    .iter()
+                    .filter(|o| matches!(o.status, crate::install::InstallStatus::Installed(_)))
+                    .count();
+                log::info!("examples pack: seeded {n_ok} apps to {}", apps_dir.display());
+            }
+        }
+
+        // Always re-seed any deleted core apps.
+        let core_outcomes = crate::install::apply_core_pack_always(&cloner, &apps_dir);
+        let n_installed = core_outcomes
+            .iter()
+            .filter(|o| matches!(o.status, crate::install::InstallStatus::Installed(_)))
+            .count();
+        if n_installed > 0 {
+            log::info!(
+                "core pack: re-seeded {n_installed} missing apps to {}",
+                apps_dir.display()
+            );
+        }
+        for o in &core_outcomes {
+            if let crate::install::InstallStatus::Failed(msg) = &o.status {
+                log::warn!("core pack: FAILED {}: {msg}", o.id);
             }
         }
     }

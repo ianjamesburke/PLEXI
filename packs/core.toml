@@ -1,29 +1,8 @@
-# Plexi core pack (#308 Phase 2). Embedded at compile time; applied
-# automatically on first launch when the channel apps dir is empty.
-#
-# Each entry sources from `local:<example-name>` — the host copies the
-# example tree out of the binary (`include_dir!("examples")`) into the
-# channel apps dir. No network required.
-#
-# This list is intentionally minimal: a few representative apps so a fresh
-# install has *something* working out of the box. Everything else is
-# discoverable via `plexi install <git-url>` or future registry browse.
-
 schema_version = 1
 
 [[app]]
-id      = "secrets-routing-tester"
-source  = "local:secrets-routing-tester"
-version = "bundled"
-
-[[app]]
-id      = "notification-tester"
-source  = "local:notification-tester"
-version = "bundled"
-
-[[app]]
-id      = "stand-up-reminder"
-source  = "local:stand-up-reminder"
+id      = "backlog"
+source  = "local:backlog"
 version = "bundled"
 
 [[app]]
@@ -32,46 +11,21 @@ source  = "local:quick-note"
 version = "bundled"
 
 [[app]]
+id      = "logs"
+source  = "local:logs"
+version = "bundled"
+
+[[app]]
+id      = "stats"
+source  = "local:stats"
+version = "bundled"
+
+[[app]]
 id      = "todo"
 source  = "local:todo"
 version = "bundled"
 
 [[app]]
-id      = "ui-playground"
-source  = "local:ui-playground"
+id      = "calc"
+source  = "local:calc"
 version = "bundled"
-
-# Video substrate POC (#345). Drives the mock decoder via
-# `video.playback`. Production AvfVideoDecoder still returns
-# NotImplemented until #346 lands real backing — launch with
-# `PLEXI_VIDEO=mock://gradient` to exercise the mock end to end.
-[[app]]
-id      = "video-player"
-source  = "local:video-player"
-version = "0.1.0"
-
-# Canvas Terminal Binding Primitives demo (#78 / v3.5 P1). Click any
-# button to drive a freshly-opened linked terminal: run a command,
-# inject a path token, preview a destructive command, open an
-# artifact in a pane / Finder. Capability: `terminal.bindings`.
-[[app]]
-id      = "canvas-terminal-bindings-test"
-source  = "local:canvas-terminal-bindings-test"
-version = "0.1.0"
-
-# GUI↔Terminal media bridge (#79 / v3.4 P2). Spawned by the file
-# browser when the user opens an audio file. Echoes the equivalent
-# ffplay/ffmpeg command into a linked terminal for every transport
-# action. Capabilities: `terminal.bindings`.
-[[app]]
-id      = "audio-player"
-source  = "local:audio-player"
-version = "0.1.0"
-
-# Audio bridge demo (#79 / v3.4 P2). Mic capture + live waveform +
-# linked-terminal echo of the equivalent ffmpeg command. Capabilities:
-# `audio.record`, `terminal.bindings`.
-[[app]]
-id      = "audio-bridge-test"
-source  = "local:audio-bridge-test"
-version = "0.1.0"

@@ -874,6 +874,10 @@ pub fn app_uninstall(id: &str, assume_yes: bool) -> i32 {
         eprintln!("error: app '{id}' not found");
         return 1;
     }
+    let core_ids = crate::install::core_pack_ids();
+    if core_ids.contains(id) {
+        eprintln!("note: '{id}' is a core app — it will be re-installed on the next Plexi launch");
+    }
     if !assume_yes {
         eprint!("Remove app '{id}'? [y/N]: ");
         let _ = io::stderr().flush();
@@ -2108,14 +2112,23 @@ pub fn list_cli() -> i32 {
     // version field — the registry only carries `manifest.version` at load time.
     let global_versions = crate::install::installed_versions(&crate::app_registry::apps_dir());
     let workspace_root = crate::app_registry::resolve_workspace_root(&cwd);
-    let mut globals = Vec::new();
-    let mut workspace = Vec::new();
+    let core_ids = crate::install::core_pack_ids();
+    let example_ids = crate::install::examples_pack_ids();
+    let mut globals: Vec<(String, String, String, &'static str)> = Vec::new();
+    let mut workspace: Vec<(String, String, String, &'static str)> = Vec::new();
     for app in installed {
         let version = global_versions
             .get(&app.manifest.id)
             .cloned()
             .unwrap_or_else(|| app.manifest.version.clone());
-        let row = (app.manifest.id.clone(), app.manifest.name.clone(), version);
+        let badge = if core_ids.contains(app.manifest.id.as_str()) {
+            "[core]"
+        } else if example_ids.contains(app.manifest.id.as_str()) {
+            "[example]"
+        } else {
+            ""
+        };
+        let row = (app.manifest.id.clone(), app.manifest.name.clone(), version, badge);
         match app.source {
             crate::app_registry::RegistrySource::Global => globals.push(row),
             crate::app_registry::RegistrySource::LocalApp
@@ -2125,16 +2138,24 @@ pub fn list_cli() -> i32 {
     }
     if !globals.is_empty() {
         println!("Global apps ({})", crate::app_registry::apps_dir().display());
-        for (id, name, version) in &globals {
-            println!("  {:30} {:30} {}", id, name, version);
+        for (id, name, version, badge) in &globals {
+            if badge.is_empty() {
+                println!("  {:30} {:30} {}", id, name, version);
+            } else {
+                println!("  {:30} {:30} {}  {}", id, name, version, badge);
+            }
         }
     }
     if !workspace.is_empty() {
         if let Some(root) = workspace_root {
             println!();
             println!("Workspace apps ({})", root.display());
-            for (id, name, version) in &workspace {
-                println!("  {:30} {:30} {}", id, name, version);
+            for (id, name, version, badge) in &workspace {
+                if badge.is_empty() {
+                    println!("  {:30} {:30} {}", id, name, version);
+                } else {
+                    println!("  {:30} {:30} {}  {}", id, name, version, badge);
+                }
             }
         }
     }

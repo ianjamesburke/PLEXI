@@ -130,7 +130,12 @@ mv "$profile_dir/sdk/plexi_sdk" "$profile_dir/sdk/plexi_sdk.old" 2>/dev/null || 
 mv "$profile_dir/sdk/plexi_sdk.tmp" "$profile_dir/sdk/plexi_sdk"
 rm -rf "$profile_dir/sdk/plexi_sdk.old" "$profile_dir/sdk/plexi_sdk.py"
 find "$profile_dir/sdk/plexi_sdk" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-rsync -a --delete examples/ "$profile_dir/apps/"
+# Seed core and example apps; alpha/PR builds also get dev-examples.
+rsync -a apps/core/ "$profile_dir/apps/"
+rsync -a apps/examples/ "$profile_dir/apps/"
+if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
+  rsync -a dev-examples/ "$profile_dir/apps/"
+fi
 find "$profile_dir/apps" -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
 find "$profile_dir/apps" -name '*.py' -exec chmod +x {} \;
 
@@ -184,6 +189,6 @@ install_skills
 echo "Installed $app_dest"
 echo "CLI: $bin_dest"
 echo "Config dir: $profile_dir/"
-echo "Apps: $(ls "$profile_dir/apps" | wc -l | tr -d ' ') synced from examples/"
+echo "Apps: $(ls "$profile_dir/apps" | wc -l | tr -d ' ') synced from apps/"
 echo ""
 echo "New to shell configuration? https://github.com/ianjamesburke/dotfiles has a starter setup and explanation."

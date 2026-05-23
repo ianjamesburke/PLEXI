@@ -1,0 +1,46 @@
+schema_version = 1
+
+[[app]]
+id      = "balls"
+source  = "local:balls"
+version = "bundled"
+
+[[app]]
+id      = "snake"
+source  = "local:snake"
+version = "bundled"
+
+[[app]]
+id      = "tetris"
+source  = "local:tetris"
+version = "bundled"
+
+[[app]]
+id      = "typing-tutor"
+source  = "local:typing-tutor"
+version = "bundled"
+
+[[app]]
+id      = "wikipedia"
+source  = "local:wikipedia"
+version = "bundled"
+
+[[app]]
+id      = "csv_viewer"
+source  = "local:csv_viewer"
+version = "bundled"
+
+[[app]]
+id      = "mind-map"
+source  = "local:mind-map"
+version = "bundled"
+
+[[app]]
+id      = "gh-projects"
+source  = "local:gh-projects"
+version = "bundled"
+
+[[app]]
+id      = "calendar"
+source  = "local:calendar"
+version = "bundled"

@@ -93,7 +93,7 @@ Report any errors or warnings before proceeding.
 
 **Spec gate:** Pass criteria map 1:1 to Done When checklist. No extra criteria.
 
-Check for existing POC app in `examples/`. Use it if present.
+Check for existing POC app in `apps/core/`, `apps/examples/`, or `dev-examples/`. Use it if present.
 
 **For multi-step or multi-pane tests:** write `test_pr<N>.py` at repo root.
 
