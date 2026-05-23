@@ -109,7 +109,7 @@ impl PlexiApp {
         workspace_root: PathBuf,
         group: Option<String>,
         hint: Option<&str>,
-    ) {
+    ) -> Option<PaneId> {
         let active = self.active_window;
         let new_app_pane = |id: PaneId,
                             process: crate::process_app::ProcessApp,
@@ -133,17 +133,17 @@ impl PlexiApp {
         if matches!(hint, Some("overlay")) {
             let Some(focused_tile) = self.windows[active].focused_pane else {
                 log::warn!("app::{app_id}: overlay launch skipped — no focused pane");
-                return;
+                return None;
             };
             let Some(Tile::Pane(focused_pane_id)) =
                 self.windows[active].tree.tiles.get(focused_tile)
             else {
                 log::warn!("app::{app_id}: overlay launch skipped — focused tile is not a pane");
-                return;
+                return None;
             };
             let pane_id = *focused_pane_id;
             let Some(replaced_pane) = self.windows[active].panes.remove(&pane_id) else {
-                return;
+                return None;
             };
             process.set_pane_id(pane_id);
             self.windows[active].panes.insert(
@@ -152,7 +152,7 @@ impl PlexiApp {
             );
             self.set_window_focused_pane(active, focused_tile);
             log::info!("app::{app_id}: launched as overlay on pane {pane_id}");
-            return;
+            return Some(pane_id);
         }
 
         if self.windows[active].zoomed_pane.take().is_some() {
@@ -187,7 +187,7 @@ impl PlexiApp {
             ctx.tree.root = Some(root_tile);
             ctx.focused_pane = Some(root_tile);
             log::info!("app::{app_id}: launched as root pane {new_id} (empty context)");
-            return;
+            return Some(new_id);
         }
 
         let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first, false);
@@ -206,6 +206,8 @@ impl PlexiApp {
                 log::info!("app::{app_id}: startup message written to terminal pane {term_id}");
             }
         }
+
+        Some(new_id)
     }
 
     /// Open a built-in error tile pane when a capability pre-flight check fails.
@@ -795,10 +797,21 @@ impl PlexiApp {
             Ok(mut process) => {
                 process.permissions.allowed_hosts = perms.allowed_hosts;
                 let group = installed.launch.join_group.clone();
+                let watch = installed.manifest.watch.unwrap_or(false);
                 log::info!(
                     "launch_app_by_path_with_layout: launched '{app_id}' from {app_path} group={group:?}"
                 );
-                self.open_process_app_pane(&app_id, process, app_dir, group, layout_hint.as_deref());
+                let watch_dir = app_dir.clone();
+                let new_pane_id = self.open_process_app_pane(&app_id, process, app_dir, group, layout_hint.as_deref());
+                if watch {
+                    if let Some(pane_id) = new_pane_id {
+                        log::info!(
+                            "hot_reload: watching {} for pane {pane_id}",
+                            watch_dir.display()
+                        );
+                        self.hot_reload.watch(pane_id, &watch_dir);
+                    }
+                }
                 Ok(())
             }
             Err(e) => {
@@ -1557,6 +1570,65 @@ mod tests {
             h.app.windows[0].zoomed_pane.is_some(),
             "zoom must NOT be cleared when launching an overlay app"
         );
+    }
+
+    /// Regression guard for issue #1706: `open_process_app_pane` must return the
+    /// created pane ID so callers can start a hot-reload watcher without going
+    /// through the registry.
+    #[test]
+    fn open_process_app_pane_returns_pane_id() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        let root = h.app.windows[0].tree.root.expect("root tile");
+        h.app.windows[0].focused_pane = Some(root);
+
+        let (process, _tx) = ProcessApp::new_for_test(1, AppPermissions::builtin());
+        let result = h.app.open_process_app_pane(
+            "test-app",
+            process,
+            std::path::PathBuf::from("/tmp"),
+            None,
+            None,
+        );
+        assert!(result.is_some(), "open_process_app_pane must return Some(pane_id) on success");
+    }
+
+    /// Regression guard for issue #1706: overlay launch returns the pane ID of the
+    /// replaced pane so the caller can attach a watcher.
+    #[test]
+    fn open_process_app_pane_overlay_returns_pane_id() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        let root = h.app.windows[0].tree.root.expect("root tile");
+        h.app.windows[0].focused_pane = Some(root);
+
+        let (process, _tx) = ProcessApp::new_for_test(2, AppPermissions::builtin());
+        let result = h.app.open_process_app_pane(
+            "test-overlay-app",
+            process,
+            std::path::PathBuf::from("/tmp"),
+            None,
+            Some("overlay"),
+        );
+        assert!(result.is_some(), "overlay launch must return Some(pane_id)");
+    }
+
+    /// Regression guard for issue #1706: overlay launch with no focused pane returns
+    /// None (nothing was created) so callers do not try to start a watcher.
+    #[test]
+    fn open_process_app_pane_overlay_no_focused_pane_returns_none() {
+        let mut h = HostHarness::new();
+        assert!(h.app.windows[0].focused_pane.is_none(), "no focused pane in empty context");
+
+        let (process, _tx) = ProcessApp::new_for_test(3, AppPermissions::builtin());
+        let result = h.app.open_process_app_pane(
+            "test-overlay-app",
+            process,
+            std::path::PathBuf::from("/tmp"),
+            None,
+            Some("overlay"),
+        );
+        assert!(result.is_none(), "overlay with no focused pane must return None");
     }
 }
 
