@@ -20,8 +20,8 @@
 //! - `github:owner/repo`        → `https://github.com/owner/repo.git`
 //! - `git+https://...`          → literal URL (`git+` stripped)
 //! - `git+ssh://...` / `git+http://...`
-//! - `local:<example-name>`     → bundled-example seed (no clone, host copies
-//!                                from `examples/<name>/` baked into the binary)
+//! - `local:<app-name>`         → bundled-app seed (no clone, host copies
+//!                                from `apps/core/<name>/` or `apps/examples/<name>/` baked into the binary)
 //! - anything else → error (no silent fallthrough).
 //!
 //! The current pack schema version constant is [`PACK_SCHEMA_VERSION`].
@@ -89,8 +89,8 @@ impl Pack {
 pub enum SourceSpec {
     /// Standard git clone target — pass directly to `git clone <url>`.
     Git(String),
-    /// Compile-time-bundled example, identified by its directory name in
-    /// `examples/`. The installer copies the directory tree to the apps dir.
+    /// Compile-time-bundled app, identified by its directory name in
+    /// `apps/core/` or `apps/examples/`. The installer copies the directory tree to the apps dir.
     Local(String),
 }
 

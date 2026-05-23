@@ -92,7 +92,7 @@ the terminal args array: single arg → pass as-is, multiple args → `shell_joi
 
 ## 2026-05-07 — apps dir wiped on pr-install
 
-`~/.plexi-pr-<N>/apps/` is re-synced from `examples/` on every `just pr-install` run. Anything written directly to that directory is lost on the next install. Always put POC and test apps in the feature worktree's `examples/` directory — they will survive reinstalls and be included in the sync.
+`~/.plexi-pr-<N>/apps/` is re-synced on every `just pr-install` run. Anything written directly to that directory is lost on the next install. Always put POC and test apps in the feature worktree's `dev-examples/` directory — they will survive reinstalls and be included in the alpha/PR sync. Example apps go in `apps/examples/`, core apps in `apps/core/`.
 
 ## cargo test --bin plexi for host tests (not --lib)
 

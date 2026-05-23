@@ -12,8 +12,8 @@
 //! [`GitCloner`] which shells out to `git` — no `git2` dependency.
 //!
 //! The bundled core pack is `packs/core.toml` baked in at compile time via
-//! `include_str!`. Sources are `local:<example-name>` — the installer copies
-//! from the embedded `examples/` tree (already used by `config::ensure_profile_initialized`).
+//! `include_str!`. Sources are `local:<app-name>` — the installer copies
+//! from the embedded `apps/core/` and `apps/examples/` trees.
 
 use crate::app_registry::{AppManifest, MANIFEST_SCHEMA_VERSION};
 use crate::packs::{parse_source_spec, Pack, PackApp, SourceSpec};
@@ -21,15 +21,17 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Pack file embedded into the binary. Auto-applied on first launch when the
-/// channel apps dir is empty. Also reachable via `plexi install --pack core`.
+/// Pack file embedded into the binary. Auto-applied on every launch (core) or
+/// on first launch only (examples). Also reachable via `plexi install --pack core`.
 pub const CORE_PACK_TOML: &str = include_str!("../packs/core.toml");
+pub const EXAMPLES_PACK_TOML: &str = include_str!("../packs/examples.toml");
 
-// `examples/` is already embedded by `config::ensure_profile_initialized`.
-// We re-embed it here keyed at the install module so `local:` source-spec
-// installs read directly from the binary without a second profile-init pass.
-static EMBEDDED_EXAMPLES: include_dir::Dir<'_> =
-    include_dir::include_dir!("$CARGO_MANIFEST_DIR/examples");
+// Core and example apps are embedded at compile time. `local:` source-spec
+// installs search EMBEDDED_CORE first, then EMBEDDED_EXAMPLES_APPS.
+static EMBEDDED_CORE: include_dir::Dir<'_> =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/apps/core");
+static EMBEDDED_EXAMPLES_APPS: include_dir::Dir<'_> =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/apps/examples");
 
 /// Result of installing or updating one app entry. Aggregated for pack apply.
 #[derive(Debug, Clone)]
@@ -253,9 +255,10 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
     std::fs::create_dir_all(target_root)
         .map_err(|e| format!("create apps dir {}: {e}", target_root.display()))?;
 
-    let example = EMBEDDED_EXAMPLES
+    let example = EMBEDDED_CORE
         .get_dir(name)
-        .ok_or_else(|| format!("local source '{name}' not found in bundled examples"))?;
+        .or_else(|| EMBEDDED_EXAMPLES_APPS.get_dir(name))
+        .ok_or_else(|| format!("local source '{name}' not found in bundled apps"))?;
 
     // Read manifest text from the embedded tree to recover the canonical id.
     let manifest_text = example
@@ -280,7 +283,7 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
     }
     // `include_dir::Dir::extract` writes paths relative to the *caller*'s
     // arg using the entries' stored paths (which include `<name>/...` because
-    // we embedded `examples/`). Calling `extract(target_root)` therefore
+    // we embedded `apps/core/` or `apps/examples/`). Calling `extract(target_root)` therefore
     // writes `target_root/<name>/manifest.toml`, etc. We just need to ensure
     // `dest` exists first; `extract` panics otherwise on macOS tempdirs.
     std::fs::create_dir_all(&dest)
@@ -640,28 +643,56 @@ fn git_current_ref(repo_dir: &Path) -> Option<String> {
     }
 }
 
-/// Apply the bundled core pack into `target_root` IF the dir is currently
-/// empty. Idempotent; safe to call on every launch. Returns the outcomes for
-/// logging.
-pub fn apply_core_pack_if_empty(
+/// Apply the bundled core pack into `target_root` on every launch. Only installs
+/// apps that are missing — already-installed apps return `SkippedOtherVersion` or
+/// `AlreadyAtVersion` and are left untouched.
+pub fn apply_core_pack_always(cloner: &dyn Cloner, target_root: &Path) -> Vec<InstallOutcome> {
+    let pack = match Pack::from_toml_str(CORE_PACK_TOML) {
+        Ok(p) => p,
+        Err(e) => {
+            log::error!("core pack parse failed: {e}");
+            return Vec::new();
+        }
+    };
+    apply_pack(cloner, &pack, target_root)
+}
+
+/// Apply the bundled examples pack into `target_root` only if `target_root` is
+/// currently empty (first-launch seeding). Idempotent — returns `None` if the
+/// dir is non-empty.
+pub fn apply_examples_pack_if_empty(
     cloner: &dyn Cloner,
     target_root: &Path,
 ) -> Option<Vec<InstallOutcome>> {
     let is_empty = match std::fs::read_dir(target_root) {
         Ok(d) => d.flatten().next().is_none(),
-        Err(_) => true, // dir doesn't exist → treat as empty.
+        Err(_) => true,
     };
     if !is_empty {
         return None;
     }
-    let pack = match Pack::from_toml_str(CORE_PACK_TOML) {
+    let pack = match Pack::from_toml_str(EXAMPLES_PACK_TOML) {
         Ok(p) => p,
         Err(e) => {
-            log::error!("core pack parse failed: {e}");
+            log::error!("examples pack parse failed: {e}");
             return None;
         }
     };
     Some(apply_pack(cloner, &pack, target_root))
+}
+
+/// Returns the set of app IDs defined in the bundled core pack.
+pub fn core_pack_ids() -> std::collections::HashSet<String> {
+    Pack::from_toml_str(CORE_PACK_TOML)
+        .map(|p| p.apps.into_iter().map(|a| a.id).collect())
+        .unwrap_or_default()
+}
+
+/// Returns the set of app IDs defined in the bundled examples pack.
+pub fn examples_pack_ids() -> std::collections::HashSet<String> {
+    Pack::from_toml_str(EXAMPLES_PACK_TOML)
+        .map(|p| p.apps.into_iter().map(|a| a.id).collect())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1019,26 +1050,55 @@ mod core_pack_tests {
     use super::*;
 
     #[test]
-    fn core_pack_applies_only_when_apps_dir_empty() {
+    fn core_pack_always_installs_missing_apps() {
         let target = tempfile::tempdir().unwrap();
         let cloner = MockCloner::new();
 
-        // Empty dir: should apply.
-        let first = apply_core_pack_if_empty(&cloner, target.path()).expect("must apply on empty");
+        // First call: all apps are missing → should install them.
+        let first = apply_core_pack_always(&cloner, target.path());
+        assert!(
+            !first.is_empty(),
+            "core pack should produce at least one outcome"
+        );
         for o in &first {
             assert!(
                 matches!(o.status, InstallStatus::Installed(_)),
-                "core pack entry '{}' did not install: {:?}",
+                "core pack entry '{}' did not install on first call: {:?}",
                 o.id,
                 o.status
             );
         }
 
-        // Now non-empty (we just installed core entries). Second call must skip.
-        let second = apply_core_pack_if_empty(&cloner, target.path());
+        // Second call: apps are already present → no Installed outcomes.
+        let second = apply_core_pack_always(&cloner, target.path());
+        let n_installed = second
+            .iter()
+            .filter(|o| matches!(o.status, InstallStatus::Installed(_)))
+            .count();
+        assert_eq!(
+            n_installed, 0,
+            "core pack must not re-install already-present apps"
+        );
+    }
+
+    #[test]
+    fn examples_pack_applies_only_when_empty() {
+        let target = tempfile::tempdir().unwrap();
+        let cloner = MockCloner::new();
+
+        // Empty dir: should apply.
+        let first =
+            apply_examples_pack_if_empty(&cloner, target.path()).expect("must apply on empty");
+        assert!(
+            !first.is_empty(),
+            "examples pack should produce at least one outcome"
+        );
+
+        // Now non-empty. Second call must return None.
+        let second = apply_examples_pack_if_empty(&cloner, target.path());
         assert!(
             second.is_none(),
-            "core pack must NOT re-apply when apps dir is non-empty"
+            "examples pack must NOT re-apply when apps dir is non-empty"
         );
     }
 
@@ -1051,6 +1111,20 @@ mod core_pack_tests {
             assert!(
                 parse_source_spec(&entry.source).is_ok(),
                 "core pack entry '{}' has invalid source '{}'",
+                entry.id,
+                entry.source
+            );
+        }
+        let examples_pack = Pack::from_toml_str(EXAMPLES_PACK_TOML)
+            .expect("bundled examples pack must parse against the current schema");
+        assert!(
+            !examples_pack.apps.is_empty(),
+            "examples pack should list at least one app"
+        );
+        for entry in &examples_pack.apps {
+            assert!(
+                parse_source_spec(&entry.source).is_ok(),
+                "examples pack entry '{}' has invalid source '{}'",
                 entry.id,
                 entry.source
             );

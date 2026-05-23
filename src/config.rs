@@ -523,54 +523,27 @@ pub fn set_profile(name: Option<String>) {
     let _ = PROFILE_OVERRIDE.set(normalized);
 }
 
-/// Seed apps from embedded examples into a fresh profile dir, and ensure the
-/// Python SDK is present in the profile sdk dir. The SDK seeding runs on every
-/// launch so migrated profiles (which skip the apps-seeding block) still get
-/// the SDK written on first run with a new binary.
-pub fn ensure_profile_initialized() {
+/// Ensure the profile directory exists and the Python SDK is up to date.
+/// Returns `true` if the profile directory was newly created (first launch),
+/// `false` if it already existed. The SDK is always overwritten so upgrades
+/// land the correct version without a fresh profile wipe.
+pub fn ensure_profile_initialized() -> bool {
     let dir = config_dir();
-    if !dir.exists() {
+    let is_new = if !dir.exists() {
         if let Err(e) = std::fs::create_dir_all(&dir) {
             eprintln!("profile init: failed to create {}: {e}", dir.display());
-            return;
+            return false;
         }
         let apps_dir = dir.join("apps");
         if let Err(e) = std::fs::create_dir_all(&apps_dir) {
             eprintln!("profile init: failed to create apps dir: {e}");
-            return;
+            return false;
         }
-        let embedded = include_dir::include_dir!("$CARGO_MANIFEST_DIR/examples");
-        if let Err(e) = embedded.extract(&apps_dir) {
-            eprintln!("profile init: failed to seed apps from bundle: {e}");
-            return;
-        }
-        // chmod +x on all .py entries.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(entries) = std::fs::read_dir(&apps_dir) {
-                for app_dir in entries.flatten().filter(|e| e.path().is_dir()) {
-                    if let Ok(files) = std::fs::read_dir(app_dir.path()) {
-                        for f in files.flatten() {
-                            let p = f.path();
-                            if p.extension().and_then(|x| x.to_str()) == Some("py") {
-                                if let Ok(meta) = std::fs::metadata(&p) {
-                                    let mut perms = meta.permissions();
-                                    perms.set_mode(perms.mode() | 0o111);
-                                    let _ = std::fs::set_permissions(&p, perms);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        eprintln!(
-            "profile init: seeded {} with {} apps",
-            dir.display(),
-            std::fs::read_dir(&apps_dir).map(|r| r.count()).unwrap_or(0)
-        );
-    }
+        log::info!("profile init: created new profile at {}", dir.display());
+        true
+    } else {
+        false
+    };
 
     // Always overwrite the SDK on every launch so upgrades always get the
     // version embedded in the current binary, not a stale copy from a prior install.
@@ -587,6 +560,8 @@ pub fn ensure_profile_initialized() {
             log::info!("profile init: seeded SDK to {}", sdk_dest.display());
         }
     }
+
+    is_new
 }
 
 /// Returns the build channel for this binary: the suffix after `plexi-`, or `None` for the bare `plexi` binary (main channel).
