@@ -124,17 +124,23 @@ if [[ ! "$channel" =~ ^pr- ]]; then
 fi
 
 mkdir -p "$profile_dir/sdk" "$profile_dir/apps" "$profile_dir/scripts"
+apps_was_empty=true
+if find "$profile_dir/apps" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .; then
+  apps_was_empty=false
+fi
 rm -rf "$profile_dir/sdk/plexi_sdk.tmp" "$profile_dir/sdk/plexi_sdk.old"
 cp -R sdk/python/plexi_sdk "$profile_dir/sdk/plexi_sdk.tmp"
 mv "$profile_dir/sdk/plexi_sdk" "$profile_dir/sdk/plexi_sdk.old" 2>/dev/null || true
 mv "$profile_dir/sdk/plexi_sdk.tmp" "$profile_dir/sdk/plexi_sdk"
 rm -rf "$profile_dir/sdk/plexi_sdk.old" "$profile_dir/sdk/plexi_sdk.py"
 find "$profile_dir/sdk/plexi_sdk" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-# Seed core and example apps; alpha/PR builds also get dev-examples.
+# Always re-seed core apps; seed examples/dev-examples only on first install.
 rsync -a apps/core/ "$profile_dir/apps/"
-rsync -a apps/examples/ "$profile_dir/apps/"
-if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
-  rsync -a dev-examples/ "$profile_dir/apps/"
+if [[ "$apps_was_empty" == true ]]; then
+  rsync -a apps/examples/ "$profile_dir/apps/"
+  if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
+    rsync -a dev-examples/ "$profile_dir/apps/"
+  fi
 fi
 find "$profile_dir/apps" -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
 find "$profile_dir/apps" -name '*.py' -exec chmod +x {} \;
