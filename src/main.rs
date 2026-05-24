@@ -11,6 +11,7 @@ mod app_permissions;
 mod app_protocol;
 mod app_render;
 mod app_registry;
+mod app_registry_watcher;
 mod app_trait;
 mod audio;
 mod cli;
