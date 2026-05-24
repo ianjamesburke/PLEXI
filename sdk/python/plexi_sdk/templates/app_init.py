@@ -21,7 +21,8 @@ from plexi_sdk.ui import (
 
 class __CLASS_NAME__(App):
     async def on_init(self, ctx: RenderContext) -> None:
-        self.click_count = 0
+        state = ctx.load_state()
+        self.click_count = state.get("clicks", 0)
         self._btn = ButtonRow("action", "Click me")
         ctx.status_summary("Ready")
         self.emit.info("__DISPLAY_NAME__ initialized")
@@ -29,6 +30,7 @@ class __CLASS_NAME__(App):
     def on_render(self, ctx: RenderContext) -> None:
         if self._btn.clicked:
             self.click_count += 1
+            ctx.save_state({"clicks": self.click_count})
             ctx.status_summary(f"Clicked {self.click_count} time(s)")
 
         ctx.render(Column([
@@ -44,6 +46,7 @@ class __CLASS_NAME__(App):
             Card([
                 self._btn,
                 Label(f"Clicks: {self.click_count}", tone="caption"),
+                Label(f"state stored in app_states/{self.app_id}.json — survives hot reload", tone="muted"),
             ]),
             Section("KEYBOARD SHORTCUTS"),
             Card([
@@ -60,6 +63,7 @@ class __CLASS_NAME__(App):
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
         if key == "+" or (key == "=" and mods.get("shift")):
             self.click_count += 1
+            ctx.save_state({"clicks": self.click_count})
             ctx.status_summary(f"Clicked {self.click_count} time(s)")
 
 
