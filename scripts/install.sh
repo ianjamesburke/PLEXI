@@ -118,13 +118,24 @@ if [[ "$channel" == "main" || "$channel" == "alpha" || "$channel" == "beta" ]]; 
 fi
 
 mkdir -p "$profile_dir/sdk" "$profile_dir/apps" "$profile_dir/scripts"
+apps_was_empty=true
+if find "$profile_dir/apps" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .; then
+  apps_was_empty=false
+fi
 rm -rf "$profile_dir/sdk/plexi_sdk.tmp" "$profile_dir/sdk/plexi_sdk.old"
 cp -R sdk/python/plexi_sdk "$profile_dir/sdk/plexi_sdk.tmp"
 mv "$profile_dir/sdk/plexi_sdk" "$profile_dir/sdk/plexi_sdk.old" 2>/dev/null || true
 mv "$profile_dir/sdk/plexi_sdk.tmp" "$profile_dir/sdk/plexi_sdk"
 rm -rf "$profile_dir/sdk/plexi_sdk.old" "$profile_dir/sdk/plexi_sdk.py"
 find "$profile_dir/sdk/plexi_sdk" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-rsync -a --delete examples/ "$profile_dir/apps/"
+# Always re-seed core apps; seed examples/dev-examples only on first install.
+rsync -a apps/core/ "$profile_dir/apps/"
+if [[ "$apps_was_empty" == true ]]; then
+  rsync -a apps/examples/ "$profile_dir/apps/"
+  if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
+    rsync -a dev-examples/ "$profile_dir/apps/"
+  fi
+fi
 find "$profile_dir/apps" -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
 find "$profile_dir/apps" -name '*.py' -exec chmod +x {} \;
 
@@ -178,6 +189,6 @@ install_skills
 echo "Installed $app_dest"
 echo "CLI: $bin_dest"
 echo "Config dir: $profile_dir/"
-echo "Apps: $(ls "$profile_dir/apps" | wc -l | tr -d ' ') synced from examples/"
+echo "Apps: $(ls "$profile_dir/apps" | wc -l | tr -d ' ') synced from apps/"
 echo ""
 echo "New to shell configuration? https://github.com/ianjamesburke/dotfiles has a starter setup and explanation."
