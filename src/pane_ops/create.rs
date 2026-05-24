@@ -1893,7 +1893,7 @@ mod quick_note_tests {
     fn spawn_pane_terminal_ipc_from_pane_id_splits_from_origin() {
         use crate::testing::HostHarness;
         let mut h = HostHarness::new();
-        let _pane_a = h.add_test_pane();
+        let pane_a = h.add_test_pane();
         let root_a = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
         h.app.windows[0].focused_pane = Some(root_a);
 
@@ -1923,7 +1923,7 @@ mod quick_note_tests {
             layout: Some("split_v".to_string()),
             args: vec![],
             pipe_id: None,
-            from_pane_id: Some(_pane_a),
+            from_pane_id: Some(pane_a),
             request_id: None,
             response_file: None,
             ephemeral: false,
