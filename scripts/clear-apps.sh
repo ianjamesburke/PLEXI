@@ -4,11 +4,11 @@
 # to re-sync from examples/. Useful when an app is renamed or removed.
 set -euo pipefail
 
-channel="${1:?channel required — one of: alpha | beta | stable}"
+channel="${1:?channel required — one of: main | alpha | beta | <channel-name>}"
 
 case "$channel" in
-    stable) dir="$HOME/.plexi/apps" ;;
-    *)      dir="$HOME/.plexi-${channel}/apps" ;;
+    main) dir="$HOME/.plexi/apps" ;;
+    *)    dir="$HOME/.plexi-${channel}/apps" ;;
 esac
 
 if [[ ! -d "$dir" ]]; then

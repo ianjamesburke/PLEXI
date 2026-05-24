@@ -6,25 +6,27 @@
 # Catches: Rust host crashes (e.g. `todo!()` in a prod factory).
 #
 # Usage: scripts/smoke-test.sh [channel]
-#   channel: stable, alpha, beta, pr-N  (default: auto-detect from git branch)
+#   channel: main, alpha, beta, pr-N  (default: auto-detect from git branch)
 # Exit 0 on clean run; non-zero on failure or missing binary.
 
 set -uo pipefail
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 _git_channel() {
   local branch
-  branch="$(git branch --show-current 2>/dev/null || echo "")"
+  branch="$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null || echo "")"
   case "$branch" in
-    main)   echo "stable" ;;
+    main)   echo "main" ;;
     alpha)  echo "alpha" ;;
     beta)   echo "beta" ;;
-    *)      cat .channel 2>/dev/null || echo "stable" ;;
+    *)      cat .channel 2>/dev/null || echo "main" ;;
   esac
 }
 
 channel="${1:-$(_git_channel)}"
 
-if [[ "$channel" == "stable" ]]; then
+if [[ "$channel" == "main" ]]; then
   suffix=""
 else
   suffix="-$channel"

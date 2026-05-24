@@ -7,7 +7,7 @@
 //!
 //! # Profile dir guard
 //!
-//! The home directory's `~/.plexi/` is the stable profile dir, NOT an anchor.
+//! The home directory's `~/.plexi/` is the main channel profile dir, NOT an anchor.
 //! [`Anchor::detect`] explicitly excludes it (and all `~/.plexi-*` profile
 //! dirs) to prevent the profile from masquerading as a workspace anchor.
 
