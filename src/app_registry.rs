@@ -659,6 +659,12 @@ pub fn apps_dir() -> PathBuf {
     crate::config::config_dir().join("apps")
 }
 
+/// Return the apps dir scoped to `workspace_root` for the current channel.
+/// Workspace apps live at `<workspace_root>/<channel_dir>/apps/`.
+pub fn workspace_apps_dir(workspace_root: &Path) -> PathBuf {
+    workspace_root.join(registry_config_dir()).join("apps")
+}
+
 /// Detect the channel config dir name from the running binary name.
 /// Mirrors the logic in `config_dir_name()` (config.rs) but without the
 /// PROFILE_OVERRIDE global, which is private to that module.

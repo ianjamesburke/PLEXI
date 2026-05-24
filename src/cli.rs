@@ -384,7 +384,34 @@ pub fn workspace_init() -> i32 {
             if channel_created {
                 println!("  channel dir:  {channel_dir}/");
             }
-            print_tip("define runnable commands in .plexi/commands.toml, then run them with `plexi run <name>`.");
+            // Write stub apps.toml if not already present.
+            let apps_toml = cwd.join(".plexi").join("apps.toml");
+            if !apps_toml.exists() {
+                let stub = concat!(
+                    "schema_version = 1\n\n",
+                    "# Declare workspace app dependencies here.\n",
+                    "# Run `plexi install` in this directory to install them.\n",
+                    "#\n",
+                    "# Example:\n",
+                    "#\n",
+                    "# [[app]]\n",
+                    "# id      = \"gh-issues\"\n",
+                    "# source  = \"local:gh-issues\"\n",
+                    "# version = \"bundled\"\n",
+                    "#\n",
+                    "# [[app]]\n",
+                    "# id      = \"my-tool\"\n",
+                    "# source  = \"github:org/my-tool\"\n",
+                    "# version = \"v1.0.0\"\n",
+                );
+                if let Err(e) = std::fs::write(&apps_toml, stub) {
+                    log::warn!("workspace_init:cli: could not write apps.toml: {e}");
+                } else {
+                    println!("  apps:         .plexi/apps.toml (declare app dependencies here)");
+                    log::info!("workspace_init:cli: wrote stub .plexi/apps.toml");
+                }
+            }
+            print_tip("declare app dependencies in .plexi/apps.toml, then run `plexi install`.");
             0
         }
         Err(e) => {
@@ -1446,6 +1473,92 @@ pub fn install_pack_cli(spec: &str) -> i32 {
     }
 }
 
+/// `plexi install` with no args — detect `.plexi/apps.toml` and apply it.
+///
+/// Walks up from CWD looking for `.plexi/` (the workspace marker), reads
+/// `apps.toml` from it, and installs declared apps into the workspace-scoped
+/// channel apps dir (`<workspace_root>/<channel_dir>/apps/`).
+pub fn install_workspace_pack_cli() -> i32 {
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => { eprintln!("error: {e}"); return 1; }
+    };
+
+    // Walk up from CWD looking for `.plexi/` (workspace marker).
+    let workspace_root = {
+        let home = dirs::home_dir();
+        let mut current = cwd.clone();
+        let mut found: Option<std::path::PathBuf> = None;
+        loop {
+            if let Some(ref h) = home {
+                if current == *h {
+                    break;
+                }
+            }
+            if current == std::path::Path::new("/") {
+                break;
+            }
+            if current.join(".plexi").is_dir() {
+                found = Some(current);
+                break;
+            }
+            if !current.pop() {
+                break;
+            }
+        }
+        found
+    };
+
+    let Some(root) = workspace_root else {
+        eprintln!("Usage: plexi install <source-spec>[@ref] | plexi install --pack <path|core>");
+        eprintln!("  In a workspace (directory with .plexi/apps.toml), `plexi install` applies the manifest.");
+        eprintln!("  Run `plexi workspace init` to initialize a workspace here.");
+        return 1;
+    };
+
+    let apps_toml = root.join(".plexi").join("apps.toml");
+    if !apps_toml.exists() {
+        eprintln!("no .plexi/apps.toml found in workspace at {}", root.display());
+        eprintln!("  Declare app dependencies there, then re-run `plexi install`.");
+        eprintln!("  Usage: plexi install <source-spec>[@ref] | plexi install --pack <path|core>");
+        return 1;
+    }
+
+    log::info!("install_workspace_pack:cli: applying {}", apps_toml.display());
+    println!("Applying workspace manifest {}...", apps_toml.display());
+
+    let cloner = crate::install::GitCloner;
+    let outcomes = match crate::install::apply_workspace_pack(&root, &cloner) {
+        Ok(o) => o,
+        Err(e) => { eprintln!("error: {e}"); return 1; }
+    };
+
+    if outcomes.is_empty() {
+        println!("No apps declared in .plexi/apps.toml.");
+        return 0;
+    }
+
+    let mut any_failed = false;
+    for o in &outcomes {
+        match &o.status {
+            crate::install::InstallStatus::Installed(p) => {
+                println!("  installed  {:30} → {}", o.id, p.display());
+            }
+            crate::install::InstallStatus::AlreadyAtVersion => {
+                println!("  up-to-date {:30}", o.id);
+            }
+            crate::install::InstallStatus::SkippedOtherVersion { installed, requested } => {
+                println!("  skipped    {:30} (installed {installed}, requested {requested})", o.id);
+            }
+            crate::install::InstallStatus::Failed(msg) => {
+                eprintln!("  FAILED     {:30} {msg}", o.id);
+                any_failed = true;
+            }
+        }
+    }
+    if any_failed { 1 } else { 0 }
+}
+
 /// `plexi uninstall [--keep-data] [--yes]` — remove Plexi itself from the Mac.
 pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
     // Detect channel suffix from binary name (e.g. "plexi-alpha" → "-alpha", "plexi" → "")
@@ -1950,6 +2063,10 @@ pub fn list_cli() -> i32 {
     let workspace_root = crate::app_registry::resolve_workspace_root(&cwd);
     let core_ids = crate::install::core_pack_ids();
     let example_ids = crate::install::examples_pack_ids();
+    let workspace_ids = workspace_root
+        .as_ref()
+        .map(|r| crate::install::workspace_manifest_ids(r))
+        .unwrap_or_default();
     let mut globals: Vec<(String, String, String, &'static str)> = Vec::new();
     let mut workspace: Vec<(String, String, String, &'static str)> = Vec::new();
     for app in installed {
@@ -1961,6 +2078,8 @@ pub fn list_cli() -> i32 {
             "[core]"
         } else if example_ids.contains(app.manifest.id.as_str()) {
             "[example]"
+        } else if workspace_ids.contains(app.manifest.id.as_str()) {
+            "[workspace]"
         } else {
             ""
         };

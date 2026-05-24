@@ -711,6 +711,40 @@ pub fn examples_pack_ids() -> std::collections::HashSet<String> {
         .unwrap_or_default()
 }
 
+/// Read `<workspace_root>/.plexi/apps.toml` and install declared apps into the
+/// workspace-scoped apps dir (`<workspace_root>/<channel_dir>/apps/`).
+pub fn apply_workspace_pack(
+    workspace_root: &Path,
+    cloner: &dyn Cloner,
+) -> Result<Vec<InstallOutcome>, String> {
+    let apps_toml = workspace_root.join(".plexi").join("apps.toml");
+    if !apps_toml.exists() {
+        return Err(
+            "no .plexi/apps.toml found — run 'plexi app add <id>' to declare dependencies"
+                .to_string(),
+        );
+    }
+    let pack = Pack::from_path(&apps_toml)?;
+    let workspace_apps = crate::app_registry::workspace_apps_dir(workspace_root);
+    std::fs::create_dir_all(&workspace_apps)
+        .map_err(|e| format!("create workspace apps dir {}: {e}", workspace_apps.display()))?;
+    log::info!(
+        "install: workspace pack {} → {} ({} apps)",
+        apps_toml.display(),
+        workspace_apps.display(),
+        pack.apps.len()
+    );
+    Ok(apply_pack(cloner, &pack, &workspace_apps))
+}
+
+/// Return the set of app IDs declared in `<workspace_root>/.plexi/apps.toml`.
+/// Returns an empty set if the file is absent or unparseable.
+pub fn workspace_manifest_ids(workspace_root: &Path) -> std::collections::HashSet<String> {
+    Pack::from_path(&workspace_root.join(".plexi").join("apps.toml"))
+        .map(|p| p.apps.into_iter().map(|a| a.id).collect())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
@@ -1166,5 +1200,107 @@ mod core_pack_tests {
         let (s, r) = split_source_and_ref("git+ssh://user@host.example.com/repo.git");
         assert_eq!(s, "git+ssh://user@host.example.com/repo.git");
         assert_eq!(r, None);
+    }
+}
+
+#[cfg(test)]
+mod workspace_pack_tests {
+    use super::test_support::MockCloner;
+    use super::*;
+
+    #[test]
+    fn apply_workspace_pack_installs_into_channel_apps_dir() {
+        let ws = tempfile::tempdir().unwrap();
+        let plexi_dir = ws.path().join(".plexi");
+        std::fs::create_dir_all(&plexi_dir).unwrap();
+        std::fs::write(
+            plexi_dir.join("apps.toml"),
+            "schema_version = 1\n\n\
+             [[app]]\n\
+             id = \"my-tool\"\n\
+             source = \"github:org/my-tool\"\n\
+             version = \"v1.0.0\"\n",
+        )
+        .unwrap();
+
+        let cloner = MockCloner::new();
+        let outcomes = apply_workspace_pack(ws.path(), &cloner).expect("should succeed");
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].id, "my-tool");
+        assert!(
+            matches!(outcomes[0].status, InstallStatus::Installed(_)),
+            "expected Installed, got {:?}",
+            outcomes[0].status
+        );
+
+        let workspace_apps = crate::app_registry::workspace_apps_dir(ws.path());
+        assert!(
+            workspace_apps.join("my-tool").join("manifest.toml").exists(),
+            "app should be present in workspace apps dir at {}",
+            workspace_apps.display()
+        );
+    }
+
+    #[test]
+    fn apply_workspace_pack_errors_when_no_apps_toml() {
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(ws.path().join(".plexi")).unwrap();
+
+        let cloner = MockCloner::new();
+        let err = apply_workspace_pack(ws.path(), &cloner).expect_err("should error");
+        assert!(
+            err.contains("no .plexi/apps.toml found"),
+            "expected no-manifest error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn workspace_manifest_ids_returns_declared_ids() {
+        let ws = tempfile::tempdir().unwrap();
+        let plexi_dir = ws.path().join(".plexi");
+        std::fs::create_dir_all(&plexi_dir).unwrap();
+        std::fs::write(
+            plexi_dir.join("apps.toml"),
+            "schema_version = 1\n\n\
+             [[app]]\nid = \"foo\"\nsource = \"github:a/b\"\nversion = \"v1\"\n\n\
+             [[app]]\nid = \"bar\"\nsource = \"github:a/c\"\nversion = \"v2\"\n",
+        )
+        .unwrap();
+
+        let ids = workspace_manifest_ids(ws.path());
+        assert!(ids.contains("foo"));
+        assert!(ids.contains("bar"));
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn workspace_manifest_ids_empty_when_no_file() {
+        let ws = tempfile::tempdir().unwrap();
+        let ids = workspace_manifest_ids(ws.path());
+        assert!(ids.is_empty());
+    }
+
+    #[test]
+    fn apply_workspace_pack_idempotent_on_second_run() {
+        let ws = tempfile::tempdir().unwrap();
+        let plexi_dir = ws.path().join(".plexi");
+        std::fs::create_dir_all(&plexi_dir).unwrap();
+        // MockCloner writes version "0.0.1" by default — pack must match for AlreadyAtVersion.
+        std::fs::write(
+            plexi_dir.join("apps.toml"),
+            "schema_version = 1\n\n\
+             [[app]]\nid = \"my-tool\"\nsource = \"github:org/my-tool\"\nversion = \"0.0.1\"\n",
+        )
+        .unwrap();
+
+        let cloner = MockCloner::new();
+        apply_workspace_pack(ws.path(), &cloner).unwrap();
+        let second = apply_workspace_pack(ws.path(), &cloner).unwrap();
+        assert_eq!(second.len(), 1);
+        assert!(
+            matches!(second[0].status, InstallStatus::AlreadyAtVersion),
+            "second apply should be no-op, got {:?}",
+            second[0].status
+        );
     }
 }
