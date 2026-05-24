@@ -11,9 +11,11 @@
 
 set -uo pipefail
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 _git_channel() {
   local branch
-  branch="$(git branch --show-current 2>/dev/null || echo "")"
+  branch="$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null || echo "")"
   case "$branch" in
     main)   echo "main" ;;
     alpha)  echo "alpha" ;;

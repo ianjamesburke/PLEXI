@@ -4,13 +4,19 @@
 # whose GitHub PR is no longer open. Reports orphaned worktrees. Requires gh CLI.
 set -euo pipefail
 
-REPO_ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
+
+command -v gh >/dev/null 2>&1 || { echo "error: gh CLI is required for merged channel cleanup"; exit 1; }
 
 found=0
 for profile in "$HOME"/.plexi-pr-*/; do
     [[ -d "$profile" ]] || continue
     num=$(basename "$profile" | sed 's/\.plexi-pr-//')
+    if [[ ! "$num" =~ ^[0-9]+$ ]]; then
+        echo "Skipping invalid PR directory: $profile"
+        continue
+    fi
     state=$(gh pr view "$num" --json state -q '.state' 2>/dev/null || echo "NOTFOUND")
     if [[ "$state" != "OPEN" ]]; then
         found=1

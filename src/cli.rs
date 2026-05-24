@@ -681,16 +681,11 @@ pub fn workspace_secret_delete(friendly: &str) -> i32 {
 
 /// Detect the channel config dir name from the running binary name.
 fn app_init_config_dir() -> String {
-    let basename = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "plexi".to_string());
-    if basename.starts_with("plexi-") {
-        let suffix = basename.trim_start_matches("plexi-");
-        format!(".plexi-{suffix}")
-    } else {
-        ".plexi".to_string()
-    }
+    crate::config::config_dir()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(".plexi")
+        .to_string()
 }
 
 /// `plexi app init [--lang python|rust] <name>` — scaffold a new app.

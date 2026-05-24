@@ -595,8 +595,8 @@ pub fn build_channel() -> Option<String> {
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))?;
     let name = basename.as_str();
-    if name.starts_with("plexi-") {
-        Some(name.trim_start_matches("plexi-").to_string())
+    if let Some(suffix) = name.strip_prefix("plexi-").filter(|s| !s.is_empty()) {
+        Some(suffix.to_string())
     } else {
         None
     }
@@ -605,8 +605,7 @@ pub fn build_channel() -> Option<String> {
 /// Maps a binary basename to its config directory name.
 /// `plexi` → `.plexi`; `plexi-<suffix>` → `.plexi-<suffix>`.
 fn channel_suffix_from_basename(basename: &str) -> String {
-    if basename.starts_with("plexi-") {
-        let suffix = basename.trim_start_matches("plexi-");
+    if let Some(suffix) = basename.strip_prefix("plexi-").filter(|s| !s.is_empty()) {
         format!(".plexi-{suffix}")
     } else {
         ".plexi".to_string()

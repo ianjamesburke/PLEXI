@@ -208,7 +208,7 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 **How it works:**
 - `PLEXI_SOCKET` (set inside a Plexi pane) routes **host commands** (pane, notify, context, open, etc.) to the correct running instance — but it does NOT re-route the binary itself. Typing `plexi` inside a PR817 pane still runs the main/alpha binary; to target a specific channel you must use the full binary name (`plexi-alpha`, `plexi-pr-817`, etc.).
 - When `PLEXI_SOCKET` is not set, commands fall back to channel-specific mechanisms (spawn-queue, config_dir) derived from the running binary name.
-- `/usr/local/bin/plexi` (the bare `plexi` command) is kept as a symlink to the most recently installed non-PR channel binary by `scripts/install.sh`. PR builds never capture the bare name.
+- `/usr/local/bin/plexi` (the bare `plexi` command) is reserved for the `main` channel binary. If `main` is not installed, the bare symlink should not exist. PR builds never capture the bare name.
 
 **Enforcement:** Never hardcode a profile directory path (e.g. `~/.plexi-alpha/`) in CLI code — always use `config_dir()`. Never route around `PLEXI_SOCKET` when it is set. Any new CLI command that communicates with a running instance must follow the socket-first pattern in `open_cli()`.
 

@@ -9,9 +9,11 @@ if [[ "$(uname)" != "Darwin" ]]; then
   exit 1
 fi
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 _git_channel() {
   local branch
-  branch="$(git branch --show-current 2>/dev/null || echo "")"
+  branch="$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null || echo "")"
   case "$branch" in
     main)   echo "main" ;;
     alpha)  echo "alpha" ;;
@@ -71,15 +73,13 @@ fi
 
 ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
 
-# For main channel only, also update the bare `plexi` symlink so that
-# `plexi open`, `plexi notify`, etc. always reach the correct running instance.
+# Only the main channel owns the bare `plexi` symlink.
 # PR builds and development channels are excluded.
-if [[ "$channel" == "main" || "$channel" == "alpha" || "$channel" == "beta" ]]; then
+if [[ "$channel" == "main" ]]; then
   ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" /usr/local/bin/plexi
 fi
 
-# Install shell completions (non-PR builds only).
-# Called after the binary symlink is in place at $bin_dest.
+# Install shell completions for production channels (main, alpha, beta).
 install_completions() {
   local binary="$1"
   local binary_name
@@ -115,11 +115,6 @@ install_completions() {
 
 if [[ "$channel" == "main" || "$channel" == "alpha" || "$channel" == "beta" ]]; then
   install_completions "$bin_dest"
-  # For non-main production channels, also install bare `plexi` completions so the bare
-  # symlink (pointing to this channel's binary) gets its own completion entry.
-  if [[ "$channel" != "main" ]]; then
-    install_completions /usr/local/bin/plexi
-  fi
 fi
 
 mkdir -p "$profile_dir/sdk" "$profile_dir/apps" "$profile_dir/scripts"

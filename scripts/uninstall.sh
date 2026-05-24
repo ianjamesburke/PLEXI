@@ -177,7 +177,7 @@ case "$channel" in
   *)
     # Generic channel (development tier)
     info "Channel: $channel"
-    uninstall_channel "-${channel}" " $(echo "$channel" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
+    uninstall_channel "$(_channel_suffix "$channel")" "$(_channel_cap "$channel")"
     ;;
 esac
 
