@@ -99,7 +99,7 @@ tail -20 ~/.plexi-pr-$PR_NUMBER/plexi.log
 
 **Spec gate:** Re-read the issue's Done When checklist before writing. Pass criteria map 1:1 to checklist items. No extra criteria.
 
-**Check for existing POC app:** scan `apps/core/`, `apps/examples/`, and `dev-examples/` in the feature worktree. If one exists, use it.
+**Check for existing POC app:** scan `apps/` and `apps/dev/` in the feature worktree. If one exists, use it.
 
 **If more than one command, or copy-paste across panes is awkward:** write a `test_pr<N>.py` at the repo root instead of a markdown block.
 

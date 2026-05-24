@@ -1,4 +1,5 @@
 schema_version = 1
+reseed = "once"
 
 [[app]]
 id      = "balls"

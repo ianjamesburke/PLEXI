@@ -13,7 +13,7 @@
 //!
 //! The bundled core pack is `packs/core.toml` baked in at compile time via
 //! `include_str!`. Sources are `local:<app-name>` — the installer copies
-//! from the embedded `apps/core/` and `apps/examples/` trees.
+//! from the embedded `apps/` tree.
 
 use crate::app_registry::{AppManifest, MANIFEST_SCHEMA_VERSION};
 use crate::packs::{parse_source_spec, Pack, PackApp, SourceSpec};
@@ -26,12 +26,10 @@ use std::process::Command;
 pub const CORE_PACK_TOML: &str = include_str!("../packs/core.toml");
 pub const EXAMPLES_PACK_TOML: &str = include_str!("../packs/examples.toml");
 
-// Core and example apps are embedded at compile time. `local:` source-spec
-// installs search EMBEDDED_CORE first, then EMBEDDED_EXAMPLES_APPS.
-static EMBEDDED_CORE: include_dir::Dir<'_> =
-    include_dir::include_dir!("$CARGO_MANIFEST_DIR/apps/core");
-static EMBEDDED_EXAMPLES_APPS: include_dir::Dir<'_> =
-    include_dir::include_dir!("$CARGO_MANIFEST_DIR/apps/examples");
+// Production apps are embedded at compile time (apps/ excluding apps/dev/).
+// `local:` source-spec installs look up by name in EMBEDDED_APPS.
+static EMBEDDED_APPS: include_dir::Dir<'_> =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/apps");
 
 /// Result of installing or updating one app entry. Aggregated for pack apply.
 #[derive(Debug, Clone)]
@@ -255,9 +253,8 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
     std::fs::create_dir_all(target_root)
         .map_err(|e| format!("create apps dir {}: {e}", target_root.display()))?;
 
-    let example = EMBEDDED_CORE
+    let example = EMBEDDED_APPS
         .get_dir(name)
-        .or_else(|| EMBEDDED_EXAMPLES_APPS.get_dir(name))
         .ok_or_else(|| format!("local source '{name}' not found in bundled apps"))?;
 
     // Read manifest text from the embedded tree to recover the canonical id.
@@ -283,7 +280,7 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
     }
     // `include_dir::Dir::extract` writes paths relative to the *caller*'s
     // arg using the entries' stored paths (which include `<name>/...` because
-    // we embedded `apps/core/` or `apps/examples/`). Calling `extract(target_root)` therefore
+    // we embedded `apps/`). Calling `extract(target_root)` therefore
     // writes `target_root/<name>/manifest.toml`, etc. We just need to ensure
     // `dest` exists first; `extract` panics otherwise on macOS tempdirs.
     std::fs::create_dir_all(&dest)
@@ -646,6 +643,9 @@ fn git_current_ref(repo_dir: &Path) -> Option<String> {
 /// Apply the bundled core pack into `target_root` on every launch. Only installs
 /// apps that are missing — already-installed apps return `SkippedOtherVersion` or
 /// `AlreadyAtVersion` and are left untouched.
+///
+/// Respects `reseed = "always"` (default for core) — always runs regardless of
+/// whether `target_root` is populated.
 pub fn apply_core_pack_always(cloner: &dyn Cloner, target_root: &Path) -> Vec<InstallOutcome> {
     let pack = match Pack::from_toml_str(CORE_PACK_TOML) {
         Ok(p) => p,
@@ -654,12 +654,19 @@ pub fn apply_core_pack_always(cloner: &dyn Cloner, target_root: &Path) -> Vec<In
             return Vec::new();
         }
     };
+    log::debug!(
+        "install: core pack reseed={:?}",
+        pack.reseed.as_deref().unwrap_or("once")
+    );
     apply_pack(cloner, &pack, target_root)
 }
 
 /// Apply the bundled examples pack into `target_root` only if `target_root` is
 /// currently empty (first-launch seeding). Idempotent — returns `None` if the
 /// dir is non-empty.
+///
+/// Respects `reseed = "once"` (default for examples) — skips if apps dir is
+/// already populated.
 pub fn apply_examples_pack_if_empty(
     cloner: &dyn Cloner,
     target_root: &Path,
@@ -681,6 +688,10 @@ pub fn apply_examples_pack_if_empty(
             return None;
         }
     };
+    log::debug!(
+        "install: examples pack reseed={:?}",
+        pack.reseed.as_deref().unwrap_or("once")
+    );
     Some(apply_pack(cloner, &pack, target_root))
 }
 
