@@ -7,6 +7,9 @@ set -euo pipefail
 channel="${1:?channel name required}"
 
 if [[ "$channel" == "main" ]]; then
+  echo "This will remove the main Plexi channel (Plexi.app, /usr/local/bin/plexi, ~/.plexi/)."
+  read -r -p "Proceed? [y/N] " confirm
+  [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
   suffix=""
   cap=""
 else
