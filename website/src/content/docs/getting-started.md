@@ -11,7 +11,7 @@ Plexi runs on macOS (Apple Silicon or Intel, macOS 12 Monterey or later).
 
 Open Terminal and run:
 
-```
+```sh
 curl -fsSL https://plexiapp.com/install | sh
 ```
 

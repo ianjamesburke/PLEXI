@@ -22,7 +22,7 @@ plexi app init my-app
 
 This scaffolds a new app folder with:
 
-```
+```text
 my-app/
   manifest.toml    ← capabilities, entry point, metadata
   main.py          ← your app code

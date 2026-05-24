@@ -11,7 +11,7 @@ PGAP (Plexi Generic App Protocol) is the communication layer between sandboxed a
 
 When you run a Plexi app, the host spawns it as a child process and establishes a bidirectional message channel over stdio. The app sends draw commands describing what to render; the host sends events when the user interacts with the pane.
 
-```
+```text
 Host ──render request──► App
 Host ◄──draw commands─── App
 Host ──input event──────► App
