@@ -1644,6 +1644,10 @@ impl PlexiApp {
                         launch_result = self.launch_app_by_path_with_layout(path_str, layout.clone(), ws_root);
                         if from_pane_id.is_some() {
                             self.active_window = active;
+                            // Undo the temporary focus redirect when launch failed.
+                            if launch_result.is_err() {
+                                self.restore_window_focused_pane(target_win, orig_focused_in_target);
+                            }
                         }
                         if *no_focus {
                             self.active_window = active;
@@ -1670,6 +1674,10 @@ impl PlexiApp {
                         launch_result = self.launch_app_by_id_with_layout(type_id, layout.clone(), args, cwd_override);
                         if from_pane_id.is_some() {
                             self.active_window = active;
+                            // Undo the temporary focus redirect when launch failed.
+                            if launch_result.is_err() {
+                                self.restore_window_focused_pane(target_win, orig_focused_in_target);
+                            }
                         }
                         if *no_focus {
                             self.active_window = active;
@@ -2710,7 +2718,15 @@ impl eframe::App for PlexiApp {
                         );
                     } else {
                         if let Some(from_id) = from_pane_id {
-                            match self.find_pane_in_any_window(from_id) {
+                            // When target_context already selected a window, restrict from_pane_id
+                            // resolution to that window so it cannot override target_context.
+                            let tile_opt = if target_context.is_some() {
+                                let ctx_win = self.active_window;
+                                self.windows[ctx_win].tree.tiles.find_pane(&from_id).map(|ft| (ctx_win, ft))
+                            } else {
+                                self.find_pane_in_any_window(from_id)
+                            };
+                            match tile_opt {
                                 Some((fw, ft)) => {
                                     log::info!("SpawnPane: app: targeting from_pane_id={from_id} win_idx={fw}");
                                     self.active_window = fw;
