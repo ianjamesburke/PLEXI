@@ -73,9 +73,7 @@ Three channels, each more stable than the last:
 
 Never commit directly to `beta` or `main`. All work flows through alpha. Feature branch naming: `feature/<issue-number>-short-description`. Never pass `--delete-branch` to `gh pr merge`.
 
-**Dirty alpha during ship-issue:** The ship-issue skill auto-stashes uncommitted alpha changes at Phase 1 and auto-pops at every exit point. If changes disappear after a ship run, check `git stash list` — a stash named `ship-issue auto-stash before #<N>` may not have been popped (agent crash mid-cycle).
-
-**Full ship cycle (label → worktree → PR → merge → install → cleanup) is defined in the `/ship-issue` skill.** Do not duplicate it here.
+**Full ship cycle:** `/dispatch N` → opens an implement-issue pane → chains open-pr inline → `/hand-off` to validate-pr → chains merge-pr inline. The pipeline self-orchestrates; each pane closes itself when done.
 
 ### alpha → beta → main (channel promotion)
 
