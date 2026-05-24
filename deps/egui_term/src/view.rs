@@ -1,4 +1,5 @@
 use alacritty_terminal::index::Point as TerminalGridPoint;
+use alacritty_terminal::selection::SelectionRange;
 use alacritty_terminal::term::cell;
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
@@ -52,6 +53,10 @@ pub struct TerminalViewState {
     last_cursor_toggle: Instant,
     cursor_visible: bool,
     copy_mode: Option<CopyModeState>,
+    /// Selection captured when this pane lost focus. Used to keep the selection
+    /// highlight visible in unfocused panes even if the alacritty backend clears
+    /// the live selection due to new terminal output.
+    frozen_selection_range: Option<SelectionRange>,
 }
 
 impl Default for TerminalViewState {
@@ -63,6 +68,7 @@ impl Default for TerminalViewState {
             last_cursor_toggle: Instant::now(),
             cursor_visible: true,
             copy_mode: None,
+            frozen_selection_range: None,
         }
     }
 }
@@ -241,6 +247,70 @@ impl<'a> TerminalView<'a> {
                                 modifiers,
                             ));
                         }
+                    } else if let egui::Event::Key {
+                        key: Key::A,
+                        pressed: true,
+                        modifiers: key_mods,
+                        ..
+                    } = &event
+                    {
+                        // Cmd+A: select all content from scrollback top to current cursor,
+                        // copy to clipboard, then restore the user's original scroll position.
+                        // In alt-screen (vim, less, TUIs) pass the key through unchanged.
+                        if key_mods.command_only() {
+                            let (is_alt_screen, display_offset, cursor_line, cell_height) = {
+                                let content = self.backend.last_content();
+                                (
+                                    content.terminal_mode.contains(TermMode::ALT_SCREEN),
+                                    content.grid.display_offset(),
+                                    content.grid.cursor.point.line.0,
+                                    content.terminal_size.cell_height as f32,
+                                )
+                            };
+                            let ppp = layout.ctx.pixels_per_point();
+                            if !is_alt_screen {
+                                // Scroll to bottom first so the cursor is in the viewport at its
+                                // natural position (display_offset=0 → cursor_y = cursor_line * cell_h).
+                                self.backend.process_command(BackendCommand::ScrollToBottom);
+                                let cursor_y = cursor_line as f32 * cell_height;
+                                // Anchor selection at the cursor row.
+                                self.backend.process_command(BackendCommand::SelectStart(
+                                    SelectionType::Lines, 0.0, cursor_y, ppp,
+                                ));
+                                // Scroll to top so SelectUpdate(0,0) resolves to the first historical line.
+                                self.backend.process_command(BackendCommand::ScrollToTop);
+                                self.backend.process_command(BackendCommand::SelectUpdate(0.0, 0.0, ppp));
+                                // Sync to make last_content reflect the freshly set selection.
+                                let _ = self.backend.sync();
+                                let text = self.backend.selectable_content();
+                                if !text.trim().is_empty() {
+                                    log::info!("[cmd+a] copied {} chars to clipboard", text.len());
+                                    layout.ctx.copy_text(text);
+                                }
+                                self.backend.process_command(BackendCommand::ClearSelection);
+                                // Restore original scroll position.
+                                self.backend.process_command(BackendCommand::ScrollToBottom);
+                                if display_offset > 0 {
+                                    self.backend.process_command(BackendCommand::Scroll(display_offset as i32));
+                                }
+                                input_actions.push(InputAction::Ignore);
+                            } else {
+                                // Alt-screen: let the key reach the TUI.
+                                input_actions.push(process_keyboard_event(
+                                    event,
+                                    self.backend,
+                                    &self.bindings_layout,
+                                    modifiers,
+                                ));
+                            }
+                        } else {
+                            input_actions.push(process_keyboard_event(
+                                event,
+                                self.backend,
+                                &self.bindings_layout,
+                                modifiers,
+                            ));
+                        }
                     } else {
                         input_actions.push(process_keyboard_event(
                             event,
@@ -371,6 +441,20 @@ impl<'a> TerminalView<'a> {
         painter: &Painter,
     ) {
         let content = self.backend.sync();
+
+        // Cross-pane selection persistence: when this pane has focus, keep the
+        // frozen range up to date. When unfocused, use the frozen range for
+        // rendering so the highlight survives even if alacritty clears the
+        // live selection due to new terminal output arriving in the background.
+        if self.has_focus {
+            state.frozen_selection_range = content.selectable_range;
+        }
+        let selection_range = if self.has_focus {
+            content.selectable_range
+        } else {
+            state.frozen_selection_range
+        };
+
         let layout_min = layout.rect.min;
         let layout_max = layout.rect.max;
         // Use font-metric-based cell dimensions from the committed terminal
@@ -407,8 +491,7 @@ impl<'a> TerminalView<'a> {
             let is_inverse = flags.contains(cell::Flags::INVERSE);
             let is_dim =
                 flags.intersects(cell::Flags::DIM | cell::Flags::DIM_BOLD);
-            let is_selected = content
-                .selectable_range
+            let is_selected = selection_range
                 .is_some_and(|r| r.contains(indexed.point));
             let is_hovered_hyperling =
                 content.hovered_hyperlink.as_ref().is_some_and(|r| {

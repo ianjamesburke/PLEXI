@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage: scripts/install.sh [channel]
-# Derives channel from git branch (main→stable, alpha→alpha, beta→beta).
-# Falls back to .channel file, then "stable". Must be run from the repo root.
+# Derives channel from git branch (main→main, alpha→alpha, beta→beta).
+# Falls back to .channel file, then "main". Must be run from the repo root.
 set -euo pipefail
 
 if [[ "$(uname)" != "Darwin" ]]; then
@@ -9,20 +9,22 @@ if [[ "$(uname)" != "Darwin" ]]; then
   exit 1
 fi
 
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 _git_channel() {
   local branch
-  branch="$(git branch --show-current 2>/dev/null || echo "")"
+  branch="$(git -C "$REPO_ROOT" branch --show-current 2>/dev/null || echo "")"
   case "$branch" in
-    main)   echo "stable" ;;
+    main)   echo "main" ;;
     alpha)  echo "alpha" ;;
     beta)   echo "beta" ;;
-    *)      cat .channel 2>/dev/null || echo "stable" ;;
+    *)      cat .channel 2>/dev/null || echo "main" ;;
   esac
 }
 
 channel="${1:-$(_git_channel)}"
 
-if [[ "$channel" == "stable" ]]; then
+if [[ "$channel" == "main" ]]; then
   cap=""
   suffix=""
 elif [[ "$channel" =~ ^pr-([0-9]+)$ ]]; then
@@ -60,7 +62,7 @@ cp -R "$app_src" "$app_dest"
 /usr/bin/plutil -replace CFBundleIdentifier -string "$bundle_id" "$app_dest/Contents/Info.plist"
 /usr/bin/plutil -replace CFBundleExecutable -string "plexi${suffix}" "$app_dest/Contents/Info.plist"
 
-# For non-stable channels, rename the binary inside the installed bundle from
+# For non-main channels, rename the binary inside the installed bundle from
 # "plexi" to "plexi-<channel>" and update CFBundleExecutable to match.
 # config_dir_name() detects the channel from current_exe() file_name(), so the
 # binary name inside the bundle must contain the channel suffix or the app
@@ -71,16 +73,13 @@ fi
 
 ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" "$bin_dest"
 
-# For non-PR channels (alpha, beta, stable), also update the bare `plexi`
-# symlink so that `plexi open`, `plexi notify`, etc. always reach the correct
-# running instance regardless of which channel was most recently installed.
-# PR builds are excluded — they are ephemeral and should not capture the bare name.
-if [[ ! "$channel" =~ ^pr- ]]; then
+# Only the main channel owns the bare `plexi` symlink.
+# PR builds and development channels are excluded.
+if [[ "$channel" == "main" ]]; then
   ln -sf "$app_dest/Contents/MacOS/plexi${suffix}" /usr/local/bin/plexi
 fi
 
-# Install shell completions (non-PR builds only).
-# Called after the binary symlink is in place at $bin_dest.
+# Install shell completions for production channels (main, alpha, beta).
 install_completions() {
   local binary="$1"
   local binary_name
@@ -114,13 +113,8 @@ install_completions() {
   fi
 }
 
-if [[ ! "$channel" =~ ^pr- ]]; then
+if [[ "$channel" == "main" || "$channel" == "alpha" || "$channel" == "beta" ]]; then
   install_completions "$bin_dest"
-  # For non-stable channels, also install bare `plexi` completions so the bare
-  # symlink (pointing to this channel's binary) gets its own completion entry.
-  if [[ "$channel" != "stable" ]]; then
-    install_completions /usr/local/bin/plexi
-  fi
 fi
 
 mkdir -p "$profile_dir/sdk" "$profile_dir/apps" "$profile_dir/scripts"

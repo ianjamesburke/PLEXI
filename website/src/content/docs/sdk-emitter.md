@@ -1,7 +1,7 @@
 ---
 title: "Emitter"
 description: "Host commands, notifications, HTTP, secrets, and device APIs"
-verified_version: "3.6.54"
+verified_version: "0.0.496"
 ---
 
 # Emitter
@@ -521,10 +521,13 @@ def run_get(intent: str, payload: Any = None) -> str
 ### `capability_request`
 
 ```python
-async def capability_request(capability: str) -> bool
+async def capability_request(capability: str) -> None
 ```
 
-Await until host grants or denies the capability. Returns True if granted.
+Request a runtime capability grant from the user. Returns None if granted.
+
+Raises CapabilityDeniedError if the user denies the request. Callers should
+wrap this in try/except CapabilityDeniedError to handle denial gracefully.
 
 Await from async hooks. From background threads:
 ``self.emit.run_sync(self.emit.capability_request(capability))``.
@@ -599,6 +602,19 @@ Raises ``RuntimeError`` if the fetch fails (network error, bad URL, decode error
 
 From background threads:
 ``self.emit.run_sync(self.emit.load_image(url))``.
+
+---
+
+### `measure_text_wrapped`
+
+```python
+async def measure_text_wrapped(text: str, font_size: float, max_width: float, max_lines: 'int | None' = None) -> float
+```
+
+Measure the height of text wrapped at max_width using real host font metrics.
+
+If `max_lines` is set, clamps the result to that many rows.
+Returns height in logical pixels. Requires a running app loop.
 
 ---
 
@@ -960,6 +976,21 @@ when replying on a directed pipe a *peer* opened (you're the target;
 the host subscribed you, but the SDK doesn't auto-build a handle).
 Sends a `pipe_send` DrawCommand; the host routes per the existing
 directed-pipe pair table.
+
+---
+
+### `close_self`
+
+```python
+def close_self() -> None
+```
+
+Ask the host to close this app's pane gracefully.
+
+Prefer this over sys.exit() — sys.exit() exits the process but the
+host marks the pane as Crashed and restart-loops watched apps.
+close_self() sends ControlCommand::CloseSelf; the host closes the
+pane via the normal wants_close path on the next frame.
 
 ---
 

@@ -1,22 +1,22 @@
 ---
 title: Quick Note
-description: A persistent scratch pane, always one keystroke away.
-verified_version: "3.6.19"
+description: A scratch overlay for capturing thoughts without leaving your layout.
+verified_version: "0.0.496"
 order: 2
 ---
 
-Quick Note is a persistent note pane that lives outside your normal layout. It opens and closes with a single shortcut and retains its content across sessions.
+Quick Note is a scratch overlay that opens over your current layout with a single shortcut. Type a note, commit it, and it's saved to your backlog — or dismiss without committing and nothing is written.
 
 ## Opening Quick Note
 
-Press `⌘0` from anywhere inside Plexi. The Quick Note pane opens full-screen, on top of your current layout. Press `⌘0` again (or `Escape`) to dismiss it — your layout underneath is unchanged.
+Press `⌘0` from anywhere inside Plexi. The overlay opens full-screen on top of your current layout. Press `⌘0` again (or `Escape`) to dismiss — your layout underneath is unchanged.
+
+## Committing a Note
+
+Press `Enter` to commit. Plexi writes the note to your backlog (in your profile directory) and closes the overlay. Dismissing without committing discards the text — uncommitted content is not saved across Plexi restarts.
 
 ## Use Cases
 
 - Scratch pad for commands you're building up
 - Temporary clipboard for copy-paste workflows
 - Running notes during a debugging session
-
-## Persistence
-
-The note pane's content persists across Quick Note open/close cycles. Closing Plexi entirely does not preserve the content — Quick Note is a session-level scratch space, not a persistent document.

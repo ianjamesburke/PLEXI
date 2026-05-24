@@ -109,7 +109,7 @@ impl PlexiApp {
         workspace_root: PathBuf,
         group: Option<String>,
         hint: Option<&str>,
-    ) {
+    ) -> Option<PaneId> {
         let active = self.active_window;
         let new_app_pane = |id: PaneId,
                             process: crate::process_app::ProcessApp,
@@ -133,17 +133,20 @@ impl PlexiApp {
         if matches!(hint, Some("overlay")) {
             let Some(focused_tile) = self.windows[active].focused_pane else {
                 log::warn!("app::{app_id}: overlay launch skipped — no focused pane");
-                return;
+                return None;
             };
             let Some(Tile::Pane(focused_pane_id)) =
                 self.windows[active].tree.tiles.get(focused_tile)
             else {
                 log::warn!("app::{app_id}: overlay launch skipped — focused tile is not a pane");
-                return;
+                return None;
             };
             let pane_id = *focused_pane_id;
             let Some(replaced_pane) = self.windows[active].panes.remove(&pane_id) else {
-                return;
+                log::warn!(
+                    "app::{app_id}: overlay launch skipped — pane {pane_id} missing from pane map"
+                );
+                return None;
             };
             process.set_pane_id(pane_id);
             self.windows[active].panes.insert(
@@ -152,7 +155,7 @@ impl PlexiApp {
             );
             self.set_window_focused_pane(active, focused_tile);
             log::info!("app::{app_id}: launched as overlay on pane {pane_id}");
-            return;
+            return Some(pane_id);
         }
 
         if self.windows[active].zoomed_pane.take().is_some() {
@@ -187,7 +190,7 @@ impl PlexiApp {
             ctx.tree.root = Some(root_tile);
             ctx.focused_pane = Some(root_tile);
             log::info!("app::{app_id}: launched as root pane {new_id} (empty context)");
-            return;
+            return Some(new_id);
         }
 
         let _ = self.split_with_new_pane(new_id, vertical, share, new_pane_first, false);
@@ -206,6 +209,8 @@ impl PlexiApp {
                 log::info!("app::{app_id}: startup message written to terminal pane {term_id}");
             }
         }
+
+        Some(new_id)
     }
 
     /// Open a built-in error tile pane when a capability pre-flight check fails.
@@ -289,7 +294,50 @@ impl PlexiApp {
         // Launch the replacement first — if launch fails, leave the old
         // subprocess running so the pane stays usable.
         let cwd = workspace_root.clone();
-        let Some(mut new_process) = self.registry.launch_process(&manifest_id, &cwd, &[]) else {
+        let new_process_opt = self.registry.launch_process(&manifest_id, &cwd, &[]);
+        // Path-launched apps (app run / app init) are never inserted into the
+        // registry's in-memory map, so launch_process returns None. Fall back
+        // to loading the manifest directly from workspace_root.
+        let new_process_opt = if new_process_opt.is_none()
+            && workspace_root.join("manifest.toml").exists()
+        {
+            match self.registry.load_app(&workspace_root) {
+                Ok(installed) => {
+                    let perms = installed.manifest.capabilities.to_permissions();
+                    let caps = perms.capabilities.clone();
+                    let keyboard_capture = installed.launch.keyboard_capture;
+                    match crate::process_app::ProcessApp::launch(
+                        installed.manifest.id.clone(),
+                        installed.manifest.name.clone(),
+                        &installed.bin_path,
+                        &cwd,
+                        &[],
+                        workspace_root.clone(),
+                        caps,
+                        keyboard_capture,
+                        installed.manifest.mcp.as_ref(),
+                    ) {
+                        Ok(mut process) => {
+                            process.permissions.allowed_hosts = perms.allowed_hosts;
+                            Some(process)
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "reload_app_pane({pane_id}): path-reload launch failed: {e}"
+                            );
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("reload_app_pane({pane_id}): path-reload load_app failed: {e}");
+                    None
+                }
+            }
+        } else {
+            new_process_opt
+        };
+        let Some(mut new_process) = new_process_opt else {
             log::warn!(
                 "reload_app_pane({pane_id}): launch_process returned None — keeping old instance"
             );
@@ -795,10 +843,21 @@ impl PlexiApp {
             Ok(mut process) => {
                 process.permissions.allowed_hosts = perms.allowed_hosts;
                 let group = installed.launch.join_group.clone();
+                let watch = installed.manifest.watch.unwrap_or(false);
                 log::info!(
                     "launch_app_by_path_with_layout: launched '{app_id}' from {app_path} group={group:?}"
                 );
-                self.open_process_app_pane(&app_id, process, app_dir, group, layout_hint.as_deref());
+                let watch_dir = app_dir.clone();
+                let new_pane_id = self.open_process_app_pane(&app_id, process, app_dir, group, layout_hint.as_deref());
+                if watch {
+                    if let Some(pane_id) = new_pane_id {
+                        log::info!(
+                            "hot_reload: watching {} for pane {pane_id}",
+                            watch_dir.display()
+                        );
+                        self.hot_reload.watch(pane_id, &watch_dir);
+                    }
+                }
                 Ok(())
             }
             Err(e) => {
@@ -1558,6 +1617,65 @@ mod tests {
             "zoom must NOT be cleared when launching an overlay app"
         );
     }
+
+    /// Regression guard for issue #1706: `open_process_app_pane` must return the
+    /// created pane ID so callers can start a hot-reload watcher without going
+    /// through the registry.
+    #[test]
+    fn open_process_app_pane_returns_pane_id() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        let root = h.app.windows[0].tree.root.expect("root tile");
+        h.app.windows[0].focused_pane = Some(root);
+
+        let (process, _tx) = ProcessApp::new_for_test(1, AppPermissions::builtin());
+        let result = h.app.open_process_app_pane(
+            "test-app",
+            process,
+            std::path::PathBuf::from("/tmp"),
+            None,
+            None,
+        );
+        assert!(result.is_some(), "open_process_app_pane must return Some(pane_id) on success");
+    }
+
+    /// Regression guard for issue #1706: overlay launch returns the pane ID of the
+    /// replaced pane so the caller can attach a watcher.
+    #[test]
+    fn open_process_app_pane_overlay_returns_pane_id() {
+        let mut h = HostHarness::new();
+        let _pane = h.add_test_pane();
+        let root = h.app.windows[0].tree.root.expect("root tile");
+        h.app.windows[0].focused_pane = Some(root);
+
+        let (process, _tx) = ProcessApp::new_for_test(2, AppPermissions::builtin());
+        let result = h.app.open_process_app_pane(
+            "test-overlay-app",
+            process,
+            std::path::PathBuf::from("/tmp"),
+            None,
+            Some("overlay"),
+        );
+        assert!(result.is_some(), "overlay launch must return Some(pane_id)");
+    }
+
+    /// Regression guard for issue #1706: overlay launch with no focused pane returns
+    /// None (nothing was created) so callers do not try to start a watcher.
+    #[test]
+    fn open_process_app_pane_overlay_no_focused_pane_returns_none() {
+        let mut h = HostHarness::new();
+        assert!(h.app.windows[0].focused_pane.is_none(), "no focused pane in empty context");
+
+        let (process, _tx) = ProcessApp::new_for_test(3, AppPermissions::builtin());
+        let result = h.app.open_process_app_pane(
+            "test-overlay-app",
+            process,
+            std::path::PathBuf::from("/tmp"),
+            None,
+            Some("overlay"),
+        );
+        assert!(result.is_none(), "overlay with no focused pane must return None");
+    }
 }
 
 #[cfg(test)]
@@ -1766,6 +1884,73 @@ mod quick_note_tests {
         assert_eq!(
             snap.open_panes.len(), 1,
             "SpawnPane with invalid target_context must not create a pane"
+        );
+    }
+
+    /// Regression guard for issue #1705: IPC terminal spawn with `from_pane_id` must split
+    /// from the originating pane and keep focus there, not from the UI-focused pane.
+    #[test]
+    fn spawn_pane_terminal_ipc_from_pane_id_splits_from_origin() {
+        use crate::testing::HostHarness;
+        let mut h = HostHarness::new();
+        let pane_a = h.add_test_pane();
+        let root_a = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        h.app.windows[0].focused_pane = Some(root_a);
+
+        // Add pane B: split from A so focus moves to B.
+        h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("split_h".to_string()),
+            args: vec![],
+            pipe_id: None,
+            from_pane_id: None,
+            request_id: None,
+            response_file: None,
+            ephemeral: false,
+            cwd: None,
+            no_focus: false,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+        });
+        h.run_frames(2);
+
+        let pane_b_tile = h.app.windows[0].focused_pane.expect("focused pane B after split");
+
+        // Spawn pane C via IPC with from_pane_id=pane_a while UI focus is on pane B.
+        h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("split_v".to_string()),
+            args: vec![],
+            pipe_id: None,
+            from_pane_id: Some(pane_a),
+            request_id: None,
+            response_file: None,
+            ephemeral: false,
+            cwd: None,
+            no_focus: false,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+        });
+        h.run_frames(2);
+
+        let snap = h.state();
+        assert!(
+            snap.open_panes.len() >= 3,
+            "from_pane_id terminal spawn via IPC must create a third pane (got {:?})",
+            snap.open_panes,
+        );
+        // keep_focus=true when from_pane_id is set: focus must not jump to the new pane.
+        assert_ne!(
+            h.app.windows[0].focused_pane,
+            None,
+            "focused_pane must not be None after from_pane_id spawn",
+        );
+        assert_eq!(
+            h.app.windows[0].focused_pane,
+            Some(pane_b_tile),
+            "focus must remain on the pre-existing UI-focused pane (pane B) after IPC terminal from_pane_id spawn",
         );
     }
 }

@@ -187,42 +187,68 @@ fn render_inspector_pane_row(
     row_resp
 }
 
-/// Returns `true` if the user clicked "Set root..." or the edit button on an
-/// existing root, signaling the caller to open the text-input overlay.
+/// Returns `(want_root_overlay, want_desc_overlay, start_rename, want_close, use_pane_dir)`.
+/// `use_pane_dir` fires when the user clicks "From pane" to set the context root from the
+/// focused pane's cwd without opening the text-input overlay.
 fn render_inspector_header(
     ui: &mut egui::Ui,
     ctx_name: &str,
     ctx_root: &Option<std::path::PathBuf>,
     ctx_description: &Option<String>,
+    focused_cwd: Option<&std::path::Path>,
     colors: &Colors,
     renaming: bool,
     rename_buffer: &mut String,
-) -> (bool, bool, bool) {
+) -> (bool, bool, bool, bool, bool) {
     let mut open_root_overlay = false;
     let mut open_description_overlay = false;
     let mut start_rename = false;
+    let mut want_close = false;
+    let mut use_pane_dir = false;
 
-    if renaming {
-        let te_id = egui::Id::new("inspector_rename_input");
-        // Do NOT call request_focus() here — focus is managed via the one-shot
-        // inspector_rename_focus_requested flag in draw_context_inspector, called
-        // AFTER all UI renders so it wins egui's last-caller-wins focus contest.
-        crate::widgets::styled_text_input(ui, rename_buffer, "Context name...", te_id, colors);
-    } else {
-        let name_resp = ui.add(
-            egui::Label::new(
-                RichText::new(ctx_name)
-                    .size(style::TEXT_TITLE_XL)
-                    .color(colors.text_primary)
-                    .strong(),
-            )
-            .sense(egui::Sense::click()),
-        );
-        if name_resp.clicked() {
-            start_rename = true;
-        }
-        name_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
-    }
+    // Render the RTL close button BEFORE the greedy title/input widget so egui's
+    // left-to-right layout doesn't let the greedy widget consume all available width
+    // and push the close button off-screen.
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("\u{2715}")
+                            .size(style::TEXT_BODY)
+                            .color(colors.text_dim),
+                    )
+                    .frame(false),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Close inspector")
+                .clicked()
+            {
+                want_close = true;
+            }
+            if renaming {
+                let te_id = egui::Id::new("inspector_rename_input");
+                // Do NOT call request_focus() here — focus is managed via the one-shot
+                // inspector_rename_focus_requested flag in draw_context_inspector, called
+                // AFTER all UI renders so it wins egui's last-caller-wins focus contest.
+                crate::widgets::styled_text_input(ui, rename_buffer, "Context name...", te_id, colors);
+            } else {
+                let name_resp = ui.add(
+                    egui::Label::new(
+                        RichText::new(ctx_name)
+                            .size(style::TEXT_TITLE_XL)
+                            .color(colors.text_primary)
+                            .strong(),
+                    )
+                    .sense(egui::Sense::click()),
+                );
+                if name_resp.clicked() {
+                    start_rename = true;
+                }
+                name_resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+            }
+        });
+    });
 
     if let Some(root) = ctx_root {
         ui.add_space(style::SPACE_SM);
@@ -248,21 +274,41 @@ fn render_inspector_header(
         });
     } else {
         ui.add_space(style::SPACE_SM);
-        if ui
-            .add(
-                egui::Button::new(
-                    RichText::new("Set root\u{2026}")
-                        .size(style::TEXT_CAPTION)
-                        .color(colors.text_primary),
+        ui.horizontal(|ui| {
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new("Set root\u{2026}")
+                            .size(style::TEXT_CAPTION)
+                            .color(colors.text_primary),
+                    )
+                    .frame(false),
                 )
-                .frame(false),
-            )
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text("Set a project root directory for this context")
-            .clicked()
-        {
-            open_root_overlay = true;
-        }
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text("Set a project root directory for this context")
+                .clicked()
+            {
+                open_root_overlay = true;
+            }
+            if let Some(cwd) = focused_cwd {
+                let cwd_str = cwd.display().to_string();
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("From pane")
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.accent),
+                        )
+                        .frame(false),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text(format!("Set root to {cwd_str}"))
+                    .clicked()
+                {
+                    use_pane_dir = true;
+                }
+            }
+        });
     }
     // Description row
     ui.add_space(style::SPACE_SM);
@@ -285,27 +331,25 @@ fn render_inspector_header(
                 open_description_overlay = true;
             }
         });
-    } else {
-        if ui
-            .add(
-                egui::Button::new(
-                    RichText::new("Add description\u{2026}")
-                        .size(style::TEXT_CAPTION)
-                        .color(colors.text_primary),
-                )
-                .frame(false),
+    } else if ui
+        .add(
+            egui::Button::new(
+                RichText::new("Add description\u{2026}")
+                    .size(style::TEXT_CAPTION)
+                    .color(colors.text_primary),
             )
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text("Add a description for this context")
-            .clicked()
-        {
-            open_description_overlay = true;
-        }
+            .frame(false),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Add a description for this context")
+        .clicked()
+    {
+        open_description_overlay = true;
     }
     ui.add_space(style::SPACE_XL);
     crate::widgets::section_header(ui, "Panes", false, colors);
     ui.add_space(style::SPACE_SM);
-    (open_root_overlay, open_description_overlay, start_rename)
+    (open_root_overlay, open_description_overlay, start_rename, want_close, use_pane_dir)
 }
 
 fn render_inspector_hints(
@@ -2051,15 +2095,11 @@ impl PlexiApp {
                                 ("exited", None)
                             } else {
                                 let busy = crate::shell::has_foreground_child(t.backend.child_pid());
+                                // Show the OSC title as the badge so the user can see what's running.
                                 let badge = if busy {
-                                    // Surface agent activity when OSC title contains a known indicator.
-                                    t.pty_title.as_deref().and_then(|title| {
-                                        if title.to_ascii_lowercase().contains("claude") {
-                                            Some("Claude Code".to_string())
-                                        } else {
-                                            None
-                                        }
-                                    })
+                                    t.pty_title.as_deref()
+                                        .filter(|t| !t.is_empty())
+                                        .map(|t| t.to_string())
                                 } else {
                                     None
                                 };
@@ -2131,6 +2171,7 @@ impl PlexiApp {
         let mut start_rename = false;
         let mut commit_rename = false;
         let mut cancel_rename = false;
+        let mut set_root_from_pane = false;
 
         let renaming = self.inspector_renaming;
         let num_contexts = self.router.len();
@@ -2161,6 +2202,10 @@ impl PlexiApp {
                 (down, up, enter, backspace, cmd_w)
             }
         });
+
+        let focused_cwd = self.windows.get(self.active_window)
+            .and_then(|w| w.focused_pane.map(|tile| (w, tile)))
+            .and_then(|(w, tile)| w.get_focused_pane_cwd(tile));
 
         let (groups, all_pane_ids, all_context_ids) = self.collect_inspector_rows();
         let pane_count = all_pane_ids.len();
@@ -2238,13 +2283,22 @@ impl PlexiApp {
                     ))
                     .show(ui, |ui| {
                         ui.set_width(style::MODAL_WIDTH_MD);
-                        let (want_root, want_desc, rename_clicked) = render_inspector_header(
-                            ui, "Workspace", &ctx_root, &ctx_description, &colors,
-                            renaming, &mut self.rename_buffer,
-                        );
+                        let (want_root, want_desc, rename_clicked, close_clicked, pane_dir_clicked) =
+                            render_inspector_header(
+                                ui,
+                                ctx_name.as_str(),
+                                &ctx_root,
+                                &ctx_description,
+                                focused_cwd.as_deref(),
+                                &colors,
+                                renaming,
+                                &mut self.rename_buffer,
+                            );
                         if want_root { open_root_overlay = true; }
                         if want_desc { open_description_overlay = true; }
                         if rename_clicked { start_rename = true; }
+                        if close_clicked { dismissed = true; }
+                        if pane_dir_clicked { set_root_from_pane = true; }
                         // While renaming, hide the pane list — interactive widgets
                         // rendered after the TextEdit can steal egui focus (last-caller-wins).
                         // See GOTCHAS.md "egui TextEdit focus in complex frames".
@@ -2393,6 +2447,16 @@ impl PlexiApp {
             self.description_focus_requested = false;
             self.push_focus_layer(crate::app::FocusLayer::ContextDescription);
             self.show_context_inspector = false;
+        }
+        if set_root_from_pane {
+            if let Some(cwd) = focused_cwd {
+                log::info!(
+                    "ContextInspector: set root from pane cwd={} ctx_idx={selected_ctx_idx}",
+                    cwd.display()
+                );
+                self.router.get_mut(selected_ctx_idx).root = Some(cwd);
+                self.save_workspace();
+            }
         }
 
         if self.inspector_delete_press_count > 0 {

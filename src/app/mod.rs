@@ -393,6 +393,11 @@ pub struct PlexiApp {
     /// a signal so `reload_config()` runs automatically.
     pub(crate) _config_watcher: Option<crate::config_watcher::ConfigWatcher>,
     pub(crate) config_reload_rx: Option<std::sync::mpsc::Receiver<()>>,
+    /// App registry filesystem watcher (#1712). Watches the global and workspace-local
+    /// apps dirs; signals `registry_reload_rx` on any directory change so the registry
+    /// is rescanned without a host restart.
+    pub(crate) _registry_watcher: Option<crate::app_registry_watcher::AppRegistryWatcher>,
+    pub(crate) registry_reload_rx: Option<std::sync::mpsc::Receiver<()>>,
     /// Watched panes scheduled for crash-restart. Value is the earliest `Instant` at
     /// which the restart fires — giving the developer ~2s to read the crash overlay.
     pub(crate) pending_crash_restarts: HashMap<PaneId, std::time::Instant>,
@@ -676,6 +681,13 @@ impl PlexiApp {
         let cwd = std::env::current_dir().unwrap_or_default();
         let registry = AppRegistry::load(&cwd);
 
+        let (mut reg_watcher, mut reg_reload_rx) = match crate::app_registry_watcher::start(
+            crate::app_registry::registry_watch_dirs(&cwd),
+        ) {
+            Some((w, rx)) => (Some(w), Some(rx)),
+            None => (None, None),
+        };
+
         // Initialize the event log. Global log goes to ~/.plexi-*/events.jsonl;
         // workspace log goes to .plexi/events.jsonl if we're inside a workspace.
         {
@@ -938,6 +950,8 @@ impl PlexiApp {
                     hot_reload_rx: hr_rx,
                     _config_watcher: cfg_watcher.take(),
                     config_reload_rx: cfg_reload_rx.take(),
+                    _registry_watcher: reg_watcher.take(),
+                    registry_reload_rx: reg_reload_rx.take(),
                     pending_crash_restarts: HashMap::new(),
                     minimap: crate::minimap::MinimapState::with_visible(window_count >= 2),
                     last_page_x_per_row: HashMap::new(),
@@ -995,6 +1009,16 @@ impl PlexiApp {
             }
             None => ("Default".to_string(), None, None),
         };
+
+        let default_cwd = std::env::current_dir().unwrap_or_default();
+        let default_registry = AppRegistry::load(&default_cwd);
+        let (mut default_reg_watcher, mut default_reg_reload_rx) =
+            match crate::app_registry_watcher::start(
+                crate::app_registry::registry_watch_dirs(&default_cwd),
+            ) {
+                Some((w, rx)) => (Some(w), Some(rx)),
+                None => (None, None),
+            };
 
         Self {
             pty_event_rx: rx,
@@ -1064,7 +1088,7 @@ impl PlexiApp {
             rename_pane_focus_requested: false,
             text_overlay: None,
             text_overlay_browse_rx: None,
-            registry: AppRegistry::load(&std::env::current_dir().unwrap_or_default()),
+            registry: default_registry,
             features,
             pending_notifications: load_pending_notifications_from(&crate::config::config_dir().join("notifications.json")),
             show_notification_modal: false,
@@ -1097,6 +1121,8 @@ impl PlexiApp {
             hot_reload_rx: hr_rx2,
             _config_watcher: cfg_watcher.take(),
             config_reload_rx: cfg_reload_rx.take(),
+            _registry_watcher: default_reg_watcher.take(),
+            registry_reload_rx: default_reg_reload_rx.take(),
             pending_crash_restarts: HashMap::new(),
             minimap: crate::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
@@ -1256,6 +1282,8 @@ impl PlexiApp {
             hot_reload_rx: hr_rx,
             _config_watcher: None,
             config_reload_rx: None,
+            _registry_watcher: None,
+            registry_reload_rx: None,
             pending_crash_restarts: HashMap::new(),
             minimap: crate::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
@@ -1385,11 +1413,16 @@ impl PlexiApp {
                         log::warn!("pane_ipc: set_pane_title: pane_id={pane_id} not found");
                     }
                 }
-                crate::app_protocol::AppRequest::ListPanes { response_file } => {
-                    log::info!("pane_ipc: kind=list_panes response_file={:?}", response_file);
+                crate::app_protocol::AppRequest::ListPanes { response_file, context_id: filter_context_id } => {
+                    log::info!("pane_ipc: kind=list_panes context_id={:?} response_file={:?}", filter_context_id, response_file);
                     let active_win = self.active_window;
                     let mut entries: Vec<serde_json::Value> = Vec::new();
                     for (win_idx, win) in self.windows.iter().enumerate() {
+                        if let Some(cid) = filter_context_id {
+                            if win.context_id != *cid {
+                                continue;
+                            }
+                        }
                         let focused_pane_id = win.focused_pane
                             .and_then(|t| win.tree.tiles.get(t))
                             .and_then(|tile| {
@@ -1619,18 +1652,64 @@ impl PlexiApp {
                         }
                     } else if let Some(path_str) = path {
                         let ws_root = workspace_root.as_deref().map(std::path::PathBuf::from);
-                        let original_focused = self.windows[active].focused_pane;
+                        let (target_win, orig_focused_in_target) = if let Some(from_id) = from_pane_id {
+                            match self.find_pane_in_any_window(*from_id) {
+                                Some((fw, ft)) => {
+                                    log::info!("pane_ipc: spawn_pane path: targeting from_pane_id={from_id} win_idx={fw}");
+                                    let saved = self.windows[fw].focused_pane;
+                                    self.active_window = fw;
+                                    self.set_window_focused_pane(fw, ft);
+                                    (fw, saved)
+                                }
+                                None => {
+                                    log::warn!("pane_ipc: spawn_pane path: from_pane_id={from_id} not found, using focused pane");
+                                    (active, self.windows[active].focused_pane)
+                                }
+                            }
+                        } else {
+                            (active, self.windows[active].focused_pane)
+                        };
                         launch_result = self.launch_app_by_path_with_layout(path_str, layout.clone(), ws_root);
+                        if from_pane_id.is_some() {
+                            self.active_window = active;
+                            // Undo the temporary focus redirect when launch failed.
+                            if launch_result.is_err() {
+                                self.restore_window_focused_pane(target_win, orig_focused_in_target);
+                            }
+                        }
                         if *no_focus {
                             self.active_window = active;
-                            self.restore_window_focused_pane(active, original_focused);
+                            self.restore_window_focused_pane(target_win, orig_focused_in_target);
                         }
                     } else {
-                        let original_focused = self.windows[active].focused_pane;
+                        let (target_win, orig_focused_in_target) = if let Some(from_id) = from_pane_id {
+                            match self.find_pane_in_any_window(*from_id) {
+                                Some((fw, ft)) => {
+                                    log::info!("pane_ipc: spawn_pane app: targeting from_pane_id={from_id} win_idx={fw}");
+                                    let saved = self.windows[fw].focused_pane;
+                                    self.active_window = fw;
+                                    self.set_window_focused_pane(fw, ft);
+                                    (fw, saved)
+                                }
+                                None => {
+                                    log::warn!("pane_ipc: spawn_pane app: from_pane_id={from_id} not found, using focused pane");
+                                    (active, self.windows[active].focused_pane)
+                                }
+                            }
+                        } else {
+                            (active, self.windows[active].focused_pane)
+                        };
                         launch_result = self.launch_app_by_id_with_layout(type_id, layout.clone(), args, cwd_override);
+                        if from_pane_id.is_some() {
+                            self.active_window = active;
+                            // Undo the temporary focus redirect when launch failed.
+                            if launch_result.is_err() {
+                                self.restore_window_focused_pane(target_win, orig_focused_in_target);
+                            }
+                        }
                         if *no_focus {
                             self.active_window = active;
-                            self.restore_window_focused_pane(active, original_focused);
+                            self.restore_window_focused_pane(target_win, orig_focused_in_target);
                         }
                     }
                     if let Some(rf) = response_file {
@@ -2666,11 +2745,31 @@ impl eframe::App for PlexiApp {
                             initial_cmd.as_deref(), close_on_exit, None, true,
                         );
                     } else {
+                        if let Some(from_id) = from_pane_id {
+                            // When target_context already selected a window, restrict from_pane_id
+                            // resolution to that window so it cannot override target_context.
+                            let tile_opt = if target_context.is_some() {
+                                let ctx_win = self.active_window;
+                                self.windows[ctx_win].tree.tiles.find_pane(&from_id).map(|ft| (ctx_win, ft))
+                            } else {
+                                self.find_pane_in_any_window(from_id)
+                            };
+                            match tile_opt {
+                                Some((fw, ft)) => {
+                                    log::info!("SpawnPane: app: targeting from_pane_id={from_id} win_idx={fw}");
+                                    self.active_window = fw;
+                                    self.set_window_focused_pane(fw, ft);
+                                }
+                                None => {
+                                    log::warn!("SpawnPane: app: from_pane_id={from_id} not found, using focused pane");
+                                }
+                            }
+                        }
                         let _ = self.launch_app_by_id_with_layout(&type_id, Some(layout), &effective_args, None);
                         log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
                     }
 
-                    // Restore active_window if we switched for target_context.
+                    // Restore active_window if we switched for target_context or from_pane_id.
                     self.active_window = original_active_window;
 
                     // Send PaneSpawned back to the requesting pane (may be
@@ -3584,6 +3683,23 @@ impl eframe::App for PlexiApp {
             });
         if config_changed {
             self.reload_config();
+        }
+
+        // App registry hot-reload (#1712): drain filesystem watcher signals.
+        let registry_changed = self
+            .registry_reload_rx
+            .as_ref()
+            .map_or(false, |rx| {
+                let hit = rx.try_recv().is_ok();
+                if hit {
+                    while rx.try_recv().is_ok() {}
+                }
+                hit
+            });
+        if registry_changed {
+            log::info!("app_registry_watcher: rescanning registry");
+            let cwd = std::env::current_dir().unwrap_or_default();
+            self.registry = crate::app_registry::AppRegistry::load(&cwd);
         }
 
         // Handle window close request (X button or macOS Cmd+Q OS event).

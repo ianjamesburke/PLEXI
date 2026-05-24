@@ -1,22 +1,18 @@
 ---
-title: Panes & Pages
-description: The Plexi layout model — panes, pages, and how to navigate them.
-verified_version: "3.6.19"
+title: Panes
+description: The Plexi layout model — panes and how to navigate them.
+verified_version: "0.0.496"
 order: 4
 ---
 
-Plexi's UI is built from **panes** arranged into **pages**.
+Plexi's UI is built from **panes** arranged in a tiling grid.
 
-## Panes
+## Pane Types
 
 A pane is a single rectangular region. There are two kinds:
 
 - **Terminal** — a full PTY session. Inherits your shell, dotfiles, and CWD.
 - **App** — runs a sandboxed Plexi app via PGAP. No shell; the app controls the render.
-
-## Pages
-
-A page is a tabbed collection of panes. Think of it like a workspace: you can switch between pages instantly, and each page has its own pane layout.
 
 ## Splitting
 

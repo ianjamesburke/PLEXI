@@ -669,6 +669,13 @@
             },
             "type_id": {
               "type": "string"
+            },
+            "workspace_root": {
+              "description": "When set, use this path as the workspace root for app state scoping\ninstead of defaulting to the app directory. Sent by `plexi open github:`.",
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -703,6 +710,15 @@
         {
           "description": "List all open panes. Host writes a JSON array to `response_file`. Sent by `plexi pane list`.",
           "properties": {
+            "context_id": {
+              "description": "When Some, only panes in this context are returned.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "response_file": {
               "type": "string"
             },
@@ -1870,6 +1886,45 @@
           "type": "object"
         },
         {
+          "description": "Measure the height of `text` wrapped at `max_width` using real host font metrics.\nIf `max_lines` is Some(n), clamps the measurement to n rows.\nReplies with `PlexiEvent::TextWrappedMeasured { request_id, height }`.",
+          "properties": {
+            "font_size": {
+              "format": "float",
+              "type": "number"
+            },
+            "max_lines": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "max_width": {
+              "format": "float",
+              "type": "number"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "const": "measure_text_wrapped",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "text",
+            "font_size",
+            "max_width"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Override the manifest-declared minimum size at runtime.\nStored by the host and used as the live effective minimum from this\npoint forward, superseding the manifest `[launch]` values.",
           "properties": {
             "height": {
@@ -1889,6 +1944,19 @@
             "type",
             "width",
             "height"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Request the host to close this app's pane gracefully.\nThe host closes the pane on the next frame via the wants_close path.\nUse instead of sys.exit() to avoid triggering crash-restart on watched panes.",
+          "properties": {
+            "type": {
+              "const": "close_self",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
           ],
           "type": "object"
         }
@@ -2777,6 +2845,28 @@
           "type": "object"
         },
         {
+          "description": "Response to a `ControlCommand::MeasureTextWrapped` request.\n`height` is the pixel height of the text when wrapped at the requested width,\nclamped to `max_lines` rows if specified.",
+          "properties": {
+            "height": {
+              "format": "float",
+              "type": "number"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text_wrapped_measured",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "height"
+          ],
+          "type": "object"
+        },
+        {
           "description": "User pressed Enter inside a `DrawCommand::TextInput` field.\n\n`id` matches the `id` the app supplied on the `TextInput` command.\n`value` is the buffered text at submission time. The host clears its\nbuffer for `id` after emitting this event so the field is empty for\nthe next input.",
           "properties": {
             "id": {
@@ -3610,6 +3700,14 @@
             "elide": {
               "type": "boolean"
             },
+            "max_lines": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "max_width": {
               "format": "float",
               "type": [
@@ -4096,6 +4194,76 @@
           "required": [
             "type",
             "src",
+            "x",
+            "y",
+            "w",
+            "h"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Circular clipped image. `src` accepts a load_image handle (UUID) or local path.\n`cx`, `cy` are the circle centre in pane-local coordinates.\n`radius` is the circle radius in logical pixels.",
+          "properties": {
+            "cx": {
+              "format": "float",
+              "type": "number"
+            },
+            "cy": {
+              "format": "float",
+              "type": "number"
+            },
+            "radius": {
+              "format": "float",
+              "type": "number"
+            },
+            "src": {
+              "type": "string"
+            },
+            "type": {
+              "const": "avatar",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "src",
+            "cx",
+            "cy",
+            "radius"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Animated shimmer placeholder rect for loading states.\nThe host drives a subtle pulsing animation at ~20fps using request_repaint_after.",
+          "properties": {
+            "h": {
+              "format": "float",
+              "type": "number"
+            },
+            "radius": {
+              "default": 4.0,
+              "format": "float",
+              "type": "number"
+            },
+            "type": {
+              "const": "skeleton",
+              "type": "string"
+            },
+            "w": {
+              "format": "float",
+              "type": "number"
+            },
+            "x": {
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
             "x",
             "y",
             "w",

@@ -680,29 +680,19 @@ pub fn workspace_secret_delete(friendly: &str) -> i32 {
 // ── plexi app subcommands ─────────────────────────────────────────────────────
 
 /// Detect the channel config dir name from the running binary name.
-/// Mirrors the logic in `config_dir_name()` (config.rs) without the
-/// PROFILE_OVERRIDE global, which is private to that module.
 fn app_init_config_dir() -> String {
-    let binary = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
-    match binary.as_deref() {
-        Some(name) if name.contains("alpha") => ".plexi-alpha".to_string(),
-        Some(name) if name.contains("beta") => ".plexi-beta".to_string(),
-        Some(name) if name.contains("v3") => ".plexi-v3".to_string(),
-        Some(name) if name.contains("pr-") => {
-            let suffix = name.trim_start_matches("plexi-");
-            format!(".plexi-{suffix}")
-        }
-        _ => ".plexi".to_string(),
-    }
+    crate::config::config_dir()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(".plexi")
+        .to_string()
 }
 
 /// `plexi app init [--lang python|rust] <name>` — scaffold a new app.
 ///
 /// Placement: walks up from CWD looking for the nearest ancestor directory
 /// that contains the channel config dir (e.g. `.plexi-alpha/` for the alpha
-/// build, `.plexi/` for stable). If found, scaffolds into
+/// build, `.plexi/` for main). If found, scaffolds into
 /// `<workspace_root>/<channel_dir>/apps/<name>/`. If no workspace root is
 /// found, falls back to `<cwd>/<channel_dir>/apps/<name>/`.
 ///
@@ -723,7 +713,7 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
     };
 
     // Refuse home dir and root — same guard as workspace_init. Creating
-    // ~/.plexi/apps/ would collide with the stable channel profile dir.
+    // ~/.plexi/apps/ would collide with the main channel profile dir.
     let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
     let is_home_or_root = cwd == std::path::Path::new("/")
         || home.as_ref().map(|h| cwd == *h).unwrap_or(false);
@@ -750,7 +740,7 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
             if current == std::path::Path::new("/") {
                 break;
             }
-            if current.join(&channel_dir).is_dir() {
+            if current.join(".plexi").is_dir() {
                 found = Some(current);
                 break;
             }
@@ -1714,7 +1704,7 @@ pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
         }
     }
 
-    // Remove completions (only for stable uninstall)
+    // Remove completions (only for main uninstall)
     if suffix.is_empty() {
         let brew_prefix = std::process::Command::new("brew")
             .arg("--prefix")
@@ -1784,7 +1774,7 @@ pub fn update_cli(maybe_id: Option<&str>) -> i32 {
 }
 
 /// `plexi update` — download and install the latest Plexi release from GitHub.
-/// Only supports stable channel. Alpha (dev) and PR builds must use `just install`.
+/// Only supports main channel. Alpha (dev) and PR builds must use `just install`.
 /// Beta builds require a channel-renamed bundle that can't yet be produced without
 /// the install script, so they are also unsupported here.
 pub fn self_update_cli() -> i32 {
@@ -2458,19 +2448,41 @@ fn print_json_output(json_str: &str) -> i32 {
 /// Sends a `list_panes` command to PLEXI_SOCKET. The host writes a JSON array
 /// to a response file; this function polls for it and prints it to stdout.
 /// Returns 0 on success, 1 on error.
-pub fn pane_list_cli() -> i32 {
+pub fn pane_list_cli(context: Option<u64>, current: bool) -> i32 {
+    let context_id: Option<u64> = if current {
+        let raw = match std::env::var("PLEXI_CONTEXT_ID") {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("error: PLEXI_CONTEXT_ID is not set — run this inside a Plexi terminal pane");
+                return 1;
+            }
+        };
+        match raw.parse::<u64>() {
+            Ok(n) => Some(n),
+            Err(_) => {
+                eprintln!("error: PLEXI_CONTEXT_ID is not a valid number: {raw}");
+                return 1;
+            }
+        }
+    } else {
+        context
+    };
+
     let id = uuid::Uuid::new_v4();
     let response_file = crate::config::config_dir()
         .join(format!("pane-list-response-{id}.json"))
         .to_string_lossy()
         .into_owned();
 
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "type": "list_panes",
         "response_file": response_file,
     });
+    if let Some(cid) = context_id {
+        payload["context_id"] = serde_json::json!(cid);
+    }
 
-    log::info!("pane_list:cli: sending via socket response_file={:?}", response_file);
+    log::info!("pane_list:cli: sending via socket context_id={:?} response_file={:?}", context_id, response_file);
 
     let code = send_to_socket(payload);
     if code != 0 {
@@ -2587,7 +2599,7 @@ pub fn pane_info_cli() -> i32 {
                         }
                         let mut obj = v;
                         obj["socket"] = serde_json::Value::String(socket_path.clone());
-                        let channel = crate::config::build_channel().unwrap_or_else(|| "stable".to_string());
+                        let channel = crate::config::build_channel().unwrap_or_else(|| "main".to_string());
                         obj["channel"] = serde_json::Value::String(channel);
                         match serde_json::to_string(&obj) {
                             Ok(json_str) => { return print_json_output(&json_str); }
@@ -2821,7 +2833,7 @@ pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize, full_output: bool) -
 ///
 /// When called from inside a Plexi pane (PLEXI_SOCKET is set), sends a
 /// spawn_pane command directly via the socket — channel-agnostic, works on
-/// alpha, beta, stable, and PR builds without caring which binary is on PATH.
+/// alpha, beta, main, and PR builds without caring which binary is on PATH.
 ///
 /// `plexi open github:owner/repo` — clone and run ephemerally, without installing.
 ///
