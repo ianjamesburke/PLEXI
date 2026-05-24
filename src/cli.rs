@@ -3031,6 +3031,8 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_
         eprintln!("warning: 'plexi open terminal' is deprecated — use 'plexi terminal' instead");
     }
 
+    let from_pane_id = from_pane_id.or_else(|| std::env::var("PLEXI_PANE_ID").ok()?.parse().ok());
+
     // Socket path is set when running inside a Plexi pane — use it directly so
     // the command reaches the correct running instance regardless of channel.
     if std::env::var("PLEXI_SOCKET").is_ok() {
@@ -3133,6 +3135,7 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_
 pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>, from_pane_id: Option<u64>, cwd: Option<&str>, no_focus: bool) -> i32 {
     let layout_str = layout.unwrap_or("split_v");
     let args: Vec<String> = cmd.map(|c| vec![c.to_string()]).unwrap_or_default();
+    let from_pane_id = from_pane_id.or_else(|| std::env::var("PLEXI_PANE_ID").ok()?.parse().ok());
 
     if std::env::var("PLEXI_SOCKET").is_ok() {
         let id = uuid::Uuid::new_v4();
