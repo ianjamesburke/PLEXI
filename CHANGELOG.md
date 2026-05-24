@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.498] — 2026-05-24
+
+### Changes
+- fix(host/pane-ops): honor from_pane_id for app spawns (#1705) (#1708)
+- refactor(skills): consolidate ship pipeline — delete ship-issue, centralize env, move hand-off (#1709)
+- fix(host): hot reload never fires for apps launched via path (app init / app run) (#1706) (#1707)
 ## [0.0.497] — 2026-05-24
 
 ### Changes
