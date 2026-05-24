@@ -27,7 +27,9 @@ impl Drop for AppRegistryWatcher {
             *c = true;
         }
         if let Some(h) = self.thread.take() {
-            let _ = h.join();
+            if let Err(e) = h.join() {
+                log::warn!("app_registry_watcher: debounce thread panicked: {e:?}");
+            }
         }
     }
 }
