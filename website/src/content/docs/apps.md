@@ -7,17 +7,10 @@ order: 5
 
 Plexi apps are sandboxed processes that render into panes via PGAP. They can be written in any language, but the Python SDK is the primary development path.
 
-## Prerequisites
-
-```sh
-uv add plexi-sdk
-```
-
-Or with pip:
-
-```sh
-pip install plexi-sdk
-```
+<div style="border: 1px solid rgba(245, 158, 11, 0.35); background: rgba(245, 158, 11, 0.07); border-radius: 6px; padding: 12px 16px; margin: 0 0 32px; font-size: 13px; color: #f59e0b; line-height: 1.6;">
+  <strong>🚧 SDK not yet on PyPI</strong><br />
+  The Python SDK ships bundled with Plexi and is available automatically once you install the app. A standalone <code>pip install plexi-sdk</code> package is coming — this page will be updated when it's live.
+</div>
 
 ## Create an App
 

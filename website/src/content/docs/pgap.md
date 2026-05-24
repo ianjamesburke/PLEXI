@@ -38,11 +38,7 @@ An app that didn't declare `secrets.read` cannot read any secret, even if it req
 
 ## The Python SDK
 
-The recommended way to write a Plexi app is with the Python SDK:
-
-```sh
-uv add plexi-sdk
-```
+The recommended way to write a Plexi app is with the Python SDK. It's bundled with Plexi — no separate install needed.
 
 The SDK wraps PGAP into idiomatic Python. Subclass `App` and override `on_render`; the SDK handles the message loop.
 
