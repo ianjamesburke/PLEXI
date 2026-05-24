@@ -294,7 +294,50 @@ impl PlexiApp {
         // Launch the replacement first — if launch fails, leave the old
         // subprocess running so the pane stays usable.
         let cwd = workspace_root.clone();
-        let Some(mut new_process) = self.registry.launch_process(&manifest_id, &cwd, &[]) else {
+        let new_process_opt = self.registry.launch_process(&manifest_id, &cwd, &[]);
+        // Path-launched apps (app run / app init) are never inserted into the
+        // registry's in-memory map, so launch_process returns None. Fall back
+        // to loading the manifest directly from workspace_root.
+        let new_process_opt = if new_process_opt.is_none()
+            && workspace_root.join("manifest.toml").exists()
+        {
+            match self.registry.load_app(&workspace_root) {
+                Ok(installed) => {
+                    let perms = installed.manifest.capabilities.to_permissions();
+                    let caps = perms.capabilities.clone();
+                    let keyboard_capture = installed.launch.keyboard_capture;
+                    match crate::process_app::ProcessApp::launch(
+                        installed.manifest.id.clone(),
+                        installed.manifest.name.clone(),
+                        &installed.bin_path,
+                        &cwd,
+                        &[],
+                        workspace_root.clone(),
+                        caps,
+                        keyboard_capture,
+                        installed.manifest.mcp.as_ref(),
+                    ) {
+                        Ok(mut process) => {
+                            process.permissions.allowed_hosts = perms.allowed_hosts;
+                            Some(process)
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "reload_app_pane({pane_id}): path-reload launch failed: {e}"
+                            );
+                            None
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("reload_app_pane({pane_id}): path-reload load_app failed: {e}");
+                    None
+                }
+            }
+        } else {
+            new_process_opt
+        };
+        let Some(mut new_process) = new_process_opt else {
             log::warn!(
                 "reload_app_pane({pane_id}): launch_process returned None — keeping old instance"
             );
