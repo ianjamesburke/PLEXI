@@ -1774,7 +1774,7 @@ pub fn update_cli(maybe_id: Option<&str>) -> i32 {
 }
 
 /// `plexi update` — download and install the latest Plexi release from GitHub.
-/// Only supports stable channel. Alpha (dev) and PR builds must use `just install`.
+/// Only supports main channel. Alpha (dev) and PR builds must use `just install`.
 /// Beta builds require a channel-renamed bundle that can't yet be produced without
 /// the install script, so they are also unsupported here.
 pub fn self_update_cli() -> i32 {
