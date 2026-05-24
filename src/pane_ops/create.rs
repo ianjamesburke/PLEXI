@@ -1886,6 +1886,73 @@ mod quick_note_tests {
             "SpawnPane with invalid target_context must not create a pane"
         );
     }
+
+    /// Regression guard for issue #1705: IPC terminal spawn with `from_pane_id` must split
+    /// from the originating pane and keep focus there, not from the UI-focused pane.
+    #[test]
+    fn spawn_pane_terminal_ipc_from_pane_id_splits_from_origin() {
+        use crate::testing::HostHarness;
+        let mut h = HostHarness::new();
+        let _pane_a = h.add_test_pane();
+        let root_a = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        h.app.windows[0].focused_pane = Some(root_a);
+
+        // Add pane B: split from A so focus moves to B.
+        h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("split_h".to_string()),
+            args: vec![],
+            pipe_id: None,
+            from_pane_id: None,
+            request_id: None,
+            response_file: None,
+            ephemeral: false,
+            cwd: None,
+            no_focus: false,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+        });
+        h.run_frames(2);
+
+        let pane_b_tile = h.app.windows[0].focused_pane.expect("focused pane B after split");
+
+        // Spawn pane C via IPC with from_pane_id=pane_a while UI focus is on pane B.
+        h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
+            type_id: "terminal".to_string(),
+            layout: Some("split_v".to_string()),
+            args: vec![],
+            pipe_id: None,
+            from_pane_id: Some(_pane_a),
+            request_id: None,
+            response_file: None,
+            ephemeral: false,
+            cwd: None,
+            no_focus: false,
+            path: None,
+            workspace_root: None,
+            target_context: None,
+        });
+        h.run_frames(2);
+
+        let snap = h.state();
+        assert!(
+            snap.open_panes.len() >= 3,
+            "from_pane_id terminal spawn via IPC must create a third pane (got {:?})",
+            snap.open_panes,
+        );
+        // keep_focus=true when from_pane_id is set: focus must not jump to the new pane.
+        assert_ne!(
+            h.app.windows[0].focused_pane,
+            None,
+            "focused_pane must not be None after from_pane_id spawn",
+        );
+        assert_eq!(
+            h.app.windows[0].focused_pane,
+            Some(pane_b_tile),
+            "focus must remain on the pre-existing UI-focused pane (pane B) after IPC terminal from_pane_id spawn",
+        );
+    }
 }
 
 /// Timestamped scratchpad file path: `<config_dir>/notes/YYYY-MM-DD_HHMMSS.md`.
