@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.497] — 2026-05-24
+
+### Changes
+- fix(host): hot reload never fires for apps launched via path (app init / app run) (#1706) (#1707)
 ## [0.0.496] — 2026-05-23
 
 ### Changes
