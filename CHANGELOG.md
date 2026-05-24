@@ -1,6 +1,19 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.499] — 2026-05-24
+
+### Changes
+- refactor(infra): unified channel primitive with stable→main rename (#1711) (#1714)
+- bug(host): command palette app list is stale — registry not re-scanned after app init or filesystem changes (#1712) (#1716)
+- fix(website): add missing language tags to bare code fences
+- fix(cli): app init workspace detection checks .plexi/ not channel dir
+- fix(website): rewrite sdk.md with proper markdown formatting
+- feat(sdk): scaffold template demonstrates state persistence with hot reload
+- fix(website): remove unpublished SDK install instructions, bump verified version
+- fix(host/pane-ops): honor from_pane_id for app spawns (#1705) (#1708)
+- refactor(skills): consolidate ship pipeline — delete ship-issue, centralize env, move hand-off (#1709)
+- fix(host): hot reload never fires for apps launched via path (app init / app run) (#1706) (#1707)
 ## [0.0.498] — 2026-05-24
 
 ### Changes
