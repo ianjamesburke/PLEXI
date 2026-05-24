@@ -143,6 +143,9 @@ impl PlexiApp {
             };
             let pane_id = *focused_pane_id;
             let Some(replaced_pane) = self.windows[active].panes.remove(&pane_id) else {
+                log::warn!(
+                    "app::{app_id}: overlay launch skipped — pane {pane_id} missing from pane map"
+                );
                 return None;
             };
             process.set_pane_id(pane_id);
