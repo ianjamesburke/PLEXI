@@ -1,20 +1,20 @@
 ---
 name: dispatch
-description: Use when the user says /dispatch <issue> or wants to ship a specific issue. Requires an issue number. Spawns a background Claude sub-agent that runs ship-issue end-to-end — implement → open-pr → validate → merge. Orchestrator is free immediately after dispatch.
+description: Use when the user wants to ship one or more issues. Runs open-lanes.sh to open parallel implement-issue panes — one per issue. Each pane self-orchestrates the full pipeline (implement → open-pr → hand-off → validate-pr → merge-pr). An issue number is always required.
 ---
 
 # Dispatch
 
-Spawn a background sub-agent to ship a specific issue. The sub-agent owns the full pipeline and its own watcher loop.
+Open parallel implement-issue panes. Each pane self-orchestrates its own pipeline.
 
 ## Invocation
 
 ```
 /dispatch 1671        # ship issue #1671
-/dispatch 1671 1679   # ship two issues in parallel sub-agents
+/dispatch 1671 1679   # ship two issues in parallel
 ```
 
-An issue number is always required. Dispatch does not auto-pick.
+An issue number is always required. Dispatch does not auto-pick — use `/pick-parallel` first if nothing is queued.
 
 ---
 
@@ -48,23 +48,24 @@ Dispatching #1671 — fix(infra/skills): implement-issue preflight optimization
 
 ---
 
-## Step 3 — Spawn sub-agent(s)
+## Step 3 — Open lanes
 
-For each issue, spawn a background Claude sub-agent via the Agent tool with `run_in_background: true`:
-
-**Prompt template:**
-```
-You are shipping issue #<N> in the PLEXI repo at /Users/ianburke/Documents/GitHub/PLEXI.
-
-Run the /ship-issue skill for issue #<N>. Follow it exactly — it will guide you through implement-issue → open-pr → validate-pr → merge-pr in sequence. You own the full pipeline and the watcher loop between each phase.
+```bash
+bash .claude/skills/dispatch/scripts/open-lanes.sh <issue1> [issue2...]
 ```
 
-Multiple issues = multiple Agent calls in the same message (parallel).
+This opens one Plexi terminal pane per issue, each running `c '/implement-issue N'`. The pipeline self-orchestrates from there:
+
+```
+implement-issue → open-pr (inline) → /hand-off → validate-pr → merge-pr (inline)
+```
+
+Each pane closes itself at the end of merge-pr and fires a notify.
 
 ---
 
 ## Notes
 
-- Dispatch is fire-and-forget. The sub-agent is the watcher — do not poll it.
-- You will be notified when each sub-agent completes.
-- If a sub-agent fails mid-pipeline, re-dispatch the same issue — ship-issue resumes from where it left off.
+- Dispatch is fire-and-forget after lanes are open. You will be notified when each pipeline completes via `plexi notify`.
+- If a pane crashes mid-pipeline: re-run `/dispatch N` for that issue. implement-issue will detect the in-progress state and ask for takeover confirmation, or open-pr/validate-pr will resume from the Ship Log.
+- To add a lane to an existing dispatch: `bash .claude/skills/dispatch/scripts/add-to-dispatch.sh <pane_id> <issue>`
