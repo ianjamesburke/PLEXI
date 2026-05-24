@@ -15,11 +15,15 @@ Phase 3 of the ship pipeline. Manages the test loop and all rejection paths.
 - `/validate-pr <pr-number> --attempt <n>` — resume at attempt N (used internally on soft-reject retry)
 
 **Outcomes:**
-- **Pass** → append Ship Log, output `[VALIDATED]`, then immediately invoke `/merge-pr <pr-number>` — never stop between the two
+- **Pass** → sets `pipeline:merge + ready` → PM dispatches `/merge-pr` on next run
 - **Soft reject** → push a fix commit, reinstall, re-run (max 3 attempts total)
-- **Hard reject** → close PR, rewrite issue body, clean up
+- **Hard reject** → close PR, rewrite issue body, remove all pipeline labels, clean up
 
 **Reads `## Ship Log` in the issue body to determine current attempt count.** Never trust an argument alone — always verify against the log.
+
+**Testing notification routing:** If the env var `PM_PANE_ID` is set (injected by PM when it dispatches this skill), route the `--choice "Talk to Claude"` action to that pane so the user replies in the PM pane. Otherwise default to `$PLEXI_PANE_ID`.
+
+> **Labels are the live state.** Never read the Ship Log to determine pipeline stage — read the issue labels. Ship Log is audit trail only.
 
 ---
 
@@ -42,6 +46,14 @@ Count `**Validate attempt` entries in `## Ship Log`. Set `ATTEMPT_COUNT` = that 
 ```bash
 ATTEMPT_COUNT=$(gh issue view $ISSUE_NUMBER --json body --jq '.body' \
   | grep -cE '^\*\*Validate attempt [0-9]+:' || true)
+```
+
+Mark issue as actively in this phase:
+```bash
+gh issue edit $ISSUE_NUMBER \
+  --add-label "in progress" \
+  --remove-label "pipeline:open-pr" \
+  --add-label "pipeline:validate" 2>/dev/null || true
 ```
 
 ---
@@ -124,10 +136,12 @@ Reply: "pass" | "fail: <description>" | "modify: <bounded change>"
 
 **Notification:**
 ```bash
+# Route reply to PM pane if PM dispatched this skill, otherwise this pane
+REPLY_PANE="${PM_PANE_ID:-$PLEXI_PANE_ID}"
 RESULT=$(plexi notify \
   --title "PR #<n> ready to test (attempt $((ATTEMPT_COUNT+1))/3)" \
   --body "<title>. Reply pass/fail/modify in pane." \
-  --choice "a:Talk to Claude:pane_focus:$PLEXI_PANE_ID" \
+  --choice "a:Talk to Claude:pane_focus:$REPLY_PANE" \
   --choice "b:Open PR build" \
   --choice "c:Open PR")
 case "$RESULT" in
@@ -150,14 +164,20 @@ Append to issue Ship Log:
 **Test date:** <YYYY-MM-DD>
 ```
 
-Output the marker, then immediately invoke merge-pr — do not stop:
+Set pipeline state:
+```bash
+gh issue edit $ISSUE_NUMBER \
+  --add-label "pipeline:merge" \
+  --add-label "ready" \
+  --remove-label "pipeline:validate" \
+  --remove-label "in progress"
+```
+
+Output:
 ```
 [VALIDATED] PR #<n> — <title>
 Attempt: <N>/3
-```
-
-```
-/merge-pr <n>
+Pipeline: pipeline:merge + ready set — PM will dispatch /merge-pr on next run
 ```
 
 ### Modify
@@ -263,9 +283,15 @@ Fetch the current body and all Ship Log entries. Rewrite the body to include:
 gh issue edit $ISSUE_NUMBER --body "<rewritten body>"
 ```
 
-4. **Re-label:**
+4. **Re-label (remove all pipeline labels, reset to ready):**
 ```bash
-gh issue edit $ISSUE_NUMBER --remove-label "in progress" --add-label "ready"
+gh issue edit $ISSUE_NUMBER \
+  --remove-label "in progress" \
+  --remove-label "pipeline:implement" \
+  --remove-label "pipeline:open-pr" \
+  --remove-label "pipeline:validate" \
+  --remove-label "pipeline:merge" \
+  --add-label "ready"
 ```
 
 5. **Clean up:**

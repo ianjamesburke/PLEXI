@@ -74,6 +74,39 @@ Collect the survivors as the **candidate list**.
 
 ---
 
+## Step 2b — Resume stalled pipeline issues
+
+Before scoring fresh candidates, check for issues stuck mid-pipeline. These are dispatched with priority over new work — they already have a PR and should complete the cycle.
+
+```bash
+for LABEL in "pipeline:implement" "pipeline:open-pr" "pipeline:validate" "pipeline:merge"; do
+  gh issue list --label "$LABEL" --label "ready" --state open \
+    --json number,title,labels --limit 20
+done
+```
+
+For each result, map label → skill and dispatch immediately (skip the scoring/selection steps):
+
+| Label found | Skill to dispatch | Notes |
+|---|---|---|
+| `pipeline:implement` + `ready` | `/implement-issue <N>` | Re-implement (prior attempt failed) |
+| `pipeline:open-pr` + `ready` | `/open-pr feature/<N>-...` | Detect branch via `git ls-remote origin "refs/heads/feature/<N>-*"` |
+| `pipeline:validate` + `ready` | `/validate-pr <PR#>` | Detect PR# via `gh pr list --json number,headRefName` |
+| `pipeline:merge` + `ready` | `/merge-pr <PR#>` | Detect PR# via `gh pr list --json number,headRefName` |
+
+**Detecting the PR number for validate/merge dispatch:**
+```bash
+gh pr list --state open --json number,headRefName \
+  | jq --arg n "<ISSUE_NUMBER>" \
+    '.[] | select(.headRefName | test("^feature/\($n)-")) | .number'
+```
+
+**Testing notification ownership for validate dispatch:** When dispatching `/validate-pr`, inject `PM_PANE_ID=$PLEXI_PANE_ID` into the worker pane's environment so the pass/fail notification routes back to the PM pane. The `open-lanes.sh` script passes env vars via the command prefix — prepend `PM_PANE_ID=$PLEXI_PANE_ID` before the `c` command.
+
+If any pipeline-labeled issues are found and dispatched, subtract the number of resumed lanes from the 4-lane capacity and continue to Step 3 to fill remaining slots with fresh issues. Example: 2 resumed lanes → capacity for 2 more from scoring. If resumed lanes already fill all 4 slots, end the run after dispatch.
+
+---
+
 ## Step 3 — Score each candidate
 
 For each candidate not in the cache:
@@ -192,3 +225,5 @@ Include every candidate that was scored this run (dispatched or not). The cache 
 - **Channel binary** is auto-detected by open-lanes.sh via `$PLEXI_CHANNEL`. Never hardcode a channel name.
 - **Area conflict penalty (−0.25)** is applied during selection (Step 4), not during scoring (Step 3). A conflicting P1 shows its penalized score (e.g. 0.55 = 0.80 raw − 0.25) in the review table and is excluded from the selected set. The penalty appears in the breakdown column for audit.
 - **Second invocation same session:** cache hits from Step 1 skip the `gh issue view` fetch in Step 3, making the second run faster. The cache does not expire within a session day.
+- **Labels are the live state; Ship Log is audit trail only.** `pipeline:*` labels answer "where is this issue in the pipeline right now." The Ship Log records what happened and why. Never read the Ship Log to determine current stage — always check labels. This is the canonical boundary, enforced in all pipeline skills.
+- **pipeline:* labels on stalled issues:** If a skill crashes or exits mid-cycle, the `pipeline:*` label remains on the issue. PM Step 2b will detect and re-dispatch it on the next run. This is the self-healing recovery path — no manual intervention needed for crashed worker panes.
