@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Remove one or all installed Plexi channels.
 # Usage: scripts/uninstall.sh [channel]
-#   channel: stable | alpha | beta | pr-<N> | all (default: all)
+#   channel: main | alpha | beta | pr-<N> | <any-name> | all (default: all)
 #
 # Profile dirs, app bundles, and CLI binaries are removed per channel.
-# Shell integration and completions are only removed when channel=all or stable.
+# Shell integration and completions are only removed when channel=all or main.
 # If a backlog folder exists inside a profile dir, it is archived to
 # ~/plexi-backlog-archive/ before the profile dir is deleted.
 set -euo pipefail
@@ -89,10 +89,39 @@ remove_completions() {
 
 # ── dispatch ──────────────────────────────────────────────────────────────────
 
+_channel_suffix() {
+  local name="$1"
+  [[ "$name" == "main" ]] && echo "" || echo "-${name}"
+}
+
+_channel_cap() {
+  local name="$1"
+  if [[ "$name" == "main" ]]; then
+    echo ""
+  elif [[ "$name" =~ ^pr-([0-9]+)$ ]]; then
+    echo " PR${BASH_REMATCH[1]}"
+  else
+    echo " $(echo "$name" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
+  fi
+}
+
+_all_channels() {
+  for bin in /usr/local/bin/plexi*; do
+    [[ -e "$bin" || -L "$bin" ]] || continue
+    name="$(basename "$bin")"
+    if [[ "$name" == "plexi" ]]; then
+      echo "main"
+    else
+      echo "${name#plexi-}"
+    fi
+  done | sort -u
+}
+
 case "$channel" in
   all)
+    channels=($(_all_channels))
     echo ""
-    echo "This will remove all Plexi channels (stable, alpha, beta):"
+    echo "This will remove all Plexi channels: ${channels[*]:-none found}"
     echo "  • /Applications/Plexi*.app"
     echo "  • /usr/local/bin/plexi*"
     echo "  • ~/.plexi*/  (profile directories)"
@@ -102,20 +131,17 @@ case "$channel" in
     read -r -p "Proceed? [y/N] " confirm
     [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
     echo ""
-
-    info "Channel: stable"
-    uninstall_channel "" ""
-    info "Channel: alpha"
-    uninstall_channel "-alpha" " Alpha"
-    info "Channel: beta"
-    uninstall_channel "-beta" " Beta"
+    for ch in "${channels[@]}"; do
+      info "Channel: $ch"
+      uninstall_channel "$(_channel_suffix "$ch")" "$(_channel_cap "$ch")"
+    done
     remove_shell_integration
     remove_completions
     ;;
 
-  stable)
+  main)
     echo ""
-    echo "This will remove the stable Plexi channel:"
+    echo "This will remove the main Plexi channel:"
     echo "  • /Applications/Plexi.app"
     echo "  • /usr/local/bin/plexi"
     echo "  • ~/.plexi/  (profile directory)"
@@ -125,8 +151,7 @@ case "$channel" in
     read -r -p "Proceed? [y/N] " confirm
     [[ "$confirm" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
     echo ""
-
-    info "Channel: stable"
+    info "Channel: main"
     uninstall_channel "" ""
     remove_shell_integration
     remove_completions
@@ -150,9 +175,9 @@ case "$channel" in
     ;;
 
   *)
-    echo "error: unknown channel '$channel'"
-    echo "Usage: just uninstall [stable|alpha|beta|pr-<N>|all]"
-    exit 1
+    # Generic channel (development tier)
+    info "Channel: $channel"
+    uninstall_channel "-${channel}" " $(echo "$channel" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
     ;;
 esac
 

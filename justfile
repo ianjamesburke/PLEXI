@@ -87,7 +87,7 @@ regen-if-stale:
         python3 tools/gen_protocol_py.py
     fi
 
-# Derives channel from git branch (main→stable, alpha/beta pass through).
+# Derives channel from git branch (main/alpha/beta). Alias for: just channel-install
 # Run from repo root or any worktree: just install
 install: fetch-python-runtime regen-if-stale
     bash scripts/install.sh
@@ -96,12 +96,14 @@ install: fetch-python-runtime regen-if-stale
 # Installs as "Plexi PR<number>.app" with isolated profile ~/.plexi-pr-<number>/.
 # Run from inside the feature worktree: just pr-install 123
 # Always cleans the previous PR build first for a fully fresh install.
+# Alias for: just channel-install pr-<number>
 pr-install number: fetch-python-runtime
     bash scripts/pr-clean.sh {{number}}
     bash scripts/install.sh "pr-{{number}}"
 
 # Remove a PR build: app bundle, CLI binary, and profile directory.
 # Run after the PR is merged and approved: just pr-clean 123
+# Alias for: just channel-clean pr-<number>
 pr-clean number:
     bash scripts/pr-clean.sh {{number}}
 
@@ -110,11 +112,39 @@ pr-clean number:
 pr-clean-merged:
     bash scripts/pr-clean-merged.sh
 
+# Generic channel install. Auto-detects from branch if no channel given.
+# Errors if branch is not main/alpha/beta — pass channel name explicitly for dev builds.
+#   just channel-install          — auto-detect from branch
+#   just channel-install gpui     — install as plexi-gpui channel
+#   just channel-install pr-123   — install as PR build
+channel-install channel="": fetch-python-runtime regen-if-stale
+    bash scripts/install.sh {{channel}}
+
+# Remove a channel: app bundle, CLI binary, and profile directory.
+# Works for any channel name: main, alpha, beta, pr-123, gpui, etc.
+#   just channel-clean gpui       — remove plexi-gpui artifacts
+#   just channel-clean pr-123     — remove PR 123 artifacts
+channel-clean channel:
+    bash scripts/channel-clean.sh {{channel}}
+
+# Remove all ephemeral channels (pr-*) whose GitHub PR is no longer open.
+channel-clean-merged:
+    bash scripts/channel-clean-merged.sh
+
+# List all installed Plexi channels with tier, binary path, and profile dir.
+channel-list:
+    bash scripts/channel-list.sh
+
+# Remove ALL Plexi channels plus shell integration and completions.
+# Same as: just uninstall all
+channel-uninstall channel="all":
+    bash scripts/uninstall.sh {{channel}}
+
 # Wipe a channel's installed apps directory then re-sync from examples/.
 # Useful when an app is renamed or removed — rsync won't delete stale dirs.
 #   just clear-apps alpha
 #   just clear-apps beta
-#   just clear-apps stable
+#   just clear-apps main
 clear-apps channel="":
     bash scripts/clear-apps.sh {{channel}}
 
@@ -137,11 +167,12 @@ promote to="":
 # Remove a Plexi channel and its profile dir, app bundle, and CLI binary.
 # Defaults to removing all channels plus shell integration and completions.
 # Backlog folders inside profile dirs are archived to ~/plexi-backlog-archive/.
-#   just uninstall              — remove all channels (stable, alpha, beta)
-#   just uninstall stable       — remove stable only (also removes bare symlink, shell integration, completions)
+#   just uninstall              — remove all channels
+#   just uninstall main         — remove main only (also removes bare symlink, shell integration, completions)
 #   just uninstall alpha        — remove alpha only
 #   just uninstall beta         — remove beta only
 #   just uninstall pr-123       — remove a specific PR build
+#   just uninstall gpui         — remove any named development channel
 uninstall channel="all":
     bash scripts/uninstall.sh {{channel}}
 

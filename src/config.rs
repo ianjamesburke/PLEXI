@@ -589,44 +589,40 @@ pub fn ensure_profile_initialized() {
     }
 }
 
-/// Returns the config directory name.
-/// Returns the build channel for this binary: `alpha`, `beta`, `pr-<N>`, `v3`, or `None` (stable).
+/// Returns the build channel for this binary: the suffix after `plexi-`, or `None` for the bare `plexi` binary (main channel).
 pub fn build_channel() -> Option<String> {
-    let binary = std::env::current_exe()
+    let basename = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))?;
-    let name = binary.as_str();
-    if name.contains("alpha") {
-        Some("alpha".into())
-    } else if name.contains("beta") {
-        Some("beta".into())
-    } else if name.contains("pr-") {
+    let name = basename.as_str();
+    if name.starts_with("plexi-") {
         Some(name.trim_start_matches("plexi-").to_string())
-    } else if name.contains("v3") {
-        Some("v3".into())
     } else {
         None
     }
 }
 
-/// Priority: `--profile <name>` CLI flag → binary-name detection → `.plexi`.
+/// Maps a binary basename to its config directory name.
+/// `plexi` → `.plexi`; `plexi-<suffix>` → `.plexi-<suffix>`.
+fn channel_suffix_from_basename(basename: &str) -> String {
+    if basename.starts_with("plexi-") {
+        let suffix = basename.trim_start_matches("plexi-");
+        format!(".plexi-{suffix}")
+    } else {
+        ".plexi".to_string()
+    }
+}
+
+/// Returns the config directory name based on the running binary basename.
 fn config_dir_name() -> String {
     if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
         return format!(".plexi-{profile}");
     }
-    let binary = std::env::current_exe()
+    let basename = std::env::current_exe()
         .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
-    match binary.as_deref() {
-        Some(name) if name.contains("alpha") => ".plexi-alpha".to_string(),
-        Some(name) if name.contains("beta") => ".plexi-beta".to_string(),
-        Some(name) if name.contains("v3") => ".plexi-v3".to_string(),
-        Some(name) if name.contains("pr-") => {
-            let suffix = name.trim_start_matches("plexi-");
-            format!(".plexi-{suffix}")
-        }
-        _ => ".plexi".to_string(),
-    }
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "plexi".to_string());
+    channel_suffix_from_basename(&basename)
 }
 
 pub fn config_path() -> PathBuf {
@@ -1051,6 +1047,34 @@ pub fn active_workspace_root() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn config_dir_name_bare_plexi() {
+        let result = channel_suffix_from_basename("plexi");
+        assert_eq!(result, ".plexi");
+    }
+
+    #[test]
+    fn config_dir_name_alpha() {
+        assert_eq!(channel_suffix_from_basename("plexi-alpha"), ".plexi-alpha");
+    }
+
+    #[test]
+    fn config_dir_name_gpui() {
+        assert_eq!(channel_suffix_from_basename("plexi-gpui"), ".plexi-gpui");
+    }
+
+    #[test]
+    fn config_dir_name_pr() {
+        assert_eq!(channel_suffix_from_basename("plexi-pr-817"), ".plexi-pr-817");
+    }
+
+    #[test]
+    fn config_dir_name_path_with_alpha_component() {
+        // A binary at /Users/alpha/bin/plexi must NOT resolve to .plexi-alpha.
+        // The extractor must use basename only, not the full path.
+        assert_eq!(channel_suffix_from_basename("plexi"), ".plexi");
+    }
 
     fn write(path: &Path, contents: &str) {
         if let Some(parent) = path.parent() {

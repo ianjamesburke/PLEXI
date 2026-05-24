@@ -52,14 +52,14 @@ Each build channel is a **fully isolated instance** — its own binary, app bund
 
 | Channel | Binary | Profile dir | App bundle |
 |---|---|---|---|
-| Stable | `plexi` | `~/.plexi/` | `Plexi.app` |
+| Main | `plexi` | `~/.plexi/` | `Plexi.app` |
 | Beta | `plexi-beta` | `~/.plexi-beta/` | `Plexi Beta.app` |
 | Alpha | `plexi-alpha` | `~/.plexi-alpha/` | `Plexi Alpha.app` |
 | PR build | `plexi-pr-<N>` | `~/.plexi-pr-<N>/` | `Plexi PR<N>.app` |
 
 **PR builds** are ephemeral isolated instances installed by `just pr-install <N>` from inside the feature worktree. They never capture the bare `plexi` symlink. Remove them after merge with `just pr-clean <N>`.
 
-**Workspace** (`.plexi/workspace.toml`) is a separate per-project concept — the directory a user initializes with `plexi workspace init` inside their project root. It is not the same as the profile dir. Never run `workspace init` from `~` — it would create `~/.plexi/workspace.toml`, colliding with the stable profile dir.
+**Workspace** (`.plexi/workspace.toml`) is a separate per-project concept — the directory a user initializes with `plexi workspace init` inside their project root. It is not the same as the profile dir. Never run `workspace init` from `~` — it would create `~/.plexi/workspace.toml`, colliding with the main channel profile dir.
 
 **When writing test instructions for a PR build:** use `plexi-pr-<N>` (not `plexi`), and if the feature requires workspace context, direct the user to `cd` into a real project dir first.
 
@@ -203,10 +203,10 @@ Before writing any keyboard shortcut display, badge, chip, or inline label widge
 
 ## Channel-Agnostic CLI Rule
 
-Every CLI command and feature must work identically on alpha, beta, stable, and PR builds. This is non-negotiable — the release channel is an implementation detail, not something callers should need to know.
+Every CLI command and feature must work identically on alpha, beta, main, and PR builds. This is non-negotiable — the release channel is an implementation detail, not something callers should need to know.
 
 **How it works:**
-- `PLEXI_SOCKET` (set inside a Plexi pane) routes **host commands** (pane, notify, context, open, etc.) to the correct running instance — but it does NOT re-route the binary itself. Typing `plexi` inside a PR817 pane still runs the stable/alpha binary; to target a specific channel you must use the full binary name (`plexi-alpha`, `plexi-pr-817`, etc.).
+- `PLEXI_SOCKET` (set inside a Plexi pane) routes **host commands** (pane, notify, context, open, etc.) to the correct running instance — but it does NOT re-route the binary itself. Typing `plexi` inside a PR817 pane still runs the main/alpha binary; to target a specific channel you must use the full binary name (`plexi-alpha`, `plexi-pr-817`, etc.).
 - When `PLEXI_SOCKET` is not set, commands fall back to channel-specific mechanisms (spawn-queue, config_dir) derived from the running binary name.
 - `/usr/local/bin/plexi` (the bare `plexi` command) is kept as a symlink to the most recently installed non-PR channel binary by `scripts/install.sh`. PR builds never capture the bare name.
 

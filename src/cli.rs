@@ -680,21 +680,16 @@ pub fn workspace_secret_delete(friendly: &str) -> i32 {
 // ── plexi app subcommands ─────────────────────────────────────────────────────
 
 /// Detect the channel config dir name from the running binary name.
-/// Mirrors the logic in `config_dir_name()` (config.rs) without the
-/// PROFILE_OVERRIDE global, which is private to that module.
 fn app_init_config_dir() -> String {
-    let binary = std::env::current_exe()
+    let basename = std::env::current_exe()
         .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
-    match binary.as_deref() {
-        Some(name) if name.contains("alpha") => ".plexi-alpha".to_string(),
-        Some(name) if name.contains("beta") => ".plexi-beta".to_string(),
-        Some(name) if name.contains("v3") => ".plexi-v3".to_string(),
-        Some(name) if name.contains("pr-") => {
-            let suffix = name.trim_start_matches("plexi-");
-            format!(".plexi-{suffix}")
-        }
-        _ => ".plexi".to_string(),
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "plexi".to_string());
+    if basename.starts_with("plexi-") {
+        let suffix = basename.trim_start_matches("plexi-");
+        format!(".plexi-{suffix}")
+    } else {
+        ".plexi".to_string()
     }
 }
 
@@ -702,7 +697,7 @@ fn app_init_config_dir() -> String {
 ///
 /// Placement: walks up from CWD looking for the nearest ancestor directory
 /// that contains the channel config dir (e.g. `.plexi-alpha/` for the alpha
-/// build, `.plexi/` for stable). If found, scaffolds into
+/// build, `.plexi/` for main). If found, scaffolds into
 /// `<workspace_root>/<channel_dir>/apps/<name>/`. If no workspace root is
 /// found, falls back to `<cwd>/<channel_dir>/apps/<name>/`.
 ///
@@ -723,7 +718,7 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
     };
 
     // Refuse home dir and root — same guard as workspace_init. Creating
-    // ~/.plexi/apps/ would collide with the stable channel profile dir.
+    // ~/.plexi/apps/ would collide with the main channel profile dir.
     let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
     let is_home_or_root = cwd == std::path::Path::new("/")
         || home.as_ref().map(|h| cwd == *h).unwrap_or(false);
@@ -1714,7 +1709,7 @@ pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
         }
     }
 
-    // Remove completions (only for stable uninstall)
+    // Remove completions (only for main uninstall)
     if suffix.is_empty() {
         let brew_prefix = std::process::Command::new("brew")
             .arg("--prefix")
@@ -2609,7 +2604,7 @@ pub fn pane_info_cli() -> i32 {
                         }
                         let mut obj = v;
                         obj["socket"] = serde_json::Value::String(socket_path.clone());
-                        let channel = crate::config::build_channel().unwrap_or_else(|| "stable".to_string());
+                        let channel = crate::config::build_channel().unwrap_or_else(|| "main".to_string());
                         obj["channel"] = serde_json::Value::String(channel);
                         match serde_json::to_string(&obj) {
                             Ok(json_str) => { return print_json_output(&json_str); }
@@ -2843,7 +2838,7 @@ pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize, full_output: bool) -
 ///
 /// When called from inside a Plexi pane (PLEXI_SOCKET is set), sends a
 /// spawn_pane command directly via the socket — channel-agnostic, works on
-/// alpha, beta, stable, and PR builds without caring which binary is on PATH.
+/// alpha, beta, main, and PR builds without caring which binary is on PATH.
 ///
 /// `plexi open github:owner/repo` — clone and run ephemerally, without installing.
 ///
