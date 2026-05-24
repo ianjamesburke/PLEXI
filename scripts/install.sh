@@ -128,12 +128,10 @@ mv "$profile_dir/sdk/plexi_sdk" "$profile_dir/sdk/plexi_sdk.old" 2>/dev/null || 
 mv "$profile_dir/sdk/plexi_sdk.tmp" "$profile_dir/sdk/plexi_sdk"
 rm -rf "$profile_dir/sdk/plexi_sdk.old" "$profile_dir/sdk/plexi_sdk.py"
 find "$profile_dir/sdk/plexi_sdk" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
-# Re-seed all production apps; seed dev apps (alpha/PR only) on first install.
+# Re-seed all production apps on every install; always sync dev apps on alpha/PR.
 rsync -a --exclude=dev/ apps/ "$profile_dir/apps/"
-if [[ "$apps_was_empty" == true ]]; then
-  if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
-    rsync -a apps/dev/ "$profile_dir/apps/"
-  fi
+if [[ "$channel" == alpha || "$channel" =~ ^pr- ]]; then
+  rsync -a apps/dev/ "$profile_dir/apps/"
 fi
 find "$profile_dir/apps" -maxdepth 2 -name 'plexi_sdk.py' -delete 2>/dev/null || true
 find "$profile_dir/apps" -name '*.py' -exec chmod +x {} \;

@@ -26,8 +26,10 @@ use std::process::Command;
 pub const CORE_PACK_TOML: &str = include_str!("../packs/core.toml");
 pub const EXAMPLES_PACK_TOML: &str = include_str!("../packs/examples.toml");
 
-// Production apps are embedded at compile time (apps/ excluding apps/dev/).
+// All apps under apps/ are embedded at compile time, including apps/dev/.
 // `local:` source-spec installs look up by name in EMBEDDED_APPS.
+// apps/dev/ apps are not referenced by any pack entry, so they are never
+// auto-installed — they are only rsync'd to the profile dir by install.sh.
 static EMBEDDED_APPS: include_dir::Dir<'_> =
     include_dir::include_dir!("$CARGO_MANIFEST_DIR/apps");
 
