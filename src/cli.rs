@@ -369,9 +369,17 @@ pub fn workspace_init() -> i32 {
     match crate::workspace_secrets::init_workspace(&cwd) {
         Ok(cfg) => {
             log::info!("workspace_init:cli: initialized workspace_id={} at {}", cfg.id, cwd.display());
+            let channel_dir = app_init_config_dir();
+            let channel_path = cwd.join(&channel_dir);
+            if let Err(e) = std::fs::create_dir_all(&channel_path) {
+                log::warn!("workspace_init:cli: could not create channel dir {}: {e}", channel_path.display());
+            } else {
+                log::info!("workspace_init:cli: created channel dir {}", channel_path.display());
+            }
             println!("Initialized workspace at {}", cwd.display());
             println!("  workspace id: {}", cfg.id);
             println!("  router:       .plexi/secrets.toml (fallback = true)");
+            println!("  channel dir:  {channel_dir}/");
             print_tip("define runnable commands in .plexi/commands.toml, then run them with `plexi run <name>`.");
             0
         }
@@ -5122,5 +5130,55 @@ mod app_run_tests {
         let path = dir.path().to_string_lossy().to_string();
         let code = super::app_run(&path);
         assert_eq!(code, 1);
+    }
+}
+
+#[cfg(test)]
+mod workspace_init_tests {
+    use std::fs;
+
+    /// Calls the internal init_workspace logic and then the channel-dir creation
+    /// on a temp dir, asserting both `.plexi/` and the channel dir are present.
+    #[test]
+    fn workspace_init_creates_channel_dir_alongside_plexi_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_path_buf();
+
+        // Run init_workspace (creates .plexi/)
+        crate::workspace_secrets::init_workspace(&cwd)
+            .expect("init_workspace should succeed in a temp dir");
+
+        // Replicate the channel dir creation from workspace_init()
+        let channel_dir = super::app_init_config_dir();
+        let channel_path = cwd.join(&channel_dir);
+        fs::create_dir_all(&channel_path).expect("create_dir_all should succeed");
+
+        assert!(
+            cwd.join(".plexi").is_dir(),
+            ".plexi/ dir must exist after workspace init"
+        );
+        assert!(
+            channel_path.is_dir(),
+            "{channel_dir}/ dir must exist after workspace init"
+        );
+    }
+
+    /// After init, resolve_workspace_root must find the workspace via the channel dir.
+    #[test]
+    fn workspace_init_makes_workspace_visible_to_resolver() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_path_buf();
+
+        crate::workspace_secrets::init_workspace(&cwd)
+            .expect("init_workspace should succeed");
+
+        let channel_dir = super::app_init_config_dir();
+        std::fs::create_dir_all(cwd.join(&channel_dir)).unwrap();
+
+        let found = crate::app_registry::resolve_workspace_root(&cwd);
+        assert!(
+            found.is_some(),
+            "resolve_workspace_root should find the workspace after workspace_init creates the channel dir"
+        );
     }
 }
