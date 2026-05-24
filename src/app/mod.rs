@@ -3343,10 +3343,12 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::SendPane(dir) => {
+                    log::info!("action: send_pane dir={dir:?}");
                     match self.send_pane(dir) {
                         crate::pane_ops::SwapResult::Swapped {
                             rect_a, rect_b, ..
                         } => {
+                            log::info!("action: send_pane swapped dir={dir:?}");
                             let now = std::time::Instant::now();
                             self.pane_anims = vec![
                                 PaneSwapAnim { from: rect_a, to: rect_b, started_at: now },
@@ -3355,6 +3357,7 @@ impl eframe::App for PlexiApp {
                             self.ctx.request_repaint();
                         }
                         crate::pane_ops::SwapResult::AtBoundary => {
+                            log::info!("action: send_pane at_boundary dir={dir:?}");
                             let moved = match dir {
                                 crate::keys::Direction::Down => {
                                     self.move_focused_pane_to_row_boundary(true)
@@ -3369,6 +3372,7 @@ impl eframe::App for PlexiApp {
                             } else if let Some(focused) =
                                 self.windows[self.active_window].focused_pane
                             {
+                                log::info!("action: send_pane blocked edge_pulse dir={dir:?} tile={focused:?}");
                                 self.edge_pulse = Some(EdgePulse {
                                     tile: focused,
                                     dir,
@@ -3377,7 +3381,9 @@ impl eframe::App for PlexiApp {
                                 self.ctx.request_repaint();
                             }
                         }
-                        crate::pane_ops::SwapResult::NoFocus => {}
+                        crate::pane_ops::SwapResult::NoFocus => {
+                            log::info!("action: send_pane ignored: no focused pane");
+                        }
                     }
                 }
                 Action::ClosePane => {
