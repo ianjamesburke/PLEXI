@@ -3356,23 +3356,14 @@ impl eframe::App for PlexiApp {
                             ];
                             self.ctx.request_repaint();
                         }
-                        crate::pane_ops::SwapResult::AtBoundary => {
-                            log::info!("action: send_pane at_boundary dir={dir:?}");
-                            let moved = match dir {
-                                crate::keys::Direction::Down => {
-                                    self.move_focused_pane_to_row_boundary(true)
-                                }
-                                crate::keys::Direction::Up => {
-                                    self.move_focused_pane_to_row_boundary(false)
-                                }
-                                _ => self.move_focused_pane_to_adjacent_window(dir),
-                            };
-                            if moved {
-                                self.ctx.request_repaint();
-                            } else if let Some(focused) =
+                        crate::pane_ops::SwapResult::AtBoundary
+                        | crate::pane_ops::SwapResult::NoFocus => {
+                            // Send never moves to a new window — focus can't stay at an empty
+                            // slot. Edge-pulse the boundary instead.
+                            log::info!("action: send_pane at_boundary or no_focus dir={dir:?}");
+                            if let Some(focused) =
                                 self.windows[self.active_window].focused_pane
                             {
-                                log::info!("action: send_pane blocked edge_pulse dir={dir:?} tile={focused:?}");
                                 self.edge_pulse = Some(EdgePulse {
                                     tile: focused,
                                     dir,
@@ -3380,9 +3371,6 @@ impl eframe::App for PlexiApp {
                                 });
                                 self.ctx.request_repaint();
                             }
-                        }
-                        crate::pane_ops::SwapResult::NoFocus => {
-                            log::info!("action: send_pane ignored: no focused pane");
                         }
                     }
                 }
