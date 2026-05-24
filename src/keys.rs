@@ -10,6 +10,7 @@ use crate::config::KeybindingsConfig;
 // Cmd+W                       — close pane
 // Cmd+H/J/K/L                 — navigate panes (falls through to adjacent window at boundary)
 // Cmd+Ctrl+H/J/K/L            — swap focused pane with neighbor in direction
+// Ctrl+Opt+Cmd+H/J/K/L        — send pane in direction (focus stays at vacated slot)
 // Cmd+Shift+M                 — toggle minimap overlay
 // Cmd+T                       — new tab
 // Cmd+Shift+L/H               — next/prev tab
@@ -121,6 +122,9 @@ pub enum Action {
     /// Swap the focused pane with its neighbor in the given direction.
     /// Bound to Cmd+Ctrl+H/J/K/L.
     SwapPane(Direction),
+    /// Send the focused pane in the given direction; focus stays at the vacated slot.
+    /// Bound to Ctrl+Opt+Cmd+H/J/K/L.
+    SendPane(Direction),
     /// Open the scratchpad overlay. Bound to Cmd+Shift+Space.
     OpenScratchpad,
     /// Zoom into the sub-context tile that has focus. Bound to Cmd+Shift+Enter.
@@ -144,6 +148,10 @@ pub struct KeyBindings {
     pub swap_pane_down: (egui::Modifiers, egui::Key),
     pub swap_pane_up: (egui::Modifiers, egui::Key),
     pub swap_pane_right: (egui::Modifiers, egui::Key),
+    pub send_pane_left: (egui::Modifiers, egui::Key),
+    pub send_pane_down: (egui::Modifiers, egui::Key),
+    pub send_pane_up: (egui::Modifiers, egui::Key),
+    pub send_pane_right: (egui::Modifiers, egui::Key),
     pub navigate_left: (egui::Modifiers, egui::Key),
     pub navigate_down: (egui::Modifiers, egui::Key),
     pub navigate_up: (egui::Modifiers, egui::Key),
@@ -190,6 +198,9 @@ fn cmd_ctrl() -> egui::Modifiers {
 fn cmd_alt() -> egui::Modifiers {
     egui::Modifiers { alt: true, ..egui::Modifiers::COMMAND }
 }
+fn cmd_ctrl_alt() -> egui::Modifiers {
+    egui::Modifiers { ctrl: true, alt: true, ..egui::Modifiers::COMMAND }
+}
 impl Default for KeyBindings {
     fn default() -> Self {
         Self {
@@ -200,10 +211,14 @@ impl Default for KeyBindings {
             split_vertical:            (cmd_shift(), egui::Key::D),
             split_right:               (cmd(),       egui::Key::Backslash),
             split_down:                (cmd_shift(), egui::Key::Backslash),
-            swap_pane_left:            (cmd_ctrl(),  egui::Key::H),
-            swap_pane_down:            (cmd_ctrl(),  egui::Key::J),
-            swap_pane_up:              (cmd_ctrl(),  egui::Key::K),
-            swap_pane_right:           (cmd_ctrl(),  egui::Key::L),
+            swap_pane_left:            (cmd_ctrl(),     egui::Key::H),
+            swap_pane_down:            (cmd_ctrl(),     egui::Key::J),
+            swap_pane_up:              (cmd_ctrl(),     egui::Key::K),
+            swap_pane_right:           (cmd_ctrl(),     egui::Key::L),
+            send_pane_left:            (cmd_ctrl_alt(), egui::Key::H),
+            send_pane_down:            (cmd_ctrl_alt(), egui::Key::J),
+            send_pane_up:              (cmd_ctrl_alt(), egui::Key::K),
+            send_pane_right:           (cmd_ctrl_alt(), egui::Key::L),
             navigate_left:             (cmd(),       egui::Key::H),
             navigate_down:             (cmd(),       egui::Key::J),
             navigate_up:               (cmd(),       egui::Key::K),
@@ -355,6 +370,10 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(swap_pane_down, "swap_pane_down");
     apply_override!(swap_pane_up, "swap_pane_up");
     apply_override!(swap_pane_right, "swap_pane_right");
+    apply_override!(send_pane_left, "send_pane_left");
+    apply_override!(send_pane_down, "send_pane_down");
+    apply_override!(send_pane_up, "send_pane_up");
+    apply_override!(send_pane_right, "send_pane_right");
     apply_override!(navigate_left, "navigate_left");
     apply_override!(navigate_down, "navigate_down");
     apply_override!(navigate_up, "navigate_up");
@@ -401,6 +420,10 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("swap_pane_down",            bindings.swap_pane_down),
         ("swap_pane_up",              bindings.swap_pane_up),
         ("swap_pane_right",           bindings.swap_pane_right),
+        ("send_pane_left",            bindings.send_pane_left),
+        ("send_pane_down",            bindings.send_pane_down),
+        ("send_pane_up",              bindings.send_pane_up),
+        ("send_pane_right",           bindings.send_pane_right),
         ("navigate_left",             bindings.navigate_left),
         ("navigate_down",             bindings.navigate_down),
         ("navigate_up",               bindings.navigate_up),
@@ -487,6 +510,20 @@ pub fn poll_actions(
             actions.push(Action::SplitVertical);
         } else if input.consume_key(bindings.split_horizontal.0, bindings.split_horizontal.1) {
             actions.push(Action::SplitHorizontal);
+        }
+
+        // Pane send (Ctrl+Opt+Cmd) — check before swap (more specific modifier set).
+        if input.consume_key(bindings.send_pane_left.0, bindings.send_pane_left.1) {
+            actions.push(Action::SendPane(Direction::Left));
+        }
+        if input.consume_key(bindings.send_pane_down.0, bindings.send_pane_down.1) {
+            actions.push(Action::SendPane(Direction::Down));
+        }
+        if input.consume_key(bindings.send_pane_up.0, bindings.send_pane_up.1) {
+            actions.push(Action::SendPane(Direction::Up));
+        }
+        if input.consume_key(bindings.send_pane_right.0, bindings.send_pane_right.1) {
+            actions.push(Action::SendPane(Direction::Right));
         }
 
         // Pane swap — check before plain pane navigation.

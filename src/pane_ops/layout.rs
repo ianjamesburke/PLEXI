@@ -823,6 +823,50 @@ impl PlexiApp {
         SwapResult::Swapped { rect_a, rect_b }
     }
 
+    pub(crate) fn send_pane(&mut self, dir: Direction) -> SwapResult {
+        use egui_tiles::Tile;
+        let active = self.active_window;
+        let ctx = &mut self.windows[active];
+
+        let Some(focused) = ctx.focused_pane else {
+            return SwapResult::NoFocus;
+        };
+
+        let Some(neighbor) = ctx.find_pane_in_direction_from(focused, dir) else {
+            log::info!("send_pane({:?}): at boundary, no neighbor", dir);
+            return SwapResult::AtBoundary;
+        };
+
+        let rect_a = ctx.tree.tiles.rect(focused).unwrap_or(egui::Rect::ZERO);
+        let rect_b = ctx.tree.tiles.rect(neighbor).unwrap_or(egui::Rect::ZERO);
+
+        let pane_a = match ctx.tree.tiles.get(focused) {
+            Some(Tile::Pane(id)) => *id,
+            _ => return SwapResult::NoFocus,
+        };
+        let pane_b = match ctx.tree.tiles.get(neighbor) {
+            Some(Tile::Pane(id)) => *id,
+            _ => return SwapResult::NoFocus,
+        };
+
+        if let Some(Tile::Pane(id)) = ctx.tree.tiles.get_mut(focused) {
+            *id = pane_b;
+        }
+        if let Some(Tile::Pane(id)) = ctx.tree.tiles.get_mut(neighbor) {
+            *id = pane_a;
+        }
+
+        // Focus stays at the vacated slot (now containing pane_b).
+        ctx.focused_pane = Some(focused);
+
+        log::info!(
+            "send_pane({:?}): pane {} ↔ pane {} (tiles {:?} ↔ {:?}) — focus stays at {:?}",
+            dir, pane_a, pane_b, focused, neighbor, focused
+        );
+
+        SwapResult::Swapped { rect_a, rect_b }
+    }
+
     /// Move the focused pane to the first (`end=false`, Cmd+Ctrl+K) or last
     /// (`end=true`, Cmd+Ctrl+J) column position in the current context row by
     /// creating a new window at that boundary. Returns `true` if the move
@@ -1442,6 +1486,45 @@ mod swap_tests {
         app.windows[0].focused_pane = Some(tile);
         // No neighbors (rects unset = Rect::ZERO, geometric search returns None)
         assert!(matches!(app.swap_pane(Direction::Right), SwapResult::AtBoundary));
+    }
+}
+
+#[cfg(test)]
+mod send_pane_tests {
+    use super::*;
+
+    fn test_app() -> PlexiApp {
+        let ctx = egui::Context::default();
+        let ft = crate::logging::new_frame_tick();
+        PlexiApp::new_for_test(ctx, ft).0
+    }
+
+    #[test]
+    fn send_pane_no_focus_returns_no_focus() {
+        let mut app = test_app();
+        assert!(matches!(app.send_pane(Direction::Right), SwapResult::NoFocus));
+    }
+
+    #[test]
+    fn send_pane_at_boundary_with_single_pane() {
+        let mut app = test_app();
+        let tile = app.windows[0].tree.tiles.insert_pane(1u64);
+        app.windows[0].focused_pane = Some(tile);
+        assert!(matches!(app.send_pane(Direction::Right), SwapResult::AtBoundary));
+    }
+
+    #[test]
+    fn send_pane_with_focused_pane_and_no_neighbor_is_at_boundary() {
+        // Verifies: focused pane + no geometric neighbor → AtBoundary (not NoFocus).
+        // The focus-stays-at-source-tile invariant is verified in layout code:
+        // `ctx.focused_pane = Some(focused)` on Swapped (unit-testable only after
+        // a rendered frame sets tile rects, which isn't available in headless tests).
+        let mut app = test_app();
+        let tile = app.windows[0].tree.tiles.insert_pane(10u64);
+        app.windows[0].focused_pane = Some(tile);
+        assert!(matches!(app.send_pane(Direction::Right), SwapResult::AtBoundary));
+        // Focus is unchanged when at boundary.
+        assert_eq!(app.windows[0].focused_pane, Some(tile));
     }
 }
 
