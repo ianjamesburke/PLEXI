@@ -785,6 +785,19 @@ pub fn resolve_workspace_root(start: &Path) -> Option<PathBuf> {
     resolve_workspace_root_with_channel(start, &registry_config_dir())
 }
 
+/// Returns the directories that [`load`] would scan for the given `cwd`.
+/// Passed to `app_registry_watcher::start()` so the watcher covers exactly the
+/// same paths the registry uses — no independent workspace detection.
+pub fn registry_watch_dirs(cwd: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![apps_dir()];
+    let channel_dir = registry_config_dir();
+    if let Some(root) = resolve_workspace_root_with_channel(cwd, &channel_dir) {
+        dirs.push(root.join(&channel_dir).join("apps"));
+        dirs.push(root.join(&channel_dir).join("agents"));
+    }
+    dirs
+}
+
 fn resolve_workspace_root_with_channel(start: &Path, channel_dir: &str) -> Option<PathBuf> {
     let home = dirs::home_dir();
     let mut current = start.to_path_buf();
