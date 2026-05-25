@@ -4596,7 +4596,7 @@ _plexi() {
         pane)
           case $line[2] in
             capture)
-              _arguments '--lines[Number of lines to read]:lines:' '--full-output[Preserve trailing empty lines]' '--from[Read only lines after this cursor]:cursor:'
+              _arguments '--lines[Number of lines to read]:lines:' '--full-output[Preserve trailing empty lines]' '--from-cursor[Read only lines after this cursor]:cursor:'
               ;;
             *)
               local subcmds
@@ -4889,7 +4889,7 @@ complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a key -d "Inject a s
 # pane capture flags
 complete -c plexi -n "__fish_seen_subcommand_from pane; and __fish_seen_subcommand_from capture" -l lines -d "Number of lines to read"
 complete -c plexi -n "__fish_seen_subcommand_from pane; and __fish_seen_subcommand_from capture" -l full-output -d "Preserve trailing empty lines"
-complete -c plexi -n "__fish_seen_subcommand_from pane; and __fish_seen_subcommand_from capture" -l from -d "Read only lines written after this cursor" -r
+complete -c plexi -n "__fish_seen_subcommand_from pane; and __fish_seen_subcommand_from capture" -l from-cursor -d "Read only lines written after this cursor" -r
 
 # descriptor subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from descriptor" -a probe -d "Probe a CLI for its Plexi descriptor"

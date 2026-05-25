@@ -438,6 +438,44 @@ impl TerminalBackend {
         Self::capture_lines_from_grid(term.grid(), n)
     }
 
+    /// Read the last `n` lines and the current cursor in one atomic snapshot.
+    ///
+    /// Avoids the TOCTOU between calling `capture_lines` and reading
+    /// `lines_written` separately — both values are derived from the same
+    /// term lock.
+    pub fn capture_lines_with_cursor(&self, n: usize) -> (Vec<String>, u64) {
+        use alacritty_terminal::index::{Column, Line};
+        let term = self.term.lock();
+        let grid = term.grid();
+        let screen_lines = grid.screen_lines();
+        let history_size = grid.history_size();
+        let total = screen_lines + history_size;
+
+        {
+            let mut prev = self.prev_total.lock().unwrap();
+            let delta = total.saturating_sub(*prev);
+            if delta > 0 {
+                self.lines_written.fetch_add(delta as u64, Ordering::Relaxed);
+                *prev = total;
+            }
+            if history_size > 0 && history_size == self.max_scroll_limit {
+                let oldest: String = {
+                    let row = &grid[Line(-(history_size as i32))];
+                    (0..grid.columns()).map(|c| row[Column(c)].c).collect()
+                };
+                let mut snapshot = self.oldest_row_snapshot.lock().unwrap();
+                if *snapshot != oldest {
+                    self.lines_written.fetch_add(1, Ordering::Relaxed);
+                    *snapshot = oldest;
+                }
+            }
+        }
+
+        let lw = self.lines_written.load(Ordering::Relaxed);
+        let captured = Self::capture_lines_from_grid(grid, n);
+        (captured, lw)
+    }
+
     /// Read lines written after `cursor` from the PTY scrollback buffer.
     ///
     /// Returns `(lines, new_cursor, missed)`:

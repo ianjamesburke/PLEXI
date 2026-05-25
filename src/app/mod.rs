@@ -1803,8 +1803,16 @@ impl PlexiApp {
                             }
                             Some(term) => {
                                 if let Some(cursor) = from_cursor {
-                                    let (captured_lines, new_cursor, missed) =
+                                    let (mut captured_lines, new_cursor, missed) =
                                         term.backend.capture_lines_since(*cursor);
+                                    if !full_output {
+                                        let trimmed = captured_lines
+                                            .iter()
+                                            .rposition(|l| !l.trim().is_empty())
+                                            .map(|pos| pos + 1)
+                                            .unwrap_or(0);
+                                        captured_lines.truncate(trimmed);
+                                    }
                                     log::info!(
                                         "pane_ipc: capture_pane: cursor={cursor} new_cursor={new_cursor} missed={missed} lines={}",
                                         captured_lines.len()
@@ -1815,7 +1823,8 @@ impl PlexiApp {
                                         "missed": missed,
                                     }))
                                 } else {
-                                    let mut captured = term.backend.capture_lines(*lines);
+                                    let (mut captured, lw) =
+                                        term.backend.capture_lines_with_cursor(*lines);
                                     if !full_output {
                                         let trimmed = captured
                                             .iter()
@@ -1828,7 +1837,6 @@ impl PlexiApp {
                                             captured.len()
                                         );
                                     }
-                                    let lw = term.backend.lines_written.load(std::sync::atomic::Ordering::Relaxed);
                                     log::info!("pane_ipc: capture_pane: lines={} cursor={lw}", captured.len());
                                     Ok(serde_json::json!({
                                         "lines": captured,
