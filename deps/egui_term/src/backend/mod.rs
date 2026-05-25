@@ -25,6 +25,7 @@ use std::collections::HashMap;
 use std::io::Result;
 use std::ops::{Index, RangeInclusive};
 use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
 pub type TerminalMode = TermMode;
@@ -147,6 +148,10 @@ pub struct TerminalBackend {
     notifier: Notifier,
     last_content: RenderableContent,
     child_pid: u32,
+    pub lines_written: Arc<AtomicU64>,
+    prev_total: Arc<Mutex<usize>>,
+    oldest_row_snapshot: Arc<Mutex<String>>,
+    max_scroll_limit: usize,
 }
 
 impl TerminalBackend {
@@ -228,6 +233,10 @@ impl TerminalBackend {
                 }
             })?;
 
+        let lines_written = Arc::new(AtomicU64::new(0));
+        let prev_total = Arc::new(Mutex::new(0usize));
+        let oldest_row_snapshot = Arc::new(Mutex::new(String::new()));
+
         Ok(Self {
             id,
             url_regex,
@@ -237,6 +246,10 @@ impl TerminalBackend {
             notifier,
             last_content: initial_content,
             child_pid,
+            lines_written,
+            prev_total,
+            oldest_row_snapshot,
+            max_scroll_limit: 10_000,
         })
     }
 
@@ -386,43 +399,104 @@ impl TerminalBackend {
         self.child_pid
     }
 
+    fn capture_lines_from_grid(
+        grid: &alacritty_terminal::Grid<alacritty_terminal::term::cell::Cell>,
+        n: usize,
+    ) -> Vec<String> {
+        use alacritty_terminal::index::{Column, Line};
+        if n == 0 {
+            return Vec::new();
+        }
+        let screen_lines = grid.screen_lines();
+        let history_size = grid.history_size();
+        let total = screen_lines + history_size;
+        let take = n.min(total);
+        let columns = grid.columns();
+        let first = screen_lines as i32 - take as i32;
+        let last = screen_lines as i32 - 1;
+        let mut result = Vec::with_capacity(take);
+        for line_idx in first..=last {
+            let row = &grid[Line(line_idx)];
+            let mut s: String = (0..columns).map(|col_idx| row[Column(col_idx)].c).collect();
+            let trimmed_len = s.trim_end().len();
+            s.truncate(trimmed_len);
+            result.push(s);
+        }
+        result
+    }
+
     /// Read the last `n` lines from the PTY scrollback buffer.
     ///
     /// Returns a `Vec<String>` of at most `n` entries, ordered oldest → newest.
     /// Each string has trailing whitespace stripped. Read-only — does not affect
     /// PTY state or scrollback position.
     pub fn capture_lines(&self, n: usize) -> Vec<String> {
-        use alacritty_terminal::index::{Column, Line};
-
         if n == 0 {
             return Vec::new();
         }
+        let term = self.term.lock();
+        Self::capture_lines_from_grid(term.grid(), n)
+    }
 
+    /// Read lines written after `cursor` from the PTY scrollback buffer.
+    ///
+    /// Returns `(lines, new_cursor, missed)`:
+    /// - `lines`: content since cursor, ordered oldest → newest
+    /// - `new_cursor`: opaque value — pass back as `cursor` on next call
+    /// - `missed`: true if lines scrolled off between reads (cursor too old)
+    ///
+    /// When `cursor == 0`, returns all available buffer content.
+    pub fn capture_lines_since(&self, cursor: u64) -> (Vec<String>, u64, bool) {
+        use alacritty_terminal::index::{Column, Line};
         let term = self.term.lock();
         let grid = term.grid();
         let screen_lines = grid.screen_lines();
         let history_size = grid.history_size();
         let total = screen_lines + history_size;
-        let take = n.min(total);
-        let columns = grid.columns();
 
-        // Line(0)..Line(screen_lines-1) are the visible rows (bottommost = screen_lines-1).
-        // Line(-1)..Line(-(history_size)) are scrollback (most recent = -1).
-        // We want the last `take` lines in order, ending at Line(screen_lines-1).
-        let first = screen_lines as i32 - take as i32;
-        let last = screen_lines as i32 - 1;
-
-        let mut result = Vec::with_capacity(take);
-        for line_idx in first..=last {
-            let row = &grid[Line(line_idx)];
-            let mut s: String = (0..columns)
-                .map(|col_idx| row[Column(col_idx)].c)
-                .collect();
-            let trimmed_len = s.trim_end().len();
-            s.truncate(trimmed_len);
-            result.push(s);
+        {
+            let mut prev = self.prev_total.lock().unwrap();
+            let delta = total.saturating_sub(*prev);
+            if delta > 0 {
+                self.lines_written.fetch_add(delta as u64, Ordering::Relaxed);
+                *prev = total;
+            }
+            // Saturation: history at max means oldest rows may scroll off without
+            // changing `total`. Detect by comparing the oldest scrollback row content.
+            if history_size > 0 && history_size == self.max_scroll_limit {
+                let oldest: String = {
+                    let row = &grid[Line(-(history_size as i32))];
+                    (0..grid.columns()).map(|c| row[Column(c)].c).collect()
+                };
+                let mut snapshot = self.oldest_row_snapshot.lock().unwrap();
+                if *snapshot != oldest {
+                    self.lines_written.fetch_add(1, Ordering::Relaxed);
+                    *snapshot = oldest;
+                }
+            }
         }
-        result
+
+        let lines_written = self.lines_written.load(Ordering::Relaxed);
+        if lines_written == 0 {
+            return (Vec::new(), 0, false);
+        }
+
+        let oldest_available = lines_written.saturating_sub(total as u64);
+        let missed = cursor > 0 && cursor < oldest_available;
+        let start = if missed || cursor == 0 {
+            0
+        } else {
+            (cursor.saturating_sub(oldest_available)) as usize
+        };
+        let lines_to_take = total.saturating_sub(start);
+
+        let captured = if lines_to_take == 0 {
+            Vec::new()
+        } else {
+            Self::capture_lines_from_grid(grid, lines_to_take)
+        };
+
+        (captured, lines_written, missed)
     }
 
     fn process_link_action(
