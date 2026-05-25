@@ -23,7 +23,7 @@ On completion, **append a Ship Log entry to the issue body**, set pipeline label
 [IMPLEMENTED] Issue #<n>
 Branch: feature/<n>-short-description
 Files changed: <N>
-Pipeline: pipeline:open-pr + ready set — PM will dispatch /open-pr on next run
+Pipeline: pipeline:open-pr + ready set — invoking /open-pr inline
 ```
 
 > **Labels are the live state.** Never read the Ship Log to determine pipeline stage — read the issue labels. Ship Log is audit trail only.
@@ -267,7 +267,7 @@ gh issue edit <number> \
   --remove-label "in progress"
 ```
 
-This is the only handoff mechanism. Never spawn a new pane or output "Next: /open-pr" as an instruction — PM reads the label and dispatches.
+After setting labels, invoke `/open-pr` inline in the same pane — do not spawn a new pane or wait for PM to dispatch.
 
 ---
 

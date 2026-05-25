@@ -1,17 +1,16 @@
 ---
 name: hand-off
-description: Split the current pane, launch a command in the new pane, confirm it started, then close self. Used by the ship pipeline (open-pr hands off to validate-pr) and as a general Plexi pane utility. Requires PLEXI_PANE_ID — must run inside a Plexi pane.
+description: Split the current pane, launch a command in the new pane, confirm it started, then close self. Use when explicitly transferring work to a different agent or pane — e.g. escalating a hard reject, handing off to a human, or launching a parallel task. Not for the standard ship pipeline (those chain inline). Requires PLEXI_PANE_ID.
 source: local
 ---
 
 # Hand-Off
 
-Split the current pane, start work in the new pane, confirm it's running, then close self.
+Split the current pane, start work in the new pane, confirm it's running, then close self. Use for explicit pane transfers — escalations, parallel task spawning, handing off to a human-monitored pane. The ship pipeline (implement → open-pr → validate-pr → merge-pr) chains inline; don't use hand-off there.
 
 ## Invocation
 
 ```
-/hand-off /validate-pr 123   # hands off to validate-pr (most common pipeline use)
 /hand-off /some-skill        # any slash command
 /hand-off echo "hello"       # any shell command
 ```
@@ -38,11 +37,11 @@ If `PLEXI_PANE_ID` is unset, stop with: "This skill must run inside a Plexi pane
 Use the argument verbatim as the command. Derive a short label from it:
 
 ```
-CMD='/validate-pr 123'
-LABEL='validate-pr #123'
+CMD='/some-skill 123'
+LABEL='some-skill #123'
 ```
 
-For a bare integer argument (legacy): treat as `/implement-issue N`.
+For a bare integer argument: treat as `/implement-issue N`.
 
 ---
 

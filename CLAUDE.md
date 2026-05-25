@@ -73,7 +73,7 @@ Three channels, each more stable than the last:
 
 Never commit directly to `beta` or `main`. All work flows through alpha. Feature branch naming: `feature/<issue-number>-short-description`. Never pass `--delete-branch` to `gh pr merge`.
 
-**Full ship cycle:** `/dispatch N` → opens an implement-issue pane → chains open-pr inline → `/hand-off` to validate-pr → chains merge-pr inline. The pipeline self-orchestrates; each pane closes itself when done.
+**Full ship cycle:** `/dispatch N` → opens one pane per issue → each pane runs implement-issue → open-pr → validate-pr (notifies you, waits) → merge-pr inline. No PM needed for the happy path. Labels track state for recovery.
 
 ### alpha → beta → main (channel promotion)
 

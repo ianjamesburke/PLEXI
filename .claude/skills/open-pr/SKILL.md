@@ -21,7 +21,7 @@ On completion, **append to the issue body's Ship Log**, set pipeline labels (see
 [PR OPENED] PR #<n> — <title>
 PR: <url>
 AI Review: <N> fixes applied | no changes needed
-Pipeline: pipeline:validate + ready set — PM will dispatch /validate-pr on next run
+Pipeline: pipeline:validate + ready set — invoking /validate-pr inline
 ```
 
 > **Labels are the live state.** Never read the Ship Log to determine pipeline stage — read the issue labels. Ship Log is audit trail only.
@@ -227,7 +227,7 @@ gh issue edit <number> \
   --remove-label "in progress"
 ```
 
-This is the only handoff mechanism. Never spawn a new pane or output "Next: /validate-pr" as an instruction — PM reads the label and dispatches.
+After setting labels, invoke `/validate-pr <pr-number>` inline in the same pane — do not spawn a new pane or wait for PM to dispatch.
 
 ---
 

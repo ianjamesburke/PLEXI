@@ -1,6 +1,6 @@
 ---
 name: dispatch
-description: Use when the user wants to ship one or more issues. Runs open-lanes.sh to open parallel implement-issue panes — one per issue. Each pane self-orchestrates the full pipeline (implement → open-pr → hand-off → validate-pr → merge-pr). An issue number is always required.
+description: Use when the user wants to ship one or more issues. Runs open-lanes.sh to open parallel implement-issue panes — one per issue. Each pane self-orchestrates the full pipeline inline (implement → open-pr → validate-pr → merge-pr). An issue number is always required.
 ---
 
 # Dispatch
@@ -54,13 +54,13 @@ Dispatching #1671 — fix(infra/skills): implement-issue preflight optimization
 bash .claude/skills/dispatch/scripts/open-lanes.sh <issue1> [issue2...]
 ```
 
-This opens one Plexi terminal pane per issue, each running `c '/implement-issue N'`. The pipeline self-orchestrates from there:
+This opens one Plexi terminal pane per issue, each running `c '/implement-issue N'`. The pipeline self-orchestrates inline from there:
 
 ```
-implement-issue → open-pr (inline) → /hand-off → validate-pr → merge-pr (inline)
+implement-issue → open-pr → validate-pr (notify user, wait) → merge-pr
 ```
 
-Each pane closes itself at the end of merge-pr and fires a notify.
+All phases run in the same pane. Each pane closes itself at the end of merge-pr and fires a notify.
 
 ---
 

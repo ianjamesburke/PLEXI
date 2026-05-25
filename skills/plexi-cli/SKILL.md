@@ -157,26 +157,6 @@ plexi registry watch             # watch installed CLIs for descriptor drift
 plexi config                     # check config.toml for errors
 ```
 
-## Orchestration Pattern (parallel ship sessions)
-
-```bash
-# Spawn one worker per issue in separate windows:
-LANE1=$(plexi terminal "cl '/ship-issue 807'" --layout new_window)
-LANE2=$(plexi terminal "cl '/ship-issue 810'" --layout new_window)
-
-# Queue next issues as tabs within each lane window:
-plexi pane focus $LANE1
-plexi terminal "cl '/ship-issue 812'" --layout tab --no-focus
-
-# Name panes and notify on completion:
-plexi pane name $LANE1 "Lane 1: #807"
-plexi notify \
-  --title "PR #807 ready for review" \
-  --choice "Go to pane:pane_focus:$LANE1"
-```
-
-For full dispatch orchestration (auto-computed lanes from issue state), see the `/dispatch-next` skill.
-
 ## Cross-Pane Conversations
 
 Send messages to and read responses from coding assistants (Claude Code, Codex, Hermes, etc.) running in other panes. Assistant-agnostic — relies only on scrollback behavior, not UI-specific markers.
