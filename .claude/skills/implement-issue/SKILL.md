@@ -74,7 +74,22 @@ depends_on: []
 
 ## Phase 1 — Pre-flight
 
-**Check issue state first:**
+**Alpha gate — run this first, before any other check:**
+```bash
+git fetch origin && git status --porcelain && git log origin/alpha..HEAD --oneline
+```
+
+If any unpushed commits listed: STOP immediately. Tell user to push first, then re-run. Do not read the issue, do not stash, do not proceed.
+
+If dirty: auto-stash:
+```bash
+git stash push -m "implement-issue auto-stash before #<number>"
+IMPL_STASHED=true
+```
+
+Then: `git pull --rebase origin alpha`
+
+**Check issue state:**
 ```bash
 gh issue view <number> --json state,title,labels --jq '{state: .state, title: .title, labels: [.labels[].name]}'
 ```
@@ -88,21 +103,6 @@ If labeled `in progress`: surface existing worktree + PR before proceeding. Ask 
 gh issue view <number> --json body --jq '.body'
 ```
 Grep `src/` on alpha and `git log --oneline -20` against Done When criteria. If all criteria met: close the issue and stop.
-
-**Sync alpha + check unpushed (batched):**
-```bash
-git fetch origin && git status --porcelain && git log origin/alpha..HEAD --oneline
-```
-
-If dirty: auto-stash:
-```bash
-git stash push -m "implement-issue auto-stash before #<number>"
-IMPL_STASHED=true
-```
-
-If any unpushed commits listed: STOP. Tell user to push first. Pop stash, exit.
-
-Then: `git pull --rebase origin alpha`
 
 **Label + pane setup:**
 ```bash
