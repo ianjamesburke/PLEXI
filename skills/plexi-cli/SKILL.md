@@ -21,7 +21,7 @@ plexi pane name "title"                # rename current pane
 plexi pane name <pane_id> "title"      # rename any pane by ID
 plexi pane focus <pane_id>             # move UI focus to a pane
 plexi pane close [pane_id]             # close pane (omit = current via PLEXI_PANE_ID)
-plexi pane send <pane_id> "text"       # inject text to a pane's PTY (text only, no newlines)
+plexi pane send <pane_id> "text"       # inject text to a pane's PTY; use \n for Enter
 plexi pane key <pane_id> <key>         # send keystroke: "enter", "escape", "ctrl+c", etc.
 plexi pane capture [pane_id] --lines N # read last N lines of scrollback as JSON array (default 50)
 ```
@@ -183,10 +183,10 @@ Send messages to and read responses from coding assistants (Claude Code, Codex, 
 
 ### Sending a message
 
-`\n` in `pane send` does NOT produce Enter — it types a literal backslash-n. Always send text and Enter separately:
+`\n` in `pane send` is converted to a real newline byte before hitting the PTY. Use it at the end of a string to submit (Enter). Avoid embedding `\n` mid-string — the shell will see actual newlines and enter PS2 continuation mode.
 
 ```bash
-plexi pane send <pane_id> "your message here" && plexi pane key <pane_id> enter
+plexi pane send <pane_id> "your message here\n"
 ```
 
 ### Waiting for a response
@@ -224,7 +224,7 @@ TARGET=<pane_id>
 MSG="your question here"
 
 # 1. Send
-plexi pane send $TARGET "$MSG" && plexi pane key $TARGET enter
+plexi pane send $TARGET "$MSG\n"
 
 # 2. Wait for idle (scrollback stabilizes)
 PREV=""
