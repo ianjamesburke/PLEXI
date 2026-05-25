@@ -5167,9 +5167,9 @@ mod workspace_init_tests {
         );
     }
 
-    /// After init, resolve_workspace_root must find the workspace via the channel dir.
+    /// After init, resolve_workspace_root must still find the workspace and the channel dir must exist.
     #[test]
-    fn workspace_init_makes_workspace_visible_to_resolver() {
+    fn workspace_remains_resolvable_after_channel_dir_creation() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().to_path_buf();
 
@@ -5182,7 +5182,11 @@ mod workspace_init_tests {
         let found = crate::app_registry::resolve_workspace_root(&cwd);
         assert!(
             found.is_some(),
-            "resolve_workspace_root should find the workspace after workspace_init creates the channel dir"
+            "resolve_workspace_root should still find the workspace (via .plexi/) after channel dir creation"
+        );
+        assert!(
+            cwd.join(&channel_dir).is_dir(),
+            "channel directory should exist alongside .plexi/"
         );
     }
 }
