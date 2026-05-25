@@ -238,6 +238,12 @@ class App:
 
     def on_timer(self, _ctx: RenderContext, _timer_id: str) -> "Coroutine[Any, Any, None] | None": return None
     def on_scroll(self, _ctx: RenderContext, _id: str, _offset_y: float) -> "Coroutine[Any, Any, None] | None": return None
+    def on_list_select(self, _ctx: "RenderContext", _id: str, _index: int) -> "Coroutine[Any, Any, None] | None":
+        """Called when a list_view selection changes via j/k/up/down."""
+        return None
+    def on_list_activate(self, _ctx: "RenderContext", _id: str, _index: int) -> "Coroutine[Any, Any, None] | None":
+        """Called when Enter is pressed on a selected list_view item."""
+        return None
     def on_text_submitted(self, _ctx: RenderContext, _id: str, _text: str) -> "Coroutine[Any, Any, None] | None": return None
     def on_file_picked(self, _ctx: RenderContext, _request_id: str, _paths: "list[str]") -> "Coroutine[Any, Any, None] | None":
         """Called when the user selected one or more files in the picker.
@@ -904,6 +910,14 @@ class App:
                         await self._dispatch_hook(self.on_scroll, ctx, scroll_id, offset_y)
                     except Exception as e:
                         sys.stderr.write(f"on_scroll handler raised: {e}\n")
+
+                elif t == "list_select":
+                    ctx = self._make_ctx()
+                    self._dispatch_hook_task(self.on_list_select, ctx, ev.get("id", ""), ev.get("index", 0))
+
+                elif t == "list_activate":
+                    ctx = self._make_ctx()
+                    self._dispatch_hook_task(self.on_list_activate, ctx, ev.get("id", ""), ev.get("index", 0))
 
                 elif t == "app_spawned":
                     # Confirmation that a SpawnApp request succeeded. Apps that

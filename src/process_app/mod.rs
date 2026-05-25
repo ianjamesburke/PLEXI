@@ -1848,6 +1848,26 @@ impl App for ProcessApp {
                             | egui::Key::Space
                             | egui::Key::Plus
                     );
+                    // When a ListView is active, suppress bare j/k/up/down/enter
+                    // forwarding — the list_view pass already handled these host-side.
+                    if self.render_session.list_view_intercepts_nav
+                        && !modifiers.ctrl
+                        && !modifiers.command
+                    {
+                        let is_nav = matches!(
+                            key,
+                            egui::Key::J
+                                | egui::Key::K
+                                | egui::Key::ArrowDown
+                                | egui::Key::ArrowUp
+                                | egui::Key::Enter
+                        );
+                        if is_nav {
+                            consumed = true;
+                            continue;
+                        }
+                    }
+
                     // Cmd-modified chords are reserved for host shortcuts
                     // (Cmd+Enter zoom, Cmd+P palette, Cmd+Shift+A notifications,
                     // etc.). Apps can't shadow a host keybind; they use bare
@@ -1868,6 +1888,12 @@ impl App for ProcessApp {
                 egui::Event::Text(text) => {
                     for ch in text.chars() {
                         if ch.is_control() {
+                            continue;
+                        }
+                        // Suppress j/k text events when a ListView is active
+                        if self.render_session.list_view_intercepts_nav
+                            && matches!(ch, 'j' | 'k')
+                        {
                             continue;
                         }
                         self.send_event(&PlexiEvent::Key {

@@ -480,7 +480,7 @@ class RenderContext:
         from plexi_sdk.ui import render_tree
         render_tree(self, tree, fill=fill)
 
-    def list_view(self, items: "list[dict]", selected: int = 0,
+    def simple_list(self, items: "list[dict]", selected: int = 0,
              item_height: float = 40.0, x: float = 0.0, y: float = 0.0,
              w: "float | None" = None, h: "float | None" = None) -> None:
         """Draw a scrollable list of items with optional selection highlight.
@@ -499,6 +499,52 @@ class RenderContext:
                      "h": self.h - y if h is None else h,
                      "items": items, "selected": selected,
                      "item_height": item_height})
+
+    def list_view(
+        self,
+        id: str,
+        items: "list[dict]",
+        selected: int = 0,
+        loading: bool = False,
+        error: "str | None" = None,
+        x: float = 0.0,
+        y: float = 0.0,
+        w: float = 0.0,
+        h: float = 0.0,
+    ) -> None:
+        """Host-native scrollable list with j/k navigation and typed row slots.
+
+        Items must be dicts with ``"type": "row"`` or ``"type": "custom_cell"``.
+        Use :class:`plexi_sdk.ui.ListRow` to build row descriptors.
+
+        The host handles: j/k selection, scroll-to-selected, skeleton loading
+        rows (when ``loading=True``), error text, and empty state.
+        The app receives :meth:`on_list_select` / :meth:`on_list_activate`
+        callbacks instead of managing scroll state.
+
+        Args:
+            id: Stable identifier for this list (must not change across frames).
+            items: List of row/custom_cell dicts. Use ``ListRow(...).to_dict()``.
+            selected: Index of the currently highlighted item.
+            loading: When True, renders skeleton rows instead of items.
+            error: When set, renders an error message instead of items.
+            x: Left edge in pane-local coordinates (0 = left edge).
+            y: Top edge in pane-local coordinates (0 = top of pane).
+            w: Width (0 = full pane width).
+            h: Height (0 = remaining height below y).
+        """
+        self._queue({
+            "type": "list_view",
+            "id": id,
+            "x": x,
+            "y": y,
+            "w": w,
+            "h": h,
+            "items": items,
+            "selected": selected,
+            "loading": loading,
+            "error": error,
+        })
 
     def begin_scroll(self, id: str, x: float, y: float, w: float, h: float,
                      content_height: float) -> None:

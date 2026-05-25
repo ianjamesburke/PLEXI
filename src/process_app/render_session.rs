@@ -19,12 +19,17 @@ pub(crate) struct RenderSession {
     /// Per-region scroll offsets for `DrawCommand::BeginScroll` / `EndScroll`.
     /// Key = scroll region id; value = current vertical offset in logical pixels.
     scroll_offsets: HashMap<String, f32>,
+    /// Per-ListView scroll offsets. Key = list_view id; value = current vertical offset.
+    list_view_scroll_offsets: HashMap<String, f32>,
+    /// True when the current frame contains a ListView command.
+    /// When true, `handle_key` in mod.rs suppresses j/k/up/down/enter forwarding.
+    pub(crate) list_view_intercepts_nav: bool,
     /// Set externally by `src/pane_ops/layout.rs` when a pane gains keyboard focus.
     /// Read during render to auto-focus the first TextInput.
     pub(crate) pane_just_focused: bool,
     /// Events accumulated during one render pass. Drained after render into
     /// `ProcessApp::outbound_events` by `drain_events`.
-    outbound_events: Vec<PlexiEvent>,
+    pub(crate) outbound_events: Vec<PlexiEvent>,
 }
 
 impl RenderSession {
@@ -34,6 +39,8 @@ impl RenderSession {
             text_input_visible_prev: HashSet::new(),
             text_input_has_focus: false,
             scroll_offsets: HashMap::new(),
+            list_view_scroll_offsets: HashMap::new(),
+            list_view_intercepts_nav: false,
             pane_just_focused: false,
             outbound_events: Vec::new(),
         }
@@ -70,6 +77,7 @@ impl RenderSession {
             image_cache,
             app_dir,
             net_http_granted,
+            &mut self.list_view_scroll_offsets,
         );
 
         // ── Pass 2: TextInput widgets ────────────────────────────────────────
@@ -77,6 +85,9 @@ impl RenderSession {
 
         // ── Pass 3: scroll region scan ───────────────────────────────────────
         self.render_scroll_regions(ui, pane_rect, frame);
+
+        // ── Pass 4: ListView interaction (j/k/enter, scroll gesture) ─────────
+        self.render_list_views(ui, pane_rect, frame);
     }
 
     /// Pass 2: render every `RenderCommand::TextInput` as a real egui `TextEdit`.
@@ -296,6 +307,102 @@ impl RenderSession {
         PlexiEvent::TextSubmitted {
             id: id.to_string(),
             value,
+        }
+    }
+
+    /// Pass 4: handle ListView pointer scroll, j/k/enter key events.
+    fn render_list_views(
+        &mut self,
+        ui: &mut egui::Ui,
+        pane_rect: egui::Rect,
+        frame: &[RenderCommand],
+    ) {
+        use crate::app_protocol::{ListViewItem, PlexiEvent};
+
+        // Reset intercept flag — recalculate from current frame
+        self.list_view_intercepts_nav = false;
+
+        for cmd in frame {
+            let RenderCommand::ListView {
+                id, x, y, w, h, items, selected, loading, ..
+            } = cmd else { continue };
+
+            // This frame has a list_view — host intercepts j/k/enter
+            self.list_view_intercepts_nav = true;
+
+            let list_w = if *w > 0.0 { *w } else { pane_rect.width() };
+            let list_h = if *h > 0.0 { *h } else { pane_rect.height() - y };
+            let list_rect = egui::Rect::from_min_size(
+                egui::pos2(pane_rect.min.x + x, pane_rect.min.y + y),
+                egui::vec2(list_w, list_h),
+            );
+
+            if *loading || items.is_empty() {
+                continue;
+            }
+
+            let n = items.len();
+            let sel = (*selected).min(n.saturating_sub(1));
+
+            // Scroll gesture (pointer inside list_rect)
+            let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
+            if scroll_delta.y != 0.0 {
+                if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+                    if list_rect.contains(pos) {
+                        const SPACE_XS: f32 = 4.0;
+                        let total_h: f32 = items.iter().map(|item| match item {
+                            ListViewItem::Row(r) => if r.secondary.is_some() { 56.0 } else { 40.0 },
+                            ListViewItem::CustomCell { height_hint, .. } => *height_hint,
+                        }).sum::<f32>() + SPACE_XS * (n.saturating_sub(1)) as f32;
+                        let max_scroll = (total_h - list_h).max(0.0);
+                        let prev = self.list_view_scroll_offsets.get(id.as_str()).copied().unwrap_or(0.0);
+                        let next = (prev - scroll_delta.y).clamp(0.0, max_scroll);
+                        if (next - prev).abs() > 0.01 {
+                            self.list_view_scroll_offsets.insert(id.clone(), next);
+                            ui.ctx().request_repaint();
+                        }
+                    }
+                }
+            }
+
+            // j / down
+            let j_pressed = ui.input(|i|
+                i.key_pressed(egui::Key::J) || i.key_pressed(egui::Key::ArrowDown)
+            );
+            if j_pressed && sel + 1 < n {
+                let new_sel = sel + 1;
+                log::info!("ListView[{id}]: j → select {new_sel}");
+                self.outbound_events.push(PlexiEvent::ListSelect {
+                    id: id.clone(),
+                    index: new_sel,
+                });
+                ui.ctx().request_repaint();
+            }
+
+            // k / up
+            let k_pressed = ui.input(|i|
+                i.key_pressed(egui::Key::K) || i.key_pressed(egui::Key::ArrowUp)
+            );
+            if k_pressed && sel > 0 {
+                let new_sel = sel - 1;
+                log::info!("ListView[{id}]: k → select {new_sel}");
+                self.outbound_events.push(PlexiEvent::ListSelect {
+                    id: id.clone(),
+                    index: new_sel,
+                });
+                ui.ctx().request_repaint();
+            }
+
+            // Enter
+            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if enter_pressed {
+                log::info!("ListView[{id}]: enter → activate {sel}");
+                self.outbound_events.push(PlexiEvent::ListActivate {
+                    id: id.clone(),
+                    index: sel,
+                });
+                ui.ctx().request_repaint();
+            }
         }
     }
 }

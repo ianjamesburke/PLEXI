@@ -42,6 +42,7 @@ pub(crate) fn render_draw_commands(
     image_cache: &mut super::image_cache::ImageCache,
     workspace_root: &std::path::Path,
     net_http_granted: bool,
+    list_view_scroll_offsets: &mut HashMap<String, f32>,
 ) {
     let origin = pane_rect.min;
 
@@ -373,6 +374,316 @@ pub(crate) fn render_draw_commands(
                             egui::FontId::proportional(10.0),
                             colors.text_dim,
                         );
+                    }
+                }
+            }
+
+            RenderCommand::ListView {
+                id,
+                x,
+                y,
+                w,
+                h,
+                items,
+                selected,
+                loading,
+                error,
+            } => {
+                use crate::app_protocol::{ListViewItem, ListViewLeading};
+
+                log::info!("ListView: id={id:?} items={} selected={selected} loading={loading}", items.len());
+
+                let list_w = if *w > 0.0 { *w } else { pane_rect.width() };
+                let list_h = if *h > 0.0 { *h } else { pane_rect.height() - y };
+                let list_rect = egui::Rect::from_min_size(
+                    egui::pos2(pane_rect.min.x + x, pane_rect.min.y + y),
+                    egui::vec2(list_w, list_h),
+                );
+                let list_clip = clip.intersect(list_rect);
+
+                const ROW_H_BASE: f32 = 40.0;
+                const ROW_H_WITH_SEC: f32 = 56.0;
+                const LEADING_W: f32 = 48.0;
+                const PAD_X: f32 = 12.0;
+                const CHIP_GAP: f32 = 4.0;
+                const CHIP_PAD_X: f32 = 8.0;
+                const SPACE_XS: f32 = 4.0;
+                const SCROLLBAR_W: f32 = 3.0;
+                const FONT_CAPTION: f32 = 13.0;
+                const FONT_HINT: f32 = 12.0;
+
+                let item_height = |item: &ListViewItem| -> f32 {
+                    match item {
+                        ListViewItem::Row(r) => {
+                            if r.secondary.is_some() { ROW_H_WITH_SEC } else { ROW_H_BASE }
+                        }
+                        ListViewItem::CustomCell { height_hint, .. } => *height_hint,
+                    }
+                };
+
+                let heights: Vec<f32> = items.iter().map(|i| item_height(i)).collect();
+                let total_h = if heights.is_empty() {
+                    0.0
+                } else {
+                    heights.iter().sum::<f32>() + SPACE_XS * (heights.len().saturating_sub(1)) as f32
+                };
+
+                // Scroll-to-selected: ensure selected row is visible
+                let scroll_y_ref = list_view_scroll_offsets.entry(id.clone()).or_insert(0.0);
+                if !items.is_empty() {
+                    let sel = (*selected).min(items.len().saturating_sub(1));
+                    let mut item_top = 0.0f32;
+                    for (i, h_item) in heights.iter().enumerate() {
+                        if i == sel {
+                            let item_bot = item_top + h_item;
+                            if item_top < *scroll_y_ref {
+                                *scroll_y_ref = item_top;
+                            }
+                            if item_bot > *scroll_y_ref + list_h {
+                                *scroll_y_ref = (item_bot - list_h).max(0.0);
+                            }
+                            break;
+                        }
+                        item_top += h_item + SPACE_XS;
+                    }
+                    let max_scroll = (total_h - list_h).max(0.0);
+                    *scroll_y_ref = scroll_y_ref.clamp(0.0, max_scroll);
+                }
+                let scroll_y = *scroll_y_ref;
+
+                let painter = ui.painter().with_clip_rect(list_clip);
+
+                // Loading state: 8 skeleton rows
+                if *loading {
+                    let mut sy = list_rect.min.y;
+                    for _ in 0..8 {
+                        if sy > list_rect.max.y { break; }
+                        let row_rect = egui::Rect::from_min_size(
+                            egui::pos2(list_rect.min.x, sy),
+                            egui::vec2(list_w, ROW_H_BASE),
+                        );
+                        painter.rect_filled(row_rect, 0.0, colors.terminal_bg);
+                        let lead_rect = egui::Rect::from_min_size(
+                            egui::pos2(list_rect.min.x + PAD_X, sy + (ROW_H_BASE - 20.0) / 2.0),
+                            egui::vec2(20.0, 20.0),
+                        );
+                        painter.rect_filled(lead_rect, 10.0, colors.border);
+                        let txt_rect = egui::Rect::from_min_size(
+                            egui::pos2(list_rect.min.x + LEADING_W, sy + (ROW_H_BASE - FONT_CAPTION) / 2.0),
+                            egui::vec2(list_w * 0.6, FONT_CAPTION),
+                        );
+                        painter.rect_filled(txt_rect, 3.0, colors.border);
+                        sy += ROW_H_BASE + SPACE_XS;
+                    }
+                    // return is inside the match arm — use continue instead
+                }
+                // Error state
+                else if let Some(err_msg) = error {
+                    painter.text(
+                        egui::pos2(list_rect.min.x + PAD_X, list_rect.min.y + PAD_X),
+                        egui::Align2::LEFT_TOP,
+                        err_msg.as_str(),
+                        egui::FontId::proportional(FONT_CAPTION),
+                        colors.text_dim,
+                    );
+                }
+                // Empty state
+                else if items.is_empty() {
+                    painter.text(
+                        egui::pos2(list_rect.min.x + PAD_X, list_rect.min.y + PAD_X),
+                        egui::Align2::LEFT_TOP,
+                        "No items.",
+                        egui::FontId::proportional(FONT_CAPTION),
+                        colors.text_dim,
+                    );
+                } else {
+                    // Scrollbar (only when content overflows)
+                    if total_h > list_h {
+                        let track_x = list_rect.max.x - SCROLLBAR_W;
+                        let thumb_ratio = list_h / total_h;
+                        let thumb_h = (thumb_ratio * list_h).max(20.0);
+                        let scroll_ratio = scroll_y / (total_h - list_h).max(1.0);
+                        let thumb_y = list_rect.min.y + scroll_ratio * (list_h - thumb_h);
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(
+                                egui::pos2(track_x, thumb_y),
+                                egui::vec2(SCROLLBAR_W, thumb_h),
+                            ),
+                            1.5,
+                            colors.border,
+                        );
+                    }
+
+                    // Render visible rows
+                    let mut item_top = 0.0f32;
+                    for (i, item) in items.iter().enumerate() {
+                        let h_item = heights[i];
+                        let row_abs_y = list_rect.min.y + item_top - scroll_y;
+                        item_top += h_item + SPACE_XS;
+
+                        if row_abs_y + h_item < list_rect.min.y || row_abs_y > list_rect.max.y {
+                            continue;
+                        }
+
+                        let row_rect = egui::Rect::from_min_size(
+                            egui::pos2(list_rect.min.x, row_abs_y),
+                            egui::vec2(list_w, h_item),
+                        );
+                        let is_sel = i == (*selected).min(items.len().saturating_sub(1));
+
+                        let bg = if is_sel {
+                            colors.bg_active
+                        } else if i % 2 == 0 {
+                            colors.terminal_bg
+                        } else {
+                            colors.bg_darkest
+                        };
+                        painter.rect_filled(row_rect, 0.0, bg);
+
+                        match item {
+                            ListViewItem::CustomCell { .. } => {
+                                // Custom cell: host only renders background. App draws over it.
+                            }
+                            ListViewItem::Row(row) => {
+                                let mid_y = row_rect.center().y;
+                                let primary_y = if row.secondary.is_some() {
+                                    row_rect.min.y + 8.0
+                                } else {
+                                    mid_y - FONT_CAPTION / 2.0
+                                };
+
+                                let text_start_x = match &row.leading {
+                                    Some(ListViewLeading::Badge { label, color }) => {
+                                        // render_badge takes origin + pane-local coords
+                                        let badge_x = list_rect.min.x - pane_rect.min.x + PAD_X;
+                                        let badge_y = row_abs_y - pane_rect.min.y + h_item / 2.0;
+                                        render_badge(
+                                            ui,
+                                            pane_rect.min,
+                                            list_clip,
+                                            badge_x,
+                                            badge_y,
+                                            label,
+                                            color,
+                                            "#1e1e2e",
+                                            FONT_HINT,
+                                            3.0,
+                                        );
+                                        list_rect.min.x + LEADING_W
+                                    }
+                                    Some(ListViewLeading::Avatar { handle }) => {
+                                        let avatar_r = 14.0;
+                                        let av_cx = list_rect.min.x + PAD_X + avatar_r;
+                                        let av_cy = mid_y;
+                                        if let Some(img_handle) = image_cache.get(handle) {
+                                            let tex_id = img_handle.id();
+                                            let n_segs: u32 = 32;
+                                            let center = egui::pos2(av_cx, av_cy);
+                                            let mut mesh = egui::Mesh::with_texture(tex_id);
+                                            mesh.vertices.push(egui::epaint::Vertex {
+                                                pos: center,
+                                                uv: egui::pos2(0.5, 0.5),
+                                                color: egui::Color32::WHITE,
+                                            });
+                                            for seg_i in 0..=n_segs {
+                                                let angle = seg_i as f32 / n_segs as f32 * std::f32::consts::TAU;
+                                                let cos = angle.cos();
+                                                let sin = angle.sin();
+                                                mesh.vertices.push(egui::epaint::Vertex {
+                                                    pos: egui::pos2(center.x + cos * avatar_r, center.y + sin * avatar_r),
+                                                    uv: egui::pos2(0.5 + cos * 0.5, 0.5 + sin * 0.5),
+                                                    color: egui::Color32::WHITE,
+                                                });
+                                            }
+                                            for seg_i in 0..n_segs {
+                                                mesh.indices.push(0);
+                                                mesh.indices.push(seg_i + 1);
+                                                mesh.indices.push(seg_i + 2);
+                                            }
+                                            painter.add(egui::Shape::Mesh(std::sync::Arc::new(mesh)));
+                                        } else {
+                                            painter.circle_filled(
+                                                egui::pos2(av_cx, av_cy),
+                                                avatar_r,
+                                                egui::Color32::from_rgb(0x3a, 0x3a, 0x4a),
+                                            );
+                                        }
+                                        list_rect.min.x + LEADING_W
+                                    }
+                                    Some(ListViewLeading::Icon { name }) => {
+                                        painter.text(
+                                            egui::pos2(list_rect.min.x + PAD_X, mid_y),
+                                            egui::Align2::LEFT_CENTER,
+                                            name.as_str(),
+                                            egui::FontId::proportional(FONT_CAPTION),
+                                            colors.text_dim,
+                                        );
+                                        list_rect.min.x + LEADING_W
+                                    }
+                                    Some(ListViewLeading::None) | None => {
+                                        list_rect.min.x + PAD_X
+                                    }
+                                };
+
+                                // Trailing text (right-aligned)
+                                let mut trailing_reserve = 0.0f32;
+                                if let Some(trailing) = &row.trailing {
+                                    let t_x = list_rect.max.x - PAD_X;
+                                    painter.text(
+                                        egui::pos2(t_x, primary_y),
+                                        egui::Align2::RIGHT_TOP,
+                                        trailing.as_str(),
+                                        egui::FontId::proportional(FONT_HINT),
+                                        colors.text_dim,
+                                    );
+                                    trailing_reserve = trailing.len() as f32 * 6.0 + 16.0;
+                                }
+
+                                // Chips (right-aligned)
+                                let chips_reserve: f32 = row.chips.iter()
+                                    .map(|c| c.label.len() as f32 * 7.0 + CHIP_PAD_X * 2.0 + CHIP_GAP)
+                                    .sum();
+                                let mut cx = list_rect.max.x - PAD_X - trailing_reserve - chips_reserve;
+                                for chip in &row.chips {
+                                    let chip_w = chip.label.len() as f32 * 7.0 + CHIP_PAD_X * 2.0;
+                                    let chip_color = parse_color(&chip.color)
+                                        .unwrap_or(colors.accent);
+                                    let chip_rect = egui::Rect::from_min_size(
+                                        egui::pos2(cx, row_rect.min.y + (h_item - FONT_HINT - 4.0) / 2.0),
+                                        egui::vec2(chip_w, FONT_HINT + 4.0),
+                                    );
+                                    painter.rect_filled(chip_rect, 3.0, chip_color.linear_multiply(0.2));
+                                    painter.text(
+                                        chip_rect.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        chip.label.as_str(),
+                                        egui::FontId::proportional(FONT_HINT),
+                                        chip_color,
+                                    );
+                                    cx += chip_w + CHIP_GAP;
+                                }
+
+                                // Primary text
+                                painter.text(
+                                    egui::pos2(text_start_x, primary_y),
+                                    egui::Align2::LEFT_TOP,
+                                    row.primary.as_str(),
+                                    egui::FontId::proportional(FONT_CAPTION),
+                                    colors.text_primary,
+                                );
+
+                                // Secondary text
+                                if let Some(sec) = &row.secondary {
+                                    painter.text(
+                                        egui::pos2(text_start_x, primary_y + FONT_CAPTION + 4.0),
+                                        egui::Align2::LEFT_TOP,
+                                        sec.as_str(),
+                                        egui::FontId::proportional(FONT_HINT),
+                                        colors.text_dim,
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }

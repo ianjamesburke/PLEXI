@@ -381,6 +381,14 @@ pub enum PlexiEvent {
     /// the region. `offset_y` is always >= 0 and clamped to
     /// `max(0, content_height - viewport_height)`.
     ScrollOffset { id: String, offset_y: f32 },
+
+    /// Emitted when j/k/up/down changes the list selection.
+    /// `id` matches the `list_view` id field; `index` is the new selected index.
+    ListSelect { id: String, index: usize },
+
+    /// Emitted when Enter is pressed on the selected item.
+    /// `id` matches the `list_view` id field; `index` is the activated item index.
+    ListActivate { id: String, index: usize },
 }
 
 /// On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives
@@ -639,6 +647,30 @@ pub enum RenderCommand {
         selected: usize,
         #[serde(default)]
         item_height: f32,
+    },
+
+    /// Host-native scrollable list with j/k navigation, typed row slots,
+    /// and built-in loading/error/empty states.
+    /// Host emits `PlexiEvent::ListSelect` / `PlexiEvent::ListActivate` for callbacks.
+    ListView {
+        id: String,
+        #[serde(default)]
+        x: f32,
+        #[serde(default)]
+        y: f32,
+        /// 0.0 = full pane width
+        #[serde(default)]
+        w: f32,
+        /// 0.0 = remaining pane height below y
+        #[serde(default)]
+        h: f32,
+        items: Vec<ListViewItem>,
+        #[serde(default)]
+        selected: usize,
+        #[serde(default)]
+        loading: bool,
+        #[serde(default)]
+        error: Option<String>,
     },
 
     // ── Host-measured layout primitives ──────────────────────────────────
@@ -1745,6 +1777,52 @@ pub struct ListItem {
     #[serde(default)]
     pub is_dir: bool,
 }
+
+/// Leading slot for a ListView row.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+#[serde(tag = "variant", rename_all = "snake_case")]
+pub enum ListViewLeading {
+    Badge { label: String, color: String },
+    Avatar { handle: String },
+    Icon { name: String },
+    None,
+}
+
+/// One chip label on a ListView row.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct ListViewChip {
+    pub label: String,
+    pub color: String,
+}
+
+/// A generic typed row for a ListView.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct ListViewRowDescriptor {
+    pub id: String,
+    #[serde(default)]
+    pub leading: Option<ListViewLeading>,
+    pub primary: String,
+    #[serde(default)]
+    pub secondary: Option<String>,
+    #[serde(default)]
+    pub chips: Vec<ListViewChip>,
+    #[serde(default)]
+    pub trailing: Option<String>,
+}
+
+/// An item inside a ListView — either a typed row or a custom cell.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ListViewItem {
+    Row(ListViewRowDescriptor),
+    CustomCell {
+        id: String,
+        #[serde(default = "default_custom_cell_height")]
+        height_hint: f32,
+    },
+}
+
+fn default_custom_cell_height() -> f32 { 40.0 }
 
 fn is_false(b: &bool) -> bool {
     !*b
