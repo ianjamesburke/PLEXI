@@ -163,7 +163,7 @@ grep -in "<term1>\|<term2>\|<term3>" GOTCHAS.md DEV_LOG.md
 ```
 Surface every match under **Gotchas found:**. Each requires disposition: **NOTED** or **N/A**.
 
-**If any changed file is a Python app under `apps/core/`, `apps/examples/`, or `dev-examples/`:** invoke `create-plexi-app` skill before writing code.
+**If any changed file is a Python app under `apps/` or `apps/dev/`:** invoke `create-plexi-app` skill before writing code.
 
 **If issue involves a third-party library:** invoke `coding-conventions` skill.
 
