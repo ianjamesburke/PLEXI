@@ -148,9 +148,9 @@ pub struct TerminalBackend {
     notifier: Notifier,
     last_content: RenderableContent,
     child_pid: u32,
-    pub lines_written: Arc<AtomicU64>,
-    prev_total: Arc<Mutex<usize>>,
-    oldest_row_snapshot: Arc<Mutex<String>>,
+    pub lines_written: AtomicU64,
+    /// (prev_total, oldest_row_snapshot) — grouped to avoid nested lock acquisitions.
+    capture_state: Mutex<(usize, String)>,
     max_scroll_limit: usize,
 }
 
@@ -233,10 +233,6 @@ impl TerminalBackend {
                 }
             })?;
 
-        let lines_written = Arc::new(AtomicU64::new(0));
-        let prev_total = Arc::new(Mutex::new(0usize));
-        let oldest_row_snapshot = Arc::new(Mutex::new(String::new()));
-
         Ok(Self {
             id,
             url_regex,
@@ -246,9 +242,8 @@ impl TerminalBackend {
             notifier,
             last_content: initial_content,
             child_pid,
-            lines_written,
-            prev_total,
-            oldest_row_snapshot,
+            lines_written: AtomicU64::new(0),
+            capture_state: Mutex::new((0usize, String::new())),
             max_scroll_limit: 10_000,
         })
     }
@@ -399,6 +394,39 @@ impl TerminalBackend {
         self.child_pid
     }
 
+    /// Advance `lines_written` to account for newly written terminal lines.
+    ///
+    /// Always updates `prev_total` — including on terminal resize-down — so
+    /// the next call correctly counts lines written after the resize.
+    fn advance_cursor(
+        &self,
+        grid: &alacritty_terminal::Grid<alacritty_terminal::term::cell::Cell>,
+        total: usize,
+        _screen_lines: usize,
+        history_size: usize,
+    ) {
+        use alacritty_terminal::index::{Column, Line};
+        let mut state = self.capture_state.lock().unwrap();
+        if total > state.0 {
+            let delta = total - state.0;
+            self.lines_written.fetch_add(delta as u64, Ordering::Relaxed);
+        }
+        // Always update prev_total — handles terminal resize-down correctly.
+        state.0 = total;
+        // Saturation: history at max means oldest rows may scroll off without
+        // changing `total`. Detect one scrolled line per call via row comparison.
+        if history_size > 0 && history_size == self.max_scroll_limit {
+            let oldest: String = {
+                let row = &grid[Line(-(history_size as i32))];
+                (0..grid.columns()).map(|c| row[Column(c)].c).collect()
+            };
+            if state.1 != oldest {
+                self.lines_written.fetch_add(1, Ordering::Relaxed);
+                state.1 = oldest;
+            }
+        }
+    }
+
     fn capture_lines_from_grid(
         grid: &alacritty_terminal::Grid<alacritty_terminal::term::cell::Cell>,
         n: usize,
@@ -444,33 +472,12 @@ impl TerminalBackend {
     /// `lines_written` separately — both values are derived from the same
     /// term lock.
     pub fn capture_lines_with_cursor(&self, n: usize) -> (Vec<String>, u64) {
-        use alacritty_terminal::index::{Column, Line};
         let term = self.term.lock();
         let grid = term.grid();
         let screen_lines = grid.screen_lines();
         let history_size = grid.history_size();
         let total = screen_lines + history_size;
-
-        {
-            let mut prev = self.prev_total.lock().unwrap();
-            let delta = total.saturating_sub(*prev);
-            if delta > 0 {
-                self.lines_written.fetch_add(delta as u64, Ordering::Relaxed);
-                *prev = total;
-            }
-            if history_size > 0 && history_size == self.max_scroll_limit {
-                let oldest: String = {
-                    let row = &grid[Line(-(history_size as i32))];
-                    (0..grid.columns()).map(|c| row[Column(c)].c).collect()
-                };
-                let mut snapshot = self.oldest_row_snapshot.lock().unwrap();
-                if *snapshot != oldest {
-                    self.lines_written.fetch_add(1, Ordering::Relaxed);
-                    *snapshot = oldest;
-                }
-            }
-        }
-
+        self.advance_cursor(&grid, total, screen_lines, history_size);
         let lw = self.lines_written.load(Ordering::Relaxed);
         let captured = Self::capture_lines_from_grid(grid, n);
         (captured, lw)
@@ -485,35 +492,12 @@ impl TerminalBackend {
     ///
     /// When `cursor == 0`, returns all available buffer content.
     pub fn capture_lines_since(&self, cursor: u64) -> (Vec<String>, u64, bool) {
-        use alacritty_terminal::index::{Column, Line};
         let term = self.term.lock();
         let grid = term.grid();
         let screen_lines = grid.screen_lines();
         let history_size = grid.history_size();
         let total = screen_lines + history_size;
-
-        {
-            let mut prev = self.prev_total.lock().unwrap();
-            let delta = total.saturating_sub(*prev);
-            if delta > 0 {
-                self.lines_written.fetch_add(delta as u64, Ordering::Relaxed);
-                *prev = total;
-            }
-            // Saturation: history at max means oldest rows may scroll off without
-            // changing `total`. Detect by comparing the oldest scrollback row content.
-            if history_size > 0 && history_size == self.max_scroll_limit {
-                let oldest: String = {
-                    let row = &grid[Line(-(history_size as i32))];
-                    (0..grid.columns()).map(|c| row[Column(c)].c).collect()
-                };
-                let mut snapshot = self.oldest_row_snapshot.lock().unwrap();
-                if *snapshot != oldest {
-                    self.lines_written.fetch_add(1, Ordering::Relaxed);
-                    *snapshot = oldest;
-                }
-            }
-        }
-
+        self.advance_cursor(&grid, total, screen_lines, history_size);
         let lines_written = self.lines_written.load(Ordering::Relaxed);
         if lines_written == 0 {
             return (Vec::new(), 0, false);
