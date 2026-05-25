@@ -371,15 +371,19 @@ pub fn workspace_init() -> i32 {
             log::info!("workspace_init:cli: initialized workspace_id={} at {}", cfg.id, cwd.display());
             let channel_dir = app_init_config_dir();
             let channel_path = cwd.join(&channel_dir);
-            if let Err(e) = std::fs::create_dir_all(&channel_path) {
+            let channel_created = if let Err(e) = std::fs::create_dir_all(&channel_path) {
                 log::warn!("workspace_init:cli: could not create channel dir {}: {e}", channel_path.display());
+                false
             } else {
                 log::info!("workspace_init:cli: created channel dir {}", channel_path.display());
-            }
+                true
+            };
             println!("Initialized workspace at {}", cwd.display());
             println!("  workspace id: {}", cfg.id);
             println!("  router:       .plexi/secrets.toml (fallback = true)");
-            println!("  channel dir:  {channel_dir}/");
+            if channel_created {
+                println!("  channel dir:  {channel_dir}/");
+            }
             print_tip("define runnable commands in .plexi/commands.toml, then run them with `plexi run <name>`.");
             0
         }
