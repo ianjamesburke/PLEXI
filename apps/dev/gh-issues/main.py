@@ -208,19 +208,23 @@ class GhIssues(App):
                 font_size=HINT, radius=3.0,
             )
 
+            # compute label reserve before drawing title so max_width is accurate
+            row_labels   = issue.get("labels", [])[:2]
+            label_reserve = sum(len(lbl["name"]) * 8 + 20 + 4 for lbl in row_labels) if row_labels else 0
+
             # title
             ctx.text(
                 PAD + 52, row_mid - CAPTION / 2,
                 issue["title"],
                 size=CAPTION, color=FG,
-                max_width=ctx.w - PAD - 52 - PAD - 130,
+                max_width=ctx.w - PAD - 52 - PAD - label_reserve - PAD,
             )
 
             # labels (up to 2, right-aligned)
             lx = ctx.w - PAD
-            for lbl in reversed(issue.get("labels", [])[:2]):
+            for lbl in reversed(row_labels):
                 name    = lbl["name"]
-                badge_w = len(name) * 6 + 14
+                badge_w = len(name) * 8 + 20
                 lx     -= badge_w + 4
                 ctx.badge(
                     x=lx, y_center=row_mid,
