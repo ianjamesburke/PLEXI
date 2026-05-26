@@ -512,6 +512,7 @@ fn main() -> eframe::Result {
                         Some(NotesCmd::List) | None => std::process::exit(cli::notes_list_cli()),
                         Some(NotesCmd::Open) => std::process::exit(cli::notes_open_cli()),
                     },
+                    Commands::Demo => std::process::exit(cli::demo_cli()),
                 }
             }
             // No subcommand — fall through to workspace path check, then GUI

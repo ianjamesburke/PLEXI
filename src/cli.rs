@@ -4300,6 +4300,130 @@ pub fn notes_open_cli() -> i32 {
     pane_send_cli(pane_id, &cmd)
 }
 
+pub fn demo_cli() -> i32 {
+    let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("error: run `plexi demo` inside a Plexi terminal pane");
+            eprintln!("hint: open Plexi, then run this command from a pane");
+            return 1;
+        }
+    };
+    let my_pane_id: u64 = match pane_id_str.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
+            return 1;
+        }
+    };
+
+    let events_path = crate::config::config_dir().join("events.jsonl");
+
+    // Seek to end — only watch events that occur after demo starts.
+    let start_offset = if events_path.exists() {
+        std::fs::metadata(&events_path)
+            .map(|m| m.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    // Welcome banner
+    eprintln!("\x1b[1;36m");
+    eprintln!("  Plexi — Quick Tutorial");
+    eprintln!("\x1b[0m");
+    eprintln!("  Two moves. That's all you need to know.");
+    eprintln!();
+
+    // Step 1 — split
+    eprintln!("  Step 1 of 2   Split a pane");
+    eprintln!();
+    eprintln!("  Press  \x1b[1m[ \u{2318}D ]\x1b[0m  to split the current pane.");
+    eprintln!();
+
+    if let Err(e) = poll_event(&events_path, start_offset, |kind, _obj| kind == "pane_split") {
+        eprintln!("error watching {}: {e}", events_path.display());
+        return 1;
+    }
+    eprintln!("  \x1b[1;32m\u{2713} 1/2\x1b[0m");
+    eprintln!();
+
+    // Remember offset after step 1 so focus events from the split itself are skipped.
+    let after_split_offset = std::fs::metadata(&events_path)
+        .map(|m| m.len())
+        .unwrap_or(start_offset);
+
+    // Step 2 — navigate
+    eprintln!("  Step 2 of 2   Navigate panes");
+    eprintln!();
+    eprintln!("     \x1b[2m^\x1b[0m");
+    eprintln!("     K");
+    eprintln!("  H     L");
+    eprintln!("     J");
+    eprintln!();
+    eprintln!("  Press  \x1b[1m[ \u{2318}L ]\x1b[0m  to move focus right, then  \x1b[1m[ \u{2318}H ]\x1b[0m  to come back.");
+    eprintln!();
+
+    // Wait for focus to LEAVE this pane (user pressed ⌘L).
+    let mut focus_offset = after_split_offset;
+    if let Err(e) = poll_event(&events_path, focus_offset, |kind, obj| {
+        kind == "focus_changed"
+            && obj.get("pane_id").and_then(|v| v.as_u64()) == Some(my_pane_id)
+    }) {
+        eprintln!("error watching {}: {e}", events_path.display());
+        return 1;
+    }
+    // Advance offset so the next poll starts after the first focus event.
+    focus_offset = std::fs::metadata(&events_path)
+        .map(|m| m.len())
+        .unwrap_or(focus_offset);
+
+    // Wait for any focus_changed (user pressed ⌘H, focus leaves the other pane).
+    if let Err(e) = poll_event(&events_path, focus_offset, |kind, _obj| kind == "focus_changed") {
+        eprintln!("error watching {}: {e}", events_path.display());
+        return 1;
+    }
+
+    eprintln!("  \x1b[1;32m\u{2713} 2/2   You know Plexi.\x1b[0m");
+    eprintln!();
+    log::info!("demo_cli: tutorial completed for pane_id={my_pane_id}");
+    0
+}
+
+/// Tail `path` from `offset`, calling `predicate(kind, json_object)` on each new event.
+/// Returns when the predicate matches, polling at 100ms intervals.
+fn poll_event<F>(path: &std::path::Path, offset: u64, predicate: F) -> std::io::Result<()>
+where
+    F: Fn(&str, &serde_json::Value) -> bool,
+{
+    use std::io::{Read, Seek, SeekFrom};
+    loop {
+        if path.exists() {
+            let mut f = std::fs::File::open(path)?;
+            let file_len = f.seek(SeekFrom::End(0))?;
+            if file_len > offset {
+                f.seek(SeekFrom::Start(offset))?;
+                let mut buf = String::new();
+                f.read_to_string(&mut buf)?;
+                for line in buf.lines() {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    if let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) {
+                        if let Some(kind) = obj.get("kind").and_then(|v| v.as_str()) {
+                            if predicate(kind, &obj) {
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
     match shell {
         "zsh" => { print!("{}", zsh_completion(binary_name)); 0 }
