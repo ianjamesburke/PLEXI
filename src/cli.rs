@@ -3977,8 +3977,11 @@ pub fn validate_cli(path: &str) -> i32 {
         if !entry_path.exists() {
             errors.push(format!("  entry file not found: {}", entry_path.display()));
         } else if entry.ends_with(".py") {
-            // Python syntax check via AST parse (no import, no SDK needed)
-            let py_check = std::process::Command::new("python3")
+            // Python syntax check via AST parse (no import, no SDK needed).
+            // On Windows the bare `python3` name routes through pymanager when no
+            // runtime is installed and errors; `python` is what a real install exposes.
+            let py_bin = if cfg!(windows) { "python" } else { "python3" };
+            let py_check = std::process::Command::new(py_bin)
                 .arg("-c")
                 .arg("import ast, sys; ast.parse(open(sys.argv[1]).read())")
                 .arg(&entry_path)
@@ -3990,7 +3993,7 @@ pub fn validate_cli(path: &str) -> i32 {
                     errors.push(format!("  Python syntax error in {entry}: {}", stderr.trim()));
                 }
                 Err(e) => {
-                    warnings.push(format!("  python3 not found — skipping syntax check: {e}"));
+                    warnings.push(format!("  {py_bin} not found — skipping syntax check: {e}"));
                 }
             }
         }

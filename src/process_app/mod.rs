@@ -356,22 +356,44 @@ impl ProcessApp {
         const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
 
         // Resolve the bundled Python interpreter path — used both to build the
-        // python3 command for .py entries and to prepend to PATH for PYTHONPATH setup.
+        // python command for .py entries and to prepend to PATH for PYTHONPATH setup.
+        //
+        // Layout differs by platform because python-build-standalone ships differently:
+        //   macOS/Linux: Resources/assets/python/bin/python3
+        //   Windows:     Resources\assets\python\python.exe  (no bin/, .exe at root)
+        //
+        // Fallback name also differs: `python3` exists on Unix; on Windows the
+        // Microsoft Python Install Manager (pymanager) hijacks both `python3` and
+        // `python` if no runtime is installed, but `python` is the conventional
+        // name a user-installed interpreter exposes.
         let bundle_contents = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()));
-        let bundled_py_bin = bundle_contents.as_ref()
+        #[cfg(windows)]
+        let bundled_py_bin = bundle_contents
+            .as_ref()
+            .map(|c| c.join("Resources").join("assets").join("python"));
+        #[cfg(not(windows))]
+        let bundled_py_bin = bundle_contents
+            .as_ref()
             .map(|c| c.join("Resources").join("assets").join("python").join("bin"));
 
-        // .py entries are launched via python3 directly — no shebang or executable bit required.
+        #[cfg(windows)]
+        const PY_FALLBACK: &str = "python";
+        #[cfg(not(windows))]
+        const PY_FALLBACK: &str = "python3";
+
+        // .py entries are launched via the interpreter directly — no shebang or
+        // executable bit required.
         let is_python = bin_path.extension().and_then(|e| e.to_str()) == Some("py");
         let py_exe: Option<std::ffi::OsString> = if is_python {
             Some(
-                bundled_py_bin.as_ref()
-                    .map(|b| b.join("python3"))
+                bundled_py_bin
+                    .as_ref()
+                    .map(|b| b.join(if cfg!(windows) { "python.exe" } else { "python3" }))
                     .filter(|p| p.exists())
                     .map(|p| std::ffi::OsString::from(p))
-                    .unwrap_or_else(|| std::ffi::OsString::from("python3")),
+                    .unwrap_or_else(|| std::ffi::OsString::from(PY_FALLBACK)),
             )
         } else {
             None
@@ -423,12 +445,14 @@ impl ProcessApp {
             }
         }).flatten();
         // Prepend the bundled Python interpreter's bin/ dir to PATH so that
-        // dev-mode .py entries without the bundle still resolve python3 correctly.
-        // Falls back silently to host PATH if the bundle runtime isn't present.
+        // dev-mode .py entries without the bundle still resolve the interpreter
+        // correctly. Falls back silently to host PATH if the bundle runtime
+        // isn't present. `;` on Windows, `:` elsewhere.
         if let Some(ref py_bin) = bundled_py_bin {
             if py_bin.exists() {
                 let host_path = std::env::var("PATH").unwrap_or_default();
-                cmd.env("PATH", format!("{}:{}", py_bin.display(), host_path));
+                let sep = if cfg!(windows) { ";" } else { ":" };
+                cmd.env("PATH", format!("{}{}{}", py_bin.display(), sep, host_path));
             }
         }
 
@@ -442,7 +466,7 @@ impl ProcessApp {
             .map(|p| p.join("Resources").join("sdk").join("python"))
             .filter(|p| p.exists())
         {
-            pythonpath.push(':');
+            pythonpath.push(if cfg!(windows) { ';' } else { ':' });
             pythonpath.push_str(&bundle_sdk.to_string_lossy());
         }
 
@@ -451,9 +475,10 @@ impl ProcessApp {
         if let Some(ref py) = py_exe {
             let path_env = {
                 let host_path = std::env::var("PATH").unwrap_or_default();
+                let sep = if cfg!(windows) { ";" } else { ":" };
                 if let Some(ref py_bin) = bundled_py_bin {
                     if py_bin.exists() {
-                        format!("{}:{}", py_bin.display(), host_path)
+                        format!("{}{}{}", py_bin.display(), sep, host_path)
                     } else {
                         host_path
                     }
