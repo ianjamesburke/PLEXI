@@ -247,6 +247,14 @@ impl PlexiApp {
             })
             .unwrap_or_else(|| (self.host.alloc_pane_id(), vertical));
 
+        let direction = if vertical { "vertical" } else { "horizontal" }.to_string();
+        log::info!("split_focused: emitting PaneSplit pane_id={new_id} direction={direction}");
+        crate::event_log::emit(crate::event_log::HostEvent::PaneSplit {
+            pane_id: new_id,
+            direction,
+            timestamp: crate::event_log::now_timestamp(),
+        });
+
         let cwd = self.resolve_new_pane_cwd(cwd_override, Some(focused));
         log::info!("split_focused: cwd={cwd:?} context_root={:?}", self.router.active().root);
         let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);

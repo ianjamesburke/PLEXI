@@ -243,6 +243,12 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: Option<NotesCmd>,
     },
+    /// Interactive keybinding tutorial — learn split and navigate in real time.
+    ///
+    /// Walk through two fundamental Plexi interactions inside a live pane:
+    /// split a pane (⌘D) and navigate between panes (⌘L / ⌘H).
+    /// Must be run inside a Plexi pane (PLEXI_PANE_ID must be set).
+    Demo,
 }
 
 #[derive(Subcommand)]
