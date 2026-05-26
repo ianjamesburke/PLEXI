@@ -1,0 +1,29 @@
+name: Publish SDK to PyPI
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+      url: https://pypi.org/p/plexi-sdk
+    permissions:
+      id-token: write  # Required for PyPI OIDC trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Build SDK
+        working-directory: sdk/python
+        run: uv build
+
+      - name: Publish to PyPI
+        working-directory: sdk/python
+        run: uv publish --skip-existing
