@@ -54,6 +54,7 @@ actions!(
 struct PlexiApp {
     panes: Vec<PaneState>,
     focused_pane: usize,
+    zoomed_pane: Option<usize>,
     layout: TileLayout,
     contexts: Vec<ContextInfo>,
     active_context: usize,
@@ -117,6 +118,10 @@ impl PlexiApp {
                         this.palette_selected = this.palette_selected.saturating_sub(1);
                     } else if ks.key == "down" {
                         this.palette_selected = (this.palette_selected + 1).min(9);
+                    } else if ks.key == "return" {
+                        // Execute selected command — dismiss for now
+                        this.dismiss_overlay(cx);
+                        return;
                     } else if let Some(ch) = &ks.key_char {
                         if !ch.chars().any(|c| c.is_control()) {
                             this.palette_query.push_str(ch);
@@ -129,8 +134,26 @@ impl PlexiApp {
                     if ks.key == "backspace" {
                         this.quick_note_text.pop();
                     } else if ks.key == "tab" {
-                        // cycle destination
                         this.quick_note_dest = (this.quick_note_dest + 1) % 3;
+                    } else if ks.key == "return" && !ks.modifiers.alt {
+                        // Append to destination file
+                        let text = this.quick_note_text.clone();
+                        let dest = match this.quick_note_dest {
+                            1 => "~/Documents/github/daily_log/2026-05-26_claude.md",
+                            2 => ".plexi/notes.md",
+                            _ => "~/Documents/notes.md",
+                        };
+                        let dest = dest.replace("~", &std::env::var("HOME").unwrap_or_default());
+                        let _ = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&dest)
+                            .and_then(|mut f| {
+                                use std::io::Write;
+                                writeln!(f, "\n{}", text)
+                            });
+                        this.dismiss_overlay(cx);
+                        return;
                     } else if let Some(ch) = &ks.key_char {
                         if !ch.chars().any(|c| c.is_control()) {
                             this.quick_note_text.push_str(ch);
@@ -142,7 +165,7 @@ impl PlexiApp {
             }
         });
 
-        // Demo notification after 3s
+        // Demo: show a notification after 3s, auto-dismiss after 5 more
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(std::time::Duration::from_secs(3)).await;
             let _ = this.update(cx, |app: &mut PlexiApp, cx| {
@@ -154,11 +177,17 @@ impl PlexiApp {
                 });
                 cx.notify();
             });
+            cx.background_executor().timer(std::time::Duration::from_secs(5)).await;
+            let _ = this.update(cx, |app: &mut PlexiApp, cx| {
+                app.notification = None;
+                cx.notify();
+            });
         }).detach();
 
         Self {
             panes,
             focused_pane: 0,
+            zoomed_pane: None,
             layout,
             contexts,
             active_context: 0,
@@ -267,6 +296,29 @@ impl PlexiApp {
                 cx.notify();
             }
         }
+    }
+
+    fn new_context(&mut self, cx: &mut Context<Self>) {
+        let id = self.contexts.iter().map(|c| c.id).max().unwrap_or(0) + 1;
+        let ctx = ContextInfo {
+            id,
+            name: format!("context-{id}"),
+            cwd: "~".into(),
+            pane_ids: vec![],
+            children: vec![],
+        };
+        self.contexts.push(ctx);
+        self.active_context = self.contexts.len() - 1;
+        cx.notify();
+    }
+
+    fn zoom_pane(&mut self, cx: &mut Context<Self>) {
+        if self.zoomed_pane == Some(self.focused_pane) {
+            self.zoomed_pane = None;
+        } else {
+            self.zoomed_pane = Some(self.focused_pane);
+        }
+        cx.notify();
     }
 
     fn focus_prev(&mut self, cx: &mut Context<Self>) {
@@ -379,6 +431,67 @@ impl PlexiApp {
             )
     }
 
+    fn render_context_tabs(&self, cx: &Context<Self>) -> impl IntoElement {
+        let active_ctx = self.active_context;
+        h_flex()
+            .h(px(34.))
+            .flex_shrink_0()
+            .items_center()
+            .px_1()
+            .gap_0p5()
+            .bg(hsla(240. / 360., 0.21, 0.08, 1.0))
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .children(self.contexts.iter().enumerate().map(|(i, ctx)| {
+                let is_active = i == active_ctx;
+                div()
+                    .id(ElementId::Name(format!("tab-{i}").into()))
+                    .px_3()
+                    .h(px(26.))
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .bg(if is_active { cx.theme().accent } else { cx.theme().transparent })
+                    .hover(|s| s.bg(cx.theme().muted))
+                    .child(
+                        Icon::new(IconName::Folder)
+                            .size(px(11.))
+                            .text_color(if is_active { cx.theme().accent_foreground } else { cx.theme().muted_foreground }),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(if is_active { cx.theme().accent_foreground } else { cx.theme().muted_foreground })
+                            .child(ctx.name.clone()),
+                    )
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.active_context = i;
+                        if let Some(first) = this.contexts.get(i).and_then(|c| c.pane_ids.first()).copied() {
+                            this.focused_pane = first;
+                        }
+                        cx.notify();
+                    }))
+            }))
+            .child(
+                div()
+                    .id("tab-new")
+                    .px_2()
+                    .h(px(26.))
+                    .flex()
+                    .items_center()
+                    .rounded(px(4.))
+                    .cursor_pointer()
+                    .text_color(cx.theme().muted_foreground)
+                    .hover(|s| s.bg(cx.theme().muted))
+                    .child(Icon::new(IconName::Plus).size(px(12.)))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.new_context(cx);
+                    }))
+            )
+    }
+
     fn render_sidebar(&self, cx: &Context<Self>) -> impl IntoElement {
         let sidebar_collapsed = self.sidebar_collapsed;
         let active_ctx = self.active_context;
@@ -397,7 +510,14 @@ impl PlexiApp {
                         .bg(cx.theme().muted)
                         .text_color(cx.theme().muted_foreground)
                         .child(format!("{pane_count}"))
-                });
+                })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.active_context = i;
+                    if let Some(first) = this.contexts.get(i).and_then(|c| c.pane_ids.first()).copied() {
+                        this.focused_pane = first;
+                    }
+                    cx.notify();
+                }));
             menu = menu.child(item);
         }
 
@@ -410,9 +530,14 @@ impl PlexiApp {
                         PaneKind::App => IconName::Bot,
                         PaneKind::Agent => IconName::Cpu,
                     };
+                    let pane_id = pane.id;
                     let item = SidebarMenuItem::new(pane.name.as_str())
                         .icon(icon)
-                        .active(pane.id == self.focused_pane);
+                        .active(pane.id == self.focused_pane)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.focused_pane = pane_id;
+                            cx.notify();
+                        }));
                     pane_menu = pane_menu.child(item);
                 }
             }
@@ -466,6 +591,7 @@ impl PlexiApp {
             .footer(
                 SidebarFooter::new().child(
                     h_flex()
+                        .id("sidebar-footer")
                         .gap_2()
                         .items_center()
                         .cursor_pointer()
@@ -477,7 +603,10 @@ impl PlexiApp {
                                     .text_color(cx.theme().muted_foreground)
                                     .child("New context"),
                             )
-                        }),
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.new_context(cx);
+                        })),
                 ),
             )
     }
@@ -593,8 +722,33 @@ impl PlexiApp {
                     .child(
                         h_flex()
                             .gap_0p5()
-                            .child(pane_btn("⤢", &**cx))
-                            .child(pane_btn("×", &**cx)),
+                            .child(
+                                div()
+                                    .id(ElementId::Name(format!("zoom-{id}").into()))
+                                    .size(px(16.))
+                                    .flex().items_center().justify_center()
+                                    .rounded_sm().cursor_pointer().text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .hover(|s| s.bg(cx.theme().muted))
+                                    .child("⤢")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.zoom_pane(cx);
+                                    }))
+                            )
+                            .child(
+                                div()
+                                    .id(ElementId::Name(format!("close-{id}").into()))
+                                    .size(px(16.))
+                                    .flex().items_center().justify_center()
+                                    .rounded_sm().cursor_pointer().text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .hover(|s| s.bg(cx.theme().muted))
+                                    .child("×")
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.focused_pane = id;
+                                        this.close_pane(cx);
+                                    }))
+                            ),
                     ),
             )
             // Terminal content — placeholder until PTY renderer is wired
@@ -643,8 +797,11 @@ impl PlexiApp {
 
     fn render_notification(&self, cx: &Context<Self>) -> Option<impl IntoElement> {
         let notif = self.notification.as_ref()?;
+        let title = notif.title.clone();
+        let body = notif.body.clone();
         Some(
             div()
+                .id("notification-toast")
                 .absolute()
                 .bottom(px(36.))
                 .right(px(16.))
@@ -672,11 +829,12 @@ impl PlexiApp {
                             v_flex()
                                 .flex_1()
                                 .gap_0p5()
-                                .child(div().text_sm().font_bold().text_color(cx.theme().foreground).child(notif.title.clone()))
-                                .child(div().text_xs().text_color(cx.theme().muted_foreground).child(notif.body.clone())),
+                                .child(div().text_sm().font_bold().text_color(cx.theme().foreground).child(title))
+                                .child(div().text_xs().text_color(cx.theme().muted_foreground).child(body)),
                         )
                         .child(
                             div()
+                                .id("notif-dismiss")
                                 .text_xs()
                                 .px_1p5()
                                 .py_0p5()
@@ -684,7 +842,11 @@ impl PlexiApp {
                                 .bg(cx.theme().muted)
                                 .text_color(cx.theme().muted_foreground)
                                 .cursor_pointer()
-                                .child("✕"),
+                                .child("✕")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.notification = None;
+                                    cx.notify();
+                                })),
                         ),
                 ),
         )
@@ -742,6 +904,7 @@ impl Render for PlexiApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let overlay = self.overlay.clone();
         let layout = self.layout.clone();
+        let zoomed = self.zoomed_pane;
 
         v_flex()
             .size_full()
@@ -752,14 +915,25 @@ impl Render for PlexiApp {
                     .flex_1()
                     .min_h_0()
                     .overflow_hidden()
-                    .child(self.render_sidebar(cx))
+                    .when(zoomed.is_none(), |el| el.child(self.render_sidebar(cx)))
                     .child(
-                        div()
+                        v_flex()
                             .flex_1()
                             .min_w_0()
                             .min_h_0()
-                            .p_1()
-                            .child(self.render_layout_node(&layout, cx)),
+                            // Context tab bar
+                            .when(zoomed.is_none(), |el| el.child(self.render_context_tabs(cx)))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .p_1()
+                                    .child(if let Some(zid) = zoomed {
+                                        self.render_single_pane(zid, cx).into_any_element()
+                                    } else {
+                                        self.render_layout_node(&layout, cx)
+                                    }),
+                            ),
                     ),
             )
             .child(self.render_status_bar(cx))
@@ -807,6 +981,8 @@ fn main() {
             KeyBinding::new("cmd-shift-=", SplitVertical, None),
             KeyBinding::new("cmd-]", FocusNext, None),
             KeyBinding::new("cmd-[", FocusPrev, None),
+            KeyBinding::new("cmd-n", NewContext, None),
+            KeyBinding::new("cmd-z", ZoomPane, None),
         ]);
 
         cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
@@ -879,6 +1055,14 @@ fn main() {
                 cx.on_action::<FocusPrev>({
                     let v = v.clone();
                     move |_, cx| { v.update(cx, |a, cx| a.focus_prev(cx)); }
+                });
+                cx.on_action::<NewContext>({
+                    let v = v.clone();
+                    move |_, cx| { v.update(cx, |a, cx| a.new_context(cx)); }
+                });
+                cx.on_action::<ZoomPane>({
+                    let v = v.clone();
+                    move |_, cx| { v.update(cx, |a, cx| a.zoom_pane(cx)); }
                 });
 
                 cx.new(|cx| Root::new(view, window, cx))
