@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.496"
+verified_version: "0.0.503"
 order: 7
 ---
 
@@ -368,6 +368,7 @@ Example: plexi pane capture --lines 50 42
 | `<pane_id>` | string | no | Pane id to capture output from. Defaults to the current pane |
 | `--lines` | string | no | How many lines to read from the end of the output Default: `50`. |
 | `--full-output` | flag | no | Preserve trailing empty lines (by default they are stripped) |
+| `--from-cursor` | string | no | Read only lines written after this cursor value. Get the cursor from a previous capture response. When set, the response is always JSON object format |
 
 ### `plexi pane key`
 

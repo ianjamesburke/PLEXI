@@ -856,6 +856,14 @@
         {
           "description": "Read the last N lines from a terminal pane's PTY scrollback buffer.\nSent by `plexi pane capture`. Host writes a JSON array of strings to `response_file`.",
           "properties": {
+            "from_cursor": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "full_output": {
               "description": "When true, preserve trailing empty lines. Defaults to false (strip them).",
               "type": "boolean"
