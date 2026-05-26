@@ -44,9 +44,6 @@ actions!(
         FocusPrev,
         ZoomPane,
         NewContext,
-        PaletteUp,
-        PaletteDown,
-        PaletteConfirm,
     ]
 );
 
@@ -794,6 +791,7 @@ impl PlexiApp {
         let ctx = self.contexts.get(self.active_context);
         let pane_count = ctx.map(|c| c.pane_ids.len()).unwrap_or(0);
         let ctx_name = ctx.map(|c| c.name.clone()).unwrap_or_else(|| "—".into());
+        let minimap = minimap_glyph(&self.layout, self.focused_pane);
 
         h_flex()
             .px_3()
@@ -810,6 +808,14 @@ impl PlexiApp {
                     .child(status_item(IconName::LayoutDashboard, "1/1", &**cx))
                     .child(status_item(IconName::SquareTerminal, format!("{pane_count} panes"), &**cx))
                     .child(status_item(IconName::Folder, ctx_name, &**cx)),
+            )
+            // Minimap — layout overview glyph in center
+            .child(
+                div()
+                    .font_family("JetBrains Mono")
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(minimap),
             )
             .child(
                 h_flex()
@@ -874,6 +880,22 @@ impl PlexiApp {
                         ),
                 ),
         )
+    }
+}
+
+// ─── Minimap layout glyph ────────────────────────────────────────────────────
+
+fn minimap_glyph(layout: &TileLayout, focused: usize) -> String {
+    match layout {
+        TileLayout::Leaf(id) => {
+            if *id == focused { "▪".into() } else { "□".into() }
+        }
+        TileLayout::HSplit { left, right, .. } => {
+            format!("{}│{}", minimap_glyph(left, focused), minimap_glyph(right, focused))
+        }
+        TileLayout::VSplit { top, bottom, .. } => {
+            format!("{}─{}", minimap_glyph(top, focused), minimap_glyph(bottom, focused))
+        }
     }
 }
 
