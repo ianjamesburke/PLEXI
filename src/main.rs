@@ -520,25 +520,10 @@ fn main() -> eframe::Result {
         }
     }
 
-    // Plexi-in-Plexi detection: if already running inside a Plexi terminal, don't
-    // launch a second GUI — just report the nearest .plexi/ workspace.
+    // Plexi-in-Plexi detection: if already running inside a Plexi terminal,
+    // show help rather than attempting to launch a second GUI.
     if std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
-        let cwd = std::env::current_dir().unwrap_or_default();
-        let home = dirs::home_dir().unwrap_or_default();
-        let mut dir = cwd.as_path();
-        loop {
-            if dir == home || dir.parent().is_none() {
-                break;
-            }
-            if dir.join(".plexi").is_dir() {
-                eprintln!(
-                    "plexi: already running inside Plexi. Nearest workspace: {}",
-                    dir.join(".plexi").display()
-                );
-                std::process::exit(0);
-            }
-            dir = dir.parent().unwrap();
-        }
+        log::info!("cli: PLEXI_RUNNING set — redirecting bare launch to --help");
         use clap::CommandFactory;
         let _ = Cli::command().print_help();
         println!();
@@ -635,7 +620,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
             let _ = iter.next();
             continue;
         }
-        if a.starts_with("--") {
+        if a.starts_with('-') {
             continue;
         }
         if SUBCOMMANDS.contains(&a.as_str()) {
@@ -797,6 +782,18 @@ mod cli_tests {
         // `plexi --profile alpha` must not treat "alpha" as a path.
         let resolved = parse_workspace_path_arg(&argv(&["--profile", "alpha"]))
             .expect("flag-only argv should resolve");
+        assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn plexi_path_arg_skips_short_flags() {
+        // `plexi -h` must not be treated as a workspace path (fixes issue #1747).
+        let resolved = parse_workspace_path_arg(&argv(&["-h"]))
+            .expect("-h should not error");
+        assert!(resolved.is_none());
+
+        let resolved = parse_workspace_path_arg(&argv(&["-V"]))
+            .expect("-V should not error");
         assert!(resolved.is_none());
     }
 }
