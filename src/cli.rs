@@ -406,6 +406,7 @@ pub fn workspace_init() -> i32 {
                 );
                 if let Err(e) = std::fs::write(&apps_toml, stub) {
                     log::warn!("workspace_init:cli: could not write apps.toml: {e}");
+                    eprintln!("warning: could not create .plexi/apps.toml: {e}");
                 } else {
                     println!("  apps:         .plexi/apps.toml (declare app dependencies here)");
                     log::info!("workspace_init:cli: wrote stub .plexi/apps.toml");
@@ -1479,6 +1480,7 @@ pub fn install_pack_cli(spec: &str) -> i32 {
 /// `apps.toml` from it, and installs declared apps into the workspace-scoped
 /// channel apps dir (`<workspace_root>/<channel_dir>/apps/`).
 pub fn install_workspace_pack_cli() -> i32 {
+    log::info!("cli: install_workspace_pack (no-args flow)");
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => { eprintln!("error: {e}"); return 1; }
