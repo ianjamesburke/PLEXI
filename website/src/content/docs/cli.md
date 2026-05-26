@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.505"
+verified_version: "0.0.506"
 order: 7
 ---
 
@@ -561,4 +561,10 @@ Print paths of all scratchpad notes, newest first
 Open a note picker with fzf in the focused terminal pane.
 
 Requires fzf to be installed. Falls back to printing the notes directory when fzf is not available or PLEXI_SOCKET is not set.
+
+## `plexi demo`
+
+Interactive keybinding tutorial — learn split and navigate in real time.
+
+Walk through two fundamental Plexi interactions inside a live pane: split a pane (⌘D) and navigate between panes (⌘L / ⌘H). Must be run inside a Plexi pane (PLEXI_PANE_ID must be set).
 
