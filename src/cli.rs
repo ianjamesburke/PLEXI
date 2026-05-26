@@ -2795,7 +2795,7 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
 /// Reads the last N lines from a pane's PTY scrollback buffer and prints a JSON array
 /// of strings to stdout. If `pane_id` is omitted, defaults to PLEXI_PANE_ID.
 /// Returns 0 on success, 1 on error.
-pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize, full_output: bool) -> i32 {
+pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize, full_output: bool, from_cursor: Option<u64>) -> i32 {
     let resolved_pane_id = match pane_id {
         Some(id) => id,
         None => match std::env::var("PLEXI_PANE_ID") {
@@ -2819,15 +2819,19 @@ pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize, full_output: bool) -
         .to_string_lossy()
         .into_owned();
 
-    log::info!("pane_capture:cli: pane_id={resolved_pane_id} lines={lines} full_output={full_output} response_file={response_file:?}");
+    log::info!("pane_capture:cli: pane_id={resolved_pane_id} lines={lines} full_output={full_output} from_cursor={from_cursor:?} response_file={response_file:?}");
 
-    let code = send_to_socket(serde_json::json!({
+    let mut req = serde_json::json!({
         "type": "capture_pane",
         "pane_id": resolved_pane_id,
         "lines": lines,
         "full_output": full_output,
         "response_file": response_file,
-    }));
+    });
+    if let Some(cursor) = from_cursor {
+        req["from_cursor"] = serde_json::Value::Number(serde_json::Number::from(cursor));
+    }
+    let code = send_to_socket(req);
     if code != 0 {
         return code;
     }
@@ -2839,13 +2843,21 @@ pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize, full_output: bool) -
             match std::fs::read_to_string(&response_path) {
                 Ok(content) => {
                     let _ = std::fs::remove_file(&response_path);
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
-                            eprintln!("error: {err}");
-                            return 1;
+                    match serde_json::from_str::<serde_json::Value>(&content) {
+                        Ok(v) => {
+                            if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+                                eprintln!("error: {err}");
+                                return 1;
+                            }
+                            // Print cursor to stderr so callers can capture it without
+                            // polluting the line stream.
+                            if let Some(cursor) = v.get("cursor").and_then(|c| c.as_u64()) {
+                                eprintln!("cursor={cursor}");
+                            }
+                            return print_json_output(&content);
                         }
+                        Err(_) => return print_json_output(&content),
                     }
-                    return print_json_output(&content);
                 }
                 Err(e) => {
                     log::warn!("pane_capture:cli: could not read response file: {e}");
@@ -4584,7 +4596,7 @@ _plexi() {
         pane)
           case $line[2] in
             capture)
-              _arguments '--lines[Number of lines to read]:lines:' '--full-output[Preserve trailing empty lines]'
+              _arguments '--lines[Number of lines to read]:lines:' '--full-output[Preserve trailing empty lines]' '--from-cursor[Read only lines after this cursor]:cursor:'
               ;;
             *)
               local subcmds
@@ -4729,7 +4741,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       else
         case "${words[2]}" in
           capture)
-            COMPREPLY=($(compgen -W "--lines --full-output" -- "$cur"))
+            COMPREPLY=($(compgen -W "--lines --full-output --from" -- "$cur"))
             ;;
         esac
       fi
@@ -4877,6 +4889,7 @@ complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a key -d "Inject a s
 # pane capture flags
 complete -c plexi -n "__fish_seen_subcommand_from pane; and __fish_seen_subcommand_from capture" -l lines -d "Number of lines to read"
 complete -c plexi -n "__fish_seen_subcommand_from pane; and __fish_seen_subcommand_from capture" -l full-output -d "Preserve trailing empty lines"
+complete -c plexi -n "__fish_seen_subcommand_from pane; and __fish_seen_subcommand_from capture" -l from-cursor -d "Read only lines written after this cursor" -r
 
 # descriptor subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from descriptor" -a probe -d "Probe a CLI for its Plexi descriptor"

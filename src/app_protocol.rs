@@ -1151,6 +1151,8 @@ pub enum AppRequest {
         /// When true, preserve trailing empty lines. Defaults to false (strip them).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         full_output: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from_cursor: Option<u64>,
     },
 
     /// Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.
@@ -2941,11 +2943,12 @@ mod tests {
         let json = r#"{"type":"capture_pane","pane_id":7,"lines":20,"response_file":"capture.json"}"#;
         let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
         match &cmd {
-            DrawCommand::Host(AppRequest::CapturePane { pane_id, lines, response_file, full_output }) => {
+            DrawCommand::Host(AppRequest::CapturePane { pane_id, lines, response_file, full_output, from_cursor }) => {
                 assert_eq!(*pane_id, 7);
                 assert_eq!(*lines, 20);
                 assert_eq!(response_file, "capture.json");
                 assert!(!full_output, "full_output should default to false");
+                assert!(from_cursor.is_none(), "from_cursor should default to None");
             }
             other => panic!("expected CapturePane, got {other:?}"),
         }
@@ -2962,6 +2965,28 @@ mod tests {
             }
             other => panic!("expected CapturePane, got {other:?}"),
         }
+
+        // from_cursor should round-trip
+        let json_cursor = r#"{"type":"capture_pane","pane_id":7,"lines":20,"response_file":"capture.json","from_cursor":42}"#;
+        let cmd_cursor: DrawCommand = serde_json::from_str(json_cursor).expect("deserialise from_cursor");
+        match &cmd_cursor {
+            DrawCommand::Host(AppRequest::CapturePane { from_cursor, .. }) => {
+                assert_eq!(*from_cursor, Some(42), "from_cursor should be Some(42)");
+            }
+            other => panic!("expected CapturePane, got {other:?}"),
+        }
+        // from_cursor absent → None
+        let cmd_no_cursor: DrawCommand = serde_json::from_str(json).expect("deserialise no cursor");
+        match &cmd_no_cursor {
+            DrawCommand::Host(AppRequest::CapturePane { from_cursor, .. }) => {
+                assert!(from_cursor.is_none(), "from_cursor should default to None");
+            }
+            other => panic!("expected CapturePane, got {other:?}"),
+        }
+        // from_cursor=0 should be omitted from wire format
+        let cmd_zero: DrawCommand = serde_json::from_str(r#"{"type":"capture_pane","pane_id":7,"lines":5,"response_file":"f.json"}"#).unwrap();
+        let s = serde_json::to_string(&cmd_zero).unwrap();
+        assert!(!s.contains("from_cursor"), "absent from_cursor must not appear on wire: {s}");
 
         // Missing required fields must fail
         let bad = r#"{"type":"capture_pane","pane_id":1}"#;

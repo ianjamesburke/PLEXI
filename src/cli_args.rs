@@ -458,6 +458,10 @@ pub enum PaneCmd {
         /// Preserve trailing empty lines (by default they are stripped)
         #[arg(long)]
         full_output: bool,
+        /// Read only lines written after this cursor value. Get the cursor from a
+        /// previous capture response. When set, the response is always JSON object format.
+        #[arg(long, value_name = "CURSOR")]
+        from_cursor: Option<u64>,
     },
     /// Send a key press to a pane. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
     ///
