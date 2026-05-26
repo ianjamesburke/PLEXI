@@ -1,7 +1,7 @@
 use gpui::{prelude::*, App, *};
 use gpui_component::{ActiveTheme, Icon, IconName, h_flex, v_flex};
 
-const DESTINATIONS: &[&str] = &[
+pub const DESTINATIONS: &[&str] = &[
     "~/Documents/notes.md",
     "~/Documents/github/daily_log/2026-05-26_claude.md",
     ".plexi/notes.md",
@@ -61,7 +61,7 @@ pub fn render_quick_note(text: &str, dest_index: usize, cx: &App) -> impl IntoEl
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child("⌥⏎ change"),
+                                .child("⇥ change"),
                         ),
                 )
                 // Input area
@@ -87,7 +87,7 @@ pub fn render_quick_note(text: &str, dest_index: usize, cx: &App) -> impl IntoEl
                         .border_color(cx.theme().border)
                         .bg(cx.theme().muted)
                         .child(qn_hint("⏎", "append", cx))
-                        .child(qn_hint("⌘⏎", "overwrite", cx))
+                        .child(qn_hint("⇥", "change dest", cx))
                         .child(qn_hint("⎋", "cancel", cx)),
                 ),
         )

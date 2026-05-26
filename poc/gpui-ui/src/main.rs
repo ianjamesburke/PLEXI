@@ -17,10 +17,10 @@ use gpui_component::{
 use gpui_component_assets::Assets;
 
 use overlays::{
-    command_palette::render_command_palette,
+    command_palette::{filtered_commands, render_command_palette},
     context_inspector::render_context_inspector,
     help::render_help,
-    quick_note::render_quick_note,
+    quick_note::{DESTINATIONS, render_quick_note},
 };
 use state::{
     ActiveOverlay, ContextInfo, NotificationState, PaneKind, PaneState, PaneStatus, TileLayout,
@@ -115,7 +115,8 @@ impl PlexiApp {
                     } else if ks.key == "up" {
                         this.palette_selected = this.palette_selected.saturating_sub(1);
                     } else if ks.key == "down" {
-                        this.palette_selected = (this.palette_selected + 1).min(9);
+                        let max = filtered_commands(&this.palette_query).len().saturating_sub(1).min(9);
+                        this.palette_selected = (this.palette_selected + 1).min(max);
                     } else if ks.key == "return" {
                         // Execute selected command — dismiss for now
                         this.dismiss_overlay(cx);
@@ -134,22 +135,17 @@ impl PlexiApp {
                     } else if ks.key == "tab" {
                         this.quick_note_dest = (this.quick_note_dest + 1) % 3;
                     } else if ks.key == "return" && !ks.modifiers.alt {
-                        // Append to destination file
                         let text = this.quick_note_text.clone();
-                        let dest = match this.quick_note_dest {
-                            1 => "~/Documents/github/daily_log/2026-05-26_claude.md",
-                            2 => ".plexi/notes.md",
-                            _ => "~/Documents/notes.md",
-                        };
-                        let dest = dest.replace("~", &std::env::var("HOME").unwrap_or_default());
-                        let _ = std::fs::OpenOptions::new()
+                        let dest_raw = DESTINATIONS.get(this.quick_note_dest).copied().unwrap_or(DESTINATIONS[0]);
+                        let dest = dest_raw.replace("~", &std::env::var("HOME").unwrap_or_default());
+                        if let Err(e) = std::fs::OpenOptions::new()
                             .create(true)
                             .append(true)
                             .open(&dest)
-                            .and_then(|mut f| {
-                                use std::io::Write;
-                                writeln!(f, "\n{}", text)
-                            });
+                            .and_then(|mut f| { use std::io::Write; writeln!(f, "\n{}", text) })
+                        {
+                            eprintln!("quick_note: failed to write to {dest}: {e}");
+                        }
                         this.dismiss_overlay(cx);
                         return;
                     } else if let Some(ch) = &ks.key_char {
@@ -330,6 +326,9 @@ impl PlexiApp {
     }
 
     fn close_pane(&mut self, cx: &mut Context<Self>) {
+        if self.panes.len() <= 1 {
+            return;
+        }
         let target = self.focused_pane;
         if let Some(ctx) = self.contexts.get_mut(self.active_context) {
             ctx.pane_ids.retain(|&id| id != target);

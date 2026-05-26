@@ -12,19 +12,14 @@ static GROUPS: &[ShortcutGroup] = &[
         entries: &[
             ("New terminal", &["⌘", "T"]),
             ("Split horizontal", &["⌘", "-"]),
-            ("Split vertical", &["⌘", "\\"]),
+            ("Split vertical", &["⌘", "⇧", "="]),
             ("Close pane", &["⌘", "W"]),
             ("Zoom pane", &["⌘", "Z"]),
-            ("Rename pane", &["⌘", "R"]),
         ],
     },
     ShortcutGroup {
         title: "Navigation",
         entries: &[
-            ("Focus left", &["⌘", "H"]),
-            ("Focus right", &["⌘", "L"]),
-            ("Focus up", &["⌘", "K"]),
-            ("Focus down", &["⌘", "J"]),
             ("Focus next", &["⌘", "]"]),
             ("Focus prev", &["⌘", "["]),
         ],
@@ -33,10 +28,6 @@ static GROUPS: &[ShortcutGroup] = &[
         title: "Contexts",
         entries: &[
             ("New context", &["⌘", "N"]),
-            ("Rename context", &["⌘", "⇧", "R"]),
-            ("Close context", &["⌘", "⇧", "W"]),
-            ("Next context", &["⌘", "⇥"]),
-            ("Prev context", &["⌘", "⇧", "⇥"]),
         ],
     },
     ShortcutGroup {

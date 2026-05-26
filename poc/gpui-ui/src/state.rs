@@ -84,7 +84,11 @@ impl TileLayout {
     }
 
     pub fn contains(&self, id: usize) -> bool {
-        self.leaf_ids().contains(&id)
+        match self {
+            TileLayout::Leaf(leaf_id) => *leaf_id == id,
+            TileLayout::HSplit { left, right, .. } => left.contains(id) || right.contains(id),
+            TileLayout::VSplit { top, bottom, .. } => top.contains(id) || bottom.contains(id),
+        }
     }
 
     /// Remove a leaf by id. If the leaf is one side of a split, the other side
@@ -101,9 +105,9 @@ impl TileLayout {
                 }
             }
             TileLayout::HSplit { ratio, left, right } => {
-                if left.contains(target) && left.leaf_ids() == vec![target] {
+                if matches!(&*left, TileLayout::Leaf(id) if *id == target) {
                     right.remove_leaf(target)
-                } else if right.contains(target) && right.leaf_ids() == vec![target] {
+                } else if matches!(&*right, TileLayout::Leaf(id) if *id == target) {
                     left.remove_leaf(target)
                 } else {
                     TileLayout::HSplit {
@@ -114,9 +118,9 @@ impl TileLayout {
                 }
             }
             TileLayout::VSplit { ratio, top, bottom } => {
-                if top.contains(target) && top.leaf_ids() == vec![target] {
+                if matches!(&*top, TileLayout::Leaf(id) if *id == target) {
                     bottom.remove_leaf(target)
-                } else if bottom.contains(target) && bottom.leaf_ids() == vec![target] {
+                } else if matches!(&*bottom, TileLayout::Leaf(id) if *id == target) {
                     top.remove_leaf(target)
                 } else {
                     TileLayout::VSplit {
