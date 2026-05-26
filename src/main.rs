@@ -264,10 +264,7 @@ fn main() -> eframe::Result {
                         }
                         match spec {
                             Some(s) => std::process::exit(cli::install_cli(&s)),
-                            None => {
-                                eprintln!("Usage: plexi install <source-spec>[@ref] | plexi install --pack <path|core>");
-                                std::process::exit(1);
-                            }
+                            None => std::process::exit(cli::install_workspace_pack_cli()),
                         }
                     }
                     Commands::Uninstall { keep_data, yes } => std::process::exit(cli::plexi_uninstall_cli(keep_data, yes)),
