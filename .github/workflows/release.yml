@@ -135,11 +135,9 @@ jobs:
         id: ver
         shell: pwsh
         run: |
-          # Prefer the tag (strip leading 'v') for tag-triggered runs so the
-          # tag and AppVersion can't drift. Fall back to Cargo.toml on
-          # workflow_dispatch (no tag exists yet). Read refs from runner env
-          # vars rather than ${{ github.ref* }} interpolation to avoid
-          # template-injection in the pwsh script body.
+          # Tag wins (strip leading 'v') so tag and AppVersion can't drift;
+          # fall back to Cargo.toml on workflow_dispatch. Refs come from runner
+          # env vars, not GitHub expression interpolation, to avoid injection.
           if ($env:GITHUB_REF -like 'refs/tags/v*') {
             $ver = $env:GITHUB_REF_NAME -replace '^v',''
           } else {
