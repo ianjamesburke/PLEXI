@@ -390,7 +390,7 @@ pub fn workspace_init() -> i32 {
                 let stub = concat!(
                     "schema_version = 1\n\n",
                     "# Declare workspace app dependencies here.\n",
-                    "# Run `plexi install` in this directory to install them.\n",
+                    "# Run `plexi app install` in this directory to install them.\n",
                     "#\n",
                     "# Example:\n",
                     "#\n",
@@ -412,7 +412,7 @@ pub fn workspace_init() -> i32 {
                     log::info!("workspace_init:cli: wrote stub .plexi/apps.toml");
                 }
             }
-            print_tip("declare app dependencies in .plexi/apps.toml, then run `plexi install`.");
+            print_tip("declare app dependencies in .plexi/apps.toml, then run `plexi app install`.");
             0
         }
         Err(e) => {
@@ -994,7 +994,7 @@ pub fn app_install(path: &str) -> i32 {
 
     log::info!("app::install: installed {app_id} v{app_version} from {}", src.display());
     println!("Installed '{app_id}' v{app_version} from {}.", src.display());
-    println!("Run `plexi open {app_id}` to launch it.");
+    println!("Run `plexi app open {app_id}` to launch it.");
     0
 }
 
@@ -1387,7 +1387,7 @@ pub fn install_cli(spec: &str) -> i32 {
         Ok(outcome) => match outcome.status {
             crate::install::InstallStatus::Installed(path) => {
                 println!("installed '{}' at {}", outcome.id, path.display());
-                print_tip(&format!("open your app with `plexi open {}`.", outcome.id));
+                print_tip(&format!("open your app with `plexi app open {}`.", outcome.id));
                 0
             }
             crate::install::InstallStatus::AlreadyAtVersion => {
@@ -1512,8 +1512,8 @@ pub fn install_workspace_pack_cli() -> i32 {
     };
 
     let Some(root) = workspace_root else {
-        eprintln!("Usage: plexi install <source-spec>[@ref] | plexi install --pack <path|core>");
-        eprintln!("  In a workspace (directory with .plexi/apps.toml), `plexi install` applies the manifest.");
+        eprintln!("Usage: plexi app install <source-spec>[@ref] | plexi app install --pack <path|core>");
+        eprintln!("  In a workspace (directory with .plexi/apps.toml), `plexi app install` applies the manifest.");
         eprintln!("  Run `plexi workspace init` to initialize a workspace here.");
         return 1;
     };
@@ -1521,8 +1521,8 @@ pub fn install_workspace_pack_cli() -> i32 {
     let apps_toml = root.join(".plexi").join("apps.toml");
     if !apps_toml.exists() {
         eprintln!("no .plexi/apps.toml found in workspace at {}", root.display());
-        eprintln!("  Declare app dependencies there, then re-run `plexi install`.");
-        eprintln!("  Usage: plexi install <source-spec>[@ref] | plexi install --pack <path|core>");
+        eprintln!("  Declare app dependencies there, then re-run `plexi app install`.");
+        eprintln!("  Usage: plexi app install <source-spec>[@ref] | plexi app install --pack <path|core>");
         return 1;
     }
 
@@ -2056,7 +2056,7 @@ pub fn list_cli() -> i32 {
     let installed = registry.list();
     if installed.is_empty() {
         println!("no apps installed");
-        println!("install one with: plexi install <source>[@ref]");
+        println!("install one with: plexi app install <source>[@ref]");
         return 0;
     }
     // Read versions directly from the global apps dir for the source-of-truth
@@ -3005,8 +3005,8 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_
     }
 
     if type_id == "terminal" {
-        log::warn!("open:cli: 'plexi open terminal' is deprecated — use 'plexi terminal' instead");
-        eprintln!("warning: 'plexi open terminal' is deprecated — use 'plexi terminal' instead");
+        log::warn!("open:cli: 'plexi app open terminal' is deprecated, use 'plexi terminal' instead");
+        eprintln!("warning: 'plexi app open terminal' is deprecated, use 'plexi terminal' instead");
     }
 
     let from_pane_id = from_pane_id.or_else(|| std::env::var("PLEXI_PANE_ID").ok()?.parse().ok());
@@ -4611,16 +4611,13 @@ _plexi() {
         'workspace:Workspace management'
         'secret:Secret management'
         'app:App management'
-        'install:Install an app'
         'uninstall:Uninstall an app'
         'update:Update apps or self'
-        'list:List installed apps'
         'validate:Validate a Plexi app directory'
         'pack:Pack management'
         'notify:Send a notification'
         'pane:Pane management'
         'terminal:Open a terminal pane'
-        'open:Open an app pane'
         'descriptor:Descriptor probe'
         'registry:CLI registry'
         'context:Context management'
@@ -4666,7 +4663,7 @@ _plexi() {
               ;;
             *)
               local subcmds
-              subcmds=('init:Scaffold a new app' 'install:Install a local app directory' 'uninstall:Remove an installed app by id' 'list:List installed apps' 'render:Render an app to PNG headlessly' 'info:Show app info')
+              subcmds=('open:Open an app in a new pane' 'install:Install an app' 'uninstall:Remove an installed app by id' 'remove:Remove an installed app by id' 'list:List installed apps' 'init:Scaffold a new app' 'render:Render an app to PNG headlessly' 'info:Show app info' 'run:Run a local app dir in a pane')
               _describe 'subcommand' subcmds
               ;;
           esac
@@ -4901,25 +4898,22 @@ complete -F _plexi_completions plexi
 
 const FISH_COMPLETION: &str = r#"# Plexi shell completions for fish
 
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a run -d "Run a named command"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a workspace -d "Workspace management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a secret -d "Secret management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a app -d "App management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a install -d "Install an app"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a uninstall -d "Uninstall an app"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a update -d "Update apps or self"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a list -d "List installed apps"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a validate -d "Validate a Plexi app directory"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a pack -d "Pack management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a notify -d "Send a notification"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a pane -d "Pane management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a terminal -d "Open a terminal pane"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a open -d "Open an app pane"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a descriptor -d "Descriptor probe"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a registry -d "CLI registry"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a context -d "Context management"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a completions -d "Print shell completion script"
-complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app install uninstall update list validate pack notify pane terminal open descriptor registry context completions config" -a config -d "Configuration management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app uninstall update validate pack notify pane terminal descriptor registry context completions config" -a run -d "Run a named command"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app uninstall update validate pack notify pane terminal descriptor registry context completions config" -a workspace -d "Workspace management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app uninstall update validate pack notify pane terminal descriptor registry context completions config" -a secret -d "Secret management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app uninstall update validate pack notify pane terminal descriptor registry context completions config" -a app -d "App management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app uninstall update validate pack notify pane terminal descriptor registry context completions config" -a uninstall -d "Uninstall Plexi itself"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app uninstall update validate pack notify pane terminal descriptor registry context completions config" -a update -d "Update apps or self"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app uninstall update validate pack notify pane terminal descriptor registry context completions config" -a validate -d "Validate a Plexi app directory"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app uninstall update validate pack notify pane terminal descriptor registry context completions config" -a pack -d "Pack management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app uninstall update validate pack notify pane terminal descriptor registry context completions config" -a notify -d "Send a notification"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app uninstall update validate pack notify pane terminal descriptor registry context completions config" -a pane -d "Pane management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app uninstall update validate pack notify pane terminal descriptor registry context completions config" -a terminal -d "Open a terminal pane"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app uninstall update validate pack notify pane terminal descriptor registry context completions config" -a descriptor -d "Descriptor probe"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app uninstall update validate pack notify pane terminal descriptor registry context completions config" -a registry -d "CLI registry"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app uninstall update validate pack notify pane terminal descriptor registry context completions config" -a context -d "Context management"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app uninstall update validate pack notify pane terminal descriptor registry context completions config" -a completions -d "Print shell completion script"
+complete -c plexi -f -n "not __fish_seen_subcommand_from run workspace secret app uninstall update validate pack notify pane terminal descriptor registry context completions config" -a config -d "Configuration management"
 
 # config subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from config" -a check -d "Validate config.toml and report errors"
@@ -4941,12 +4935,18 @@ complete -c plexi -n "__fish_seen_subcommand_from secret; and __fish_seen_subcom
 complete -c plexi -n "__fish_seen_subcommand_from secret; and __fish_seen_subcommand_from get" -l global -d "Read from global store only"
 
 # app subcommands
-complete -c plexi -f -n "__fish_seen_subcommand_from app" -a init -d "Scaffold a new app"
-complete -c plexi -f -n "__fish_seen_subcommand_from app" -a install -d "Install a local app directory"
+complete -c plexi -f -n "__fish_seen_subcommand_from app" -a open -d "Open an app in a new pane"
+complete -c plexi -f -n "__fish_seen_subcommand_from app" -a install -d "Install an app (local path, remote source, or pack)"
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a uninstall -d "Uninstall an app"
+complete -c plexi -f -n "__fish_seen_subcommand_from app" -a remove -d "Remove an installed app (alias for uninstall)"
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a list -d "List installed apps"
+complete -c plexi -f -n "__fish_seen_subcommand_from app" -a init -d "Scaffold a new app"
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a render -d "Render an app to PNG headlessly"
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a info -d "Show app info"
+complete -c plexi -f -n "__fish_seen_subcommand_from app" -a run -d "Run a local app dir in a pane"
+# app install flags
+complete -c plexi -n "__fish_seen_subcommand_from app; and __fish_seen_subcommand_from install" -l pack -d "Install from a pack file or 'core'"
+
 # app init flags
 complete -c plexi -n "__fish_seen_subcommand_from app; and __fish_seen_subcommand_from init" -l lang -d "Language template" -a "python"
 
