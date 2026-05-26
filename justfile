@@ -37,6 +37,9 @@ gen-schema:
 gen-cli-docs:
     cargo run -p gen_cli_docs > website/src/content/docs/cli.md
     @echo "CLI reference regenerated."
+    git add website/src/content/docs/cli.md
+    git diff --cached --quiet || git commit -m "chore(website): regenerate CLI reference docs"
+    git push
 
 # Verify the committed CLI docs are up to date with the current Rust source.
 # Fails if website/src/content/docs/cli.md is stale.
