@@ -1,7 +1,7 @@
 ---
 title: "App"
 description: "Base class for Plexi pane apps with lifecycle hooks"
-verified_version: "0.0.496"
+verified_version: "0.0.505"
 ---
 
 # App

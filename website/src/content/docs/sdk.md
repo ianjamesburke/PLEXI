@@ -1,7 +1,7 @@
 ---
 title: "SDK Overview"
 description: "Python SDK for building Plexi pane apps"
-verified_version: "0.0.496"
+verified_version: "0.0.505"
 ---
 
 Python SDK for building Plexi pane apps. Zero dependencies, pure stdlib. Implements PGAP v3 over newline-delimited JSON on stdin/stdout.

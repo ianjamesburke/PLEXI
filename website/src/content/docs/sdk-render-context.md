@@ -1,7 +1,7 @@
 ---
 title: "RenderContext"
 description: "Drawing API for rendering pane content"
-verified_version: "0.0.496"
+verified_version: "0.0.505"
 ---
 
 # RenderContext

@@ -1,7 +1,7 @@
 ---
 title: Apps
 description: Build and run sandboxed apps inside Plexi.
-verified_version: "0.0.496"
+verified_version: "0.0.505"
 order: 5
 ---
 

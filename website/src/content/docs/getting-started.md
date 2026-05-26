@@ -1,7 +1,7 @@
 ---
 title: Installation & Setup
 description: Get Plexi running on your Mac.
-verified_version: "0.0.496"
+verified_version: "0.0.505"
 order: 1
 ---
 

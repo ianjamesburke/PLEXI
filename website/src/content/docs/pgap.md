@@ -1,7 +1,7 @@
 ---
 title: PGAP
 description: The Plexi Generic App Protocol — how apps communicate with the host.
-verified_version: "0.0.496"
+verified_version: "0.0.505"
 order: 3
 ---
 

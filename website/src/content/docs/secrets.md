@@ -1,7 +1,7 @@
 ---
 title: Secrets
 description: Store and access secrets inside Plexi apps.
-verified_version: "0.0.496"
+verified_version: "0.0.505"
 order: 6
 ---
 
