@@ -664,6 +664,15 @@ pub fn config_dir() -> PathBuf {
         .join(config_dir_name())
 }
 
+/// Path of the per-pane cwd sidecar file. The host sets `PLEXI_PANE_CWD_FILE`
+/// to this path when spawning a shell; the shell's prompt hook writes its
+/// current directory here after every prompt. `get_focused_pane_cwd` reads it
+/// on Windows, where the OS does not expose a shell's working directory
+/// (PowerShell keeps its location as application state, not the process cwd).
+pub fn pane_cwd_file(pane_id: u64) -> PathBuf {
+    config_dir().join("panes").join(format!("{pane_id}.cwd"))
+}
+
 /// Value of `PLEXI_SOCKET` for every pane — an AF_UNIX path on Unix, a Win32
 /// named-pipe name on Windows. Both the host (binding) and the CLI client
 /// (connecting) call this so the strings agree by construction.

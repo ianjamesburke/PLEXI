@@ -1,5 +1,6 @@
 use crate::keys::Direction;
 use crate::pane::Pane;
+#[cfg(not(windows))]
 use crate::shell;
 use crate::tiling::PaneId;
 use egui_tiles::{Container, Tile, TileId, Tree};
@@ -200,11 +201,36 @@ impl Window {
         };
         let pane = self.panes.get(&pane_id)?;
         if let Some(terminal) = pane.as_terminal() {
+            // Windows: the OS can't report a PowerShell shell's location, so
+            // read the per-pane sidecar file the shell's prompt hook writes.
+            // Falls through to None when the hook hasn't run yet (e.g. shell
+            // integration not installed) — callers then use the context root.
+            #[cfg(windows)]
+            {
+                let _ = &terminal;
+                return read_pane_cwd_sidecar(pane_id);
+            }
+            #[cfg(not(windows))]
             shell::get_pid_cwd(terminal.backend.child_pid())
         } else {
             pane.as_app().map(|app| app.workspace_root.clone())
         }
     }
+}
+
+/// Read the per-pane cwd sidecar written by the shell's prompt hook. Returns
+/// the path only when it exists and is a directory, so a stale or partially
+/// written file never resolves to a bogus cwd. See [`crate::config::pane_cwd_file`].
+#[cfg(windows)]
+fn read_pane_cwd_sidecar(pane_id: u64) -> Option<PathBuf> {
+    let path = crate::config::pane_cwd_file(pane_id);
+    let contents = std::fs::read_to_string(&path).ok()?;
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let dir = PathBuf::from(trimmed);
+    dir.is_dir().then_some(dir)
 }
 
 /// Pure-geometry direction-finder. Picks the geometrically-nearest neighbor

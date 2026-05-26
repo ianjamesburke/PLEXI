@@ -96,11 +96,28 @@ if (-not $NoCompletions) {
     $beginTag = "# >>> plexi completions ($binaryName) >>>"
     $endTag   = "# <<< plexi completions ($binaryName) <<<"
     $escapedDest = $dest.Replace("'", "''")
+    # Plexi-pane cwd reporting — inert outside Plexi panes (gated on the
+    # PLEXI_PANE_CWD_FILE env var the host sets). Wraps prompt to write $PWD
+    # to the per-pane sidecar so the host can read the shell's location;
+    # Windows exposes no OS-level API for a PowerShell session's cwd.
+    # Single-quoted here-string: emitted literally, NOT interpolated here.
+    # Keep in sync with installer\plexi-completions-helper.ps1.
+    $cwdHook = @'
+if ($env:PLEXI_PANE_CWD_FILE -and -not $global:__PlexiCwdHooked) {
+    $global:__PlexiCwdHooked = $true
+    $global:__PlexiOrigPrompt = $function:prompt
+    function global:prompt {
+        try { [System.IO.File]::WriteAllText($env:PLEXI_PANE_CWD_FILE, $PWD.ProviderPath) } catch { }
+        if ($global:__PlexiOrigPrompt) { & $global:__PlexiOrigPrompt } else { "PS $($PWD.Path)> " }
+    }
+}
+'@
     $block = @"
 $beginTag
 if (Test-Path '$escapedDest') {
     & '$escapedDest' completions powershell | Out-String | Invoke-Expression
 }
+$cwdHook
 $endTag
 "@
 

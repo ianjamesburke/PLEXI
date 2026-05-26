@@ -72,6 +72,22 @@ if ($Action -eq 'unregister') {
     return
 }
 
+# Plexi-pane cwd reporting. Inert outside Plexi (gated on PLEXI_PANE_CWD_FILE,
+# which only the host sets). Wraps the prompt to write $PWD to the per-pane
+# sidecar file after each prompt so the host can read the shell's location —
+# Windows has no OS-level API for a PowerShell session's current directory.
+# Single-quoted here-string: emitted literally, NOT interpolated here.
+$cwdHook = @'
+if ($env:PLEXI_PANE_CWD_FILE -and -not $global:__PlexiCwdHooked) {
+    $global:__PlexiCwdHooked = $true
+    $global:__PlexiOrigPrompt = $function:prompt
+    function global:prompt {
+        try { [System.IO.File]::WriteAllText($env:PLEXI_PANE_CWD_FILE, $PWD.ProviderPath) } catch { }
+        if ($global:__PlexiOrigPrompt) { & $global:__PlexiOrigPrompt } else { "PS $($PWD.Path)> " }
+    }
+}
+'@
+
 if (-not [string]::IsNullOrEmpty($BinaryPath)) {
     $escapedPath = $BinaryPath.Replace("'", "''")
     $block = @"
@@ -79,6 +95,7 @@ $beginTag
 if (Test-Path '$escapedPath') {
     & '$escapedPath' completions powershell | Out-String | Invoke-Expression
 }
+$cwdHook
 $endTag
 "@
 } else {
@@ -88,6 +105,7 @@ $beginTag
 if (Get-Command $BinaryName -ErrorAction SilentlyContinue) {
     $BinaryName completions powershell | Out-String | Invoke-Expression
 }
+$cwdHook
 $endTag
 "@
 }
