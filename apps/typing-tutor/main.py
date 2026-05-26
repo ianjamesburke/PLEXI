@@ -92,7 +92,8 @@ class _LevelGrid(Component):
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         app = self._app
-        cols, rows = 5, 2
+        cols = 5
+        rows = (len(LEVELS) + cols - 1) // cols
         gap = 12.0
         card_w = (w - (cols - 1) * gap) / cols
         card_h = (h - (rows - 1) * gap) / rows
@@ -130,8 +131,9 @@ class _LevelGrid(Component):
 
             if not unlocked:
                 ctx.rect(cx, cy, card_w, card_h, fill="#00000066", radius=RADIUS_MD)
-                ctx.text(cx + card_w / 2 - 18, cy + card_h / 2 - 8,
-                         f"🔒 Need {level.stars_needed}★", size=TEXT_HINT, color=MUTED)
+                ctx.text(cx + card_w / 2, cy + card_h / 2,
+                         f"🔒 Need {level.stars_needed}★", size=TEXT_HINT, color=MUTED,
+                         align="center")
 
 
 class _CharGrid(Component):
@@ -174,8 +176,6 @@ class _CharGrid(Component):
             else:
                 ctx.text(cx, cy, ch, size=char_size, color=MUTED, monospace=True)
 
-        ctx.emit.schedule_render(16)
-
 
 class _TimerBar(Component):
     """Progress bar + countdown timer pinned above the footer."""
@@ -203,6 +203,7 @@ class _TimerBar(Component):
         ctx.rect(x + SPACE_SM, bar_y, bar_w, 8.0, fill=SURFACE, radius=4.0)
         progress = app._typed / max(len(level.text), 1)
         ctx.rect(x + SPACE_SM, bar_y, bar_w * progress, 8.0, fill=GREEN, radius=4.0)
+        ctx.schedule_render(100)
 
 
 # ── App ──────────────────────────────────────────────────────────────────────
@@ -298,7 +299,7 @@ class TypingTutorApp(App):
             self._selected = max(0, self._selected - 5)
         elif key in ("j", "down"):
             self._selected = min(n - 1, self._selected + 5)
-        elif key in (" ", "Enter"):
+        elif key in ("space", "return"):
             if _is_unlocked(self._selected, self._level_stars):
                 self._start_level(self._selected)
 
@@ -306,12 +307,12 @@ class TypingTutorApp(App):
         level = LEVELS[self._play_level]
         text = level.text
 
-        if key == "Escape":
+        if key == "escape":
             self.emit.info(f"typing-tutor: aborted level={self._play_level + 1}")
             self._screen = Screen.LEVEL_SELECT
             return
 
-        if key == "Backspace":
+        if key == "backspace":
             if self._typed > 0:
                 self._typed -= 1
                 self._errors.discard(self._typed)
@@ -333,7 +334,7 @@ class TypingTutorApp(App):
             self._go_result(ctx, timed_out=False)
 
     def _key_result(self, key: str) -> None:
-        if key in (" ", "Enter"):
+        if key in ("space", "return"):
             self._screen = Screen.LEVEL_SELECT
         elif key == "r":
             self._start_level(self._play_level)
