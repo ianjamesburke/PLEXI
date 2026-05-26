@@ -109,7 +109,7 @@ class _LevelGrid(Component):
             stars = app._level_stars[i]
 
             if selected:
-                bg, border, bw = ACCENT + "33", ACCENT, 2.0
+                bg, border, bw = SURFACE, ACCENT, 2.0
             elif unlocked:
                 bg, border, bw = SURFACE, HIGHLIGHT, 1.0
             else:
@@ -122,8 +122,9 @@ class _LevelGrid(Component):
             ctx.rect(cx + card_w - bw, cy, bw, card_h, fill=border)
 
             text_color = FG if unlocked else MUTED
+            num_color = ACCENT if selected else (ACCENT if unlocked else MUTED)
             ctx.text(cx + 10, cy + 10, f"{i + 1}", size=TEXT_BODY,
-                     color=ACCENT if selected else text_color, bold=True)
+                     color=num_color, bold=True)
             ctx.text(cx + 10, cy + 28, level.name, size=TEXT_HINT, color=text_color)
             ctx.text(cx + 10, cy + card_h - 20,
                      "★" * stars + "☆" * (5 - stars),
