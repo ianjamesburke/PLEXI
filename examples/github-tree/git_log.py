@@ -50,11 +50,18 @@ def _diag(msg: str) -> None:
         pass
 
 
+# Suppress the console window each git subprocess would otherwise pop on
+# Windows (this app polls git frequently). 0 elsewhere, so it's a no-op on
+# macOS/Linux.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 def _run(cmd: list[str], cwd: str, timeout: float = 15.0) -> tuple[int, str, str]:
     """Run cmd under cwd. Returns (returncode, stdout, stderr). Never raises."""
     try:
         proc = subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+            creationflags=_NO_WINDOW,
         )
         _diag(
             f"cmd={cmd!r} cwd={cwd!r} rc={proc.returncode} "

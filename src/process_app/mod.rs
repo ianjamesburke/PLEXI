@@ -487,7 +487,13 @@ impl ProcessApp {
 
         // Static capability validation — runs before the real spawn.
         // For Python apps only; non-Python apps skip. Subprocess failures log warn and proceed.
+        // Skipped entirely when the app declares no capabilities: there is
+        // nothing to validate, and the introspect spawn is a full extra Python
+        // cold-start that noticeably delays launch (worst on Windows).
         if let Some(ref py) = py_exe {
+            if capabilities.is_empty() {
+                log::info!("ProcessApp[{type_id}]: no declared capabilities — skipping static capability check");
+            } else {
             let path_env = {
                 let host_path = std::env::var("PATH").unwrap_or_default();
                 let sep = if cfg!(windows) { ";" } else { ":" };
@@ -511,9 +517,19 @@ impl ProcessApp {
             ) {
                 return Err(e);
             }
+            }
         }
 
         cmd.env("PYTHONPATH", pythonpath);
+        // Windows: python.exe is a console subsystem binary, so spawning it
+        // pops a visible console window. CREATE_NO_WINDOW suppresses it — the
+        // app talks over stdio pipes, which are unaffected.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
         let mut child = cmd.spawn()?;
 
         let stdin = child.stdin.take().expect("stdin piped");
@@ -2177,8 +2193,21 @@ pub(crate) fn static_capability_check(
 
     log::info!("ProcessApp[{type_id}]: running static capability check");
 
+    // Must mirror the launch whitelist's Windows additions — without SYSTEMROOT
+    // et al the introspect run crashes on `import asyncio` (WSAEPROVIDERFAILEDINIT)
+    // exactly like the real launch did before the fix, so the check would always
+    // fail-and-skip on Windows while still paying its full spawn cost.
+    #[cfg(not(windows))]
     const INTROSPECT_ENV_WHITELIST: &[&str] = &[
         "HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL",
+    ];
+    #[cfg(windows)]
+    const INTROSPECT_ENV_WHITELIST: &[&str] = &[
+        "HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL",
+        "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR",
+        "USERPROFILE", "USERNAME", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP",
+        "COMSPEC", "PATHEXT",
+        "OS", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "COMPUTERNAME",
     ];
     let mut cmd = std::process::Command::new(py_exe);
     cmd.arg(bin_path)
@@ -2193,6 +2222,13 @@ pub(crate) fn static_capability_check(
         if let Ok(v) = std::env::var(var) {
             cmd.env(var, v);
         }
+    }
+    // Hide the console window the introspect python.exe would otherwise pop.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
     let child = match cmd.spawn() {
