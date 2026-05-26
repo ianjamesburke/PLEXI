@@ -157,13 +157,12 @@ pub fn run_command(command_name: &str) -> i32 {
     let config_path = cwd.join(COMMANDS_FILE);
     let contents = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
-        Err(_) => {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // No workspace commands.toml — try global script from config_dir()/scripts/.
             let script_path = crate::config::config_dir().join("scripts").join(command_name);
             if script_path.is_file() && is_executable(&script_path) {
                 log::info!("cli: running global script {:?}", script_path);
-                let mut child_cmd = Command::new("sh");
-                child_cmd.arg(&script_path);
+                let mut child_cmd = Command::new(&script_path);
                 child_cmd.env("PLEXI_CONFIG_DIR", crate::config::config_dir());
                 return match child_cmd.status() {
                     Ok(status) => status.code().unwrap_or(1),
@@ -175,6 +174,10 @@ pub fn run_command(command_name: &str) -> i32 {
             }
             eprintln!("error: no {COMMANDS_FILE} found in {}", cwd.display());
             eprintln!("Create a .plexi/commands.toml to define runnable commands.");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("error: could not read {}: {e}", config_path.display());
             return 1;
         }
     };
