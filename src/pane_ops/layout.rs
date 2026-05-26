@@ -657,9 +657,11 @@ impl PlexiApp {
                     }
                 }
 
-                // Only transfer focus when the closed tile was focused, or when it was
-                // the active tab (whose close forces a tab switch regardless of focus).
-                if is_focused || is_active_tab {
+                // Only transfer focus when the closed tile was focused.
+                // tabs.set_active was already updated above so egui_tiles stays valid
+                // even when closing a background active tab; but that must not move
+                // focused_pane to the new active tab's pane.
+                if is_focused {
                     self.windows[ctx_idx].find_first_pane_in(sibling)
                 } else {
                     None
@@ -1466,6 +1468,43 @@ mod close_pane_by_id_tests {
         assert_eq!(app.windows.len(), 1);
         app.close_pane_by_id(pane_id);
         assert_eq!(app.windows.len(), 1, "sole-page window must remain alive showing welcome screen");
+    }
+
+    /// Closing the active tab of a background tab container must not steal focus.
+    /// Regression guard for #1547 (Gemini-identified edge case).
+    #[test]
+    fn close_background_active_tab_does_not_steal_focus() {
+        let mut app = test_app();
+        let focused_id: u64 = 100;
+        let bg_active_id: u64 = 101;
+        let bg_inactive_id: u64 = 102;
+
+        let tile_focused    = app.windows[0].tree.tiles.insert_pane(focused_id);
+        let tile_bg_active  = app.windows[0].tree.tiles.insert_pane(bg_active_id);
+        let tile_bg_inactive = app.windows[0].tree.tiles.insert_pane(bg_inactive_id);
+
+        let tabs_tile = app.windows[0].tree.tiles.insert_tab_tile(
+            vec![tile_bg_active, tile_bg_inactive],
+        );
+        if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) =
+            app.windows[0].tree.tiles.get_mut(tabs_tile)
+        {
+            tabs.set_active(tile_bg_active);
+        }
+
+        let container_tile = app.windows[0].tree.tiles.insert_horizontal_tile(
+            vec![tile_focused, tabs_tile],
+        );
+        app.windows[0].tree.root = Some(container_tile);
+        app.windows[0].focused_pane = Some(tile_focused);
+
+        app.close_pane_by_id(bg_active_id);
+
+        assert_eq!(
+            app.windows[0].focused_pane,
+            Some(tile_focused),
+            "focus must remain on the focused pane after closing a background active tab",
+        );
     }
 
     /// Closing a background pane must not steal focus from the currently focused pane.
