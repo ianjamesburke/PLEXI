@@ -4067,8 +4067,9 @@ impl PlexiApp {
                     // Each entry: (chip groups for one combo, description).
                     // Every modifier/key is a separate chip — no combined strings.
                     let shortcuts: &[(&[&str], &str)] = &[
-                        (&["⌘", "P"], "command palette"),
                         (&["⌘", "N"], "new terminal"),
+                        (&["⌘", "E"], "file browser"),
+                        (&["⌘", "P"], "command palette"),
                         (&["⌘", "⇧", "N"], "new context"),
                         (&["⌘", "/"], "keyboard shortcuts"),
                     ];
@@ -4087,34 +4088,32 @@ impl PlexiApp {
                     }
 
                     ui.add_space(style::SPACE_XL);
-                    ui.label(
-                        RichText::new("Things to try")
-                            .size(style::TEXT_CAPTION)
-                            .color(colors.text_dim)
-                            .strong(),
-                    );
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("New to Plexi? Run ")
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.text_dim),
+                        );
+                        ui.label(
+                            RichText::new("plexi demo")
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.text_dim)
+                                .monospace()
+                                .background_color(colors.bg_active),
+                        );
+                        ui.label(
+                            RichText::new(" in any terminal to get started.")
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.text_dim),
+                        );
+                    });
                     ui.add_space(style::SPACE_SM);
-
-                    let tips: &[&str] = &[
-                        "⌘P opens the command palette — jump to any pane or launch an installed app",
-                        "⌘⇧N opens a fresh context — use it like a virtual desktop",
-                    ];
-                    for tip in tips {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("·")
-                                    .size(style::TEXT_BODY)
-                                    .color(colors.text_dim),
-                            );
-                            ui.add_space(style::SPACE_SM / 2.0);
-                            ui.label(
-                                RichText::new(*tip)
-                                    .size(style::TEXT_CAPTION)
-                                    .color(colors.text_dim),
-                            );
-                        });
-                        ui.add_space(style::SPACE_SM / 2.0);
-                    }
+                    ui.hyperlink_to(
+                        RichText::new("Read the docs at plexi.dev/docs")
+                            .size(style::TEXT_CAPTION)
+                            .color(colors.text_dim),
+                        "https://plexi.dev/docs",
+                    );
 
                     ui.add_space(style::SPACE_MD);
                     ui.separator();
