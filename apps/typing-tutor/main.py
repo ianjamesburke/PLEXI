@@ -172,8 +172,8 @@ class _CharGrid(Component):
                 else:
                     ctx.text(cx, cy, ch, size=char_size, color=GREEN, monospace=True)
             elif i == app._typed:
-                ctx.rect(cx - 1, cy - 1, cell_w, cell_h, fill=ACCENT + "55", radius=2.0)
-                ctx.text(cx, cy, ch, size=char_size, color=FG, monospace=True)
+                ctx.rect(cx - 1, cy - 1, cell_w, cell_h, fill=ACCENT, radius=2.0)
+                ctx.text(cx, cy, ch, size=char_size, color=BG, monospace=True)
             else:
                 ctx.text(cx, cy, ch, size=char_size, color=MUTED, monospace=True)
 
