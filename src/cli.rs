@@ -29,6 +29,37 @@ pub struct CommandDef {
     pub secrets: Vec<String>,
 }
 
+/// List executable files in a scripts directory.
+fn list_global_scripts(scripts_dir: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(scripts_dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let path = e.path();
+            path.is_file() && is_executable(&path)
+        })
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    names.sort();
+    names
+}
+
+fn is_executable(path: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        path.exists()
+    }
+}
+
 fn print_tip(msg: &str) {
     let config = crate::config::PlexiConfig::load_with_workspace(
         crate::config::active_workspace_root().as_deref(),
@@ -61,14 +92,22 @@ pub fn run_list_commands() -> i32 {
     let contents = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            log::info!("cli: no workspace commands.toml, falling back to global scripts");
+            let scripts_dir = crate::config::config_dir().join("scripts");
+            let global_scripts = list_global_scripts(&scripts_dir);
+            if !global_scripts.is_empty() {
+                println!("Built-in scripts:");
+                for name in &global_scripts {
+                    println!("  {name}");
+                }
+                println!();
+                println!("Run one with: plexi run <script>");
+                println!();
+            }
             println!("No workspace commands configured.");
             println!();
-            println!("To set up commands, create {COMMANDS_FILE} in your project:");
+            println!("To add project commands:");
             println!("  plexi workspace init");
-            println!();
-            println!("Then define commands in .plexi/commands.toml:");
-            println!("  [commands.dev]");
-            println!("  run = \"npm run dev\"");
             return 0;
         }
         Err(e) => {
@@ -119,6 +158,21 @@ pub fn run_command(command_name: &str) -> i32 {
     let contents = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
         Err(_) => {
+            // No workspace commands.toml — try global script from config_dir()/scripts/.
+            let script_path = crate::config::config_dir().join("scripts").join(command_name);
+            if script_path.is_file() && is_executable(&script_path) {
+                log::info!("cli: running global script {:?}", script_path);
+                let mut child_cmd = Command::new("sh");
+                child_cmd.arg(&script_path);
+                child_cmd.env("PLEXI_CONFIG_DIR", crate::config::config_dir());
+                return match child_cmd.status() {
+                    Ok(status) => status.code().unwrap_or(1),
+                    Err(e) => {
+                        eprintln!("error: failed to spawn script: {e}");
+                        1
+                    }
+                };
+            }
             eprintln!("error: no {COMMANDS_FILE} found in {}", cwd.display());
             eprintln!("Create a .plexi/commands.toml to define runnable commands.");
             return 1;
@@ -410,6 +464,31 @@ pub fn workspace_init() -> i32 {
                 } else {
                     println!("  apps:         .plexi/apps.toml (declare app dependencies here)");
                     log::info!("workspace_init:cli: wrote stub .plexi/apps.toml");
+                }
+            }
+            // Write stub commands.toml if not already present.
+            let commands_toml = cwd.join(".plexi").join("commands.toml");
+            if !commands_toml.exists() {
+                let stub = concat!(
+                    "# Workspace commands — run with: plexi run <name>\n",
+                    "#\n",
+                    "# Examples:\n",
+                    "#\n",
+                    "# [commands.dev]\n",
+                    "# run = \"npm run dev\"\n",
+                    "#\n",
+                    "# [commands.build]\n",
+                    "# run = \"cargo build\"\n",
+                    "\n",
+                    "[commands.hi]\n",
+                    "run = \"$PLEXI_CONFIG_DIR/scripts/hi\"\n",
+                );
+                if let Err(e) = std::fs::write(&commands_toml, stub) {
+                    log::warn!("workspace_init:cli: could not write commands.toml: {e}");
+                    eprintln!("warning: could not create .plexi/commands.toml: {e}");
+                } else {
+                    println!("  commands:     .plexi/commands.toml (run commands with: plexi run)");
+                    log::info!("workspace_init:cli: wrote stub .plexi/commands.toml");
                 }
             }
             print_tip("declare app dependencies in .plexi/apps.toml, then run `plexi app install`.");
