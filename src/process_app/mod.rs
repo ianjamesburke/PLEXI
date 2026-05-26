@@ -353,7 +353,22 @@ impl ProcessApp {
         // Clear the inherited environment and whitelist only vars the app
         // legitimately needs. Strips OPENROUTER_API_KEY and every other
         // host credential — apps must use the iq.query / llm broker, never direct API access.
+        //
+        // On Windows, several system vars (SYSTEMROOT especially) are required by
+        // ordinary Win32 DLL loading — without SYSTEMROOT, Winsock's service-provider
+        // registry can't initialize, and Python's `import asyncio` blows up with
+        // `WinError 10106 (WSAEPROVIDERFAILEDINIT)` on the IOCP backend. None of
+        // these contain credentials or per-user secrets the host needs to scrub.
+        #[cfg(not(windows))]
         const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
+        #[cfg(windows)]
+        const ENV_WHITELIST: &[&str] = &[
+            "HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL",
+            "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR",
+            "USERPROFILE", "USERNAME", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP",
+            "COMSPEC", "PATHEXT",
+            "OS", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "COMPUTERNAME",
+        ];
 
         // Resolve the bundled Python interpreter path — used both to build the
         // python command for .py entries and to prepend to PATH for PYTHONPATH setup.
