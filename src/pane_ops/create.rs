@@ -660,12 +660,28 @@ impl PlexiApp {
             return Ok(());
         }
 
+        // App launches prefer the focused pane's live cwd ("launch the app
+        // where I am") over the context root — the opposite priority from new
+        // terminal splits (resolve_new_pane_cwd), which intentionally anchor to
+        // the context root. Without this, an app launched from a terminal the
+        // user cd'd into still opens at the context root (e.g. home), so repo
+        // tools like github-tree never see the repo. Falls back: focused pane
+        // cwd → context root → home.
+        let focused = self.windows[self.active_window].focused_pane;
         let cwd_explicit = cwd_override.is_some();
+        let focused_cwd = focused.and_then(|f| self.windows[self.active_window].get_focused_pane_cwd(f));
+        let cwd_source = if cwd_explicit {
+            "explicit"
+        } else if focused_cwd.is_some() {
+            "focused-pane"
+        } else {
+            "context-root"
+        };
         let cwd = cwd_override
-            .or_else(|| self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane))
+            .or(focused_cwd)
+            .or_else(|| self.router.active().root.clone())
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-        log::info!("launch_app_by_id_with_layout: id={id} cwd={cwd:?} cwd_source={} context_root={:?}",
-            if cwd_explicit { "explicit" } else { "resolved" },
+        log::info!("launch_app_by_id_with_layout: id={id} cwd={cwd:?} cwd_source={cwd_source} context_root={:?}",
             self.router.active().root);
 
         // Re-attach a parked background app if one is waiting
