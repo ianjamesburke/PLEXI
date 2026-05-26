@@ -50,9 +50,7 @@ def _diag(msg: str) -> None:
         pass
 
 
-# Suppress the console window each git subprocess would otherwise pop on
-# Windows (this app polls git frequently). 0 elsewhere, so it's a no-op on
-# macOS/Linux.
+# Suppress the console window each git subprocess would otherwise pop on Windows.
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 

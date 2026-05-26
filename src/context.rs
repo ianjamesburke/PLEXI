@@ -201,10 +201,8 @@ impl Window {
         };
         let pane = self.panes.get(&pane_id)?;
         if let Some(terminal) = pane.as_terminal() {
-            // Windows: the OS can't report a PowerShell shell's location, so
-            // read the per-pane sidecar file the shell's prompt hook writes.
-            // Falls through to None when the hook hasn't run yet (e.g. shell
-            // integration not installed) — callers then use the context root.
+            // Windows can't report a PowerShell shell's cwd; read the sidecar the
+            // prompt hook writes. None until the hook has run (callers use context root).
             #[cfg(windows)]
             {
                 let _ = &terminal;
@@ -218,9 +216,8 @@ impl Window {
     }
 }
 
-/// Read the per-pane cwd sidecar written by the shell's prompt hook. Returns
-/// the path only when it exists and is a directory, so a stale or partially
-/// written file never resolves to a bogus cwd. See [`crate::config::pane_cwd_file`].
+/// Read the per-pane cwd sidecar. Returns the path only when it's an existing
+/// directory, so a stale/partial file never resolves to a bogus cwd.
 #[cfg(windows)]
 fn read_pane_cwd_sidecar(pane_id: u64) -> Option<PathBuf> {
     let path = crate::config::pane_cwd_file(pane_id);

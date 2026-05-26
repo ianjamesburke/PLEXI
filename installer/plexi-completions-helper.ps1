@@ -72,10 +72,8 @@ if ($Action -eq 'unregister') {
     return
 }
 
-# Plexi-pane cwd reporting. Inert outside Plexi (gated on PLEXI_PANE_CWD_FILE,
-# which only the host sets). Wraps the prompt to write $PWD to the per-pane
-# sidecar file after each prompt so the host can read the shell's location —
-# Windows has no OS-level API for a PowerShell session's current directory.
+# Plexi-pane cwd reporting: prompt hook writes $PWD to the sidecar so the host can
+# read the shell's location. Inert outside Plexi (gated on PLEXI_PANE_CWD_FILE).
 # Single-quoted here-string: emitted literally, NOT interpolated here.
 $cwdHook = @'
 if ($env:PLEXI_PANE_CWD_FILE -and -not $global:__PlexiCwdHooked) {

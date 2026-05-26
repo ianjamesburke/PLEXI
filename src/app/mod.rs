@@ -1436,10 +1436,8 @@ impl PlexiApp {
         let mut env = shell::build_env();
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
         env.insert("PLEXI_SOCKET".into(), crate::config::ipc_endpoint());
-        // Windows can't read a shell's cwd from the OS (PowerShell keeps its
-        // location as app state). Point the shell at a per-pane sidecar file;
-        // the managed $PROFILE prompt hook writes $PWD there each prompt and
-        // get_focused_pane_cwd reads it. See config::pane_cwd_file.
+        // Windows can't read a shell's cwd from the OS; point the shell at a
+        // sidecar file its prompt hook writes $PWD to. See config::pane_cwd_file.
         #[cfg(windows)]
         {
             let cwd_file = crate::config::pane_cwd_file(pane_id);

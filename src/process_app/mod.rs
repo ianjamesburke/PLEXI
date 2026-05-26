@@ -353,14 +353,10 @@ impl ProcessApp {
         // Clear the inherited environment and whitelist only vars the app
         // legitimately needs. Strips OPENROUTER_API_KEY and every other
         // host credential — apps must use the iq.query / llm broker, never direct API access.
-        //
-        // On Windows, several system vars (SYSTEMROOT especially) are required by
-        // ordinary Win32 DLL loading — without SYSTEMROOT, Winsock's service-provider
-        // registry can't initialize, and Python's `import asyncio` blows up with
-        // `WinError 10106 (WSAEPROVIDERFAILEDINIT)` on the IOCP backend. None of
-        // these contain credentials or per-user secrets the host needs to scrub.
         #[cfg(not(windows))]
         const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
+        // Windows: SYSTEMROOT et al are required for Win32 DLL loading; without them
+        // Python's `import asyncio` fails with WSAEPROVIDERFAILEDINIT. No secrets here.
         #[cfg(windows)]
         const ENV_WHITELIST: &[&str] = &[
             "HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL",
@@ -370,17 +366,8 @@ impl ProcessApp {
             "OS", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "COMPUTERNAME",
         ];
 
-        // Resolve the bundled Python interpreter path — used both to build the
-        // python command for .py entries and to prepend to PATH for PYTHONPATH setup.
-        //
-        // Layout differs by platform because python-build-standalone ships differently:
-        //   macOS/Linux: Resources/assets/python/bin/python3
-        //   Windows:     Resources\assets\python\python.exe  (no bin/, .exe at root)
-        //
-        // Fallback name also differs: `python3` exists on Unix; on Windows the
-        // Microsoft Python Install Manager (pymanager) hijacks both `python3` and
-        // `python` if no runtime is installed, but `python` is the conventional
-        // name a user-installed interpreter exposes.
+        // Resolve the bundled Python interpreter path. python-build-standalone
+        // ships .exe at the python/ root on Windows but under bin/ on Unix.
         let bundle_contents = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()));
@@ -393,13 +380,12 @@ impl ProcessApp {
             .as_ref()
             .map(|c| c.join("Resources").join("assets").join("python").join("bin"));
 
+        // `python` not `python3` on Windows: pymanager hijacks `python3` when no runtime is installed.
         #[cfg(windows)]
         const PY_FALLBACK: &str = "python";
         #[cfg(not(windows))]
         const PY_FALLBACK: &str = "python3";
 
-        // .py entries are launched via the interpreter directly — no shebang or
-        // executable bit required.
         let is_python = bin_path.extension().and_then(|e| e.to_str()) == Some("py");
         let py_exe: Option<std::ffi::OsString> = if is_python {
             Some(
@@ -459,10 +445,8 @@ impl ProcessApp {
                 }
             }
         }).flatten();
-        // Prepend the bundled Python interpreter's bin/ dir to PATH so that
-        // dev-mode .py entries without the bundle still resolve the interpreter
-        // correctly. Falls back silently to host PATH if the bundle runtime
-        // isn't present. `;` on Windows, `:` elsewhere.
+        // Prepend the bundled interpreter dir to PATH so dev-mode .py entries
+        // resolve it; falls back to host PATH when the bundle runtime is absent.
         if let Some(ref py_bin) = bundled_py_bin {
             if py_bin.exists() {
                 let host_path = std::env::var("PATH").unwrap_or_default();
@@ -487,9 +471,8 @@ impl ProcessApp {
 
         // Static capability validation — runs before the real spawn.
         // For Python apps only; non-Python apps skip. Subprocess failures log warn and proceed.
-        // Skipped entirely when the app declares no capabilities: there is
-        // nothing to validate, and the introspect spawn is a full extra Python
-        // cold-start that noticeably delays launch (worst on Windows).
+        // No capabilities → skip: nothing to validate, and the introspect spawn
+        // is a full Python cold-start that noticeably delays launch.
         if let Some(ref py) = py_exe {
             if capabilities.is_empty() {
                 log::info!("ProcessApp[{type_id}]: no declared capabilities — skipping static capability check");
@@ -521,9 +504,7 @@ impl ProcessApp {
         }
 
         cmd.env("PYTHONPATH", pythonpath);
-        // Windows: python.exe is a console subsystem binary, so spawning it
-        // pops a visible console window. CREATE_NO_WINDOW suppresses it — the
-        // app talks over stdio pipes, which are unaffected.
+        // Suppress the console window python.exe (a console-subsystem binary) would otherwise pop.
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -2193,10 +2174,8 @@ pub(crate) fn static_capability_check(
 
     log::info!("ProcessApp[{type_id}]: running static capability check");
 
-    // Must mirror the launch whitelist's Windows additions — without SYSTEMROOT
-    // et al the introspect run crashes on `import asyncio` (WSAEPROVIDERFAILEDINIT)
-    // exactly like the real launch did before the fix, so the check would always
-    // fail-and-skip on Windows while still paying its full spawn cost.
+    // Must mirror the launch ENV_WHITELIST's Windows additions, else the
+    // introspect run crashes on `import asyncio` (WSAEPROVIDERFAILEDINIT).
     #[cfg(not(windows))]
     const INTROSPECT_ENV_WHITELIST: &[&str] = &[
         "HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL",

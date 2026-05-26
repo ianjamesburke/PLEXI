@@ -3977,9 +3977,7 @@ pub fn validate_cli(path: &str) -> i32 {
         if !entry_path.exists() {
             errors.push(format!("  entry file not found: {}", entry_path.display()));
         } else if entry.ends_with(".py") {
-            // Python syntax check via AST parse (no import, no SDK needed).
-            // On Windows the bare `python3` name routes through pymanager when no
-            // runtime is installed and errors; `python` is what a real install exposes.
+            // `python` not `python3` on Windows: pymanager hijacks `python3` when no runtime is installed.
             let py_bin = if cfg!(windows) { "python" } else { "python3" };
             let py_check = std::process::Command::new(py_bin)
                 .arg("-c")

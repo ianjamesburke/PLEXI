@@ -237,10 +237,8 @@ impl PlexiApp {
             if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                 self.show_command_palette = false;
             }
-            // Emacs-style nav (Ctrl+N down, Ctrl+P up) — consumed before the
-            // Cmd+P close binding below so that on Windows (where Cmd == Ctrl)
-            // Ctrl+P scrolls up inside the palette instead of toggling it closed.
-            // Esc still closes on every platform.
+            // Emacs nav (Ctrl+N/P) — consumed before the Cmd+P close binding so that
+            // on Windows (Cmd == Ctrl) Ctrl+P scrolls instead of closing the palette.
             if input.consume_key(egui::Modifiers::CTRL, egui::Key::N)
                 && total > 0
                 && self.palette_selected < total - 1

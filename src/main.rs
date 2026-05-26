@@ -139,10 +139,8 @@ fn main() -> eframe::Result {
         .clone()
         .or_else(|| crate::config::active_workspace_root());
     let bootstrap_config = crate::config::PlexiConfig::load_with_workspace(merged_config_root.as_deref());
-    // When launched with no path argument, honour `default_cwd` from config so
-    // Plexi never inherits the directory of the .exe / shortcut it was launched
-    // from. Logged so the user can see what happened. CLI subcommands run later
-    // in this function so this chdir affects them too — intended.
+    // With no path arg, honour `default_cwd` so Plexi doesn't inherit the .exe /
+    // shortcut dir. Intentionally before CLI subcommand dispatch, so it applies there too.
     if adopted_root.is_none() {
         if let Some(raw) = bootstrap_config.default_cwd.as_deref() {
             let target = crate::config::expand_user_path(raw);

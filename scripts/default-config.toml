@@ -21,11 +21,8 @@ confirm_close = false
 # focus_history_depth = 100
 
 # ── Default working directory ──────────────────────────────────
-# Directory Plexi cd's into at boot when launched without an
-# explicit path argument (e.g. double-click on Windows, fixed
-# shortcut, or `plexi` with no args). Prevents inheriting the
-# install dir (`...\bin\` on Windows) as your terminal cwd.
-# Supports `~` and `~/...` for home-relative paths.
+# Directory to cd into at boot when launched without a path arg
+# (avoids inheriting the install dir on Windows). Supports `~`.
 # default_cwd = "~"
 
 # ── OSC & Terminal Features ────────────────────────────────────────

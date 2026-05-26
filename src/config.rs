@@ -288,16 +288,13 @@ pub struct PlexiConfig {
     pub focus_history_depth: Option<usize>,
     pub agents: Option<AgentsConfig>,
     pub cli: Option<CliConfig>,
-    /// Directory Plexi cd's into at boot when launched without an explicit path
-    /// argument. Avoids landing in `...\bin\` on Windows when launched from
-    /// Explorer or a fixed shortcut. Supports `~` and `~/...` for home-relative
-    /// paths. Falls back to the launching shell's CWD when unset.
+    /// Directory to cd into at boot when launched without a path argument
+    /// (avoids inheriting `...\bin\` on Windows). Supports `~`. Unset = shell CWD.
     pub default_cwd: Option<String>,
 }
 
-/// Expand a leading `~` / `~/` in a config path to the user's home directory.
-/// Returns the path unchanged when no expansion is needed or when no home
-/// directory is resolvable. Trims whitespace.
+/// Expand a leading `~` / `~/` to the home directory; returns the trimmed path
+/// unchanged when no expansion applies or no home dir resolves.
 pub fn expand_user_path(raw: &str) -> PathBuf {
     let trimmed = raw.trim();
     if trimmed == "~" {
@@ -664,11 +661,8 @@ pub fn config_dir() -> PathBuf {
         .join(config_dir_name())
 }
 
-/// Path of the per-pane cwd sidecar file. The host sets `PLEXI_PANE_CWD_FILE`
-/// to this path when spawning a shell; the shell's prompt hook writes its
-/// current directory here after every prompt. `get_focused_pane_cwd` reads it
-/// on Windows, where the OS does not expose a shell's working directory
-/// (PowerShell keeps its location as application state, not the process cwd).
+/// Path of the per-pane cwd sidecar the shell's prompt hook writes to. Needed
+/// on Windows, where a PowerShell session's cwd isn't exposed by the OS.
 pub fn pane_cwd_file(pane_id: u64) -> PathBuf {
     config_dir().join("panes").join(format!("{pane_id}.cwd"))
 }
