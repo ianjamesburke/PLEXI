@@ -698,7 +698,6 @@ pub fn registry_watch_dirs(cwd: &Path) -> Vec<PathBuf> {
     let channel_dir = registry_config_dir();
     if let Some(root) = resolve_workspace_root_with_channel(cwd, &channel_dir) {
         let channel_root = root.join(&channel_dir);
-        dirs.push(channel_root.clone());
         dirs.push(channel_root.join("apps"));
         dirs.push(channel_root.join("agents"));
     }
