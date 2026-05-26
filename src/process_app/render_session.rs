@@ -317,11 +317,21 @@ impl RenderSession {
         pane_rect: egui::Rect,
         frame: &[RenderCommand],
     ) {
-        use crate::app_protocol::{ListViewItem, PlexiEvent};
+        use crate::app_protocol::PlexiEvent;
 
         // Reset intercept flag — recalculate from current frame
         self.list_view_intercepts_nav = false;
 
+        // Prune scroll state for lists no longer in the frame
+        let live_ids: std::collections::HashSet<String> = frame
+            .iter()
+            .filter_map(|cmd| {
+                if let RenderCommand::ListView { id, .. } = cmd { Some(id.clone()) } else { None }
+            })
+            .collect();
+        self.list_view_scroll_offsets.retain(|id, _| live_ids.contains(id));
+
+        let mut handled_nav = false;
         for cmd in frame {
             let RenderCommand::ListView {
                 id, x, y, w, h, items, selected, loading, ..
@@ -337,7 +347,7 @@ impl RenderSession {
                 egui::vec2(list_w, list_h),
             );
 
-            if *loading || items.is_empty() {
+            if handled_nav || *loading || items.is_empty() {
                 continue;
             }
 
@@ -350,10 +360,8 @@ impl RenderSession {
                 if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
                     if list_rect.contains(pos) {
                         const SPACE_XS: f32 = 4.0;
-                        let total_h: f32 = items.iter().map(|item| match item {
-                            ListViewItem::Row(r) => if r.secondary.is_some() { 56.0 } else { 40.0 },
-                            ListViewItem::CustomCell { height_hint, .. } => *height_hint,
-                        }).sum::<f32>() + SPACE_XS * (n.saturating_sub(1)) as f32;
+                        let total_h: f32 = items.iter().map(|item| item.height()).sum::<f32>()
+                            + SPACE_XS * (n.saturating_sub(1)) as f32;
                         let max_scroll = (total_h - list_h).max(0.0);
                         let prev = self.list_view_scroll_offsets.get(id.as_str()).copied().unwrap_or(0.0);
                         let next = (prev - scroll_delta.y).clamp(0.0, max_scroll);
@@ -377,6 +385,7 @@ impl RenderSession {
                     index: new_sel,
                 });
                 ui.ctx().request_repaint();
+                handled_nav = true;
             }
 
             // k / up
@@ -391,6 +400,7 @@ impl RenderSession {
                     index: new_sel,
                 });
                 ui.ctx().request_repaint();
+                handled_nav = true;
             }
 
             // Enter
@@ -402,6 +412,7 @@ impl RenderSession {
                     index: sel,
                 });
                 ui.ctx().request_repaint();
+                handled_nav = true;
             }
         }
     }

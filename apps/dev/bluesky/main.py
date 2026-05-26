@@ -254,11 +254,11 @@ class BlueskyApp(App):
             reposts = post.get("repostCount", 0)
             rows.append(ListRow(
                 id=f"post-{i}",
-                leading=LeadingAvatar(av_handle) if av_handle else LeadingIcon("���"),
+                leading=LeadingAvatar(av_handle) if av_handle else LeadingIcon("👤"),
                 primary=_author(post),
                 secondary=_text(post) or None,
                 chips=[
-                    RowChip(f"��� {likes}", "muted"),
+                    RowChip(f"♥ {likes}", "muted"),
                     RowChip(f"↺ {reposts}", "muted"),
                 ],
                 trailing=ts or None,

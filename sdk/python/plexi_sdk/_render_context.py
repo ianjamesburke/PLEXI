@@ -502,7 +502,7 @@ class RenderContext:
 
     def list_view(
         self,
-        id: str,
+        list_id: str,
         items: "list[dict]",
         selected: int = 0,
         loading: bool = False,
@@ -523,7 +523,7 @@ class RenderContext:
         callbacks instead of managing scroll state.
 
         Args:
-            id: Stable identifier for this list (must not change across frames).
+            list_id: Stable identifier for this list (must not change across frames).
             items: List of row/custom_cell dicts. Use ``ListRow(...).to_dict()``.
             selected: Index of the currently highlighted item.
             loading: When True, renders skeleton rows instead of items.
@@ -535,7 +535,7 @@ class RenderContext:
         """
         self._queue({
             "type": "list_view",
-            "id": id,
+            "id": list_id,
             "x": x,
             "y": y,
             "w": w,

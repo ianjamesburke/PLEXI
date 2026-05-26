@@ -389,7 +389,7 @@ pub(crate) fn render_draw_commands(
                 loading,
                 error,
             } => {
-                use crate::app_protocol::{ListViewItem, ListViewLeading};
+                use crate::app_protocol::ListViewLeading;
 
                 log::debug!("ListView: id={id:?} items={} selected={selected} loading={loading}", items.len());
 
@@ -401,8 +401,7 @@ pub(crate) fn render_draw_commands(
                 );
                 let list_clip = clip.intersect(list_rect);
 
-                const ROW_H_BASE: f32 = 40.0;
-                const ROW_H_WITH_SEC: f32 = 56.0;
+                use crate::app_protocol::ListViewItem as LVI;
                 const LEADING_W: f32 = 48.0;
                 const PAD_X: f32 = 12.0;
                 const CHIP_GAP: f32 = 4.0;
@@ -412,16 +411,7 @@ pub(crate) fn render_draw_commands(
                 const FONT_CAPTION: f32 = 13.0;
                 const FONT_HINT: f32 = 12.0;
 
-                let item_height = |item: &ListViewItem| -> f32 {
-                    match item {
-                        ListViewItem::Row(r) => {
-                            if r.secondary.is_some() { ROW_H_WITH_SEC } else { ROW_H_BASE }
-                        }
-                        ListViewItem::CustomCell { height_hint, .. } => *height_hint,
-                    }
-                };
-
-                let heights: Vec<f32> = items.iter().map(|i| item_height(i)).collect();
+                let heights: Vec<f32> = items.iter().map(|i| i.height()).collect();
                 let total_h = if heights.is_empty() {
                     0.0
                 } else {
@@ -436,10 +426,11 @@ pub(crate) fn render_draw_commands(
                     for (i, h_item) in heights.iter().enumerate() {
                         if i == sel {
                             let item_bot = item_top + h_item;
-                            if item_top < *scroll_y_ref {
+                            if *h_item > list_h {
                                 *scroll_y_ref = item_top;
-                            }
-                            if item_bot > *scroll_y_ref + list_h {
+                            } else if item_top < *scroll_y_ref {
+                                *scroll_y_ref = item_top;
+                            } else if item_bot > *scroll_y_ref + list_h {
                                 *scroll_y_ref = (item_bot - list_h).max(0.0);
                             }
                             break;
@@ -460,20 +451,20 @@ pub(crate) fn render_draw_commands(
                         if sy > list_rect.max.y { break; }
                         let row_rect = egui::Rect::from_min_size(
                             egui::pos2(list_rect.min.x, sy),
-                            egui::vec2(list_w, ROW_H_BASE),
+                            egui::vec2(list_w, LVI::ROW_H_BASE),
                         );
                         painter.rect_filled(row_rect, 0.0, colors.terminal_bg);
                         let lead_rect = egui::Rect::from_min_size(
-                            egui::pos2(list_rect.min.x + PAD_X, sy + (ROW_H_BASE - 20.0) / 2.0),
+                            egui::pos2(list_rect.min.x + PAD_X, sy + (LVI::ROW_H_BASE - 20.0) / 2.0),
                             egui::vec2(20.0, 20.0),
                         );
                         painter.rect_filled(lead_rect, 10.0, colors.border);
                         let txt_rect = egui::Rect::from_min_size(
-                            egui::pos2(list_rect.min.x + LEADING_W, sy + (ROW_H_BASE - FONT_CAPTION) / 2.0),
+                            egui::pos2(list_rect.min.x + LEADING_W, sy + (LVI::ROW_H_BASE - FONT_CAPTION) / 2.0),
                             egui::vec2(list_w * 0.6, FONT_CAPTION),
                         );
                         painter.rect_filled(txt_rect, 3.0, colors.border);
-                        sy += ROW_H_BASE + SPACE_XS;
+                        sy += LVI::ROW_H_BASE + SPACE_XS;
                     }
                     // return is inside the match arm — use continue instead
                 }
@@ -541,10 +532,10 @@ pub(crate) fn render_draw_commands(
                         painter.rect_filled(row_rect, 0.0, bg);
 
                         match item {
-                            ListViewItem::CustomCell { .. } => {
+                            LVI::CustomCell { .. } => {
                                 // Custom cell: host only renders background. App draws over it.
                             }
-                            ListViewItem::Row(row) => {
+                            LVI::Row(row) => {
                                 let mid_y = row_rect.center().y;
                                 let primary_y = if row.secondary.is_some() {
                                     row_rect.min.y + 8.0
@@ -636,16 +627,16 @@ pub(crate) fn render_draw_commands(
                                         egui::FontId::proportional(FONT_HINT),
                                         colors.text_dim,
                                     );
-                                    trailing_reserve = trailing.len() as f32 * 6.0 + 16.0;
+                                    trailing_reserve = trailing.chars().count() as f32 * 6.0 + 16.0;
                                 }
 
                                 // Chips (right-aligned)
                                 let chips_reserve: f32 = row.chips.iter()
-                                    .map(|c| c.label.len() as f32 * 7.0 + CHIP_PAD_X * 2.0 + CHIP_GAP)
+                                    .map(|c| c.label.chars().count() as f32 * 7.0 + CHIP_PAD_X * 2.0 + CHIP_GAP)
                                     .sum();
                                 let mut cx = list_rect.max.x - PAD_X - trailing_reserve - chips_reserve;
                                 for chip in &row.chips {
-                                    let chip_w = chip.label.len() as f32 * 7.0 + CHIP_PAD_X * 2.0;
+                                    let chip_w = chip.label.chars().count() as f32 * 7.0 + CHIP_PAD_X * 2.0;
                                     let chip_color = parse_color(&chip.color)
                                         .unwrap_or(colors.accent);
                                     let chip_rect = egui::Rect::from_min_size(

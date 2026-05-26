@@ -1892,7 +1892,7 @@ impl App for ProcessApp {
                         }
                         // Suppress j/k text events when a ListView is active
                         if self.render_session.list_view_intercepts_nav
-                            && matches!(ch, 'j' | 'k')
+                            && matches!(ch, 'j' | 'k' | 'J' | 'K')
                         {
                             continue;
                         }

@@ -1822,6 +1822,20 @@ pub enum ListViewItem {
     },
 }
 
+impl ListViewItem {
+    pub const ROW_H_BASE: f32 = 40.0;
+    pub const ROW_H_WITH_SEC: f32 = 56.0;
+
+    pub fn height(&self) -> f32 {
+        match self {
+            ListViewItem::Row(r) => {
+                if r.secondary.is_some() { Self::ROW_H_WITH_SEC } else { Self::ROW_H_BASE }
+            }
+            ListViewItem::CustomCell { height_hint, .. } => *height_hint,
+        }
+    }
+}
+
 fn default_custom_cell_height() -> f32 { 40.0 }
 
 fn is_false(b: &bool) -> bool {
