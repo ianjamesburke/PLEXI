@@ -1,6 +1,29 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.503] — 2026-05-26
+
+### Changes
+- feat(cli/terminal): cursor-based incremental pane capture (#1723) (#1725)
+- docs(skills/implement-issue): alpha gate is first check in pre-flight, before any gh calls
+- docs(skills): unify ship pipeline to inline chaining, remove PM-dispatch model
+- fix(apps/gh-issues): label badges overlap title text (#1724) (#1726)
+- docs(skills/plexi-cli): correct pane send newline behavior
+- refactor(apps): flatten app directory — collapse core/examples into apps/, move dev-examples to apps/dev/ (#1718) (#1721)
+- fix(cli): workspace init does not create channel dir — resolve_workspace_root fails on non-stable channels (#1720) (#1722)
+- fix(cli): pane-spawning commands split from PLEXI_PANE_ID env, not UI-active pane
+- refactor(apps): overhaul app directory structure — core/fixtures split + registry-driven distribution (#1295) (#1717)
+- feat(infra/skills): PM as single IO channel — pipeline orchestration via GitHub labels (#1670)
+- refactor(infra): unified channel primitive with stable→main rename (#1711) (#1714)
+- bug(host): command palette app list is stale — registry not re-scanned after app init or filesystem changes (#1712) (#1716)
+- fix(website): add missing language tags to bare code fences
+- fix(cli): app init workspace detection checks .plexi/ not channel dir
+- fix(website): rewrite sdk.md with proper markdown formatting
+- feat(sdk): scaffold template demonstrates state persistence with hot reload
+- fix(website): remove unpublished SDK install instructions, bump verified version
+- fix(host/pane-ops): honor from_pane_id for app spawns (#1705) (#1708)
+- refactor(skills): consolidate ship pipeline — delete ship-issue, centralize env, move hand-off (#1709)
+- fix(host): hot reload never fires for apps launched via path (app init / app run) (#1706) (#1707)
 ## [0.0.502] — 2026-05-25
 
 ### Changes
