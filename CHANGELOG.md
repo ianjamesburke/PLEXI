@@ -1,6 +1,17 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.507] — 2026-05-26
+
+### Changes
+- chore: restore session edits carried through merge
+- Bug: Pane focus misbehaves on close and fullscreen toggle (#1547) (#1753)
+- feat(cli): plexi demo — live keybinding tutorial that watches events.jsonl (#1740) (#1749)
+- chore: remove demo spec file
+- feat(website): swap mailing list storage from SQLite to Resend Contacts
+- docs: add plexi demo interactive tutorial spec
+- chore(justfile): auto-commit and push CLI docs from gen-cli-docs recipe
+- chore(website): remove deprecated link and unlink command documentation
 ## [0.0.506] — 2026-05-26
 
 ### Changes
