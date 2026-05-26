@@ -720,7 +720,7 @@ pub fn apply_workspace_pack(
     let apps_toml = workspace_root.join(".plexi").join("apps.toml");
     if !apps_toml.exists() {
         return Err(
-            "no .plexi/apps.toml found — run 'plexi app add <id>' to declare dependencies"
+            "no .plexi/apps.toml found — run 'plexi workspace init' to initialize a workspace with a stub apps.toml"
                 .to_string(),
         );
     }
@@ -740,9 +740,16 @@ pub fn apply_workspace_pack(
 /// Return the set of app IDs declared in `<workspace_root>/.plexi/apps.toml`.
 /// Returns an empty set if the file is absent or unparseable.
 pub fn workspace_manifest_ids(workspace_root: &Path) -> std::collections::HashSet<String> {
-    Pack::from_path(&workspace_root.join(".plexi").join("apps.toml"))
-        .map(|p| p.apps.into_iter().map(|a| a.id).collect())
-        .unwrap_or_default()
+    let path = workspace_root.join(".plexi").join("apps.toml");
+    match Pack::from_path(&path) {
+        Ok(p) => p.apps.into_iter().map(|a| a.id).collect(),
+        Err(e) => {
+            if path.exists() {
+                log::warn!("failed to parse workspace apps.toml: {e}");
+            }
+            std::collections::HashSet::new()
+        }
+    }
 }
 
 #[cfg(test)]
