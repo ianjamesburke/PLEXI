@@ -4,6 +4,14 @@
 
 ---
 
+## [cli] New top-level subcommands must be added to SUBCOMMANDS in parse_workspace_path_arg
+
+`parse_workspace_path_arg` in `src/main.rs` runs on raw args before clap parses anything. It has a hardcoded `SUBCOMMANDS: &[&str]` allowlist. Any first positional arg not in that list is treated as a workspace path, giving `error: workspace path does not exist: <name>` even when the subcommand is defined in the `Commands` enum.
+
+**Fix:** add the lowercase subcommand name to `SUBCOMMANDS` in `parse_workspace_path_arg` (line ~601 in `src/main.rs`) for every new `Commands` variant.
+
+---
+
 ## [git · ship] Unpushed alpha commits are silently lost when ship-issue agents rebase
 
 `ship-issue` runs `git pull --rebase origin alpha` at Phase 1. If there are commits on the local alpha branch that haven't been pushed to origin, the rebase replays them on top of origin's HEAD — but if those commits touch files that were also changed by merged PRs (e.g. skill files, CLAUDE.md), they will conflict and be silently dropped or overwritten.
