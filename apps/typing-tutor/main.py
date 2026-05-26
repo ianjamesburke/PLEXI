@@ -308,7 +308,7 @@ class TypingTutorApp(App):
         text = level.text
 
         if key == "escape":
-            self.emit.info(f"typing-tutor: aborted level={self._play_level + 1}")
+            ctx.info(f"typing-tutor: aborted level={self._play_level + 1}")
             self._screen = Screen.LEVEL_SELECT
             return
 
