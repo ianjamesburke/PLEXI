@@ -183,9 +183,11 @@ fn render_commands_to_png(commands: &[RenderCommand], width: u32, height: u32) -
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
+                let mut lv_offsets = std::collections::HashMap::new();
                 crate::process_app::render::render_draw_commands(
                     ui, rect, commands, &colors, &mut cm_cache, &peaks,
                     &mut img_cache, &std::env::temp_dir(), false,
+                    &mut lv_offsets,
                 );
             });
     });

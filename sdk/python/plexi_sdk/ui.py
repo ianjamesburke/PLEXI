@@ -1427,6 +1427,88 @@ class ButtonRow(Component):
         )
 
 
+# ── ListView row helpers ───────────────────────────────────────────────────────
+
+@dataclass
+class LeadingBadge:
+    """Badge leading slot for :class:`ListRow`.
+
+    Renders a pill badge with ``label`` text and the given ``color``.
+    """
+    label: str
+    color: str = "accent"
+
+    def to_dict(self) -> dict:
+        return {"variant": "badge", "label": self.label, "color": self.color}
+
+
+@dataclass
+class LeadingAvatar:
+    """Circular avatar leading slot for :class:`ListRow`.
+
+    ``handle`` must be a UUID returned by ``emit.load_image(url)``.
+    """
+    handle: str
+
+    def to_dict(self) -> dict:
+        return {"variant": "avatar", "handle": self.handle}
+
+
+@dataclass
+class LeadingIcon:
+    """Text/emoji icon leading slot for :class:`ListRow`."""
+    name: str
+
+    def to_dict(self) -> dict:
+        return {"variant": "icon", "name": self.name}
+
+
+@dataclass
+class RowChip:
+    """A small colored chip label on a :class:`ListRow`."""
+    label: str
+    color: str = "accent"
+
+    def to_dict(self) -> dict:
+        return {"label": self.label, "color": self.color}
+
+
+@dataclass
+class ListRow:
+    """Typed row descriptor for :meth:`RenderContext.list_view`.
+
+    Example::
+
+        rows = [
+            ListRow(
+                id=f"issue-{issue['number']}",
+                leading=LeadingBadge(f"#{issue['number']}", color="accent"),
+                primary=issue["title"],
+                chips=[RowChip(lbl["name"], _label_color(lbl["name"])) for lbl in issue["labels"][:2]],
+            ).to_dict()
+            for issue in self._issues
+        ]
+        ctx.list_view("issues", rows, selected=self._sel, y=float(HEADER_H))
+    """
+    id: str
+    primary: str
+    leading: "LeadingBadge | LeadingAvatar | LeadingIcon | None" = None
+    secondary: "str | None" = None
+    chips: "list[RowChip]" = field(default_factory=list)
+    trailing: "str | None" = None
+
+    def to_dict(self) -> dict:
+        return {
+            "type": "row",
+            "id": self.id,
+            "leading": self.leading.to_dict() if self.leading else {"variant": "none"},
+            "primary": self.primary,
+            "secondary": self.secondary,
+            "chips": [c.to_dict() for c in self.chips],
+            "trailing": self.trailing,
+        }
+
+
 __all__ = [
     # tokens
     "SPACE_XS", "SPACE_SM", "SPACE_MD", "SPACE_LG", "SPACE_XL",
@@ -1448,4 +1530,6 @@ __all__ = [
     "ensure_visible",
     # entry
     "render_tree",
+    # ListView row helpers
+    "ListRow", "RowChip", "LeadingBadge", "LeadingAvatar", "LeadingIcon",
 ]

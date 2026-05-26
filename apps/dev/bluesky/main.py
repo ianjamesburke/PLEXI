@@ -18,11 +18,12 @@ import webbrowser
 
 from plexi_sdk import (
     App, RenderContext, CapabilityDeniedError,
-    BG, SURFACE, FG, ACCENT, MUTED, HIGHLIGHT,
+    BG, SURFACE, ACCENT, MUTED,
     BODY, CAPTION, HEADING, HINT, HEADER_H,
     RED,
     PAD, PAD_TIGHT,
 )
+from plexi_sdk.ui import ListRow, RowChip, LeadingAvatar, LeadingIcon
 
 BASE     = "https://public.api.bsky.app/xrpc"
 DISCOVER = "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot"
@@ -99,7 +100,6 @@ class BlueskyApp(App):
         self._view   = self.VIEW_FEED
         self._feed   : list[dict] = []
         self._sel    = 0
-        self._scroll  = 0.0
         self._loading = True
         self._error   : str | None = None
 
@@ -114,8 +114,6 @@ class BlueskyApp(App):
         self._thread  : list[dict] = []
         self._t_scroll = 0.0
 
-        # per-post measured row heights (pre-computed at fetch time)
-        self._row_heights: list[float] = []
         # avatar handles keyed by author did
         self._avatar_handles: dict[str, str] = {}
 
@@ -180,27 +178,7 @@ class BlueskyApp(App):
         self.emit.schedule_render()
 
     async def _post_fetch_setup(self) -> None:
-        """Pre-measure row heights and load avatars after any feed fetch."""
-        pane_w = 700.0  # conservative default; real width used for render
-        text_w = pane_w - TEXT_X - PAD
-
-        heights = []
-        for post in self._feed:
-            body = _text(post)
-            if body:
-                try:
-                    h = await self.emit.measure_text_wrapped(
-                        body, CAPTION, text_w, max_lines=MAX_LINES
-                    )
-                    heights.append(ROW_BASE + max(0.0, h - CAPTION))
-                except Exception as exc:
-                    self.emit.warn(f"bluesky: measure_text_wrapped failed: {exc}")
-                    heights.append(ROW_BASE + LINE_H * MAX_LINES)
-            else:
-                heights.append(ROW_BASE)
-        self._row_heights = heights
-
-        # Load avatars for unique authors
+        """Load avatars after any feed fetch."""
         for post in self._feed:
             did = _did(post)
             url = _avatar_url(post)
@@ -266,15 +244,32 @@ class BlueskyApp(App):
 
     # ── render ────────────────────────────────────────────────────────────────
 
+    def _feed_rows(self) -> "list[dict]":
+        rows = []
+        for i, post in enumerate(self._feed):
+            did = _did(post)
+            av_handle = self._avatar_handles.get(did, "")
+            ts = _short_ts((post.get("record") or {}).get("createdAt", ""))
+            likes = post.get("likeCount", 0)
+            reposts = post.get("repostCount", 0)
+            rows.append(ListRow(
+                id=f"post-{i}",
+                leading=LeadingAvatar(av_handle) if av_handle else LeadingIcon("👤"),
+                primary=_author(post),
+                secondary=_text(post) or None,
+                chips=[
+                    RowChip(f"♥ {likes}", "muted"),
+                    RowChip(f"↺ {reposts}", "muted"),
+                ],
+                trailing=ts or None,
+            ).to_dict())
+        return rows
+
     def on_render(self, ctx: RenderContext) -> None:
         ctx.clear(BG)
         self._draw_header(ctx)
 
-        if self._loading:
-            self._draw_loading_skeleton(ctx)
-            return
-
-        if self._error:
+        if self._error and not self._loading:
             ctx.text(PAD, HEADER_H + PAD, f"Error: {self._error}",
                      size=CAPTION, color=RED, max_width=ctx.w - PAD * 2)
             ctx.text(PAD, HEADER_H + PAD + BODY + PAD_TIGHT, "r — retry",
@@ -283,25 +278,19 @@ class BlueskyApp(App):
 
         if self._view == self.VIEW_THREAD:
             self._draw_thread(ctx)
-        else:
-            self._draw_feed(ctx)
-            if self._show_input:
-                self._draw_input_overlay(ctx)
+            return
 
-    def _draw_loading_skeleton(self, ctx: RenderContext) -> None:
-        """Render animated skeleton rows instead of plain 'Loading…'."""
-        y = HEADER_H + PAD
-        for _ in range(8):
-            row_h = ROW_BASE + LINE_H * 2
-            # avatar circle placeholder
-            ctx.skeleton(PAD, y + (row_h - AVATAR_R * 2) / 2,
-                         AVATAR_R * 2, AVATAR_R * 2, radius=AVATAR_R)
-            # author line
-            ctx.skeleton(TEXT_X, y + 6, ctx.w * 0.35, HINT, radius=3.0)
-            # text lines
-            ctx.skeleton(TEXT_X, y + 6 + HINT + 6, ctx.w * 0.85 - TEXT_X, CAPTION, radius=3.0)
-            ctx.skeleton(TEXT_X, y + 6 + HINT + 6 + LINE_H, ctx.w * 0.60 - TEXT_X, CAPTION, radius=3.0)
-            y += row_h + 1
+        if self._show_input:
+            self._draw_input_overlay(ctx)
+
+        ctx.list_view(
+            "feed",
+            self._feed_rows(),
+            selected=self._sel,
+            loading=self._loading,
+            error=self._error,
+            y=float(HEADER_H),
+        )
 
     def _draw_header(self, ctx: RenderContext) -> None:
         ctx.rect(0, 0, ctx.w, HEADER_H, fill=SURFACE)
@@ -327,67 +316,6 @@ class BlueskyApp(App):
         )
         ctx.shortcuts(x=ctx.w / 3, y=mid_y - HINT / 2,
                       max_width=ctx.w * 2 / 3 - PAD, pairs=pairs)
-
-    def _row_height(self, i: int) -> float:
-        if i < len(self._row_heights):
-            return self._row_heights[i]
-        return ROW_BASE + LINE_H * 2
-
-    def _draw_feed(self, ctx: RenderContext) -> None:
-        if not self._feed:
-            ctx.text(PAD, HEADER_H + PAD, "No posts.", size=BODY, color=MUTED)
-            return
-
-        content_h = sum(self._row_height(i) for i in range(len(self._feed)))
-        list_y = HEADER_H
-        ctx.begin_scroll("feed-list", 0.0, list_y, ctx.w,
-                         ctx.h - list_y, content_h)
-
-        y = list_y - self._scroll
-        for i, post in enumerate(self._feed):
-            row_h = self._row_height(i)
-            sel   = i == self._sel
-            ctx.rect(0, y, ctx.w, row_h,
-                     fill=HIGHLIGHT if sel else (SURFACE if i % 2 == 0 else BG))
-            if i > 0:
-                ctx.rect(0, y, ctx.w, 1, fill=BG)
-
-            # Avatar
-            did = _did(post)
-            av_handle = self._avatar_handles.get(did, "")
-            av_cy = y + row_h / 2
-            if av_handle:
-                ctx.avatar(av_handle, x=PAD, y_center=av_cy, radius=AVATAR_R)
-            else:
-                ctx.circle(PAD + AVATAR_R, av_cy, AVATAR_R, fill="#3a3a4a")
-
-            # Author + timestamp
-            ts = _short_ts((post.get("record") or {}).get("createdAt", ""))
-            ctx.text(TEXT_X, y + 6, _author(post),
-                     size=HINT, color=ACCENT,
-                     max_width=ctx.w - TEXT_X - PAD - 36)
-            if ts:
-                ctx.text(ctx.w - PAD - 32, y + 6, ts, size=HINT, color=MUTED)
-
-            # Post body (up to MAX_LINES lines)
-            body = _text(post)
-            if body:
-                ctx.text(TEXT_X, y + 6 + HINT + 4, body,
-                         size=CAPTION, color=FG,
-                         max_width=ctx.w - TEXT_X - PAD,
-                         max_lines=MAX_LINES)
-
-            # Stats
-            likes   = post.get("likeCount", 0)
-            reposts = post.get("repostCount", 0)
-            replies = post.get("replyCount", 0)
-            ctx.text(TEXT_X, y + row_h - HINT - 4,
-                     f"♥ {likes}  ↺ {reposts}  💬 {replies}",
-                     size=HINT, color=MUTED)
-
-            y += row_h
-
-        ctx.end_scroll()
 
     def _draw_thread(self, ctx: RenderContext) -> None:
         if not self._thread:
@@ -476,14 +404,6 @@ class BlueskyApp(App):
             if key == "escape":
                 self.emit.info("bluesky: close via Escape")
                 self.emit.close_self()
-            elif key in ("j", "down"):
-                self._sel = min(self._sel + 1, max(0, len(self._feed) - 1))
-                self.emit.schedule_render()
-            elif key in ("k", "up"):
-                self._sel = max(self._sel - 1, 0)
-                self.emit.schedule_render()
-            elif key == "return":
-                self._open_thread()
             elif key == "p":
                 self._show_input = True
                 self.emit.schedule_render()
@@ -519,24 +439,19 @@ class BlueskyApp(App):
         self.emit.info(f"bluesky: profile lookup @{handle}")
         asyncio.create_task(self._fetch_author(handle, None))
 
+    def on_list_select(self, _ctx: RenderContext, _id: str, index: int) -> None:
+        self._sel = index
+        self.emit.schedule_render()
+
+    def on_list_activate(self, _ctx: RenderContext, _id: str, _index: int) -> None:
+        self._open_thread()
+
     def on_scroll(self, _ctx: RenderContext, id: str, offset_y: float) -> None:
-        if id == "feed-list":
-            self._scroll = offset_y
-        elif id == "thread-list":
+        if id == "thread-list":
             self._t_scroll = offset_y
 
-    def on_click(self, _ctx: RenderContext, _x: float, y: float, button: str) -> None:
-        if self._view == self.VIEW_FEED and not self._loading and self._feed:
-            local_y = y - HEADER_H + self._scroll
-            if local_y >= 0:
-                acc = 0.0
-                for i, rh in enumerate(self._row_heights):
-                    if local_y < acc + rh:
-                        self._sel = i
-                        if button == "primary":
-                            self._open_thread()
-                        break
-                    acc += rh
+    def on_click(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> None:
+        pass
 
     # ── actions ───────────────────────────────────────────────────────────────
 

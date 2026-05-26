@@ -381,6 +381,14 @@ pub enum PlexiEvent {
     /// the region. `offset_y` is always >= 0 and clamped to
     /// `max(0, content_height - viewport_height)`.
     ScrollOffset { id: String, offset_y: f32 },
+
+    /// Emitted when j/k/up/down changes the list selection.
+    /// `id` matches the `list_view` id field; `index` is the new selected index.
+    ListSelect { id: String, index: usize },
+
+    /// Emitted when Enter is pressed on the selected item.
+    /// `id` matches the `list_view` id field; `index` is the activated item index.
+    ListActivate { id: String, index: usize },
 }
 
 /// On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives
@@ -639,6 +647,30 @@ pub enum RenderCommand {
         selected: usize,
         #[serde(default)]
         item_height: f32,
+    },
+
+    /// Host-native scrollable list with j/k navigation, typed row slots,
+    /// and built-in loading/error/empty states.
+    /// Host emits `PlexiEvent::ListSelect` / `PlexiEvent::ListActivate` for callbacks.
+    ListView {
+        id: String,
+        #[serde(default)]
+        x: f32,
+        #[serde(default)]
+        y: f32,
+        /// 0.0 = full pane width
+        #[serde(default)]
+        w: f32,
+        /// 0.0 = remaining pane height below y
+        #[serde(default)]
+        h: f32,
+        items: Vec<ListViewItem>,
+        #[serde(default)]
+        selected: usize,
+        #[serde(default)]
+        loading: bool,
+        #[serde(default)]
+        error: Option<String>,
     },
 
     // ── Host-measured layout primitives ──────────────────────────────────
@@ -1745,6 +1777,66 @@ pub struct ListItem {
     #[serde(default)]
     pub is_dir: bool,
 }
+
+/// Leading slot for a ListView row.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+#[serde(tag = "variant", rename_all = "snake_case")]
+pub enum ListViewLeading {
+    Badge { label: String, color: String },
+    Avatar { handle: String },
+    Icon { name: String },
+    None,
+}
+
+/// One chip label on a ListView row.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct ListViewChip {
+    pub label: String,
+    pub color: String,
+}
+
+/// A generic typed row for a ListView.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+pub struct ListViewRowDescriptor {
+    pub id: String,
+    #[serde(default)]
+    pub leading: Option<ListViewLeading>,
+    pub primary: String,
+    #[serde(default)]
+    pub secondary: Option<String>,
+    #[serde(default)]
+    pub chips: Vec<ListViewChip>,
+    #[serde(default)]
+    pub trailing: Option<String>,
+}
+
+/// An item inside a ListView — either a typed row or a custom cell.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ListViewItem {
+    Row(ListViewRowDescriptor),
+    CustomCell {
+        id: String,
+        #[serde(default = "default_custom_cell_height")]
+        height_hint: f32,
+    },
+}
+
+impl ListViewItem {
+    pub const ROW_H_BASE: f32 = 40.0;
+    pub const ROW_H_WITH_SEC: f32 = 56.0;
+
+    pub fn height(&self) -> f32 {
+        match self {
+            ListViewItem::Row(r) => {
+                if r.secondary.is_some() { Self::ROW_H_WITH_SEC } else { Self::ROW_H_BASE }
+            }
+            ListViewItem::CustomCell { height_hint, .. } => *height_hint,
+        }
+    }
+}
+
+fn default_custom_cell_height() -> f32 { 40.0 }
 
 fn is_false(b: &bool) -> bool {
     !*b
@@ -3197,6 +3289,107 @@ mod tests {
                 assert_eq!(*max_lines, None, "absent max_lines should be None");
             }
             other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_view_command_round_trips_serde() {
+        let json = r#"{"type":"list_view","id":"feed","x":0.0,"y":48.0,"w":0.0,"h":0.0,"items":[{"type":"row","id":"r1","primary":"Hello","secondary":null,"leading":{"variant":"none"},"chips":[],"trailing":null}],"selected":0,"loading":false,"error":null}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Render(RenderCommand::ListView { id, selected, loading, error, items, .. }) => {
+                assert_eq!(id, "feed");
+                assert_eq!(*selected, 0);
+                assert!(!loading);
+                assert!(error.is_none());
+                assert_eq!(items.len(), 1);
+            }
+            other => panic!("expected ListView, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""type":"list_view""#), "wire tag missing: {serialised}");
+        assert!(serialised.contains(r#""id":"feed""#), "id missing: {serialised}");
+    }
+
+    #[test]
+    fn list_view_loading_state_round_trips_serde() {
+        let json = r#"{"type":"list_view","id":"issues","x":0.0,"y":0.0,"w":0.0,"h":0.0,"items":[],"selected":0,"loading":true,"error":null}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Render(RenderCommand::ListView { loading, error, .. }) => {
+                assert!(loading, "loading should be true");
+                assert!(error.is_none());
+            }
+            other => panic!("expected ListView, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_view_error_state_round_trips_serde() {
+        let json = r#"{"type":"list_view","id":"issues","x":0.0,"y":0.0,"w":0.0,"h":0.0,"items":[],"selected":0,"loading":false,"error":"network timeout"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Render(RenderCommand::ListView { error, .. }) => {
+                assert_eq!(error.as_deref(), Some("network timeout"));
+            }
+            other => panic!("expected ListView, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_view_row_badge_leading_round_trips_serde() {
+        let json = r##"{"type":"list_view","id":"issues","x":0.0,"y":0.0,"w":0.0,"h":0.0,"items":[{"type":"row","id":"r1","primary":"Fix bug","secondary":"subtitle","leading":{"variant":"badge","label":"#42","color":"accent"},"chips":[{"label":"P1","color":"red"}],"trailing":"3m ago"}],"selected":0,"loading":false,"error":null}"##;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Render(RenderCommand::ListView { items, .. }) => {
+                assert_eq!(items.len(), 1);
+                match &items[0] {
+                    crate::app_protocol::ListViewItem::Row(row) => {
+                        assert_eq!(row.primary, "Fix bug");
+                        assert_eq!(row.secondary.as_deref(), Some("subtitle"));
+                        assert_eq!(row.chips.len(), 1);
+                        assert_eq!(row.trailing.as_deref(), Some("3m ago"));
+                        match &row.leading {
+                            Some(crate::app_protocol::ListViewLeading::Badge { label, color }) => {
+                                assert_eq!(label, "#42");
+                                assert_eq!(color, "accent");
+                            }
+                            other => panic!("expected Badge leading, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Row item, got {other:?}"),
+                }
+            }
+            other => panic!("expected ListView, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_select_event_round_trips_serde() {
+        let json = r#"{"type":"list_select","id":"feed","index":3}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::ListSelect { id, index } => {
+                assert_eq!(id, "feed");
+                assert_eq!(*index, 3);
+            }
+            other => panic!("expected ListSelect, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(serialised.contains(r#""type":"list_select""#), "wire tag missing: {serialised}");
+        assert!(serialised.contains(r#""index":3"#), "index missing: {serialised}");
+    }
+
+    #[test]
+    fn list_activate_event_round_trips_serde() {
+        let json = r#"{"type":"list_activate","id":"issues","index":0}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::ListActivate { id, index } => {
+                assert_eq!(id, "issues");
+                assert_eq!(*index, 0);
+            }
+            other => panic!("expected ListActivate, got {other:?}"),
         }
     }
 }
