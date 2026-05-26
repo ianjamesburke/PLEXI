@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "plexi-gpui-poc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component" }
+anyhow = "1"
+
+[patch.crates-io]
+psm = { git = "https://github.com/rust-lang/stacker", branch = "master" }
