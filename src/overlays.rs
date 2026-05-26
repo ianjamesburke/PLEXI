@@ -4096,10 +4096,11 @@ impl PlexiApp {
                         .color(colors.text_dim),
                     );
                     ui.add_space(style::SPACE_SM);
-                    ui.label(
+                    ui.hyperlink_to(
                         RichText::new("Read the docs at plexi.dev/docs")
                             .size(style::TEXT_CAPTION)
                             .color(colors.text_dim),
+                        "https://plexi.dev/docs",
                     );
 
                     ui.add_space(style::SPACE_MD);
