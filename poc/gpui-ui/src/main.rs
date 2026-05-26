@@ -635,11 +635,11 @@ impl PlexiApp {
                     .min_h_0()
                     .gap_1()
                     .child(
-                        div().flex_1().min_h_0()
+                        v_flex().flex_1().min_h_0().min_w_0()
                             .child(self.render_layout_node(left, cx)),
                     )
                     .child(
-                        div().flex_1().min_h_0()
+                        v_flex().flex_1().min_h_0().min_w_0()
                             .child(self.render_layout_node(right, cx)),
                     )
                     .into_any_element()
@@ -651,11 +651,11 @@ impl PlexiApp {
                     .min_h_0()
                     .gap_1()
                     .child(
-                        div().flex_1().min_w_0()
+                        v_flex().flex_1().min_w_0().min_h_0()
                             .child(self.render_layout_node(top, cx)),
                     )
                     .child(
-                        div().flex_1().min_w_0()
+                        v_flex().flex_1().min_w_0().min_h_0()
                             .child(self.render_layout_node(bottom, cx)),
                     )
                     .into_any_element()
@@ -969,7 +969,7 @@ impl Render for PlexiApp {
                             // Context tab bar
                             .when(zoomed.is_none(), |el| el.child(self.render_context_tabs(cx)))
                             .child(
-                                div()
+                                v_flex()
                                     .flex_1()
                                     .min_h_0()
                                     .p_1()
