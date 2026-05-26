@@ -4067,9 +4067,9 @@ impl PlexiApp {
                     // Each entry: (chip groups for one combo, description).
                     // Every modifier/key is a separate chip — no combined strings.
                     let shortcuts: &[(&[&str], &str)] = &[
+                        (&["⌘", "N"], "new terminal"),
                         (&["⌘", "E"], "file browser"),
                         (&["⌘", "P"], "command palette"),
-                        (&["⌘", "N"], "new terminal"),
                         (&["⌘", "⇧", "N"], "new context"),
                         (&["⌘", "/"], "keyboard shortcuts"),
                     ];
@@ -4088,13 +4088,25 @@ impl PlexiApp {
                     }
 
                     ui.add_space(style::SPACE_XL);
-                    ui.label(
-                        RichText::new(
-                            "New to Plexi? Run plexi demo in any terminal to get started.",
-                        )
-                        .size(style::TEXT_CAPTION)
-                        .color(colors.text_dim),
-                    );
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("New to Plexi? Run ")
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.text_dim),
+                        );
+                        ui.label(
+                            RichText::new("plexi demo")
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.text_dim)
+                                .monospace()
+                                .background_color(colors.bg_active),
+                        );
+                        ui.label(
+                            RichText::new(" in any terminal to get started.")
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.text_dim),
+                        );
+                    });
                     ui.add_space(style::SPACE_SM);
                     ui.hyperlink_to(
                         RichText::new("Read the docs at plexi.dev/docs")
