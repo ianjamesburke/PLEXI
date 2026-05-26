@@ -46,8 +46,13 @@ class McpClient:
 
     def start(self) -> None:
         env = os.environ.copy()
-        extra = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
-        env["PATH"] = extra + ":" + env.get("PATH", "")
+        # macOS/Linux GUI processes often launch with a minimal PATH that
+        # misses Homebrew / system bins where `npx`, `uvx`, etc. live. On
+        # Windows these dirs don't exist and ':' is the wrong separator, so
+        # leave the inherited PATH untouched there.
+        if os.name != "nt":
+            extra = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+            env["PATH"] = extra + os.pathsep + env.get("PATH", "")
         self._proc = subprocess.Popen(
             self._cmd,
             stdin=subprocess.PIPE,
