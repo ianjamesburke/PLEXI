@@ -69,6 +69,14 @@
 ; UninstallDisplayIcon. Path is relative to the .iss file.
 #define HasIcon FileExists(AddBackslash(SourcePath) + "..\assets\app-icon.ico")
 
+; Whether the bundled Python runtime is present (fetched by
+; scripts\fetch-python-runtime.ps1). When present it is shipped to
+; {app}\Resources\assets\python so the host resolves a zero-setup interpreter
+; (process_app/mod.rs) and Python apps work without the user installing Python.
+; When absent the installer still compiles (ad-hoc local builds) and the host
+; falls back to a `python` on PATH.
+#define HasPython FileExists(AddBackslash(SourcePath) + "..\assets\python\python.exe")
+
 [Setup]
 AppId={{#MyAppId}}
 AppName=Plexi{#MyAppNameSuffix}
@@ -111,17 +119,21 @@ Source: "plexi-completions-helper.ps1";       DestDir: "{app}";                 
 #if HasIcon
 Source: "..\assets\app-icon.ico";             DestDir: "{app}";                                  Flags: ignoreversion
 #endif
+#if HasPython
+Source: "..\assets\python\*";                 DestDir: "{app}\Resources\assets\python"; Flags: ignoreversion recursesubdirs createallsubdirs
+#endif
 
 [Icons]
 ; WorkingDir defaults to {app} (the install dir) if omitted, which makes Plexi
 ; spawn new terminal panes inside %LOCALAPPDATA%\Plexi[-channel]\. Setting it
-; to {userprofile} (~) gives terminals a sane default CWD when launched via
+; to the user profile (~) gives terminals a sane default CWD when launched via
 ; the Start Menu shortcut. Terminal launches of `plexi` still honor the
-; caller's CWD.
+; caller's CWD. {%USERPROFILE} reads the env var — Inno has no {userprofile}
+; constant (the bare form fails to compile).
 #if HasIcon
-Name: "{group}\Plexi{#MyAppNameSuffix}"; Filename: "{app}\bin\{#MyBinaryName}"; WorkingDir: "{userprofile}"; IconFilename: "{app}\app-icon.ico"
+Name: "{group}\Plexi{#MyAppNameSuffix}"; Filename: "{app}\bin\{#MyBinaryName}"; WorkingDir: "{%USERPROFILE}"; IconFilename: "{app}\app-icon.ico"
 #else
-Name: "{group}\Plexi{#MyAppNameSuffix}"; Filename: "{app}\bin\{#MyBinaryName}"; WorkingDir: "{userprofile}"
+Name: "{group}\Plexi{#MyAppNameSuffix}"; Filename: "{app}\bin\{#MyBinaryName}"; WorkingDir: "{%USERPROFILE}"
 #endif
 
 [Run]

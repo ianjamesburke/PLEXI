@@ -108,6 +108,10 @@ jobs:
       - name: Build release binary
         run: cargo build --release --bin plexi
 
+      - name: Fetch Python runtime
+        shell: pwsh
+        run: .\scripts\fetch-python-runtime.ps1 -Version 3.12.13 -PbsDate 20260414
+
       - name: Locate ISCC.exe
         id: iscc
         shell: pwsh
