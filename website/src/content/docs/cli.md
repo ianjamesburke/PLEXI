@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.494"
+verified_version: "0.0.506"
 order: 7
 ---
 
@@ -99,8 +99,6 @@ Manage your Plexi apps — scaffold, install, list, and inspect
 | `render` | Render an app to a PNG image without opening the UI (useful for screenshots and testing) |
 | `info` | Show details about an installed app: id, name, version, and available tools |
 | `install` | Install a local app directory you are developing into Plexi |
-| `link` | Link a local app directory so Plexi can see it without copying files |
-| `unlink` | Unlink a previously linked app directory |
 | `run` | Run an app directly from a local directory without installing or linking |
 
 ### `plexi app init`
@@ -157,24 +155,6 @@ Copies your app folder into Plexi's app store so it shows up and runs like any o
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<path>` | string | yes | Path to the app folder containing manifest.toml |
-
-### `plexi app link`
-
-Link a local app directory so Plexi can see it without copying files.
-
-Useful during development — edits to your app folder take effect immediately without reinstalling.
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<path>` | string | yes | Path to the app folder containing manifest.toml |
-
-### `plexi app unlink`
-
-Unlink a previously linked app directory
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<path>` | string | yes | Path to the app folder (the same path you passed to `link`) |
 
 ### `plexi app run`
 
@@ -368,6 +348,7 @@ Example: plexi pane capture --lines 50 42
 | `<pane_id>` | string | no | Pane id to capture output from. Defaults to the current pane |
 | `--lines` | string | no | How many lines to read from the end of the output Default: `50`. |
 | `--full-output` | flag | no | Preserve trailing empty lines (by default they are stripped) |
+| `--from-cursor` | string | no | Read only lines written after this cursor value. Get the cursor from a previous capture response. When set, the response is always JSON object format |
 
 ### `plexi pane key`
 
@@ -580,4 +561,10 @@ Print paths of all scratchpad notes, newest first
 Open a note picker with fzf in the focused terminal pane.
 
 Requires fzf to be installed. Falls back to printing the notes directory when fzf is not available or PLEXI_SOCKET is not set.
+
+## `plexi demo`
+
+Interactive keybinding tutorial — learn split and navigate in real time.
+
+Walk through two fundamental Plexi interactions inside a live pane: split a pane (⌘D) and navigate between panes (⌘L / ⌘H). Must be run inside a Plexi pane (PLEXI_PANE_ID must be set).
 

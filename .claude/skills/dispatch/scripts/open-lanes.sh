@@ -10,7 +10,9 @@ if [[ $# -eq 0 ]]; then
   exit 1
 fi
 
-REPO_DIR=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=../../_lib/plexi-env.sh
+source "$SCRIPT_DIR/../../_lib/plexi-env.sh"
 
 if ! git -C "$REPO_DIR" diff --quiet || ! git -C "$REPO_DIR" diff --cached --quiet; then
   echo "ERROR: alpha has uncommitted changes. Commit or stash before dispatching." >&2
@@ -18,14 +20,11 @@ if ! git -C "$REPO_DIR" diff --quiet || ! git -C "$REPO_DIR" diff --cached --qui
   exit 1
 fi
 
-PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}
-MY_PANE_ID=${PLEXI_PANE_ID:?PLEXI_PANE_ID not set — must run inside a Plexi pane}
-
 PREV_ID=$MY_PANE_ID
 LAYOUT=split_h
 
 for ISSUE in "$@"; do
-  PANE_ID=$($PLEXI terminal "c '/ship-issue $ISSUE'" \
+  PANE_ID=$($PLEXI terminal "c '/implement-issue $ISSUE'" \
     --layout $LAYOUT \
     --from-pane-id $PREV_ID \
     --cwd "$REPO_DIR" \

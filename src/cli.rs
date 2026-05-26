@@ -369,10 +369,50 @@ pub fn workspace_init() -> i32 {
     match crate::workspace_secrets::init_workspace(&cwd) {
         Ok(cfg) => {
             log::info!("workspace_init:cli: initialized workspace_id={} at {}", cfg.id, cwd.display());
+            let channel_dir = app_init_config_dir();
+            let channel_path = cwd.join(&channel_dir);
+            let channel_created = if let Err(e) = std::fs::create_dir_all(&channel_path) {
+                log::warn!("workspace_init:cli: could not create channel dir {}: {e}", channel_path.display());
+                false
+            } else {
+                log::info!("workspace_init:cli: created channel dir {}", channel_path.display());
+                true
+            };
             println!("Initialized workspace at {}", cwd.display());
             println!("  workspace id: {}", cfg.id);
             println!("  router:       .plexi/secrets.toml (fallback = true)");
-            print_tip("define runnable commands in .plexi/commands.toml, then run them with `plexi run <name>`.");
+            if channel_created {
+                println!("  channel dir:  {channel_dir}/");
+            }
+            // Write stub apps.toml if not already present.
+            let apps_toml = cwd.join(".plexi").join("apps.toml");
+            if !apps_toml.exists() {
+                let stub = concat!(
+                    "schema_version = 1\n\n",
+                    "# Declare workspace app dependencies here.\n",
+                    "# Run `plexi install` in this directory to install them.\n",
+                    "#\n",
+                    "# Example:\n",
+                    "#\n",
+                    "# [[app]]\n",
+                    "# id      = \"gh-issues\"\n",
+                    "# source  = \"local:gh-issues\"\n",
+                    "# version = \"bundled\"\n",
+                    "#\n",
+                    "# [[app]]\n",
+                    "# id      = \"my-tool\"\n",
+                    "# source  = \"github:org/my-tool\"\n",
+                    "# version = \"v1.0.0\"\n",
+                );
+                if let Err(e) = std::fs::write(&apps_toml, stub) {
+                    log::warn!("workspace_init:cli: could not write apps.toml: {e}");
+                    eprintln!("warning: could not create .plexi/apps.toml: {e}");
+                } else {
+                    println!("  apps:         .plexi/apps.toml (declare app dependencies here)");
+                    log::info!("workspace_init:cli: wrote stub .plexi/apps.toml");
+                }
+            }
+            print_tip("declare app dependencies in .plexi/apps.toml, then run `plexi install`.");
             0
         }
         Err(e) => {
@@ -680,29 +720,19 @@ pub fn workspace_secret_delete(friendly: &str) -> i32 {
 // ── plexi app subcommands ─────────────────────────────────────────────────────
 
 /// Detect the channel config dir name from the running binary name.
-/// Mirrors the logic in `config_dir_name()` (config.rs) without the
-/// PROFILE_OVERRIDE global, which is private to that module.
 fn app_init_config_dir() -> String {
-    let binary = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
-    match binary.as_deref() {
-        Some(name) if name.contains("alpha") => ".plexi-alpha".to_string(),
-        Some(name) if name.contains("beta") => ".plexi-beta".to_string(),
-        Some(name) if name.contains("v3") => ".plexi-v3".to_string(),
-        Some(name) if name.contains("pr-") => {
-            let suffix = name.trim_start_matches("plexi-");
-            format!(".plexi-{suffix}")
-        }
-        _ => ".plexi".to_string(),
-    }
+    crate::config::config_dir()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(".plexi")
+        .to_string()
 }
 
 /// `plexi app init [--lang python|rust] <name>` — scaffold a new app.
 ///
 /// Placement: walks up from CWD looking for the nearest ancestor directory
 /// that contains the channel config dir (e.g. `.plexi-alpha/` for the alpha
-/// build, `.plexi/` for stable). If found, scaffolds into
+/// build, `.plexi/` for main). If found, scaffolds into
 /// `<workspace_root>/<channel_dir>/apps/<name>/`. If no workspace root is
 /// found, falls back to `<cwd>/<channel_dir>/apps/<name>/`.
 ///
@@ -723,7 +753,7 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
     };
 
     // Refuse home dir and root — same guard as workspace_init. Creating
-    // ~/.plexi/apps/ would collide with the stable channel profile dir.
+    // ~/.plexi/apps/ would collide with the main channel profile dir.
     let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
     let is_home_or_root = cwd == std::path::Path::new("/")
         || home.as_ref().map(|h| cwd == *h).unwrap_or(false);
@@ -750,7 +780,7 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
             if current == std::path::Path::new("/") {
                 break;
             }
-            if current.join(&channel_dir).is_dir() {
+            if current.join(".plexi").is_dir() {
                 found = Some(current);
                 break;
             }
@@ -873,6 +903,10 @@ pub fn app_uninstall(id: &str, assume_yes: bool) -> i32 {
         eprintln!("error: app '{id}' not found");
         return 1;
     }
+    let core_ids = crate::install::core_pack_ids();
+    if core_ids.contains(id) {
+        eprintln!("note: '{id}' is a core app — it will be re-installed on the next Plexi launch");
+    }
     if !assume_yes {
         eprint!("Remove app '{id}'? [y/N]: ");
         let _ = io::stderr().flush();
@@ -976,172 +1010,6 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> 
         }
     }
     Ok(())
-}
-
-/// `plexi app link <path>` — register a local app directory with the nearest workspace.
-pub fn app_link(path: &str) -> i32 {
-    eprintln!("deprecated: `plexi app link` is deprecated — use `plexi app run <path>` instead");
-    let cwd = match std::env::current_dir() {
-        Ok(d) => d,
-        Err(e) => { eprintln!("error: {e}"); return 1; }
-    };
-    let app_dir = if std::path::Path::new(path).is_absolute() {
-        std::path::PathBuf::from(path)
-    } else {
-        cwd.join(path)
-    };
-    let app_dir = match app_dir.canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: could not resolve {path}: {e}");
-            return 1;
-        }
-    };
-    // Validate manifest.toml exists and is parseable
-    let manifest_path = app_dir.join("manifest.toml");
-    if !manifest_path.exists() {
-        eprintln!("error: no manifest.toml found in {}", app_dir.display());
-        eprintln!("  Is this a Plexi app directory? Run `plexi app init <name>` to scaffold one.");
-        return 1;
-    }
-    let manifest_str = match std::fs::read_to_string(&manifest_path) {
-        Ok(s) => s,
-        Err(e) => { eprintln!("error: could not read manifest.toml: {e}"); return 1; }
-    };
-    let manifest: toml::Value = match toml::from_str(&manifest_str) {
-        Ok(v) => v,
-        Err(e) => { eprintln!("error: manifest.toml parse failed: {e}"); return 1; }
-    };
-    let app_id = match manifest.get("app").and_then(|a| a.get("id")).and_then(|v| v.as_str()) {
-        Some(id) if !id.is_empty() => id.to_string(),
-        _ => {
-            eprintln!("error: manifest.toml is missing a valid [app].id");
-            return 1;
-        }
-    };
-
-    let workspace_root = match crate::app_registry::resolve_workspace_root(&cwd) {
-        Some(r) => r,
-        None => {
-            eprintln!("error: no .plexi/ workspace found at or above {}.", cwd.display());
-            eprintln!("  Run `plexi workspace init` first.");
-            return 1;
-        }
-    };
-
-    log::info!(
-        "app_link:cli: linking {} as app '{}' in workspace {}",
-        app_dir.display(), app_id, workspace_root.display()
-    );
-
-    let links_path = workspace_root.join(".plexi").join("links.toml");
-    let abs_path = app_dir.to_string_lossy().to_string();
-
-    #[derive(serde::Deserialize, serde::Serialize)]
-    struct LinksFile { #[serde(default)] links: Vec<String> }
-
-    // Read existing links (or start fresh)
-    let mut links: Vec<String> = if links_path.exists() {
-        let content = match std::fs::read_to_string(&links_path) {
-            Ok(s) => s,
-            Err(e) => { eprintln!("error: could not read links.toml: {e}"); return 1; }
-        };
-        match toml::from_str::<LinksFile>(&content) {
-            Ok(f) => f.links,
-            Err(e) => { eprintln!("error: could not parse links.toml: {e}"); return 1; }
-        }
-    } else {
-        Vec::new()
-    };
-
-    if links.contains(&abs_path) {
-        println!("Already linked: {}", app_dir.display());
-        return 0;
-    }
-
-    links.push(abs_path);
-
-    let new_content = match toml::to_string_pretty(&LinksFile { links }) {
-        Ok(s) => s,
-        Err(e) => { eprintln!("error: could not serialize links.toml: {e}"); return 1; }
-    };
-
-    if let Err(e) = std::fs::write(&links_path, new_content) {
-        eprintln!("error: could not write links.toml: {e}");
-        return 1;
-    }
-
-    println!("Linked '{}' from {}", app_id, app_dir.display());
-    println!("  App will appear in the run palette on next launch or reload.");
-    0
-}
-
-/// `plexi app unlink <path>` — remove a linked app directory from the workspace registry.
-pub fn app_unlink(path: &str) -> i32 {
-    eprintln!("deprecated: `plexi app unlink` is deprecated — use `plexi app run <path>` instead");
-    let cwd = match std::env::current_dir() {
-        Ok(d) => d,
-        Err(e) => { eprintln!("error: {e}"); return 1; }
-    };
-    let app_dir = if std::path::Path::new(path).is_absolute() {
-        std::path::PathBuf::from(path)
-    } else {
-        cwd.join(path)
-    };
-    // Try to canonicalize; fall back to the raw path if it doesn't exist
-    let app_dir = app_dir.canonicalize().unwrap_or(app_dir);
-    let abs_path = app_dir.to_string_lossy().to_string();
-
-    let workspace_root = match crate::app_registry::resolve_workspace_root(&cwd) {
-        Some(r) => r,
-        None => {
-            eprintln!("error: no .plexi/ workspace found at or above {}.", cwd.display());
-            eprintln!("  Run `plexi workspace init` first.");
-            return 1;
-        }
-    };
-
-    log::info!(
-        "app_unlink:cli: unlinking {} from workspace {}",
-        app_dir.display(), workspace_root.display()
-    );
-
-    let links_path = workspace_root.join(".plexi").join("links.toml");
-    if !links_path.exists() {
-        println!("Not linked (no links.toml found).");
-        return 0;
-    }
-
-    let content = match std::fs::read_to_string(&links_path) {
-        Ok(s) => s,
-        Err(e) => { eprintln!("error: could not read links.toml: {e}"); return 1; }
-    };
-    #[derive(serde::Deserialize, serde::Serialize)]
-    struct LinksFile { #[serde(default)] links: Vec<String> }
-    let mut links: Vec<String> = match toml::from_str::<LinksFile>(&content) {
-        Ok(f) => f.links,
-        Err(e) => { eprintln!("error: could not parse links.toml: {e}"); return 1; }
-    };
-
-    let before = links.len();
-    links.retain(|p| p != &abs_path);
-    if links.len() == before {
-        println!("Not found in links.toml: {}", app_dir.display());
-        return 0;
-    }
-
-    let new_content = match toml::to_string_pretty(&LinksFile { links }) {
-        Ok(s) => s,
-        Err(e) => { eprintln!("error: could not serialize links.toml: {e}"); return 1; }
-    };
-
-    if let Err(e) = std::fs::write(&links_path, new_content) {
-        eprintln!("error: could not write links.toml: {e}");
-        return 1;
-    }
-
-    println!("Unlinked: {}", app_dir.display());
-    0
 }
 
 /// `plexi app run <path>` — open any directory with a valid manifest.toml as an app pane.
@@ -1605,6 +1473,93 @@ pub fn install_pack_cli(spec: &str) -> i32 {
     }
 }
 
+/// `plexi install` with no args — detect `.plexi/apps.toml` and apply it.
+///
+/// Walks up from CWD looking for `.plexi/` (the workspace marker), reads
+/// `apps.toml` from it, and installs declared apps into the workspace-scoped
+/// channel apps dir (`<workspace_root>/<channel_dir>/apps/`).
+pub fn install_workspace_pack_cli() -> i32 {
+    log::info!("cli: install_workspace_pack (no-args flow)");
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => { eprintln!("error: {e}"); return 1; }
+    };
+
+    // Walk up from CWD looking for `.plexi/` (workspace marker).
+    let workspace_root = {
+        let home = dirs::home_dir();
+        let mut current = cwd.clone();
+        let mut found: Option<std::path::PathBuf> = None;
+        loop {
+            if let Some(ref h) = home {
+                if current == *h {
+                    break;
+                }
+            }
+            if current == std::path::Path::new("/") {
+                break;
+            }
+            if current.join(".plexi").is_dir() {
+                found = Some(current);
+                break;
+            }
+            if !current.pop() {
+                break;
+            }
+        }
+        found
+    };
+
+    let Some(root) = workspace_root else {
+        eprintln!("Usage: plexi install <source-spec>[@ref] | plexi install --pack <path|core>");
+        eprintln!("  In a workspace (directory with .plexi/apps.toml), `plexi install` applies the manifest.");
+        eprintln!("  Run `plexi workspace init` to initialize a workspace here.");
+        return 1;
+    };
+
+    let apps_toml = root.join(".plexi").join("apps.toml");
+    if !apps_toml.exists() {
+        eprintln!("no .plexi/apps.toml found in workspace at {}", root.display());
+        eprintln!("  Declare app dependencies there, then re-run `plexi install`.");
+        eprintln!("  Usage: plexi install <source-spec>[@ref] | plexi install --pack <path|core>");
+        return 1;
+    }
+
+    log::info!("install_workspace_pack:cli: applying {}", apps_toml.display());
+    println!("Applying workspace manifest {}...", apps_toml.display());
+
+    let cloner = crate::install::GitCloner;
+    let outcomes = match crate::install::apply_workspace_pack(&root, &cloner) {
+        Ok(o) => o,
+        Err(e) => { eprintln!("error: {e}"); return 1; }
+    };
+
+    if outcomes.is_empty() {
+        println!("No apps declared in .plexi/apps.toml.");
+        return 0;
+    }
+
+    let mut any_failed = false;
+    for o in &outcomes {
+        match &o.status {
+            crate::install::InstallStatus::Installed(p) => {
+                println!("  installed  {:30} → {}", o.id, p.display());
+            }
+            crate::install::InstallStatus::AlreadyAtVersion => {
+                println!("  up-to-date {:30}", o.id);
+            }
+            crate::install::InstallStatus::SkippedOtherVersion { installed, requested } => {
+                println!("  skipped    {:30} (installed {installed}, requested {requested})", o.id);
+            }
+            crate::install::InstallStatus::Failed(msg) => {
+                eprintln!("  FAILED     {:30} {msg}", o.id);
+                any_failed = true;
+            }
+        }
+    }
+    if any_failed { 1 } else { 0 }
+}
+
 /// `plexi uninstall [--keep-data] [--yes]` — remove Plexi itself from the Mac.
 pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
     // Detect channel suffix from binary name (e.g. "plexi-alpha" → "-alpha", "plexi" → "")
@@ -1713,7 +1668,7 @@ pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
         }
     }
 
-    // Remove completions (only for stable uninstall)
+    // Remove completions (only for main uninstall)
     if suffix.is_empty() {
         let brew_prefix = std::process::Command::new("brew")
             .arg("--prefix")
@@ -1783,7 +1738,7 @@ pub fn update_cli(maybe_id: Option<&str>) -> i32 {
 }
 
 /// `plexi update` — download and install the latest Plexi release from GitHub.
-/// Only supports stable channel. Alpha (dev) and PR builds must use `just install`.
+/// Only supports main channel. Alpha (dev) and PR builds must use `just install`.
 /// Beta builds require a channel-renamed bundle that can't yet be produced without
 /// the install script, so they are also unsupported here.
 pub fn self_update_cli() -> i32 {
@@ -2111,33 +2066,55 @@ pub fn list_cli() -> i32 {
     // version field — the registry only carries `manifest.version` at load time.
     let global_versions = crate::install::installed_versions(&crate::app_registry::apps_dir());
     let workspace_root = crate::app_registry::resolve_workspace_root(&cwd);
-    let mut globals = Vec::new();
-    let mut workspace = Vec::new();
+    let core_ids = crate::install::core_pack_ids();
+    let example_ids = crate::install::examples_pack_ids();
+    let workspace_ids = workspace_root
+        .as_ref()
+        .map(|r| crate::install::workspace_manifest_ids(r))
+        .unwrap_or_default();
+    let mut globals: Vec<(String, String, String, &'static str)> = Vec::new();
+    let mut workspace: Vec<(String, String, String, &'static str)> = Vec::new();
     for app in installed {
         let version = global_versions
             .get(&app.manifest.id)
             .cloned()
             .unwrap_or_else(|| app.manifest.version.clone());
-        let row = (app.manifest.id.clone(), app.manifest.name.clone(), version);
+        let badge = if core_ids.contains(app.manifest.id.as_str()) {
+            "[core]"
+        } else if example_ids.contains(app.manifest.id.as_str()) {
+            "[example]"
+        } else if workspace_ids.contains(app.manifest.id.as_str()) {
+            "[workspace]"
+        } else {
+            ""
+        };
+        let row = (app.manifest.id.clone(), app.manifest.name.clone(), version, badge);
         match app.source {
             crate::app_registry::RegistrySource::Global => globals.push(row),
             crate::app_registry::RegistrySource::LocalApp
-            | crate::app_registry::RegistrySource::LocalAgent
-            | crate::app_registry::RegistrySource::Linked => workspace.push(row),
+            | crate::app_registry::RegistrySource::LocalAgent => workspace.push(row),
         }
     }
     if !globals.is_empty() {
         println!("Global apps ({})", crate::app_registry::apps_dir().display());
-        for (id, name, version) in &globals {
-            println!("  {:30} {:30} {}", id, name, version);
+        for (id, name, version, badge) in &globals {
+            if badge.is_empty() {
+                println!("  {:30} {:30} {}", id, name, version);
+            } else {
+                println!("  {:30} {:30} {}  {}", id, name, version, badge);
+            }
         }
     }
     if !workspace.is_empty() {
         if let Some(root) = workspace_root {
             println!();
             println!("Workspace apps ({})", root.display());
-            for (id, name, version) in &workspace {
-                println!("  {:30} {:30} {}", id, name, version);
+            for (id, name, version, badge) in &workspace {
+                if badge.is_empty() {
+                    println!("  {:30} {:30} {}", id, name, version);
+                } else {
+                    println!("  {:30} {:30} {}  {}", id, name, version, badge);
+                }
             }
         }
     }
@@ -2590,7 +2567,7 @@ pub fn pane_info_cli() -> i32 {
                         }
                         let mut obj = v;
                         obj["socket"] = serde_json::Value::String(socket_path.clone());
-                        let channel = crate::config::build_channel().unwrap_or_else(|| "stable".to_string());
+                        let channel = crate::config::build_channel().unwrap_or_else(|| "main".to_string());
                         obj["channel"] = serde_json::Value::String(channel);
                         match serde_json::to_string(&obj) {
                             Ok(json_str) => { return print_json_output(&json_str); }
@@ -2753,7 +2730,7 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
 /// Reads the last N lines from a pane's PTY scrollback buffer and prints a JSON array
 /// of strings to stdout. If `pane_id` is omitted, defaults to PLEXI_PANE_ID.
 /// Returns 0 on success, 1 on error.
-pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize, full_output: bool) -> i32 {
+pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize, full_output: bool, from_cursor: Option<u64>) -> i32 {
     let resolved_pane_id = match pane_id {
         Some(id) => id,
         None => match std::env::var("PLEXI_PANE_ID") {
@@ -2777,15 +2754,19 @@ pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize, full_output: bool) -
         .to_string_lossy()
         .into_owned();
 
-    log::info!("pane_capture:cli: pane_id={resolved_pane_id} lines={lines} full_output={full_output} response_file={response_file:?}");
+    log::info!("pane_capture:cli: pane_id={resolved_pane_id} lines={lines} full_output={full_output} from_cursor={from_cursor:?} response_file={response_file:?}");
 
-    let code = send_to_socket(serde_json::json!({
+    let mut req = serde_json::json!({
         "type": "capture_pane",
         "pane_id": resolved_pane_id,
         "lines": lines,
         "full_output": full_output,
         "response_file": response_file,
-    }));
+    });
+    if let Some(cursor) = from_cursor {
+        req["from_cursor"] = serde_json::Value::Number(serde_json::Number::from(cursor));
+    }
+    let code = send_to_socket(req);
     if code != 0 {
         return code;
     }
@@ -2797,13 +2778,21 @@ pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize, full_output: bool) -
             match std::fs::read_to_string(&response_path) {
                 Ok(content) => {
                     let _ = std::fs::remove_file(&response_path);
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
-                            eprintln!("error: {err}");
-                            return 1;
+                    match serde_json::from_str::<serde_json::Value>(&content) {
+                        Ok(v) => {
+                            if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+                                eprintln!("error: {err}");
+                                return 1;
+                            }
+                            // Print cursor to stderr so callers can capture it without
+                            // polluting the line stream.
+                            if let Some(cursor) = v.get("cursor").and_then(|c| c.as_u64()) {
+                                eprintln!("cursor={cursor}");
+                            }
+                            return print_json_output(&content);
                         }
+                        Err(_) => return print_json_output(&content),
                     }
-                    return print_json_output(&content);
                 }
                 Err(e) => {
                     log::warn!("pane_capture:cli: could not read response file: {e}");
@@ -2824,7 +2813,7 @@ pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize, full_output: bool) -
 ///
 /// When called from inside a Plexi pane (PLEXI_SOCKET is set), sends a
 /// spawn_pane command directly via the socket — channel-agnostic, works on
-/// alpha, beta, stable, and PR builds without caring which binary is on PATH.
+/// alpha, beta, main, and PR builds without caring which binary is on PATH.
 ///
 /// `plexi open github:owner/repo` — clone and run ephemerally, without installing.
 ///
@@ -3001,6 +2990,8 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_
         eprintln!("warning: 'plexi open terminal' is deprecated — use 'plexi terminal' instead");
     }
 
+    let from_pane_id = from_pane_id.or_else(|| std::env::var("PLEXI_PANE_ID").ok()?.parse().ok());
+
     // Socket path is set when running inside a Plexi pane — use it directly so
     // the command reaches the correct running instance regardless of channel.
     if std::env::var("PLEXI_SOCKET").is_ok() {
@@ -3103,6 +3094,7 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_
 pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>, from_pane_id: Option<u64>, cwd: Option<&str>, no_focus: bool) -> i32 {
     let layout_str = layout.unwrap_or("split_v");
     let args: Vec<String> = cmd.map(|c| vec![c.to_string()]).unwrap_or_default();
+    let from_pane_id = from_pane_id.or_else(|| std::env::var("PLEXI_PANE_ID").ok()?.parse().ok());
 
     if std::env::var("PLEXI_SOCKET").is_ok() {
         let id = uuid::Uuid::new_v4();
@@ -4453,6 +4445,145 @@ pub fn notes_open_cli() -> i32 {
     pane_send_cli(pane_id, &cmd)
 }
 
+pub fn demo_cli() -> i32 {
+    let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("error: run `plexi demo` inside a Plexi terminal pane");
+            eprintln!("hint: open Plexi, then run this command from a pane");
+            return 1;
+        }
+    };
+    let my_pane_id: u64 = match pane_id_str.parse() {
+        Ok(n) => n,
+        Err(_) => {
+            eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
+            return 1;
+        }
+    };
+
+    log::info!("demo_cli: starting interactive tutorial for pane_id={my_pane_id}");
+
+    let events_path = crate::config::config_dir().join("events.jsonl");
+
+    // Seek to end — only watch events that occur after demo starts.
+    let start_offset = match std::fs::metadata(&events_path) {
+        Ok(m) => m.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(e) => {
+            log::warn!("demo_cli: could not read events file metadata: {e}");
+            0
+        }
+    };
+
+    // Welcome banner
+    eprintln!("\x1b[1;36m");
+    eprintln!("  Plexi — Quick Tutorial");
+    eprintln!("\x1b[0m");
+    eprintln!("  Two moves. That's all you need to know.");
+    eprintln!();
+
+    // Step 1 — split
+    eprintln!("  Step 1 of 2   Split a pane");
+    eprintln!();
+    eprintln!("  Press  \x1b[1m[ \u{2318}D ]\x1b[0m  to split the current pane.");
+    eprintln!();
+
+    let after_split_offset = match poll_event(&events_path, start_offset, |kind, _obj| kind == "pane_split") {
+        Ok(offset) => offset,
+        Err(e) => {
+            eprintln!("error watching {}: {e}", events_path.display());
+            return 1;
+        }
+    };
+    eprintln!("  \x1b[1;32m\u{2713} 1/2\x1b[0m");
+    eprintln!();
+
+    // Step 2 — navigate
+    eprintln!("  Step 2 of 2   Navigate panes");
+    eprintln!();
+    eprintln!("     \x1b[2m^\x1b[0m");
+    eprintln!("     K");
+    eprintln!("  H     L");
+    eprintln!("     J");
+    eprintln!();
+    eprintln!("  Press  \x1b[1m[ \u{2318}L ]\x1b[0m  to move focus right, then  \x1b[1m[ \u{2318}H ]\x1b[0m  to come back.");
+    eprintln!();
+
+    // Wait for focus to LEAVE this pane (user pressed ⌘L); returned offset is exact position after match.
+    let focus_offset = match poll_event(&events_path, after_split_offset, |kind, obj| {
+        kind == "focus_changed"
+            && obj.get("pane_id").and_then(|v| v.as_u64()) == Some(my_pane_id)
+    }) {
+        Ok(offset) => offset,
+        Err(e) => {
+            eprintln!("error watching {}: {e}", events_path.display());
+            return 1;
+        }
+    };
+
+    // Wait for any focus_changed (user pressed ⌘H, focus leaves the other pane).
+    if let Err(e) = poll_event(&events_path, focus_offset, |kind, _obj| kind == "focus_changed") {
+        eprintln!("error watching {}: {e}", events_path.display());
+        return 1;
+    }
+
+    eprintln!("  \x1b[1;32m\u{2713} 2/2   You know Plexi.\x1b[0m");
+    eprintln!();
+    log::info!("demo_cli: tutorial completed for pane_id={my_pane_id}");
+    0
+}
+
+/// Tails `path` from `offset`, advancing the cursor as lines are consumed.
+/// Returns the byte offset immediately after the matched line when the predicate fires.
+/// Handles missing files gracefully; only processes complete newline-terminated lines.
+fn poll_event<F>(path: &std::path::Path, mut offset: u64, predicate: F) -> std::io::Result<u64>
+where
+    F: Fn(&str, &serde_json::Value) -> bool,
+{
+    use std::io::{Read, Seek, SeekFrom};
+    loop {
+        match std::fs::File::open(path) {
+            Ok(mut f) => {
+                let file_len = f.seek(SeekFrom::End(0))?;
+                if file_len > offset {
+                    f.seek(SeekFrom::Start(offset))?;
+                    let mut buf = String::new();
+                    f.read_to_string(&mut buf)?;
+                    // Only process lines up to the last newline to avoid partial writes.
+                    let process_len = match buf.rfind('\n') {
+                        Some(pos) => pos + 1,
+                        None => {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            continue;
+                        }
+                    };
+                    let complete = &buf[..process_len];
+                    let mut byte_pos: u64 = 0;
+                    for line in complete.split_inclusive('\n') {
+                        let line_bytes = line.len() as u64;
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            if let Ok(obj) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                                if let Some(kind) = obj.get("kind").and_then(|v| v.as_str()) {
+                                    if predicate(kind, &obj) {
+                                        return Ok(offset + byte_pos + line_bytes);
+                                    }
+                                }
+                            }
+                        }
+                        byte_pos += line_bytes;
+                    }
+                    offset += process_len as u64;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
     match shell {
         "zsh" => { print!("{}", zsh_completion(binary_name)); 0 }
@@ -4564,7 +4695,7 @@ _plexi() {
               ;;
             *)
               local subcmds
-              subcmds=('init:Scaffold a new app' 'install:Install a local app directory' 'uninstall:Remove an installed app by id' 'list:List installed apps' 'render:Render an app to PNG headlessly' 'info:Show app info' 'link:Register a local app directory' 'unlink:Remove a linked app directory')
+              subcmds=('init:Scaffold a new app' 'install:Install a local app directory' 'uninstall:Remove an installed app by id' 'list:List installed apps' 'render:Render an app to PNG headlessly' 'info:Show app info')
               _describe 'subcommand' subcmds
               ;;
           esac
@@ -4587,7 +4718,7 @@ _plexi() {
         pane)
           case $line[2] in
             capture)
-              _arguments '--lines[Number of lines to read]:lines:' '--full-output[Preserve trailing empty lines]'
+              _arguments '--lines[Number of lines to read]:lines:' '--full-output[Preserve trailing empty lines]' '--from-cursor[Read only lines after this cursor]:cursor:'
               ;;
             *)
               local subcmds
@@ -4732,7 +4863,7 @@ const BASH_COMPLETION: &str = r#"_plexi_completions() {
       else
         case "${words[2]}" in
           capture)
-            COMPREPLY=($(compgen -W "--lines --full-output" -- "$cur"))
+            COMPREPLY=($(compgen -W "--lines --full-output --from" -- "$cur"))
             ;;
         esac
       fi
@@ -4845,9 +4976,6 @@ complete -c plexi -f -n "__fish_seen_subcommand_from app" -a uninstall -d "Unins
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a list -d "List installed apps"
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a render -d "Render an app to PNG headlessly"
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a info -d "Show app info"
-complete -c plexi -f -n "__fish_seen_subcommand_from app" -a link -d "Register a local app directory with the workspace"
-complete -c plexi -f -n "__fish_seen_subcommand_from app" -a unlink -d "Remove a linked app directory from the workspace"
-
 # app init flags
 complete -c plexi -n "__fish_seen_subcommand_from app; and __fish_seen_subcommand_from init" -l lang -d "Language template" -a "python"
 
@@ -4880,6 +5008,7 @@ complete -c plexi -f -n "__fish_seen_subcommand_from pane" -a key -d "Inject a s
 # pane capture flags
 complete -c plexi -n "__fish_seen_subcommand_from pane; and __fish_seen_subcommand_from capture" -l lines -d "Number of lines to read"
 complete -c plexi -n "__fish_seen_subcommand_from pane; and __fish_seen_subcommand_from capture" -l full-output -d "Preserve trailing empty lines"
+complete -c plexi -n "__fish_seen_subcommand_from pane; and __fish_seen_subcommand_from capture" -l from-cursor -d "Read only lines written after this cursor" -r
 
 # descriptor subcommands
 complete -c plexi -f -n "__fish_seen_subcommand_from descriptor" -a probe -d "Probe a CLI for its Plexi descriptor"
@@ -5185,5 +5314,59 @@ mod app_run_tests {
         let path = dir.path().to_string_lossy().to_string();
         let code = super::app_run(&path);
         assert_eq!(code, 1);
+    }
+}
+
+#[cfg(test)]
+mod workspace_init_tests {
+    use std::fs;
+
+    /// Calls the internal init_workspace logic and then the channel-dir creation
+    /// on a temp dir, asserting both `.plexi/` and the channel dir are present.
+    #[test]
+    fn workspace_init_creates_channel_dir_alongside_plexi_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_path_buf();
+
+        // Run init_workspace (creates .plexi/)
+        crate::workspace_secrets::init_workspace(&cwd)
+            .expect("init_workspace should succeed in a temp dir");
+
+        // Replicate the channel dir creation from workspace_init()
+        let channel_dir = super::app_init_config_dir();
+        let channel_path = cwd.join(&channel_dir);
+        fs::create_dir_all(&channel_path).expect("create_dir_all should succeed");
+
+        assert!(
+            cwd.join(".plexi").is_dir(),
+            ".plexi/ dir must exist after workspace init"
+        );
+        assert!(
+            channel_path.is_dir(),
+            "{channel_dir}/ dir must exist after workspace init"
+        );
+    }
+
+    /// After init, resolve_workspace_root must still find the workspace and the channel dir must exist.
+    #[test]
+    fn workspace_remains_resolvable_after_channel_dir_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().to_path_buf();
+
+        crate::workspace_secrets::init_workspace(&cwd)
+            .expect("init_workspace should succeed");
+
+        let channel_dir = super::app_init_config_dir();
+        std::fs::create_dir_all(cwd.join(&channel_dir)).unwrap();
+
+        let found = crate::app_registry::resolve_workspace_root(&cwd);
+        assert!(
+            found.is_some(),
+            "resolve_workspace_root should still find the workspace (via .plexi/) after channel dir creation"
+        );
+        assert!(
+            cwd.join(&channel_dir).is_dir(),
+            "channel directory should exist alongside .plexi/"
+        );
     }
 }

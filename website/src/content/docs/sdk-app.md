@@ -1,7 +1,7 @@
 ---
 title: "App"
 description: "Base class for Plexi pane apps with lifecycle hooks"
-verified_version: "3.6.54"
+verified_version: "0.0.505"
 ---
 
 # App
@@ -37,7 +37,6 @@ Task (dispatched as asyncio tasks — event loop continues):
     on_mcp_call(ctx, tool_name, arguments)       — on MCP tool call
 
 Fire-and-forget (no RenderContext — called outside a render frame):
-    on_app_spawned(pane_id, type_id)             — app spawn succeeded
     on_pane_spawned(pane_id, request_id)         — pane spawn succeeded
     on_pane_spawn_error(reason, request_id)      — pane spawn failed
     on_context_state(state)                      — context state query result
@@ -166,14 +165,6 @@ back arrow in the pane chrome. ``view_id`` is the view being navigated
 
 The app should update its own view state to show ``view_id``, then call
 ``ctx.emit.pop_nav()`` to remove the entry from the host stack.
-
----
-
-### `on_app_spawned`
-
-```python
-def on_app_spawned(_pane_id: int, _type_id: str) -> None
-```
 
 ---
 

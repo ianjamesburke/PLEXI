@@ -1,5 +1,5 @@
 import type { APIRoute } from 'astro';
-import { addSubscriber } from '../../server/db';
+import { addSubscriber } from '../../server/resend';
 
 export const prerender = false;
 
@@ -30,7 +30,7 @@ export const POST: APIRoute = async ({ request }) => {
   }
 
   try {
-    addSubscriber(email, source ?? 'web');
+    await addSubscriber(email);
   } catch (err) {
     console.error(`[api/subscribe] addSubscriber threw for email="${email}":`, err);
     return json({ error: 'server error' }, 500);

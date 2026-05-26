@@ -19,6 +19,7 @@ from plexi_sdk import (
     GREEN, RED, YELLOW,
     PAD, PAD_TIGHT,
 )
+from plexi_sdk.ui import ListRow, RowChip, LeadingBadge
 
 # ── Layout ────────────────────────────────────────────────────────────────────
 
@@ -63,7 +64,6 @@ class GhIssues(App):
         self._view           = self.VIEW_LIST
         self._issues         : list[dict] = []
         self._sel            = 0
-        self._scroll_y       = 0.0
         self._loading        = True
         self._detail_loading = False
         self._error          : str | None = None
@@ -177,59 +177,25 @@ class GhIssues(App):
         )
 
     def _draw_list(self, ctx: RenderContext) -> None:
-        if not self._issues:
-            ctx.text(PAD, HEADER_H + PAD, "No open issues.", size=BODY, color=MUTED)
-            return
-
-        list_y = float(HEADER_H)
-        list_h = ctx.h - list_y
-        content_h = ROW_H * len(self._issues)
-
-        ctx.begin_scroll("issues-list", 0.0, list_y, ctx.w, list_h, content_h)
-
-        for i, issue in enumerate(self._issues):
-            iy      = list_y + i * ROW_H - self._scroll_y
-            focused = (i == self._sel)
-            bg      = HIGHLIGHT if focused else (SURFACE if i % 2 == 0 else BG)
-            ctx.rect(0, iy, ctx.w, ROW_H, fill=bg)
-
-            # row divider
-            if i > 0:
-                ctx.rect(0, iy, ctx.w, 1, fill=BG)
-
-            row_mid = iy + ROW_H / 2
-
-            # issue number badge
-            ctx.badge(
-                x=PAD, y_center=row_mid,
-                label=f"#{issue['number']}",
-                fill=ACCENT if focused else SURFACE,
-                fg=BG if focused else ACCENT,
-                font_size=HINT, radius=3.0,
-            )
-
-            # title
-            ctx.text(
-                PAD + 52, row_mid - CAPTION / 2,
-                issue["title"],
-                size=CAPTION, color=FG,
-                max_width=ctx.w - PAD - 52 - PAD - 130,
-            )
-
-            # labels (up to 2, right-aligned)
-            lx = ctx.w - PAD
-            for lbl in reversed(issue.get("labels", [])[:2]):
-                name    = lbl["name"]
-                badge_w = len(name) * 6 + 14
-                lx     -= badge_w + 4
-                ctx.badge(
-                    x=lx, y_center=row_mid,
-                    label=name,
-                    fill=_label_color(name), fg=BG,
-                    font_size=HINT, radius=3.0,
-                )
-
-        ctx.end_scroll()
+        rows = [
+            ListRow(
+                id=f"issue-{issue['number']}",
+                leading=LeadingBadge(f"#{issue['number']}", color="accent"),
+                primary=issue.get("title", ""),
+                chips=[
+                    RowChip(lbl.get("name", ""), _label_color(lbl.get("name", "")))
+                    for lbl in (issue.get("labels") or [])[:2]
+                ],
+            ).to_dict()
+            for issue in self._issues
+        ]
+        ctx.list_view(
+            "issues",
+            rows,
+            selected=self._sel,
+            loading=False,
+            y=float(HEADER_H),
+        )
 
     def _draw_detail(self, ctx: RenderContext) -> None:
         if self._detail is None:
@@ -289,15 +255,7 @@ class GhIssues(App):
             return
 
         if self._view == self.VIEW_LIST:
-            if key in ("j", "down"):
-                self._sel = min(self._sel + 1, max(0, len(self._issues) - 1))
-                ctx.status_summary(self._issues[self._sel]["title"] if self._issues else "")
-            elif key in ("k", "up"):
-                self._sel = max(self._sel - 1, 0)
-                ctx.status_summary(self._issues[self._sel]["title"] if self._issues else "")
-            elif key == "return":
-                self._open_detail()
-            elif key == "o":
+            if key == "o":
                 self._open_browser()
             elif key == "r":
                 self.emit.info("gh-issues: refresh")
@@ -318,20 +276,17 @@ class GhIssues(App):
                                    cwd=self._root or None)
                     self.emit.info(f"gh-issues: open #{num} in browser rc={rc}")
 
-    def on_scroll(self, _ctx: RenderContext, id: str, offset_y: float) -> None:
-        if id == "issues-list":
-            self._scroll_y = offset_y
+    def on_list_select(self, ctx: RenderContext, _id: str, index: int) -> None:
+        self._sel = index
+        if self._issues:
+            ctx.status_summary(self._issues[self._sel]["title"])
+        self.emit.schedule_render()
 
-    def on_click(self, _ctx: RenderContext, _x: float, y: float, button: str) -> None:
-        if self._view == self.VIEW_LIST and not self._loading and self._issues:
-            list_y = float(HEADER_H)
-            local_y = y - list_y + self._scroll_y
-            if local_y >= 0:
-                idx = int(local_y / ROW_H)
-                if 0 <= idx < len(self._issues):
-                    self._sel = idx
-                    if button == "primary":
-                        self._open_detail()
+    def on_list_activate(self, _ctx: RenderContext, _id: str, _index: int) -> None:
+        self._open_detail()
+
+    def on_click(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> None:
+        pass
 
     # ── actions ───────────────────────────────────────────────────────────────
 

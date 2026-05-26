@@ -11,6 +11,7 @@ mod app_permissions;
 mod app_protocol;
 mod app_render;
 mod app_registry;
+mod app_registry_watcher;
 mod app_trait;
 mod audio;
 mod cli;
@@ -83,25 +84,40 @@ fn main() -> eframe::Result {
     let raw_args: Vec<String> = std::env::args().collect();
     let profile = parse_profile_flag(&raw_args);
     crate::config::set_profile(profile);
-    crate::config::ensure_profile_initialized();
+    let is_first_launch = crate::config::ensure_profile_initialized();
 
-    // #308 Phase 2: idempotently apply the bundled core pack to a freshly-
-    // empty apps dir. `ensure_profile_initialized` already seeds the dir on
-    // first profile creation; this catches the secondary case where someone
-    // wiped their apps dir but kept the rest of the profile config.
     {
         let apps_dir = crate::app_registry::apps_dir();
         let cloner = crate::install::GitCloner;
-        if let Some(outcomes) = crate::install::apply_core_pack_if_empty(&cloner, &apps_dir) {
-            let n_ok = outcomes
-                .iter()
-                .filter(|o| matches!(o.status, crate::install::InstallStatus::Installed(_)))
-                .count();
-            eprintln!("core pack: applied {} apps to {}", n_ok, apps_dir.display());
-            for o in &outcomes {
-                if let crate::install::InstallStatus::Failed(msg) = &o.status {
-                    eprintln!("core pack: FAILED {}: {msg}", o.id);
-                }
+
+        // On first launch, also seed the example apps.
+        if is_first_launch {
+            if let Some(outcomes) =
+                crate::install::apply_examples_pack_if_empty(&cloner, &apps_dir)
+            {
+                let n_ok = outcomes
+                    .iter()
+                    .filter(|o| matches!(o.status, crate::install::InstallStatus::Installed(_)))
+                    .count();
+                log::info!("examples pack: seeded {n_ok} apps to {}", apps_dir.display());
+            }
+        }
+
+        // Always re-seed any deleted core apps.
+        let core_outcomes = crate::install::apply_core_pack_always(&cloner, &apps_dir);
+        let n_installed = core_outcomes
+            .iter()
+            .filter(|o| matches!(o.status, crate::install::InstallStatus::Installed(_)))
+            .count();
+        if n_installed > 0 {
+            log::info!(
+                "core pack: re-seeded {n_installed} missing apps to {}",
+                apps_dir.display()
+            );
+        }
+        for o in &core_outcomes {
+            if let crate::install::InstallStatus::Failed(msg) = &o.status {
+                log::warn!("core pack: FAILED {}: {msg}", o.id);
             }
         }
     }
@@ -255,8 +271,6 @@ fn main() -> eframe::Result {
                             std::process::exit(cli::app_render(&id, &size, state.as_deref(), output.as_deref()))
                         }
                         AppCmd::Info { id } => std::process::exit(cli::app_info(&id)),
-                        AppCmd::Link { path } => std::process::exit(cli::app_link(&path)),
-                        AppCmd::Unlink { path } => std::process::exit(cli::app_unlink(&path)),
                         AppCmd::Run { path } => std::process::exit(cli::app_run(&path)),
                     },
                     Commands::Install { spec, pack } => {
@@ -265,10 +279,7 @@ fn main() -> eframe::Result {
                         }
                         match spec {
                             Some(s) => std::process::exit(cli::install_cli(&s)),
-                            None => {
-                                eprintln!("Usage: plexi install <source-spec>[@ref] | plexi install --pack <path|core>");
-                                std::process::exit(1);
-                            }
+                            None => std::process::exit(cli::install_workspace_pack_cli()),
                         }
                     }
                     Commands::Uninstall { keep_data, yes } => std::process::exit(cli::plexi_uninstall_cli(keep_data, yes)),
@@ -411,7 +422,7 @@ fn main() -> eframe::Result {
                         PaneCmd::Key { pane_id, key } => std::process::exit(cli::pane_key_cli(pane_id, &key)),
                         PaneCmd::Self_ => std::process::exit(cli::pane_self_cli()),
                         PaneCmd::Info => std::process::exit(cli::pane_info_cli()),
-                        PaneCmd::Capture { pane_id, lines, full_output } => std::process::exit(cli::pane_capture_cli(pane_id, lines, full_output)),
+                        PaneCmd::Capture { pane_id, lines, full_output, from_cursor } => std::process::exit(cli::pane_capture_cli(pane_id, lines, full_output, from_cursor)),
                     },
                     Commands::Terminal { cmd, ephemeral, layout, from_pane_id, cwd, no_focus } => {
                         std::process::exit(cli::terminal_cli(cmd.as_deref(), ephemeral, layout.as_deref(), from_pane_id, cwd.as_deref(), no_focus));
@@ -513,6 +524,7 @@ fn main() -> eframe::Result {
                         Some(NotesCmd::List) | None => std::process::exit(cli::notes_list_cli()),
                         Some(NotesCmd::Open) => std::process::exit(cli::notes_open_cli()),
                     },
+                    Commands::Demo => std::process::exit(cli::demo_cli()),
                 }
             }
             // No subcommand — fall through to workspace path check, then GUI
@@ -627,6 +639,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         "config",
         "routine",
         "notes",
+        "demo",
     ];
     let mut iter = args.iter().enumerate();
     // Skip argv[0] (binary name).

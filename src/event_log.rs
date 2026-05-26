@@ -136,6 +136,12 @@ pub enum HostEvent {
         duration_secs: u64,
         timestamp: String,
     },
+    /// A pane was created via a split action.
+    PaneSplit {
+        pane_id: u64,
+        direction: String,
+        timestamp: String,
+    },
 }
 
 // ── Wire envelope ─────────────────────────────────────────────────────────────

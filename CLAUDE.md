@@ -52,14 +52,14 @@ Each build channel is a **fully isolated instance** — its own binary, app bund
 
 | Channel | Binary | Profile dir | App bundle |
 |---|---|---|---|
-| Stable | `plexi` | `~/.plexi/` | `Plexi.app` |
+| Main | `plexi` | `~/.plexi/` | `Plexi.app` |
 | Beta | `plexi-beta` | `~/.plexi-beta/` | `Plexi Beta.app` |
 | Alpha | `plexi-alpha` | `~/.plexi-alpha/` | `Plexi Alpha.app` |
 | PR build | `plexi-pr-<N>` | `~/.plexi-pr-<N>/` | `Plexi PR<N>.app` |
 
 **PR builds** are ephemeral isolated instances installed by `just pr-install <N>` from inside the feature worktree. They never capture the bare `plexi` symlink. Remove them after merge with `just pr-clean <N>`.
 
-**Workspace** (`.plexi/workspace.toml`) is a separate per-project concept — the directory a user initializes with `plexi workspace init` inside their project root. It is not the same as the profile dir. Never run `workspace init` from `~` — it would create `~/.plexi/workspace.toml`, colliding with the stable profile dir.
+**Workspace** (`.plexi/workspace.toml`) is a separate per-project concept — the directory a user initializes with `plexi workspace init` inside their project root. It is not the same as the profile dir. Never run `workspace init` from `~` — it would create `~/.plexi/workspace.toml`, colliding with the main channel profile dir.
 
 **When writing test instructions for a PR build:** use `plexi-pr-<N>` (not `plexi`), and if the feature requires workspace context, direct the user to `cd` into a real project dir first.
 
@@ -73,9 +73,7 @@ Three channels, each more stable than the last:
 
 Never commit directly to `beta` or `main`. All work flows through alpha. Feature branch naming: `feature/<issue-number>-short-description`. Never pass `--delete-branch` to `gh pr merge`.
 
-**Dirty alpha during ship-issue:** The ship-issue skill auto-stashes uncommitted alpha changes at Phase 1 and auto-pops at every exit point. If changes disappear after a ship run, check `git stash list` — a stash named `ship-issue auto-stash before #<N>` may not have been popped (agent crash mid-cycle).
-
-**Full ship cycle (label → worktree → PR → merge → install → cleanup) is defined in the `/ship-issue` skill.** Do not duplicate it here.
+**Full ship cycle:** `/dispatch N` → opens one pane per issue → each pane runs implement-issue → open-pr → validate-pr (notifies you, waits) → merge-pr inline. No PM needed for the happy path. Labels track state for recovery.
 
 ### alpha → beta → main (channel promotion)
 
@@ -205,12 +203,12 @@ Before writing any keyboard shortcut display, badge, chip, or inline label widge
 
 ## Channel-Agnostic CLI Rule
 
-Every CLI command and feature must work identically on alpha, beta, stable, and PR builds. This is non-negotiable — the release channel is an implementation detail, not something callers should need to know.
+Every CLI command and feature must work identically on alpha, beta, main, and PR builds. This is non-negotiable — the release channel is an implementation detail, not something callers should need to know.
 
 **How it works:**
-- `PLEXI_SOCKET` (set inside a Plexi pane) routes **host commands** (pane, notify, context, open, etc.) to the correct running instance — but it does NOT re-route the binary itself. Typing `plexi` inside a PR817 pane still runs the stable/alpha binary; to target a specific channel you must use the full binary name (`plexi-alpha`, `plexi-pr-817`, etc.).
+- `PLEXI_SOCKET` (set inside a Plexi pane) routes **host commands** (pane, notify, context, open, etc.) to the correct running instance — but it does NOT re-route the binary itself. Typing `plexi` inside a PR817 pane still runs the main/alpha binary; to target a specific channel you must use the full binary name (`plexi-alpha`, `plexi-pr-817`, etc.).
 - When `PLEXI_SOCKET` is not set, commands fall back to channel-specific mechanisms (spawn-queue, config_dir) derived from the running binary name.
-- `/usr/local/bin/plexi` (the bare `plexi` command) is kept as a symlink to the most recently installed non-PR channel binary by `scripts/install.sh`. PR builds never capture the bare name.
+- `/usr/local/bin/plexi` (the bare `plexi` command) is reserved for the `main` channel binary. If `main` is not installed, the bare symlink should not exist. PR builds never capture the bare name.
 
 **Enforcement:** Never hardcode a profile directory path (e.g. `~/.plexi-alpha/`) in CLI code — always use `config_dir()`. Never route around `PLEXI_SOCKET` when it is set. Any new CLI command that communicates with a running instance must follow the socket-first pattern in `open_cli()`.
 

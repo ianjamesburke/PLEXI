@@ -1,7 +1,7 @@
 ---
 title: Installation & Setup
 description: Get Plexi running on your Mac.
-verified_version: "3.6.19"
+verified_version: "0.0.505"
 order: 1
 ---
 
@@ -11,7 +11,7 @@ Plexi runs on macOS (Apple Silicon or Intel, macOS 12 Monterey or later).
 
 Open Terminal and run:
 
-```
+```sh
 curl -fsSL https://plexiapp.com/install | sh
 ```
 
@@ -22,7 +22,7 @@ You'll be asked for your password. The script installs Plexi.app to /Application
 
 Download the `.dmg` from the [GitHub releases page](https://github.com/ianjamesburke/PLEXI/releases/latest), open it, and drag Plexi to your Applications folder.
 
-Note: the install script also sets up the CLI and shell completions automatically. If you install manually, you'll need to run `plexi cli install` after first launch.
+Note: the install script also sets up the CLI and shell completions automatically. If you install manually, open Plexi after dragging it to Applications — it will prompt you to install the CLI on first launch.
 </details>
 
 On first launch, Plexi will request Accessibility permission. This is required for context-aware features.

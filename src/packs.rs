@@ -20,8 +20,8 @@
 //! - `github:owner/repo`        → `https://github.com/owner/repo.git`
 //! - `git+https://...`          → literal URL (`git+` stripped)
 //! - `git+ssh://...` / `git+http://...`
-//! - `local:<example-name>`     → bundled-example seed (no clone, host copies
-//!                                from `examples/<name>/` baked into the binary)
+//! - `local:<app-name>`         → bundled-app seed (no clone, host copies
+//!                                from `apps/<name>/` baked into the binary)
 //! - anything else → error (no silent fallthrough).
 //!
 //! The current pack schema version constant is [`PACK_SCHEMA_VERSION`].
@@ -37,6 +37,10 @@ pub const PACK_SCHEMA_VERSION: u32 = 1;
 pub struct Pack {
     /// Required; rejected loud if greater than [`PACK_SCHEMA_VERSION`].
     pub schema_version: u32,
+    /// Seeding policy. `"always"` = re-seed on every install; `"once"` = seed
+    /// only on first launch (empty apps dir). Defaults to `"once"` if absent.
+    #[serde(default)]
+    pub reseed: Option<String>,
     /// One entry per app to install. `[[app]]` table-array.
     #[serde(default, rename = "app")]
     pub apps: Vec<PackApp>,
@@ -89,8 +93,8 @@ impl Pack {
 pub enum SourceSpec {
     /// Standard git clone target — pass directly to `git clone <url>`.
     Git(String),
-    /// Compile-time-bundled example, identified by its directory name in
-    /// `examples/`. The installer copies the directory tree to the apps dir.
+    /// Compile-time-bundled app, identified by its directory name in
+    /// `apps/`. The installer copies the directory tree to the apps dir.
     Local(String),
 }
 

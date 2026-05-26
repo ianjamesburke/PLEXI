@@ -243,6 +243,12 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: Option<NotesCmd>,
     },
+    /// Interactive keybinding tutorial — learn split and navigate in real time.
+    ///
+    /// Walk through two fundamental Plexi interactions inside a live pane:
+    /// split a pane (⌘D) and navigate between panes (⌘L / ⌘H).
+    /// Must be run inside a Plexi pane (PLEXI_PANE_ID must be set).
+    Demo,
 }
 
 #[derive(Subcommand)]
@@ -339,18 +345,6 @@ pub enum AppCmd {
     /// To install apps from GitHub or a pack file, use `plexi install` instead.
     Install {
         /// Path to the app folder containing manifest.toml
-        path: String,
-    },
-    /// Link a local app directory so Plexi can see it without copying files.
-    ///
-    /// Useful during development — edits to your app folder take effect immediately without reinstalling.
-    Link {
-        /// Path to the app folder containing manifest.toml
-        path: String,
-    },
-    /// Unlink a previously linked app directory.
-    Unlink {
-        /// Path to the app folder (the same path you passed to `link`)
         path: String,
     },
     /// Run an app directly from a local directory without installing or linking.
@@ -458,6 +452,10 @@ pub enum PaneCmd {
         /// Preserve trailing empty lines (by default they are stripped)
         #[arg(long)]
         full_output: bool,
+        /// Read only lines written after this cursor value. Get the cursor from a
+        /// previous capture response. When set, the response is always JSON object format.
+        #[arg(long, value_name = "CURSOR")]
+        from_cursor: Option<u64>,
     },
     /// Send a key press to a pane. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
     ///

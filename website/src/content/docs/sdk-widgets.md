@@ -1,7 +1,7 @@
 ---
 title: "Widgets"
 description: "Reusable UI components for Plexi apps"
-verified_version: "3.6.54"
+verified_version: "0.0.505"
 ---
 
 # Widgets

@@ -15,14 +15,16 @@ Phase 2 of the ship pipeline. Input: a pushed feature branch. Output: PR URL rea
 - `/open-pr <branch-name>` — explicit branch (e.g. `feature/1234-something`)
 - `/open-pr <pr-number>` — re-run AI review on an existing PR, skip PR creation
 
-On completion, **append to the issue body's Ship Log** (see Ship Log Append below) and output:
+On completion, **append to the issue body's Ship Log**, set pipeline labels (see Pipeline Labels below), and output:
 
 ```
 [PR OPENED] PR #<n> — <title>
 PR: <url>
 AI Review: <N> fixes applied | no changes needed
-Next: /validate-pr <pr-number>
+Pipeline: pipeline:validate + ready set — invoking /validate-pr inline
 ```
+
+> **Labels are the live state.** Never read the Ship Log to determine pipeline stage — read the issue labels. Ship Log is audit trail only.
 
 ---
 
@@ -104,9 +106,9 @@ EOF
 PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
 ```
 
-Update pane title:
+Update pipeline label:
 ```bash
-plexi pane name "#<number> / PR #${PR_NUMBER} — <short-title>"
+gh issue edit <number> --add-label "in progress" --remove-label "pipeline:implement" --add-label "pipeline:open-pr" 2>/dev/null || true
 ```
 
 Update project board to "In Review":
@@ -212,6 +214,23 @@ gh issue edit <number> --body "<updated body>"
 ```
 
 ---
+
+## Pipeline Labels
+
+After writing the Ship Log, set pipeline state:
+
+```bash
+gh issue edit <number> \
+  --add-label "pipeline:validate" \
+  --add-label "ready" \
+  --remove-label "pipeline:open-pr" \
+  --remove-label "in progress"
+```
+
+After setting labels, invoke `/validate-pr <pr-number>` inline in the same pane — do not spawn a new pane or wait for PM to dispatch.
+
+---
+
 
 ## Rules
 
