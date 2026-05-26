@@ -391,7 +391,7 @@ pub(crate) fn render_draw_commands(
             } => {
                 use crate::app_protocol::{ListViewItem, ListViewLeading};
 
-                log::info!("ListView: id={id:?} items={} selected={selected} loading={loading}", items.len());
+                log::debug!("ListView: id={id:?} items={} selected={selected} loading={loading}", items.len());
 
                 let list_w = if *w > 0.0 { *w } else { pane_rect.width() };
                 let list_h = if *h > 0.0 { *h } else { pane_rect.height() - y };

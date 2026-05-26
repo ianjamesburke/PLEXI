@@ -3277,4 +3277,105 @@ mod tests {
             other => panic!("expected Text, got {other:?}"),
         }
     }
+
+    #[test]
+    fn list_view_command_round_trips_serde() {
+        let json = r#"{"type":"list_view","id":"feed","x":0.0,"y":48.0,"w":0.0,"h":0.0,"items":[{"type":"row","id":"r1","primary":"Hello","secondary":null,"leading":{"variant":"none"},"chips":[],"trailing":null}],"selected":0,"loading":false,"error":null}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Render(RenderCommand::ListView { id, selected, loading, error, items, .. }) => {
+                assert_eq!(id, "feed");
+                assert_eq!(*selected, 0);
+                assert!(!loading);
+                assert!(error.is_none());
+                assert_eq!(items.len(), 1);
+            }
+            other => panic!("expected ListView, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""type":"list_view""#), "wire tag missing: {serialised}");
+        assert!(serialised.contains(r#""id":"feed""#), "id missing: {serialised}");
+    }
+
+    #[test]
+    fn list_view_loading_state_round_trips_serde() {
+        let json = r#"{"type":"list_view","id":"issues","x":0.0,"y":0.0,"w":0.0,"h":0.0,"items":[],"selected":0,"loading":true,"error":null}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Render(RenderCommand::ListView { loading, error, .. }) => {
+                assert!(loading, "loading should be true");
+                assert!(error.is_none());
+            }
+            other => panic!("expected ListView, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_view_error_state_round_trips_serde() {
+        let json = r#"{"type":"list_view","id":"issues","x":0.0,"y":0.0,"w":0.0,"h":0.0,"items":[],"selected":0,"loading":false,"error":"network timeout"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Render(RenderCommand::ListView { error, .. }) => {
+                assert_eq!(error.as_deref(), Some("network timeout"));
+            }
+            other => panic!("expected ListView, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_view_row_badge_leading_round_trips_serde() {
+        let json = r##"{"type":"list_view","id":"issues","x":0.0,"y":0.0,"w":0.0,"h":0.0,"items":[{"type":"row","id":"r1","primary":"Fix bug","secondary":"subtitle","leading":{"variant":"badge","label":"#42","color":"accent"},"chips":[{"label":"P1","color":"red"}],"trailing":"3m ago"}],"selected":0,"loading":false,"error":null}"##;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Render(RenderCommand::ListView { items, .. }) => {
+                assert_eq!(items.len(), 1);
+                match &items[0] {
+                    crate::app_protocol::ListViewItem::Row(row) => {
+                        assert_eq!(row.primary, "Fix bug");
+                        assert_eq!(row.secondary.as_deref(), Some("subtitle"));
+                        assert_eq!(row.chips.len(), 1);
+                        assert_eq!(row.trailing.as_deref(), Some("3m ago"));
+                        match &row.leading {
+                            Some(crate::app_protocol::ListViewLeading::Badge { label, color }) => {
+                                assert_eq!(label, "#42");
+                                assert_eq!(color, "accent");
+                            }
+                            other => panic!("expected Badge leading, got {other:?}"),
+                        }
+                    }
+                    other => panic!("expected Row item, got {other:?}"),
+                }
+            }
+            other => panic!("expected ListView, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn list_select_event_round_trips_serde() {
+        let json = r#"{"type":"list_select","id":"feed","index":3}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::ListSelect { id, index } => {
+                assert_eq!(id, "feed");
+                assert_eq!(*index, 3);
+            }
+            other => panic!("expected ListSelect, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&event).expect("serialise");
+        assert!(serialised.contains(r#""type":"list_select""#), "wire tag missing: {serialised}");
+        assert!(serialised.contains(r#""index":3"#), "index missing: {serialised}");
+    }
+
+    #[test]
+    fn list_activate_event_round_trips_serde() {
+        let json = r#"{"type":"list_activate","id":"issues","index":0}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");
+        match &event {
+            PlexiEvent::ListActivate { id, index } => {
+                assert_eq!(id, "issues");
+                assert_eq!(*index, 0);
+            }
+            other => panic!("expected ListActivate, got {other:?}"),
+        }
+    }
 }

@@ -912,12 +912,22 @@ class App:
                         sys.stderr.write(f"on_scroll handler raised: {e}\n")
 
                 elif t == "list_select":
-                    ctx = self._make_ctx()
-                    self._dispatch_hook_task(self.on_list_select, ctx, ev.get("id", ""), ev.get("index", 0))
+                    _lid = ev.get("id")
+                    _lidx = ev.get("index")
+                    if _lid is None or _lidx is None:
+                        sys.stderr.write(f"list_select event missing required fields: {ev}\n")
+                    else:
+                        ctx = self._make_ctx()
+                        self._dispatch_hook_task(self.on_list_select, ctx, _lid, _lidx)
 
                 elif t == "list_activate":
-                    ctx = self._make_ctx()
-                    self._dispatch_hook_task(self.on_list_activate, ctx, ev.get("id", ""), ev.get("index", 0))
+                    _lid = ev.get("id")
+                    _lidx = ev.get("index")
+                    if _lid is None or _lidx is None:
+                        sys.stderr.write(f"list_activate event missing required fields: {ev}\n")
+                    else:
+                        ctx = self._make_ctx()
+                        self._dispatch_hook_task(self.on_list_activate, ctx, _lid, _lidx)
 
                 elif t == "app_spawned":
                     # Confirmation that a SpawnApp request succeeded. Apps that
