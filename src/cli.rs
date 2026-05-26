@@ -985,172 +985,6 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> 
     Ok(())
 }
 
-/// `plexi app link <path>` — register a local app directory with the nearest workspace.
-pub fn app_link(path: &str) -> i32 {
-    eprintln!("deprecated: `plexi app link` is deprecated — use `plexi app run <path>` instead");
-    let cwd = match std::env::current_dir() {
-        Ok(d) => d,
-        Err(e) => { eprintln!("error: {e}"); return 1; }
-    };
-    let app_dir = if std::path::Path::new(path).is_absolute() {
-        std::path::PathBuf::from(path)
-    } else {
-        cwd.join(path)
-    };
-    let app_dir = match app_dir.canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: could not resolve {path}: {e}");
-            return 1;
-        }
-    };
-    // Validate manifest.toml exists and is parseable
-    let manifest_path = app_dir.join("manifest.toml");
-    if !manifest_path.exists() {
-        eprintln!("error: no manifest.toml found in {}", app_dir.display());
-        eprintln!("  Is this a Plexi app directory? Run `plexi app init <name>` to scaffold one.");
-        return 1;
-    }
-    let manifest_str = match std::fs::read_to_string(&manifest_path) {
-        Ok(s) => s,
-        Err(e) => { eprintln!("error: could not read manifest.toml: {e}"); return 1; }
-    };
-    let manifest: toml::Value = match toml::from_str(&manifest_str) {
-        Ok(v) => v,
-        Err(e) => { eprintln!("error: manifest.toml parse failed: {e}"); return 1; }
-    };
-    let app_id = match manifest.get("app").and_then(|a| a.get("id")).and_then(|v| v.as_str()) {
-        Some(id) if !id.is_empty() => id.to_string(),
-        _ => {
-            eprintln!("error: manifest.toml is missing a valid [app].id");
-            return 1;
-        }
-    };
-
-    let workspace_root = match crate::app_registry::resolve_workspace_root(&cwd) {
-        Some(r) => r,
-        None => {
-            eprintln!("error: no .plexi/ workspace found at or above {}.", cwd.display());
-            eprintln!("  Run `plexi workspace init` first.");
-            return 1;
-        }
-    };
-
-    log::info!(
-        "app_link:cli: linking {} as app '{}' in workspace {}",
-        app_dir.display(), app_id, workspace_root.display()
-    );
-
-    let links_path = workspace_root.join(".plexi").join("links.toml");
-    let abs_path = app_dir.to_string_lossy().to_string();
-
-    #[derive(serde::Deserialize, serde::Serialize)]
-    struct LinksFile { #[serde(default)] links: Vec<String> }
-
-    // Read existing links (or start fresh)
-    let mut links: Vec<String> = if links_path.exists() {
-        let content = match std::fs::read_to_string(&links_path) {
-            Ok(s) => s,
-            Err(e) => { eprintln!("error: could not read links.toml: {e}"); return 1; }
-        };
-        match toml::from_str::<LinksFile>(&content) {
-            Ok(f) => f.links,
-            Err(e) => { eprintln!("error: could not parse links.toml: {e}"); return 1; }
-        }
-    } else {
-        Vec::new()
-    };
-
-    if links.contains(&abs_path) {
-        println!("Already linked: {}", app_dir.display());
-        return 0;
-    }
-
-    links.push(abs_path);
-
-    let new_content = match toml::to_string_pretty(&LinksFile { links }) {
-        Ok(s) => s,
-        Err(e) => { eprintln!("error: could not serialize links.toml: {e}"); return 1; }
-    };
-
-    if let Err(e) = std::fs::write(&links_path, new_content) {
-        eprintln!("error: could not write links.toml: {e}");
-        return 1;
-    }
-
-    println!("Linked '{}' from {}", app_id, app_dir.display());
-    println!("  App will appear in the run palette on next launch or reload.");
-    0
-}
-
-/// `plexi app unlink <path>` — remove a linked app directory from the workspace registry.
-pub fn app_unlink(path: &str) -> i32 {
-    eprintln!("deprecated: `plexi app unlink` is deprecated — use `plexi app run <path>` instead");
-    let cwd = match std::env::current_dir() {
-        Ok(d) => d,
-        Err(e) => { eprintln!("error: {e}"); return 1; }
-    };
-    let app_dir = if std::path::Path::new(path).is_absolute() {
-        std::path::PathBuf::from(path)
-    } else {
-        cwd.join(path)
-    };
-    // Try to canonicalize; fall back to the raw path if it doesn't exist
-    let app_dir = app_dir.canonicalize().unwrap_or(app_dir);
-    let abs_path = app_dir.to_string_lossy().to_string();
-
-    let workspace_root = match crate::app_registry::resolve_workspace_root(&cwd) {
-        Some(r) => r,
-        None => {
-            eprintln!("error: no .plexi/ workspace found at or above {}.", cwd.display());
-            eprintln!("  Run `plexi workspace init` first.");
-            return 1;
-        }
-    };
-
-    log::info!(
-        "app_unlink:cli: unlinking {} from workspace {}",
-        app_dir.display(), workspace_root.display()
-    );
-
-    let links_path = workspace_root.join(".plexi").join("links.toml");
-    if !links_path.exists() {
-        println!("Not linked (no links.toml found).");
-        return 0;
-    }
-
-    let content = match std::fs::read_to_string(&links_path) {
-        Ok(s) => s,
-        Err(e) => { eprintln!("error: could not read links.toml: {e}"); return 1; }
-    };
-    #[derive(serde::Deserialize, serde::Serialize)]
-    struct LinksFile { #[serde(default)] links: Vec<String> }
-    let mut links: Vec<String> = match toml::from_str::<LinksFile>(&content) {
-        Ok(f) => f.links,
-        Err(e) => { eprintln!("error: could not parse links.toml: {e}"); return 1; }
-    };
-
-    let before = links.len();
-    links.retain(|p| p != &abs_path);
-    if links.len() == before {
-        println!("Not found in links.toml: {}", app_dir.display());
-        return 0;
-    }
-
-    let new_content = match toml::to_string_pretty(&LinksFile { links }) {
-        Ok(s) => s,
-        Err(e) => { eprintln!("error: could not serialize links.toml: {e}"); return 1; }
-    };
-
-    if let Err(e) = std::fs::write(&links_path, new_content) {
-        eprintln!("error: could not write links.toml: {e}");
-        return 1;
-    }
-
-    println!("Unlinked: {}", app_dir.display());
-    0
-}
-
 /// `plexi app run <path>` — open any directory with a valid manifest.toml as an app pane.
 ///
 /// No install, no link required. Edits take effect on next launch.
@@ -2134,8 +1968,7 @@ pub fn list_cli() -> i32 {
         match app.source {
             crate::app_registry::RegistrySource::Global => globals.push(row),
             crate::app_registry::RegistrySource::LocalApp
-            | crate::app_registry::RegistrySource::LocalAgent
-            | crate::app_registry::RegistrySource::Linked => workspace.push(row),
+            | crate::app_registry::RegistrySource::LocalAgent => workspace.push(row),
         }
     }
     if !globals.is_empty() {
@@ -4573,7 +4406,7 @@ _plexi() {
               ;;
             *)
               local subcmds
-              subcmds=('init:Scaffold a new app' 'install:Install a local app directory' 'uninstall:Remove an installed app by id' 'list:List installed apps' 'render:Render an app to PNG headlessly' 'info:Show app info' 'link:Register a local app directory' 'unlink:Remove a linked app directory')
+              subcmds=('init:Scaffold a new app' 'install:Install a local app directory' 'uninstall:Remove an installed app by id' 'list:List installed apps' 'render:Render an app to PNG headlessly' 'info:Show app info')
               _describe 'subcommand' subcmds
               ;;
           esac
@@ -4854,9 +4687,6 @@ complete -c plexi -f -n "__fish_seen_subcommand_from app" -a uninstall -d "Unins
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a list -d "List installed apps"
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a render -d "Render an app to PNG headlessly"
 complete -c plexi -f -n "__fish_seen_subcommand_from app" -a info -d "Show app info"
-complete -c plexi -f -n "__fish_seen_subcommand_from app" -a link -d "Register a local app directory with the workspace"
-complete -c plexi -f -n "__fish_seen_subcommand_from app" -a unlink -d "Remove a linked app directory from the workspace"
-
 # app init flags
 complete -c plexi -n "__fish_seen_subcommand_from app; and __fish_seen_subcommand_from init" -l lang -d "Language template" -a "python"
 

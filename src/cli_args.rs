@@ -341,18 +341,6 @@ pub enum AppCmd {
         /// Path to the app folder containing manifest.toml
         path: String,
     },
-    /// Link a local app directory so Plexi can see it without copying files.
-    ///
-    /// Useful during development — edits to your app folder take effect immediately without reinstalling.
-    Link {
-        /// Path to the app folder containing manifest.toml
-        path: String,
-    },
-    /// Unlink a previously linked app directory.
-    Unlink {
-        /// Path to the app folder (the same path you passed to `link`)
-        path: String,
-    },
     /// Run an app directly from a local directory without installing or linking.
     ///
     /// Opens the app in a pane immediately. Edits to the app take effect on next launch.

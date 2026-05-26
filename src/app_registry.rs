@@ -5,7 +5,6 @@
 //! 1. `~/.plexi-<channel>/apps/<id>/manifest.toml` — global apps (lowest priority)
 //! 2. `<workspace_root>/.plexi/apps/<id>/manifest.toml` — local app (overrides global)
 //! 3. `<workspace_root>/.plexi/agents/<id>/manifest.toml` — local agent (overrides above)
-//! 4. `<linked_path>/manifest.toml` — linked apps (`.plexi/links.toml`)
 //!
 //! `workspace_root` is the nearest ancestor of the current working directory that
 //! contains a `.plexi/` directory; if none is found, only global apps are loaded.
@@ -262,8 +261,6 @@ pub enum RegistrySource {
     LocalApp,
     /// `<workspace_root>/.plexi/agents/<id>/`
     LocalAgent,
-    /// Linked via `.plexi/links.toml` — absolute path registered by `plexi app link`
-    Linked,
 }
 
 impl RegistrySource {
@@ -272,7 +269,6 @@ impl RegistrySource {
             RegistrySource::Global => "global",
             RegistrySource::LocalApp => "local-app",
             RegistrySource::LocalAgent => "local-agent",
-            RegistrySource::Linked => "linked",
         }
     }
 }
@@ -341,12 +337,6 @@ impl AppRegistry {
             if local_agents.is_dir() {
                 registry.scan_dir(&local_agents, RegistrySource::LocalAgent);
             }
-            // Linked apps — registered via `plexi app link`, stored as absolute paths in
-            // `<channel_dir>/links.toml`. Scanned last — linked entries shadow all other sources.
-            let links_path = root.join(&channel_dir).join("links.toml");
-            if links_path.exists() {
-                registry.scan_links(&links_path);
-            }
         }
 
         registry
@@ -414,91 +404,6 @@ impl AppRegistry {
                 }
                 Err(e) => {
                     log::warn!("AppRegistry: skipping {:?}: {e}", entry_dir.file_name());
-                }
-            }
-        }
-    }
-
-    /// Parse `.plexi/links.toml` and load each listed absolute path as a linked app.
-    /// links.toml format:
-    /// ```toml
-    /// links = ["/abs/path/to/app1", "/abs/path/to/app2"]
-    /// ```
-    fn scan_links(&mut self, links_path: &Path) {
-        let content = match std::fs::read_to_string(links_path) {
-            Ok(s) => s,
-            Err(e) => {
-                log::warn!("AppRegistry: failed to read {:?}: {e}", links_path);
-                return;
-            }
-        };
-        #[derive(serde::Deserialize)]
-        struct LinksFile {
-            #[serde(default)]
-            links: Vec<String>,
-        }
-        let parsed: LinksFile = match toml::from_str(&content) {
-            Ok(p) => p,
-            Err(e) => {
-                log::warn!("AppRegistry: failed to parse {:?}: {e}", links_path);
-                return;
-            }
-        };
-        // Profile dir — linked paths must not point inside it. A path inside
-        // the global config dir would silently override a managed install with
-        // arbitrary code from a local workspace's links.toml.
-        // Canonicalize so symlinks (e.g. macOS /var → /private/var) don't
-        // allow a bypass via the real resolved path.
-        let raw_profile = crate::config::config_dir();
-        let profile_dir = raw_profile.canonicalize().unwrap_or(raw_profile);
-
-        for raw_path in &parsed.links {
-            let app_dir = PathBuf::from(raw_path);
-            if !app_dir.is_absolute() {
-                log::warn!("AppRegistry: skipping relative path in links.toml: {:?} (must be absolute)", raw_path);
-                continue;
-            }
-            // Canonicalize to resolve symlinks before the profile-dir check.
-            let canonical = match app_dir.canonicalize() {
-                Ok(p) => p,
-                Err(e) => {
-                    log::warn!("AppRegistry: skipping linked path {:?}: cannot canonicalize: {e}", raw_path);
-                    continue;
-                }
-            };
-            if canonical.starts_with(&profile_dir) {
-                log::warn!(
-                    "AppRegistry: skipping linked path {:?}: resolves inside profile dir {:?} — use global install instead",
-                    raw_path,
-                    profile_dir,
-                );
-                continue;
-            }
-            match self.load_app(&canonical) {
-                Ok(installed) => {
-                    let id = installed.manifest.id.clone();
-                    if let Some(existing) = self.apps.get(&id) {
-                        log::warn!(
-                            "AppRegistry: '{}' — linked entry (from {:?}) shadows {} entry (from {:?})",
-                            id,
-                            canonical,
-                            existing.source.label(),
-                            existing.bin_path.parent().unwrap_or(&existing.bin_path),
-                        );
-                    } else {
-                        log::info!(
-                            "AppRegistry: loaded linked entry '{}' from {:?}",
-                            id,
-                            canonical,
-                        );
-                    }
-                    for ext in &installed.manifest.capabilities.file_types {
-                        self.extension_map.insert(ext.to_lowercase(), id.clone());
-                    }
-                    self.apps.insert(id, InstalledApp { source: RegistrySource::Linked, ..installed });
-                }
-                Err(e) => {
-                    log::warn!("AppRegistry: skipping linked path {:?}: {e}", canonical);
                 }
             }
         }
@@ -793,8 +698,6 @@ pub fn registry_watch_dirs(cwd: &Path) -> Vec<PathBuf> {
     let channel_dir = registry_config_dir();
     if let Some(root) = resolve_workspace_root_with_channel(cwd, &channel_dir) {
         let channel_root = root.join(&channel_dir);
-        // Watch the channel dir itself (catches links.toml changes from `app link`).
-        dirs.push(channel_root.clone());
         dirs.push(channel_root.join("apps"));
         dirs.push(channel_root.join("agents"));
     }
@@ -1224,48 +1127,6 @@ notification_scope = \"global\"
     }
 
     #[test]
-    fn linked_app_appears_in_registry() {
-        let global = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        // Create workspace .plexi dir
-        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
-        // Create app directory outside .plexi/ — write_app creates <parent>/<id>/ subdir
-        let apps_parent = workspace.path().join("apps");
-        fs::create_dir_all(&apps_parent).unwrap();
-        write_app(&apps_parent, "linked-app", "Linked App");
-        let app_dir = apps_parent.join("linked-app");
-        // Write links.toml
-        let links_toml = format!("links = [{:?}]\n", app_dir.to_string_lossy());
-        fs::write(workspace.path().join(".plexi").join("links.toml"), links_toml).unwrap();
-
-        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
-        let app = registry.get("linked-app").expect("linked app must appear in registry");
-        assert_eq!(app.source, RegistrySource::Linked);
-    }
-
-    #[test]
-    fn linked_app_shadows_global_with_same_id() {
-        let global = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        // Global install of "my-app"
-        write_app(global.path(), "my-app", "Global My App");
-        // Workspace .plexi dir
-        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
-        // Linked version of same id — write_app creates <parent>/<id>/ subdir
-        let apps_parent = workspace.path().join("apps");
-        fs::create_dir_all(&apps_parent).unwrap();
-        write_app(&apps_parent, "my-app", "Linked My App");
-        let linked_app = apps_parent.join("my-app");
-        let links_toml = format!("links = [{:?}]\n", linked_app.to_string_lossy());
-        fs::write(workspace.path().join(".plexi").join("links.toml"), links_toml).unwrap();
-
-        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
-        let app = registry.get("my-app").expect("my-app must be in registry");
-        assert_eq!(app.source, RegistrySource::Linked, "linked must shadow global");
-        assert_eq!(app.manifest.name, "Linked My App");
-    }
-
-    #[test]
     fn local_agent_shadows_local_app_with_same_id() {
         let global = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
@@ -1281,34 +1142,6 @@ notification_scope = \"global\"
         let entry = registry.get("tool").expect("tool must be discovered");
         assert_eq!(entry.source, RegistrySource::LocalAgent, "agent must shadow local app");
         assert_eq!(entry.manifest.name, "Tool (agent)");
-    }
-
-    #[test]
-    fn linked_app_relative_path_rejected() {
-        let global = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
-
-        // A relative path in links.toml must be skipped — only absolute paths allowed.
-        let bad_links = "links = [\"relative/path/to/app\"]\n";
-        fs::write(workspace.path().join(".plexi").join("links.toml"), bad_links).unwrap();
-
-        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
-        assert!(registry.get("anything").is_none(), "relative linked path must be rejected");
-    }
-
-    #[test]
-    fn linked_app_with_nonexistent_path_skipped() {
-        let global = tempfile::tempdir().unwrap();
-        let workspace = tempfile::tempdir().unwrap();
-        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
-
-        let bad_links = "links = [\"/nonexistent/path/to/app\"]\n";
-        fs::write(workspace.path().join(".plexi").join("links.toml"), bad_links).unwrap();
-
-        // Must not panic — skips with a warn
-        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
-        assert!(registry.get("anything").is_none());
     }
 
     #[test]
