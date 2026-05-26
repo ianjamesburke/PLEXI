@@ -99,8 +99,6 @@ Manage your Plexi apps — scaffold, install, list, and inspect
 | `render` | Render an app to a PNG image without opening the UI (useful for screenshots and testing) |
 | `info` | Show details about an installed app: id, name, version, and available tools |
 | `install` | Install a local app directory you are developing into Plexi |
-| `link` | Link a local app directory so Plexi can see it without copying files |
-| `unlink` | Unlink a previously linked app directory |
 | `run` | Run an app directly from a local directory without installing or linking |
 
 ### `plexi app init`
@@ -157,24 +155,6 @@ Copies your app folder into Plexi's app store so it shows up and runs like any o
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<path>` | string | yes | Path to the app folder containing manifest.toml |
-
-### `plexi app link`
-
-Link a local app directory so Plexi can see it without copying files.
-
-Useful during development — edits to your app folder take effect immediately without reinstalling.
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<path>` | string | yes | Path to the app folder containing manifest.toml |
-
-### `plexi app unlink`
-
-Unlink a previously linked app directory
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<path>` | string | yes | Path to the app folder (the same path you passed to `link`) |
 
 ### `plexi app run`
 
