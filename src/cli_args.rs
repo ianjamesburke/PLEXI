@@ -5,24 +5,7 @@ use clap::{Parser, Subcommand};
     name = "plexi",
     about = "Plexi — the last app you'll ever need",
     version = env!("CARGO_PKG_VERSION"),
-    after_help = "\x1b[1mQuick start:\x1b[0m
-  plexi                     Launch the Plexi GUI
-  plexi list                Show installed apps
-  plexi open <app>          Open an app in a new pane
-  plexi install <source>    Install an app (e.g. github:owner/repo)
-  plexi app init <name>     Scaffold a new app
-
-\x1b[1mInside a Plexi pane:\x1b[0m
-  plexi terminal            Open a terminal pane
-  plexi pane list           List all open panes
-  plexi notify --title ...  Send a notification
-
-\x1b[1mWorkspace (per-project):\x1b[0m
-  plexi workspace init      Set up a .plexi/ workspace
-  plexi secret set <name>   Store a secret in your keychain
-  plexi run                 List available workspace commands
-  plexi run <command>       Run a command from .plexi/commands.toml
-"
+    after_help = "Get started: plexi demo | Docs: https://plexi.dev"
 )]
 pub struct Cli {
     /// Profile name (e.g. alpha, beta)
