@@ -138,9 +138,24 @@ fn main() -> eframe::Result {
     let merged_config_root = adopted_root
         .clone()
         .or_else(|| crate::config::active_workspace_root());
-    let log_config = crate::config::PlexiConfig::load_with_workspace(merged_config_root.as_deref())
-        .log
-        .unwrap_or_default();
+    let bootstrap_config = crate::config::PlexiConfig::load_with_workspace(merged_config_root.as_deref());
+    // When launched with no path argument, honour `default_cwd` from config so
+    // Plexi never inherits the directory of the .exe / shortcut it was launched
+    // from. Logged so the user can see what happened. CLI subcommands run later
+    // in this function so this chdir affects them too — intended.
+    if adopted_root.is_none() {
+        if let Some(raw) = bootstrap_config.default_cwd.as_deref() {
+            let target = crate::config::expand_user_path(raw);
+            match std::env::set_current_dir(&target) {
+                Ok(()) => eprintln!("plexi: default_cwd applied → {}", target.display()),
+                Err(e) => eprintln!(
+                    "warning: default_cwd '{}' could not be entered: {e}",
+                    target.display()
+                ),
+            }
+        }
+    }
+    let log_config = bootstrap_config.log.clone().unwrap_or_default();
     let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
     let retention_days = log_config.retention_days.unwrap_or(30);
     let cli_mode = raw_args.iter().skip(1).any(|a| {

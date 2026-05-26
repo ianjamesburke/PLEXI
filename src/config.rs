@@ -36,6 +36,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "font_size", "theme_preset", "theme", "beta", "log",
     "notifications", "ai", "confirm_quit", "confirm_close",
     "keybindings", "quick_note", "focus_history_depth", "agents", "cli",
+    "default_cwd",
 ];
 const KNOWN_AGENTS: &[&str] = &["low", "medium", "high"];
 const KNOWN_CLI: &[&str] = &["tips"];
@@ -287,6 +288,27 @@ pub struct PlexiConfig {
     pub focus_history_depth: Option<usize>,
     pub agents: Option<AgentsConfig>,
     pub cli: Option<CliConfig>,
+    /// Directory Plexi cd's into at boot when launched without an explicit path
+    /// argument. Avoids landing in `...\bin\` on Windows when launched from
+    /// Explorer or a fixed shortcut. Supports `~` and `~/...` for home-relative
+    /// paths. Falls back to the launching shell's CWD when unset.
+    pub default_cwd: Option<String>,
+}
+
+/// Expand a leading `~` / `~/` in a config path to the user's home directory.
+/// Returns the path unchanged when no expansion is needed or when no home
+/// directory is resolvable. Trims whitespace.
+pub fn expand_user_path(raw: &str) -> PathBuf {
+    let trimmed = raw.trim();
+    if trimmed == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(trimmed));
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(trimmed)
 }
 
 /// CLI behavior configuration.

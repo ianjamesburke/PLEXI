@@ -20,6 +20,14 @@ confirm_close = false
 # Maximum depth of pane focus history (Cmd+[ / Cmd+]).
 # focus_history_depth = 100
 
+# ── Default working directory ──────────────────────────────────
+# Directory Plexi cd's into at boot when launched without an
+# explicit path argument (e.g. double-click on Windows, fixed
+# shortcut, or `plexi` with no args). Prevents inheriting the
+# install dir (`...\bin\` on Windows) as your terminal cwd.
+# Supports `~` and `~/...` for home-relative paths.
+# default_cwd = "~"
+
 # ── OSC & Terminal Features ────────────────────────────────────────
 # osc_pane_title applies OSC 0/1/2 title sequences from running
 # processes as pane names.
