@@ -306,8 +306,10 @@ fn main() -> eframe::Result {
                                     std::process::exit(cli::install_workspace_pack_cli());
                                 }
                                 Some(s) => {
-                                    // Local path: contains a path separator, starts with . or /, or the path exists on disk.
-                                    let is_local = s.contains('/') || s.starts_with('.') || std::path::Path::new(&s).exists();
+                                    // Local path: contains a path separator, starts with . or /, or is an existing directory.
+                                    // Using is_dir() (not exists()) avoids misrouting bare app IDs that happen
+                                    // to match a file in the current directory.
+                                    let is_local = s.contains('/') || s.starts_with('.') || std::path::Path::new(&s).is_dir();
                                     if is_local {
                                         log::info!("app_install:cli: local path={s}");
                                         std::process::exit(cli::app_install(&s));
