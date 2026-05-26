@@ -3450,6 +3450,52 @@
             "offset_y"
           ],
           "type": "object"
+        },
+        {
+          "description": "Emitted when j/k/up/down changes the list selection.\n`id` matches the `list_view` id field; `index` is the new selected index.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "index": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "list_select",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "index"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Emitted when Enter is pressed on the selected item.\n`id` matches the `list_view` id field; `index` is the activated item index.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "index": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "list_activate",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "index"
+          ],
+          "type": "object"
         }
       ],
       "title": "PlexiEvent"
@@ -3492,6 +3538,178 @@
           },
           "required": [
             "label"
+          ],
+          "type": "object"
+        },
+        "ListViewChip": {
+          "description": "One chip label on a ListView row.",
+          "properties": {
+            "color": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "label",
+            "color"
+          ],
+          "type": "object"
+        },
+        "ListViewItem": {
+          "description": "An item inside a ListView — either a typed row or a custom cell.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ListViewRowDescriptor",
+              "properties": {
+                "type": {
+                  "const": "row",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "height_hint": {
+                  "default": 40.0,
+                  "format": "float",
+                  "type": "number"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "custom_cell",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "id"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ListViewLeading": {
+          "description": "Leading slot for a ListView row.",
+          "oneOf": [
+            {
+              "properties": {
+                "color": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "variant": {
+                  "const": "badge",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "variant",
+                "label",
+                "color"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "handle": {
+                  "type": "string"
+                },
+                "variant": {
+                  "const": "avatar",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "variant",
+                "handle"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "variant": {
+                  "const": "icon",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "variant",
+                "name"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "variant": {
+                  "const": "none",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "variant"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ListViewRowDescriptor": {
+          "description": "A generic typed row for a ListView.",
+          "properties": {
+            "chips": {
+              "default": [],
+              "items": {
+                "$ref": "#/$defs/ListViewChip"
+              },
+              "type": "array"
+            },
+            "id": {
+              "type": "string"
+            },
+            "leading": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ListViewLeading"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "primary": {
+              "type": "string"
+            },
+            "secondary": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "trailing": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "primary"
           ],
           "type": "object"
         },
@@ -3926,6 +4144,69 @@
             "type",
             "items",
             "selected"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Host-native scrollable list with j/k navigation, typed row slots,\nand built-in loading/error/empty states.\nHost emits `PlexiEvent::ListSelect` / `PlexiEvent::ListActivate` for callbacks.",
+          "properties": {
+            "error": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "h": {
+              "default": 0.0,
+              "description": "0.0 = remaining pane height below y",
+              "format": "float",
+              "type": "number"
+            },
+            "id": {
+              "type": "string"
+            },
+            "items": {
+              "items": {
+                "$ref": "#/$defs/ListViewItem"
+              },
+              "type": "array"
+            },
+            "loading": {
+              "default": false,
+              "type": "boolean"
+            },
+            "selected": {
+              "default": 0,
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "type": {
+              "const": "list_view",
+              "type": "string"
+            },
+            "w": {
+              "default": 0.0,
+              "description": "0.0 = full pane width",
+              "format": "float",
+              "type": "number"
+            },
+            "x": {
+              "default": 0.0,
+              "format": "float",
+              "type": "number"
+            },
+            "y": {
+              "default": 0.0,
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "items"
           ],
           "type": "object"
         },

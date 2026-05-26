@@ -71,6 +71,8 @@ gh pr diff $PR_NUMBER --name-only
 - Rust test-only additions (`#[cfg(test)]` or `tests/` only)
 - CLI output changes verifiable without a running host
 
+**Never skip install if any changed file is under `apps/` or `apps/dev/`** — Python apps are copied to the profile dir on install, not served from source. Skipping install means the old version runs.
+
 If install not needed → use diff-review testing block (see below). Skip install steps.
 
 ---
