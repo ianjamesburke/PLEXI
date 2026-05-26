@@ -62,6 +62,7 @@ mod sidebar;
 mod sidebar_row;
 mod spatial;
 mod style;
+mod text_editor;
 mod theme;
 mod tiling;
 mod typed_pipes;

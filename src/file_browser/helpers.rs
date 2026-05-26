@@ -9,6 +9,7 @@ use std::time::SystemTime;
 pub(crate) enum MediaKind {
     Video,
     Audio,
+    Text,
     Other,
 }
 
@@ -34,6 +35,10 @@ impl MediaKind {
             // via `RunInLinkedTerminal`. All recognised extensions route
             // identically.
             "mp3" | "wav" | "flac" | "m4a" | "aac" | "ogg" | "opus" => Self::Audio,
+            "txt" | "md" | "rs" | "py" | "js" | "ts" | "tsx" | "jsx" | "toml" | "yaml" | "yml"
+            | "json" | "sh" | "bash" | "zsh" | "fish" | "html" | "css" | "go" | "rb" | "java"
+            | "c" | "cpp" | "h" | "hpp" | "sql" | "log" | "gitignore" | "lock" | "ron" | "kdl"
+            | "swift" | "kt" | "lua" | "r" => Self::Text,
             _ => Self::Other,
         }
     }
@@ -44,6 +49,7 @@ impl MediaKind {
         match self {
             Self::Video => Some("video-player"),
             Self::Audio => Some("audio-player"),
+            Self::Text => Some("text_editor"),
             Self::Other => None,
         }
     }
@@ -153,7 +159,6 @@ mod media_bridge_tests {
     #[test]
     fn unrecognized_extension_falls_back_to_system_open() {
         for path in &[
-            "/tmp/notes.txt",
             "/tmp/photo.tiff",
             "/tmp/archive.zip",
             "/tmp/Makefile",
@@ -171,6 +176,36 @@ mod media_bridge_tests {
                 None,
                 "{path} should not route to an in-app player"
             );
+        }
+    }
+
+    #[test]
+    fn open_text_file_routes_to_text_editor_app() {
+        for ext in &["rs", "md", "py", "js", "toml", "json", "sh", "txt"] {
+            let p = PathBuf::from(format!("/tmp/file.{ext}"));
+            assert_eq!(
+                MediaKind::for_path(&p),
+                MediaKind::Text,
+                "extension {ext} should classify as Text"
+            );
+            assert_eq!(
+                MediaKind::for_path(&p).player_app_id(),
+                Some("text_editor"),
+                "{ext} routes to text_editor app"
+            );
+        }
+    }
+
+    #[test]
+    fn unrecognized_extension_still_falls_back_to_system_open() {
+        for path in &[
+            "/tmp/photo.tiff",
+            "/tmp/archive.zip",
+            "/tmp/.dotfile",
+            "/tmp/no-extension",
+        ] {
+            let p = PathBuf::from(path);
+            assert_eq!(MediaKind::for_path(&p).player_app_id(), None);
         }
     }
 }

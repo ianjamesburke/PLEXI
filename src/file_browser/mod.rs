@@ -1172,6 +1172,19 @@ mod tests {
         (app, dir)
     }
 
+    fn takes_one_text_editor_spawn(app: &mut FileBrowserApp, filename: &str) {
+        use crate::app_trait::AppCommand;
+        let cmds = app.take_pending_commands();
+        assert_eq!(cmds.len(), 1, "expected one pending SpawnApp command");
+        match &cmds[0] {
+            AppCommand::SpawnApp { type_id, args, .. } => {
+                assert_eq!(type_id, "text_editor", "file must route to text_editor app");
+                assert!(args[0].ends_with(filename), "args[0] must be the file path");
+            }
+            _ => panic!("expected SpawnApp"),
+        }
+    }
+
     #[test]
     fn enter_on_file_opens_file_and_browser_stays_open() {
         let (mut app, _dir) = make_file_only_dir_app();
@@ -1179,8 +1192,7 @@ mod tests {
         assert!(!app.entries[0].is_dir, "first entry must be a file (no dirs in fixture)");
         let consumed = run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
         assert!(consumed, "Enter on a file must be consumed");
-        assert_eq!(app.opened_files.len(), 1, "Enter on a file must call open_file");
-        assert!(app.opened_files[0].ends_with("readme.txt"), "must open the selected file");
+        takes_one_text_editor_spawn(&mut app, "readme.txt");
         assert!(!app.should_close, "browser must stay open after opening a file");
     }
 
@@ -1189,7 +1201,7 @@ mod tests {
         let (mut app, _dir) = make_file_only_dir_app();
         let consumed = run_handle_key(&mut app, vec![key_event(Key::L, Modifiers::default())]);
         assert!(consumed);
-        assert_eq!(app.opened_files.len(), 1, "l on a file must call open_file");
+        takes_one_text_editor_spawn(&mut app, "readme.txt");
     }
 
     #[test]
@@ -1197,7 +1209,7 @@ mod tests {
         let (mut app, _dir) = make_file_only_dir_app();
         let consumed = run_handle_key(&mut app, vec![key_event(Key::ArrowRight, Modifiers::default())]);
         assert!(consumed);
-        assert_eq!(app.opened_files.len(), 1, "→ on a file must call open_file");
+        takes_one_text_editor_spawn(&mut app, "readme.txt");
     }
 
     #[test]
@@ -1219,7 +1231,7 @@ mod tests {
         // press Enter to open the (only) filtered result
         let consumed = run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
         assert!(consumed);
-        assert_eq!(app.opened_files.len(), 1, "Enter in search mode on a file must call open_file");
+        takes_one_text_editor_spawn(&mut app, "readme.txt");
         assert!(!app.in_search, "search mode must exit after opening a file");
     }
 

@@ -708,6 +708,20 @@ impl PlexiApp {
             return Ok(());
         }
 
+        if id == "text_editor" {
+            let path_arg = args.first().cloned();
+            let app: Box<dyn crate::app_trait::App> = Box::new(
+                crate::text_editor::TextEditorApp::from_args(args)
+            );
+            let hint = layout.or_else(|| Some("split_h".to_string()));
+            let te_cwd = cwd_override
+                .or_else(|| self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane))
+                .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+            log::info!("launch_app_by_id: text_editor path={path_arg:?} hint={hint:?}");
+            self.open_builtin_app_pane(app, crate::app_permissions::AppPermissions::default(), te_cwd, None, hint.as_deref(), None);
+            return Ok(());
+        }
+
         let cwd_explicit = cwd_override.is_some();
         let cwd = cwd_override
             .or_else(|| self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane))
@@ -959,47 +973,18 @@ impl PlexiApp {
         self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"), None);
     }
 
-    /// Open a terminal editor in the focused pane for scratchpad editing.
+    /// Open the text editor as a scratchpad overlay on the current pane.
     ///
-    /// Injects `micro <path>` (or `nano` fallback) into the focused terminal's PTY.
-    /// The scratchpad file persists at `<config_dir>/scratchpad.md` across sessions.
+    /// Opens a new timestamped note in the built-in text editor as an overlay,
+    /// replacing the old PTY-injection pattern.
     pub(crate) fn open_scratchpad(&mut self) {
-        let active = self.active_window;
-
-        let focused_tile = match self.windows[active].focused_pane {
-            Some(t) => t,
-            None => {
-                log::warn!("scratchpad: no focused pane — ignored");
-                return;
-            }
-        };
-        let pane_id = match self.windows[active].tree.tiles.get(focused_tile) {
-            Some(egui_tiles::Tile::Pane(id)) => *id,
-            _ => {
-                log::warn!("scratchpad: focused tile is not a pane — ignored");
-                return;
-            }
-        };
-        let Some(term) = self.windows[active].panes.get_mut(&pane_id).and_then(Pane::as_terminal_mut) else {
-            log::warn!("scratchpad: focused pane {pane_id} is not a terminal — ignored");
-            return;
-        };
-
-        let path = scratchpad_file();
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                log::warn!("scratchpad: could not create notes dir {:?}: {e}", parent);
-            } else {
-                log::info!("scratchpad: notes dir {:?} ready", parent);
-            }
-        }
-        let path_str = path.display().to_string();
-        let escaped = crate::shell::shell_quote(&path_str);
-        let editor = preferred_editor();
-
-        let cmd = format!("{editor} {escaped}\r");
-        log::info!("scratchpad: injecting '{editor} {escaped}' into terminal pane {pane_id}");
-        term.backend.process_command(BackendCommand::Write(cmd.into_bytes()));
+        let path = crate::text_editor::scratchpad_file();
+        log::info!("text_editor: opening scratchpad overlay at '{}'", path.display());
+        let app: Box<dyn crate::app_trait::App> = Box::new(
+            crate::text_editor::TextEditorApp::new(path)
+        );
+        let cwd = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+        self.open_builtin_app_pane(app, crate::app_permissions::AppPermissions::default(), cwd, None, Some("overlay"), None);
     }
 
     /// Open the quick note modal: capture context and push FocusLayer::QuickNote.
@@ -1955,19 +1940,3 @@ mod quick_note_tests {
     }
 }
 
-/// Timestamped scratchpad file path: `<config_dir>/notes/YYYY-MM-DD_HHMMSS.md`.
-fn scratchpad_file() -> PathBuf {
-    use chrono::Local;
-    let timestamp = Local::now().format("%Y-%m-%d_%H%M%S").to_string();
-    crate::config::config_dir().join("notes").join(format!("{timestamp}.md"))
-}
-
-/// Resolve the preferred terminal editor: `micro` if available, else `nano`, then `vim`.
-fn preferred_editor() -> &'static str {
-    for editor in ["micro", "nano", "vim"] {
-        if cli_binary_in_path(editor) {
-            return editor;
-        }
-    }
-    "nano"
-}
