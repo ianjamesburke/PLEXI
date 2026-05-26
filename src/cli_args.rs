@@ -102,7 +102,7 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: PackCmd,
     },
-    /// Send a notification to the Plexi UI. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
+    /// Send a notification to the Plexi UI.
     Notify {
         /// Notification title (required)
         #[arg(long)]
@@ -129,7 +129,7 @@ pub enum Commands {
         #[arg(long, value_name = "SCOPE")]
         scope: Option<String>,
     },
-    /// Control panes — list, focus, send input, capture output, and more. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
+    /// Control panes — list, focus, send input, capture output, and more.
     Pane {
         #[command(subcommand)]
         cmd: PaneCmd,
@@ -193,7 +193,7 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: RegistryCmd,
     },
-    /// Manage the active context (the folder and project scope tied to the current pane). Run this from inside a Plexi pane (open one first with `plexi open terminal`).
+    /// Manage the active context (the folder and project scope tied to the current pane).
     Context {
         #[command(subcommand)]
         cmd: ContextCmd,
@@ -403,7 +403,7 @@ pub enum PaneCmd {
         /// Pane id to close (from `plexi pane list`). Defaults to the current pane if not given.
         pane_id: Option<u64>,
     },
-    /// Type text into another pane as if it came from the keyboard. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
+    /// Type text into another pane as if it came from the keyboard.
     ///
     /// Use `\n` in the text to press Enter (which submits a command).
     ///
@@ -421,7 +421,7 @@ pub enum PaneCmd {
     Self_,
     /// Print details about the current pane as JSON.
     Info,
-    /// Capture the last N lines of a pane's output as a JSON array. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
+    /// Capture the last N lines of a pane's output as a JSON array.
     ///
     /// Defaults to the current pane when no pane id is given.
     ///
@@ -440,7 +440,7 @@ pub enum PaneCmd {
         #[arg(long, value_name = "CURSOR")]
         from_cursor: Option<u64>,
     },
-    /// Send a key press to a pane. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
+    /// Send a key press to a pane.
     ///
     /// For terminal panes, injects the keystroke into the terminal.
     /// For app panes, delivers a structured key event.
