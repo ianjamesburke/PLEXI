@@ -6,6 +6,7 @@ use gpui::{prelude::*, *};
 use gpui_component::{
     ActiveTheme, Icon, IconName, Sizable, ThemeMode,
     button::{Button, ButtonVariants},
+    menu::{ContextMenuExt, PopupMenuItem},
     sidebar::{
         Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
         SidebarToggleButton,
@@ -421,6 +422,21 @@ impl PlexiApp {
                                     })),
                             )
                             .child(
+                                Button::new("theme-toggle")
+                                    .ghost()
+                                    .small()
+                                    .icon(Icon::new(IconName::Sun).size(px(14.)))
+                                    .on_click(cx.listener(|_, _, window, cx| {
+                                        let current = cx.theme().mode;
+                                        let next = if current == ThemeMode::Dark {
+                                            ThemeMode::Light
+                                        } else {
+                                            ThemeMode::Dark
+                                        };
+                                        Theme::change(next, Some(window), cx);
+                                    })),
+                            )
+                            .child(
                                 Button::new("settings")
                                     .ghost()
                                     .small()
@@ -764,6 +780,14 @@ impl PlexiApp {
                 this.focused_pane = id;
                 cx.notify();
             }))
+            .context_menu(move |menu, _window, _cx| {
+                menu.item(PopupMenuItem::new("Split Horizontal").action(Box::new(SplitHorizontal)))
+                    .item(PopupMenuItem::new("Split Vertical").action(Box::new(SplitVertical)))
+                    .separator()
+                    .item(PopupMenuItem::new("Zoom").action(Box::new(ZoomPane)))
+                    .separator()
+                    .item(PopupMenuItem::new("Close Pane").action(Box::new(ClosePane)))
+            })
     }
 
     fn render_status_bar(&self, cx: &Context<Self>) -> impl IntoElement {
