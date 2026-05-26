@@ -4317,15 +4317,18 @@ pub fn demo_cli() -> i32 {
         }
     };
 
+    log::info!("demo_cli: starting interactive tutorial for pane_id={my_pane_id}");
+
     let events_path = crate::config::config_dir().join("events.jsonl");
 
     // Seek to end — only watch events that occur after demo starts.
-    let start_offset = if events_path.exists() {
-        std::fs::metadata(&events_path)
-            .map(|m| m.len())
-            .unwrap_or(0)
-    } else {
-        0
+    let start_offset = match std::fs::metadata(&events_path) {
+        Ok(m) => m.len(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(e) => {
+            log::warn!("demo_cli: could not read events file metadata: {e}");
+            0
+        }
     };
 
     // Welcome banner
@@ -4341,17 +4344,15 @@ pub fn demo_cli() -> i32 {
     eprintln!("  Press  \x1b[1m[ \u{2318}D ]\x1b[0m  to split the current pane.");
     eprintln!();
 
-    if let Err(e) = poll_event(&events_path, start_offset, |kind, _obj| kind == "pane_split") {
-        eprintln!("error watching {}: {e}", events_path.display());
-        return 1;
-    }
+    let after_split_offset = match poll_event(&events_path, start_offset, |kind, _obj| kind == "pane_split") {
+        Ok(offset) => offset,
+        Err(e) => {
+            eprintln!("error watching {}: {e}", events_path.display());
+            return 1;
+        }
+    };
     eprintln!("  \x1b[1;32m\u{2713} 1/2\x1b[0m");
     eprintln!();
-
-    // Remember offset after step 1 so focus events from the split itself are skipped.
-    let after_split_offset = std::fs::metadata(&events_path)
-        .map(|m| m.len())
-        .unwrap_or(start_offset);
 
     // Step 2 — navigate
     eprintln!("  Step 2 of 2   Navigate panes");
@@ -4364,19 +4365,17 @@ pub fn demo_cli() -> i32 {
     eprintln!("  Press  \x1b[1m[ \u{2318}L ]\x1b[0m  to move focus right, then  \x1b[1m[ \u{2318}H ]\x1b[0m  to come back.");
     eprintln!();
 
-    // Wait for focus to LEAVE this pane (user pressed ⌘L).
-    let mut focus_offset = after_split_offset;
-    if let Err(e) = poll_event(&events_path, focus_offset, |kind, obj| {
+    // Wait for focus to LEAVE this pane (user pressed ⌘L); returned offset is exact position after match.
+    let focus_offset = match poll_event(&events_path, after_split_offset, |kind, obj| {
         kind == "focus_changed"
             && obj.get("pane_id").and_then(|v| v.as_u64()) == Some(my_pane_id)
     }) {
-        eprintln!("error watching {}: {e}", events_path.display());
-        return 1;
-    }
-    // Advance offset so the next poll starts after the first focus event.
-    focus_offset = std::fs::metadata(&events_path)
-        .map(|m| m.len())
-        .unwrap_or(focus_offset);
+        Ok(offset) => offset,
+        Err(e) => {
+            eprintln!("error watching {}: {e}", events_path.display());
+            return 1;
+        }
+    };
 
     // Wait for any focus_changed (user pressed ⌘H, focus leaves the other pane).
     if let Err(e) = poll_event(&events_path, focus_offset, |kind, _obj| kind == "focus_changed") {
@@ -4390,35 +4389,51 @@ pub fn demo_cli() -> i32 {
     0
 }
 
-/// Tail `path` from `offset`, calling `predicate(kind, json_object)` on each new event.
-/// Returns when the predicate matches, polling at 100ms intervals.
-fn poll_event<F>(path: &std::path::Path, offset: u64, predicate: F) -> std::io::Result<()>
+/// Tails `path` from `offset`, advancing the cursor as lines are consumed.
+/// Returns the byte offset immediately after the matched line when the predicate fires.
+/// Handles missing files gracefully; only processes complete newline-terminated lines.
+fn poll_event<F>(path: &std::path::Path, mut offset: u64, predicate: F) -> std::io::Result<u64>
 where
     F: Fn(&str, &serde_json::Value) -> bool,
 {
     use std::io::{Read, Seek, SeekFrom};
     loop {
-        if path.exists() {
-            let mut f = std::fs::File::open(path)?;
-            let file_len = f.seek(SeekFrom::End(0))?;
-            if file_len > offset {
-                f.seek(SeekFrom::Start(offset))?;
-                let mut buf = String::new();
-                f.read_to_string(&mut buf)?;
-                for line in buf.lines() {
-                    let line = line.trim();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    if let Ok(obj) = serde_json::from_str::<serde_json::Value>(line) {
-                        if let Some(kind) = obj.get("kind").and_then(|v| v.as_str()) {
-                            if predicate(kind, &obj) {
-                                return Ok(());
+        match std::fs::File::open(path) {
+            Ok(mut f) => {
+                let file_len = f.seek(SeekFrom::End(0))?;
+                if file_len > offset {
+                    f.seek(SeekFrom::Start(offset))?;
+                    let mut buf = String::new();
+                    f.read_to_string(&mut buf)?;
+                    // Only process lines up to the last newline to avoid partial writes.
+                    let process_len = match buf.rfind('\n') {
+                        Some(pos) => pos + 1,
+                        None => {
+                            std::thread::sleep(std::time::Duration::from_millis(100));
+                            continue;
+                        }
+                    };
+                    let complete = &buf[..process_len];
+                    let mut byte_pos: u64 = 0;
+                    for line in complete.split_inclusive('\n') {
+                        let line_bytes = line.len() as u64;
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            if let Ok(obj) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                                if let Some(kind) = obj.get("kind").and_then(|v| v.as_str()) {
+                                    if predicate(kind, &obj) {
+                                        return Ok(offset + byte_pos + line_bytes);
+                                    }
+                                }
                             }
                         }
+                        byte_pos += line_bytes;
                     }
+                    offset += process_len as u64;
                 }
             }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
