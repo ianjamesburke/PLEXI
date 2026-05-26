@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{Theme, ThemeSet};
 use syntect::parsing::SyntaxSet;
@@ -8,12 +8,24 @@ use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, FontId};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
 
+static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
+static THEME: OnceLock<Theme> = OnceLock::new();
+
+fn syntax_set() -> &'static SyntaxSet {
+    SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+fn theme() -> &'static Theme {
+    THEME.get_or_init(|| {
+        let theme_set = ThemeSet::load_defaults();
+        theme_set.themes["base16-ocean.dark"].clone()
+    })
+}
+
 pub(crate) struct TextEditorApp {
     path: PathBuf,
     content: String,
     original_content: String,
-    syntax_set: SyntaxSet,
-    theme: Theme,
     dirty: bool,
     should_close: bool,
     dirty_escape_warned: bool,
@@ -46,17 +58,11 @@ impl TextEditorApp {
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         log::info!("text_editor: opening '{}' ({} bytes)", path.display(), content.len());
 
-        let syntax_set = SyntaxSet::load_defaults_newlines();
-        let theme_set = ThemeSet::load_defaults();
-        let theme = theme_set.themes["base16-ocean.dark"].clone();
-
         let original_content = content.clone();
         Self {
             path,
             content,
             original_content,
-            syntax_set,
-            theme,
             dirty: false,
             should_close: false,
             dirty_escape_warned: false,
@@ -69,18 +75,18 @@ impl TextEditorApp {
 
     fn build_layout(&mut self, font_size: f32) -> LayoutJob {
         let ext = self.path.extension().and_then(|e| e.to_str()).unwrap_or("txt");
-        let syntax = self.syntax_set
+        let ss = syntax_set();
+        let syntax = ss
             .find_syntax_by_extension(ext)
-            .or_else(|| self.syntax_set.find_syntax_by_name("Plain Text"))
-            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
+            .or_else(|| ss.find_syntax_by_name("Plain Text"))
+            .unwrap_or_else(|| ss.find_syntax_plain_text());
 
-        let mut highlighter = HighlightLines::new(syntax, &self.theme);
+        let mut highlighter = HighlightLines::new(syntax, theme());
         let mut job = LayoutJob::default();
         let font_id = FontId::monospace(font_size);
 
         for line in LinesWithEndings::from(&self.content) {
-            let ranges = highlighter.highlight_line(line, &self.syntax_set)
-                .unwrap_or_default();
+            let ranges = highlighter.highlight_line(line, ss).unwrap_or_default();
             for (style, text) in ranges {
                 let fg = style.foreground;
                 let color = Color32::from_rgb(fg.r, fg.g, fg.b);
@@ -140,10 +146,14 @@ impl App for TextEditorApp {
         let colors = ctx.colors;
         let content_before = self.content.clone();
 
-        // Handle Cmd+S to save
-        let cmd_s = ui.input(|i| {
-            i.key_pressed(egui::Key::S) && i.modifiers.command
-        });
+        // Derive a per-pane unique ID from the enclosing ui region.
+        // Using ui.id() avoids static-ID conflicts when multiple editors are open.
+        let te_id = ui.id().with("text_editor_main");
+        let has_focus = ui.memory(|mem| mem.has_focus(te_id));
+
+        // Guard input behind has_focus so unfocused editors don't react to
+        // Escape/Cmd+S pressed in another pane (global input state is shared).
+        let cmd_s = has_focus && ui.input(|i| i.key_pressed(egui::Key::S) && i.modifiers.command);
         if cmd_s {
             match std::fs::write(&self.path, &self.content) {
                 Ok(()) => {
@@ -158,10 +168,7 @@ impl App for TextEditorApp {
             }
         }
 
-        // Handle Escape
-        let escape = ui.input(|i| {
-            i.key_pressed(egui::Key::Escape)
-        });
+        let escape = has_focus && ui.input(|i| i.key_pressed(egui::Key::Escape));
         if escape {
             if !self.dirty {
                 log::info!("text_editor: clean close of '{}'", self.path.display());
@@ -178,14 +185,10 @@ impl App for TextEditorApp {
         egui::Frame::new()
             .fill(colors.terminal_bg)
             .show(ui, |ui| {
-                // Footer hint bar
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        ui.colored_label(
-                            colors.text_dim,
-                            egui::RichText::new("⌘S save").size(11.0),
-                        );
+                        ui.colored_label(colors.text_dim, egui::RichText::new("⌘S save").size(11.0));
                         ui.colored_label(colors.text_dim, egui::RichText::new("  ").size(11.0));
                         if self.dirty && self.dirty_escape_warned {
                             ui.colored_label(
@@ -193,27 +196,19 @@ impl App for TextEditorApp {
                                 egui::RichText::new("Unsaved — Esc again to discard").size(11.0),
                             );
                         } else {
-                            ui.colored_label(
-                                colors.text_dim,
-                                egui::RichText::new("Esc close").size(11.0),
-                            );
+                            ui.colored_label(colors.text_dim, egui::RichText::new("Esc close").size(11.0));
                         }
                         if self.dirty {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                ui.colored_label(
-                                    egui::Color32::YELLOW,
-                                    egui::RichText::new("●").size(11.0),
-                                );
+                                ui.colored_label(egui::Color32::YELLOW, egui::RichText::new("●").size(11.0));
                             });
                         }
                     });
                     ui.separator();
 
-                    // Main editor area
                     let available = ui.available_size();
                     let font_size = 13.0_f32;
 
-                    // Build/cache syntax-highlighted layout job
                     let cached_job = if self.content_version == self.cached_version {
                         self.cached_layout.clone().unwrap_or_else(|| self.build_layout(font_size))
                     } else {
@@ -226,7 +221,6 @@ impl App for TextEditorApp {
                         ui.fonts(|f| f.layout_job(job))
                     };
 
-                    let te_id = egui::Id::new("text_editor_main");
                     let te_response = ui.add_sized(
                         available,
                         egui::TextEdit::multiline(&mut self.content)
@@ -237,7 +231,7 @@ impl App for TextEditorApp {
                             .layouter(&mut layouter),
                     );
 
-                    // One-shot focus request (after all widgets render)
+                    // One-shot focus request after all widgets render (GOTCHAS.md Fix 1).
                     if !self.focus_requested {
                         te_response.request_focus();
                         self.focus_requested = true;
@@ -245,7 +239,6 @@ impl App for TextEditorApp {
                 });
             });
 
-        // Track dirty state
         if self.content != content_before {
             self.content_version += 1;
             self.dirty = self.content != self.original_content;
