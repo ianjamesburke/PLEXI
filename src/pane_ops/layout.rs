@@ -596,6 +596,10 @@ impl PlexiApp {
     /// Close a tile in a specific context by its TileId. Handles sibling focus
     /// transfer, container cleanup, and pane removal.
     pub(super) fn close_tile(&mut self, ctx_idx: usize, tile_id: TileId) {
+        // Snapshot focus/zoom state before any mutation so Phase 2 guards are accurate.
+        let is_focused = self.windows[ctx_idx].focused_pane == Some(tile_id);
+        let is_zoomed = self.windows[ctx_idx].zoomed_pane == Some(tile_id);
+
         // Phase 1: Read-only — determine sibling and container type
         let parent_info = self.windows[ctx_idx].find_logical_parent(tile_id);
 
@@ -615,17 +619,28 @@ impl PlexiApp {
                             };
                             let is_tabs = matches!(container, Container::Tabs(_));
                             let is_linear = matches!(container, Container::Linear(_));
-                            (sibling, is_tabs, is_linear, children)
+                            // Only treat this as an active-tab close if the closing child
+                            // was actually the selected tab. Closing an inactive tab must
+                            // not switch the active tab to a different sibling.
+                            let is_active_tab = if let Container::Tabs(tabs) = container {
+                                tabs.active == Some(child_in_parent)
+                            } else {
+                                false
+                            };
+                            (sibling, is_tabs, is_linear, is_active_tab, children)
                         })
                 } else {
                     None
                 }
             };
 
-            if let Some((sibling, is_tabs, is_linear, all_children)) = sibling_info {
-                // Phase 2: Mutable — update container state
+            if let Some((sibling, is_tabs, is_linear, is_active_tab, all_children)) = sibling_info {
+                // Phase 2: Mutable — update container state.
+                // For tabs: only switch the active tab when the closing tile was the active one.
+                // Switching away from an already-active sibling would steal focus from a
+                // pane the user chose to focus.
                 let ctx = &mut self.windows[ctx_idx];
-                if is_tabs {
+                if is_tabs && is_active_tab {
                     if let Some(Tile::Container(Container::Tabs(tabs))) =
                         ctx.tree.tiles.get_mut(parent_id)
                     {
@@ -642,12 +657,24 @@ impl PlexiApp {
                     }
                 }
 
-                self.windows[ctx_idx].find_first_pane_in(sibling)
-            } else {
+                // Only transfer focus when the closed tile was focused.
+                // tabs.set_active was already updated above so egui_tiles stays valid
+                // even when closing a background active tab; but that must not move
+                // focused_pane to the new active tab's pane.
+                if is_focused {
+                    self.windows[ctx_idx].find_first_pane_in(sibling)
+                } else {
+                    None
+                }
+            } else if is_focused {
                 self.windows[ctx_idx].find_next_focus(tile_id)
+            } else {
+                None
             }
-        } else {
+        } else if is_focused {
             self.windows[ctx_idx].find_next_focus(tile_id)
+        } else {
+            None
         };
 
         // Phase 3: Remove tile and extract pane — defer drop so background apps can be parked.
@@ -669,8 +696,25 @@ impl PlexiApp {
                 all_panes_must_have_tabs: true,
                 ..SimplificationOptions::default()
             });
-            log::info!("close_tile: focus -> {:?}", next);
-            ctx.focused_pane = next;
+
+            // Only update focused_pane when focus actually needs to transfer.
+            // A background-pane close must not steal focus from the current pane.
+            if let Some(new_focus) = next {
+                log::info!("close_tile: focus -> {:?}", new_focus);
+                ctx.focused_pane = Some(new_focus);
+            } else if is_focused {
+                // Closed tile was focused but no sibling found — clear focus.
+                log::info!("close_tile: focus -> None (no sibling)");
+                ctx.focused_pane = None;
+            }
+
+            // Clear zoom if the zoomed tile was closed. Render-time validation also does
+            // this, but clearing it here avoids a one-frame inconsistency where
+            // ToggleZoom sees zoomed_pane pointing at a dead tile.
+            if is_zoomed {
+                ctx.zoomed_pane = None;
+                log::info!("close_tile: cleared stale zoom (closed tile was zoomed)");
+            }
 
             removed
         };
@@ -1424,6 +1468,106 @@ mod close_pane_by_id_tests {
         assert_eq!(app.windows.len(), 1);
         app.close_pane_by_id(pane_id);
         assert_eq!(app.windows.len(), 1, "sole-page window must remain alive showing welcome screen");
+    }
+
+    /// Closing the active tab of a background tab container must not steal focus.
+    /// Regression guard for #1547 (Gemini-identified edge case).
+    #[test]
+    fn close_background_active_tab_does_not_steal_focus() {
+        let mut app = test_app();
+        let focused_id: u64 = 100;
+        let bg_active_id: u64 = 101;
+        let bg_inactive_id: u64 = 102;
+
+        let tile_focused    = app.windows[0].tree.tiles.insert_pane(focused_id);
+        let tile_bg_active  = app.windows[0].tree.tiles.insert_pane(bg_active_id);
+        let tile_bg_inactive = app.windows[0].tree.tiles.insert_pane(bg_inactive_id);
+
+        let tabs_tile = app.windows[0].tree.tiles.insert_tab_tile(
+            vec![tile_bg_active, tile_bg_inactive],
+        );
+        if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) =
+            app.windows[0].tree.tiles.get_mut(tabs_tile)
+        {
+            tabs.set_active(tile_bg_active);
+        }
+
+        let container_tile = app.windows[0].tree.tiles.insert_horizontal_tile(
+            vec![tile_focused, tabs_tile],
+        );
+        app.windows[0].tree.root = Some(container_tile);
+        app.windows[0].focused_pane = Some(tile_focused);
+
+        app.close_pane_by_id(bg_active_id);
+
+        assert_eq!(
+            app.windows[0].focused_pane,
+            Some(tile_focused),
+            "focus must remain on the focused pane after closing a background active tab",
+        );
+    }
+
+    /// Closing a background pane must not steal focus from the currently focused pane.
+    /// Regression guard for #1547.
+    #[test]
+    fn close_background_pane_does_not_steal_focus() {
+        let mut app = test_app();
+        // Build: Linear(H) -> [pane_focused(100), pane_bg(101), pane_extra(102)]
+        let focused_id: u64 = 100;
+        let bg_id: u64 = 101;
+        let extra_id: u64 = 102;
+
+        let tile_focused = app.windows[0].tree.tiles.insert_pane(focused_id);
+        let tile_bg      = app.windows[0].tree.tiles.insert_pane(bg_id);
+        let tile_extra   = app.windows[0].tree.tiles.insert_pane(extra_id);
+
+        let container_tile = app.windows[0].tree.tiles.insert_horizontal_tile(
+            vec![tile_focused, tile_bg, tile_extra],
+        );
+        app.windows[0].tree.root = Some(container_tile);
+        app.windows[0].focused_pane = Some(tile_focused);
+
+        // Close the non-focused background pane.
+        app.close_pane_by_id(bg_id);
+
+        assert_eq!(
+            app.windows[0].focused_pane,
+            Some(tile_focused),
+            "focus must remain on the originally-focused pane after closing a background pane",
+        );
+    }
+
+    /// Closing a background pane while another pane is zoomed must not corrupt zoom state.
+    /// Regression guard for #1547 (cmd+Enter fullscreen bug).
+    #[test]
+    fn close_background_pane_preserves_zoom() {
+        let mut app = test_app();
+        let zoomed_id: u64 = 200;
+        let bg_id: u64 = 201;
+
+        let tile_zoomed = app.windows[0].tree.tiles.insert_pane(zoomed_id);
+        let tile_bg     = app.windows[0].tree.tiles.insert_pane(bg_id);
+
+        let container_tile = app.windows[0].tree.tiles.insert_horizontal_tile(
+            vec![tile_zoomed, tile_bg],
+        );
+        app.windows[0].tree.root = Some(container_tile);
+        app.windows[0].focused_pane = Some(tile_zoomed);
+        app.windows[0].zoomed_pane = Some(tile_zoomed);
+
+        // Close the background (non-zoomed) pane.
+        app.close_pane_by_id(bg_id);
+
+        assert_eq!(
+            app.windows[0].zoomed_pane,
+            Some(tile_zoomed),
+            "zoom must remain on the originally-zoomed pane after closing a background pane",
+        );
+        assert_eq!(
+            app.windows[0].focused_pane,
+            Some(tile_zoomed),
+            "focus must remain on the zoomed pane",
+        );
     }
 }
 
