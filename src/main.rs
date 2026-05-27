@@ -157,12 +157,7 @@ fn main() -> eframe::Result {
     let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
     let retention_days = log_config.retention_days.unwrap_or(30);
     let cli_mode = raw_args.iter().skip(1).any(|a| {
-        const CLI_SUBCOMMANDS: &[&str] = &[
-            "run", "secret", "app", "workspace", "notify", "pane", "terminal",
-            "uninstall", "update", "pack",
-            "descriptor", "registry", "validate", "context", "completions", "config",
-        ];
-        !a.starts_with('-') && CLI_SUBCOMMANDS.contains(&a.as_str())
+        !a.starts_with('-') && known_subcommands().contains(a.as_str())
     });
     crate::logging::init(log_level, retention_days, cli_mode);
     let frame_tick = crate::logging::new_frame_tick();
@@ -613,32 +608,7 @@ fn main() -> eframe::Result {
 /// subcommands (`run`, `secret`, `app`, `workspace`, `notify`) are also
 /// skipped — those are dispatched separately later in `main`.
 fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf>, String> {
-    const SUBCOMMANDS: &[&str] = &[
-        "run",
-        "secret",
-        "app",
-        "workspace",
-        "notify",
-        "pane",
-        "terminal",
-        "--render",
-        "uninstall",
-        "update",
-        "pack",
-        // #188 — `plexi descriptor probe <cmd>` for the --plexi standard.
-        "descriptor",
-        // #321 — `plexi registry watch [<cli>]` for the CLI wrapper registry.
-        "registry",
-        // #627 — `plexi validate <path>` preflight app checker.
-        "validate",
-        // #680 — context root and shell integration.
-        "context",
-        "completions",
-        "config",
-        "routine",
-        "notes",
-        "demo",
-    ];
+    let known = known_subcommands();
     let mut iter = args.iter().enumerate();
     // Skip argv[0] (binary name).
     let _ = iter.next();
@@ -651,7 +621,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         if a.starts_with('-') {
             continue;
         }
-        if SUBCOMMANDS.contains(&a.as_str()) {
+        if known.contains(a.as_str()) {
             return Ok(None);
         }
         // First positional that isn't a known subcommand — interpret as a
@@ -682,6 +652,22 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         }
     }
     Ok(None)
+}
+
+/// Returns the set of known top-level subcommand names and aliases, cached after first call.
+fn known_subcommands() -> &'static std::collections::HashSet<String> {
+    use clap::CommandFactory;
+    use std::sync::OnceLock;
+    static INSTANCE: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        crate::cli_args::Cli::command()
+            .get_subcommands()
+            .flat_map(|c| {
+                std::iter::once(c.get_name().to_string())
+                    .chain(c.get_all_aliases().map(str::to_string))
+            })
+            .collect()
+    })
 }
 
 /// Scan argv for `--profile <name>`. Returns the name if present.

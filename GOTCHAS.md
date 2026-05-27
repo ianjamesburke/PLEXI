@@ -4,14 +4,6 @@
 
 ---
 
-## [cli] New top-level subcommands must be added to SUBCOMMANDS in parse_workspace_path_arg
-
-`parse_workspace_path_arg` in `src/main.rs` runs on raw args before clap parses anything. It has a hardcoded `SUBCOMMANDS: &[&str]` allowlist. Any first positional arg not in that list is treated as a workspace path, giving `error: workspace path does not exist: <name>` even when the subcommand is defined in the `Commands` enum.
-
-**Fix:** add the lowercase subcommand name to `SUBCOMMANDS` in `parse_workspace_path_arg` (line ~601 in `src/main.rs`) for every new `Commands` variant.
-
----
-
 ## [git · ship] Unpushed alpha commits are silently lost when ship-issue agents rebase
 
 `ship-issue` runs `git pull --rebase origin alpha` at Phase 1. If there are commits on the local alpha branch that haven't been pushed to origin, the rebase replays them on top of origin's HEAD — but if those commits touch files that were also changed by merged PRs (e.g. skill files, CLAUDE.md), they will conflict and be silently dropped or overwritten.
@@ -91,10 +83,6 @@ the terminal args array: single arg → pass as-is, multiple args → `shell_joi
 ## PR build GUI won't launch when PLEXI_SOCKET is set
 
 `open -a "Plexi PR<N>"` silently no-ops when run inside a Plexi pane because the binary detects `PLEXI_SOCKET`, prints "already running inside Plexi", and exits. Any test script that needs the PR build GUI to actually launch must either run outside Plexi (separate terminal) or `unset PLEXI_SOCKET` before the `open` call. This also affects `pkill`-and-relaunch loops — the relaunch silently fails while the script waits for a socket that never appears.
-
-## New top-level CLI subcommands must be added to parse_workspace_path_arg SUBCOMMANDS list (cli · ship)
-
-`src/main.rs` contains `parse_workspace_path_arg` with a hardcoded `SUBCOMMANDS: &[&str]` list. Any new top-level subcommand not in this list will be silently consumed as a workspace path argument (manifesting as "workspace path does not exist: <subcommand>"). Every new entry in `cli_args.rs` `Commands` enum must be mirrored there.
 
 - Any code that spawns a Plexi app subprocess outside `ProcessApp::launch` must replicate its env setup: ENV_WHITELIST (HOME/PATH/LANG/LC_ALL/TERM/USER/SHELL), PLEXI_* passthrough, and PYTHONPATH → config_dir/sdk + bundle SDK path. Reference: `src/process_app/mod.rs` lines ~320–368.
 
