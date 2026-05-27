@@ -55,7 +55,7 @@ class BacklogApp(App):
     def on_init(self, ctx: RenderContext) -> None:
         parser = argparse.ArgumentParser(add_help=False)
         parser.add_argument("-g", "--global", dest="global_only", action="store_true")
-        parsed, _ = parser.parse_known_args(sys.argv[1:])
+        parsed, _ = parser.parse_known_args(self.args)
         self.global_only: bool = parsed.global_only
 
         self.backlog_dir = Path(ctx.workspace_root) / ".plexi" / "backlog"
@@ -170,8 +170,16 @@ class BacklogApp(App):
         # users follow when creating backlog notes by hand.
         safe = "".join(c if c.isalnum() or c in " -_" else "-" for c in title)
         safe = safe.strip().replace(" ", "-").lower() or "untitled"
-        self.backlog_dir.mkdir(parents=True, exist_ok=True)
-        path = self.backlog_dir / f"{safe}.md"
+        if self.global_only:
+            if not self.channel_dir:
+                self.status = "Error: no channel-level backlog directory found"
+                self.in_add = False
+                return
+            target_dir = self.channel_dir
+        else:
+            target_dir = self.backlog_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / f"{safe}.md"
         # If the slug collides, append a numeric suffix until free.
         n = 2
         while path.exists():
