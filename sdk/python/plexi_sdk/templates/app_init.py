@@ -50,18 +50,22 @@ class __CLASS_NAME__(App):
             ]),
             Section("KEYBOARD SHORTCUTS"),
             Card([
+                KeyRow("esc", "close"),
                 KeyRow("q", "quit"),
                 KeyRow("+", "increment counter"),
             ]),
             Spacer(grow=True),
             FooterKeys([
+                ("esc", "close"),
                 ("q", "quit"),
                 ("+", "increment"),
             ]),
         ]))
 
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
-        if key == "+" or (key == "=" and mods.get("shift")):
+        if key == "Escape":
+            self.emit.close_self()
+        elif key == "+" or (key == "=" and mods.get("shift")):
             self.click_count += 1
             ctx.save_state({"clicks": self.click_count})
             ctx.status_summary(f"Clicked {self.click_count} time(s)")
