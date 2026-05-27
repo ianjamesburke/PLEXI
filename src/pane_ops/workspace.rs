@@ -606,10 +606,10 @@ impl PlexiApp {
             }
         };
 
-        // Determine path for new context from pane CWD
+        // Determine path for new context from pane CWD, falling back to active context path.
         let path = pane.as_terminal()
             .and_then(|t| shell::get_pid_cwd(t.backend.child_pid()))
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+            .unwrap_or_else(|| self.router.active().path.clone());
 
         let child_ctx_id = self.next_window_id;
         self.next_window_id += 1;
@@ -652,6 +652,8 @@ impl PlexiApp {
                         }
                     }
                     Container::Grid(_) => {
+                        // Grid::children is private; use remove+add (position not preserved).
+                        // Grid containers are not created by Plexi, so this path is unreachable in practice.
                         container.remove_child(focused_tile_id);
                         container.add_child(portal_tile_id);
                     }
@@ -663,6 +665,10 @@ impl PlexiApp {
         }
         // Remove the focused tile from tiles
         self.windows[active_win_idx].tree.tiles.remove(focused_tile_id);
+
+        // Update parent window focus to the new portal tile so returning to
+        // this context doesn't resolve a stale (now-removed) tile ID.
+        self.windows[active_win_idx].focused_pane = Some(portal_tile_id);
 
         // Insert portal pane into parent window
         self.windows[active_win_idx].panes.insert(

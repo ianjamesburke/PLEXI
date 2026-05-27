@@ -1898,10 +1898,12 @@ impl PlexiApp {
                 }
                 crate::app_protocol::AppRequest::CreateContext { root, name, parent_name, parent_id } => {
                     log::info!("pane_ipc: kind=create_context root={:?} name={:?} parent_name={:?} parent_id={:?}", root, name, parent_name, parent_id);
-                    // Resolve parent by id first, then fall back to name
-                    let resolved_parent_name = parent_name.clone().or_else(|| {
-                        parent_id.and_then(|pid| self.router.iter().find(|c| c.context_id == pid).map(|c| c.name.clone()))
-                    });
+                    // Resolve parent by id first (numeric ID is unambiguous), then fall back to name.
+                    let resolved_parent_name = parent_id
+                        .and_then(|pid| {
+                            self.router.iter().find(|c| c.context_id == pid).map(|c| c.name.clone())
+                        })
+                        .or_else(|| parent_name.clone());
                     if let Some(pname) = resolved_parent_name {
                         let path = root.as_ref().cloned().unwrap_or_else(|| std::path::PathBuf::from("."));
                         let current_ctx_id = self.router.active().context_id;
@@ -4390,11 +4392,12 @@ impl eframe::App for PlexiApp {
                 }
 
                 // Handle "Extract to sub-context" from pane right-click menu.
+                // Focus the requested pane first so extract_pane_to_subcontext operates on the
+                // correct tile — the right-click target may not be the current focused pane.
                 if let Some(requested_pane_id) = extract_requested {
-                    let focused_pane_id = self.windows[self.active_window].focused_pane
-                        .and_then(|tile_id| self.windows[self.active_window].tree.tiles.get(tile_id))
-                        .and_then(|t| if let egui_tiles::Tile::Pane(p) = t { Some(*p) } else { None });
-                    if focused_pane_id == Some(requested_pane_id) {
+                    let tile_id = self.windows[self.active_window].tree.tiles.find_pane(&requested_pane_id);
+                    if let Some(tile_id) = tile_id {
+                        self.windows[self.active_window].focused_pane = Some(tile_id);
                         self.extract_pane_to_subcontext();
                     }
                 }

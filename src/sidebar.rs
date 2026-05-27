@@ -83,6 +83,13 @@ impl PlexiApp {
 
         let num_contexts = self.router.len();
 
+        // Pre-calculate pane rows once if any context is expanded — avoids O(n) calls inside loop.
+        let pane_groups = if !self.sidebar_expanded_contexts.is_empty() {
+            Some(self.collect_inspector_rows().0)
+        } else {
+            None
+        };
+
         let mut delete_context: Option<usize> = None;
         let mut menu_action: Option<(usize, WindowMenuAction)> = None;
         let mut row_rects: Vec<Rect> = Vec::with_capacity(num_contexts);
@@ -222,7 +229,7 @@ impl PlexiApp {
             // Inline pane list when expanded
             let is_expanded = self.sidebar_expanded_contexts.contains(&ctx_id);
             if is_expanded {
-                let (groups, _, _) = self.collect_inspector_rows();
+                if let Some(groups) = &pane_groups {
                 if let Some((_, _, rows)) = groups.iter().find(|(_, cid, _)| *cid == ctx_id) {
                     for row in rows {
                         let row_id = row.id;
@@ -246,6 +253,7 @@ impl PlexiApp {
                             }
                         });
                     }
+                } // if let Some groups
                 }
             }
 
