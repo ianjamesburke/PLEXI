@@ -1,6 +1,15 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.517] — 2026-05-27
+
+### Changes
+- refactor(cli): derive completions and subcommand routing from clap (#1769) (#1772)
+- fix: project-manager skill reference and add sidebar pane row gotcha
+- fix: relative cargo target-dir; gate promote on path and doc checks
+- refactor(host): replace drain_captured_keyboard_input with per-overlay handle_key() handler chain (#1764) (#1766)
+- chore: update cli.md verified_version to 0.0.515
+- feat(sdk): add ESC as default close key in app template (#1767)
 ## [0.0.516] — 2026-05-27
 
 ### Changes
