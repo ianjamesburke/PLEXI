@@ -836,7 +836,7 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
 
     // Root dir: hard reject (no prompt). Home dir: prompt — user may
     // intentionally want a global-scoped app not tied to any workspace.
-    let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
+    let home = dirs::home_dir();
     let is_root = cwd == std::path::Path::new("/");
     let is_home = home.as_ref().map(|h| cwd == *h).unwrap_or(false);
     if is_root {
