@@ -7,8 +7,11 @@ Shows items from two sources merged by mtime:
   - workspace backlog: <workspace>/.plexi/backlog/
   - channel backlog:   $PLEXI_CONFIG_DIR/backlog/ (quick notes from host ⌘0)
 Items from the channel backlog are prefixed with [ch] in the list.
+
+Pass -g/--global to show only channel-level items: plexi open backlog -g
 """
 
+import argparse
 import os
 import shutil
 import subprocess
@@ -50,6 +53,11 @@ BOTTOM_BAR_H = 26.0
 class BacklogApp(App):
 
     def on_init(self, ctx: RenderContext) -> None:
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument("-g", "--global", dest="global_only", action="store_true")
+        parsed, _ = parser.parse_known_args(self.args)
+        self.global_only: bool = parsed.global_only
+
         self.backlog_dir = Path(ctx.workspace_root) / ".plexi" / "backlog"
         self.channel_dir = _detect_channel_backlog_dir()
         self.items: list = []         # list[Path]
@@ -66,7 +74,7 @@ class BacklogApp(App):
         self._item_list = SelectList([])
         self._load()
         self.emit.info(
-            f"BacklogApp ready — workspace: {self.backlog_dir}, channel: {self.channel_dir}"
+            f"BacklogApp ready — workspace: {self.backlog_dir}, channel: {self.channel_dir}, global_only={self.global_only}"
         )
 
     # ── Data ────────────────────────────────────────────────────────────────────
@@ -84,7 +92,8 @@ class BacklogApp(App):
                         all_files.append(f)
                         self._source[f] = source
 
-        _collect(self.backlog_dir, "ws")
+        if not self.global_only:
+            _collect(self.backlog_dir, "ws")
         _collect(self.channel_dir, "channel")
         all_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
         self.items = all_files
@@ -161,8 +170,16 @@ class BacklogApp(App):
         # users follow when creating backlog notes by hand.
         safe = "".join(c if c.isalnum() or c in " -_" else "-" for c in title)
         safe = safe.strip().replace(" ", "-").lower() or "untitled"
-        self.backlog_dir.mkdir(parents=True, exist_ok=True)
-        path = self.backlog_dir / f"{safe}.md"
+        if self.global_only:
+            if not self.channel_dir:
+                self.status = "Error: no channel-level backlog directory found"
+                self.in_add = False
+                return
+            target_dir = self.channel_dir
+        else:
+            target_dir = self.backlog_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / f"{safe}.md"
         # If the slug collides, append a numeric suffix until free.
         n = 2
         while path.exists():
@@ -203,22 +220,31 @@ class BacklogApp(App):
         list_h = h - TOP - BOTTOM_BAR_H
 
         # Header
-        ctx.text(12, 10, "backlog", size=12, color=ACCENT, bold=True,
+        title = "backlog (global)" if self.global_only else "backlog"
+        ctx.text(12, 10, title, size=12, color=ACCENT, bold=True,
                  max_width=list_w - 100)
         item_count = len(self.filtered)
         count_label = f"{item_count} item{'s' if item_count != 1 else ''}"
         ctx.text(list_w - 80, 10, count_label, size=11, color=MUTED,
                  max_width=80)
 
-        has_any_dir = self.backlog_dir.is_dir() or (
-            self.channel_dir is not None and self.channel_dir.is_dir()
-        )
+        if self.global_only:
+            has_any_dir = self.channel_dir is not None and self.channel_dir.is_dir()
+        else:
+            has_any_dir = self.backlog_dir.is_dir() or (
+                self.channel_dir is not None and self.channel_dir.is_dir()
+            )
         if not has_any_dir:
             self.emit.info("backlog: no dirs found — showing empty-state guide")
             ctx.text(12, TOP + 12, "No notes yet.", size=13, color=FG)
-            ctx.text(12, TOP + 34,
-                     "Press ⌘0 to open Quick Note, then press Enter twice to send to your backlog.",
-                     size=11, color=MUTED, max_width=w - 24)
+            if self.global_only:
+                ctx.text(12, TOP + 34,
+                         "No channel-level backlog found. Press ⌘0 to create a Quick Note.",
+                         size=11, color=MUTED, max_width=w - 24)
+            else:
+                ctx.text(12, TOP + 34,
+                         "Press ⌘0 to open Quick Note, then press Enter twice to send to your backlog.",
+                         size=11, color=MUTED, max_width=w - 24)
             return
 
         # Divider
