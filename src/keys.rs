@@ -93,8 +93,6 @@ pub enum Action {
     RenameContext,
     /// Toggle the notification panel overlay (Cmd+Shift+A).
     ToggleNotificationModal,
-    NotificationCycleNext,
-    NotificationCyclePrev,
     /// Force-reload the focused app pane (#83). Bound to Cmd+Option+R.
     /// Cmd+R is RenamePane and Cmd+Shift+R is RenameContext, so the
     /// Option (Alt) modifier is the next free chord. No-op when the
@@ -454,6 +452,9 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
 /// `keyboard_capture_active` — focused app declared `keyboard_capture = true` in its manifest.
 ///   When true, all host shortcuts are suppressed *except* Cmd+Q (quit), Cmd+W (close pane),
 ///   and Cmd+P (command palette) — structural safety operations that must always work.
+/// `overlay_open` — an overlay owns keyboard focus. Same suppression as keyboard_capture_active:
+///   only the three global always-on shortcuts fire. Each overlay's `*_handle_key` method owns
+///   its own key contract and runs before this function is called.
 pub fn poll_actions(
     ctx: &egui::Context,
     bindings: &KeyBindings,
@@ -461,8 +462,6 @@ pub fn poll_actions(
     keyboard_capture_active: bool,
     overlay_open: bool,
     shortcuts_overlay_open: bool,
-    notification_modal_active: bool,
-    notification_shortcuts_blocked: bool,
 ) -> Vec<Action> {
     let mut actions = Vec::new();
 
@@ -476,9 +475,19 @@ pub fn poll_actions(
         if input.consume_key(bindings.toggle_command_palette.0, bindings.toggle_command_palette.1) {
             actions.push(Action::ToggleCommandPalette);
         }
+        // Cmd+0 opens QuickNote on top of any overlay; the QuickNote handle_key methods consume
+        // it when the modal is already open to prevent a mid-session reset.
+        if input.consume_key(bindings.open_quick_note.0, bindings.open_quick_note.1) {
+            actions.push(Action::OpenQuickNote);
+        }
+        // Cmd+Shift+A dismisses the notification modal when it is already open.
+        if input.consume_key(bindings.toggle_notification_modal.0, bindings.toggle_notification_modal.1) {
+            actions.push(Action::ToggleNotificationModal);
+        }
 
-        // All remaining shortcuts are suppressed when an app has declared keyboard capture.
-        if keyboard_capture_active {
+        // All remaining shortcuts are suppressed when an app has declared keyboard capture
+        // or when an overlay holds focus. Each overlay's *_handle_key method owns its keys.
+        if keyboard_capture_active || overlay_open {
             return;
         }
 
@@ -509,20 +518,11 @@ pub fn poll_actions(
         if input.consume_key(bindings.new_tab.0, bindings.new_tab.1) {
             actions.push(Action::NewTab);
         }
-        // When the notification modal is open, next/prev tab cycle the queue instead.
         if input.consume_key(bindings.next_tab.0, bindings.next_tab.1) {
-            actions.push(if overlay_open {
-                Action::NotificationCycleNext
-            } else {
-                Action::NextTab
-            });
+            actions.push(Action::NextTab);
         }
         if input.consume_key(bindings.prev_tab.0, bindings.prev_tab.1) {
-            actions.push(if overlay_open {
-                Action::NotificationCyclePrev
-            } else {
-                Action::PrevTab
-            });
+            actions.push(Action::PrevTab);
         }
         if input.consume_key(bindings.first_tab.0, bindings.first_tab.1) {
             actions.push(Action::FirstTab);
@@ -546,36 +546,10 @@ pub fn poll_actions(
         }
 
         if input.consume_key(bindings.nav_back.0, bindings.nav_back.1) {
-            actions.push(if overlay_open {
-                Action::NotificationCyclePrev
-            } else {
-                Action::NavBackApp
-            });
+            actions.push(Action::NavBackApp);
         }
         if input.consume_key(bindings.focus_history_forward.0, bindings.focus_history_forward.1) {
-            actions.push(if overlay_open {
-                Action::NotificationCycleNext
-            } else {
-                Action::FocusHistoryForward
-            });
-        }
-
-        // Bare H/L cycle the notification queue when the modal is focused.
-        // Restricted to the notification modal specifically (not other overlays).
-        // Blocked when the active notification is Choice or Input — those kinds
-        // need H/L as per-option shortcut keys or free text input.
-        // modifiers.is_none() guard is required: consume_key(NONE, key) matches
-        // regardless of modifiers (see GOTCHA at top of file), so Shift+H or
-        // Cmd+H must not accidentally trigger cycling.
-        if notification_modal_active && !notification_shortcuts_blocked {
-            if input.modifiers.is_none() && input.consume_key(egui::Modifiers::NONE, egui::Key::H) {
-                log::info!("notification cycle: prev (H)");
-                actions.push(Action::NotificationCyclePrev);
-            }
-            if input.modifiers.is_none() && input.consume_key(egui::Modifiers::NONE, egui::Key::L) {
-                log::info!("notification cycle: next (L)");
-                actions.push(Action::NotificationCycleNext);
-            }
+            actions.push(Action::FocusHistoryForward);
         }
 
         if input.consume_key(bindings.toggle_sidebar.0, bindings.toggle_sidebar.1) {
@@ -648,9 +622,6 @@ pub fn poll_actions(
         if input.consume_key(bindings.open_file_browser.0, bindings.open_file_browser.1) {
             actions.push(Action::OpenFileBrowser);
         }
-        if input.consume_key(bindings.open_quick_note.0, bindings.open_quick_note.1) {
-            actions.push(Action::OpenQuickNote);
-        }
         if input.consume_key(bindings.open_config.0, bindings.open_config.1) {
             actions.push(Action::OpenConfig);
         }
@@ -664,9 +635,6 @@ pub fn poll_actions(
         // `!input.modifiers.alt` so Cmd+Alt+R still reaches this branch.
         if input.consume_key(bindings.force_reload_app.0, bindings.force_reload_app.1) {
             actions.push(Action::ForceReloadApp);
-        }
-        if input.consume_key(bindings.toggle_notification_modal.0, bindings.toggle_notification_modal.1) {
-            actions.push(Action::ToggleNotificationModal);
         }
         if input.consume_key(bindings.context_inspector.0, bindings.context_inspector.1) {
             actions.push(Action::ContextInspector);

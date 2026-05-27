@@ -53,8 +53,12 @@ fn paste_event_forwarded_as_plexi_event() {
     let mut input = egui::InputState::default();
     input.events.push(egui::Event::Paste("hello".to_string()));
 
-    let consumed = app.handle_key(&input);
-    assert!(consumed, "handle_key must consume Paste events");
+    let disposition = app.handle_key(&input);
+    assert_eq!(
+        disposition,
+        crate::app_trait::KeyDisposition::Consumed,
+        "handle_key must consume Paste events"
+    );
 
     let paste_events: Vec<_> = app
         .outbound_events

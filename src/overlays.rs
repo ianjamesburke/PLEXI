@@ -4339,6 +4339,142 @@ impl PlexiApp {
     }
 }
 
+/// Per-overlay keyboard handlers. Each method owns its overlay's full keyboard
+/// contract and returns `Consumed` so the unified dispatch loop knows not to
+/// pass through to `dispatch_app_key_events` or `poll_actions`.
+impl PlexiApp {
+    /// Notification modal: consume H/L queue cycling when the active notification
+    /// is not Choice or Input. All other key handling stays in `draw_notification_modal`.
+    pub(crate) fn notification_modal_handle_key(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> crate::app_trait::KeyDisposition {
+        use crate::app_protocol::NotifyKind;
+        let shortcuts_blocked = self
+            .current_notify_id
+            .as_ref()
+            .and_then(|id| self.pending_notifications.iter().find(|n| n.notify_id == *id))
+            .map(|n| matches!(n.kind, NotifyKind::Input))
+            .unwrap_or(true);
+
+        let (h_pressed, l_pressed) = ctx.input_mut(|i| {
+            if shortcuts_blocked || !i.modifiers.is_none() {
+                return (false, false);
+            }
+            let h = i.consume_key(egui::Modifiers::NONE, egui::Key::H);
+            let l = i.consume_key(egui::Modifiers::NONE, egui::Key::L);
+            (h, l)
+        });
+
+        if h_pressed {
+            log::info!("notification cycle: prev (H)");
+            self.cycle_notification(-1);
+        }
+        if l_pressed {
+            log::info!("notification cycle: next (L)");
+            self.cycle_notification(1);
+        }
+
+        crate::app_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn confirm_close_handle_key(
+        &mut self,
+        _ctx: &egui::Context,
+    ) -> crate::app_trait::KeyDisposition {
+        crate::app_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn command_palette_handle_key(
+        &mut self,
+        _ctx: &egui::Context,
+    ) -> crate::app_trait::KeyDisposition {
+        crate::app_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn rename_pane_handle_key(
+        &mut self,
+        _ctx: &egui::Context,
+    ) -> crate::app_trait::KeyDisposition {
+        crate::app_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn context_rename_handle_key(
+        &mut self,
+        _ctx: &egui::Context,
+    ) -> crate::app_trait::KeyDisposition {
+        crate::app_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn context_description_handle_key(
+        &mut self,
+        _ctx: &egui::Context,
+    ) -> crate::app_trait::KeyDisposition {
+        crate::app_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn quick_note_handle_key(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> crate::app_trait::KeyDisposition {
+        // Consume Cmd+0 so poll_actions doesn't fire OpenQuickNote while the modal
+        // is already open — that would reset mid-session note state.
+        ctx.input_mut(|i| { i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0); });
+        crate::app_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn quick_note_destination_handle_key(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> crate::app_trait::KeyDisposition {
+        ctx.input_mut(|i| { i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0); });
+        crate::app_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn quick_note_sub_destination_handle_key(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> crate::app_trait::KeyDisposition {
+        ctx.input_mut(|i| { i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0); });
+        crate::app_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn cli_setup_prompt_handle_key(
+        &mut self,
+        _ctx: &egui::Context,
+    ) -> crate::app_trait::KeyDisposition {
+        crate::app_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn context_inspector_handle_key(
+        &mut self,
+        _ctx: &egui::Context,
+    ) -> crate::app_trait::KeyDisposition {
+        crate::app_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn text_input_handle_key(
+        &mut self,
+        _ctx: &egui::Context,
+    ) -> crate::app_trait::KeyDisposition {
+        crate::app_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn context_close_confirm_handle_key(
+        &mut self,
+        _ctx: &egui::Context,
+    ) -> crate::app_trait::KeyDisposition {
+        crate::app_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn capability_modal_handle_key(
+        &mut self,
+        _ctx: &egui::Context,
+    ) -> crate::app_trait::KeyDisposition {
+        crate::app_trait::KeyDisposition::Consumed
+    }
+}
+
 fn parse_children_cmd_output(stdout: &str) -> Vec<crate::config::QuickNoteNode> {
     stdout.lines()
         .filter_map(|line| {

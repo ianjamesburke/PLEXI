@@ -518,270 +518,23 @@ mod tests {
         );
     }
 
-    // -- Input drain (issue #1236) ────────────────────────────────────────────
+    // -- Handle-key chain (issue #1764) ──────────────────────────────────────
 
-    /// For every FocusLayer variant × every input-intent event type, asserts
-    /// that `drain_captured_keyboard_input` removes the event from the buffer.
-    /// Non-input events (pointer, scroll) must survive.
-    ///
-    /// Tests the drain function directly by injecting events into ctx.input_mut
-    /// and calling drain_captured_keyboard_input, then reading back what remains.
+    /// Notification modal handle_key always returns Consumed so poll_actions and
+    /// dispatch_app_key_events are skipped while the modal is open.
     #[test]
-    fn drain_drops_all_input_intent_events_when_overlay_active() {
+    fn notification_modal_handle_key_returns_consumed() {
         use crate::app::FocusLayer;
-        use crate::input_intent;
-
-        let focus_layers = vec![
-            FocusLayer::NotificationModal,
-            FocusLayer::ConfirmClose,
-            FocusLayer::CommandPalette,
-            FocusLayer::RenamePane,
-            FocusLayer::ContextRename,
-            FocusLayer::QuickNote,
-            FocusLayer::QuickNoteDestination,
-            FocusLayer::QuickNoteSubDestination(vec![0]),
-            FocusLayer::CliSetupPrompt,
-            FocusLayer::ContextInspector,
-        ];
-
-        let input_events = vec![
-            egui::Event::Text("hello".into()),
-            egui::Event::Paste("pasted".into()),
-            egui::Event::Copy,
-            egui::Event::Cut,
-            egui::Event::Ime(egui::ImeEvent::Commit("日本語".into())),
-            egui::Event::Key {
-                key: egui::Key::A,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: Default::default(),
-            },
-        ];
-
-        let non_input_event = egui::Event::PointerMoved(egui::pos2(100.0, 100.0));
-
-        for layer in &focus_layers {
-            for input_event in &input_events {
-                assert!(
-                    input_intent::classify(input_event).is_some(),
-                    "test bug: {input_event:?} should classify as input intent"
-                );
-
-                let mut h = HostHarness::new();
-                h.app.push_focus_layer(layer.clone());
-
-                h.app.ctx.input_mut(|i| {
-                    i.events.push(input_event.clone());
-                    i.events.push(non_input_event.clone());
-                });
-
-                h.app.drain_captured_keyboard_input(&h.app.ctx.clone());
-
-                h.app.ctx.input(|i| {
-                    for remaining in &i.events {
-                        assert!(
-                            input_intent::classify(remaining).is_none(),
-                            "input-intent event leaked through drain with {layer:?}: {remaining:?}"
-                        );
-                    }
-                    assert!(
-                        i.events.iter().any(|e| matches!(e, egui::Event::PointerMoved(_))),
-                        "non-input event was incorrectly drained with {layer:?}"
-                    );
-                });
-            }
-        }
-    }
-
-    /// Verify that the global allowlist keys survive the drain even when an
-    /// overlay is active — users must always be able to quit or dismiss.
-    #[test]
-    fn drain_preserves_global_allowlist_keys() {
-        use crate::app::FocusLayer;
-
-        let allowlist_keys = vec![
-            (egui::Key::Q, false),  // Cmd+Q
-            (egui::Key::W, false),  // Cmd+W
-            (egui::Key::A, true),   // Cmd+Shift+A
-            (egui::Key::L, true),   // Cmd+Shift+L
-            (egui::Key::H, true),   // Cmd+Shift+H
-        ];
-
-        for (key, shift) in &allowlist_keys {
-            let mut h = HostHarness::new();
-            h.app.push_focus_layer(FocusLayer::QuickNote);
-
-            let event = egui::Event::Key {
-                key: *key,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers {
-                    command: true,
-                    shift: *shift,
-                    ..Default::default()
-                },
-            };
-
-            h.app.ctx.input_mut(|i| {
-                i.events.push(event.clone());
-            });
-
-            h.app.drain_captured_keyboard_input(&h.app.ctx.clone());
-
-            let mut found = false;
-            h.app.ctx.input(|i| {
-                found = i.events.iter().any(|e| matches!(
-                    e,
-                    egui::Event::Key { key: k, modifiers, .. }
-                        if *k == *key && modifiers.command
-                ));
-            });
-            assert!(
-                found,
-                "allowlist key {key:?} (shift={shift}) was incorrectly drained"
-            );
-        }
-    }
-
-    /// Cmd+0 (quick note) must pass through the drain when any non-quick-note
-    /// overlay is active so poll_actions can open the quick note modal.
-    #[test]
-    fn drain_allows_quick_note_key_through_other_overlays() {
-        use crate::app::FocusLayer;
-
-        let non_quick_note_layers = vec![
-            FocusLayer::ContextInspector,
-            FocusLayer::CommandPalette,
-            FocusLayer::NotificationModal,
-            FocusLayer::ConfirmClose,
-            FocusLayer::RenamePane,
-            FocusLayer::TextInput,
-            FocusLayer::ContextRename,
-            FocusLayer::CliSetupPrompt,
-        ];
-
-        for layer in non_quick_note_layers {
-            let mut h = HostHarness::new();
-            h.app.push_focus_layer(layer.clone());
-
-            let event = egui::Event::Key {
-                key: egui::Key::Num0,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers {
-                    command: true,
-                    ..Default::default()
-                },
-            };
-
-            h.app.ctx.input_mut(|i| {
-                i.events.push(event);
-            });
-
-            h.app.drain_captured_keyboard_input(&h.app.ctx.clone());
-
-            let mut found = false;
-            h.app.ctx.input(|i| {
-                found = i.events.iter().any(|e| matches!(
-                    e,
-                    egui::Event::Key { key: egui::Key::Num0, modifiers, .. }
-                        if modifiers.command && !modifiers.shift
-                ));
-            });
-            assert!(
-                found,
-                "Cmd+0 was incorrectly drained when {layer:?} was active — quick note should be reachable"
-            );
-        }
-    }
-
-    /// Cmd+0 must be drained when quick note is already the active overlay to
-    /// prevent resetting the modal state mid-edit. This includes when another
-    /// overlay is stacked on top of QuickNote (e.g. a notification pushed above it).
-    #[test]
-    fn drain_blocks_quick_note_key_when_quick_note_active() {
-        use crate::app::FocusLayer;
-
-        let quick_note_layers = vec![
-            FocusLayer::QuickNote,
-            FocusLayer::QuickNoteDestination,
-            FocusLayer::QuickNoteSubDestination(vec![0]),
-        ];
-
-        // Also verify that a non-QuickNote layer on top of QuickNote still blocks Cmd+0.
-        {
-            let mut h = HostHarness::new();
-            h.app.push_focus_layer(FocusLayer::QuickNote);
-            h.app.push_focus_layer(FocusLayer::NotificationModal);
-
-            let event = egui::Event::Key {
-                key: egui::Key::Num0,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers {
-                    command: true,
-                    ..Default::default()
-                },
-            };
-
-            h.app.ctx.input_mut(|i| {
-                i.events.push(event);
-            });
-
-            h.app.drain_captured_keyboard_input(&h.app.ctx.clone());
-
-            let mut found = false;
-            h.app.ctx.input(|i| {
-                found = i.events.iter().any(|e| matches!(
-                    e,
-                    egui::Event::Key { key: egui::Key::Num0, modifiers, .. }
-                        if modifiers.command
-                ));
-            });
-            assert!(
-                !found,
-                "Cmd+0 leaked through drain when NotificationModal is on top of QuickNote"
-            );
-        }
-
-        for layer in quick_note_layers {
-            let mut h = HostHarness::new();
-            h.app.push_focus_layer(layer.clone());
-
-            let event = egui::Event::Key {
-                key: egui::Key::Num0,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers {
-                    command: true,
-                    ..Default::default()
-                },
-            };
-
-            h.app.ctx.input_mut(|i| {
-                i.events.push(event);
-            });
-
-            h.app.drain_captured_keyboard_input(&h.app.ctx.clone());
-
-            let mut found = false;
-            h.app.ctx.input(|i| {
-                found = i.events.iter().any(|e| matches!(
-                    e,
-                    egui::Event::Key { key: egui::Key::Num0, modifiers, .. }
-                        if modifiers.command
-                ));
-            });
-            assert!(
-                !found,
-                "Cmd+0 leaked through drain when {layer:?} was active — quick note should stay open"
-            );
-        }
+        use crate::app_trait::KeyDisposition;
+        let mut h = HostHarness::new();
+        h.app.push_focus_layer(FocusLayer::NotificationModal);
+        let ctx = h.app.ctx.clone();
+        let disposition = h.app.notification_modal_handle_key(&ctx);
+        assert_eq!(
+            disposition,
+            KeyDisposition::Consumed,
+            "notification_modal_handle_key must return Consumed"
+        );
     }
 
     // -- Context root CWD resolution ------------------------------------------
@@ -1003,10 +756,10 @@ mod tests {
             i.events.push(egui::Event::PointerMoved(egui::pos2(50.0, 50.0)));
         });
 
-        // Run the overlay draw + drain directly (same path as a full frame).
+        // Run the overlay draw directly — draw_quick_note_modal consumes key events
+        // via ctx.input_mut before the terminal backends run.
         let ctx = h.app.ctx.clone();
         h.app.draw_quick_note_modal(&ctx);
-        h.app.drain_captured_keyboard_input(&ctx);
 
         // Paste event must be gone.
         h.app.ctx.input(|i| {
