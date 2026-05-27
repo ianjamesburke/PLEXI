@@ -834,15 +834,30 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
         }
     };
 
-    // Refuse home dir and root — same guard as workspace_init. Creating
-    // ~/.plexi/apps/ would collide with the main channel profile dir.
-    let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
-    let is_home_or_root = cwd == std::path::Path::new("/")
-        || home.as_ref().map(|h| cwd == *h).unwrap_or(false);
-    if is_home_or_root {
-        log::warn!("app_init: rejected — home/root guard: {}", cwd.display());
-        eprintln!("error: cannot scaffold an app in your home or root directory — run from a project directory instead.");
+    // Root dir: hard reject (no prompt). Home dir: prompt — user may
+    // intentionally want a global-scoped app not tied to any workspace.
+    let home = dirs::home_dir();
+    let is_root = cwd == std::path::Path::new("/");
+    let is_home = home.as_ref().map(|h| cwd == *h).unwrap_or(false);
+    if is_root {
+        log::warn!("app_init: rejected — root dir guard: {}", cwd.display());
+        eprintln!("error: cannot scaffold an app in the root directory.");
         return 1;
+    }
+    if is_home {
+        eprintln!("You're about to create a global-scoped app (not tied to any workspace). Continue? [y/N]");
+        eprintln!("(Or cd into a project directory to create a workspace-scoped app.)");
+        let _ = io::stderr().flush();
+        let mut answer = String::new();
+        if io::stdin().read_line(&mut answer).is_err() {
+            eprintln!("error: failed to read confirmation");
+            return 1;
+        }
+        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+            log::info!("app_init: user declined global-scoped app at home dir — exiting cleanly");
+            return 0;
+        }
+        log::info!("app_init: user confirmed global-scoped app at home dir");
     }
 
     let channel_dir = app_init_config_dir();
