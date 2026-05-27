@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.515"
+verified_version: "0.0.517"
 order: 7
 ---
 
@@ -113,7 +113,7 @@ Pass an app id (e.g. `plexi app open snake`) to open an installed app. Use `--mc
 | `<type_id>` | string | no | App id to open (mutually exclusive with --mcp and --cli) |
 | `--mcp` | string (repeatable) | no | Wrap a stdio MCP server in a Plexi pane.  Example: plexi app open --mcp npx @modelcontextprotocol/server-filesystem /tmp |
 | `--cli` | string | no | Wrap a CLI tool in a Plexi pane with a visual UI.  Example: plexi app open --cli git |
-| `--layout` | string | no | Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, or new_window |
+| `--layout` | string | no | Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, new_window, or overlay |
 | `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane |
 | `<extra_args>` | string (repeatable) | no | Extra arguments passed through to the app (only valid with an app id) |
 
@@ -252,7 +252,7 @@ Send a notification to the Plexi UI
 | `--choice` | string (repeatable) | no | Add a clickable button to the notification. Format: `key:Label` (returns key when clicked) or `Label:pane_focus:<pane_id>` (switches focus to that pane when clicked). Repeatable |
 | `--host-action` | string (repeatable) | no | Action to perform on the host when a button is clicked. Format: `key:action_type:action_arg`. Repeatable. The host runs this even after the process that sent the notification has exited |
 | `--timeout` | string | no | How many seconds before the notification disappears (0 = stays until dismissed) Default: `0`. |
-| `--scope` | string | no | Which panes see this notification: window, context, or global (default: global) |
+| `--scope` | string | no | Which panes see this notification: window, context, or global (default: global) Default: `global`. |
 
 ## `plexi pane`
 
