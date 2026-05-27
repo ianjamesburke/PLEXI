@@ -220,14 +220,34 @@ impl Window {
 /// directory, so a stale/partial file never resolves to a bogus cwd.
 #[cfg(windows)]
 fn read_pane_cwd_sidecar(pane_id: u64) -> Option<PathBuf> {
-    let path = crate::config::pane_cwd_file(pane_id);
-    let contents = std::fs::read_to_string(&path).ok()?;
-    let trimmed = contents.trim();
-    if trimmed.is_empty() {
-        return None;
+    use std::sync::{LazyLock, Mutex};
+    use std::time::{Duration, Instant};
+
+    // get_focused_pane_cwd runs on the render path (the sidebar reads it every
+    // frame), so cache the read on a short TTL — mirrors shell::get_pid_cwd.
+    static CACHE: LazyLock<Mutex<HashMap<u64, (Option<PathBuf>, Instant)>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    const TTL: Duration = Duration::from_millis(300);
+
+    if let Ok(cache) = CACHE.lock() {
+        if let Some((val, ts)) = cache.get(&pane_id) {
+            if ts.elapsed() < TTL {
+                return val.clone();
+            }
+        }
     }
-    let dir = PathBuf::from(trimmed);
-    dir.is_dir().then_some(dir)
+
+    let result = std::fs::read_to_string(crate::config::pane_cwd_file(pane_id))
+        .ok()
+        .and_then(|contents| {
+            let dir = PathBuf::from(contents.trim());
+            (!dir.as_os_str().is_empty() && dir.is_dir()).then_some(dir)
+        });
+
+    if let Ok(mut cache) = CACHE.lock() {
+        cache.insert(pane_id, (result.clone(), Instant::now()));
+    }
+    result
 }
 
 /// Pure-geometry direction-finder. Picks the geometrically-nearest neighbor

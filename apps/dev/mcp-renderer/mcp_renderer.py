@@ -15,7 +15,7 @@ Result view: Shows tool call output inline. Escape or Back returns to list.
 import asyncio
 import json
 import os
-import select
+import queue
 import subprocess
 import sys
 import threading
@@ -43,6 +43,9 @@ class McpClient:
         self._stdout: IO[bytes] | None = None
         self._next_id: int = 1
         self._lock = threading.Lock()
+        # A reader thread feeds stdout lines here; _recv pops with a timeout.
+        # select.select() can't wait on pipes on Windows, so we don't use it.
+        self._stdout_q: "queue.Queue[bytes | None]" = queue.Queue()
 
     def start(self) -> None:
         env = os.environ.copy()
@@ -60,6 +63,16 @@ class McpClient:
         )
         self._stdin = self._proc.stdin
         self._stdout = self._proc.stdout
+        # Reader thread: line-delimited JSON-RPC; None sentinel signals EOF.
+        stdout_pipe = self._proc.stdout
+        def _drain_stdout() -> None:
+            try:
+                assert stdout_pipe is not None
+                for line in stdout_pipe:
+                    self._stdout_q.put(line)
+            finally:
+                self._stdout_q.put(None)
+        threading.Thread(target=_drain_stdout, daemon=True).start()
         # Drain stderr in background so it doesn't block; last line kept for diagnostics.
         self._last_stderr: str = ""
         stderr_pipe = self._proc.stderr
@@ -77,13 +90,12 @@ class McpClient:
             self._stdin.flush()
 
     def _recv(self, timeout: float = 30.0) -> dict:
-        assert self._stdout is not None
         while True:
-            ready, _, _ = select.select([self._stdout], [], [], timeout)
-            if not ready:
+            try:
+                raw = self._stdout_q.get(timeout=timeout)
+            except queue.Empty:
                 raise TimeoutError(f"MCP server did not respond within {timeout:.0f}s")
-            raw = self._stdout.readline(65536)
-            if not raw:
+            if raw is None:
                 raise EOFError("MCP server closed stdout")
             raw = raw.strip()
             if not raw:

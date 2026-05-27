@@ -86,6 +86,12 @@ fn main() -> eframe::Result {
     crate::config::set_profile(profile);
     let is_first_launch = crate::config::ensure_profile_initialized();
 
+    // Per-pane cwd sidecars are session-scoped; clear stale ones from prior
+    // runs so config_dir/panes/ doesn't grow unbounded. Safe at startup — no
+    // panes are live yet.
+    #[cfg(windows)]
+    let _ = std::fs::remove_dir_all(crate::config::config_dir().join("panes"));
+
     {
         let apps_dir = crate::app_registry::apps_dir();
         let cloner = crate::install::GitCloner;
@@ -650,7 +656,9 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
             let _ = iter.next();
             continue;
         }
-        if a.starts_with("--") {
+        // Skip any flag (short or long) — short flags like -h/-V must not be
+        // mistaken for a workspace path.
+        if a.starts_with('-') {
             continue;
         }
         if SUBCOMMANDS.contains(&a.as_str()) {
@@ -813,5 +821,15 @@ mod cli_tests {
         let resolved = parse_workspace_path_arg(&argv(&["--profile", "alpha"]))
             .expect("flag-only argv should resolve");
         assert!(resolved.is_none());
+    }
+
+    #[test]
+    fn plexi_path_arg_skips_short_flags() {
+        // `plexi -h` / `plexi -V` must not be treated as workspace paths.
+        for flag in ["-h", "-V", "-v"] {
+            let resolved = parse_workspace_path_arg(&argv(&[flag]))
+                .unwrap_or_else(|e| panic!("{flag} should not error: {e}"));
+            assert!(resolved.is_none(), "{flag} should resolve to no path");
+        }
     }
 }

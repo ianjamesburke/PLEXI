@@ -64,10 +64,12 @@ Three equivalent paths:
 - **Wizard**: run `unins000.exe` inside the install dir
 - **Script**: `scripts\uninstall-windows.ps1` (also works for installs done via `install-windows.ps1`)
 
-All three reverse the same things: binary, PATH segment, `$PROFILE` block. The profile directory itself (`%LOCALAPPDATA%\Plexi[-channel]\`, which holds config, logs, and installed apps) is **kept by default**. To remove it as well, either:
+All three reverse the same things: binary, PATH segment, `$PROFILE` block. Two separate trees are involved:
 
-- Tick "Also delete config, logs, and installed apps" in the wizard's final page (Inno's default `Also delete the user files?` prompt for non-empty install dirs), or
-- Run `scripts\uninstall-windows.ps1 -PurgeProfile`.
+- **Install dir** (`%LOCALAPPDATA%\Plexi[-channel]\`) — the binary and bundled Python runtime. Removed by the GUI/wizard uninstaller.
+- **Profile dir** (`~\.plexi[-channel]\`) — config, logs, installed apps, and secrets. **Kept by default**, and NOT touched by the GUI/wizard uninstaller (Inno only manages its own install dir).
+
+To remove the profile dir as well, run `scripts\uninstall-windows.ps1 -PurgeProfile` (it removes both the install dir and the profile dir).
 
 ## Icon
 

@@ -8,9 +8,11 @@
     and strips the channel's sentinel-tagged completions block from the current
     user's PowerShell $PROFILE.
 
-    By default the profile directory (%LOCALAPPDATA%\Plexi[-channel]\, which
-    holds config, logs, and installed apps) is KEPT. Pass -PurgeProfile to
-    remove it as well.
+    The install dir (%LOCALAPPDATA%\Plexi[-channel]\) holds the binary and the
+    bundled Python runtime. The profile dir (~\.plexi[-channel]\) holds config,
+    logs, installed apps, and secrets — these are separate trees. By default the
+    profile dir is KEPT; pass -PurgeProfile to remove the install dir AND the
+    profile dir.
 
     Per-user only — no Administrator rights required. Mirror of
     install-windows.ps1.
@@ -24,8 +26,9 @@
     confirmation before proceeding.
 
 .PARAMETER PurgeProfile
-    Also delete the profile directory %LOCALAPPDATA%\Plexi[-channel]\. This
-    removes config, logs, and installed apps. Default is to keep it.
+    Also delete the profile directory ~\.plexi[-channel]\ (config, logs,
+    installed apps, secrets) along with the install dir. Default keeps the
+    profile.
 
 .PARAMETER NoPath
     Skip the PATH cleanup step.
@@ -78,6 +81,11 @@ function Remove-PlexiChannel {
     $binDir = Join-Path $installRoot 'bin'
     $dest   = Join-Path $binDir $binaryName
 
+    # Profile dir is a separate tree from the install dir — it lives under the
+    # home dir with a dot prefix (matches config_dir() in the Rust host).
+    $profileName = if ($ChannelSuffix) { ".plexi-$ChannelSuffix" } else { ".plexi" }
+    $profileDir  = Join-Path $env:USERPROFILE $profileName
+
     $removed = $false
 
     if (Test-Path $dest) {
@@ -119,15 +127,17 @@ function Remove-PlexiChannel {
     if ($Purge) {
         if (Test-Path $installRoot) {
             Remove-Item -Path $installRoot -Recurse -Force
-            Write-Output "Removed profile dir: $installRoot"
+            Write-Output "Removed install dir: $installRoot"
             $removed = $true
         }
-    } elseif (Test-Path $installRoot) {
-        $remaining = Get-ChildItem -Path $installRoot -Force -ErrorAction SilentlyContinue
-        if ($remaining) {
-            Write-Output "Profile dir kept: $installRoot"
-            Write-Output "  (config, logs, apps preserved; pass -PurgeProfile to remove)"
+        if (Test-Path $profileDir) {
+            Remove-Item -Path $profileDir -Recurse -Force
+            Write-Output "Removed profile dir: $profileDir"
+            $removed = $true
         }
+    } elseif (Test-Path $profileDir) {
+        Write-Output "Profile dir kept: $profileDir"
+        Write-Output "  (config, logs, apps, secrets preserved; pass -PurgeProfile to remove)"
     }
 
     return $removed

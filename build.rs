@@ -16,10 +16,16 @@ fn main() {
     // No-op on non-Windows hosts (winresource isn't in scope there).
     #[cfg(target_os = "windows")]
     {
-        println!("cargo:rerun-if-changed=assets/app-icon.ico");
-        let mut res = winresource::WindowsResource::new();
-        res.set_icon("assets/app-icon.ico");
-        res.compile()
-            .expect("failed to embed Windows icon resource");
+        let icon = "assets/app-icon.ico";
+        println!("cargo:rerun-if-changed={icon}");
+        // Guard on existence (symmetric with the installer's HasIcon gate) so a
+        // missing asset doesn't abort the build; a present-but-broken icon still fails loudly.
+        if std::path::Path::new(icon).exists() {
+            let mut res = winresource::WindowsResource::new();
+            res.set_icon(icon);
+            res.compile().expect("failed to embed Windows icon resource");
+        } else {
+            println!("cargo:warning={icon} not found — building without an embedded icon");
+        }
     }
 }
