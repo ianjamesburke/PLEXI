@@ -246,6 +246,22 @@ fn cmd_alt() -> egui::Modifiers {
 fn cmd_alt() -> egui::Modifiers {
     egui::Modifiers { ctrl: true, alt: true, ..egui::Modifiers::default() }
 }
+
+// The non-mac primary (`cmd` → Ctrl+Shift) and secondary (`cmd_shift` →
+// Ctrl+Shift+Alt) tiers include Shift, which changes the *logical* key egui
+// reports for punctuation/digits: e.g. Shift+`/` arrives as `Key::Questionmark`,
+// not `Key::Slash`, so a `Slash` binding never fires (egui-winit sets the event
+// key to `logical_key.or(physical_key)`). For keys egui exposes as a distinct
+// shifted variant, bind to that variant so the chord the user types (Ctrl+Shift
+// + the printed key) matches. Keys whose shifted symbol has NO egui variant
+// (`,`→`<`, `-`→`_`, digits 2–9 and 0) fall back to their physical key and
+// already match, so they pass through unchanged. macOS keeps the base key (its
+// primary tier is bare ⌘, no Shift). Assumes a US/ANSI layout.
+#[cfg(target_os = "macos")]
+fn shift_variant(base: egui::Key, _shifted: egui::Key) -> egui::Key { base }
+#[cfg(not(target_os = "macos"))]
+fn shift_variant(_base: egui::Key, shifted: egui::Key) -> egui::Key { shifted }
+
 impl Default for KeyBindings {
     fn default() -> Self {
         Self {
@@ -254,8 +270,8 @@ impl Default for KeyBindings {
             toggle_command_palette:    (cmd(),       egui::Key::P),
             split_horizontal:          (cmd(),       egui::Key::D),
             split_vertical:            (cmd_shift(), egui::Key::D),
-            split_right:               (cmd(),       egui::Key::Backslash),
-            split_down:                (cmd_shift(), egui::Key::Backslash),
+            split_right:               (cmd(),       shift_variant(egui::Key::Backslash, egui::Key::Pipe)),
+            split_down:                (cmd_shift(), shift_variant(egui::Key::Backslash, egui::Key::Pipe)),
             swap_pane_left:            (cmd_ctrl(),  egui::Key::H),
             swap_pane_down:            (cmd_ctrl(),  egui::Key::J),
             swap_pane_up:              (cmd_ctrl(),  egui::Key::K),
@@ -269,11 +285,11 @@ impl Default for KeyBindings {
             prev_tab:                  (cmd_shift(), egui::Key::H),
             first_tab:                 (cmd_shift(), egui::Key::K),
             last_tab:                  (cmd_shift(), egui::Key::J),
-            nav_back:                  (cmd(),       egui::Key::OpenBracket),
-            focus_history_forward:     (cmd(),       egui::Key::CloseBracket),
+            nav_back:                  (cmd(),       shift_variant(egui::Key::OpenBracket, egui::Key::OpenCurlyBracket)),
+            focus_history_forward:     (cmd(),       shift_variant(egui::Key::CloseBracket, egui::Key::CloseCurlyBracket)),
             toggle_sidebar:            (cmd(),       egui::Key::B),
             toggle_zoom:               (cmd(),       egui::Key::Enter),
-            toggle_shortcuts:          (cmd(),       egui::Key::Slash),
+            toggle_shortcuts:          (cmd(),       shift_variant(egui::Key::Slash, egui::Key::Questionmark)),
             rename_context:            (cmd_shift(), egui::Key::R),
             rename_pane:               (cmd(),       egui::Key::R),
             new_context:               (cmd_shift(), egui::Key::N),
@@ -281,7 +297,7 @@ impl Default for KeyBindings {
             toggle_minimap:            (cmd_shift(), egui::Key::M),
             scroll_up:                 (cmd(),       egui::Key::ArrowUp),
             scroll_down:               (cmd(),       egui::Key::ArrowDown),
-            increase_font_size:        (cmd(),       egui::Key::Equals),
+            increase_font_size:        (cmd(),       shift_variant(egui::Key::Equals, egui::Key::Plus)),
             decrease_font_size:        (cmd(),       egui::Key::Minus),
             open_file_browser:         (cmd(),       egui::Key::E),
             open_quick_note:           (cmd(),       egui::Key::Num0),
@@ -745,8 +761,11 @@ pub fn poll_actions(
         // configurable, but uses the same primary-modifier tier as the other
         // defaults via `cmd()` so it stays off the bare-Ctrl terminal namespace.
         let switch_context_mod = cmd();
+        // Num1 → `!` under Shift on non-mac (has an egui variant); 2–9 fall back
+        // to their physical key and match as-is. See `shift_variant`.
         let num_keys = [
-            egui::Key::Num1, egui::Key::Num2, egui::Key::Num3,
+            shift_variant(egui::Key::Num1, egui::Key::Exclamationmark),
+            egui::Key::Num2, egui::Key::Num3,
             egui::Key::Num4, egui::Key::Num5, egui::Key::Num6,
             egui::Key::Num7, egui::Key::Num8, egui::Key::Num9,
         ];
@@ -867,6 +886,31 @@ mod tests {
         let acts = poll(vec![press(egui::Key::Comma, open)]);
         assert!(any(&acts, |a| matches!(a, Action::OpenConfig)));
         assert!(!any(&acts, |a| matches!(a, Action::ReloadConfig)));
+    }
+
+    /// Shift mutates punctuation/digit logical keys on non-mac (egui reports the
+    /// shifted variant). Bindings must match the variant the keypress produces,
+    /// e.g. Ctrl+Shift+`/` arrives as `Questionmark`, Ctrl+Shift+`\` as `Pipe`.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn ctrl_shift_punctuation_matches_shifted_keys() {
+        let m = win_mods(true, true, false); // Ctrl+Shift
+        assert!(any(&poll(vec![press(egui::Key::Questionmark, m)]), |a| matches!(a, Action::ToggleShortcuts)), "Ctrl+Shift+/ (?)");
+        assert!(any(&poll(vec![press(egui::Key::Pipe, m)]), |a| matches!(a, Action::SplitRight)), "Ctrl+Shift+\\ (|)");
+        assert!(any(&poll(vec![press(egui::Key::OpenCurlyBracket, m)]), |a| matches!(a, Action::NavBackApp)), "Ctrl+Shift+open-bracket");
+        assert!(any(&poll(vec![press(egui::Key::CloseCurlyBracket, m)]), |a| matches!(a, Action::FocusHistoryForward)), "Ctrl+Shift+close-bracket");
+        assert!(any(&poll(vec![press(egui::Key::Plus, m)]), |a| matches!(a, Action::IncreasePaneFontSize)), "Ctrl+Shift+= (+)");
+        assert!(any(&poll(vec![press(egui::Key::Exclamationmark, m)]), |a| matches!(a, Action::SwitchContext(0))), "Ctrl+Shift+1 (!)");
+
+        // split_down is the Ctrl+Shift+Alt tier on the same shifted key (|).
+        let acts = poll(vec![press(egui::Key::Pipe, win_mods(true, true, true))]);
+        assert!(any(&acts, |a| matches!(a, Action::SplitDown)), "Ctrl+Shift+Alt+\\ (|) → SplitDown");
+        assert!(!any(&acts, |a| matches!(a, Action::SplitRight)), "must not also fire SplitRight");
+
+        // Keys with no shifted egui variant still match their base key (physical
+        // fallback): Ctrl+Shift+, stays Comma, Ctrl+Shift+2 stays Num2.
+        assert!(any(&poll(vec![press(egui::Key::Comma, m)]), |a| matches!(a, Action::OpenConfig)), "Ctrl+Shift+, → OpenConfig");
+        assert!(any(&poll(vec![press(egui::Key::Num2, m)]), |a| matches!(a, Action::SwitchContext(1))), "Ctrl+Shift+2 → context 2");
     }
 
     // egui reports `command == mac_cmd` for ⌘ on macOS; Ctrl is independent.
