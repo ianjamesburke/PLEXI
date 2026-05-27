@@ -3107,7 +3107,8 @@ impl PlexiApp {
 
         // For NotifyKind::Input, bare Enter must reach the TextEdit (newline).
         // For all other kinds, consume it so it cannot bleed into panes behind.
-        let consume_bare_enter = !matches!(notif.kind, NotifyKind::Input);
+        // Tombstoned notifications never render a TextEdit, so always consume.
+        let consume_bare_enter = notif.tombstoned || !matches!(notif.kind, NotifyKind::Input);
 
         let (
             enter_pressed,
