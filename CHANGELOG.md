@@ -1,6 +1,10 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.519] — 2026-05-27
+
+### Changes
+- feat(apps/backlog): add -g/--global flag to show channel-level backlog (#1744) (#1761)
 ## [0.0.518] — 2026-05-27
 
 ### Changes
