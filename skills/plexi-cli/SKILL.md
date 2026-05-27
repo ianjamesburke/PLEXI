@@ -47,7 +47,7 @@ NEW=$(plexi terminal --layout new_window)                # separate OS window
 ```bash
 plexi list                           # list installed apps (use to find IDs before open/render)
 plexi app list                       # same as above (alias)
-plexi app init <name>                # scaffold a new app
+plexi app init <name>                # scaffold a new app; from ~/ prompts for confirmation (y/N) before creating a global-scoped app; / still hard-rejects
 plexi app run <path>                 # run a local app dir in a pane — no install required (dev workflow)
 plexi app install <path>             # install a local app dir permanently
 plexi install <source>               # install from remote source or pack file (e.g. github:owner/repo)
