@@ -4109,10 +4109,10 @@ impl PlexiApp {
                     });
                     ui.add_space(style::SPACE_SM);
                     ui.hyperlink_to(
-                        RichText::new("Read the docs at plexi.dev/docs")
+                        RichText::new("Read the docs at plexiapp.com/docs")
                             .size(style::TEXT_CAPTION)
                             .color(colors.text_dim),
-                        "https://plexi.dev/docs",
+                        "https://plexiapp.com/docs",
                     );
 
                     ui.add_space(style::SPACE_MD);

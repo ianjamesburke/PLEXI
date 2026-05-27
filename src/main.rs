@@ -557,7 +557,6 @@ fn main() -> eframe::Result {
     // Plexi-in-Plexi detection: if already running inside a Plexi terminal,
     // show help rather than attempting to launch a second GUI.
     if std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
-        log::info!("cli: PLEXI_RUNNING set — redirecting bare launch to --help");
         use clap::CommandFactory;
         let _ = Cli::command().print_help();
         println!();

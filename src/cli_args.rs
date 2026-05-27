@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
     name = "plexi",
     about = "Plexi — the last app you'll ever need",
     version = env!("CARGO_PKG_VERSION"),
-    after_help = "Get started: plexi demo | Docs: https://plexi.dev"
+    after_help = "Get started: plexi demo | Docs: https://plexiapp.com/docs"
 )]
 pub struct Cli {
     /// Profile name (e.g. alpha, beta)
