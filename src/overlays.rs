@@ -4354,7 +4354,7 @@ impl PlexiApp {
             .current_notify_id
             .as_ref()
             .and_then(|id| self.pending_notifications.iter().find(|n| n.notify_id == *id))
-            .map(|n| matches!(n.kind, NotifyKind::Choice | NotifyKind::Input))
+            .map(|n| matches!(n.kind, NotifyKind::Input))
             .unwrap_or(true);
 
         let (h_pressed, l_pressed) = ctx.input_mut(|i| {
