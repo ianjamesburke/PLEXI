@@ -1,6 +1,25 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.514] — 2026-05-27
+
+### Changes
+- feat(cli): ship default workspace commands, scripts, and hi game on install (#1743) (#1759)
+- docs: regenerate cli.md for v0.0.513 app namespace changes
+- fix(cli): consolidate app lifecycle commands under plexi app namespace (#1644) (#1756)
+- feat(sdk): publish plexi-sdk to PyPI via GitHub Actions trusted publishing (#1752)
+- fix(cli): bare plexi and plexi -h inside pane now show help (#1757)
+- ux(cli): trim help output — remove Quick Start, Inside Pane, and Workspace sections (#1742) (#1758)
+- ux(welcome): add Cmd+E hint, demo callout, docs link, and clean up repetition (#1741) (#1751)
+- feat(cli): workspace app manifest — .plexi/apps.toml declares per-project app dependencies (#1719) (#1750)
+- chore: restore session edits carried through merge
+- Bug: Pane focus misbehaves on close and fullscreen toggle (#1547) (#1753)
+- feat(cli): plexi demo — live keybinding tutorial that watches events.jsonl (#1740) (#1749)
+- chore: remove demo spec file
+- feat(website): swap mailing list storage from SQLite to Resend Contacts
+- docs: add plexi demo interactive tutorial spec
+- chore(justfile): auto-commit and push CLI docs from gen-cli-docs recipe
+- chore(website): remove deprecated link and unlink command documentation
 ## [0.0.513] — 2026-05-27
 
 ### Changes
