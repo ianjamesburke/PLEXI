@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.516] — 2026-05-27
+
+### Changes
+- refactor(host): replace drain_captured_keyboard_input with per-overlay handle_key() handler chain (#1764) (#1766)
+- chore: update cli.md verified_version to 0.0.515
+- feat(sdk): add ESC as default close key in app template (#1767)
 ## [0.0.515] — 2026-05-27
 
 ### Changes
