@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, builder::ValueHint};
 
 #[derive(Parser)]
 #[command(
@@ -94,7 +94,7 @@ pub enum Commands {
         #[arg(long, default_value = "")]
         body: String,
         /// Severity level: info, warn, or error
-        #[arg(long, default_value = "info")]
+        #[arg(long, default_value = "info", value_parser = ["info", "warn", "error"])]
         level: String,
         /// Add a clickable button to the notification. Format: `key:Label` (returns key when clicked) or
         /// `Label:pane_focus:<pane_id>` (switches focus to that pane when clicked).
@@ -109,7 +109,7 @@ pub enum Commands {
         #[arg(long, default_value = "0")]
         timeout: u64,
         /// Which panes see this notification: window, context, or global (default: global)
-        #[arg(long, value_name = "SCOPE")]
+        #[arg(long, value_name = "SCOPE", value_parser = ["window", "context", "global"])]
         scope: Option<String>,
     },
     /// Control panes — list, focus, send input, capture output, and more.
@@ -125,13 +125,13 @@ pub enum Commands {
         #[arg(long, short = 'e')]
         ephemeral: bool,
         /// Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, or new_window
-        #[arg(long)]
+        #[arg(long, value_parser = ["split_h", "split_left", "split_right", "split_v", "split_below", "split_above", "tab", "new_window"])]
         layout: Option<String>,
         /// Open the new pane relative to this pane ID instead of the focused pane
         #[arg(long)]
         from_pane_id: Option<u64>,
         /// Directory to open the terminal in
-        #[arg(long)]
+        #[arg(long, value_hint = ValueHint::DirPath)]
         cwd: Option<String>,
         /// Keep focus on the current pane instead of jumping to the new one
         #[arg(long)]
@@ -257,7 +257,7 @@ pub enum AppCmd {
         #[arg(long, value_name = "BINARY", conflicts_with = "mcp")]
         cli: Option<String>,
         /// Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, or new_window
-        #[arg(long)]
+        #[arg(long, value_parser = ["split_h", "split_left", "split_right", "split_v", "split_below", "split_above", "tab", "new_window"])]
         layout: Option<String>,
         /// Open the new pane relative to this pane ID instead of the focused pane
         #[arg(long)]
@@ -301,10 +301,10 @@ pub enum AppCmd {
         #[arg(long, default_value = "800x600")]
         size: String,
         /// Pre-seed the app's state from a JSON file before rendering
-        #[arg(long)]
+        #[arg(long, value_hint = ValueHint::FilePath)]
         state: Option<String>,
         /// Where to save the PNG (default: stdout)
-        #[arg(long)]
+        #[arg(long, value_hint = ValueHint::FilePath)]
         output: Option<String>,
     },
     /// Show details about an installed app: id, name, version, and available tools.
