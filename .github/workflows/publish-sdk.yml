@@ -26,4 +26,4 @@ jobs:
 
       - name: Publish to PyPI
         working-directory: sdk/python
-        run: uv publish --skip-existing
+        run: uv publish --check-url https://pypi.org/simple/plexi-sdk/
