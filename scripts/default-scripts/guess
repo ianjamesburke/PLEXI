@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# hi — a number-guessing game bundled with Plexi
-# Try: plexi run hi
+# guess — a number-guessing game bundled with Plexi
+# Try: plexi run guess
 echo "Hi! I'm thinking of a number between 1 and 10."
 secret=$((RANDOM % 10 + 1))
 attempts=0

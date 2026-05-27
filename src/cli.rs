@@ -483,8 +483,8 @@ pub fn workspace_init() -> i32 {
                     "# [commands.build]\n",
                     "# run = \"cargo build\"\n",
                     "\n",
-                    "[commands.hi]\n",
-                    "run = \"$PLEXI_CONFIG_DIR/scripts/hi\"\n",
+                    "[commands.guess]\n",
+                    "run = \"$PLEXI_CONFIG_DIR/scripts/guess\"\n",
                 );
                 if let Err(e) = std::fs::write(&commands_toml, stub) {
                     log::warn!("workspace_init:cli: could not write commands.toml: {e}");
