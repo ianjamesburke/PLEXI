@@ -109,7 +109,7 @@ pub enum Commands {
         #[arg(long, default_value = "0")]
         timeout: u64,
         /// Which panes see this notification: window, context, or global (default: global)
-        #[arg(long, value_name = "SCOPE", value_parser = ["window", "context", "global"])]
+        #[arg(long, value_name = "SCOPE", default_value = "global", value_parser = ["window", "context", "global"])]
         scope: Option<String>,
     },
     /// Control panes — list, focus, send input, capture output, and more.
@@ -256,8 +256,8 @@ pub enum AppCmd {
         /// Example: plexi app open --cli git
         #[arg(long, value_name = "BINARY", conflicts_with = "mcp")]
         cli: Option<String>,
-        /// Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, or new_window
-        #[arg(long, value_parser = ["split_h", "split_left", "split_right", "split_v", "split_below", "split_above", "tab", "new_window"])]
+        /// Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, new_window, or overlay
+        #[arg(long, value_parser = ["split_h", "split_left", "split_right", "split_v", "split_below", "split_above", "tab", "new_window", "overlay"])]
         layout: Option<String>,
         /// Open the new pane relative to this pane ID instead of the focused pane
         #[arg(long)]

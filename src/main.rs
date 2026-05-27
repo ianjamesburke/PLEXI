@@ -156,17 +156,9 @@ fn main() -> eframe::Result {
         .unwrap_or_default();
     let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
     let retention_days = log_config.retention_days.unwrap_or(30);
-    let cli_mode = {
-        use clap::CommandFactory;
-        let known: std::collections::HashSet<String> = Cli::command()
-            .get_subcommands()
-            .flat_map(|c| {
-                std::iter::once(c.get_name().to_string())
-                    .chain(c.get_all_aliases().map(str::to_string))
-            })
-            .collect();
-        raw_args.iter().skip(1).any(|a| !a.starts_with('-') && known.contains(a.as_str()))
-    };
+    let cli_mode = raw_args.iter().skip(1).any(|a| {
+        !a.starts_with('-') && known_subcommands().contains(a.as_str())
+    });
     crate::logging::init(log_level, retention_days, cli_mode);
     let frame_tick = crate::logging::new_frame_tick();
     // Note: spawn_heartbeat is deferred to just before eframe::run_native so
@@ -616,14 +608,7 @@ fn main() -> eframe::Result {
 /// subcommands (`run`, `secret`, `app`, `workspace`, `notify`) are also
 /// skipped — those are dispatched separately later in `main`.
 fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf>, String> {
-    use clap::CommandFactory;
-    let known_subcommands: std::collections::HashSet<String> = crate::cli_args::Cli::command()
-        .get_subcommands()
-        .flat_map(|c| {
-            std::iter::once(c.get_name().to_string())
-                .chain(c.get_all_aliases().map(str::to_string))
-        })
-        .collect();
+    let known = known_subcommands();
     let mut iter = args.iter().enumerate();
     // Skip argv[0] (binary name).
     let _ = iter.next();
@@ -636,7 +621,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         if a.starts_with('-') {
             continue;
         }
-        if known_subcommands.contains(a.as_str()) {
+        if known.contains(a.as_str()) {
             return Ok(None);
         }
         // First positional that isn't a known subcommand — interpret as a
@@ -667,6 +652,22 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         }
     }
     Ok(None)
+}
+
+/// Returns the set of known top-level subcommand names and aliases, cached after first call.
+fn known_subcommands() -> &'static std::collections::HashSet<String> {
+    use clap::CommandFactory;
+    use std::sync::OnceLock;
+    static INSTANCE: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
+    INSTANCE.get_or_init(|| {
+        crate::cli_args::Cli::command()
+            .get_subcommands()
+            .flat_map(|c| {
+                std::iter::once(c.get_name().to_string())
+                    .chain(c.get_all_aliases().map(str::to_string))
+            })
+            .collect()
+    })
 }
 
 /// Scan argv for `--profile <name>`. Returns the name if present.
