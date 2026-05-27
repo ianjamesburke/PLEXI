@@ -2,6 +2,14 @@
 
 Development log for PLEXI. Tracks root causes, non-obvious decisions, abandoned approaches, and environment quirks that git history won't capture. Entries are newest-first — most recent at the top.
 
+## 2026-05-27 — [GOTCHA] Sidebar inline pane rows cannot be appended externally after ContextItem::draw()
+
+`ContextItem::draw()` in `sidebar_row.rs` uses a `bg_idx` deferred shape slot (reserved before content renders, filled after) combined with `ui.scope()`. Appending `ui.horizontal()` rows in `sidebar.rs` after `draw()` returns expands the layout in a way that either grows the scope's allocated rect or misaligns the deferred shape fill — producing a full-height black bar over the sidebar.
+
+**Do NOT:** inject pane rows as external siblings after `ContextItem::draw()` returns.
+
+**DO:** pass `pane_rows: Option<&[PaneRow]>` + `is_expanded: bool` fields into `ContextItem` and render the rows INSIDE the `ui.scope()` that owns the background shape slot. The background rect then covers the pane rows naturally.
+
 ## 2026-05-22 — [FIX] QuickNote Cmd+V paste falls through to terminal when zoom overlay active (PR #1658 → alpha)
 
 When QuickNote is open and the zoom overlay is also visible, `TerminalView::set_focus(true)` is called unconditionally inside the CentralPanel render pass (`app/mod.rs:3999`). This `request_focus()` on the zoom terminal runs before the re-focus block at line 4312 reclaims focus for `quick_note_text`. On those frames, egui's TextEdit skips paste processing because `mem.has_focus(id)` is false — so `egui::Event::Paste` falls through to the terminal.

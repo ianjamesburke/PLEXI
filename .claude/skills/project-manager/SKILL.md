@@ -1,6 +1,6 @@
 ---
 name: project-manager
-description: Use when selecting and dispatching parallelizable issues from the GitHub backlog. Triggered by /project-manager, "what should we ship?", "pick issues to dispatch", or at session start when the board needs a fresh dispatch. Not for single-issue work — use /ship-issue for that.
+description: Use when selecting and dispatching parallelizable issues from the GitHub backlog. Triggered by /project-manager, "what should we ship?", "pick issues to dispatch", or at session start when the board needs a fresh dispatch. Not for single-issue work — use /implement-issue for that.
 ---
 
 # Project Manager
