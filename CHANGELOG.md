@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.520] — 2026-05-27
+
+### Changes
+- ux(cli): relax home directory guard on app init — prompt instead of reject (#1745) (#1763)
+- feat(apps/backlog): add -g/--global flag to show channel-level backlog (#1744) (#1761)
 ## [0.0.519] — 2026-05-27
 
 ### Changes
