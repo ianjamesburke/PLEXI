@@ -60,7 +60,7 @@ class __CLASS_NAME__(App):
             ]),
         ]))
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
         if key == "Escape":
             self.emit.close_self()
         elif key == "i":
