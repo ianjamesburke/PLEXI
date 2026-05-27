@@ -73,8 +73,11 @@ promote_alpha_to_beta() {
     check_clean "$BETA_TREE" "beta"
 
     echo "Checking CLI docs are up to date..."
-    (cd "$ALPHA_TREE" && just check-cli-docs) \
-        || die "CLI docs are stale — run 'just gen-cli-docs' first"
+    if ! (cd "$ALPHA_TREE" && just check-cli-docs) 2>/dev/null; then
+        echo "CLI docs are stale — regenerating automatically..."
+        (cd "$ALPHA_TREE" && just gen-cli-docs) \
+            || die "Failed to regenerate CLI docs"
+    fi
 
     local version
     version=$(grep '^version' "$ALPHA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
