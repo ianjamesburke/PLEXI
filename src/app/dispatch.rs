@@ -91,8 +91,8 @@ impl PlexiApp {
         // Escape from the InputState so poll_actions can't re-fire CloseApp
         // for keys the app already handled (e.g. Escape exiting search mode
         // in the file browser rather than closing the pane).
-        let consumed = ctx.input(|i| app_pane.runtime.handle_key(i));
-        if consumed {
+        let disposition = ctx.input(|i| app_pane.runtime.handle_key(i));
+        if disposition == crate::app_trait::KeyDisposition::Consumed {
             ctx.input_mut(|i| {
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
             });

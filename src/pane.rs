@@ -160,7 +160,7 @@ impl AppRuntime {
         }
     }
 
-    pub fn handle_key(&mut self, input: &egui::InputState) -> bool {
+    pub fn handle_key(&mut self, input: &egui::InputState) -> crate::app_trait::KeyDisposition {
         match self {
             AppRuntime::Process(app) => app.handle_key(input),
             AppRuntime::Builtin(app) => app.handle_key(input),

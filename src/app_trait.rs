@@ -1,5 +1,14 @@
 use crate::theme::Colors;
 
+/// The result of an overlay's or app's keyboard handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeyDisposition {
+    /// The handler consumed the event; downstream handlers must not run.
+    Consumed,
+    /// The handler did not consume the event; pass to the next handler.
+    Passthrough,
+}
+
 /// Context passed to an app during rendering.
 pub struct AppRenderContext<'a> {
     pub colors: &'a Colors,
@@ -176,9 +185,9 @@ pub trait App: Send {
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>);
 
     /// Handle raw key input before it reaches the terminal.
-    /// Return `true` to consume the event (prevents terminal from seeing it).
-    fn handle_key(&mut self, _input: &egui::InputState) -> bool {
-        false
+    /// Return `Consumed` to prevent downstream handlers from seeing the event.
+    fn handle_key(&mut self, _input: &egui::InputState) -> KeyDisposition {
+        KeyDisposition::Passthrough
     }
 
     /// Drain any commands the app has queued since the last call.

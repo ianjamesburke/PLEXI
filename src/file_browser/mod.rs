@@ -826,7 +826,8 @@ impl App for FileBrowserApp {
             });
     }
 
-    fn handle_key(&mut self, input: &egui::InputState) -> bool {
+    fn handle_key(&mut self, input: &egui::InputState) -> crate::app_trait::KeyDisposition {
+        use crate::app_trait::KeyDisposition;
         let mode = if self.in_search {
             Mode::Search
         } else if self.entries.is_empty() {
@@ -841,26 +842,26 @@ impl App for FileBrowserApp {
             // Escape: closes browser in normal/empty, exits search in search mode
             (Mode::Search, Some(FileBrowserAction::Escape)) => {
                 self.exit_search();
-                true
+                KeyDisposition::Consumed
             }
             (_, Some(FileBrowserAction::Escape)) => {
                 self.should_close = true;
-                true
+                KeyDisposition::Consumed
             }
             // NavigateUp (← / H): global — no modal conflict
             (_, Some(FileBrowserAction::NavigateUp)) => {
                 self.navigate_up();
-                true
+                KeyDisposition::Consumed
             }
             // Backspace: delete char in search, navigate up elsewhere
             (Mode::Search, Some(FileBrowserAction::Backspace)) => {
                 self.search_query.pop();
                 self.refilter();
-                true
+                KeyDisposition::Consumed
             }
             (_, Some(FileBrowserAction::Backspace)) => {
                 self.navigate_up();
-                true
+                KeyDisposition::Consumed
             }
             // Search mode actions
             (Mode::Search, Some(FileBrowserAction::Activate)) => {
@@ -874,67 +875,67 @@ impl App for FileBrowserApp {
                         self.exit_search();
                     }
                 }
-                true
+                KeyDisposition::Consumed
             }
             (Mode::Search, Some(FileBrowserAction::SelectNext)) => {
                 let last = self.search_indices.len().saturating_sub(1);
                 self.selected = (self.selected + 1).min(last);
                 self.pending_scroll = true;
-                true
+                KeyDisposition::Consumed
             }
             (Mode::Search, Some(FileBrowserAction::SelectPrev)) => {
                 self.selected = self.selected.saturating_sub(1);
                 self.pending_scroll = true;
-                true
+                KeyDisposition::Consumed
             }
             (Mode::Search, Some(FileBrowserAction::AppendText(text))) => {
                 self.search_query.push_str(&text);
                 self.refilter();
-                true
+                KeyDisposition::Consumed
             }
             // Search mode consumes all unhandled input
-            (Mode::Search, _) => true,
+            (Mode::Search, _) => KeyDisposition::Consumed,
             // Empty mode: no further keys handled
-            (Mode::Empty, _) => false,
+            (Mode::Empty, _) => KeyDisposition::Passthrough,
             // Normal mode actions
             (Mode::Normal, Some(FileBrowserAction::EnterSearch)) => {
                 self.in_search = true;
                 self.search_query.clear();
                 self.refilter();
                 log::info!("file_browser: entering search mode");
-                true
+                KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::SelectNext)) => {
                 let last = self.entries.len().saturating_sub(1);
                 self.selected = (self.selected + 1).min(last);
                 self.pending_scroll = true;
-                true
+                KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::SelectPrev)) => {
                 self.selected = self.selected.saturating_sub(1);
                 self.pending_scroll = true;
-                true
+                KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::SelectFirst)) => {
                 self.selected = 0;
                 self.pending_scroll = true;
-                true
+                KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::SelectLast)) => {
                 self.selected = self.entries.len().saturating_sub(1);
                 self.pending_scroll = true;
-                true
+                KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::PageDown)) => {
                 let last = self.entries.len().saturating_sub(1);
                 self.selected = (self.selected + 10).min(last);
                 self.pending_scroll = true;
-                true
+                KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::PageUp)) => {
                 self.selected = self.selected.saturating_sub(10);
                 self.pending_scroll = true;
-                true
+                KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::Activate)) => {
                 if let Some(entry) = self.selected_entry().cloned() {
@@ -944,7 +945,7 @@ impl App for FileBrowserApp {
                         self.open_file(&entry.path);
                     }
                 }
-                true
+                KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::ToggleSort)) => {
                 self.sort_mode = match self.sort_mode {
@@ -952,13 +953,13 @@ impl App for FileBrowserApp {
                     SortMode::Name => SortMode::RecentlyTouched,
                 };
                 self.refresh();
-                true
+                KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::Refresh)) => {
                 self.refresh();
-                true
+                KeyDisposition::Consumed
             }
-            _ => false,
+            _ => KeyDisposition::Passthrough,
         }
     }
 
@@ -1009,12 +1010,13 @@ mod tests {
     }
 
     fn run_handle_key(app: &mut FileBrowserApp, events: Vec<Event>) -> bool {
+        use crate::app_trait::KeyDisposition;
         let ctx = egui::Context::default();
         let raw = RawInput { events, ..Default::default() };
         let mut consumed = false;
         let _ = ctx.run(raw, |ctx| {
             ctx.input(|i| {
-                consumed = app.handle_key(i);
+                consumed = app.handle_key(i) == KeyDisposition::Consumed;
             });
         });
         consumed

@@ -158,20 +158,21 @@ impl App for SecretsApp {
         self.cwd = new_cwd.to_path_buf();
     }
 
-    fn handle_key(&mut self, input: &egui::InputState) -> bool {
+    fn handle_key(&mut self, input: &egui::InputState) -> crate::app_trait::KeyDisposition {
+        use crate::app_trait::KeyDisposition;
         if self.mode == Mode::Adding {
             // Escape cancels the form
             if input.key_pressed(egui::Key::Escape) {
                 self.cancel_add();
-                return true;
+                return KeyDisposition::Consumed;
             }
             // Let all other keys go to TextEdit widgets in ui()
-            return false;
+            return KeyDisposition::Passthrough;
         }
 
         // List mode
         if input.modifiers.command || input.modifiers.alt {
-            return false;
+            return KeyDisposition::Passthrough;
         }
 
         let mut consumed = false;
@@ -205,7 +206,7 @@ impl App for SecretsApp {
             consumed = true;
         }
 
-        consumed
+        if consumed { KeyDisposition::Consumed } else { KeyDisposition::Passthrough }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {

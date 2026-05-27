@@ -1773,13 +1773,14 @@ impl App for ProcessApp {
         }
     }
 
-    fn handle_key(&mut self, input: &egui::InputState) -> bool {
+    fn handle_key(&mut self, input: &egui::InputState) -> crate::app_trait::KeyDisposition {
+        use crate::app_trait::KeyDisposition;
         // When a TextInput widget has focus, egui owns the keyboard — all
         // text and key events are consumed by the TextEdit widget. Don't
         // forward them to the app's on_key handler (typing "h" in the chat
         // input shouldn't trigger a tier change, for example).
         if self.render_session.text_input_has_focus {
-            return false;
+            return KeyDisposition::Passthrough;
         }
         let mut consumed = false;
         for event in &input.events {
@@ -1923,7 +1924,7 @@ impl App for ProcessApp {
                 _ => {}
             }
         }
-        consumed
+        if consumed { KeyDisposition::Consumed } else { KeyDisposition::Passthrough }
     }
 
     fn take_pending_commands(&mut self) -> Vec<AppCommand> {

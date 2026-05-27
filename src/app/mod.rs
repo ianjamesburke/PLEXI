@@ -2493,16 +2493,33 @@ impl eframe::App for PlexiApp {
         self.sync_text_input_focus();
         self.sync_capability_modal_focus();
 
-        // If an overlay owns input, render it FIRST so its widgets (the
-        // notification modal's TextEdit for the `input` kind, the palette's
-        // search field, the rename input) can read keystrokes before we
-        // drain. Then drain the keyboard buffer so downstream readers —
-        // focused app (`dispatch_app_key_events`), terminal backends,
-        // `keys::poll_actions` — see only the global allowlist (Cmd+Q,
-        // Cmd+W, Cmd+Shift+A, Cmd+Shift+L/H).
+        // Unified overlay dispatch: each overlay owns its complete keyboard
+        // contract via a `*_handle_key` method that returns `Consumed`, preventing
+        // `dispatch_app_key_events` and `poll_actions` from seeing those events.
+        // Global shortcuts (Cmd+Q, Cmd+W, Cmd+P) remain active via `poll_actions`
+        // even when an overlay holds focus (see early-return guard in `keys::poll_actions`).
         let mut early_modal_cmds: Vec<crate::app_trait::AppCommand> = Vec::new();
-        if self.input_captured_by_overlay() {
-            match self.focus_stack.last() {
+        let overlay_key_disposition = if self.input_captured_by_overlay() {
+            // Step 1: run the overlay's handle_key (consumes its owned key events).
+            let disposition = match self.focus_stack.last() {
+                Some(FocusLayer::NotificationModal) => self.notification_modal_handle_key(ctx),
+                Some(FocusLayer::ConfirmClose) => self.confirm_close_handle_key(ctx),
+                Some(FocusLayer::CommandPalette) => self.command_palette_handle_key(ctx),
+                Some(FocusLayer::RenamePane) => self.rename_pane_handle_key(ctx),
+                Some(FocusLayer::ContextRename) => self.context_rename_handle_key(ctx),
+                Some(FocusLayer::ContextDescription) => self.context_description_handle_key(ctx),
+                Some(FocusLayer::QuickNote) => self.quick_note_handle_key(ctx),
+                Some(FocusLayer::QuickNoteDestination) => self.quick_note_destination_handle_key(ctx),
+                Some(FocusLayer::QuickNoteSubDestination(_)) => self.quick_note_sub_destination_handle_key(ctx),
+                Some(FocusLayer::CliSetupPrompt) => self.cli_setup_prompt_handle_key(ctx),
+                Some(FocusLayer::ContextInspector) => self.context_inspector_handle_key(ctx),
+                Some(FocusLayer::TextInput) => self.text_input_handle_key(ctx),
+                Some(FocusLayer::ContextCloseConfirm) => self.context_close_confirm_handle_key(ctx),
+                Some(FocusLayer::CapabilityModal) => self.capability_modal_handle_key(ctx),
+                None => crate::app_trait::KeyDisposition::Passthrough,
+            };
+            // Step 2: render the overlay (visual only — key reads already done above).
+            match self.focus_stack.last().cloned() {
                 Some(FocusLayer::NotificationModal) => {
                     early_modal_cmds = self.draw_notification_modal(ctx);
                 }
@@ -2528,7 +2545,6 @@ impl eframe::App for PlexiApp {
                     self.draw_quick_note_destination(ctx);
                 }
                 Some(FocusLayer::QuickNoteSubDestination(path)) => {
-                    let path = path.clone();
                     self.draw_quick_note_menu(ctx, &path);
                 }
                 Some(FocusLayer::CliSetupPrompt) => {
@@ -2548,7 +2564,6 @@ impl eframe::App for PlexiApp {
                 }
                 None => {}
             }
-            self.drain_captured_keyboard_input(ctx);
             // The overlay may have self-closed (notification queue drained,
             // confirm-close confirmed/cancelled, palette picked an entry,
             // rename committed). Re-sync so the layer is accurate for the
@@ -2563,11 +2578,13 @@ impl eframe::App for PlexiApp {
             self.sync_context_inspector_focus();
             self.sync_text_input_focus();
             self.sync_capability_modal_focus();
-        }
+            disposition
+        } else {
+            crate::app_trait::KeyDisposition::Passthrough
+        };
 
-        // Apps only receive key input if nothing is capturing above them.
-        // (Key input is focus-scoped; command drain below is not.)
-        if !self.input_captured_by_overlay() {
+        // Apps only receive key input when no overlay holds focus.
+        if overlay_key_disposition == crate::app_trait::KeyDisposition::Passthrough {
             self.dispatch_app_key_events(ctx);
         }
         // Drain every app pane's pending_commands every frame — including
@@ -3313,14 +3330,11 @@ impl eframe::App for PlexiApp {
             (active, capture)
         };
 
-        // Handle keyboard shortcuts
+        // Handle keyboard shortcuts. Global shortcuts (Cmd+Q, Cmd+W, Cmd+P) always
+        // fire; all other shortcuts are suppressed when an overlay holds focus via
+        // the early-return guard in `keys::poll_actions`.
         let modal_open = self.input_captured_by_overlay();
-        let notification_modal_active = matches!(self.focus_stack.last(), Some(FocusLayer::NotificationModal));
-        let notification_shortcuts_blocked = self.current_notify_id.as_ref()
-            .and_then(|id| self.pending_notifications.iter().find(|n| n.notify_id == *id))
-            .map(|n| matches!(n.kind, crate::app_protocol::NotifyKind::Choice | crate::app_protocol::NotifyKind::Input))
-            .unwrap_or(true);
-        for action in keys::poll_actions(ctx, &self.key_bindings, app_active, keyboard_capture_active, modal_open, self.show_shortcuts, notification_modal_active, notification_shortcuts_blocked) {
+        for action in keys::poll_actions(ctx, &self.key_bindings, app_active, keyboard_capture_active, modal_open, self.show_shortcuts) {
             match action {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].zoomed_pane = None;
@@ -3598,12 +3612,6 @@ impl eframe::App for PlexiApp {
                             self.current_notify_id = self.select_highest_priority();
                         }
                     }
-                }
-                Action::NotificationCycleNext => {
-                    self.cycle_notification(1);
-                }
-                Action::NotificationCyclePrev => {
-                    self.cycle_notification(-1);
                 }
                 Action::ForceReloadApp => {
                     self.force_reload_focused_app();
@@ -5173,75 +5181,6 @@ impl PlexiApp {
                 .copied()
                 .find_map(|child| Self::find_pane_in_tile(tree, child)),
         }
-    }
-
-    /// Drain input-intent events from `ctx.input` so downstream widgets (panes,
-    /// terminal backends, `keys::poll_actions`) see only the global allowlist.
-    ///
-    /// Uses `input_intent::classify` to identify events that carry user input
-    /// (Key, Text, Paste, Ime, Copy, Cut). Non-input events (pointer, scroll,
-    /// window focus, etc.) pass through unconditionally. New egui::Event
-    /// variants are dropped by default — promoting one requires adding it to
-    /// `InputIntent`.
-    pub(crate) fn drain_captured_keyboard_input(&self, ctx: &egui::Context) {
-        // Allow bare H/L through when the notification modal is focused on a
-        // non-Choice, non-Input notification so poll_actions can cycle the queue.
-        let allow_bare_hl = matches!(self.focus_stack.last(), Some(FocusLayer::NotificationModal))
-            && self.current_notify_id.as_ref()
-                .and_then(|id| self.pending_notifications.iter().find(|n| n.notify_id == *id))
-                .map(|n| !matches!(n.kind, crate::app_protocol::NotifyKind::Choice | crate::app_protocol::NotifyKind::Input))
-                .unwrap_or(false);
-
-        // Cmd+0 (quick note) is a global shortcut that must fire even when another
-        // overlay is open — it pushes QuickNote on top of the current overlay.
-        // Block it when ANY QuickNote layer is on the stack (not just the top),
-        // so a notification pushed on top of QuickNote doesn't re-open and reset
-        // the note mid-edit.
-        let allow_quick_note = !self.focus_stack.iter().any(|layer| {
-            matches!(
-                layer,
-                FocusLayer::QuickNote
-                    | FocusLayer::QuickNoteDestination
-                    | FocusLayer::QuickNoteSubDestination(_)
-            )
-        });
-
-        ctx.input_mut(|i| {
-            i.events.retain(|e| {
-                if crate::input_intent::classify(e).is_none() {
-                    return true;
-                }
-                match e {
-                    egui::Event::Key { key, modifiers, .. } => {
-                        let cmd = modifiers.command;
-                        let shift = modifiers.shift;
-                        if allow_bare_hl
-                            && modifiers.is_none()
-                            && matches!(key, egui::Key::H | egui::Key::L)
-                        {
-                            return true;
-                        }
-                        if !cmd || modifiers.alt || modifiers.ctrl {
-                            return false;
-                        }
-                        if !shift && matches!(key, egui::Key::Q | egui::Key::W) {
-                            return true;
-                        }
-                        if !shift && allow_quick_note && *key == egui::Key::Num0 {
-                            return true;
-                        }
-                        if shift && matches!(key, egui::Key::A) {
-                            return true;
-                        }
-                        if shift && matches!(key, egui::Key::L | egui::Key::H) {
-                            return true;
-                        }
-                        false
-                    }
-                    _ => false,
-                }
-            });
-        });
     }
 
     /// Route `DeliverNotifyAction` commands back to the originating app pane as
