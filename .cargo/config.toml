@@ -1,5 +1,5 @@
 [build]
-target-dir = "/Users/ianburke/Documents/GitHub/PLEXI/target"
+target-dir = "target"
 
 # THROTTLE: limits cargo to 3 of 10 logical cores to keep the machine
 # responsive during parallel agent builds. Builds take ~3x longer.

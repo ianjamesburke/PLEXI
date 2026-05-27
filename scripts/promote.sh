@@ -22,6 +22,17 @@ check_clean() {
         || die "$label has uncommitted changes — commit first"
 }
 
+check_cargo_config() {
+    local tree="$1"
+    local cfg="$tree/.cargo/config.toml"
+    [[ -f "$cfg" ]] || return 0
+    if grep -Eq '/Users/|/home/' "$cfg"; then
+        echo "error: $cfg contains a hardcoded absolute path:" >&2
+        grep -En '/Users/|/home/' "$cfg" >&2
+        die "fix .cargo/config.toml to use relative paths before promoting"
+    fi
+}
+
 check_pushed() {
     local tree="$1" branch="$2" label="$3"
     local n
@@ -57,8 +68,13 @@ esac
 
 promote_alpha_to_beta() {
     check_clean "$ALPHA_TREE" "alpha"
+    check_cargo_config "$ALPHA_TREE"
     check_pushed "$ALPHA_TREE" "alpha" "alpha"
     check_clean "$BETA_TREE" "beta"
+
+    echo "Checking CLI docs are up to date..."
+    (cd "$ALPHA_TREE" && just check-cli-docs) \
+        || die "CLI docs are stale — run 'just gen-cli-docs' first"
 
     local version
     version=$(grep '^version' "$ALPHA_TREE/Cargo.toml" | head -1 | sed 's/version = "\(.*\)"/\1/')
