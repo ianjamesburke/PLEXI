@@ -541,7 +541,6 @@ mod tests {
             FocusLayer::QuickNoteDestination,
             FocusLayer::QuickNoteSubDestination(vec![0]),
             FocusLayer::CliSetupPrompt,
-            FocusLayer::ContextInspector,
         ];
 
         let input_events = vec![
@@ -652,7 +651,6 @@ mod tests {
         use crate::app::FocusLayer;
 
         let non_quick_note_layers = vec![
-            FocusLayer::ContextInspector,
             FocusLayer::CommandPalette,
             FocusLayer::NotificationModal,
             FocusLayer::ConfirmClose,

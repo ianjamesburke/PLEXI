@@ -26,7 +26,8 @@ use crate::config::KeybindingsConfig;
 // Cmd+Up / Cmd+Down           — scroll
 // Cmd+= / Cmd+-               — font size
 // Cmd+E                       — file browser
-// Cmd+I                       — context inspector
+// Cmd+I                       — toggle context pane list
+// Cmd+Option+N                 — new sub-context (child of active)
 // Cmd+0                       — quick note
 // Cmd+1–9                     — switch context (sidebar)
 // Escape (app active)         — close app
@@ -106,8 +107,10 @@ pub enum Action {
     /// Create a new context (sidebar item) and immediately open the rename modal.
     /// Bound to Cmd+Shift+N.
     NewContext,
-    /// Toggle the context inspector modal. Bound to Cmd+I.
-    ContextInspector,
+    /// Create a new sub-context (child of active). Bound to Cmd+Option+N.
+    NewChildContext,
+    /// Toggle the pane list expand/collapse for the active context. Bound to Cmd+I.
+    ToggleContextDetail,
     /// Toggle the minimap overlay. Bound to Cmd+Shift+M.
     ToggleMinimap,
     /// Reload configuration from disk. Bound to Cmd+Shift+,.
@@ -123,8 +126,6 @@ pub enum Action {
     SwapPane(Direction),
     /// Open the scratchpad overlay. Bound to Cmd+Shift+Space.
     OpenScratchpad,
-    /// Zoom into the sub-context tile that has focus. Bound to Cmd+Shift+Enter.
-    ContextZoomIn,
     /// Zoom out of the current sub-context to the parent. Bound to Cmd+Escape.
     ContextZoomOut,
 }
@@ -174,9 +175,9 @@ pub struct KeyBindings {
     pub open_secrets_manager: (egui::Modifiers, egui::Key),
     pub force_reload_app: (egui::Modifiers, egui::Key),
     pub toggle_notification_modal: (egui::Modifiers, egui::Key),
-    pub context_inspector: (egui::Modifiers, egui::Key),
+    pub toggle_context_detail: (egui::Modifiers, egui::Key),
+    pub new_child_context: (egui::Modifiers, egui::Key),
     pub open_scratchpad: (egui::Modifiers, egui::Key),
-    pub context_zoom_in: (egui::Modifiers, egui::Key),
     pub context_zoom_out: (egui::Modifiers, egui::Key),
 }
 
@@ -234,9 +235,9 @@ impl Default for KeyBindings {
             open_secrets_manager:      (cmd_shift(), egui::Key::S),
             force_reload_app:          (cmd_alt(),   egui::Key::R),
             toggle_notification_modal: (cmd_shift(), egui::Key::A),
-            context_inspector:         (cmd(),       egui::Key::I),
+            toggle_context_detail:     (cmd(),       egui::Key::I),
+            new_child_context:         (cmd_alt(),   egui::Key::N),
             open_scratchpad:           (cmd_shift(), egui::Key::Space),
-            context_zoom_in:           (cmd_shift(), egui::Key::Enter),
             context_zoom_out:          (cmd(),       egui::Key::Escape),
         }
     }
@@ -385,7 +386,8 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(open_secrets_manager, "open_secrets_manager");
     apply_override!(force_reload_app, "force_reload_app");
     apply_override!(toggle_notification_modal, "toggle_notification_modal");
-    apply_override!(context_inspector, "context_inspector");
+    apply_override!(toggle_context_detail, "toggle_context_detail");
+    apply_override!(new_child_context, "new_child_context");
     apply_override!(open_scratchpad, "open_scratchpad");
 
     // Conflict detection
@@ -431,7 +433,8 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("open_secrets_manager",      bindings.open_secrets_manager),
         ("force_reload_app",          bindings.force_reload_app),
         ("toggle_notification_modal", bindings.toggle_notification_modal),
-        ("context_inspector",         bindings.context_inspector),
+        ("toggle_context_detail",     bindings.toggle_context_detail),
+        ("new_child_context",         bindings.new_child_context),
         ("open_scratchpad",           bindings.open_scratchpad),
     ];
 
@@ -581,11 +584,7 @@ pub fn poll_actions(
         if input.consume_key(bindings.toggle_sidebar.0, bindings.toggle_sidebar.1) {
             actions.push(Action::ToggleSidebar);
         }
-        // context_zoom_in (Cmd+Shift+Enter) must be checked before toggle_zoom (Cmd+Enter)
-        // because egui consume_key uses subset modifier matching.
-        if input.consume_key(bindings.context_zoom_in.0, bindings.context_zoom_in.1) {
-            actions.push(Action::ContextZoomIn);
-        } else if input.consume_key(bindings.toggle_zoom.0, bindings.toggle_zoom.1) {
+        if input.consume_key(bindings.toggle_zoom.0, bindings.toggle_zoom.1) {
             actions.push(Action::ToggleZoom);
         }
         if input.consume_key(bindings.toggle_shortcuts.0, bindings.toggle_shortcuts.1) {
@@ -606,8 +605,10 @@ pub fn poll_actions(
             actions.push(Action::SplitRight);
         }
 
-        // New context before new page right — check shifted variant first.
-        if input.consume_key(bindings.new_context.0, bindings.new_context.1) {
+        // New child context before new context before new page right — check alt variant first.
+        if input.consume_key(bindings.new_child_context.0, bindings.new_child_context.1) {
+            actions.push(Action::NewChildContext);
+        } else if input.consume_key(bindings.new_context.0, bindings.new_context.1) {
             actions.push(Action::NewContext);
         } else if input.consume_key(bindings.new_page_right.0, bindings.new_page_right.1) {
             actions.push(Action::NewPageRight);
@@ -668,8 +669,8 @@ pub fn poll_actions(
         if input.consume_key(bindings.toggle_notification_modal.0, bindings.toggle_notification_modal.1) {
             actions.push(Action::ToggleNotificationModal);
         }
-        if input.consume_key(bindings.context_inspector.0, bindings.context_inspector.1) {
-            actions.push(Action::ContextInspector);
+        if input.consume_key(bindings.toggle_context_detail.0, bindings.toggle_context_detail.1) {
+            actions.push(Action::ToggleContextDetail);
         }
         if input.consume_key(bindings.open_scratchpad.0, bindings.open_scratchpad.1) {
             actions.push(Action::OpenScratchpad);

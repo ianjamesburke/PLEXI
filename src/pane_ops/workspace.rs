@@ -565,6 +565,157 @@ impl PlexiApp {
         self.router.get_mut(idx).root = Some(root);
     }
 
+    /// Extract the focused pane from the active window into a new child context.
+    /// Creates a Portal tile at the old pane position, zooms into the new child context,
+    /// and opens the rename overlay.
+    pub(crate) fn extract_pane_to_subcontext(&mut self) {
+        use egui_tiles::{Container, Tile};
+
+        let active_win_idx = self.active_window;
+        let focused_tile_id = match self.windows[active_win_idx].focused_pane {
+            Some(t) => t,
+            None => {
+                log::warn!("extract_pane_to_subcontext: no focused pane");
+                return;
+            }
+        };
+
+        let focused_pane_id = match self.windows[active_win_idx].tree.tiles.get(focused_tile_id) {
+            Some(Tile::Pane(p)) => *p,
+            _ => {
+                log::warn!("extract_pane_to_subcontext: focused tile is not a pane");
+                return;
+            }
+        };
+
+        // Bail if portal
+        if self.windows[active_win_idx].panes.get(&focused_pane_id)
+            .map(|p| p.portal_target().is_some())
+            .unwrap_or(false)
+        {
+            log::warn!("extract_pane_to_subcontext: focused pane is a portal, cannot extract");
+            return;
+        }
+
+        // Remove pane from parent window
+        let pane = match self.windows[active_win_idx].panes.remove(&focused_pane_id) {
+            Some(p) => p,
+            None => {
+                log::warn!("extract_pane_to_subcontext: pane {focused_pane_id} not found");
+                return;
+            }
+        };
+
+        // Determine path for new context from pane CWD
+        let path = pane.as_terminal()
+            .and_then(|t| shell::get_pid_cwd(t.backend.child_pid()))
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+
+        let child_ctx_id = self.next_window_id;
+        self.next_window_id += 1;
+        let child_win_id = self.next_window_id;
+        self.next_window_id += 1;
+
+        let parent_id = self.router.active().context_id;
+        let parent_depth = self.router.active().depth;
+        let child_depth = parent_depth + 1;
+        let child_name = format!("Sub-context {}", self.router.len() + 1);
+
+        log::info!(
+            "extract_pane_to_subcontext: pane={focused_pane_id} → new ctx_id={child_ctx_id} depth={child_depth}"
+        );
+
+        // Build child window with the extracted pane
+        let mut child_tree = egui_tiles::Tree::empty(format!("tree_{child_win_id}"));
+        let child_tile_id = child_tree.tiles.insert_pane(focused_pane_id);
+        child_tree.root = Some(child_tile_id);
+        let mut child_panes = std::collections::HashMap::new();
+        child_panes.insert(focused_pane_id, pane);
+
+        // Insert Portal pane at the old tile position in parent window
+        let portal_pane_id = self.host.alloc_pane_id();
+        let portal_tile_id = self.windows[active_win_idx].tree.tiles.insert_pane(portal_pane_id);
+
+        // Replace old tile with portal in the parent tree
+        let parent_of_focused = self.windows[active_win_idx].tree.tiles.parent_of(focused_tile_id);
+        if let Some(parent_tile) = parent_of_focused {
+            if let Some(Tile::Container(container)) = self.windows[active_win_idx].tree.tiles.get_mut(parent_tile) {
+                match container {
+                    Container::Linear(lin) => {
+                        if let Some(pos) = lin.children.iter().position(|&c| c == focused_tile_id) {
+                            lin.children[pos] = portal_tile_id;
+                        }
+                    }
+                    Container::Tabs(tabs) => {
+                        if let Some(pos) = tabs.children.iter().position(|&c| c == focused_tile_id) {
+                            tabs.children[pos] = portal_tile_id;
+                        }
+                    }
+                    Container::Grid(_) => {
+                        container.remove_child(focused_tile_id);
+                        container.add_child(portal_tile_id);
+                    }
+                }
+            }
+        } else {
+            // Was root tile
+            self.windows[active_win_idx].tree.root = Some(portal_tile_id);
+        }
+        // Remove the focused tile from tiles
+        self.windows[active_win_idx].tree.tiles.remove(focused_tile_id);
+
+        // Insert portal pane into parent window
+        self.windows[active_win_idx].panes.insert(
+            portal_pane_id,
+            crate::pane::Pane::Portal(Box::new(crate::pane::PortalPane {
+                pane_id: portal_pane_id,
+                target_context_id: child_ctx_id,
+                context_state: None,
+            })),
+        );
+
+        // Register child context
+        self.router.push(crate::context::Context {
+            name: child_name.clone(),
+            path: path.clone(),
+            root: Some(path.clone()),
+            description: None,
+            context_id: child_ctx_id,
+            parent_id: Some(parent_id),
+            depth: child_depth,
+        });
+
+        // Register child window
+        let child_win = crate::context::Window {
+            name: String::new(),
+            path: path,
+            tree: child_tree,
+            panes: child_panes,
+            focused_pane: Some(child_tile_id),
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 0,
+            window_id: child_win_id,
+            context_id: child_ctx_id,
+        };
+        self.windows.push(child_win);
+        self.context_active_window.insert(child_ctx_id, child_win_id);
+
+        // Zoom into child context
+        let current_win_id = self.windows[active_win_idx].window_id;
+        self.router.push_depth(parent_id, current_win_id, Some(portal_tile_id));
+        if let Some(ctx_idx) = self.router.position(|c| c.context_id == child_ctx_id) {
+            self.switch_workspace(ctx_idx);
+            // Open rename for the new context
+            let new_idx = self.router.active_idx();
+            self.renaming_window = Some(new_idx);
+            self.rename_buffer = child_name;
+            log::info!("extract_pane_to_subcontext: zoomed to ctx_id={child_ctx_id}, opening rename");
+        }
+
+        self.save_workspace();
+    }
+
     /// Dissolve a portal: reparent all its panes into the parent window (the active
     /// window that contains the Portal tile), replace the Portal tile with the
     /// adopted panes, then delete the now-empty child context.

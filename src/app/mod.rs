@@ -82,8 +82,6 @@ pub(crate) enum FocusLayer {
     /// First-launch CLI setup prompt. No text input — intercepts keys so they
     /// don't fall through to the active terminal while the modal is visible.
     CliSetupPrompt,
-    /// Context inspector modal — shows pane list, allows close/delete.
-    ContextInspector,
     /// Shared text-input overlay (context root, future: context rename).
     TextInput,
     /// Close-context confirmation dialog with pane inventory and dissolve option.
@@ -271,12 +269,7 @@ pub struct PlexiApp {
     pub(crate) quit_last_press: Option<std::time::Instant>,
     pub(crate) pending_close: bool,
     pub(crate) pending_context_close: Option<ContextCloseState>,
-    pub(crate) show_context_inspector: bool,
-    pub(crate) inspector_selected_pane: usize,
-    pub(crate) inspector_renaming: bool,
-    pub(crate) inspector_rename_focus_requested: bool,
-    pub(crate) inspector_delete_press_count: u8,
-    pub(crate) inspector_delete_last_press: Option<std::time::Instant>,
+    pub(crate) sidebar_expanded_contexts: std::collections::HashSet<u64>,
     pub(crate) welcome_delete_press_count: u8,
     pub(crate) welcome_delete_last_press: Option<std::time::Instant>,
     pub(crate) frame_tick: crate::logging::FrameTick,
@@ -717,6 +710,9 @@ impl PlexiApp {
             let ctx_desc_map: std::collections::HashMap<u64, String> = ws.contexts.iter()
                 .filter_map(|c| c.description.as_ref().map(|d| (c.context_id, d.clone())))
                 .collect();
+            let ctx_parent_map: std::collections::HashMap<u64, (Option<u64>, u32)> = ws.contexts.iter()
+                .map(|c| (c.context_id, (c.parent_id, c.depth)))
+                .collect();
             for saved_win in ws.windows {
                 let mut panes = HashMap::new();
                 for saved_pane in &saved_win.panes {
@@ -807,7 +803,8 @@ impl PlexiApp {
                     if pane_entry.is_none() {
                         let ctx_name = ctx_name_map.get(&saved_win.context_id).cloned().unwrap_or_default();
                         let ctx_desc = ctx_desc_map.get(&saved_win.context_id).cloned().unwrap_or_default();
-                        let settings = Self::make_backend_settings(saved_pane.id, cwd, &colors, saved_win.context_id, &ctx_name, &ctx_desc);
+                        let (ctx_parent_id, ctx_depth) = ctx_parent_map.get(&saved_win.context_id).copied().unwrap_or((None, 0));
+                        let settings = Self::make_backend_settings(saved_pane.id, cwd, &colors, saved_win.context_id, &ctx_name, &ctx_desc, ctx_parent_id, ctx_depth);
                         if let Some(mut pane) = TerminalPane::new(
                             saved_pane.id,
                             cc.egui_ctx.clone(),
@@ -890,12 +887,7 @@ impl PlexiApp {
                     quitting: false,
                     quit_press_count: 0,
                     quit_last_press: None,
-                    show_context_inspector: false,
-                    inspector_selected_pane: 0,
-                    inspector_renaming: false,
-                    inspector_rename_focus_requested: false,
-                    inspector_delete_press_count: 0,
-                    inspector_delete_last_press: None,
+                    sidebar_expanded_contexts: std::collections::HashSet::new(),
                     welcome_delete_press_count: 0,
                     welcome_delete_last_press: None,
                     config: config.clone(),
@@ -1061,12 +1053,7 @@ impl PlexiApp {
             quitting: false,
             quit_press_count: 0,
             quit_last_press: None,
-            show_context_inspector: false,
-            inspector_selected_pane: 0,
-            inspector_renaming: false,
-            inspector_rename_focus_requested: false,
-            inspector_delete_press_count: 0,
-            inspector_delete_last_press: None,
+            sidebar_expanded_contexts: std::collections::HashSet::new(),
             welcome_delete_press_count: 0,
             welcome_delete_last_press: None,
             config,
@@ -1221,12 +1208,7 @@ impl PlexiApp {
             quitting: false,
             quit_press_count: 0,
             quit_last_press: None,
-            show_context_inspector: false,
-            inspector_selected_pane: 0,
-            inspector_renaming: false,
-            inspector_rename_focus_requested: false,
-            inspector_delete_press_count: 0,
-            inspector_delete_last_press: None,
+            sidebar_expanded_contexts: std::collections::HashSet::new(),
             welcome_delete_press_count: 0,
             welcome_delete_last_press: None,
             config,
@@ -1357,6 +1339,8 @@ impl PlexiApp {
         context_id: u64,
         context_name: &str,
         context_description: &str,
+        parent_id: Option<u64>,
+        depth: u32,
     ) -> BackendSettings {
         log::info!("make_backend_settings: pane_id={pane_id} context_id={context_id} context_name={context_name:?}");
         let mut env = shell::build_env();
@@ -1369,6 +1353,8 @@ impl PlexiApp {
         env.insert("PLEXI_CONTEXT_ID".into(), context_id.to_string());
         env.insert("PLEXI_CONTEXT_NAME".into(), context_name.to_string());
         env.insert("PLEXI_CONTEXT_DESCRIPTION".into(), context_description.to_string());
+        env.insert("PLEXI_CONTEXT_PARENT_ID".into(), parent_id.map(|id| id.to_string()).unwrap_or_default());
+        env.insert("PLEXI_CONTEXT_DEPTH".into(), depth.to_string());
         BackendSettings {
             shell: shell::detect_shell(),
             args: vec!["-l".to_string()],
@@ -1910,9 +1896,13 @@ impl PlexiApp {
                         }
                     }
                 }
-                crate::app_protocol::AppRequest::CreateContext { root, name, parent_name } => {
-                    log::info!("pane_ipc: kind=create_context root={:?} name={:?} parent_name={:?}", root, name, parent_name);
-                    if let Some(pname) = parent_name {
+                crate::app_protocol::AppRequest::CreateContext { root, name, parent_name, parent_id } => {
+                    log::info!("pane_ipc: kind=create_context root={:?} name={:?} parent_name={:?} parent_id={:?}", root, name, parent_name, parent_id);
+                    // Resolve parent by id first, then fall back to name
+                    let resolved_parent_name = parent_name.clone().or_else(|| {
+                        parent_id.and_then(|pid| self.router.iter().find(|c| c.context_id == pid).map(|c| c.name.clone()))
+                    });
+                    if let Some(pname) = resolved_parent_name {
                         let path = root.as_ref().cloned().unwrap_or_else(|| std::path::PathBuf::from("."));
                         let current_ctx_id = self.router.active().context_id;
                         let current_win_id = self.windows[self.active_window].window_id;
@@ -2489,7 +2479,6 @@ impl eframe::App for PlexiApp {
         self.sync_rename_pane_focus();
         self.sync_context_rename_focus();
         self.sync_cli_setup_prompt_focus();
-        self.sync_context_inspector_focus();
         self.sync_text_input_focus();
         self.sync_capability_modal_focus();
 
@@ -2534,9 +2523,6 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::CliSetupPrompt) => {
                     self.draw_cli_setup_modal(ctx);
                 }
-                Some(FocusLayer::ContextInspector) => {
-                    self.draw_context_inspector(ctx);
-                }
                 Some(FocusLayer::TextInput) => {
                     self.draw_text_input_overlay(ctx);
                 }
@@ -2560,7 +2546,6 @@ impl eframe::App for PlexiApp {
             self.sync_rename_pane_focus();
             self.sync_context_rename_focus();
             self.sync_cli_setup_prompt_focus();
-            self.sync_context_inspector_focus();
             self.sync_text_input_focus();
             self.sync_capability_modal_focus();
         }
@@ -3448,20 +3433,40 @@ impl eframe::App for PlexiApp {
                     self.save_workspace();
                 }
                 Action::ToggleZoom => {
-                    let ctx = &mut self.windows[self.active_window];
-                    if let Some(focused) = ctx.focused_pane {
-                        if ctx.zoomed_pane == Some(focused) {
-                            ctx.zoomed_pane = None;
-                            log::info!("zoom: toggle off — pane={focused:?}");
-                        } else {
-                            ctx.zoomed_pane = Some(focused);
-                            log::info!("zoom: toggle on — pane={focused:?}");
+                    let active_win = &self.windows[self.active_window];
+                    let focused_pane_id = active_win.focused_pane
+                        .and_then(|tile_id| active_win.tree.tiles.get(tile_id))
+                        .and_then(|t| if let egui_tiles::Tile::Pane(p) = t { Some(*p) } else { None });
+                    let portal_target = focused_pane_id
+                        .and_then(|pid| self.windows[self.active_window].panes.get(&pid))
+                        .and_then(|p| p.portal_target());
+                    if let Some(child_ctx_id) = portal_target {
+                        // Portal focused — zoom into subcontext
+                        log::info!("ToggleZoom: portal focused, zooming into context_id={child_ctx_id}");
+                        let focused_tile = self.windows[self.active_window].focused_pane;
+                        let current_ctx_id = self.router.active().context_id;
+                        let current_win_id = self.windows[self.active_window].window_id;
+                        self.router.push_depth(current_ctx_id, current_win_id, focused_tile);
+                        if let Some(ctx_idx) = self.router.position(|c| c.context_id == child_ctx_id) {
+                            self.switch_workspace(ctx_idx);
                         }
-                        self.ctx.memory_mut(|m| {
-                            if let Some(id) = m.focused() {
-                                m.surrender_focus(id);
+                    } else {
+                        // Terminal/app focused — toggle pane zoom
+                        let ctx = &mut self.windows[self.active_window];
+                        if let Some(focused) = ctx.focused_pane {
+                            if ctx.zoomed_pane == Some(focused) {
+                                ctx.zoomed_pane = None;
+                                log::info!("zoom: toggle off — pane={focused:?}");
+                            } else {
+                                ctx.zoomed_pane = Some(focused);
+                                log::info!("zoom: toggle on — pane={focused:?}");
                             }
-                        });
+                            self.ctx.memory_mut(|m| {
+                                if let Some(id) = m.focused() {
+                                    m.surrender_focus(id);
+                                }
+                            });
+                        }
                     }
                 }
                 Action::Quit => {
@@ -3622,28 +3627,27 @@ impl eframe::App for PlexiApp {
                     self.new_context();
                     self.save_workspace();
                 }
-                Action::ContextInspector => {
-                    self.show_context_inspector = !self.show_context_inspector;
-                    self.inspector_renaming = false;
-                    self.inspector_rename_focus_requested = false;
-                    if self.show_context_inspector {
-                        let focused_pane_id = self.windows[self.active_window]
-                            .focused_pane
-                            .and_then(|tile_id| match self.windows[self.active_window].tree.tiles.get(tile_id) {
-                                Some(Tile::Pane(pane_id)) => Some(*pane_id),
-                                _ => None,
-                            });
-                        let pane_order = self.inspector_pane_order();
-                        self.inspector_selected_pane = focused_pane_id
-                            .and_then(|fpid| pane_order.iter().position(|&pid| pid == fpid))
-                            .unwrap_or(0);
-                        log::info!(
-                            "ContextInspector: opened — pre-selected pane idx={} (focused={:?})",
-                            self.inspector_selected_pane,
-                            focused_pane_id
-                        );
+                Action::NewChildContext => {
+                    let active_name = self.router.active().name.clone();
+                    let cwd = self.windows.get(self.active_window)
+                        .and_then(|w| w.focused_pane.map(|tile| (w, tile)))
+                        .and_then(|(w, tile)| w.get_focused_pane_cwd(tile))
+                        .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")));
+                    if let Err(e) = self.new_child_context(&active_name, cwd) {
+                        log::error!("NewChildContext: {e}");
                     } else {
-                        log::info!("ContextInspector: closed via toggle");
+                        log::info!("NewChildContext: created under '{active_name}'");
+                        self.save_workspace();
+                    }
+                }
+                Action::ToggleContextDetail => {
+                    let active_ctx_id = self.router.active().context_id;
+                    if self.sidebar_expanded_contexts.contains(&active_ctx_id) {
+                        self.sidebar_expanded_contexts.remove(&active_ctx_id);
+                        log::info!("sidebar: collapsed pane list for ctx_id={active_ctx_id}");
+                    } else {
+                        self.sidebar_expanded_contexts.insert(active_ctx_id);
+                        log::info!("sidebar: expanded pane list for ctx_id={active_ctx_id}");
                     }
                 }
                 Action::ToggleMinimap => {
@@ -3652,27 +3656,6 @@ impl eframe::App for PlexiApp {
                 Action::OpenScratchpad => {
                     log::info!("scratchpad: Cmd+Shift+Space — opening");
                     self.open_scratchpad();
-                }
-                Action::ContextZoomIn => {
-                    // Zoom into the sub-context tile that currently has focus.
-                    let focused_tile = self.windows[self.active_window].focused_pane;
-                    if let Some(tile_id) = focused_tile {
-                        let focused_pane_id = self.windows[self.active_window].tree.tiles.get(tile_id)
-                            .and_then(|t| if let egui_tiles::Tile::Pane(p) = t { Some(*p) } else { None });
-                        if let Some(pane_id) = focused_pane_id {
-                            if let Some(child_ctx_id) = self.windows[self.active_window].panes.get(&pane_id)
-                                .and_then(|p| p.portal_target())
-                            {
-                                log::info!("ContextZoomIn: zooming into context_id={child_ctx_id}");
-                                let current_ctx_id = self.router.active().context_id;
-                                let current_win_id = self.windows[self.active_window].window_id;
-                                self.router.push_depth(current_ctx_id, current_win_id, focused_tile);
-                                if let Some(ctx_idx) = self.router.position(|c| c.context_id == child_ctx_id) {
-                                    self.switch_workspace(ctx_idx);
-                                }
-                            }
-                        }
-                    }
                 }
                 Action::ContextZoomOut => {
                     log::info!("ContextZoomOut: popping depth stack (depth={})", self.router.current_depth());
@@ -4108,6 +4091,7 @@ impl eframe::App for PlexiApp {
                     unfocused_opacity,
                     portal_info,
                     modal_open,
+                    extract_pane_requested: None,
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ui.scope(|ui| {
@@ -4149,6 +4133,7 @@ impl eframe::App for PlexiApp {
                 };
 
                 let should_close_exited = behavior.close_exited.is_some();
+                let extract_requested = behavior.extract_pane_requested;
 
                 // Draw zoom overlay if a pane is zoomed
                 if let Some(zoomed_tile) = zoomed_pane {
@@ -4404,6 +4389,16 @@ impl eframe::App for PlexiApp {
                     self.close_focused();
                 }
 
+                // Handle "Extract to sub-context" from pane right-click menu.
+                if let Some(requested_pane_id) = extract_requested {
+                    let focused_pane_id = self.windows[self.active_window].focused_pane
+                        .and_then(|tile_id| self.windows[self.active_window].tree.tiles.get(tile_id))
+                        .and_then(|t| if let egui_tiles::Tile::Pane(p) = t { Some(*p) } else { None });
+                    if focused_pane_id == Some(requested_pane_id) {
+                        self.extract_pane_to_subcontext();
+                    }
+                }
+
                 // Record canvas click focus change in pane history (ctx borrow released above).
                 if canvas_focus_changed {
                     self.push_focus_history(canvas_old_window_id, canvas_old_focus);
@@ -4465,15 +4460,6 @@ impl eframe::App for PlexiApp {
         // pane TextInput widgets rendered in CentralPanel can't steal it.
         if matches!(self.focus_stack.last(), Some(FocusLayer::QuickNote)) {
             ctx.memory_mut(|m| m.request_focus(egui::Id::new("quick_note_text")));
-        }
-
-        // Same pattern: inspector inline rename TextEdit needs re-focus every frame.
-        // The one-shot focus request in draw_context_inspector fires during early overlay
-        // dispatch, BEFORE CentralPanel runs — pane TextInput widgets then steal focus back.
-        // Re-requesting here (post-CentralPanel) ensures we always win the last-write-wins
-        // contest while rename mode is active.
-        if self.inspector_renaming {
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new("inspector_rename_input")));
         }
 
         // Detect genuine pane focus transitions and emit FocusChanged events.
@@ -4574,7 +4560,6 @@ impl PlexiApp {
                 | Some(FocusLayer::QuickNoteDestination)
                 | Some(FocusLayer::QuickNoteSubDestination(_))
                 | Some(FocusLayer::CliSetupPrompt)
-                | Some(FocusLayer::ContextInspector)
                 | Some(FocusLayer::TextInput)
                 | Some(FocusLayer::ContextCloseConfirm)
                 | Some(FocusLayer::CapabilityModal)
@@ -4986,20 +4971,6 @@ impl PlexiApp {
             // Use retain rather than pop_focus_layer so stale entries are removed
             // even if another layer was pushed on top (e.g. via rapid state change).
             self.focus_stack.retain(|l| *l != FocusLayer::CliSetupPrompt);
-        }
-    }
-
-    pub(crate) fn sync_context_inspector_focus(&mut self) {
-        let should_own = self.show_context_inspector;
-        let has_layer = self
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::ContextInspector);
-        if should_own && !has_layer {
-            self.push_focus_layer(FocusLayer::ContextInspector);
-        } else if !should_own && has_layer {
-            self.focus_stack
-                .retain(|l| *l != FocusLayer::ContextInspector);
         }
     }
 

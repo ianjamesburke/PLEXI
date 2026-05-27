@@ -51,7 +51,7 @@ This mirrors the established pattern for `palette_search` and `quick_note_text`,
 
 Both fixes are necessary. Fix 1 alone fails when CentralPanel runs after the overlay. Fix 2 alone skips initial cursor selection.
 
-Canonical implementation: `inspector_rename_focus_requested` (one-shot, `src/overlays.rs::draw_context_inspector`) + `if self.inspector_renaming { ctx.memory_mut... }` block in `src/app/mod.rs::update()` after the QuickNote re-focus block.
+Canonical implementation: use the same two-fix pattern for any inline rename TextEdit. Keep `palette_search` and `quick_note_text` as reference.
 
 ---
 

@@ -82,7 +82,7 @@ impl PlexiApp {
         }
 
         let num_contexts = self.router.len();
-        let mut clicked_workspace: Option<usize> = None;
+
         let mut delete_context: Option<usize> = None;
         let mut menu_action: Option<(usize, WindowMenuAction)> = None;
         let mut row_rects: Vec<Rect> = Vec::with_capacity(num_contexts);
@@ -97,6 +97,7 @@ impl PlexiApp {
             let is_renaming = self.renaming_window == Some(i);
             let is_dragging = self.drag_context == Some(i);
             let any_dragging = self.drag_context.is_some();
+
 
             // Pane count + focused-dot index for this context
             let ctx_id = self.router.get(i).context_id;
@@ -186,7 +187,15 @@ impl PlexiApp {
 
             // --- Normal row via ContextItem ---
             let ctx_name = self.router.get(i).name.clone();
-            let ctx_depth = self.router.get(i).depth;
+            let ctx_depth = {
+                let ctx = self.router.get(i);
+                let active_ctx = self.router.active();
+                if ctx.parent_id == Some(active_ctx.context_id) {
+                    1u32 // direct child of current zoom level
+                } else {
+                    0u32 // at current level or ancestor
+                }
+            };
             let badge_count = if is_active {
                 self.visible_notification_count()
             } else {
@@ -210,6 +219,36 @@ impl PlexiApp {
 
             row_rects.push(response.rect);
 
+            // Inline pane list when expanded
+            let is_expanded = self.sidebar_expanded_contexts.contains(&ctx_id);
+            if is_expanded {
+                let (groups, _, _) = self.collect_inspector_rows();
+                if let Some((_, _, rows)) = groups.iter().find(|(_, cid, _)| *cid == ctx_id) {
+                    for row in rows {
+                        let row_id = row.id;
+                        let row_name: &str = if row.name.is_empty() { row.kind } else { &row.name };
+                        ui.horizontal(|ui| {
+                            ui.add_space(32.0);
+                            crate::widgets::pane_type_badge(ui, row.kind, &self.colors);
+                            let click = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(row_name)
+                                        .size(11.0)
+                                        .color(self.colors.text_dim)
+                                )
+                                .selectable(false)
+                                .sense(egui::Sense::click()),
+                            );
+                            crate::widgets::status_chip(ui, row.status, &self.colors);
+                            if click.clicked() {
+                                self.pane_navigate(row_id);
+                                log::info!("sidebar: pane row clicked — focusing pane {row_id}");
+                            }
+                        });
+                    }
+                }
+            }
+
             match action {
                 SidebarAction::DragStart => { self.drag_context = Some(i); }
                 SidebarAction::DragEnd => { drag_released = true; }
@@ -227,6 +266,10 @@ impl PlexiApp {
                     }
                     if ui.button("Edit Description").clicked() {
                         menu_action = Some((i, WindowMenuAction::EditDescription));
+                        ui.close_menu();
+                    }
+                    if ui.button("New sub-context").clicked() {
+                        menu_action = Some((i, WindowMenuAction::NewSubContext));
                         ui.close_menu();
                     }
                     ui.separator();
@@ -269,7 +312,31 @@ impl PlexiApp {
                     SidebarAction::Rename => { menu_action = Some((i, WindowMenuAction::Rename)); }
                     SidebarAction::Activate => {
                         log::debug!("sidebar: activate ctx={i} active={}", self.router.active_idx());
-                        clicked_workspace = Some(i);
+                        let ctx = self.router.get(i);
+                        let active_ctx = self.router.active();
+                        if ctx.parent_id == Some(active_ctx.context_id) {
+                            // Direct child → zoom in
+                            let focused_tile = self.windows[self.active_window].focused_pane;
+                            let current_ctx_id = active_ctx.context_id;
+                            let current_win_id = self.windows[self.active_window].window_id;
+                            self.router.push_depth(current_ctx_id, current_win_id, focused_tile);
+                            self.switch_workspace(i);
+                        } else if active_ctx.parent_id.is_some() && ctx.parent_id == active_ctx.parent_id {
+                            // Sibling at same level → just switch
+                            self.switch_workspace(i);
+                        } else if ctx.parent_id.is_none() && self.router.current_depth() > 0 {
+                            // Top-level context clicked while zoomed in → pop all depth stack then switch
+                            while self.router.current_depth() > 0 {
+                                self.router.pop_depth();
+                            }
+                            self.switch_workspace(i);
+                        } else {
+                            // Regular switch
+                            self.switch_workspace(i);
+                        }
+                        // Auto-expand the newly active context
+                        let new_active_id = self.router.active().context_id;
+                        self.sidebar_expanded_contexts.insert(new_active_id);
                     }
                     _ => {}
                 }
@@ -370,11 +437,22 @@ impl PlexiApp {
                 WindowMenuAction::Delete => {
                     self.delete_context(i);
                 }
+                WindowMenuAction::NewSubContext => {
+                    let parent_name = self.router.get(i).name.clone();
+                    let cwd = self.windows.get(self.active_window)
+                        .and_then(|w| w.focused_pane.map(|tile| (w, tile)))
+                        .and_then(|(w, tile)| w.get_focused_pane_cwd(tile))
+                        .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")));
+                    if let Err(e) = self.new_child_context(&parent_name, cwd) {
+                        log::error!("sidebar: NewSubContext failed: {e}");
+                    } else {
+                        log::info!("sidebar: new sub-context created under '{parent_name}'");
+                        self.save_workspace();
+                    }
+                }
             }
         } else if let Some(i) = delete_context {
             self.delete_context(i);
-        } else if let Some(i) = clicked_workspace {
-            self.switch_workspace(i);
         }
 
         if add_clicked {

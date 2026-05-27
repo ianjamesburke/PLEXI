@@ -89,6 +89,8 @@ pub struct PlexiBehavior<'a> {
     /// Prevents terminal panes from calling `request_focus()` and stealing
     /// egui focus from the active overlay (egui resolves focus last-caller-wins).
     pub modal_open: bool,
+    /// Set to the pane_id when the user right-clicks and selects "Extract to sub-context".
+    pub extract_pane_requested: Option<PaneId>,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -194,6 +196,24 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     &self.colors, &mut cache, &audio_peaks,
                 );
             }
+        }
+
+        // Right-click context menu on terminal and app panes (not portals).
+        let is_terminal_or_app = self.panes.get(pane_id)
+            .map(|p| p.as_terminal().is_some() || p.as_app().is_some())
+            .unwrap_or(false);
+        if is_terminal_or_app {
+            let resp = ui.interact(
+                pane_rect,
+                egui::Id::new(("pane_ctx_menu", *pane_id)),
+                egui::Sense::hover(),
+            );
+            resp.context_menu(|ui| {
+                if ui.button("Extract to sub-context").clicked() {
+                    self.extract_pane_requested = Some(*pane_id);
+                    ui.close_menu();
+                }
+            });
         }
 
         UiResponse::None

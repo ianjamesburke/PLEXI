@@ -19,6 +19,8 @@ pub(crate) enum WindowMenuAction {
     ClearRoot,
     /// Open the text-input overlay to set the root interactively.
     OpenRootOverlay,
+    /// Create a new sub-context nested inside this context.
+    NewSubContext,
 }
 
 /// A context is a sidebar item — a project or directory scope.
@@ -44,7 +46,7 @@ pub struct Context {
     /// Parent context_id for sub-contexts. None = top-level.
     #[serde(default)]
     pub parent_id: Option<u64>,
-    /// Nesting depth. 0 = root level. Capped at 3.
+    /// Nesting depth. 0 = root level.
     /// Kept for backward-compatible deserialization but should be derived
     /// from `parent_id` chain at runtime.
     #[serde(default)]

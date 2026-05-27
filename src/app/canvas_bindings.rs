@@ -67,7 +67,11 @@ impl PlexiApp {
         let ctx_id = self.windows[active].context_id;
         let ctx_name = self.context_name_for(ctx_id);
         let ctx_desc = self.context_description_for(ctx_id);
-        let settings = Self::make_backend_settings(new_id, resolved_cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc);
+        let (ctx_parent_id, ctx_depth) = self.router.iter()
+            .find(|c| c.context_id == ctx_id)
+            .map(|c| (c.parent_id, c.depth))
+            .unwrap_or((None, 0));
+        let settings = Self::make_backend_settings(new_id, resolved_cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc, ctx_parent_id, ctx_depth);
         let Some(term) = TerminalPane::new(
             new_id,
             self.ctx.clone(),

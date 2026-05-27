@@ -4208,7 +4208,11 @@ pub fn context_new_cli(name: Option<&str>, path: Option<&str>, parent: Option<&s
         payload["name"] = serde_json::Value::String(n.to_string());
     }
     if let Some(p) = resolved_parent {
-        payload["parent_name"] = serde_json::Value::String(p);
+        if let Ok(parent_id) = p.parse::<u64>() {
+            payload["parent_id"] = serde_json::Value::Number(parent_id.into());
+        } else {
+            payload["parent_name"] = serde_json::Value::String(p);
+        }
     }
     send_to_socket(payload)
 }
@@ -4284,6 +4288,8 @@ pub fn context_current_cli() -> i32 {
     };
     let context_name = std::env::var("PLEXI_CONTEXT_NAME").unwrap_or_default();
     let context_description = std::env::var("PLEXI_CONTEXT_DESCRIPTION").unwrap_or_default();
+    let parent_id_str = std::env::var("PLEXI_CONTEXT_PARENT_ID").unwrap_or_default();
+    let depth_str = std::env::var("PLEXI_CONTEXT_DEPTH").unwrap_or_else(|_| "0".to_string());
     let id_num: u64 = match context_id.parse() {
         Ok(n) => n,
         Err(_) => {
@@ -4291,10 +4297,18 @@ pub fn context_current_cli() -> i32 {
             return 1;
         }
     };
+    let parent_id_num: Option<u64> = if parent_id_str.is_empty() {
+        None
+    } else {
+        parent_id_str.parse().ok()
+    };
+    let depth_num: u32 = depth_str.parse().unwrap_or(0);
     let json = serde_json::json!({
         "context_id": id_num,
         "context_name": context_name,
         "context_description": context_description,
+        "parent_id": parent_id_num,
+        "depth": depth_num,
     });
     match serde_json::to_string_pretty(&json) {
         Ok(s) => println!("{s}"),
