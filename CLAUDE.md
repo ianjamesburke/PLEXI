@@ -1,5 +1,3 @@
-Always confirm best practices by researching the docs.
-
 ## Source of Truth for Project State
 
 **CLAUDE.md does not track in-progress work or completion status.** It goes stale immediately and will mislead future sessions.
@@ -9,7 +7,7 @@ Always confirm best practices by researching the docs.
 - **What's planned** → GitHub issues
 - **What to dispatch next** → GitHub Project board #7 "Up Next" column (query: `gh project item-list 7 --owner ianjamesburke --format json | jq '.items[] | select(.status == "Up Next")'`)
 
-Before reporting anything as "done" or "missing", verify against `git log`. Never trust a status list in this file.
+Before reporting anything as "done" or "missing", verify against `git log`.
 
 ## North Star
 
@@ -18,10 +16,6 @@ Before making architectural decisions, read [`NORTH_STAR.md`](NORTH_STAR.md) for
 ## Branches
 
 **`alpha` is the starting branch for all changes.** Every feature branch, worktree, and PR originates from alpha. Never branch from `main` or `beta`.
-
-- `alpha` — active development. All PRs land here.
-- `beta` — staging/release channel. Promoted from alpha when ready. Used for rigorous testing before promotion to main.
-- `main` — stable releases only.
 
 Feature branch naming: `feature/<issue-number>-short-description`. Never push directly to `main` or `beta`.
 
@@ -170,14 +164,10 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 
 ## Lessons Carried Into v3
 
-- **Coupled state:** When adding state that derives from or shadows existing state, grep every mutation site of the original and update each one.
-- **Fallback chain audit:** When a value looks correct on the surface but behavior is stale, enumerate every fallback source in priority order (cookies, env vars, caches, defaults). Fix the chain, not the surface.
-- **Model ID verification:** Never guess versioned model IDs. Use only confirmed-current family IDs. A 400/404 surfaces only at call time.
 - **Platform behavior validation:** Before implementing any macOS-specific behavior (menu lifecycle, bundle naming, eframe/winit callback order), add a throwaway `log::info!()` to observe the actual runtime value on the first frame. Never assume which callback fires when or what a property returns — observe first, then code.
 - **Command self-containment:** Any data a command handler needs must be in the command's own fields — never looked up from ambient state (like a queue or map) at dispatch time. By dispatch, that state may have been mutated or cleared by an earlier step in the same frame.
 - **Test constructor sync:** When adding a field to any struct that has a `new_for_test()` constructor, update that constructor in the same commit. Before running `cargo test --bin plexi` on a fresh worktree, run it once on the base branch first to distinguish pre-existing failures from regressions.
 - **Issue-referenced code validation:** When an issue names specific functions or code paths, grep for them in alpha before implementing — the function may have been removed or moved since the issue was filed.
-- **git worktree operations:** Always use absolute paths with `git -C /absolute/worktree/path <command>` — relative paths (`git -C worktrees/<branch>`) fail when CWD is not the repo root. Applies to all operations: `add`, `rebase`, `push`, etc.
 - **HostHarness initial state:** `add_test_pane()` inserts a `ProcessApp` pane — not a Terminal. Terminal-count assertions in tests must not assume the initial pane is a Terminal; offset accordingly.
 - **Shell suffix construction:** when appending a stay-alive or exec suffix to a user command string, use the absolute shell path from `settings.shell` (already resolved) rather than `$SHELL`, and `trim_end_matches([';', ' '])` the user command before appending to prevent `;;` syntax errors.
 - **cfg(unix) propagation on removal:** When removing a `#[cfg(unix)]` block or executable-bit check, grep for `set_mode`, `PermissionsExt`, and `0o755` across all test functions in the same file before staging. The helper function is never the only site.
@@ -217,6 +207,13 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 ## CLI Namespace Design
 
 Before adding any new CLI command, verify it belongs in the right namespace — place it where the noun already lives, not at the top level. When in doubt, ask before implementing.
+
+## App & SDK Design Philosophy
+
+- **Obvious over clever.** Fight for the solution agents would naturally assume. If a design requires explanation, that's a signal to rethink it. "Simple" and "obvious" aren't always aligned — sometimes the obvious solution is more complex, and that's correct.
+- **Simulate affordances, never lie about contracts.** Give apps familiar interfaces (filesystem-like, subprocess-like), but never obscure isolation, durability, security, or persistence boundaries. These must be explicit, never implied.
+- **Build primitives, not features.** Resist building what developers' agents can trivially implement atop the platform. Feature creep in the core is maintenance debt that compounds. When scope is unclear, omit.
+- **Design for agents, not humans browsing docs.** The SDK must be immediately legible to a coding agent. If it requires a README to be usable, the API is wrong.
 
 ## General Rules
 
