@@ -236,18 +236,6 @@ pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::
 // Status color mapping lives here — not in individual overlays — so adding a
 // new status value is a one-line change that applies everywhere.
 
-/// Renders a section / group header label (context name, group title, etc.).
-/// `is_active` tints the label with `colors.accent` instead of `colors.text_dim`.
-pub(crate) fn section_header(ui: &mut egui::Ui, label: &str, is_active: bool, colors: &Colors) {
-    let color = if is_active { colors.accent } else { colors.text_dim };
-    ui.label(
-        egui::RichText::new(label)
-            .size(style::TEXT_CAPTION)
-            .color(color)
-            .strong(),
-    );
-}
-
 /// Renders the pane type as a short lowercase chip: `"term"` for Terminal,
 /// `"app"` for App, or the lowercased kind string for anything else.
 /// Uses `key_chip` so the visual weight matches keyboard shortcut chips.
@@ -277,30 +265,6 @@ pub(crate) fn status_chip(ui: &mut egui::Ui, status: &str, colors: &Colors) {
     );
 }
 
-/// Renders a single-line label that truncates with an ellipsis at the available
-/// width. `egui::Label::truncate` clips at `available_width()`, so without a
-/// constraint the label expands naturally and truncation never fires.
-///
-/// **Always wrap in `ui.scope()`** and set `ui.set_max_width(n)` inside the
-/// scope — setting max_width on a shared `Ui` corrupts the layout of other
-/// widgets already rendered in the same row (especially inside right_to_left
-/// layouts):
-/// ```ignore
-/// ui.scope(|ui| {
-///     ui.set_max_width(120.0);
-///     description_label(ui, text, colors);
-/// });
-/// ```
-pub(crate) fn description_label(ui: &mut egui::Ui, text: &str, colors: &Colors) {
-    ui.add(
-        egui::Label::new(
-            egui::RichText::new(text)
-                .size(style::TEXT_HINT)
-                .color(colors.text_dim),
-        )
-        .truncate(),
-    );
-}
 
 /// Renders a dismissable centered modal overlay. Handles Escape and click-outside.
 /// Returns `true` if the user dismissed it this frame. Callers guard with

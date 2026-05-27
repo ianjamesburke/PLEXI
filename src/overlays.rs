@@ -4,8 +4,6 @@ use crate::theme::Colors;
 use crate::tiling::PaneId;
 use egui::{Align, Align2, Color32, CornerRadius, Layout, RichText, Stroke, Vec2};
 
-/// Timeout (ms) between presses in a multi-tap confirmation sequence.
-const CONFIRM_TIMEOUT_MS: u64 = 1500;
 
 /// Consume the first digit key (0–9) pressed this frame; return its value.
 fn consume_digit_key(ctx: &egui::Context) -> Option<u8> {
@@ -139,10 +137,7 @@ pub(crate) struct PaneRow {
     pub(crate) id: PaneId,
     pub(crate) kind: &'static str,
     pub(crate) name: String,
-    pub(crate) detail: String,
     pub(crate) status: &'static str,
-    /// Supplementary label shown next to status (e.g. agent name from OSC title when busy).
-    pub(crate) osc_badge: Option<String>,
 }
 
 impl PlexiApp {
@@ -1843,33 +1838,18 @@ impl PlexiApp {
                     match pane {
                         crate::pane::Pane::Terminal(t) => {
                             let pane_name = t.name.clone().or_else(|| t.pty_title.clone()).unwrap_or_default();
-                            // Show pty_title in detail only when it adds context beyond the displayed name.
-                            let pane_detail = t.pty_title.as_deref()
-                                .filter(|pt| !pt.is_empty() && *pt != pane_name.as_str())
-                                .map(|s| s.to_string())
-                                .unwrap_or_default();
-                            let (status, osc_badge) = if t.exited {
-                                ("exited", None)
+                            let status = if t.exited {
+                                "exited"
+                            } else if crate::shell::has_foreground_child(t.backend.child_pid()) {
+                                "busy"
                             } else {
-                                let busy = crate::shell::has_foreground_child(t.backend.child_pid());
-                                // Show the OSC title as the badge so the user can see what's running.
-                                let badge = if busy {
-                                    t.pty_title.as_deref()
-                                        .filter(|t| !t.is_empty())
-                                        .map(|t| t.to_string())
-                                } else {
-                                    None
-                                };
-                                let status = if busy { "busy" } else { "idle" };
-                                (status, badge)
+                                "idle"
                             };
                             rows.push(PaneRow {
                                 id: t.id,
                                 kind: "Terminal",
                                 name: pane_name,
-                                detail: pane_detail,
                                 status,
-                                osc_badge,
                             });
                         }
                         crate::pane::Pane::App(a) => {
@@ -1888,9 +1868,7 @@ impl PlexiApp {
                                 id: a.id,
                                 kind: "App",
                                 name: a.name.clone(),
-                                detail: a.manifest_id.clone(),
                                 status,
-                                osc_badge: None,
                             });
                         }
                         crate::pane::Pane::Portal(p) => {
@@ -1898,9 +1876,7 @@ impl PlexiApp {
                                 id: p.pane_id,
                                 kind: "Portal",
                                 name: format!("portal:{}", p.target_context_id),
-                                detail: String::new(),
                                 status: "active",
-                                osc_badge: None,
                             });
                         }
                     }
