@@ -369,6 +369,9 @@ fn render_inspector_hints(
                 crate::widgets::key_combo_list(ui, &[&["⌫"]], Some("delete"), colors);
                 ui.add_space(style::SPACE_XL);
             }
+            // NOTE: the inspector reads bare Cmd/Ctrl+R and Cmd/Ctrl+W locally
+            // (see draw_context_inspector), not the global Ctrl+Shift tier — so
+            // these hints intentionally show the bare modifier.
             crate::widgets::key_combo_list(ui, &[&[crate::widgets::CMD, "R"]], Some("rename"), colors);
             ui.add_space(style::SPACE_MD);
             crate::widgets::key_combo_list(ui, &[&["Esc"]], Some("close"), colors);
@@ -425,7 +428,7 @@ impl PlexiApp {
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .on_hover_text({
                         #[cfg(target_os = "macos")] { "Keyboard shortcuts (\u{2318}/)" }
-                        #[cfg(not(target_os = "macos"))] { "Keyboard shortcuts (Ctrl+/)" }
+                        #[cfg(not(target_os = "macos"))] { "Keyboard shortcuts (Ctrl+Shift+/)" }
                     })
                     .clicked()
                 {
@@ -473,7 +476,7 @@ impl PlexiApp {
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .on_hover_text({
                             #[cfg(target_os = "macos")] { "Notifications (\u{2318}\u{21E7}A)" }
-                            #[cfg(not(target_os = "macos"))] { "Notifications (Ctrl+Shift+A)" }
+                            #[cfg(not(target_os = "macos"))] { "Notifications (Ctrl+Alt+A)" }
                         })
                         .clicked()
                     {
@@ -511,6 +514,11 @@ impl PlexiApp {
                     ui.add_space(style::SPACE_MD);
 
                     let colors = &self.colors;
+                    // Modifier-tier chip sequences (⌘ on macOS; Ctrl+Shift /
+                    // Ctrl+Alt elsewhere — see widgets::MOD_CMD/MOD_CMD_SHIFT).
+                    let m1 = crate::widgets::MOD_CMD;
+                    let m2 = crate::widgets::MOD_CMD_SHIFT;
+                    let combo = crate::widgets::combo;
 
                     ui.horizontal(|ui| {
                         // ── Left column ──────────────────────────────
@@ -523,17 +531,17 @@ impl PlexiApp {
                                 .min_col_width(80.0)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
-                                    let rows: &[(&[&str], &str)] = &[
-                                        (&[crate::widgets::CMD, "N"], "New window right"),
-                                        (&[crate::widgets::CMD, crate::widgets::SHIFT, "N"], "New context"),
-                                        (&[crate::widgets::CMD, "D"], "Split right"),
-                                        (&[crate::widgets::CMD, crate::widgets::SHIFT, "D"], "Split down"),
-                                        (&[crate::widgets::CMD, "\\"], "Split right (mirror)"),
-                                        (&[crate::widgets::CMD, crate::widgets::SHIFT, "\\"], "Split below (mirror)"),
-                                        (&[crate::widgets::CMD, "W"], "Close pane"),
-                                        (&[crate::widgets::CMD, "T"], "New tab"),
+                                    let rows: Vec<(Vec<&str>, &str)> = vec![
+                                        (combo(m1, &["N"]), "New window right"),
+                                        (combo(m2, &["N"]), "New context"),
+                                        (combo(m1, &["D"]), "Split right"),
+                                        (combo(m2, &["D"]), "Split down"),
+                                        (combo(m1, &["\\"]), "Split right (mirror)"),
+                                        (combo(m2, &["\\"]), "Split below (mirror)"),
+                                        (combo(m1, &["W"]), "Close pane"),
+                                        (combo(m1, &["T"]), "New tab"),
                                     ];
-                                    for (keys, desc) in rows {
+                                    for (keys, desc) in &rows {
                                         crate::widgets::key_combo(ui, keys, colors);
                                         ui.label(
                                             RichText::new(*desc)
@@ -554,7 +562,7 @@ impl PlexiApp {
                                 .show(ui, |ui| {
                                     crate::widgets::key_combo_list(
                                         ui,
-                                        &[&[crate::widgets::CMD], &["H", "J", "K", "L"]],
+                                        &[m1, &["H", "J", "K", "L"]],
                                         None,
                                         colors,
                                     );
@@ -565,9 +573,11 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
+                                    let next_tab = combo(m2, &["L"]);
+                                    let prev_tab = combo(m2, &["H"]);
                                     crate::widgets::key_combo_list(
                                         ui,
-                                        &[&[crate::widgets::CMD, crate::widgets::SHIFT, "L"], &[crate::widgets::CMD, crate::widgets::SHIFT, "H"]],
+                                        &[&next_tab, &prev_tab],
                                         None,
                                         colors,
                                     );
@@ -578,9 +588,11 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
+                                    let first_tab = combo(m2, &["K"]);
+                                    let last_tab = combo(m2, &["J"]);
                                     crate::widgets::key_combo_list(
                                         ui,
-                                        &[&[crate::widgets::CMD, crate::widgets::SHIFT, "K"], &[crate::widgets::CMD, crate::widgets::SHIFT, "J"]],
+                                        &[&first_tab, &last_tab],
                                         None,
                                         colors,
                                     );
@@ -591,9 +603,11 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
+                                    let hist_back = combo(m1, &["["]);
+                                    let hist_fwd = combo(m1, &["]"]);
                                     crate::widgets::key_combo_list(
                                         ui,
-                                        &[&[crate::widgets::CMD, "["], &[crate::widgets::CMD, "]"]],
+                                        &[&hist_back, &hist_fwd],
                                         None,
                                         colors,
                                     );
@@ -604,9 +618,11 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
+                                    let ctx_first = combo(m1, &["1"]);
+                                    let ctx_last = combo(m1, &["9"]);
                                     crate::widgets::key_combo_list(
                                         ui,
-                                        &[&[crate::widgets::CMD, "1"], &[crate::widgets::CMD, "9"]],
+                                        &[&ctx_first, &ctx_last],
                                         None,
                                         colors,
                                     );
@@ -617,11 +633,8 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::widgets::key_combo(
-                                        ui,
-                                        &[crate::widgets::CMD, "\u{21A9}"],
-                                        colors,
-                                    );
+                                    let zoom = combo(m1, &["\u{21A9}"]);
+                                    crate::widgets::key_combo(ui, &zoom, colors);
                                     ui.label(
                                         RichText::new("Zoom pane")
                                             .size(style::TEXT_HINT)
@@ -644,15 +657,15 @@ impl PlexiApp {
                                 .min_col_width(80.0)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
-                                    let rows: &[(&[&str], &str)] = &[
-                                        (&[crate::widgets::CMD, "P"], "Command palette"),
-                                        (&[crate::widgets::CMD, "E"], "File browser"),
-                                        (&[crate::widgets::CMD, "0"], "Quick note"),
-                                        (&[crate::widgets::CMD, "B"], "Toggle sidebar"),
-                                        (&[crate::widgets::CMD, crate::widgets::SHIFT, "A"], "Notifications"),
-                                        (&[crate::widgets::CMD, crate::widgets::SHIFT, "M"], "Toggle minimap"),
+                                    let rows: Vec<(Vec<&str>, &str)> = vec![
+                                        (combo(m1, &["P"]), "Command palette"),
+                                        (combo(m1, &["E"]), "File browser"),
+                                        (combo(m1, &["0"]), "Quick note"),
+                                        (combo(m1, &["B"]), "Toggle sidebar"),
+                                        (combo(m2, &["A"]), "Notifications"),
+                                        (combo(m2, &["M"]), "Toggle minimap"),
                                     ];
-                                    for (keys, desc) in rows {
+                                    for (keys, desc) in &rows {
                                         crate::widgets::key_combo(ui, keys, colors);
                                         ui.label(
                                             RichText::new(*desc)
@@ -671,9 +684,11 @@ impl PlexiApp {
                                 .min_col_width(80.0)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
+                                    let scroll_up = combo(m1, &["\u{2191}"]);
+                                    let scroll_down = combo(m1, &["\u{2193}"]);
                                     crate::widgets::key_combo_list(
                                         ui,
-                                        &[&[crate::widgets::CMD, "\u{2191}"], &[crate::widgets::CMD, "\u{2193}"]],
+                                        &[&scroll_up, &scroll_down],
                                         None,
                                         colors,
                                     );
@@ -684,9 +699,11 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
+                                    let font_inc = combo(m1, &["="]);
+                                    let font_dec = combo(m1, &["-"]);
                                     crate::widgets::key_combo_list(
                                         ui,
-                                        &[&[crate::widgets::CMD, "="], &[crate::widgets::CMD, "-"]],
+                                        &[&font_inc, &font_dec],
                                         None,
                                         colors,
                                     );
@@ -706,15 +723,16 @@ impl PlexiApp {
                                 .min_col_width(80.0)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
-                                    let rows: &[(&[&str], &str)] = &[
-                                        (&[crate::widgets::CMD, ","], "Open config"),
-                                        (&[crate::widgets::CMD, crate::widgets::SHIFT, ","], "Reload config"),
-                                        (&[crate::widgets::CMD, crate::widgets::SHIFT, "S"], "Secrets manager"),
-                                        (&[crate::widgets::CMD, crate::widgets::SHIFT, "R"], "Rename pane"),
-                                        (&[crate::widgets::CMD, "/"], "This help"),
-                                        (&[crate::widgets::CMD, "Q"], "Quit"),
+                                    let rows: Vec<(Vec<&str>, &str)> = vec![
+                                        (combo(m1, &[","]), "Open config"),
+                                        (combo(m2, &[","]), "Reload config"),
+                                        (combo(m2, &["S"]), "Secrets manager"),
+                                        (combo(m1, &["R"]), "Rename pane"),
+                                        (combo(m2, &["R"]), "Rename context"),
+                                        (combo(m1, &["/"]), "This help"),
+                                        (combo(m1, &["Q"]), "Quit"),
                                     ];
-                                    for (keys, desc) in rows {
+                                    for (keys, desc) in &rows {
                                         crate::widgets::key_combo(ui, keys, colors);
                                         ui.label(
                                             RichText::new(*desc)
@@ -2557,7 +2575,7 @@ impl PlexiApp {
                                     #[cfg(target_os = "macos")]
                                     let msg = format!("\u{2318}Q pressed {} of 3 — press again to quit", count);
                                     #[cfg(not(target_os = "macos"))]
-                                    let msg = format!("Ctrl+Q pressed {} of 3 — press again to quit", count);
+                                    let msg = format!("Ctrl+Shift+Q pressed {} of 3 — press again to quit", count);
                                     msg
                                 })
                                 .size(12.0)
@@ -4080,18 +4098,20 @@ impl PlexiApp {
                     ui.add_space(style::SPACE_XL);
 
                     // Each entry: (chip groups for one combo, description).
-                    // Every modifier/key is a separate chip — no combined strings.
-                    let cmd = crate::widgets::CMD;
-                    let shift = crate::widgets::SHIFT;
-                    let shortcuts: &[(&[&str], &str)] = &[
-                        (&[cmd, "N"], "new terminal"),
-                        (&[cmd, "E"], "file browser"),
-                        (&[cmd, "P"], "command palette"),
-                        (&[cmd, shift, "N"], "new context"),
-                        (&[cmd, "/"], "keyboard shortcuts"),
+                    // Modifier tiers map per-platform (⌘ / Ctrl+Shift / Ctrl+Alt)
+                    // via widgets::MOD_CMD / MOD_CMD_SHIFT.
+                    let m1 = crate::widgets::MOD_CMD;
+                    let m2 = crate::widgets::MOD_CMD_SHIFT;
+                    let combo = crate::widgets::combo;
+                    let shortcuts: Vec<(Vec<&str>, &str)> = vec![
+                        (combo(m1, &["N"]), "new terminal"),
+                        (combo(m1, &["E"]), "file browser"),
+                        (combo(m1, &["P"]), "command palette"),
+                        (combo(m2, &["N"]), "new context"),
+                        (combo(m1, &["/"]), "keyboard shortcuts"),
                     ];
 
-                    for (keys, desc) in shortcuts {
+                    for (keys, desc) in &shortcuts {
                         ui.horizontal(|ui| {
                             crate::widgets::key_combo(ui, keys, &colors);
                             ui.add_space(style::SPACE_SM);
@@ -4125,7 +4145,8 @@ impl PlexiApp {
                         );
                     });
                     ui.add_space(style::SPACE_SM);
-                    // ⌘P on macOS, Ctrl+P elsewhere.
+                    // ⌘P on macOS; Ctrl+Shift+P / Ctrl+Alt+N elsewhere (the host
+                    // shortcut tiers shift up on non-mac — see keys.rs).
                     #[cfg(target_os = "macos")]
                     let tips: &[&str] = &[
                         "⌘P opens the command palette — jump to any pane or launch an installed app",
@@ -4133,8 +4154,8 @@ impl PlexiApp {
                     ];
                     #[cfg(not(target_os = "macos"))]
                     let tips: &[&str] = &[
-                        "Ctrl+P opens the command palette — jump to any pane or launch an installed app",
-                        "Ctrl+Shift+N opens a fresh context — use it like a virtual desktop",
+                        "Ctrl+Shift+P opens the command palette — jump to any pane or launch an installed app",
+                        "Ctrl+Alt+N opens a fresh context — use it like a virtual desktop",
                     ];
                     for tip in tips {
                         ui.horizontal(|ui| {
