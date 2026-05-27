@@ -2583,8 +2583,14 @@ impl eframe::App for PlexiApp {
             crate::app_trait::KeyDisposition::Passthrough
         };
 
-        // Apps only receive key input when no overlay holds focus.
-        if overlay_key_disposition == crate::app_trait::KeyDisposition::Passthrough {
+        // Apps only receive key input when no overlay holds focus. Double-check
+        // input_captured_by_overlay() after the re-syncs above — an overlay may
+        // have returned Passthrough for keys it doesn't own (e.g. a Choice/Input
+        // notification) while still being open. Re-syncs may also have dismissed
+        // the overlay, in which case it's safe to forward keys to the app pane.
+        if overlay_key_disposition == crate::app_trait::KeyDisposition::Passthrough
+            && !self.input_captured_by_overlay()
+        {
             self.dispatch_app_key_events(ctx);
         }
         // Drain every app pane's pending_commands every frame — including
