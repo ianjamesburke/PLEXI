@@ -124,17 +124,17 @@ function Remove-PlexiChannel {
         }
     }
 
-    if ($Purge) {
-        if (Test-Path $installRoot) {
-            Remove-Item -Path $installRoot -Recurse -Force
-            Write-Output "Removed install dir: $installRoot"
-            $removed = $true
-        }
-        if (Test-Path $profileDir) {
-            Remove-Item -Path $profileDir -Recurse -Force
-            Write-Output "Removed profile dir: $profileDir"
-            $removed = $true
-        }
+    # The install tree (binary + bundled runtime) always goes. -PurgeProfile
+    # only governs the separate profile dir (user data).
+    if (Test-Path $installRoot) {
+        Remove-Item -Path $installRoot -Recurse -Force
+        Write-Output "Removed install dir: $installRoot"
+        $removed = $true
+    }
+    if ($Purge -and (Test-Path $profileDir)) {
+        Remove-Item -Path $profileDir -Recurse -Force
+        Write-Output "Removed profile dir: $profileDir"
+        $removed = $true
     } elseif (Test-Path $profileDir) {
         Write-Output "Profile dir kept: $profileDir"
         Write-Output "  (config, logs, apps, secrets preserved; pass -PurgeProfile to remove)"

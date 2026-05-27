@@ -70,6 +70,9 @@ class McpClient:
                 assert stdout_pipe is not None
                 for line in stdout_pipe:
                     self._stdout_q.put(line)
+            except Exception as err:
+                self._last_stderr = f"stdout reader failed: {err}"
+                print(f"mcp-renderer: {self._last_stderr}", file=sys.stderr, flush=True)
             finally:
                 self._stdout_q.put(None)
         threading.Thread(target=_drain_stdout, daemon=True).start()
@@ -94,7 +97,7 @@ class McpClient:
             try:
                 raw = self._stdout_q.get(timeout=timeout)
             except queue.Empty:
-                raise TimeoutError(f"MCP server did not respond within {timeout:.0f}s")
+                raise TimeoutError(f"MCP server did not respond within {timeout:.0f}s") from None
             if raw is None:
                 raise EOFError("MCP server closed stdout")
             raw = raw.strip()

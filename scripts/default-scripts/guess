@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# guess — a number-guessing game bundled with Plexi
+# Try: plexi run guess
+echo "Hi! I'm thinking of a number between 1 and 10."
+secret=$((RANDOM % 10 + 1))
+attempts=0
+while true; do
+  printf "Your guess: "
+  read -r guess
+  if ! [[ "$guess" =~ ^[0-9]+$ ]]; then
+    echo "Please enter a number."
+    continue
+  fi
+  attempts=$((attempts + 1))
+  if [[ "$guess" -eq "$secret" ]]; then
+    echo "Correct! You got it in $attempts guess(es)."
+    break
+  elif [[ "$guess" -lt "$secret" ]]; then
+    echo "Too low!"
+  else
+    echo "Too high!"
+  fi
+done

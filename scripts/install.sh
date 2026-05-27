@@ -118,6 +118,20 @@ if [[ "$channel" == "main" || "$channel" == "alpha" || "$channel" == "beta" ]]; 
 fi
 
 mkdir -p "$profile_dir/sdk" "$profile_dir/apps" "$profile_dir/scripts"
+
+# Seed default scripts (skip files already present to preserve user customizations).
+DEFAULT_SCRIPTS_DIR="$REPO_ROOT/scripts/default-scripts"
+if [[ -d "$DEFAULT_SCRIPTS_DIR" ]]; then
+  for script in "$DEFAULT_SCRIPTS_DIR"/*; do
+    [[ -f "$script" ]] || continue
+    name="$(basename "$script")"
+    dest="$profile_dir/scripts/$name"
+    if [[ ! -f "$dest" ]]; then
+      cp "$script" "$dest"
+      chmod +x "$dest"
+    fi
+  done
+fi
 apps_was_empty=true
 if find "$profile_dir/apps" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null | grep -q .; then
   apps_was_empty=false

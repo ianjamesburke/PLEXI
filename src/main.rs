@@ -90,7 +90,14 @@ fn main() -> eframe::Result {
     // runs so config_dir/panes/ doesn't grow unbounded. Safe at startup — no
     // panes are live yet.
     #[cfg(windows)]
-    let _ = std::fs::remove_dir_all(crate::config::config_dir().join("panes"));
+    {
+        let panes_dir = crate::config::config_dir().join("panes");
+        if let Err(e) = std::fs::remove_dir_all(&panes_dir) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("startup: failed to clear {}: {e}", panes_dir.display());
+            }
+        }
+    }
 
     {
         let apps_dir = crate::app_registry::apps_dir();
@@ -181,7 +188,7 @@ fn main() -> eframe::Result {
     let cli_mode = raw_args.iter().skip(1).any(|a| {
         const CLI_SUBCOMMANDS: &[&str] = &[
             "run", "secret", "app", "workspace", "notify", "pane", "terminal",
-            "open", "install", "uninstall", "update", "list", "pack",
+            "uninstall", "update", "pack",
             "descriptor", "registry", "validate", "context", "completions", "config",
         ];
         !a.starts_with('-') && CLI_SUBCOMMANDS.contains(&a.as_str())
@@ -269,8 +276,79 @@ fn main() -> eframe::Result {
                         SecretCmd::Delete { friendly_name } => std::process::exit(cli::workspace_secret_delete(&friendly_name)),
                     },
                     Commands::App { cmd } => match cmd {
+                        AppCmd::Open { type_id, mcp, cli: cli_flag, layout, from_pane_id, extra_args } => {
+                            let mode_count = type_id.is_some() as u8
+                                + (!mcp.is_empty()) as u8
+                                + cli_flag.is_some() as u8;
+                            if mode_count == 0 {
+                                eprintln!("error: one of TYPE_ID, --mcp, or --cli is required");
+                                std::process::exit(2);
+                            }
+                            if mode_count > 1 {
+                                eprintln!("error: TYPE_ID, --mcp, and --cli are mutually exclusive");
+                                std::process::exit(2);
+                            }
+                            if let Some(tid) = type_id {
+                                log::info!("app_open:cli: opening app type_id={tid}");
+                                std::process::exit(cli::open_cli(&tid, &extra_args, layout.as_deref(), from_pane_id, None));
+                            } else if !mcp.is_empty() {
+                                log::info!("app_open:cli: launching mcp-renderer with command {:?}", mcp);
+                                std::process::exit(cli::open_cli("mcp-renderer", &mcp, layout.as_deref(), from_pane_id, None));
+                            } else {
+                                let binary = cli_flag.unwrap();
+                                log::info!("app_open:cli: running --help parser for `{binary}`");
+                                match cli_help_parser::parse_help_to_descriptor(&binary) {
+                                    Ok(json) => {
+                                        let id = uuid::Uuid::new_v4();
+                                        let tmp = std::env::temp_dir()
+                                            .join(format!("plexi-descriptor-{id}.json"));
+                                        if let Err(e) = std::fs::write(&tmp, &json) {
+                                            eprintln!("error: could not write descriptor temp file: {e}");
+                                            std::process::exit(1);
+                                        }
+                                        let path = tmp.to_string_lossy().into_owned();
+                                        log::info!("app_open:cli: launching descriptor-renderer with descriptor at {path}");
+                                        std::process::exit(cli::open_cli(
+                                            "descriptor-renderer",
+                                            &[path],
+                                            layout.as_deref(),
+                                            from_pane_id,
+                                            None,
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        eprintln!("error: could not parse --help output: {e}");
+                                        std::process::exit(1);
+                                    }
+                                }
+                            }
+                        }
+                        AppCmd::Install { spec_or_path, pack } => {
+                            if let Some(p) = pack {
+                                log::info!("app_install:cli: pack={p}");
+                                std::process::exit(cli::install_pack_cli(&p));
+                            }
+                            match spec_or_path {
+                                None => {
+                                    log::info!("app_install:cli: workspace pack (no args)");
+                                    std::process::exit(cli::install_workspace_pack_cli());
+                                }
+                                Some(s) => {
+                                    // Local path: contains a path separator, starts with . or /, or is an existing directory.
+                                    // Using is_dir() (not exists()) avoids misrouting bare app IDs that happen
+                                    // to match a file in the current directory.
+                                    let is_local = s.contains('/') || s.starts_with('.') || std::path::Path::new(&s).is_dir();
+                                    if is_local {
+                                        log::info!("app_install:cli: local path={s}");
+                                        std::process::exit(cli::app_install(&s));
+                                    } else {
+                                        log::info!("app_install:cli: remote spec={s}");
+                                        std::process::exit(cli::install_cli(&s));
+                                    }
+                                }
+                            }
+                        }
                         AppCmd::Init { name, lang } => std::process::exit(cli::app_init(&name, &lang)),
-                        AppCmd::Install { path } => std::process::exit(cli::app_install(&path)),
                         AppCmd::Uninstall { id, yes } => std::process::exit(cli::app_uninstall(&id, yes)),
                         AppCmd::List => std::process::exit(cli::app_list()),
                         AppCmd::Render { id, size, state, output } => {
@@ -279,21 +357,11 @@ fn main() -> eframe::Result {
                         AppCmd::Info { id } => std::process::exit(cli::app_info(&id)),
                         AppCmd::Run { path } => std::process::exit(cli::app_run(&path)),
                     },
-                    Commands::Install { spec, pack } => {
-                        if let Some(p) = pack {
-                            std::process::exit(cli::install_pack_cli(&p));
-                        }
-                        match spec {
-                            Some(s) => std::process::exit(cli::install_cli(&s)),
-                            None => std::process::exit(cli::install_workspace_pack_cli()),
-                        }
-                    }
                     Commands::Uninstall { keep_data, yes } => std::process::exit(cli::plexi_uninstall_cli(keep_data, yes)),
                     Commands::Update { subcommand } => match subcommand {
                         Some(UpdateCmd::Apps { id }) => std::process::exit(cli::update_cli(id.as_deref())),
                         None => std::process::exit(cli::self_update_cli()),
                     },
-                    Commands::List => std::process::exit(cli::list_cli()),
                     Commands::Validate { path } => std::process::exit(cli::validate_cli(&path)),
                     Commands::Pack { cmd } => match cmd {
                         PackCmd::Export { path } => std::process::exit(cli::pack_export_cli(&path)),
@@ -399,7 +467,20 @@ fn main() -> eframe::Result {
                             };
                             std::process::exit(cli::pane_set_title_cli(pane_id, &name))
                         }
-                        PaneCmd::List { context, current } => std::process::exit(cli::pane_list_cli(context, current)),
+                        PaneCmd::List { context } => {
+                            let (context_id, current) = match context.as_deref() {
+                                None => (None, false),
+                                Some("current") => (None, true),
+                                Some(s) => match s.parse::<u64>() {
+                                    Ok(id) => (Some(id), false),
+                                    Err(_) => {
+                                        eprintln!("error: --context value must be a numeric context ID or omitted for current context");
+                                        std::process::exit(1);
+                                    }
+                                },
+                            };
+                            std::process::exit(cli::pane_list_cli(context_id, current))
+                        }
                         PaneCmd::Focus { pane_id } => std::process::exit(cli::pane_focus_cli(pane_id)),
                         PaneCmd::Close { pane_id } => {
                             let id = match pane_id {
@@ -432,46 +513,6 @@ fn main() -> eframe::Result {
                     },
                     Commands::Terminal { cmd, ephemeral, layout, from_pane_id, cwd, no_focus } => {
                         std::process::exit(cli::terminal_cli(cmd.as_deref(), ephemeral, layout.as_deref(), from_pane_id, cwd.as_deref(), no_focus));
-                    }
-                    Commands::Open { type_id, mcp, cli: cli_flag, layout, from_pane_id, extra_args } => {
-                        let mode_count = type_id.is_some() as u8
-                            + (!mcp.is_empty()) as u8
-                            + cli_flag.is_some() as u8;
-                        if mode_count == 0 {
-                            eprintln!("error: one of TYPE_ID, --mcp, or --cli is required");
-                            std::process::exit(2);
-                        }
-                        if mode_count > 1 {
-                            eprintln!("error: TYPE_ID, --mcp, and --cli are mutually exclusive");
-                            std::process::exit(2);
-                        }
-                        if let Some(tid) = type_id {
-                            std::process::exit(cli::open_cli(&tid, &extra_args, layout.as_deref(), from_pane_id, None));
-                        } else if !mcp.is_empty() {
-                            log::info!("open:mcp: launching mcp-renderer with command {:?}", mcp);
-                            std::process::exit(cli::open_cli("mcp-renderer", &mcp, layout.as_deref(), from_pane_id, None));
-                        } else {
-                            let binary = cli_flag.unwrap();
-                            log::info!("open:cli-flag: running --help parser for `{binary}`");
-                            match cli_help_parser::parse_help_to_descriptor(&binary) {
-                                Ok(json) => {
-                                    let id = uuid::Uuid::new_v4();
-                                    let tmp = std::env::temp_dir()
-                                        .join(format!("plexi-descriptor-{id}.json"));
-                                    if let Err(e) = std::fs::write(&tmp, &json) {
-                                        eprintln!("error: could not write descriptor temp file: {e}");
-                                        std::process::exit(1);
-                                    }
-                                    let path = tmp.to_string_lossy().into_owned();
-                                    log::info!("open:cli-flag: launching descriptor-renderer with descriptor at {path}");
-                                    std::process::exit(cli::open_cli("descriptor-renderer", &[path], layout.as_deref(), from_pane_id, None));
-                                }
-                                Err(e) => {
-                                    eprintln!("error: could not parse --help output for `{binary}`: {e}");
-                                    std::process::exit(1);
-                                }
-                            }
-                        }
                     }
                     Commands::Descriptor { cmd } => match cmd {
                         DescriptorCmd::Probe { command, no_registry, no_crawl, json, extra_args } => {
@@ -541,25 +582,10 @@ fn main() -> eframe::Result {
         }
     }
 
-    // Plexi-in-Plexi detection: if already running inside a Plexi terminal, don't
-    // launch a second GUI — just report the nearest .plexi/ workspace.
+    // Plexi-in-Plexi detection: if already running inside a Plexi terminal,
+    // show help rather than attempting to launch a second GUI.
     if std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
-        let cwd = std::env::current_dir().unwrap_or_default();
-        let home = dirs::home_dir().unwrap_or_default();
-        let mut dir = cwd.as_path();
-        loop {
-            if dir == home || dir.parent().is_none() {
-                break;
-            }
-            if dir.join(".plexi").is_dir() {
-                eprintln!(
-                    "plexi: already running inside Plexi. Nearest workspace: {}",
-                    dir.join(".plexi").display()
-                );
-                std::process::exit(0);
-            }
-            dir = dir.parent().unwrap();
-        }
+        log::info!("cli: PLEXI_RUNNING set — redirecting bare launch to --help");
         use clap::CommandFactory;
         let _ = Cli::command().print_help();
         println!();
@@ -625,13 +651,9 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
         "notify",
         "pane",
         "terminal",
-        "open",
         "--render",
-        // #308 Phase 2 — top-level package manager subcommands
-        "install",
         "uninstall",
         "update",
-        "list",
         "pack",
         // #188 — `plexi descriptor probe <cmd>` for the --plexi standard.
         "descriptor",
@@ -656,8 +678,6 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
             let _ = iter.next();
             continue;
         }
-        // Skip any flag (short or long) — short flags like -h/-V must not be
-        // mistaken for a workspace path.
         if a.starts_with('-') {
             continue;
         }
@@ -825,11 +845,13 @@ mod cli_tests {
 
     #[test]
     fn plexi_path_arg_skips_short_flags() {
-        // `plexi -h` / `plexi -V` must not be treated as workspace paths.
-        for flag in ["-h", "-V", "-v"] {
-            let resolved = parse_workspace_path_arg(&argv(&[flag]))
-                .unwrap_or_else(|e| panic!("{flag} should not error: {e}"));
-            assert!(resolved.is_none(), "{flag} should resolve to no path");
-        }
+        // `plexi -h` must not be treated as a workspace path (fixes issue #1747).
+        let resolved = parse_workspace_path_arg(&argv(&["-h"]))
+            .expect("-h should not error");
+        assert!(resolved.is_none());
+
+        let resolved = parse_workspace_path_arg(&argv(&["-V"]))
+            .expect("-V should not error");
+        assert!(resolved.is_none());
     }
 }

@@ -5,24 +5,7 @@ use clap::{Parser, Subcommand};
     name = "plexi",
     about = "Plexi — the last app you'll ever need",
     version = env!("CARGO_PKG_VERSION"),
-    after_help = "\x1b[1mQuick start:\x1b[0m
-  plexi                     Launch the Plexi GUI
-  plexi list                Show installed apps
-  plexi open <app>          Open an app in a new pane
-  plexi install <source>    Install an app (e.g. github:owner/repo)
-  plexi app init <name>     Scaffold a new app
-
-\x1b[1mInside a Plexi pane:\x1b[0m
-  plexi terminal            Open a terminal pane
-  plexi pane list           List all open panes
-  plexi notify --title ...  Send a notification
-
-\x1b[1mWorkspace (per-project):\x1b[0m
-  plexi workspace init      Set up a .plexi/ workspace
-  plexi secret set <name>   Store a secret in your keychain
-  plexi run                 List available workspace commands
-  plexi run <command>       Run a command from .plexi/commands.toml
-"
+    after_help = "Get started: plexi demo | Docs: https://plexi.dev"
 )]
 pub struct Cli {
     /// Profile name (e.g. alpha, beta)
@@ -63,25 +46,10 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: SecretCmd,
     },
-    /// Manage your Plexi apps — scaffold, install, list, and inspect.
+    /// Manage your Plexi apps — open, install, list, scaffold, and inspect.
     App {
         #[command(subcommand)]
         cmd: AppCmd,
-    },
-    /// Install an app from a remote source or a pack file.
-    ///
-    /// Pass a GitHub source like `github:owner/repo`, or use `--pack` to install from a local pack file or the built-in core pack.
-    ///
-    /// Example: plexi install github:owner/repo
-    /// Example: plexi install --pack core
-    ///
-    /// To install a local app directory you are developing, use `plexi app install <path>` instead.
-    Install {
-        /// Source to install from (e.g. github:owner/repo or a bare app id)
-        spec: Option<String>,
-        /// Install from a pack file or 'core'
-        #[arg(long)]
-        pack: Option<String>,
     },
     /// Remove Plexi from your Mac — uninstalls the app, CLI, and optionally your profile data.
     ///
@@ -106,8 +74,6 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: Option<UpdateCmd>,
     },
-    /// Show all installed apps with their versions.
-    List,
     /// Check a Plexi app directory for errors before publishing or installing.
     Validate {
         /// Path to check (default: current directory)
@@ -119,7 +85,7 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: PackCmd,
     },
-    /// Send a notification to the Plexi UI. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
+    /// Send a notification to the Plexi UI.
     Notify {
         /// Notification title (required)
         #[arg(long)]
@@ -146,7 +112,7 @@ pub enum Commands {
         #[arg(long, value_name = "SCOPE")]
         scope: Option<String>,
     },
-    /// Control panes — list, focus, send input, capture output, and more. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
+    /// Control panes — list, focus, send input, capture output, and more.
     Pane {
         #[command(subcommand)]
         cmd: PaneCmd,
@@ -171,34 +137,6 @@ pub enum Commands {
         #[arg(long)]
         no_focus: bool,
     },
-    /// Open an app or tool in a new pane.
-    ///
-    /// Pass an app id (e.g. `plexi open snake`) to open an installed app.
-    /// Use `--mcp` to wrap an MCP server, or `--cli` to open any CLI tool with a Plexi UI.
-    Open {
-        /// App id to open (mutually exclusive with --mcp and --cli)
-        #[arg(conflicts_with_all = ["mcp", "cli"])]
-        type_id: Option<String>,
-        /// Wrap a stdio MCP server in a Plexi pane.
-        ///
-        /// Example: plexi open --mcp npx @modelcontextprotocol/server-filesystem /tmp
-        #[arg(long, num_args = 1.., value_name = "CMD", allow_hyphen_values = true, conflicts_with = "cli")]
-        mcp: Vec<String>,
-        /// Wrap a CLI tool in a Plexi pane with a visual UI.
-        ///
-        /// Example: plexi open --cli git
-        #[arg(long, value_name = "BINARY", conflicts_with = "mcp")]
-        cli: Option<String>,
-        /// Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, or new_window
-        #[arg(long)]
-        layout: Option<String>,
-        /// Open the new pane relative to this pane ID instead of the focused pane
-        #[arg(long)]
-        from_pane_id: Option<u64>,
-        /// Extra arguments passed through to the app (only valid with an app id)
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true, conflicts_with_all = ["mcp", "cli"])]
-        extra_args: Vec<String>,
-    },
     /// Descriptor probe
     #[command(hide = true)]
     Descriptor {
@@ -210,7 +148,7 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: RegistryCmd,
     },
-    /// Manage the active context (the folder and project scope tied to the current pane). Run this from inside a Plexi pane (open one first with `plexi open terminal`).
+    /// Manage the active context (the folder and project scope tied to the current pane).
     Context {
         #[command(subcommand)]
         cmd: ContextCmd,
@@ -300,18 +238,52 @@ pub enum SecretCmd {
 
 #[derive(Subcommand)]
 pub enum AppCmd {
-    /// Create a new app from a template.
+    /// Open an app or tool in a new pane.
     ///
-    /// Scaffolds the folder structure and files you need to build a Plexi app.
-    /// Use --lang to pick the language (default: python).
-    Init {
-        name: String,
-        #[arg(long, default_value = "python")]
-        lang: String,
+    /// Pass an app id (e.g. `plexi app open snake`) to open an installed app.
+    /// Use `--mcp` to wrap an MCP server, or `--cli` to open any CLI tool with a Plexi UI.
+    Open {
+        /// App id to open (mutually exclusive with --mcp and --cli)
+        #[arg(conflicts_with_all = ["mcp", "cli"])]
+        type_id: Option<String>,
+        /// Wrap a stdio MCP server in a Plexi pane.
+        ///
+        /// Example: plexi app open --mcp npx @modelcontextprotocol/server-filesystem /tmp
+        #[arg(long, num_args = 1.., value_name = "CMD", allow_hyphen_values = true, conflicts_with = "cli")]
+        mcp: Vec<String>,
+        /// Wrap a CLI tool in a Plexi pane with a visual UI.
+        ///
+        /// Example: plexi app open --cli git
+        #[arg(long, value_name = "BINARY", conflicts_with = "mcp")]
+        cli: Option<String>,
+        /// Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, or new_window
+        #[arg(long)]
+        layout: Option<String>,
+        /// Open the new pane relative to this pane ID instead of the focused pane
+        #[arg(long)]
+        from_pane_id: Option<u64>,
+        /// Extra arguments passed through to the app (only valid with an app id)
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, conflicts_with_all = ["mcp", "cli"])]
+        extra_args: Vec<String>,
+    },
+    /// Install an app from a local path, a remote source, or a pack file.
+    ///
+    /// Local path: `plexi app install ./my-app` — copies the app dir into Plexi's store.
+    /// Remote source: `plexi app install github:owner/repo` — fetches and installs from GitHub.
+    /// Pack file: `plexi app install --pack core` — installs from a pack file or the built-in core pack.
+    /// Workspace pack: `plexi app install` (no args) — installs from .plexi/apps.toml.
+    Install {
+        /// Source to install: a local path, GitHub spec (github:owner/repo), or bare app id.
+        /// Omit to install from the workspace pack (.plexi/apps.toml).
+        spec_or_path: Option<String>,
+        /// Install from a pack file or 'core'
+        #[arg(long)]
+        pack: Option<String>,
     },
     /// Remove an installed app by id.
     ///
     /// Example: plexi app uninstall github-tree
+    #[command(aliases = ["remove", "delete"])]
     Uninstall {
         /// App id to remove (use `plexi app list` to see installed ids)
         id: String,
@@ -319,7 +291,7 @@ pub enum AppCmd {
         #[arg(long = "yes", short = 'y')]
         yes: bool,
     },
-    /// Show all installed apps (alias for `plexi list`).
+    /// Show all installed apps with their versions.
     List,
     /// Render an app to a PNG image without opening the UI (useful for screenshots and testing).
     Render {
@@ -339,13 +311,14 @@ pub enum AppCmd {
     Info {
         id: String,
     },
-    /// Install a local app directory you are developing into Plexi.
+    /// Create a new app from a template.
     ///
-    /// Copies your app folder into Plexi's app store so it shows up and runs like any other app.
-    /// To install apps from GitHub or a pack file, use `plexi install` instead.
-    Install {
-        /// Path to the app folder containing manifest.toml
-        path: String,
+    /// Scaffolds the folder structure and files you need to build a Plexi app.
+    /// Use --lang to pick the language (default: python).
+    Init {
+        name: String,
+        #[arg(long, default_value = "python")]
+        lang: String,
     },
     /// Run an app directly from a local directory without installing or linking.
     ///
@@ -398,14 +371,13 @@ pub enum PaneCmd {
     },
     /// List all open panes as a JSON array.
     ///
-    /// Filter by context with --context <id> or --current (reads PLEXI_CONTEXT_ID).
+    /// Filter by context: `--context` (no value) returns panes in the caller's context
+    /// (reads PLEXI_CONTEXT_ID from env). `--context <id>` filters to a specific context ID.
     List {
-        /// Only return panes belonging to this context ID.
-        #[arg(long, conflicts_with = "current")]
-        context: Option<u64>,
-        /// Only return panes in the caller's context (reads PLEXI_CONTEXT_ID from env).
-        #[arg(long)]
-        current: bool,
+        /// Filter by context. With no argument, reads PLEXI_CONTEXT_ID from env (caller's context).
+        /// With a numeric argument, returns panes in that specific context.
+        #[arg(long, value_name = "ID", num_args = 0..=1, default_missing_value = "current")]
+        context: Option<String>,
     },
     /// Move the visible focus to a specific pane.
     ///
@@ -420,7 +392,7 @@ pub enum PaneCmd {
         /// Pane id to close (from `plexi pane list`). Defaults to the current pane if not given.
         pane_id: Option<u64>,
     },
-    /// Type text into another pane as if it came from the keyboard. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
+    /// Type text into another pane as if it came from the keyboard.
     ///
     /// Use `\n` in the text to press Enter (which submits a command).
     ///
@@ -438,7 +410,7 @@ pub enum PaneCmd {
     Self_,
     /// Print details about the current pane as JSON.
     Info,
-    /// Capture the last N lines of a pane's output as a JSON array. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
+    /// Capture the last N lines of a pane's output as a JSON array.
     ///
     /// Defaults to the current pane when no pane id is given.
     ///
@@ -457,7 +429,7 @@ pub enum PaneCmd {
         #[arg(long, value_name = "CURSOR")]
         from_cursor: Option<u64>,
     },
-    /// Send a key press to a pane. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
+    /// Send a key press to a pane.
     ///
     /// For terminal panes, injects the keystroke into the terminal.
     /// For app panes, delivers a structured key event.

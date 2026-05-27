@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.506"
+verified_version: "0.0.513"
 order: 7
 ---
 
@@ -89,28 +89,44 @@ Delete a stored secret
 
 ## `plexi app`
 
-Manage your Plexi apps — scaffold, install, list, and inspect
+Manage your Plexi apps — open, install, list, scaffold, and inspect
 
 | Subcommand | Description |
 |---|---|
-| `init` | Create a new app from a template |
+| `open` | Open an app or tool in a new pane |
+| `install` | Install an app from a local path, a remote source, or a pack file |
 | `uninstall` | Remove an installed app by id |
-| `list` | Show all installed apps (alias for `plexi list`) |
+| `list` | Show all installed apps with their versions |
 | `render` | Render an app to a PNG image without opening the UI (useful for screenshots and testing) |
 | `info` | Show details about an installed app: id, name, version, and available tools |
-| `install` | Install a local app directory you are developing into Plexi |
+| `init` | Create a new app from a template |
 | `run` | Run an app directly from a local directory without installing or linking |
 
-### `plexi app init`
+### `plexi app open`
 
-Create a new app from a template.
+Open an app or tool in a new pane.
 
-Scaffolds the folder structure and files you need to build a Plexi app. Use --lang to pick the language (default: python).
+Pass an app id (e.g. `plexi app open snake`) to open an installed app. Use `--mcp` to wrap an MCP server, or `--cli` to open any CLI tool with a Plexi UI.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<name>` | string | yes |  |
-| `--lang` | string | no | Default: `python`. |
+| `<type_id>` | string | no | App id to open (mutually exclusive with --mcp and --cli) |
+| `--mcp` | string (repeatable) | no | Wrap a stdio MCP server in a Plexi pane.  Example: plexi app open --mcp npx @modelcontextprotocol/server-filesystem /tmp |
+| `--cli` | string | no | Wrap a CLI tool in a Plexi pane with a visual UI.  Example: plexi app open --cli git |
+| `--layout` | string | no | Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, or new_window |
+| `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane |
+| `<extra_args>` | string (repeatable) | no | Extra arguments passed through to the app (only valid with an app id) |
+
+### `plexi app install`
+
+Install an app from a local path, a remote source, or a pack file.
+
+Local path: `plexi app install ./my-app` — copies the app dir into Plexi's store. Remote source: `plexi app install github:owner/repo` — fetches and installs from GitHub. Pack file: `plexi app install --pack core` — installs from a pack file or the built-in core pack. Workspace pack: `plexi app install` (no args) — installs from .plexi/apps.toml.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<spec_or_path>` | string | no | Source to install: a local path, GitHub spec (github:owner/repo), or bare app id. Omit to install from the workspace pack (.plexi/apps.toml) |
+| `--pack` | string | no | Install from a pack file or 'core' |
 
 ### `plexi app uninstall`
 
@@ -125,7 +141,7 @@ Example: plexi app uninstall github-tree
 
 ### `plexi app list`
 
-Show all installed apps (alias for `plexi list`)
+Show all installed apps with their versions
 
 ### `plexi app render`
 
@@ -146,15 +162,16 @@ Show details about an installed app: id, name, version, and available tools
 |---|---|---|---|
 | `<id>` | string | yes |  |
 
-### `plexi app install`
+### `plexi app init`
 
-Install a local app directory you are developing into Plexi.
+Create a new app from a template.
 
-Copies your app folder into Plexi's app store so it shows up and runs like any other app. To install apps from GitHub or a pack file, use `plexi install` instead.
+Scaffolds the folder structure and files you need to build a Plexi app. Use --lang to pick the language (default: python).
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<path>` | string | yes | Path to the app folder containing manifest.toml |
+| `<name>` | string | yes |  |
+| `--lang` | string | no | Default: `python`. |
 
 ### `plexi app run`
 
@@ -165,21 +182,6 @@ Opens the app in a pane immediately. Edits to the app take effect on next launch
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<path>` | string | yes | Path to the app folder containing manifest.toml |
-
-## `plexi install`
-
-Install an app from a remote source or a pack file.
-
-Pass a GitHub source like `github:owner/repo`, or use `--pack` to install from a local pack file or the built-in core pack.
-
-Example: plexi install github:owner/repo Example: plexi install --pack core
-
-To install a local app directory you are developing, use `plexi app install <path>` instead.
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<spec>` | string | no | Source to install from (e.g. github:owner/repo or a bare app id) |
-| `--pack` | string | no | Install from a pack file or 'core' |
 
 ## `plexi uninstall`
 
@@ -214,10 +216,6 @@ Omit the app id to update all installed apps at once.
 |---|---|---|---|
 | `<id>` | string | no | App id to update (omit to update all installed apps) |
 
-## `plexi list`
-
-Show all installed apps with their versions
-
 ## `plexi validate`
 
 Check a Plexi app directory for errors before publishing or installing
@@ -244,7 +242,7 @@ Export your currently installed apps as a single pack file for sharing or backup
 
 ## `plexi notify`
 
-Send a notification to the Plexi UI. Run this from inside a Plexi pane (open one first with `plexi open terminal`)
+Send a notification to the Plexi UI
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
@@ -258,7 +256,7 @@ Send a notification to the Plexi UI. Run this from inside a Plexi pane (open one
 
 ## `plexi pane`
 
-Control panes — list, focus, send input, capture output, and more. Run this from inside a Plexi pane (open one first with `plexi open terminal`)
+Control panes — list, focus, send input, capture output, and more
 
 | Subcommand | Description |
 |---|---|
@@ -266,11 +264,11 @@ Control panes — list, focus, send input, capture output, and more. Run this fr
 | `list` | List all open panes as a JSON array |
 | `focus` | Move the visible focus to a specific pane |
 | `close` | Close a pane. Omit the pane id to close the pane you are currently in |
-| `send` | Type text into another pane as if it came from the keyboard. Run this from inside a Plexi pane (open one first with `plexi open terminal`) |
+| `send` | Type text into another pane as if it came from the keyboard |
 | `self` | Print the id of the pane you are currently in |
 | `info` | Print details about the current pane as JSON |
-| `capture` | Capture the last N lines of a pane's output as a JSON array. Run this from inside a Plexi pane (open one first with `plexi open terminal`) |
-| `key` | Send a key press to a pane. Run this from inside a Plexi pane (open one first with `plexi open terminal`) |
+| `capture` | Capture the last N lines of a pane's output as a JSON array |
+| `key` | Send a key press to a pane |
 
 ### `plexi pane name`
 
@@ -287,12 +285,11 @@ With one argument, renames the current pane: plexi pane name "My Project" With t
 
 List all open panes as a JSON array.
 
-Filter by context with --context <id> or --current (reads PLEXI_CONTEXT_ID).
+Filter by context: `--context` (no value) returns panes in the caller's context (reads PLEXI_CONTEXT_ID from env). `--context <id>` filters to a specific context ID.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--context` | string | no | Only return panes belonging to this context ID |
-| `--current` | flag | no | Only return panes in the caller's context (reads PLEXI_CONTEXT_ID from env) |
+| `--context` | string | no | Filter by context. With no argument, reads PLEXI_CONTEXT_ID from env (caller's context). With a numeric argument, returns panes in that specific context |
 
 ### `plexi pane focus`
 
@@ -314,7 +311,7 @@ Close a pane. Omit the pane id to close the pane you are currently in
 
 ### `plexi pane send`
 
-Type text into another pane as if it came from the keyboard. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
+Type text into another pane as if it came from the keyboard.
 
 Use `\n` in the text to press Enter (which submits a command).
 
@@ -337,7 +334,7 @@ Print details about the current pane as JSON
 
 ### `plexi pane capture`
 
-Capture the last N lines of a pane's output as a JSON array. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
+Capture the last N lines of a pane's output as a JSON array.
 
 Defaults to the current pane when no pane id is given.
 
@@ -352,7 +349,7 @@ Example: plexi pane capture --lines 50 42
 
 ### `plexi pane key`
 
-Send a key press to a pane. Run this from inside a Plexi pane (open one first with `plexi open terminal`).
+Send a key press to a pane.
 
 For terminal panes, injects the keystroke into the terminal. For app panes, delivers a structured key event.
 
@@ -378,21 +375,6 @@ Open a plain terminal pane
 | `--cwd` | string | no | Directory to open the terminal in |
 | `--no-focus` | flag | no | Keep focus on the current pane instead of jumping to the new one |
 
-## `plexi open`
-
-Open an app or tool in a new pane.
-
-Pass an app id (e.g. `plexi open snake`) to open an installed app. Use `--mcp` to wrap an MCP server, or `--cli` to open any CLI tool with a Plexi UI.
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<type_id>` | string | no | App id to open (mutually exclusive with --mcp and --cli) |
-| `--mcp` | string (repeatable) | no | Wrap a stdio MCP server in a Plexi pane.  Example: plexi open --mcp npx @modelcontextprotocol/server-filesystem /tmp |
-| `--cli` | string | no | Wrap a CLI tool in a Plexi pane with a visual UI.  Example: plexi open --cli git |
-| `--layout` | string | no | Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, or new_window |
-| `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane |
-| `<extra_args>` | string (repeatable) | no | Extra arguments passed through to the app (only valid with an app id) |
-
 ## `plexi registry`
 
 Watch installed CLI tools for changes to their available commands and options
@@ -411,7 +393,7 @@ Check installed CLI tools for changes to their help output and update Plexi's kn
 
 ## `plexi context`
 
-Manage the active context (the folder and project scope tied to the current pane). Run this from inside a Plexi pane (open one first with `plexi open terminal`)
+Manage the active context (the folder and project scope tied to the current pane)
 
 | Subcommand | Description |
 |---|---|
