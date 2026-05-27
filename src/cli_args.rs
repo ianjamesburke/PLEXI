@@ -51,7 +51,7 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: AppCmd,
     },
-    /// Remove Plexi from your Mac — uninstalls the app, CLI, and optionally your profile data.
+    /// Uninstalls the app, CLI, and optionally your profile data.
     ///
     /// Removes the current channel's app bundle (/Applications/Plexi.app), CLI binary (/usr/local/bin/plexi),
     /// and shell completions. Your profile directory (~/.plexi/) holds your settings, secrets,
