@@ -1,5 +1,10 @@
 [build]
-target-dir = "/Users/ianburke/Documents/GitHub/PLEXI/target"
+# target-dir intentionally NOT set — defaults to `./target/` relative to the
+# workspace root, which works on every platform. The upstream repo points this
+# at an absolute macOS path (`/Users/ianburke/...`); on Windows that gets
+# misinterpreted as drive-relative and creates a phantom `C:\Users\ianburke\`
+# tree. If a contributor wants a shared target dir across worktrees on their
+# own machine, set `CARGO_TARGET_DIR` in their shell instead.
 
 # THROTTLE: limits cargo to 3 of 10 logical cores to keep the machine
 # responsive during parallel agent builds. Builds take ~3x longer.

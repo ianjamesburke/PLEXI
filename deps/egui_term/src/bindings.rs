@@ -373,6 +373,14 @@ fn platform_keyboard_bindings() -> Vec<(Binding<InputKind>, BindingAction)> {
         KeyboardBinding;
         C, Modifiers::SHIFT | Modifiers::COMMAND; BindingAction::Copy;
         V, Modifiers::SHIFT | Modifiers::COMMAND; BindingAction::Paste;
+        // Windows/Linux word-delete: Ctrl+Backspace and Alt+Backspace send 0x17
+        // (Ctrl+W), which PSReadLine and readline both bind to backward-kill-word.
+        // Overrides the cross-platform defaults — Ctrl+Backspace=0x15 (kill to
+        // line start, the macOS Cmd+Backspace convention) and Alt+Backspace=ESC
+        // DEL (readline meta-backspace, which PSReadLine ignores). These replace
+        // the matching default bindings in `add_bindings` (same target+mods).
+        Backspace, Modifiers::COMMAND; BindingAction::Char('\x17');
+        Backspace, Modifiers::ALT;     BindingAction::Char('\x17');
     )
 }
 
@@ -381,4 +389,41 @@ fn mouse_default_bindings() -> Vec<(Binding<InputKind>, BindingAction)> {
         MouseBinding;
         Primary, Modifiers::COMMAND; BindingAction::LinkOpen;
     )
+}
+
+#[cfg(test)]
+#[cfg(not(target_os = "macos"))]
+mod windows_word_delete_tests {
+    use super::*;
+    use egui::Key;
+
+    /// On Windows/Linux, Ctrl+Backspace and Alt+Backspace must send 0x17
+    /// (Ctrl+W = backward-kill-word) rather than the cross-platform defaults
+    /// (0x15 kill-line / ESC-DEL meta-backspace).
+    #[test]
+    fn ctrl_and_alt_backspace_send_ctrl_w() {
+        let layout = BindingsLayout::new();
+
+        // egui reports Ctrl+Backspace with both `ctrl` and `command` set on non-mac.
+        let ctrl = Modifiers { ctrl: true, command: true, ..Modifiers::default() };
+        assert_eq!(
+            layout.get_action(InputKind::KeyCode(Key::Backspace), ctrl, TerminalMode::empty()),
+            BindingAction::Char('\x17'),
+            "Ctrl+Backspace should backward-kill-word"
+        );
+
+        let alt = Modifiers { alt: true, ..Modifiers::default() };
+        assert_eq!(
+            layout.get_action(InputKind::KeyCode(Key::Backspace), alt, TerminalMode::empty()),
+            BindingAction::Char('\x17'),
+            "Alt+Backspace should backward-kill-word"
+        );
+
+        // Plain Backspace is unchanged (DEL).
+        assert_eq!(
+            layout.get_action(InputKind::KeyCode(Key::Backspace), Modifiers::default(), TerminalMode::empty()),
+            BindingAction::Char('\x7f'),
+            "plain Backspace should still send DEL"
+        );
+    }
 }

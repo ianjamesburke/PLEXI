@@ -67,7 +67,12 @@ egui_commonmark = "0.20"
 rfd = "0.17"
 # Headless app render (#850). Already transitive via eframe; declared directly for explicit use.
 pollster = "0.4"
-wgpu = { version = "24", default-features = false, features = ["wgsl", "metal"] }
+# wgpu backends: WGSL shader compiler is the common path. Per-API backends
+# (`metal`, `dx12`, `vulkan`) are no-ops on platforms where their API isn't
+# present, so listing all three here is the standard portable arrangement.
+# Without at least one matching backend, `wgpu::Instance` will find no
+# adapter at startup and the host fails to launch.
+wgpu = { version = "24", default-features = false, features = ["wgsl", "metal", "dx12"] }
 egui-wgpu = "0.31"
 png = "0.17"
 taffy = "0.5"
@@ -109,6 +114,26 @@ objc2-core-foundation = { version = "0.3", features = [
     "CFString",
     "objc2",
 ] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Win32: process termination (process_app/win.rs), named-pipe IPC and
+# typed-pipe transport (app/mod.rs, typed_pipes.rs, cli.rs), Credential
+# Manager secret storage (secrets_win.rs).
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Pipes",
+    "Win32_System_IO",
+    "Win32_Storage_FileSystem",
+    "Win32_Security_Credentials",
+] }
+
+[target.'cfg(target_os = "windows")'.build-dependencies]
+# Embed assets/app-icon.ico into plexi.exe so the icon appears in Explorer,
+# the taskbar, Task Manager, Start Menu shortcuts, and the Add/Remove Programs
+# entry. Build-dep is host-scoped (build.rs runs on host), so it's only pulled
+# in on Windows builds.
+winresource = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

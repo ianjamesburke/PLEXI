@@ -2,6 +2,9 @@
 /target/
 deps/egui_term/target/
 
+# Windows installer output (Inno Setup writes Setup.exe here)
+/dist/
+
 # Scratch docs
 docs/scratch/
 

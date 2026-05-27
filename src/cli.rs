@@ -924,19 +924,15 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
 }
 
 fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    // manifest.toml
     std::fs::write(app_dir.join("manifest.toml"), format!(
         "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"A Plexi app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = []\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n",
         name = name,
         display = to_title_case(name),
     ))?;
 
-    // main.py — plexi_sdk is injected via PYTHONPATH by the host at launch;
-    // do NOT copy plexi_sdk.py alongside (the package uses relative imports
-    // that break when imported as a flat single file).
-    // __CLASS_NAME__ and __DISPLAY_NAME__ are substituted below.
+    // plexi_sdk is injected via PYTHONPATH by the host at launch; do NOT copy
+    // plexi_sdk.py alongside — its package uses relative imports that break
+    // when imported as a flat single file.
     let template = include_str!("../sdk/python/plexi_sdk/templates/app_init.py");
     let main_py = template
         .replace("__CLASS_NAME__", &to_struct_name(name))
@@ -944,10 +940,13 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     let main_path = app_dir.join("main.py");
     std::fs::write(&main_path, main_py)?;
 
-    // chmod +x main.py
-    let mut perms = std::fs::metadata(&main_path)?.permissions();
-    perms.set_mode(perms.mode() | 0o111);
-    std::fs::set_permissions(&main_path, perms)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&main_path)?.permissions();
+        perms.set_mode(perms.mode() | 0o111);
+        std::fs::set_permissions(&main_path, perms)?;
+    }
 
     Ok(())
 }
@@ -2114,7 +2113,9 @@ pub fn self_update_cli() -> i32 {
         return 1;
     }
 
-    // Re-symlink the CLI binary at /usr/local/bin/plexi (non-fatal if missing).
+    // Re-symlink /usr/local/bin/plexi on macOS. Windows uses the PATH entry
+    // dropped by scripts/install-windows.ps1 instead.
+    #[cfg(unix)]
     if let Some(bin_name) = current_exe.file_name().and_then(|n| n.to_str()) {
         let new_binary = app_bundle.join("Contents/MacOS").join(bin_name);
         let bin_link = std::path::Path::new("/usr/local/bin").join(bin_name);
@@ -2125,6 +2126,8 @@ pub fn self_update_cli() -> i32 {
             }
         }
     }
+    #[cfg(not(unix))]
+    let _ = current_exe;
 
     let _ = std::fs::remove_dir_all(&tmp_dir);
     println!("Installed v{latest_version}. Restart Plexi to apply.");
@@ -2325,19 +2328,10 @@ pub fn notify_cli(
         choices.len(), scope, response_file_str
     );
 
-    use std::io::Write;
-    use std::os::unix::net::UnixStream;
-    let mut stream = match UnixStream::connect(&socket_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
-            return 1;
-        }
-    };
-    let line = format!("{payload}\n");
-    if let Err(e) = stream.write_all(line.as_bytes()) {
-        eprintln!("error: could not write to socket: {e}");
-        return 1;
+    let _ = &socket_path;
+    let rc = send_to_socket(payload);
+    if rc != 0 {
+        return rc;
     }
 
     // Fire-and-forget path — command is delivered, nothing to wait for.
@@ -2447,21 +2441,8 @@ pub fn pane_set_title_cli(pane_id: Option<u64>, name: &str) -> i32 {
         "pane_id": resolved_pane_id,
         "name": name,
     });
-    use std::io::Write;
-    use std::os::unix::net::UnixStream;
-    let mut stream = match UnixStream::connect(&socket_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
-            return 1;
-        }
-    };
-    let line = format!("{}\n", payload);
-    if let Err(e) = stream.write_all(line.as_bytes()) {
-        eprintln!("error: could not write to socket: {e}");
-        return 1;
-    }
-    0
+    let _ = &socket_path;
+    send_to_socket(payload)
 }
 
 /// Prints JSON to stdout. If `jq` is in PATH, pipes through `jq .` for
@@ -4070,8 +4051,9 @@ pub fn validate_cli(path: &str) -> i32 {
         if !entry_path.exists() {
             errors.push(format!("  entry file not found: {}", entry_path.display()));
         } else if entry.ends_with(".py") {
-            // Python syntax check via AST parse (no import, no SDK needed)
-            let py_check = std::process::Command::new("python3")
+            // `python` not `python3` on Windows: pymanager hijacks `python3` when no runtime is installed.
+            let py_bin = if cfg!(windows) { "python" } else { "python3" };
+            let py_check = std::process::Command::new(py_bin)
                 .arg("-c")
                 .arg("import ast, sys; ast.parse(open(sys.argv[1]).read())")
                 .arg(&entry_path)
@@ -4083,7 +4065,7 @@ pub fn validate_cli(path: &str) -> i32 {
                     errors.push(format!("  Python syntax error in {entry}: {}", stderr.trim()));
                 }
                 Err(e) => {
-                    warnings.push(format!("  python3 not found — skipping syntax check: {e}"));
+                    warnings.push(format!("  {py_bin} not found — skipping syntax check: {e}"));
                 }
             }
         }
@@ -4156,21 +4138,63 @@ fn send_to_socket(payload: serde_json::Value) -> i32 {
             return 1;
         }
     };
-    use std::io::Write;
-    use std::os::unix::net::UnixStream;
-    let mut stream = match UnixStream::connect(&socket_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+        let mut stream = match UnixStream::connect(&socket_path) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("error: could not connect to PLEXI_SOCKET {socket_path:?}: {e}");
+                return 1;
+            }
+        };
+        let line = format!("{}\n", payload);
+        if let Err(e) = stream.write_all(line.as_bytes()) {
+            eprintln!("error: could not write to socket: {e}");
             return 1;
         }
-    };
-    let line = format!("{}\n", payload);
-    if let Err(e) = stream.write_all(line.as_bytes()) {
-        eprintln!("error: could not write to socket: {e}");
-        return 1;
+        0
     }
-    0
+    #[cfg(windows)]
+    {
+        use std::io::Write;
+        use std::os::windows::io::{FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+        };
+
+        let wide: Vec<u16> = socket_path
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        // Write-only: responses use the response_file polling pattern.
+        let raw = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                std::ptr::null_mut(),
+            )
+        };
+        if raw == INVALID_HANDLE_VALUE {
+            let err = std::io::Error::last_os_error();
+            eprintln!("error: could not open PLEXI_SOCKET pipe {socket_path:?}: {err}");
+            return 1;
+        }
+        let owned = unsafe { OwnedHandle::from_raw_handle(raw as _) };
+        let mut file = std::fs::File::from(owned);
+        let line = format!("{payload}\n");
+        if let Err(e) = file.write_all(line.as_bytes()) {
+            eprintln!("error: could not write to pipe: {e}");
+            return 1;
+        }
+        0
+    }
 }
 
 /// `plexi context new [name] [--path <path>] [--parent <parent>]`
@@ -4647,8 +4671,9 @@ pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
         "zsh" => { print!("{}", zsh_completion(binary_name)); 0 }
         "bash" => { print!("{}", bash_completion(binary_name)); 0 }
         "fish" => { print!("{}", fish_completion(binary_name)); 0 }
+        "powershell" | "pwsh" => { print!("{}", powershell_completion(binary_name)); 0 }
         other => {
-            eprintln!("error: unsupported shell {other:?} — supported shells: zsh, bash, fish");
+            eprintln!("error: unsupported shell {other:?} — supported shells: zsh, bash, fish, powershell");
             1
         }
     }
@@ -4673,6 +4698,10 @@ fn bash_completion(binary: &str) -> String {
 
 fn fish_completion(binary: &str) -> String {
     FISH_COMPLETION.replace("-c plexi", &format!("-c {binary}"))
+}
+
+fn powershell_completion(binary: &str) -> String {
+    POWERSHELL_COMPLETION.replace("__BINARY__", binary)
 }
 
 const ZSH_COMPLETION: &str = r#"#compdef plexi
@@ -5114,6 +5143,54 @@ complete -c plexi -n "__fish_seen_subcommand_from open" -l layout -d "Layout hin
 complete -c plexi -n "__fish_seen_subcommand_from open" -l from-pane-id -d "Split relative to this pane ID"
 complete -c plexi -n "__fish_seen_subcommand_from open" -l mcp -d "Wrap stdio MCP server command in mcp-renderer"
 complete -c plexi -n "__fish_seen_subcommand_from open" -l cli -d "Wrap CLI binary in descriptor-renderer" -a "(__fish_complete_command)"
+"#;
+
+// Native ArgumentCompleter registration script. `__BINARY__` is substituted
+// at runtime so each channel registers its own completer under its own name.
+const POWERSHELL_COMPLETION: &str = r#"# Plexi PowerShell completions
+Register-ArgumentCompleter -Native -CommandName __BINARY__ -ScriptBlock {
+    param($wordToComplete, $commandAst, $cursorPosition)
+
+    $tokens = $commandAst.CommandElements | ForEach-Object { $_.Extent.Text }
+    $depth = $tokens.Count
+    $prev = if ($depth -ge 2) { $tokens[$depth - 1] } else { '' }
+    $sub = if ($depth -ge 2) { $tokens[1] } else { '' }
+
+    $topLevel = @(
+        'run','workspace','secret','app','install','uninstall','update','list',
+        'validate','pack','notify','pane','terminal','open','descriptor',
+        'registry','context','completions','config','notes'
+    )
+
+    function Out-Completions($candidates, $word) {
+        foreach ($c in $candidates) {
+            if ($c -like "$word*") {
+                [System.Management.Automation.CompletionResult]::new(
+                    $c, $c, 'ParameterValue', $c)
+            }
+        }
+    }
+
+    # First positional after the binary → top-level subcommand.
+    if ($depth -le 1 -or ($depth -eq 2 -and -not $wordToComplete.StartsWith('-'))) {
+        Out-Completions $topLevel $wordToComplete
+        return
+    }
+
+    switch ($sub) {
+        'workspace'   { Out-Completions @('init','status') $wordToComplete }
+        'secret'      { Out-Completions @('set','get','list','delete') $wordToComplete }
+        'app'         { Out-Completions @('init','install','uninstall','list','info','render','link','unlink','run') $wordToComplete }
+        'update'      { Out-Completions @('apps','self') $wordToComplete }
+        'pack'        { Out-Completions @('export') $wordToComplete }
+        'pane'        { Out-Completions @('name','set-title','list','self','focus','close','send','info','capture','key') $wordToComplete }
+        'context'     { Out-Completions @('new','zoom','zoom-out','open','set-root','describe','current') $wordToComplete }
+        'config'      { Out-Completions @('check','edit','get','reset') $wordToComplete }
+        'completions' { Out-Completions @('zsh','bash','fish','powershell') $wordToComplete }
+        'notes'       { Out-Completions @('list','open') $wordToComplete }
+        default       { }
+    }
+}
 "#;
 
 #[cfg(test)]

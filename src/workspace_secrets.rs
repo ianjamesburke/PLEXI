@@ -120,18 +120,65 @@ impl SecretStore for MacKeychain {
     }
 }
 
+/// Windows Credential Manager backend. Mirrors `MacKeychain`: values
+/// live in the OS credential store and `secrets-index.json` tracks
+/// accounts for prefix listing (so we don't have to enumerate the whole
+/// credential set every time).
+#[cfg(target_os = "windows")]
+pub struct WinCredentialStore;
+
+#[cfg(target_os = "windows")]
+impl WinCredentialStore {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Default for WinCredentialStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl SecretStore for WinCredentialStore {
+    fn get(&self, account: &str) -> Option<Zeroizing<String>> {
+        crate::secrets_win::cred_read(account)
+    }
+
+    fn set(&self, account: &str, value: &str) -> Result<(), SecretError> {
+        crate::secrets_win::cred_write(account, value).map_err(SecretError::Backend)?;
+        index_add(account);
+        Ok(())
+    }
+
+    fn delete(&self, account: &str) -> Result<(), SecretError> {
+        crate::secrets_win::cred_delete(account).map_err(SecretError::Backend)?;
+        index_remove(account);
+        Ok(())
+    }
+
+    fn list_with_prefix(&self, prefix: &str) -> Vec<String> {
+        index_read()
+            .into_iter()
+            .filter(|a| a.starts_with(prefix))
+            .collect()
+    }
+}
+
 // ── Workspace-secret index file (accounts only, no values) ───────────────────
 //
 // Replaces the legacy SecretEntry-based `secrets-index.json`. We store full
 // account strings (`plexi:<scope>:<friendly>`) because that's the single
 // natural primary key — workspace_id is embedded in the account name.
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn index_path() -> PathBuf {
     crate::config::config_dir().join("secrets-index.json")
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn index_read() -> Vec<String> {
     let path = index_path();
     let raw = match std::fs::read_to_string(&path) {
@@ -172,7 +219,7 @@ fn index_read() -> Vec<String> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn index_write(entries: &[String]) {
     let path = index_path();
     if let Some(parent) = path.parent() {
@@ -191,7 +238,7 @@ fn index_write(entries: &[String]) {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn index_add(account: &str) {
     let mut entries = index_read();
     if !entries.iter().any(|a| a == account) {
@@ -200,7 +247,7 @@ fn index_add(account: &str) {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn index_remove(account: &str) {
     let mut entries = index_read();
     entries.retain(|a| a != account);

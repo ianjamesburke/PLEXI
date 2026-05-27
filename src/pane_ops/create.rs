@@ -708,12 +708,24 @@ impl PlexiApp {
             return Ok(());
         }
 
+        // App launches prefer the focused pane's live cwd over the context root —
+        // the inverse of terminal splits (resolve_new_pane_cwd) — so repo tools
+        // see the repo the user cd'd into. Fallback: focused cwd → context root → home.
+        let focused = self.windows[self.active_window].focused_pane;
         let cwd_explicit = cwd_override.is_some();
+        let focused_cwd = focused.and_then(|f| self.windows[self.active_window].get_focused_pane_cwd(f));
+        let cwd_source = if cwd_explicit {
+            "explicit"
+        } else if focused_cwd.is_some() {
+            "focused-pane"
+        } else {
+            "context-root"
+        };
         let cwd = cwd_override
-            .or_else(|| self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane))
+            .or(focused_cwd)
+            .or_else(|| self.router.active().root.clone())
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-        log::info!("launch_app_by_id_with_layout: id={id} cwd={cwd:?} cwd_source={} context_root={:?}",
-            if cwd_explicit { "explicit" } else { "resolved" },
+        log::info!("launch_app_by_id_with_layout: id={id} cwd={cwd:?} cwd_source={cwd_source} context_root={:?}",
             self.router.active().root);
 
         // Re-attach a parked background app if one is waiting

@@ -36,6 +36,15 @@ use crate::config::KeybindingsConfig;
 // Always guard with `!input.modifiers.command` before consuming Enter, H, J,
 // K, L, Backspace, or other keys that Plexi uses with Cmd modifier.
 //
+// PLATFORM: the chords above are written with the macOS ⌘ key. egui maps
+// `Modifiers::COMMAND` to ⌘ on macOS but to **Ctrl** everywhere else — so the
+// mac scheme would turn every host shortcut into a bare Ctrl+<key> chord, the
+// exact space terminals use for control codes (Ctrl+I = Tab, Ctrl+R =
+// reverse-search, Ctrl+W = delete-word, …). On Windows/Linux the defaults
+// therefore shift up one tier — `Cmd` → `Ctrl+Shift`, `Cmd+Shift` →
+// `Ctrl+Alt` — leaving the bare-Ctrl namespace free for the focused terminal.
+// See `cmd()` / `cmd_shift()` below.
+//
 // GOTCHA: consume_key(Modifiers::NONE, Key) does NOT mean "key with no
 // modifiers" — it matches the key regardless of modifiers. To distinguish
 // plain Enter from Shift+Enter, check `input.modifiers.shift` BEFORE
@@ -180,16 +189,79 @@ pub struct KeyBindings {
     pub context_zoom_out: (egui::Modifiers, egui::Key),
 }
 
+// ── Host shortcut modifier tiers ──────────────────────────────────────────
+//
+// macOS has a dedicated ⌘ key that namespaces every host shortcut away from
+// the terminal's Ctrl-based control codes, so the tiers map straight onto Cmd:
+//
+//   cmd       → ⌘             cmd_ctrl → ⌘⌃
+//   cmd_shift → ⌘⇧            cmd_alt  → ⌘⌥
+//
+// Windows/Linux have no ⌘, and egui collapses `Modifiers::COMMAND` to Ctrl, so
+// the mac scheme would make every shortcut a bare Ctrl+<key> chord that steals
+// terminal control codes. We shift each tier up one modifier — mirroring the
+// Ctrl+Shift convention the terminal itself already uses for copy/paste — so
+// bare Ctrl stays free for the focused terminal:
+//
+//   cmd       → Ctrl+Shift        cmd_ctrl → Ctrl+Alt
+//   cmd_shift → Ctrl+Shift+Alt    cmd_alt  → Ctrl+Alt
+//
+// egui's `consume_key` matches modifiers as a *subset* (a Ctrl+Shift pattern
+// also matches a Ctrl+Shift+Alt press — see `Modifiers::matches_logically`),
+// so `poll_actions` must check the tiers most-specific-first: cmd_shift
+// (Ctrl+Shift+Alt) before both cmd (Ctrl+Shift) and cmd_ctrl/cmd_alt
+// (Ctrl+Alt). cmd_ctrl and cmd_alt collapse to the same Ctrl+Alt chord on
+// non-mac but bind disjoint keys (swap = HJKL, force-reload = R), so they
+// never collide.
+#[cfg(target_os = "macos")]
 fn cmd() -> egui::Modifiers { egui::Modifiers::COMMAND }
+#[cfg(not(target_os = "macos"))]
+fn cmd() -> egui::Modifiers {
+    egui::Modifiers { ctrl: true, shift: true, ..egui::Modifiers::default() }
+}
+
+#[cfg(target_os = "macos")]
 fn cmd_shift() -> egui::Modifiers {
     egui::Modifiers { shift: true, ..egui::Modifiers::COMMAND }
 }
+#[cfg(not(target_os = "macos"))]
+fn cmd_shift() -> egui::Modifiers {
+    egui::Modifiers { ctrl: true, shift: true, alt: true, ..egui::Modifiers::default() }
+}
+
+#[cfg(target_os = "macos")]
 fn cmd_ctrl() -> egui::Modifiers {
     egui::Modifiers { ctrl: true, ..egui::Modifiers::COMMAND }
 }
+#[cfg(not(target_os = "macos"))]
+fn cmd_ctrl() -> egui::Modifiers {
+    egui::Modifiers { ctrl: true, alt: true, ..egui::Modifiers::default() }
+}
+
+#[cfg(target_os = "macos")]
 fn cmd_alt() -> egui::Modifiers {
     egui::Modifiers { alt: true, ..egui::Modifiers::COMMAND }
 }
+#[cfg(not(target_os = "macos"))]
+fn cmd_alt() -> egui::Modifiers {
+    egui::Modifiers { ctrl: true, alt: true, ..egui::Modifiers::default() }
+}
+
+// The non-mac primary (`cmd` → Ctrl+Shift) and secondary (`cmd_shift` →
+// Ctrl+Shift+Alt) tiers include Shift, which changes the *logical* key egui
+// reports for punctuation/digits: e.g. Shift+`/` arrives as `Key::Questionmark`,
+// not `Key::Slash`, so a `Slash` binding never fires (egui-winit sets the event
+// key to `logical_key.or(physical_key)`). For keys egui exposes as a distinct
+// shifted variant, bind to that variant so the chord the user types (Ctrl+Shift
+// + the printed key) matches. Keys whose shifted symbol has NO egui variant
+// (`,`→`<`, `-`→`_`, digits 2–9 and 0) fall back to their physical key and
+// already match, so they pass through unchanged. macOS keeps the base key (its
+// primary tier is bare ⌘, no Shift). Assumes a US/ANSI layout.
+#[cfg(target_os = "macos")]
+fn shift_variant(base: egui::Key, _shifted: egui::Key) -> egui::Key { base }
+#[cfg(not(target_os = "macos"))]
+fn shift_variant(_base: egui::Key, shifted: egui::Key) -> egui::Key { shifted }
+
 impl Default for KeyBindings {
     fn default() -> Self {
         Self {
@@ -198,8 +270,8 @@ impl Default for KeyBindings {
             toggle_command_palette:    (cmd(),       egui::Key::P),
             split_horizontal:          (cmd(),       egui::Key::D),
             split_vertical:            (cmd_shift(), egui::Key::D),
-            split_right:               (cmd(),       egui::Key::Backslash),
-            split_down:                (cmd_shift(), egui::Key::Backslash),
+            split_right:               (cmd(),       shift_variant(egui::Key::Backslash, egui::Key::Pipe)),
+            split_down:                (cmd_shift(), shift_variant(egui::Key::Backslash, egui::Key::Pipe)),
             swap_pane_left:            (cmd_ctrl(),  egui::Key::H),
             swap_pane_down:            (cmd_ctrl(),  egui::Key::J),
             swap_pane_up:              (cmd_ctrl(),  egui::Key::K),
@@ -213,11 +285,11 @@ impl Default for KeyBindings {
             prev_tab:                  (cmd_shift(), egui::Key::H),
             first_tab:                 (cmd_shift(), egui::Key::K),
             last_tab:                  (cmd_shift(), egui::Key::J),
-            nav_back:                  (cmd(),       egui::Key::OpenBracket),
-            focus_history_forward:     (cmd(),       egui::Key::CloseBracket),
+            nav_back:                  (cmd(),       shift_variant(egui::Key::OpenBracket, egui::Key::OpenCurlyBracket)),
+            focus_history_forward:     (cmd(),       shift_variant(egui::Key::CloseBracket, egui::Key::CloseCurlyBracket)),
             toggle_sidebar:            (cmd(),       egui::Key::B),
             toggle_zoom:               (cmd(),       egui::Key::Enter),
-            toggle_shortcuts:          (cmd(),       egui::Key::Slash),
+            toggle_shortcuts:          (cmd(),       shift_variant(egui::Key::Slash, egui::Key::Questionmark)),
             rename_context:            (cmd_shift(), egui::Key::R),
             rename_pane:               (cmd(),       egui::Key::R),
             new_context:               (cmd_shift(), egui::Key::N),
@@ -225,7 +297,7 @@ impl Default for KeyBindings {
             toggle_minimap:            (cmd_shift(), egui::Key::M),
             scroll_up:                 (cmd(),       egui::Key::ArrowUp),
             scroll_down:               (cmd(),       egui::Key::ArrowDown),
-            increase_font_size:        (cmd(),       egui::Key::Equals),
+            increase_font_size:        (cmd(),       shift_variant(egui::Key::Equals, egui::Key::Plus)),
             decrease_font_size:        (cmd(),       egui::Key::Minus),
             open_file_browser:         (cmd(),       egui::Key::E),
             open_quick_note:           (cmd(),       egui::Key::Num0),
@@ -489,23 +561,11 @@ pub fn poll_actions(
             actions.push(Action::SplitHorizontal);
         }
 
-        // Pane swap — check before plain pane navigation.
-        if input.consume_key(bindings.swap_pane_left.0, bindings.swap_pane_left.1) {
-            actions.push(Action::SwapPane(Direction::Left));
-        }
-        if input.consume_key(bindings.swap_pane_down.0, bindings.swap_pane_down.1) {
-            actions.push(Action::SwapPane(Direction::Down));
-        }
-        if input.consume_key(bindings.swap_pane_up.0, bindings.swap_pane_up.1) {
-            actions.push(Action::SwapPane(Direction::Up));
-        }
-        if input.consume_key(bindings.swap_pane_right.0, bindings.swap_pane_right.1) {
-            actions.push(Action::SwapPane(Direction::Right));
-        }
-
-        // Tab navigation — checked before plain Cmd+H/J/K/L pane navigation because
-        // egui's consume_key uses subset modifier matching: Cmd+H matches Cmd+Shift+H,
-        // so more-specific (Cmd+Shift) variants must be consumed first.
+        // Tab navigation — the most-specific modifier tier (Cmd+Shift on macOS,
+        // Ctrl+Shift+Alt elsewhere). Checked first because egui's consume_key uses
+        // subset modifier matching: a less-specific pattern (the Cmd / Ctrl+Shift
+        // navigation chord, or the Cmd+Ctrl / Ctrl+Alt swap chord) also matches
+        // this press, so the more-specific variant must be consumed first.
         if input.consume_key(bindings.new_tab.0, bindings.new_tab.1) {
             actions.push(Action::NewTab);
         }
@@ -531,7 +591,24 @@ pub fn poll_actions(
             actions.push(Action::LastTab);
         }
 
-        // Focus navigation — checked after Cmd+Shift tab variants above.
+        // Pane swap (Cmd+Ctrl on macOS, Ctrl+Alt elsewhere). On non-macOS the
+        // Ctrl+Alt chord is a subset of the tabs' Ctrl+Shift+Alt chord, so this
+        // MUST come after the tab checks above — otherwise a tab chord would be
+        // consumed here first. Still checked before plain navigation below.
+        if input.consume_key(bindings.swap_pane_left.0, bindings.swap_pane_left.1) {
+            actions.push(Action::SwapPane(Direction::Left));
+        }
+        if input.consume_key(bindings.swap_pane_down.0, bindings.swap_pane_down.1) {
+            actions.push(Action::SwapPane(Direction::Down));
+        }
+        if input.consume_key(bindings.swap_pane_up.0, bindings.swap_pane_up.1) {
+            actions.push(Action::SwapPane(Direction::Up));
+        }
+        if input.consume_key(bindings.swap_pane_right.0, bindings.swap_pane_right.1) {
+            actions.push(Action::SwapPane(Direction::Right));
+        }
+
+        // Focus navigation — least-specific tier (Cmd / Ctrl+Shift), checked last.
         if input.consume_key(bindings.navigate_left.0, bindings.navigate_left.1) {
             actions.push(Action::Navigate(Direction::Left));
         }
@@ -651,11 +728,13 @@ pub fn poll_actions(
         if input.consume_key(bindings.open_quick_note.0, bindings.open_quick_note.1) {
             actions.push(Action::OpenQuickNote);
         }
-        if input.consume_key(bindings.open_config.0, bindings.open_config.1) {
-            actions.push(Action::OpenConfig);
-        }
+        // Reload config (Cmd+Shift+, / Ctrl+Alt+,) before open config (Cmd+, /
+        // Ctrl+Shift+,) — more-specific modifier tier first, since the open-config
+        // pattern also matches the reload press under subset matching.
         if input.consume_key(bindings.reload_config.0, bindings.reload_config.1) {
             actions.push(Action::ReloadConfig);
+        } else if input.consume_key(bindings.open_config.0, bindings.open_config.1) {
+            actions.push(Action::OpenConfig);
         }
         if input.consume_key(bindings.open_secrets_manager.0, bindings.open_secrets_manager.1) {
             actions.push(Action::OpenSecretsManager);
@@ -678,18 +757,177 @@ pub fn poll_actions(
             actions.push(Action::ContextZoomOut);
         }
 
-        // Switch context (Cmd+1 through Cmd+9) — these remain hardcoded for now.
+        // Switch context (Cmd+1–9 on macOS, Ctrl+Shift+1–9 elsewhere). Not yet
+        // configurable, but uses the same primary-modifier tier as the other
+        // defaults via `cmd()` so it stays off the bare-Ctrl terminal namespace.
+        let switch_context_mod = cmd();
+        // Num1 → `!` under Shift on non-mac (has an egui variant); 2–9 fall back
+        // to their physical key and match as-is. See `shift_variant`.
         let num_keys = [
-            egui::Key::Num1, egui::Key::Num2, egui::Key::Num3,
+            shift_variant(egui::Key::Num1, egui::Key::Exclamationmark),
+            egui::Key::Num2, egui::Key::Num3,
             egui::Key::Num4, egui::Key::Num5, egui::Key::Num6,
             egui::Key::Num7, egui::Key::Num8, egui::Key::Num9,
         ];
         for (i, key) in num_keys.into_iter().enumerate() {
-            if input.consume_key(egui::Modifiers::COMMAND, key) {
+            if input.consume_key(switch_context_mod, key) {
                 actions.push(Action::SwitchContext(i));
             }
         }
     });
 
     actions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a key-press event carrying the given modifier state.
+    fn press(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+    }
+
+    /// Run `poll_actions` for one headless frame fed `events`, with no app or
+    /// overlay active and notification shortcuts blocked (so bare H/L cycling
+    /// stays off). Returns the actions the host would fire for those presses.
+    fn poll(events: Vec<egui::Event>) -> Vec<Action> {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput { events, ..Default::default() };
+        let mut out = Vec::new();
+        let _ = ctx.run(raw, |ctx| {
+            out = poll_actions(
+                ctx,
+                &KeyBindings::default(),
+                /* app_active */ false,
+                /* keyboard_capture_active */ false,
+                /* overlay_open */ false,
+                /* shortcuts_overlay_open */ false,
+                /* notification_modal_active */ false,
+                /* notification_shortcuts_blocked */ true,
+            );
+        });
+        out
+    }
+
+    fn any(actions: &[Action], pred: impl Fn(&Action) -> bool) -> bool {
+        actions.iter().any(pred)
+    }
+
+    // egui reports `command == ctrl` on Windows/Linux (no dedicated ⌘ key).
+    #[cfg(not(target_os = "macos"))]
+    fn win_mods(ctrl: bool, shift: bool, alt: bool) -> egui::Modifiers {
+        egui::Modifiers { alt, ctrl, shift, mac_cmd: false, command: ctrl }
+    }
+
+    /// The whole reason for the non-mac scheme: bare Ctrl+<key> must reach the
+    /// focused terminal (neovim, readline, …) instead of being eaten by a host
+    /// shortcut. Ctrl+I in particular is the terminal's Tab.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn bare_ctrl_falls_through_to_terminal() {
+        let bare_ctrl = win_mods(true, false, false);
+        for key in [
+            egui::Key::I, egui::Key::R, egui::Key::W, egui::Key::P, egui::Key::D,
+            egui::Key::T, egui::Key::H, egui::Key::J, egui::Key::K, egui::Key::L,
+            egui::Key::B, egui::Key::N, egui::Key::E, egui::Key::A, egui::Key::S,
+            egui::Key::M, egui::Key::Q, egui::Key::OpenBracket, egui::Key::CloseBracket,
+            egui::Key::Backslash, egui::Key::Slash, egui::Key::Num1, egui::Key::Num9,
+        ] {
+            let actions = poll(vec![press(key, bare_ctrl)]);
+            assert!(
+                actions.is_empty(),
+                "bare Ctrl+{key:?} should fall through to the terminal, got {} host action(s)",
+                actions.len()
+            );
+        }
+    }
+
+    /// Primary host shortcuts move to Ctrl+Shift on non-mac.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn ctrl_shift_triggers_primary_host_shortcuts() {
+        let m = win_mods(true, true, false); // Ctrl+Shift
+        assert!(any(&poll(vec![press(egui::Key::I, m)]), |a| matches!(a, Action::ContextInspector)));
+        assert!(any(&poll(vec![press(egui::Key::W, m)]), |a| matches!(a, Action::ClosePane)));
+        assert!(any(&poll(vec![press(egui::Key::P, m)]), |a| matches!(a, Action::ToggleCommandPalette)));
+        assert!(any(&poll(vec![press(egui::Key::R, m)]), |a| matches!(a, Action::RenamePane)));
+        assert!(any(&poll(vec![press(egui::Key::H, m)]), |a| matches!(a, Action::Navigate(Direction::Left))));
+    }
+
+    /// swap_pane (Ctrl+Alt) is a modifier subset of the tab chord
+    /// (Ctrl+Shift+Alt), so ordering must resolve the tab chord to a tab action,
+    /// not a pane swap — and vice versa.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn tab_chord_not_swallowed_by_swap_pane() {
+        let tab = win_mods(true, true, true); // Ctrl+Shift+Alt+H → prev_tab
+        let acts = poll(vec![press(egui::Key::H, tab)]);
+        assert!(any(&acts, |a| matches!(a, Action::PrevTab)), "Ctrl+Shift+Alt+H should be PrevTab");
+        assert!(!any(&acts, |a| matches!(a, Action::SwapPane(_))), "tab chord must not trigger SwapPane");
+
+        let swap = win_mods(true, false, true); // Ctrl+Alt+H → swap_pane_left
+        let acts = poll(vec![press(egui::Key::H, swap)]);
+        assert!(any(&acts, |a| matches!(a, Action::SwapPane(Direction::Left))), "Ctrl+Alt+H should be SwapPane(Left)");
+        assert!(!any(&acts, |a| matches!(a, Action::PrevTab | Action::Navigate(_))), "swap chord must not trigger tab/nav");
+    }
+
+    /// open_config (Ctrl+Shift+,) is a subset of reload_config (Ctrl+Shift+Alt+,),
+    /// so reload must be checked first.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn reload_config_not_swallowed_by_open_config() {
+        let reload = win_mods(true, true, true); // Ctrl+Shift+Alt+,
+        let acts = poll(vec![press(egui::Key::Comma, reload)]);
+        assert!(any(&acts, |a| matches!(a, Action::ReloadConfig)));
+        assert!(!any(&acts, |a| matches!(a, Action::OpenConfig)));
+
+        let open = win_mods(true, true, false); // Ctrl+Shift+,
+        let acts = poll(vec![press(egui::Key::Comma, open)]);
+        assert!(any(&acts, |a| matches!(a, Action::OpenConfig)));
+        assert!(!any(&acts, |a| matches!(a, Action::ReloadConfig)));
+    }
+
+    /// Shift mutates punctuation/digit logical keys on non-mac (egui reports the
+    /// shifted variant). Bindings must match the variant the keypress produces,
+    /// e.g. Ctrl+Shift+`/` arrives as `Questionmark`, Ctrl+Shift+`\` as `Pipe`.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn ctrl_shift_punctuation_matches_shifted_keys() {
+        let m = win_mods(true, true, false); // Ctrl+Shift
+        assert!(any(&poll(vec![press(egui::Key::Questionmark, m)]), |a| matches!(a, Action::ToggleShortcuts)), "Ctrl+Shift+/ (?)");
+        assert!(any(&poll(vec![press(egui::Key::Pipe, m)]), |a| matches!(a, Action::SplitRight)), "Ctrl+Shift+\\ (|)");
+        assert!(any(&poll(vec![press(egui::Key::OpenCurlyBracket, m)]), |a| matches!(a, Action::NavBackApp)), "Ctrl+Shift+open-bracket");
+        assert!(any(&poll(vec![press(egui::Key::CloseCurlyBracket, m)]), |a| matches!(a, Action::FocusHistoryForward)), "Ctrl+Shift+close-bracket");
+        assert!(any(&poll(vec![press(egui::Key::Plus, m)]), |a| matches!(a, Action::IncreasePaneFontSize)), "Ctrl+Shift+= (+)");
+        assert!(any(&poll(vec![press(egui::Key::Exclamationmark, m)]), |a| matches!(a, Action::SwitchContext(0))), "Ctrl+Shift+1 (!)");
+
+        // split_down is the Ctrl+Shift+Alt tier on the same shifted key (|).
+        let acts = poll(vec![press(egui::Key::Pipe, win_mods(true, true, true))]);
+        assert!(any(&acts, |a| matches!(a, Action::SplitDown)), "Ctrl+Shift+Alt+\\ (|) → SplitDown");
+        assert!(!any(&acts, |a| matches!(a, Action::SplitRight)), "must not also fire SplitRight");
+
+        // Keys with no shifted egui variant still match their base key (physical
+        // fallback): Ctrl+Shift+, stays Comma, Ctrl+Shift+2 stays Num2.
+        assert!(any(&poll(vec![press(egui::Key::Comma, m)]), |a| matches!(a, Action::OpenConfig)), "Ctrl+Shift+, → OpenConfig");
+        assert!(any(&poll(vec![press(egui::Key::Num2, m)]), |a| matches!(a, Action::SwitchContext(1))), "Ctrl+Shift+2 → context 2");
+    }
+
+    // egui reports `command == mac_cmd` for ⌘ on macOS; Ctrl is independent.
+    #[cfg(target_os = "macos")]
+    fn mac_mods(cmd: bool, ctrl: bool, shift: bool, alt: bool) -> egui::Modifiers {
+        egui::Modifiers { alt, ctrl, shift, mac_cmd: cmd, command: cmd }
+    }
+
+    /// macOS keeps the Cmd-based scheme: Cmd+I is the host shortcut, and bare
+    /// Ctrl+I still falls through to the terminal.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_uses_cmd_and_leaves_ctrl_for_terminal() {
+        let cmd_i = poll(vec![press(egui::Key::I, mac_mods(true, false, false, false))]);
+        assert!(any(&cmd_i, |a| matches!(a, Action::ContextInspector)));
+
+        let ctrl_i = poll(vec![press(egui::Key::I, mac_mods(false, true, false, false))]);
+        assert!(ctrl_i.is_empty(), "bare Ctrl+I must fall through to the terminal on macOS too");
+    }
 }

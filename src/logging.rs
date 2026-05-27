@@ -165,7 +165,11 @@ pub fn init(level: log::LevelFilter, retention_days: u32, cli_mode: bool) {
         .level_for("plexi", level)
         .level_for("plexi_v3", level)
         .level_for("plexi_alpha", level)
-        .level_for("app", level);
+        .level_for("app", level)
+        // wgpu 24 warns once per frame about Vulkan present mode 1000361000
+        // (FIFO_LATEST_READY_EXT, a newer extension wgpu doesn't enumerate;
+        // fallback to FIFO works). Clamp to Error until a wgpu upgrade lands.
+        .level_for("wgpu_hal::vulkan::conv", log::LevelFilter::Error);
 
     let dispatch = match file_result {
         Ok(file) => {

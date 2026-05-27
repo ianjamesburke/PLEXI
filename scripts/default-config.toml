@@ -20,6 +20,11 @@ confirm_close = false
 # Maximum depth of pane focus history (Cmd+[ / Cmd+]).
 # focus_history_depth = 100
 
+# ── Default working directory ──────────────────────────────────
+# Directory to cd into at boot when launched without a path arg
+# (avoids inheriting the install dir on Windows). Supports `~`.
+# default_cwd = "~"
+
 # ── OSC & Terminal Features ────────────────────────────────────────
 # osc_pane_title applies OSC 0/1/2 title sequences from running
 # processes as pane names.

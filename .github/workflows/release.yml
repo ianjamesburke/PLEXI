@@ -5,6 +5,12 @@ on:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  # Manual trigger for ad-hoc validation of the build jobs without cutting a
+  # real release tag. Run from the Actions tab on any branch. Build steps run
+  # in full; release-creation and upload steps are skipped (gated on
+  # startsWith(github.ref, 'refs/tags/')) so no release artifacts appear on
+  # the releases page.
+  workflow_dispatch:
 
 jobs:
   build:
@@ -52,11 +58,13 @@ jobs:
           zip -r Plexi-${{ github.ref_name }}.zip Plexi.app skills
 
       - name: Install git-cliff
+        if: startsWith(github.ref, 'refs/tags/')
         uses: taiki-e/install-action@v2
         with:
           tool: git-cliff
 
       - name: Extract release notes
+        if: startsWith(github.ref, 'refs/tags/')
         id: notes
         run: |
           notes=$(git-cliff --latest --strip header)
@@ -65,8 +73,98 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
           files: target/release/bundle/osx/Plexi-${{ github.ref_name }}.zip
           body: ${{ steps.notes.outputs.body }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
+  build-windows:
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      CARGO_TARGET_DIR: target
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-x64-cargo-${{ hashFiles('**/Cargo.lock', 'Cargo.toml') }}
+
+      - name: Build release binary
+        run: cargo build --release --bin plexi
+
+      - name: Fetch Python runtime
+        shell: pwsh
+        run: .\scripts\fetch-python-runtime.ps1 -Version 3.12.13 -PbsDate 20260414
+
+      - name: Locate ISCC.exe
+        id: iscc
+        shell: pwsh
+        run: |
+          $candidates = @(
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          )
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Output "Inno Setup not pre-installed on runner, installing via Chocolatey..."
+            choco install innosetup --no-progress --yes
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw "ISCC.exe not found after install attempt" }
+          "path=$iscc" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Output "Using $iscc"
+
+      - name: Derive version
+        id: ver
+        shell: pwsh
+        run: |
+          # Tag wins (strip leading 'v') so tag and AppVersion can't drift;
+          # fall back to Cargo.toml on workflow_dispatch. Refs come from runner
+          # env vars, not GitHub expression interpolation, to avoid injection.
+          if ($env:GITHUB_REF -like 'refs/tags/v*') {
+            $ver = $env:GITHUB_REF_NAME -replace '^v',''
+          } else {
+            $ver = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          }
+          "value=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Output "Version: $ver"
+
+      - name: Compile installers (stable, alpha, beta)
+        shell: pwsh
+        run: |
+          $iscc = "${{ steps.iscc.outputs.path }}"
+          $ver  = "${{ steps.ver.outputs.value }}"
+          & $iscc /DMyAppVersion=$ver installer\plexi.iss
+          if ($LASTEXITCODE -ne 0) { throw "Stable installer compile failed" }
+          & $iscc /DMyAppVersion=$ver /DMyChannel=alpha installer\plexi.iss
+          if ($LASTEXITCODE -ne 0) { throw "Alpha installer compile failed" }
+          & $iscc /DMyAppVersion=$ver /DMyChannel=beta  installer\plexi.iss
+          if ($LASTEXITCODE -ne 0) { throw "Beta installer compile failed" }
+          Get-ChildItem dist\
+
+      - name: Upload installers to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/plexi-setup.exe
+            dist/plexi-alpha-setup.exe
+            dist/plexi-beta-setup.exe
           prerelease: ${{ contains(github.ref_name, '-') }}

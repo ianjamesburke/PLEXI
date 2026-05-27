@@ -77,6 +77,48 @@ pub(crate) fn selectable_row<R>(
 //     key_combo(ui, &["⌘", "["], colors);        // single shortcut
 //     key_combo_list(ui, &[["⌘", "["], ["⌘", "]"]], colors, "to cycle");
 
+/// Display label for the primary command modifier. macOS uses the ⌘ glyph;
+/// Windows/Linux conventions write out "Ctrl". Used as a chip label so the
+/// keycap renderer is unchanged across platforms.
+#[cfg(target_os = "macos")]
+pub(crate) const CMD: &str = "⌘";
+#[cfg(not(target_os = "macos"))]
+pub(crate) const CMD: &str = "Ctrl";
+
+/// Display label for the shift modifier. macOS uses the ⇧ glyph; everywhere
+/// else writes "Shift".
+#[cfg(target_os = "macos")]
+pub(crate) const SHIFT: &str = "⇧";
+#[cfg(not(target_os = "macos"))]
+pub(crate) const SHIFT: &str = "Shift";
+
+// Chip sequences for the two host-shortcut modifier tiers, mirroring the
+// platform mapping in `keys.rs`. macOS renders the ⌘ glyphs unchanged; on
+// Windows/Linux the tiers shift up (Cmd → Ctrl+Shift, Cmd+Shift → Ctrl+Alt)
+// so the displayed chords match what the host actually binds and the bare-Ctrl
+// space stays free for the terminal. Use these with `combo()` instead of
+// hand-composing `CMD`/`SHIFT`, so a single place owns the mapping.
+
+/// Primary modifier tier — `keys::cmd()`.
+#[cfg(target_os = "macos")]
+pub(crate) const MOD_CMD: &[&str] = &[CMD];
+#[cfg(not(target_os = "macos"))]
+pub(crate) const MOD_CMD: &[&str] = &["Ctrl", "Shift"];
+
+/// Secondary modifier tier — `keys::cmd_shift()`.
+#[cfg(target_os = "macos")]
+pub(crate) const MOD_CMD_SHIFT: &[&str] = &[CMD, SHIFT];
+#[cfg(not(target_os = "macos"))]
+pub(crate) const MOD_CMD_SHIFT: &[&str] = &["Ctrl", "Alt"];
+
+/// Build one key combo from a modifier-tier chip slice plus trailing key
+/// labels — e.g. `combo(MOD_CMD, &["N"])` → `["⌘","N"]` on macOS,
+/// `["Ctrl","Shift","N"]` elsewhere. Pass the result to `key_combo` /
+/// `key_combo_list` (a `&Vec<&str>` coerces to `&[&str]`).
+pub(crate) fn combo(modifier: &[&'static str], keys: &[&'static str]) -> Vec<&'static str> {
+    modifier.iter().chain(keys.iter()).copied().collect()
+}
+
 /// Padding around the key label text inside the chip.
 const KEYCAP_PAD_H: f32 = 6.0;
 const KEYCAP_PAD_V: f32 = 3.0;

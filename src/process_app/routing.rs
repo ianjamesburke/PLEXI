@@ -676,20 +676,43 @@ impl ProcessApp {
                     );
                     handle.cancel.store(true, Ordering::Relaxed);
                     // SIGTERM first; reader thread exits when the pipe closes.
-                    unsafe {
-                        libc::kill(handle.pid as libc::pid_t, libc::SIGTERM);
-                    }
                     // Escalate to SIGKILL after a 1s grace period on a
                     // background thread so the UI never blocks.
-                    let pid = handle.pid;
-                    std::thread::Builder::new()
-                        .name(format!("sigkill-{pid}"))
-                        .spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_secs(1));
+                    #[cfg(unix)]
+                    {
                         unsafe {
-                            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                            libc::kill(handle.pid as libc::pid_t, libc::SIGTERM);
                         }
-                    }).expect("failed to spawn sigkill thread");
+                        let pid = handle.pid;
+                        std::thread::Builder::new()
+                            .name(format!("sigkill-{pid}"))
+                            .spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                            unsafe {
+                                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                            }
+                        }).expect("failed to spawn sigkill thread");
+                    }
+                    #[cfg(windows)]
+                    {
+                        // TerminateProcess is unconditional — single call
+                        // replaces the Unix SIGTERM-then-SIGKILL escalation.
+                        let pid = handle.pid;
+                        match crate::process_app::win::terminate(pid) {
+                            Ok(()) => log::info!(
+                                "ProcessApp[{}]: CancelProcess — terminated pid {pid} via Win32 TerminateProcess",
+                                self.type_id
+                            ),
+                            Err(err) => log::warn!(
+                                "ProcessApp[{}]: CancelProcess — TerminateProcess failed for pid {pid}: {err}",
+                                self.type_id
+                            ),
+                        }
+                    }
+                    #[cfg(not(any(unix, windows)))]
+                    {
+                        log::warn!("ProcessApp: CancelProcess termination skipped on this platform (pid {} left running)", handle.pid);
+                    }
                 }
                 // else: stream already ended — no-op, no error event.
             }

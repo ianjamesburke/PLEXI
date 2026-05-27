@@ -18,6 +18,8 @@ pub(crate) mod prompts;
 pub(crate) mod render;
 mod render_session;
 mod routing;
+#[cfg(windows)]
+mod win;
 
 pub(crate) use lifecycle::{LifecycleState, LifecycleTracker};
 use render_session::RenderSession;
@@ -351,25 +353,48 @@ impl ProcessApp {
         // Clear the inherited environment and whitelist only vars the app
         // legitimately needs. Strips OPENROUTER_API_KEY and every other
         // host credential — apps must use the iq.query / llm broker, never direct API access.
+        #[cfg(not(windows))]
         const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
+        // Windows: SYSTEMROOT et al are required for Win32 DLL loading; without them
+        // Python's `import asyncio` fails with WSAEPROVIDERFAILEDINIT. No secrets here.
+        #[cfg(windows)]
+        const ENV_WHITELIST: &[&str] = &[
+            "HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL",
+            "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR",
+            "USERPROFILE", "USERNAME", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP",
+            "COMSPEC", "PATHEXT",
+            "OS", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "COMPUTERNAME",
+        ];
 
-        // Resolve the bundled Python interpreter path — used both to build the
-        // python3 command for .py entries and to prepend to PATH for PYTHONPATH setup.
+        // Resolve the bundled Python interpreter path. python-build-standalone
+        // ships .exe at the python/ root on Windows but under bin/ on Unix.
         let bundle_contents = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()));
-        let bundled_py_bin = bundle_contents.as_ref()
+        #[cfg(windows)]
+        let bundled_py_bin = bundle_contents
+            .as_ref()
+            .map(|c| c.join("Resources").join("assets").join("python"));
+        #[cfg(not(windows))]
+        let bundled_py_bin = bundle_contents
+            .as_ref()
             .map(|c| c.join("Resources").join("assets").join("python").join("bin"));
 
-        // .py entries are launched via python3 directly — no shebang or executable bit required.
+        // `python` not `python3` on Windows: pymanager hijacks `python3` when no runtime is installed.
+        #[cfg(windows)]
+        const PY_FALLBACK: &str = "python";
+        #[cfg(not(windows))]
+        const PY_FALLBACK: &str = "python3";
+
         let is_python = bin_path.extension().and_then(|e| e.to_str()) == Some("py");
         let py_exe: Option<std::ffi::OsString> = if is_python {
             Some(
-                bundled_py_bin.as_ref()
-                    .map(|b| b.join("python3"))
+                bundled_py_bin
+                    .as_ref()
+                    .map(|b| b.join(if cfg!(windows) { "python.exe" } else { "python3" }))
                     .filter(|p| p.exists())
                     .map(|p| std::ffi::OsString::from(p))
-                    .unwrap_or_else(|| std::ffi::OsString::from("python3")),
+                    .unwrap_or_else(|| std::ffi::OsString::from(PY_FALLBACK)),
             )
         } else {
             None
@@ -401,9 +426,10 @@ impl ProcessApp {
         }
         // Set PLEXI_SOCKET so the app can invoke `plexi` CLI commands against
         // the running host. macOS GUI apps don't inherit shell env, so this
-        // is never present via PLEXI_* passthrough above.
-        let socket_path = crate::config::config_dir().join("notify.sock");
-        cmd.env("PLEXI_SOCKET", &socket_path);
+        // is never present via PLEXI_* passthrough above. Route through
+        // `ipc_endpoint()` so Windows gets the named-pipe string (the host
+        // listener binds the same name) and Unix gets the same socket path.
+        cmd.env("PLEXI_SOCKET", crate::config::ipc_endpoint());
 
         // Start the MCP server when the manifest declares [app.mcp].
         let mcp_server_handle = mcp.map(|section| {
@@ -419,13 +445,13 @@ impl ProcessApp {
                 }
             }
         }).flatten();
-        // Prepend the bundled Python interpreter's bin/ dir to PATH so that
-        // dev-mode .py entries without the bundle still resolve python3 correctly.
-        // Falls back silently to host PATH if the bundle runtime isn't present.
+        // Prepend the bundled interpreter dir to PATH so dev-mode .py entries
+        // resolve it; falls back to host PATH when the bundle runtime is absent.
         if let Some(ref py_bin) = bundled_py_bin {
             if py_bin.exists() {
                 let host_path = std::env::var("PATH").unwrap_or_default();
-                cmd.env("PATH", format!("{}:{}", py_bin.display(), host_path));
+                let sep = if cfg!(windows) { ";" } else { ":" };
+                cmd.env("PATH", format!("{}{}{}", py_bin.display(), sep, host_path));
             }
         }
 
@@ -439,18 +465,24 @@ impl ProcessApp {
             .map(|p| p.join("Resources").join("sdk").join("python"))
             .filter(|p| p.exists())
         {
-            pythonpath.push(':');
+            pythonpath.push(if cfg!(windows) { ';' } else { ':' });
             pythonpath.push_str(&bundle_sdk.to_string_lossy());
         }
 
         // Static capability validation — runs before the real spawn.
         // For Python apps only; non-Python apps skip. Subprocess failures log warn and proceed.
+        // No capabilities → skip: nothing to validate, and the introspect spawn
+        // is a full Python cold-start that noticeably delays launch.
         if let Some(ref py) = py_exe {
+            if capabilities.is_empty() {
+                log::info!("ProcessApp[{type_id}]: no declared capabilities — skipping static capability check");
+            } else {
             let path_env = {
                 let host_path = std::env::var("PATH").unwrap_or_default();
+                let sep = if cfg!(windows) { ";" } else { ":" };
                 if let Some(ref py_bin) = bundled_py_bin {
                     if py_bin.exists() {
-                        format!("{}:{}", py_bin.display(), host_path)
+                        format!("{}{}{}", py_bin.display(), sep, host_path)
                     } else {
                         host_path
                     }
@@ -468,9 +500,17 @@ impl ProcessApp {
             ) {
                 return Err(e);
             }
+            }
         }
 
         cmd.env("PYTHONPATH", pythonpath);
+        // Suppress the console window python.exe (a console-subsystem binary) would otherwise pop.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
         let mut child = cmd.spawn()?;
 
         let stdin = child.stdin.take().expect("stdin piped");
@@ -606,24 +646,53 @@ impl ProcessApp {
         // per-frame try_wait() poll that was causing 600 syscalls/sec with 10 panes open.
         let reaper_pid = child.id();
         let lifecycle_reaper = Arc::clone(&lifecycle_tracker);
-        let reaper_type_id = type_id.clone();
-        thread::Builder::new()
-            .name(format!("app-reaper-{reaper_type_id}"))
-            .spawn(move || {
-                let mut status = 0i32;
-                // SAFETY: reaper_pid is a valid child PID obtained from Command::spawn().
-                // We block until the child exits. The shutdown path's child.wait() may
-                // race and get ECHILD if we win — that's harmless since shutdown discards
-                // the result with `let _ = child.wait()`.
-                unsafe {
-                    libc::waitpid(reaper_pid as libc::pid_t, &mut status, 0);
-                }
-                log::info!(
-                    "ProcessApp[{reaper_type_id}]: child exited — reaper signaling lifecycle"
-                );
-                lifecycle_reaper.on_process_exited();
-            })
-            .expect("failed to spawn app-reaper thread");
+        // Reaper races with the shutdown path's child.wait(); whichever side wins
+        // observes the exit, the other gets ECHILD / already-gone — both harmless.
+        #[cfg(unix)]
+        {
+            let reaper_type_id = type_id.clone();
+            thread::Builder::new()
+                .name(format!("app-reaper-{reaper_type_id}"))
+                .spawn(move || {
+                    let mut status = 0i32;
+                    // SAFETY: reaper_pid is a valid child PID obtained from Command::spawn().
+                    unsafe {
+                        libc::waitpid(reaper_pid as libc::pid_t, &mut status, 0);
+                    }
+                    log::info!(
+                        "ProcessApp[{reaper_type_id}]: child exited — reaper signaling lifecycle"
+                    );
+                    lifecycle_reaper.on_process_exited();
+                })
+                .expect("failed to spawn app-reaper thread");
+        }
+        #[cfg(windows)]
+        {
+            let reaper_type_id = type_id.clone();
+            thread::Builder::new()
+                .name(format!("app-reaper-{reaper_type_id}"))
+                .spawn(move || {
+                    match win::wait(reaper_pid) {
+                        Ok(()) => {
+                            log::info!(
+                                "ProcessApp[{reaper_type_id}]: child exited (pid {reaper_pid}) — reaper signaling lifecycle via Win32 WaitForSingleObject"
+                            );
+                        }
+                        Err(err) => {
+                            log::warn!(
+                                "ProcessApp[{reaper_type_id}]: Win32 wait failed for pid {reaper_pid}: {err} — signaling lifecycle anyway"
+                            );
+                        }
+                    }
+                    lifecycle_reaper.on_process_exited();
+                })
+                .expect("failed to spawn app-reaper thread");
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (reaper_pid, &type_id, lifecycle_reaper);
+            log::warn!("ProcessApp[{type_id}]: app-reaper not wired on this platform — exit detection limited to shutdown path");
+        }
 
         let config_dir = crate::config::config_dir();
         let store = crate::app_permissions::PermissionStore::load_or_default(&config_dir);
@@ -2133,8 +2202,19 @@ pub(crate) fn static_capability_check(
 
     log::info!("ProcessApp[{type_id}]: running static capability check");
 
+    // Must mirror the launch ENV_WHITELIST's Windows additions, else the
+    // introspect run crashes on `import asyncio` (WSAEPROVIDERFAILEDINIT).
+    #[cfg(not(windows))]
     const INTROSPECT_ENV_WHITELIST: &[&str] = &[
         "HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL",
+    ];
+    #[cfg(windows)]
+    const INTROSPECT_ENV_WHITELIST: &[&str] = &[
+        "HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL",
+        "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR",
+        "USERPROFILE", "USERNAME", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP",
+        "COMSPEC", "PATHEXT",
+        "OS", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "COMPUTERNAME",
     ];
     let mut cmd = std::process::Command::new(py_exe);
     cmd.arg(bin_path)
@@ -2149,6 +2229,13 @@ pub(crate) fn static_capability_check(
         if let Ok(v) = std::env::var(var) {
             cmd.env(var, v);
         }
+    }
+    // Hide the console window the introspect python.exe would otherwise pop.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
     let child = match cmd.spawn() {
@@ -2173,7 +2260,19 @@ pub(crate) fn static_capability_check(
         }
         Err(_) => {
             log::warn!("ProcessApp[{type_id}]: static capability check timed out (pid {pid}) — killing and skipping");
+            #[cfg(unix)]
             unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL); }
+            #[cfg(windows)]
+            {
+                match win::terminate(pid) {
+                    Ok(()) => log::info!(
+                        "ProcessApp[{type_id}]: terminated pid {pid} via Win32 TerminateProcess (static-cap-check timeout)"
+                    ),
+                    Err(err) => log::warn!(
+                        "ProcessApp[{type_id}]: TerminateProcess failed for pid {pid}: {err}"
+                    ),
+                }
+            }
             return Ok(());
         }
     };
@@ -2262,10 +2361,12 @@ impl Drop for ProcessApp {
                 handle.pid
             );
             handle.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            #[cfg(unix)]
             unsafe {
                 libc::kill(handle.pid as libc::pid_t, libc::SIGTERM);
             }
             let pid = handle.pid;
+            #[cfg(unix)]
             let _ = std::thread::Builder::new()
                 .name(format!("drop-sigkill-{pid}"))
                 .spawn(move || {
@@ -2275,6 +2376,24 @@ impl Drop for ProcessApp {
                         libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG);
                     }
                 });
+            #[cfg(windows)]
+            {
+                // TerminateProcess is unconditional — single call replaces the
+                // Unix SIGTERM-then-SIGKILL escalation.
+                let type_id = &self.type_id;
+                match win::terminate(pid) {
+                    Ok(()) => log::info!(
+                        "ProcessApp[{type_id}]: drop — terminated stream pid {pid} via Win32 TerminateProcess"
+                    ),
+                    Err(err) => log::warn!(
+                        "ProcessApp[{type_id}]: drop — TerminateProcess failed for stream pid {pid}: {err}"
+                    ),
+                }
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                log::warn!("ProcessApp: stream drop-kill skipped on this platform (pid {pid} left running until host exits)");
+            }
         }
         // Unregister any tools this pane exposed so the global registry stays clean.
         crate::plexi_ai::tool_dispatch::unregister(self.pane_id);

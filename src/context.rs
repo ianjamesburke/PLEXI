@@ -1,5 +1,6 @@
 use crate::keys::Direction;
 use crate::pane::Pane;
+#[cfg(not(windows))]
 use crate::shell;
 use crate::tiling::PaneId;
 use egui_tiles::{Container, Tile, TileId, Tree};
@@ -200,11 +201,53 @@ impl Window {
         };
         let pane = self.panes.get(&pane_id)?;
         if let Some(terminal) = pane.as_terminal() {
+            // Windows can't report a PowerShell shell's cwd; read the sidecar the
+            // prompt hook writes. None until the hook has run (callers use context root).
+            #[cfg(windows)]
+            {
+                let _ = &terminal;
+                return read_pane_cwd_sidecar(pane_id);
+            }
+            #[cfg(not(windows))]
             shell::get_pid_cwd(terminal.backend.child_pid())
         } else {
             pane.as_app().map(|app| app.workspace_root.clone())
         }
     }
+}
+
+/// Read the per-pane cwd sidecar. Returns the path only when it's an existing
+/// directory, so a stale/partial file never resolves to a bogus cwd.
+#[cfg(windows)]
+fn read_pane_cwd_sidecar(pane_id: u64) -> Option<PathBuf> {
+    use std::sync::{LazyLock, Mutex};
+    use std::time::{Duration, Instant};
+
+    // get_focused_pane_cwd runs on the render path (the sidebar reads it every
+    // frame), so cache the read on a short TTL — mirrors shell::get_pid_cwd.
+    static CACHE: LazyLock<Mutex<HashMap<u64, (Option<PathBuf>, Instant)>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+    const TTL: Duration = Duration::from_millis(300);
+
+    if let Ok(cache) = CACHE.lock() {
+        if let Some((val, ts)) = cache.get(&pane_id) {
+            if ts.elapsed() < TTL {
+                return val.clone();
+            }
+        }
+    }
+
+    let result = std::fs::read_to_string(crate::config::pane_cwd_file(pane_id))
+        .ok()
+        .and_then(|contents| {
+            let dir = PathBuf::from(contents.trim());
+            (!dir.as_os_str().is_empty() && dir.is_dir()).then_some(dir)
+        });
+
+    if let Ok(mut cache) = CACHE.lock() {
+        cache.insert(pane_id, (result.clone(), Instant::now()));
+    }
+    result
 }
 
 /// Pure-geometry direction-finder. Picks the geometrically-nearest neighbor

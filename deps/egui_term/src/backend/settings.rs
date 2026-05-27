@@ -1,7 +1,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+// Fallback only — the host overrides via `shell::detect_shell()` in practice.
+#[cfg(unix)]
 const DEFAULT_SHELL: &str = "/bin/bash";
+#[cfg(windows)]
+const DEFAULT_SHELL: &str = "cmd.exe";
 
 #[derive(Debug, Clone)]
 pub struct BackendSettings {

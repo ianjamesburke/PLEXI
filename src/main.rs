@@ -53,6 +53,8 @@ mod protocol;
 mod runs;
 mod secrets;
 mod secrets_app;
+#[cfg(windows)]
+mod secrets_win;
 mod workspace_router;
 mod workspace_secrets;
 mod scheduler;
@@ -83,6 +85,19 @@ fn main() -> eframe::Result {
     let profile = parse_profile_flag(&raw_args);
     crate::config::set_profile(profile);
     let is_first_launch = crate::config::ensure_profile_initialized();
+
+    // Per-pane cwd sidecars are session-scoped; clear stale ones from prior
+    // runs so config_dir/panes/ doesn't grow unbounded. Safe at startup — no
+    // panes are live yet.
+    #[cfg(windows)]
+    {
+        let panes_dir = crate::config::config_dir().join("panes");
+        if let Err(e) = std::fs::remove_dir_all(&panes_dir) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("startup: failed to clear {}: {e}", panes_dir.display());
+            }
+        }
+    }
 
     {
         let apps_dir = crate::app_registry::apps_dir();
@@ -152,9 +167,22 @@ fn main() -> eframe::Result {
     let merged_config_root = adopted_root
         .clone()
         .or_else(|| crate::config::active_workspace_root());
-    let log_config = crate::config::PlexiConfig::load_with_workspace(merged_config_root.as_deref())
-        .log
-        .unwrap_or_default();
+    let bootstrap_config = crate::config::PlexiConfig::load_with_workspace(merged_config_root.as_deref());
+    // With no path arg, honour `default_cwd` so Plexi doesn't inherit the .exe /
+    // shortcut dir. Intentionally before CLI subcommand dispatch, so it applies there too.
+    if adopted_root.is_none() {
+        if let Some(raw) = bootstrap_config.default_cwd.as_deref() {
+            let target = crate::config::expand_user_path(raw);
+            match std::env::set_current_dir(&target) {
+                Ok(()) => eprintln!("plexi: default_cwd applied → {}", target.display()),
+                Err(e) => eprintln!(
+                    "warning: default_cwd '{}' could not be entered: {e}",
+                    target.display()
+                ),
+            }
+        }
+    }
+    let log_config = bootstrap_config.log.clone().unwrap_or_default();
     let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
     let retention_days = log_config.retention_days.unwrap_or(30);
     let cli_mode = raw_args.iter().skip(1).any(|a| {

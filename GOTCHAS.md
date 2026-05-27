@@ -126,3 +126,14 @@ Sessions always start inside `worktrees/alpha/`. Running `git -C worktrees/alpha
 
 ## 2026-05-05 — [ship] Worktree CWD gone after wtp remove
 After merging and running `wtp remove`, the feature worktree directory no longer exists. Any shell commands that reference it will fail. Always finish all file edits and cd away before cleanup steps.
+
+## 2026-05-27 — [egui · macos] `Modifiers::COMMAND` is Ctrl off-macOS, so host shortcuts shadow terminal control codes
+egui maps `Modifiers::COMMAND` to ⌘ on macOS but to **Ctrl** on Windows/Linux. Plexi's host shortcuts are all defined with `cmd()` (= `COMMAND`), so on non-mac every shortcut became a bare `Ctrl+<key>` chord — the exact namespace terminals use for control codes (Ctrl+I = Tab, Ctrl+R = reverse-search, Ctrl+W = delete-word, Ctrl+[ = ESC, …). `poll_actions` runs before the terminal view reads input and `consume_key`s the event, so the focused terminal (neovim, readline) never received it.
+
+**Fix (`src/keys.rs`):** on non-mac the modifier tiers shift up — `cmd()` → Ctrl+Shift, `cmd_shift()` → Ctrl+Alt — leaving bare Ctrl free for the terminal. macOS keeps the ⌘ scheme. Both paths are `#[cfg]`-split in the `cmd*()` helpers.
+
+**Subset-matching trap:** egui's `consume_key` uses `Modifiers::matches_logically`, which treats shift/alt as a *subset* — a `Ctrl+Shift` pattern also matches a `Ctrl+Shift+Alt` press (but not vice-versa). Tiers MUST therefore be checked most-specific-first in `poll_actions`: `cmd_shift` (Ctrl+Shift+Alt) before `cmd` (Ctrl+Shift) and before `cmd_ctrl`/`cmd_alt` (Ctrl+Alt). Adding a binding on a key that already has a shifted sibling requires placing the more-specific check first, or it silently eats the other. This is why swap-pane is checked after tabs, and reload-config before open-config.
+
+**Display:** shortcut hints must build combos from `widgets::MOD_CMD` / `MOD_CMD_SHIFT` (which encode the per-platform chip sequence) via `widgets::combo()`, not hand-composed `CMD`+`SHIFT`, or Windows help text under-reports the modifier.
+
+**Shift mutates punctuation/digit logical keys.** Once shortcuts include Shift, egui no longer reports the base punctuation key: egui-winit sets the event key to `logical_key.or(physical_key)` (egui-winit lib.rs:764), and `Shift+/` has logical key `?`. So `consume_key(Ctrl+Shift, Key::Slash)` never matches `Ctrl+Shift+/` — it arrives as `Key::Questionmark`. This breaks exactly the keys egui exposes a shifted variant for: `/`→`?`, `[`→`{`, `]`→`}`, `\`→`|`, `=`→`+`, `1`→`!`. Keys with NO variant (`,`→`<`, `-`→`_`, digits `2`–`9`/`0`) fall through to their physical key and still match. Fix: `shift_variant(base, shifted)` in `keys.rs` binds the shifted variant on non-mac (US/ANSI layout assumed). Symptom when missed: the shortcut silently does nothing (reported for `Ctrl+Shift+/`). Letters are unaffected — `Shift+i` is still `Key::I`.

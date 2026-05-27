@@ -36,6 +36,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "font_size", "theme_preset", "theme", "beta", "log",
     "notifications", "ai", "confirm_quit", "confirm_close",
     "keybindings", "quick_note", "focus_history_depth", "agents", "cli",
+    "default_cwd",
 ];
 const KNOWN_AGENTS: &[&str] = &["low", "medium", "high"];
 const KNOWN_CLI: &[&str] = &["tips"];
@@ -287,6 +288,24 @@ pub struct PlexiConfig {
     pub focus_history_depth: Option<usize>,
     pub agents: Option<AgentsConfig>,
     pub cli: Option<CliConfig>,
+    /// Directory to cd into at boot when launched without a path argument
+    /// (avoids inheriting `...\bin\` on Windows). Supports `~`. Unset = shell CWD.
+    pub default_cwd: Option<String>,
+}
+
+/// Expand a leading `~` / `~/` to the home directory; returns the trimmed path
+/// unchanged when no expansion applies or no home dir resolves.
+pub fn expand_user_path(raw: &str) -> PathBuf {
+    let trimmed = raw.trim();
+    if trimmed == "~" {
+        return dirs::home_dir().unwrap_or_else(|| PathBuf::from(trimmed));
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(trimmed)
 }
 
 /// CLI behavior configuration.
@@ -610,6 +629,42 @@ pub fn config_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(config_dir_name())
+}
+
+/// Path of the per-pane cwd sidecar the shell's prompt hook writes to. Needed
+/// on Windows, where a PowerShell session's cwd isn't exposed by the OS.
+pub fn pane_cwd_file(pane_id: u64) -> PathBuf {
+    config_dir().join("panes").join(format!("{pane_id}.cwd"))
+}
+
+/// Value of `PLEXI_SOCKET` for every pane — an AF_UNIX path on Unix, a Win32
+/// named-pipe name on Windows. Both the host (binding) and the CLI client
+/// (connecting) call this so the strings agree by construction.
+pub fn ipc_endpoint() -> String {
+    #[cfg(unix)]
+    {
+        config_dir()
+            .join("notify.sock")
+            .to_string_lossy()
+            .into_owned()
+    }
+    #[cfg(windows)]
+    {
+        // Derive from config_dir_name() so `--profile foo` and PR builds get
+        // distinct pipes — matching the per-profile isolation Unix already
+        // gets via config_dir()/notify.sock. Strip the `.plexi-` prefix
+        // (or `.plexi` → empty) so the pipe name reads cleanly:
+        //   .plexi        -> \\.\pipe\plexi-notify
+        //   .plexi-alpha  -> \\.\pipe\plexi-notify-alpha
+        //   .plexi-pr-783 -> \\.\pipe\plexi-notify-pr-783
+        let dir_name = config_dir_name();
+        let suffix = dir_name.strip_prefix(".plexi-").unwrap_or("");
+        if suffix.is_empty() {
+            r"\\.\pipe\plexi-notify".to_string()
+        } else {
+            format!(r"\\.\pipe\plexi-notify-{suffix}")
+        }
+    }
 }
 
 pub const CONFIG_TEMPLATE: &str = include_str!("../scripts/default-config.toml");

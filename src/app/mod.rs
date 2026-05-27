@@ -450,46 +450,148 @@ fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
     theme::setup_style(ctx, colors, true);
 }
 
+#[cfg(unix)]
 fn spawn_socket_listener(
     tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
 ) {
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
 
-    let path = crate::config::config_dir().join("notify.sock");
+    let endpoint = crate::config::ipc_endpoint();
+    let path = std::path::PathBuf::from(&endpoint);
     let _ = std::fs::remove_file(&path);
     let listener = match UnixListener::bind(&path) {
         Ok(l) => l,
         Err(e) => {
-            log::error!("pane_ipc: failed to bind {:?}: {e}", path);
+            log::error!("pane_ipc: failed to bind {endpoint}: {e}");
             return;
         }
     };
-    log::info!("pane_ipc: listening on {:?}", path);
+    log::info!("pane_ipc: listening on {endpoint}");
+    let endpoint_log = endpoint.clone();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
-            let Ok(stream) = stream else { break };
-            let tx = tx.clone();
-            std::thread::spawn(move || {
-                let reader = BufReader::new(stream);
-                for line in reader.lines() {
-                    let Ok(line) = line else { break };
-                    let line = line.trim().to_owned();
-                    if line.is_empty() {
-                        continue;
-                    }
-                    match serde_json::from_str::<crate::app_protocol::AppRequest>(&line) {
-                        Ok(cmd) => {
-                            let _ = tx.send(cmd);
-                        }
-                        Err(e) => {
-                            log::warn!("pane_ipc: parse error: {e}  line={line:?}");
-                        }
-                    }
+            let stream = match stream {
+                Ok(s) => s,
+                Err(e) => {
+                    // Log and continue — one transient accept failure must
+                    // not take IPC offline for the rest of the session.
+                    log::warn!("pane_ipc: accept failed on {endpoint_log}: {e}");
+                    continue;
                 }
-            });
+            };
+            let tx = tx.clone();
+            if let Err(e) = std::thread::Builder::new()
+                .name("plexi-pane-ipc-conn".into())
+                .spawn(move || {
+                    let reader = BufReader::new(stream);
+                    dispatch_lines(reader, &tx);
+                })
+            {
+                log::warn!("pane_ipc: failed to spawn connection thread: {e}");
+            }
         }
     });
+}
+
+#[cfg(windows)]
+fn spawn_socket_listener(
+    tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
+) {
+    use std::io::BufReader;
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+    use windows_sys::Win32::System::Pipes::{
+        ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
+        PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    };
+
+    let endpoint = crate::config::ipc_endpoint();
+    log::info!("pane_ipc: listening on {endpoint}");
+
+    let wide: Vec<u16> = endpoint.encode_utf16().chain(std::iter::once(0)).collect();
+
+    let spawn_result = std::thread::Builder::new()
+        .name("plexi-pane-ipc".into())
+        .spawn(move || loop {
+            // Each ConnectNamedPipe accepts one client. Recreate the instance
+            // per connection; PIPE_UNLIMITED_INSTANCES lets concurrent listeners
+            // coexist under the same name.
+            let raw = unsafe {
+                CreateNamedPipeW(
+                    wide.as_ptr(),
+                    PIPE_ACCESS_DUPLEX,
+                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                    PIPE_UNLIMITED_INSTANCES,
+                    64 * 1024,
+                    64 * 1024,
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            if raw == INVALID_HANDLE_VALUE {
+                let err = std::io::Error::last_os_error();
+                log::error!("pane_ipc: CreateNamedPipeW failed for {endpoint}: {err}");
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                continue;
+            }
+
+            // ERROR_PIPE_CONNECTED: the client beat us here. Still success.
+            let connected = unsafe { ConnectNamedPipe(raw, std::ptr::null_mut()) };
+            let ok = connected != 0
+                || std::io::Error::last_os_error().raw_os_error()
+                    == Some(ERROR_PIPE_CONNECTED as i32);
+            if !ok {
+                let err = std::io::Error::last_os_error();
+                log::warn!("pane_ipc: ConnectNamedPipe failed: {err}");
+                unsafe { CloseHandle(raw); }
+                continue;
+            }
+
+            let owned = unsafe { OwnedHandle::from_raw_handle(raw as _) };
+            let tx = tx.clone();
+            if let Err(e) = std::thread::Builder::new()
+                .name("plexi-pane-ipc-conn".into())
+                .spawn(move || {
+                    let file = std::fs::File::from(owned);
+                    let reader = BufReader::new(file);
+                    dispatch_lines(reader, &tx);
+                })
+            {
+                log::warn!("pane_ipc: failed to spawn connection thread: {e}");
+                // `owned` was moved into the closure on success; on failure
+                // it's dropped here, closing the pipe handle automatically.
+            }
+        });
+    if let Err(e) = spawn_result {
+        // Listener is essential for in-pane CLI calls but not for host startup;
+        // log and degrade rather than aborting.
+        log::error!("pane_ipc: listener thread spawn failed; in-pane CLI calls will not work: {e}");
+    }
+}
+
+fn dispatch_lines<R: std::io::BufRead>(
+    reader: R,
+    tx: &std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
+) {
+    for line in reader.lines() {
+        let Ok(line) = line else { break };
+        let line = line.trim().to_owned();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<crate::app_protocol::AppRequest>(&line) {
+            Ok(cmd) => {
+                let _ = tx.send(cmd);
+            }
+            Err(e) => {
+                log::warn!("pane_ipc: parse error: {e}  line={line:?}");
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1361,17 +1463,33 @@ impl PlexiApp {
         log::info!("make_backend_settings: pane_id={pane_id} context_id={context_id} context_name={context_name:?}");
         let mut env = shell::build_env();
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
-        let socket = crate::config::config_dir()
-            .join("notify.sock")
-            .to_string_lossy()
-            .into_owned();
-        env.insert("PLEXI_SOCKET".into(), socket);
+        env.insert("PLEXI_SOCKET".into(), crate::config::ipc_endpoint());
+        // Windows can't read a shell's cwd from the OS; point the shell at a
+        // sidecar file its prompt hook writes $PWD to. See config::pane_cwd_file.
+        #[cfg(windows)]
+        {
+            let cwd_file = crate::config::pane_cwd_file(pane_id);
+            if let Some(parent) = cwd_file.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            env.insert(
+                "PLEXI_PANE_CWD_FILE".into(),
+                cwd_file.to_string_lossy().into_owned(),
+            );
+        }
         env.insert("PLEXI_CONTEXT_ID".into(), context_id.to_string());
         env.insert("PLEXI_CONTEXT_NAME".into(), context_name.to_string());
         env.insert("PLEXI_CONTEXT_DESCRIPTION".into(), context_description.to_string());
+        // `-l` makes Unix login shells source .zprofile / .bash_profile. cmd
+        // rejects it and pwsh treats it as a script path, so Windows passes
+        // no args — interactive panes get a plain REPL.
+        #[cfg(unix)]
+        let default_args = vec!["-l".to_string()];
+        #[cfg(windows)]
+        let default_args: Vec<String> = Vec::new();
         BackendSettings {
             shell: shell::detect_shell(),
-            args: vec!["-l".to_string()],
+            args: default_args,
             env,
             dynamic_colors: theme::terminal_dynamic_colors(colors),
             working_directory,
@@ -3699,11 +3817,14 @@ impl eframe::App for PlexiApp {
         // have crashed, after a 2s delay so the developer can read the traceback.
         self.drain_crash_restarts();
 
-        // Reload configuration from disk when the user clicks
-        // "Reload Configuration" in the app menu.
-        crate::macos_menu::apply_version_title_once();
-        if crate::macos_menu::take_reload_config_flag() {
-            self.reload_config();
+        // NSMenu hook for "Reload Configuration". Other platforms surface it
+        // via the command palette.
+        #[cfg(target_os = "macos")]
+        {
+            crate::macos_menu::apply_version_title_once();
+            if crate::macos_menu::take_reload_config_flag() {
+                self.reload_config();
+            }
         }
 
         // Config hot-reload (#1115): drain filesystem watcher signals.
