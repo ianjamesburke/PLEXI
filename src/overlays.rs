@@ -3608,7 +3608,6 @@ impl PlexiApp {
 
         // ── Resolve keyboard input into an action_cmd (only if not already
         //    produced by a mouse click). Mouse wins; keyboard is a fallback.
-        // Tombstoned notifications have no keyboard actions — only the mouse Dismiss.
         if action_cmd.is_none() && !notif.tombstoned {
             match notif.kind {
                 NotifyKind::Message => {
@@ -3682,6 +3681,21 @@ impl PlexiApp {
                 }
                 _ => {}
             }
+        }
+
+        if action_cmd.is_none() && notif.tombstoned && (enter_pressed || space_pressed) {
+            action_cmd = Some(AppCommand::DeliverNotifyAction {
+                pane_id: notif.sender_pane_id,
+                notify_id: notif.notify_id.clone(),
+                action_label: "tombstone_dismiss".to_string(),
+                value: Some("tombstone_dismiss".to_string()),
+                response_file: notif.response_file.clone(),
+                host_action: None,
+            });
+            log::info!(
+                "notify:tombstone_dismiss:keyboard notify_id={}",
+                notif.notify_id
+            );
         }
 
         // Esc defers (not cancels) unless the notification is required.
