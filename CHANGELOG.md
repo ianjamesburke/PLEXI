@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.515] — 2026-05-27
+
+### Changes
+- fix(ci): replace deprecated --skip-existing with --check-url in uv publish
+- fix(cli): remove noisy PLEXI_RUNNING log, update docs URL to plexiapp.com/docs
 ## [0.0.514] — 2026-05-27
 
 ### Changes
