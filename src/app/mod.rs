@@ -2519,6 +2519,8 @@ impl eframe::App for PlexiApp {
                 None => crate::app_trait::KeyDisposition::Passthrough,
             };
             // Step 2: render the overlay (visual only — key reads already done above).
+            // .cloned() is required: the QuickNoteSubDestination arm borrows `path` from
+            // focus_stack while calling draw_quick_note_menu which needs &mut self.
             match self.focus_stack.last().cloned() {
                 Some(FocusLayer::NotificationModal) => {
                     early_modal_cmds = self.draw_notification_modal(ctx);

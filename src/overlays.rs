@@ -4415,22 +4415,27 @@ impl PlexiApp {
 
     pub(crate) fn quick_note_handle_key(
         &mut self,
-        _ctx: &egui::Context,
+        ctx: &egui::Context,
     ) -> crate::app_trait::KeyDisposition {
+        // Consume Cmd+0 so poll_actions doesn't fire OpenQuickNote while the modal
+        // is already open — that would reset mid-session note state.
+        ctx.input_mut(|i| { i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0); });
         crate::app_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn quick_note_destination_handle_key(
         &mut self,
-        _ctx: &egui::Context,
+        ctx: &egui::Context,
     ) -> crate::app_trait::KeyDisposition {
+        ctx.input_mut(|i| { i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0); });
         crate::app_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn quick_note_sub_destination_handle_key(
         &mut self,
-        _ctx: &egui::Context,
+        ctx: &egui::Context,
     ) -> crate::app_trait::KeyDisposition {
+        ctx.input_mut(|i| { i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0); });
         crate::app_trait::KeyDisposition::Consumed
     }
 

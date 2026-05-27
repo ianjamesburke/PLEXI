@@ -475,6 +475,15 @@ pub fn poll_actions(
         if input.consume_key(bindings.toggle_command_palette.0, bindings.toggle_command_palette.1) {
             actions.push(Action::ToggleCommandPalette);
         }
+        // Cmd+0 opens QuickNote on top of any overlay; the QuickNote handle_key methods consume
+        // it when the modal is already open to prevent a mid-session reset.
+        if input.consume_key(bindings.open_quick_note.0, bindings.open_quick_note.1) {
+            actions.push(Action::OpenQuickNote);
+        }
+        // Cmd+Shift+A dismisses the notification modal when it is already open.
+        if input.consume_key(bindings.toggle_notification_modal.0, bindings.toggle_notification_modal.1) {
+            actions.push(Action::ToggleNotificationModal);
+        }
 
         // All remaining shortcuts are suppressed when an app has declared keyboard capture
         // or when an overlay holds focus. Each overlay's *_handle_key method owns its keys.
@@ -613,9 +622,6 @@ pub fn poll_actions(
         if input.consume_key(bindings.open_file_browser.0, bindings.open_file_browser.1) {
             actions.push(Action::OpenFileBrowser);
         }
-        if input.consume_key(bindings.open_quick_note.0, bindings.open_quick_note.1) {
-            actions.push(Action::OpenQuickNote);
-        }
         if input.consume_key(bindings.open_config.0, bindings.open_config.1) {
             actions.push(Action::OpenConfig);
         }
@@ -629,9 +635,6 @@ pub fn poll_actions(
         // `!input.modifiers.alt` so Cmd+Alt+R still reaches this branch.
         if input.consume_key(bindings.force_reload_app.0, bindings.force_reload_app.1) {
             actions.push(Action::ForceReloadApp);
-        }
-        if input.consume_key(bindings.toggle_notification_modal.0, bindings.toggle_notification_modal.1) {
-            actions.push(Action::ToggleNotificationModal);
         }
         if input.consume_key(bindings.context_inspector.0, bindings.context_inspector.1) {
             actions.push(Action::ContextInspector);
