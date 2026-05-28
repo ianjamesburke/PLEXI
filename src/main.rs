@@ -217,7 +217,7 @@ fn main() -> eframe::Result {
             Some(a.clone())
         })
         .collect();
-    use crate::cli_args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PackCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd, ConfigCmd, RoutineCmd, NotesCmd};
+    use crate::cli_args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd, ConfigCmd, RoutineCmd, NotesCmd};
     use clap::Parser;
 
     match Cli::try_parse_from(&args) {
@@ -322,15 +322,19 @@ fn main() -> eframe::Result {
                         }
                         AppCmd::Info { id } => std::process::exit(cli::app_info(&id)),
                         AppCmd::Run { path } => std::process::exit(cli::app_run(&path)),
+                        AppCmd::Validate { path } => {
+                            log::info!("app_validate:cli: path={path}");
+                            std::process::exit(cli::validate_cli(&path));
+                        }
+                        AppCmd::Freeze { path } => {
+                            log::info!("app_freeze:cli: path={path}");
+                            std::process::exit(cli::freeze_cli(&path));
+                        }
                     },
                     Commands::Uninstall { keep_data, yes } => std::process::exit(cli::plexi_uninstall_cli(keep_data, yes)),
                     Commands::Update { subcommand } => match subcommand {
                         Some(UpdateCmd::Apps { id }) => std::process::exit(cli::update_cli(id.as_deref())),
                         None => std::process::exit(cli::self_update_cli()),
-                    },
-                    Commands::Validate { path } => std::process::exit(cli::validate_cli(&path)),
-                    Commands::Pack { cmd } => match cmd {
-                        PackCmd::Export { path } => std::process::exit(cli::pack_export_cli(&path)),
                     },
                     Commands::Notify { title, body, level, choices, host_actions, timeout, scope } => {
                         // Parse --host-action flags into a key → "action_type:action_arg" map.
