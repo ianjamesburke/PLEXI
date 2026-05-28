@@ -4923,6 +4923,10 @@ impl PlexiApp {
         }
         log::info!("ai_broker: config reloaded");
 
+        // Reset so the auto-switch re-evaluates against the current system theme (#1776).
+        // Without this, a config reload that restores a disk preset (e.g. mocha) would leave
+        // last_system_theme unchanged, silently suppressing the catppuccin auto-switch.
+        self.last_system_theme = None;
         log::info!("Configuration reloaded from disk.");
     }
 
