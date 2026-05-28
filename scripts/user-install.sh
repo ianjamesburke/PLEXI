@@ -97,7 +97,7 @@ rm -rf "$APP_DEST"
 cp -R "$APP_SRC" "$APP_DEST"
 
 # clear Gatekeeper quarantine flag so the app opens without "unidentified developer" block
-xattr -cr "$APP_DEST" 2>/dev/null || true
+xattr -c "$APP_DEST" 2>/dev/null || true
 ok "Installed $APP_DEST"
 
 # ── CLI symlink ────────────────────────────────────────────────────────────────
