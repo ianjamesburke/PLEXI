@@ -95,6 +95,12 @@ regen-if-stale:
 install: fetch-python-runtime regen-if-stale
     bash scripts/install.sh
 
+# Editable install of plexi-sdk into your virtual environment for local development.
+# Makes `plexi_sdk` importable in your IDE/type-checker with live source changes.
+# Does not affect the SDK bundled into the Plexi app (use `just install` for that).
+sdk-dev:
+    uv pip install -e sdk/python
+
 # Build and install the current worktree as a testable PR build.
 # Installs as "Plexi PR<number>.app" with isolated profile ~/.plexi-pr-<number>/.
 # Run from inside the feature worktree: just pr-install 123

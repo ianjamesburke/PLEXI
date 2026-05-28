@@ -6,6 +6,35 @@ Full API reference: `plexi_sdk/__init__.py` docstring.
 
 ---
 
+## Install
+
+```sh
+pip install plexi-sdk
+```
+
+## Development
+
+To work on the SDK itself with live source changes, install it as an editable package:
+
+```sh
+uv pip install -e ./sdk/python
+```
+
+Run from the repo root. `uv` creates `.venv` automatically if it doesn't exist. Changes to `sdk/python/plexi_sdk/` take effect immediately — no reinstall needed.
+
+This makes `plexi_sdk` importable in your virtual environment and IDE. Note that apps running inside Plexi use the bundled SDK copy set on `PYTHONPATH` by the host — the editable install does not affect those. Use it for type checking, testing, and local development only.
+
+Verify the install:
+
+```sh
+source .venv/bin/activate
+python3 -c "from plexi_sdk import App; print('ok')"
+```
+
+To rebuild and reinstall the bundled copy (used by running apps), run `just install` from the repo root.
+
+---
+
 ## Keyboard Conventions
 
 Apps should follow these standard navigation bindings so users get consistent behavior across all Plexi apps.
