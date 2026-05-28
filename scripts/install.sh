@@ -201,5 +201,8 @@ echo "Installed $app_dest"
 echo "CLI: $bin_dest"
 echo "Config dir: $profile_dir/"
 echo "Apps: $(ls "$profile_dir/apps" | wc -l | tr -d ' ') synced from apps/"
+if ! command -v micro &>/dev/null; then
+  echo "tip: brew install micro — preferred editor for plexi notes open"
+fi
 echo ""
 echo "New to shell configuration? https://github.com/ianjamesburke/dotfiles has a starter setup and explanation."
