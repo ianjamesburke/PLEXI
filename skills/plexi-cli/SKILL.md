@@ -21,8 +21,8 @@ plexi pane name "title"                # rename current pane
 plexi pane name <pane_id> "title"      # rename any pane by ID
 plexi pane focus <pane_id>             # move UI focus to a pane
 plexi pane close [pane_id]             # close pane (omit = current via PLEXI_PANE_ID)
-plexi pane send <pane_id> "text"       # inject text to a pane's PTY; use \n for Enter
-plexi pane key <pane_id> <key>         # send keystroke: "enter", "escape", "ctrl+c", etc.
+plexi pane send <pane_id> "text"       # inject text to PTY; \n works for shell, NOT Claude Code prompts
+plexi pane key <pane_id> <key>         # send keystroke: "enter", "escape", "ctrl+c" — use after pane send for Claude Code panes
 plexi pane capture [pane_id] --lines N # read last N lines of scrollback as JSON array (default 50)
 ```
 
@@ -163,11 +163,18 @@ Send messages to and read responses from coding assistants (Claude Code, Codex, 
 
 ### Sending a message
 
-`\n` in `pane send` is converted to a real newline byte before hitting the PTY. Use it at the end of a string to submit (Enter). Avoid embedding `\n` mid-string — the shell will see actual newlines and enter PS2 continuation mode.
+`pane send` injects text into the PTY. `\n` sends a raw newline byte — sufficient for **shell prompts**, but **not** for Claude Code's input handler. For Claude Code panes (idle at the `❯` Claude prompt), always follow with `pane key`:
 
 ```bash
-plexi pane send <pane_id> "your message here\n"
+# Shell prompt — \n submits
+plexi pane send <pane_id> "git status\n"
+
+# Claude Code prompt — two steps required
+plexi pane send <pane_id> "your message here"
+plexi pane key <pane_id> enter
 ```
+
+Avoid embedding `\n` mid-string for shell — the shell sees actual newlines and enters PS2 continuation mode.
 
 ### Waiting for a response
 
@@ -203,8 +210,9 @@ plexi pane capture <pane_id> --lines 80 | \
 TARGET=<pane_id>
 MSG="your question here"
 
-# 1. Send
-plexi pane send $TARGET "$MSG\n"
+# 1. Send (Claude Code pane — two steps)
+plexi pane send $TARGET "$MSG"
+plexi pane key $TARGET enter
 
 # 2. Wait for idle (scrollback stabilizes)
 PREV=""
