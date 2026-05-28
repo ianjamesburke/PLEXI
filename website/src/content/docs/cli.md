@@ -21,6 +21,19 @@ Example: plexi run dev
 |---|---|---|---|
 | `<command>` | string | no | Command name to run (omit to list available commands) |
 
+### commands.toml format
+
+Commands live in a `[commands]` section. Simple commands are bare strings; complex commands use inline tables:
+
+```toml
+[commands]
+build = "cargo build"
+dev   = { run = "npm run dev", description = "Start the dev server" }
+deploy = { run = "./deploy.sh", secrets = ["API_KEY"] }
+```
+
+Both forms can coexist freely. The `description` field is optional and appears in `plexi run` output. The `secrets` field lists secret keys that are resolved from your keychain and injected as environment variables when the command runs.
+
 ## `plexi workspace`
 
 Set up a .plexi/ workspace in your project folder.
