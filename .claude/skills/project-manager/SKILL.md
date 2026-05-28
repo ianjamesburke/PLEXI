@@ -85,7 +85,7 @@ Before dispatching anything, build `ACTIVE_PANE_ISSUES` from live pane state. Th
 
 ```bash
 PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}
-ACTIVE_PANE_ISSUES=$($PLEXI pane list --json 2>/dev/null \
+ACTIVE_PANE_ISSUES=$($PLEXI pane list 2>/dev/null \
   | jq -r '.[].name // ""' \
   | grep -oE '[0-9]+' || true)
 ```
