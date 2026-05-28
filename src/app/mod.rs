@@ -133,6 +133,9 @@ pub(crate) struct PendingNotification {
     pub sender_pane_id: u64,
     /// Stable context identity the notification originated from (stamped at drain time).
     pub source_context_id: u64,
+    /// Stable window identity the notification originated from. Used by
+    /// `NotifyScope::Window` to restrict visibility to the originating window.
+    pub source_window_id: u64,
     pub level: String,
     pub title: String,
     pub body: String,
@@ -182,6 +185,8 @@ struct PersistedNotification {
     notify_id: String,
     sender_pane_id: u64,
     source_context_id: u64,
+    #[serde(default)]
+    source_window_id: u64,
     level: String,
     title: String,
     body: String,
@@ -517,6 +522,7 @@ pub(crate) fn save_pending_notifications_to(
                 notify_id: n.notify_id.clone(),
                 sender_pane_id: n.sender_pane_id,
                 source_context_id: n.source_context_id,
+                source_window_id: n.source_window_id,
                 level: n.level.clone(),
                 title: n.title.clone(),
                 body: n.body.clone(),
@@ -580,6 +586,7 @@ pub(crate) fn load_pending_notifications_from(
                 notify_id: p.notify_id,
                 sender_pane_id: p.sender_pane_id,
                 source_context_id: p.source_context_id,
+                source_window_id: p.source_window_id,
                 level: p.level,
                 title: p.title,
                 body: p.body,
@@ -1882,6 +1889,7 @@ impl PlexiApp {
                         notify_id: internal_id.clone(),
                         sender_pane_id: 0,
                         source_context_id: self.router.active().context_id,
+                        source_window_id: self.windows[self.active_window].window_id,
                         scope: scope.unwrap_or(crate::app_protocol::NotifyScope::Global),
                         level: level.clone(),
                         title: title.clone(),
@@ -2229,8 +2237,10 @@ impl PlexiApp {
         }
         match n.scope {
             crate::app_protocol::NotifyScope::Global => true,
-            crate::app_protocol::NotifyScope::Window
-            | crate::app_protocol::NotifyScope::Context => {
+            crate::app_protocol::NotifyScope::Window => {
+                n.source_window_id == self.windows[self.active_window].window_id
+            }
+            crate::app_protocol::NotifyScope::Context => {
                 n.source_context_id == self.router.active().context_id
             }
         }
@@ -2901,9 +2911,16 @@ impl eframe::App for PlexiApp {
                         continue;
                     }
                     let new_id = notify_id.clone();
-                    // Capture scope/source_context_id before they move into the struct.
+                    // Capture scope/source_context_id/source_window_id before they move into the struct.
                     let notif_scope = scope;
                     let notif_source_ctx = source_context_id;
+                    let notif_source_win_id: u64 = if sender_pane_id != 0 {
+                        self.find_pane_in_any_window(sender_pane_id)
+                            .map(|(idx, _)| self.windows[idx].window_id)
+                            .unwrap_or_else(|| self.windows[self.active_window].window_id)
+                    } else {
+                        self.windows[self.active_window].window_id
+                    };
                     // Strip any per-option shortcut that conflicts with navigation keys.
                     let options: Vec<crate::app_protocol::NotifyOption> = options.into_iter().map(|mut opt| {
                         if let Some(ref sc) = opt.shortcut.clone() {
@@ -2921,6 +2938,7 @@ impl eframe::App for PlexiApp {
                         notify_id,
                         sender_pane_id,
                         source_context_id,
+                        source_window_id: notif_source_win_id,
                         level,
                         title,
                         body,
@@ -2951,8 +2969,10 @@ impl eframe::App for PlexiApp {
                     // (badge ticks) but the modal doesn't pop.
                     let is_visible = match notif_scope {
                         crate::app_protocol::NotifyScope::Global => true,
-                        crate::app_protocol::NotifyScope::Window
-                        | crate::app_protocol::NotifyScope::Context => {
+                        crate::app_protocol::NotifyScope::Window => {
+                            notif_source_win_id == self.windows[self.active_window].window_id
+                        }
+                        crate::app_protocol::NotifyScope::Context => {
                             notif_source_ctx == self.router.active().context_id
                         }
                     };
@@ -3880,12 +3900,15 @@ impl eframe::App for PlexiApp {
                 // avoid a borrow conflict with the mutable ctx reference below.
                 let notify_counts: std::collections::HashMap<u64, usize> = {
                     let active_context_id = self.router.active().context_id;
+                    let active_window_id = self.windows[self.active_window].window_id;
                     let mut counts = std::collections::HashMap::new();
                     for n in &self.pending_notifications {
                         let visible = match n.scope {
                             crate::app_protocol::NotifyScope::Global => true,
-                            crate::app_protocol::NotifyScope::Window
-                            | crate::app_protocol::NotifyScope::Context => {
+                            crate::app_protocol::NotifyScope::Window => {
+                                n.source_window_id == active_window_id
+                            }
+                            crate::app_protocol::NotifyScope::Context => {
                                 n.source_context_id == active_context_id
                             }
                         };
@@ -4790,6 +4813,7 @@ impl PlexiApp {
                 notify_id: notify_id.clone(),
                 sender_pane_id: 0,
                 source_context_id: 0,
+                source_window_id: 0,
                 level: "error".to_string(),
                 title: "Config Error".to_string(),
                 body: error_msg,
