@@ -244,6 +244,7 @@ fn snoozed_notification_invisible_then_visible() {
         notify_id: "snoozed-woken".into(),
         sender_pane_id: 0,
         source_context_id: h.app.router.active().context_id,
+        source_window_id: h.app.windows[h.app.active_window].window_id,
         level: "info".into(),
         title: "Snoozed".into(),
         body: "body".into(),
@@ -283,6 +284,7 @@ fn snoozed_notification_exempt_from_timeout() {
         notify_id: "snoozed-no-timeout".into(),
         sender_pane_id: sender_id,
         source_context_id: h.app.router.active().context_id,
+        source_window_id: h.app.windows[h.app.active_window].window_id,
         level: "info".into(),
         title: "ShouldNotTimeout".into(),
         body: "body".into(),
@@ -971,6 +973,7 @@ fn persist_roundtrip() {
         notify_id: "test-id".into(),
         sender_pane_id: 0,
         source_context_id: 1,
+        source_window_id: 1,
         level: "info".into(),
         title: "Test".into(),
         body: "body".into(),
@@ -1062,4 +1065,57 @@ fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
     let (found_win_idx, found_tile) = loc.unwrap();
     assert_eq!(found_win_idx, 0, "pane should be in window 0");
     assert_eq!(found_tile, tile_in_w0);
+}
+
+/// #1774: A Window-scoped notification from a pane on window 0 must be visible
+/// only when window 0 is active; navigating to window 1 hides it; returning
+/// makes it visible again.
+#[test]
+fn window_scoped_notification_visible_only_on_source_window() {
+    let mut h = HostHarness::new();
+    let _pane_w0 = h.add_test_pane();
+
+    // Add a second window in the same workspace so we can switch active_window.
+    let win1_id = 2u64;
+    h.app.windows.push(same_workspace_window_below(win1_id, 9920));
+
+    let win0_id = h.app.windows[0].window_id;
+    assert_eq!(h.app.active_window, 0);
+
+    // Push a Window-scoped notification originating from window 0.
+    h.app.pending_notifications.push(PendingNotification {
+        notify_id: "win-scoped-1774".into(),
+        sender_pane_id: 0,
+        source_context_id: h.app.router.active().context_id,
+        source_window_id: win0_id,
+        level: "info".into(),
+        title: "Window Notification".into(),
+        body: "body".into(),
+        kind: crate::app_protocol::NotifyKind::Message,
+        options: vec![],
+        input_prompt: None,
+        required: false,
+        priority: 100,
+        scope: crate::app_protocol::NotifyScope::Window,
+        image_inline: None,
+        image_pipe_id: None,
+        response_file: None,
+        timeout_secs: None,
+        on_dismiss: None,
+        enqueued_at: std::time::Instant::now(),
+        tombstoned: false,
+        deliver_after: None,
+    });
+
+    // Visible on window 0.
+    assert_eq!(h.app.active_window, 0);
+    assert_eq!(h.app.visible_notification_count(), 1, "notification must be visible on source window");
+
+    // Navigate to window 1 — notification must disappear.
+    h.app.active_window = 1;
+    assert_eq!(h.app.visible_notification_count(), 0, "notification must be invisible on a different window");
+
+    // Return to window 0 — notification reappears.
+    h.app.active_window = 0;
+    assert_eq!(h.app.visible_notification_count(), 1, "notification must reappear when returning to source window");
 }
