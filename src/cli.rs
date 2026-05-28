@@ -13,7 +13,7 @@ pub struct PlexiCommands {
     #[serde(default)]
     pub secrets: SecretsConfig,
     #[serde(default)]
-    pub commands: HashMap<String, CommandDef>,
+    pub commands: HashMap<String, CommandEntry>,
 }
 
 #[derive(Deserialize, Default)]
@@ -22,9 +22,44 @@ pub struct SecretsConfig {
     pub required: Vec<String>,
 }
 
+/// A command entry: either a bare string (`build = "cargo build"`) or an inline table
+/// (`build = { run = "cargo build", description = "..." }`).
+/// The old nested-section form (`[commands.build]\nrun = "..."`) is TOML-equivalent to the
+/// inline-table form and parses identically — no migration needed.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum CommandEntry {
+    Simple(String),
+    Full(CommandDef),
+}
+
+impl CommandEntry {
+    pub fn run(&self) -> &str {
+        match self {
+            CommandEntry::Simple(s) => s,
+            CommandEntry::Full(d) => &d.run,
+        }
+    }
+
+    pub fn description(&self) -> Option<&str> {
+        match self {
+            CommandEntry::Simple(_) => None,
+            CommandEntry::Full(d) => d.description.as_deref(),
+        }
+    }
+
+    pub fn secrets(&self) -> &[String] {
+        match self {
+            CommandEntry::Simple(_) => &[],
+            CommandEntry::Full(d) => &d.secrets,
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct CommandDef {
     pub run: String,
+    pub description: Option<String>,
     #[serde(default)]
     pub secrets: Vec<String>,
 }
@@ -128,8 +163,9 @@ pub fn run_list_commands() -> i32 {
         println!("No commands defined in {COMMANDS_FILE}.");
         println!();
         println!("Add a command:");
-        println!("  [commands.dev]");
-        println!("  run = \"npm run dev\"");
+        println!("  [commands]");
+        println!("  dev = \"npm run dev\"");
+        println!("  build = {{ run = \"cargo build\", description = \"Build the project\" }}");
         return 0;
     }
 
@@ -137,8 +173,12 @@ pub fn run_list_commands() -> i32 {
     let mut names: Vec<&String> = config.commands.keys().collect();
     names.sort();
     for name in names {
-        let cmd = &config.commands[name];
-        println!("  {:20} {}", name, cmd.run);
+        let entry = &config.commands[name];
+        if let Some(desc) = entry.description() {
+            println!("  {:20} {}  # {}", name, entry.run(), desc);
+        } else {
+            println!("  {:20} {}", name, entry.run());
+        }
     }
     println!();
     println!("Run one with: plexi run <command>");
@@ -190,7 +230,7 @@ pub fn run_command(command_name: &str) -> i32 {
         }
     };
 
-    let cmd_def = match config.commands.get(command_name) {
+    let cmd_entry = match config.commands.get(command_name) {
         Some(c) => c,
         None => {
             eprintln!("error: unknown command '{command_name}'");
@@ -207,7 +247,7 @@ pub fn run_command(command_name: &str) -> i32 {
 
     // Collect all required secret keys: global + command-specific
     let mut secret_keys: Vec<&str> = config.secrets.required.iter().map(|s| s.as_str()).collect();
-    for k in &cmd_def.secrets {
+    for k in cmd_entry.secrets() {
         if !secret_keys.contains(&k.as_str()) {
             secret_keys.push(k.as_str());
         }
@@ -241,7 +281,7 @@ pub fn run_command(command_name: &str) -> i32 {
     // Spawn the command via sh -c with secrets injected as env vars.
     // PLEXI_CONFIG_DIR lets scripts reference channel-correct paths without hardcoding ~/.plexi/.
     let mut child_cmd = Command::new("sh");
-    child_cmd.arg("-c").arg(&cmd_def.run);
+    child_cmd.arg("-c").arg(cmd_entry.run());
     child_cmd.env("PLEXI_CONFIG_DIR", crate::config::config_dir());
     for (key, value) in &resolved {
         child_cmd.env(key, value);
@@ -475,16 +515,12 @@ pub fn workspace_init() -> i32 {
                 let stub = concat!(
                     "# Workspace commands — run with: plexi run <name>\n",
                     "#\n",
-                    "# Examples:\n",
-                    "#\n",
-                    "# [commands.dev]\n",
-                    "# run = \"npm run dev\"\n",
-                    "#\n",
-                    "# [commands.build]\n",
-                    "# run = \"cargo build\"\n",
+                    "# Simple form:   build = \"cargo build\"\n",
+                    "# With metadata: dev = { run = \"npm run dev\", description = \"Start dev server\" }\n",
+                    "# With secrets:  deploy = { run = \"./deploy.sh\", secrets = [\"API_KEY\"] }\n",
                     "\n",
-                    "[commands.guess]\n",
-                    "run = \"$PLEXI_CONFIG_DIR/scripts/guess\"\n",
+                    "[commands]\n",
+                    "guess = \"$PLEXI_CONFIG_DIR/scripts/guess\"\n",
                 );
                 if let Err(e) = std::fs::write(&commands_toml, stub) {
                     log::warn!("workspace_init:cli: could not write commands.toml: {e}");
@@ -4927,5 +4963,73 @@ mod workspace_init_tests {
             cwd.join(&channel_dir).is_dir(),
             "channel directory should exist alongside .plexi/"
         );
+    }
+}
+
+#[cfg(test)]
+mod command_parse_tests {
+    use super::{CommandEntry, PlexiCommands};
+
+    #[test]
+    fn simple_string_command() {
+        let toml = r#"
+[commands]
+build = "cargo build"
+"#;
+        let parsed: PlexiCommands = toml::from_str(toml).unwrap();
+        let entry = parsed.commands.get("build").unwrap();
+        assert_eq!(entry.run(), "cargo build");
+        assert!(entry.description().is_none());
+        assert!(entry.secrets().is_empty());
+    }
+
+    #[test]
+    fn full_inline_table_command() {
+        let toml = r#"
+[commands]
+dev = { run = "npm run dev", description = "Start dev server" }
+"#;
+        let parsed: PlexiCommands = toml::from_str(toml).unwrap();
+        let entry = parsed.commands.get("dev").unwrap();
+        assert_eq!(entry.run(), "npm run dev");
+        assert_eq!(entry.description(), Some("Start dev server"));
+        assert!(entry.secrets().is_empty());
+    }
+
+    #[test]
+    fn full_inline_table_with_secrets() {
+        let toml = r#"
+[commands]
+deploy = { run = "./deploy.sh", secrets = ["API_KEY", "DB_PASS"] }
+"#;
+        let parsed: PlexiCommands = toml::from_str(toml).unwrap();
+        let entry = parsed.commands.get("deploy").unwrap();
+        assert_eq!(entry.run(), "./deploy.sh");
+        assert_eq!(entry.secrets(), &["API_KEY".to_string(), "DB_PASS".to_string()]);
+    }
+
+    #[test]
+    fn nested_section_old_format_still_parses() {
+        // [commands.dev]\nrun = "..." is TOML-equivalent to dev = { run = "..." }
+        let toml = r#"
+[commands.dev]
+run = "npm run dev"
+"#;
+        let parsed: PlexiCommands = toml::from_str(toml).unwrap();
+        let entry = parsed.commands.get("dev").unwrap();
+        assert_eq!(entry.run(), "npm run dev");
+    }
+
+    #[test]
+    fn mixed_simple_and_full_commands() {
+        let toml = r#"
+[commands]
+build = "cargo build"
+dev = { run = "npm run dev", description = "Start dev server" }
+"#;
+        let parsed: PlexiCommands = toml::from_str(toml).unwrap();
+        assert_eq!(parsed.commands.len(), 2);
+        assert!(matches!(parsed.commands.get("build").unwrap(), CommandEntry::Simple(_)));
+        assert!(matches!(parsed.commands.get("dev").unwrap(), CommandEntry::Full(_)));
     }
 }
