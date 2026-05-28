@@ -1,6 +1,12 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.521] — 2026-05-28
+
+### Changes
+- fix(infra/build): remove invalid -r flag from xattr in install script (#1781)
+- chore(pm-skill): rewrite project-manager from conviction-scored to reactive newest-first dispatch; add micro tip to install.sh
+- ux(cli): trim "Remove Plexi from your Mac" from uninstall help
 ## [0.0.520] — 2026-05-27
 
 ### Changes
