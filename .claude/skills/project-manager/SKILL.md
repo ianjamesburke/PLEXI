@@ -79,9 +79,24 @@ Print one status line:
 
 ---
 
-## Step 2b — Resume stalled pipeline issues (priority)
+## Step 2b — Pane census
 
-Stalled issues already have a PR or partial work — resume them before dispatching fresh ones. Each consumes one open slot.
+Before dispatching anything, build `ACTIVE_PANE_ISSUES` from live pane state. This is the authoritative source — GitHub labels lag behind pane reality.
+
+```bash
+PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}
+ACTIVE_PANE_ISSUES=$($PLEXI pane list --json 2>/dev/null \
+  | jq -r '.[].name // ""' \
+  | grep -oE '[0-9]+' || true)
+```
+
+Any issue number in `ACTIVE_PANE_ISSUES` must be skipped in Step 2c and Step 4 — a pane is already running for it.
+
+---
+
+## Step 2c — Resume stalled pipeline issues (priority)
+
+Stalled issues already have a PR or partial work — resume them before dispatching fresh ones. Each consumes one open slot. **Skip any issue whose number is in `ACTIVE_PANE_ISSUES`** — a pane is already handling it.
 
 | Label | Dispatch |
 |---|---|
@@ -120,6 +135,7 @@ Skip any issue that:
 2. Has a `blocked` label
 3. Has an open PR with `headRefName` matching `^feature/<N>-`
 4. Body contains "Do not implement here" (epic tracker)
+5. Number is in `ACTIVE_PANE_ISSUES` (pane already running)
 
 Walk remaining candidates in order. For each:
 - If any of its `area:*` labels appear in `IN_PROGRESS_AREAS` or a previously selected candidate's areas: **skip** (parallel conflict).

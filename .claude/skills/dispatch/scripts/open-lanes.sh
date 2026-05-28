@@ -20,6 +20,13 @@ if ! git -C "$REPO_DIR" diff --quiet || ! git -C "$REPO_DIR" diff --cached --qui
   exit 1
 fi
 
+UNPUSHED=$(git -C "$REPO_DIR" log origin/alpha..HEAD --oneline 2>/dev/null | wc -l | tr -d ' ')
+if [ "$UNPUSHED" -gt 0 ]; then
+  echo "ERROR: alpha has $UNPUSHED unpushed commit(s). Push first: git push origin alpha" >&2
+  git -C "$REPO_DIR" log origin/alpha..HEAD --oneline >&2
+  exit 1
+fi
+
 PREV_ID=$MY_PANE_ID
 LAYOUT=split_h
 
