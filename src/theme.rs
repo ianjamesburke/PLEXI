@@ -99,6 +99,11 @@ pub fn is_light_preset(name: &str) -> bool {
     matches!(canonical_preset_name(name), Some("catppuccin-latte") | Some("solarized-light"))
 }
 
+/// Returns true if the preset is any catppuccin variant (latte or mocha).
+pub fn is_catppuccin_preset(name: &str) -> bool {
+    matches!(canonical_preset_name(name), Some("catppuccin-mocha" | "catppuccin-latte"))
+}
+
 /// Returns the list of available preset names.
 #[allow(dead_code)] // theme-picker palette is future; preset list stays ready
 pub fn preset_names() -> &'static [&'static str] {
