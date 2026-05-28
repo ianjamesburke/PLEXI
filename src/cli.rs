@@ -4597,7 +4597,18 @@ pub fn demo_cli() -> i32 {
     eprintln!("  Press  \x1b[1m[ \u{2318}D ]\x1b[0m  to split the current pane.");
     eprintln!();
 
-    let after_split_offset = match poll_event(&events_path, start_offset, |kind, _obj| kind == "pane_split") {
+    // Capture the new pane's ID from the split event so step 2 can verify
+    // focus specifically returns from that pane (not a bounce from the split itself).
+    let mut split_pane_id: u64 = 0;
+    let after_split_offset = match poll_event(&events_path, start_offset, |kind, obj| {
+        if kind == "pane_split" {
+            if let Some(id) = obj.get("pane_id").and_then(|v| v.as_u64()) {
+                split_pane_id = id;
+                return true;
+            }
+        }
+        false
+    }) {
         Ok(offset) => offset,
         Err(e) => {
             eprintln!("error watching {}: {e}", events_path.display());
@@ -4618,7 +4629,7 @@ pub fn demo_cli() -> i32 {
     eprintln!("  Press  \x1b[1m[ \u{2318}L ]\x1b[0m  to move focus right, then  \x1b[1m[ \u{2318}H ]\x1b[0m  to come back.");
     eprintln!();
 
-    // Wait for focus to LEAVE this pane (user pressed ⌘L); returned offset is exact position after match.
+    // Wait for focus to LEAVE this pane (user pressed ⌘L).
     let focus_offset = match poll_event(&events_path, after_split_offset, |kind, obj| {
         kind == "focus_changed"
             && obj.get("pane_id").and_then(|v| v.as_u64()) == Some(my_pane_id)
@@ -4630,8 +4641,14 @@ pub fn demo_cli() -> i32 {
         }
     };
 
-    // Wait for any focus_changed (user pressed ⌘H, focus leaves the other pane).
-    if let Err(e) = poll_event(&events_path, focus_offset, |kind, _obj| kind == "focus_changed") {
+    // Wait for focus to leave the split pane with duration_secs > 0 (user pressed ⌘H and
+    // spent deliberate time on the new pane). The split itself generates a 0-duration
+    // bounce-back that must not satisfy this check.
+    if let Err(e) = poll_event(&events_path, focus_offset, |kind, obj| {
+        kind == "focus_changed"
+            && obj.get("pane_id").and_then(|v| v.as_u64()) == Some(split_pane_id)
+            && obj.get("duration_secs").and_then(|v| v.as_u64()).unwrap_or(0) > 0
+    }) {
         eprintln!("error watching {}: {e}", events_path.display());
         return 1;
     }
@@ -4645,9 +4662,9 @@ pub fn demo_cli() -> i32 {
 /// Tails `path` from `offset`, advancing the cursor as lines are consumed.
 /// Returns the byte offset immediately after the matched line when the predicate fires.
 /// Handles missing files gracefully; only processes complete newline-terminated lines.
-fn poll_event<F>(path: &std::path::Path, mut offset: u64, predicate: F) -> std::io::Result<u64>
+fn poll_event<F>(path: &std::path::Path, mut offset: u64, mut predicate: F) -> std::io::Result<u64>
 where
-    F: Fn(&str, &serde_json::Value) -> bool,
+    F: FnMut(&str, &serde_json::Value) -> bool,
 {
     use std::io::{Read, Seek, SeekFrom};
     loop {
