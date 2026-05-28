@@ -95,7 +95,7 @@ regen-if-stale:
 install: fetch-python-runtime regen-if-stale
     bash scripts/install.sh
 
-# Editable install of plexi-sdk into your system Python for local development.
+# Editable install of plexi-sdk into your virtual environment for local development.
 # Makes `plexi_sdk` importable in your IDE/type-checker with live source changes.
 # Does not affect the SDK bundled into the Plexi app (use `just install` for that).
 sdk-dev:

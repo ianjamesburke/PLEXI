@@ -22,7 +22,7 @@ uv pip install -e ./sdk/python
 
 Run from the repo root. `uv` creates `.venv` automatically if it doesn't exist. Changes to `sdk/python/plexi_sdk/` take effect immediately — no reinstall needed.
 
-This makes `plexi_sdk` importable in your IDE and type checker. Note that apps running inside Plexi use the bundled SDK copy set on `PYTHONPATH` by the host — the editable install does not affect those. Use it for type checking, testing, and local development only.
+This makes `plexi_sdk` importable in your virtual environment and IDE. Note that apps running inside Plexi use the bundled SDK copy set on `PYTHONPATH` by the host — the editable install does not affect those. Use it for type checking, testing, and local development only.
 
 Verify the install:
 
