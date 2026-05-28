@@ -445,6 +445,8 @@ pub struct PlexiApp {
     pub(crate) last_logged_focus: Option<(u64, egui_tiles::TileId)>,
     /// When the current focus session started. Reset on each FocusChanged emit.
     pub(crate) focus_started_at: Option<std::time::Instant>,
+    /// Last observed system theme for auto-switching catppuccin variants (#1776).
+    pub(crate) last_system_theme: Option<egui::Theme>,
 }
 
 #[cfg(test)]
@@ -973,6 +975,7 @@ impl PlexiApp {
                     pane_ipc_rx,
                     last_logged_focus: None,
                     focus_started_at: None,
+                    last_system_theme: None,
 
                 };
             }
@@ -1144,6 +1147,7 @@ impl PlexiApp {
             pane_ipc_rx,
             last_logged_focus: None,
             focus_started_at: None,
+            last_system_theme: None,
         }
     }
 
@@ -1308,6 +1312,7 @@ impl PlexiApp {
             pane_ipc_rx,
             last_logged_focus: None,
             focus_started_at: None,
+            last_system_theme: None,
         }, pane_ipc_tx)
     }
 
@@ -3757,6 +3762,15 @@ impl eframe::App for PlexiApp {
             self.reload_config();
         }
 
+        // Auto-switch catppuccin variant on macOS appearance change (#1776).
+        let current_system_theme = self.ctx.system_theme();
+        if current_system_theme != self.last_system_theme {
+            self.last_system_theme = current_system_theme;
+            if let Some(sys_theme) = current_system_theme {
+                self.apply_catppuccin_auto_theme(sys_theme);
+            }
+        }
+
         // App registry hot-reload (#1712): drain filesystem watcher signals.
         let registry_changed = self
             .registry_reload_rx
@@ -4909,7 +4923,38 @@ impl PlexiApp {
         }
         log::info!("ai_broker: config reloaded");
 
+        // Reset so the auto-switch re-evaluates against the current system theme (#1776).
+        // Without this, a config reload that restores a disk preset (e.g. mocha) would leave
+        // last_system_theme unchanged, silently suppressing the catppuccin auto-switch.
+        self.last_system_theme = None;
         log::info!("Configuration reloaded from disk.");
+    }
+
+    /// Auto-switch to the catppuccin variant that matches `system_theme`.
+    /// Only fires when the OS appearance changes and the configured preset is a catppuccin variant.
+    fn apply_catppuccin_auto_theme(&mut self, system_theme: egui::Theme) {
+        let current_preset = self.config.theme_preset.as_deref().unwrap_or("");
+        if !crate::theme::is_catppuccin_preset(current_preset) {
+            return;
+        }
+        let new_preset = match system_theme {
+            egui::Theme::Light => "catppuccin-latte",
+            egui::Theme::Dark => "catppuccin-mocha",
+        };
+        log::info!("theme: auto-switch to {new_preset} (system_theme={system_theme:?})");
+        if let Some(preset) = crate::theme::preset_colors(new_preset) {
+            let user_theme = self.config.theme.clone().unwrap_or_default();
+            let theme_cfg = crate::theme::apply_preset(&preset, &user_theme);
+            let new_colors = crate::theme::Colors::from_config(&theme_cfg);
+            if self.colors != new_colors {
+                self.colors = new_colors.clone();
+                let dark_mode = !crate::theme::is_light_preset(new_preset);
+                crate::theme::setup_style(&self.ctx, &new_colors, dark_mode);
+                let window_theme = if dark_mode { egui::SystemTheme::Dark } else { egui::SystemTheme::Light };
+                self.ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(window_theme));
+                self.theme = crate::theme::terminal_theme(&theme_cfg);
+            }
+        }
     }
 
     /// Reconcile the confirm-close focus layer with `pending_close`. Mirrors
