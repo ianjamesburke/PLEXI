@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.520"
+verified_version: "0.0.525"
 order: 7
 ---
 
@@ -20,19 +20,6 @@ Example: plexi run dev
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<command>` | string | no | Command name to run (omit to list available commands) |
-
-### commands.toml format
-
-Commands live in a `[commands]` section. Simple commands are bare strings; complex commands use inline tables:
-
-```toml
-[commands]
-build = "cargo build"
-dev   = { run = "npm run dev", description = "Start the dev server" }
-deploy = { run = "./deploy.sh", secrets = ["API_KEY"] }
-```
-
-Both forms can coexist freely. The `description` field is optional and appears in `plexi run` output. The `secrets` field lists secret keys that are resolved from your keychain and injected as environment variables when the command runs.
 
 ## `plexi workspace`
 
@@ -115,7 +102,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `init` | Create a new app from a template |
 | `run` | Run an app directly from a local directory without installing or linking |
 | `validate` | Check a Plexi app directory for errors before publishing or installing |
-| `freeze` | Export installed apps as a TOML snapshot for sharing or backup |
+| `freeze` | Export your currently installed apps as a single TOML snapshot for sharing or backup |
 
 ### `plexi app open`
 
@@ -218,7 +205,7 @@ Like `pip freeze` — captures exactly what's installed so you can replay it lat
 
 ## `plexi uninstall`
 
-Remove Plexi from your Mac — uninstalls the app, CLI, and optionally your profile data.
+Uninstalls the app, CLI, and optionally your profile data.
 
 Removes the current channel's app bundle (/Applications/Plexi.app), CLI binary (/usr/local/bin/plexi), and shell completions. Your profile directory (~/.plexi/) holds your settings, secrets, and app configurations — you will be asked whether to keep it.
 
