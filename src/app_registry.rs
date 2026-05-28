@@ -287,6 +287,9 @@ pub struct InstalledApp {
     /// value returned by `load_app` is a placeholder and is overwritten at
     /// insert time.
     pub source: RegistrySource,
+    /// The workspace root this app was discovered under. `Some` for
+    /// `LocalApp`/`LocalAgent` entries; `None` for `Global` entries.
+    pub workspace_root: Option<PathBuf>,
 }
 
 pub struct AppRegistry {
@@ -321,7 +324,7 @@ impl AppRegistry {
         };
 
         if global_dir.is_dir() {
-            registry.scan_dir(global_dir, RegistrySource::Global);
+            registry.scan_dir(global_dir, RegistrySource::Global, None);
         }
 
         // Local apps + agents — only scanned when a workspace root exists.
@@ -331,11 +334,11 @@ impl AppRegistry {
         if let Some(root) = resolve_workspace_root_with_channel(cwd, &channel_dir) {
             let local_apps = root.join(&channel_dir).join("apps");
             if local_apps.is_dir() {
-                registry.scan_dir(&local_apps, RegistrySource::LocalApp);
+                registry.scan_dir(&local_apps, RegistrySource::LocalApp, Some(&root));
             }
             let local_agents = root.join(&channel_dir).join("agents");
             if local_agents.is_dir() {
-                registry.scan_dir(&local_agents, RegistrySource::LocalAgent);
+                registry.scan_dir(&local_agents, RegistrySource::LocalAgent, Some(&root));
             }
         }
 
@@ -350,7 +353,7 @@ impl AppRegistry {
     /// Scan one directory of manifest-bearing subdirs, inserting discovered
     /// entries. Calls made later in `load()` shadow earlier ones; on shadow
     /// the displaced entry's source is logged so users can debug discovery.
-    fn scan_dir(&mut self, dir: &Path, source: RegistrySource) {
+    fn scan_dir(&mut self, dir: &Path, source: RegistrySource, workspace_root: Option<&Path>) {
         let read_dir = match std::fs::read_dir(dir) {
             Ok(d) => d,
             Err(e) => {
@@ -400,7 +403,7 @@ impl AppRegistry {
                         // Plain insert — local entries override global for extension map too.
                         self.extension_map.insert(ext.to_lowercase(), id.clone());
                     }
-                    self.apps.insert(id, InstalledApp { source, ..installed });
+                    self.apps.insert(id, InstalledApp { source, workspace_root: workspace_root.map(ToOwned::to_owned), ..installed });
                 }
                 Err(e) => {
                     log::warn!("AppRegistry: skipping {:?}: {e}", entry_dir.file_name());
@@ -472,8 +475,9 @@ impl AppRegistry {
             launch: manifest.launch,
             secrets: manifest.secrets,
             bin_path,
-            // Placeholder — `scan_dir` overwrites this with the real source.
+            // Placeholder — `scan_dir` overwrites source and workspace_root.
             source: RegistrySource::Global,
+            workspace_root: None,
         })
     }
 

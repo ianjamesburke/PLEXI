@@ -189,11 +189,20 @@ impl PlexiApp {
         };
 
         // ── App entries ────────────────────────────────────────────────────
+        let active_ctx_root = self.router.active().root.clone();
         let app_entries: Vec<(String, String, String)> = self
             .registry
             .list()
             .into_iter()
             .filter(|app| {
+                // Workspace-local apps are only visible when the active context
+                // root matches the workspace they were installed into (#1770).
+                use crate::app_registry::RegistrySource;
+                if app.source != RegistrySource::Global
+                    && app.workspace_root.as_deref() != active_ctx_root.as_deref()
+                {
+                    return false;
+                }
                 query.is_empty()
                     || app.manifest.name.to_lowercase().contains(&query)
                     || app.manifest.id.to_lowercase().contains(&query)
