@@ -74,17 +74,6 @@ pub enum Commands {
         #[command(subcommand)]
         subcommand: Option<UpdateCmd>,
     },
-    /// Check a Plexi app directory for errors before publishing or installing.
-    Validate {
-        /// Path to check (default: current directory)
-        #[arg(default_value = ".")]
-        path: String,
-    },
-    /// Package your apps for sharing or bulk installation.
-    Pack {
-        #[command(subcommand)]
-        cmd: PackCmd,
-    },
     /// Send a notification to the Plexi UI.
     Notify {
         /// Notification title (required)
@@ -328,6 +317,20 @@ pub enum AppCmd {
         /// Path to the app folder containing manifest.toml
         path: String,
     },
+    /// Check a Plexi app directory for errors before publishing or installing.
+    Validate {
+        /// Path to check (default: current directory)
+        #[arg(default_value = ".", value_hint = ValueHint::DirPath)]
+        path: String,
+    },
+    /// Export your currently installed apps as a single TOML snapshot for sharing or backup.
+    ///
+    /// Like `pip freeze` — captures exactly what's installed so you can replay it later with `plexi app install`.
+    Freeze {
+        /// Destination path for the TOML snapshot file
+        #[arg(value_hint = ValueHint::FilePath)]
+        path: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -338,14 +341,6 @@ pub enum UpdateCmd {
     Apps {
         /// App id to update (omit to update all installed apps)
         id: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum PackCmd {
-    /// Export your currently installed apps as a single pack file for sharing or backup.
-    Export {
-        path: String,
     },
 }
 

@@ -114,6 +114,8 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `info` | Show details about an installed app: id, name, version, and available tools |
 | `init` | Create a new app from a template |
 | `run` | Run an app directly from a local directory without installing or linking |
+| `validate` | Check a Plexi app directory for errors before publishing or installing |
+| `freeze` | Export installed apps as a TOML snapshot for sharing or backup |
 
 ### `plexi app open`
 
@@ -196,6 +198,24 @@ Opens the app in a pane immediately. Edits to the app take effect on next launch
 |---|---|---|---|
 | `<path>` | string | yes | Path to the app folder containing manifest.toml |
 
+### `plexi app validate`
+
+Check a Plexi app directory for errors before publishing or installing
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<path>` | string | no | Path to check (default: current directory) Default: `.`. |
+
+### `plexi app freeze`
+
+Export your currently installed apps as a single TOML snapshot for sharing or backup.
+
+Like `pip freeze` — captures exactly what's installed so you can replay it later with `plexi app install`.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<path>` | string | yes | Destination path for the TOML snapshot file |
+
 ## `plexi uninstall`
 
 Remove Plexi from your Mac — uninstalls the app, CLI, and optionally your profile data.
@@ -228,30 +248,6 @@ Omit the app id to update all installed apps at once.
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<id>` | string | no | App id to update (omit to update all installed apps) |
-
-## `plexi validate`
-
-Check a Plexi app directory for errors before publishing or installing
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<path>` | string | no | Path to check (default: current directory) Default: `.`. |
-
-## `plexi pack`
-
-Package your apps for sharing or bulk installation
-
-| Subcommand | Description |
-|---|---|
-| `export` | Export your currently installed apps as a single pack file for sharing or backup |
-
-### `plexi pack export`
-
-Export your currently installed apps as a single pack file for sharing or backup
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<path>` | string | yes |  |
 
 ## `plexi notify`
 
