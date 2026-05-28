@@ -1,6 +1,19 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.525] — 2026-05-28
+
+### Changes
+- feat(config): auto-switch catppuccin latte/mocha on macOS appearance change (#1776) (#1786)
+- test(sdk): verify PyPI publish workflow and local dev cycle for plexi-sdk (#1760) (#1785)
+- fix(pm): drop --json flag from pane list (returns JSON by default)
+- fix(pm): pane census + unpushed-commit gate before dispatch
+- ux(cli): move 'plexi validate' under 'app' namespace and rename 'plexi pack export' to 'plexi app freeze' (#1779) (#1782)
+- feat(host/notifications): implement window-scoped notification visibility (#1784)
+- refactor(config): simplify commands.toml schema to flat inline tables (#1783)
+- fix(infra/build): remove invalid -r flag from xattr in install script (#1781)
+- chore(pm-skill): rewrite project-manager from conviction-scored to reactive newest-first dispatch; add micro tip to install.sh
+- ux(cli): trim "Remove Plexi from your Mac" from uninstall help
 ## [0.0.524] — 2026-05-28
 
 ### Changes
