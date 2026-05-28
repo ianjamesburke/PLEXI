@@ -1,6 +1,14 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.523] — 2026-05-28
+
+### Changes
+- feat(host/notifications): implement window-scoped notification visibility (#1784)
+- refactor(config): simplify commands.toml schema to flat inline tables (#1783)
+- fix(infra/build): remove invalid -r flag from xattr in install script (#1781)
+- chore(pm-skill): rewrite project-manager from conviction-scored to reactive newest-first dispatch; add micro tip to install.sh
+- ux(cli): trim "Remove Plexi from your Mac" from uninstall help
 ## [0.0.522] — 2026-05-28
 
 ### Changes
