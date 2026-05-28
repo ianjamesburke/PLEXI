@@ -320,7 +320,7 @@ pub enum AppCmd {
     /// Check a Plexi app directory for errors before publishing or installing.
     Validate {
         /// Path to check (default: current directory)
-        #[arg(default_value = ".")]
+        #[arg(default_value = ".", value_hint = ValueHint::DirPath)]
         path: String,
     },
     /// Export your currently installed apps as a single TOML snapshot for sharing or backup.
@@ -328,6 +328,7 @@ pub enum AppCmd {
     /// Like `pip freeze` — captures exactly what's installed so you can replay it later with `plexi app install`.
     Freeze {
         /// Destination path for the TOML snapshot file
+        #[arg(value_hint = ValueHint::FilePath)]
         path: String,
     },
 }
