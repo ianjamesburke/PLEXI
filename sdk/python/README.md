@@ -20,12 +20,15 @@ To work on the SDK itself with live source changes, install it as an editable pa
 uv pip install -e ./sdk/python
 ```
 
-Run from the repo root. Changes to `sdk/python/plexi_sdk/` take effect immediately — no reinstall needed.
+Run from the repo root. `uv` creates `.venv` automatically if it doesn't exist. Changes to `sdk/python/plexi_sdk/` take effect immediately — no reinstall needed.
 
-This makes `plexi_sdk` importable in your system Python and IDE. Note that apps running inside Plexi use the bundled SDK copy set on `PYTHONPATH` by the host — the editable install does not affect those. Use it for type checking, testing, and local development only.
+This makes `plexi_sdk` importable in your IDE and type checker. Note that apps running inside Plexi use the bundled SDK copy set on `PYTHONPATH` by the host — the editable install does not affect those. Use it for type checking, testing, and local development only.
+
+Verify the install:
 
 ```sh
-.venv/bin/python3 -c "from plexi_sdk import App; print('ok')"
+source .venv/bin/activate
+python3 -c "from plexi_sdk import App; print('ok')"
 ```
 
 To rebuild and reinstall the bundled copy (used by running apps), run `just install` from the repo root.
