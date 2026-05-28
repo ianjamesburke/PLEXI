@@ -403,6 +403,10 @@ pub struct PlexiApp {
     /// is rescanned without a host restart.
     pub(crate) _registry_watcher: Option<crate::app_registry_watcher::AppRegistryWatcher>,
     pub(crate) registry_reload_rx: Option<std::sync::mpsc::Receiver<()>>,
+    /// Last workspace root the registry was loaded from (#1770). Compared each
+    /// frame against the active context's root — mismatch triggers a rescan and
+    /// watcher restart so switching contexts immediately reflects their local apps.
+    pub(crate) last_registry_root: Option<std::path::PathBuf>,
     /// Watched panes scheduled for crash-restart. Value is the earliest `Instant` at
     /// which the restart fires — giving the developer ~2s to read the crash overlay.
     pub(crate) pending_crash_restarts: HashMap<PaneId, std::time::Instant>,
@@ -959,6 +963,7 @@ impl PlexiApp {
                     config_reload_rx: cfg_reload_rx.take(),
                     _registry_watcher: reg_watcher.take(),
                     registry_reload_rx: reg_reload_rx.take(),
+                    last_registry_root: None,
                     pending_crash_restarts: HashMap::new(),
                     minimap: crate::minimap::MinimapState::with_visible(window_count >= 2),
                     last_page_x_per_row: HashMap::new(),
@@ -1130,6 +1135,7 @@ impl PlexiApp {
             config_reload_rx: cfg_reload_rx.take(),
             _registry_watcher: default_reg_watcher.take(),
             registry_reload_rx: default_reg_reload_rx.take(),
+            last_registry_root: None,
             pending_crash_restarts: HashMap::new(),
             minimap: crate::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
@@ -1291,6 +1297,7 @@ impl PlexiApp {
             config_reload_rx: None,
             _registry_watcher: None,
             registry_reload_rx: None,
+            last_registry_root: None,
             pending_crash_restarts: HashMap::new(),
             minimap: crate::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
@@ -3768,11 +3775,33 @@ impl eframe::App for PlexiApp {
                 }
                 hit
             });
-        if registry_changed {
-            let root = self.router.active().root.clone()
+        // Active context root change (#1770): rescan registry and restart
+        // watcher whenever the active context's root differs from the last
+        // loaded root. Covers switch_workspace, set_active_context_root, and
+        // any other path that changes which context is active.
+        let active_root = self.router.active().root.clone();
+        let root_changed = active_root.as_deref() != self.last_registry_root.as_deref();
+        if registry_changed || root_changed {
+            let root = active_root.clone()
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-            log::info!("app_registry_watcher: rescanning registry from {}", root.display());
+            log::info!(
+                "app_registry: rescanning for {} (fs_event={registry_changed} root_changed={root_changed})",
+                root.display()
+            );
             self.registry = crate::app_registry::AppRegistry::load(&root);
+            self.last_registry_root = active_root;
+            // Restart the watcher so it tracks the new workspace directories.
+            let watch_dirs = crate::app_registry::registry_watch_dirs(&root);
+            match crate::app_registry_watcher::start(watch_dirs) {
+                Some((watcher, rx)) => {
+                    self._registry_watcher = Some(watcher);
+                    self.registry_reload_rx = Some(rx);
+                }
+                None => {
+                    self._registry_watcher = None;
+                    self.registry_reload_rx = None;
+                }
+            }
         }
 
         // Handle window close request (X button or macOS Cmd+Q OS event).

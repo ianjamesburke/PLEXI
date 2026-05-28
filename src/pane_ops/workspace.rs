@@ -562,11 +562,9 @@ impl PlexiApp {
             self.router.active().context_id,
             root.display()
         );
-        self.router.get_mut(idx).root = Some(root.clone());
-        // Rescan the registry immediately so the command palette reflects the
-        // new workspace's local apps without waiting for a filesystem event (#1770).
-        log::info!("set_active_context_root: rescanning app registry for {}", root.display());
-        self.registry = crate::app_registry::AppRegistry::load(&root);
+        self.router.get_mut(idx).root = Some(root);
+        // Registry rescan is handled by the update() loop via last_registry_root
+        // comparison (#1770) — covers both this path and switch_workspace.
     }
 
     /// Dissolve a portal: reparent all its panes into the parent window (the active

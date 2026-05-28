@@ -403,7 +403,7 @@ impl AppRegistry {
                         // Plain insert — local entries override global for extension map too.
                         self.extension_map.insert(ext.to_lowercase(), id.clone());
                     }
-                    self.apps.insert(id, InstalledApp { source, workspace_root: workspace_root.map(ToOwned::to_owned), ..installed });
+                    self.apps.insert(id, InstalledApp { source, workspace_root: workspace_root.map(Path::to_path_buf), ..installed });
                 }
                 Err(e) => {
                     log::warn!("AppRegistry: skipping {:?}: {e}", entry_dir.file_name());
