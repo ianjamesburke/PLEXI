@@ -2720,6 +2720,21 @@
           "type": "object"
         },
         {
+          "description": "Sent by the headless renderer to seed app state before the first render.\nUnlike InjectState (which fires on_inject as a background task and is a live\nprotocol event), RenderSeed fires on_render_seed awaited, so state is applied\nbefore the Render event arrives. Live app behavior is completely unaffected.",
+          "properties": {
+            "payload": true,
+            "type": {
+              "const": "render_seed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "payload"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Host broker response to a `DrawCommand::HttpRequest`. `error` is present\nwhen the request failed; `body` may still carry a partial response.",
           "properties": {
             "body": {
