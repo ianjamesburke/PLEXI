@@ -721,9 +721,9 @@ class FooterKeys(Component):
         # width math, no truncation, no overlap. This is the whole
         # point of the host-measured layout primitives (#312).
         ctx.shortcuts(
-            x=x,
+            x=x + SPACE_MD,
             y=chip_row_y,
-            max_width=w,
+            max_width=w - 2 * SPACE_MD,
             pairs=list(self.shortcuts),
             font_size=TEXT_HINT,
         )

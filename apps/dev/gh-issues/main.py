@@ -192,24 +192,24 @@ class GhIssues(App):
                 self._draw_detail(ctx)
             return
 
-        # Header: AppBar (title + count) + FooterKeys (shortcuts)
+        # Header: AppBar (title + count). Shortcuts live in a bottom footer.
         appbar = AppBar(
             "Issues",
             subtitle=f"{len(self._issues)} open" if not self._loading else None,
             accent=theme.accent,
         )
-        shortcuts = FooterKeys([
+        footer = FooterKeys([
             (["j", "k"], "navigate"),
             ("↩", "detail"),
             ("o", "browser"),
             ("r", "refresh"),
             ("n", "new"),
-        ], divider=False)
-        appbar_h    = appbar.measure(ctx.w)
-        shortcuts_h = shortcuts.measure(ctx.w)
+        ])
+        appbar_h  = appbar.measure(ctx.w)
+        footer_h  = footer.measure(ctx.w)
+        list_top  = appbar_h
         appbar.render(ctx, 0.0, 0.0, ctx.w, appbar_h)
-        shortcuts.render(ctx, 0.0, appbar_h, ctx.w, shortcuts_h)
-        list_top = appbar_h + shortcuts_h
+        footer.render(ctx, 0.0, ctx.h - footer_h, ctx.w, footer_h)
 
         if self._loading:
             ctx.text(PAD, list_top + PAD, "Loading…", size=BODY, color=theme.muted)
@@ -221,9 +221,9 @@ class GhIssues(App):
                      "r — retry", size=HINT, color=theme.muted)
             return
 
-        self._draw_list(ctx, list_top)
+        self._draw_list(ctx, list_top, footer_h)
 
-    def _draw_list(self, ctx: RenderContext, list_top: float) -> None:
+    def _draw_list(self, ctx: RenderContext, list_top: float, footer_h: float) -> None:
         rows = [
             ListRow(
                 id=f"issue-{issue['number']}",
@@ -236,7 +236,9 @@ class GhIssues(App):
             ).to_dict()
             for issue in self._issues
         ]
-        ctx.list_view("issues", rows, selected=self._sel, y=float(list_top))
+        list_h = max(0.0, ctx.h - list_top - footer_h)
+        ctx.list_view("issues", rows, selected=self._sel,
+                      y=float(list_top), h=float(list_h))
 
     def _draw_detail(self, ctx: RenderContext) -> None:
         if self._detail is None:
