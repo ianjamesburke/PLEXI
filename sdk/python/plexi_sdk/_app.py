@@ -100,6 +100,7 @@ class App:
     Awaited (block the event loop until they return):
         on_init(ctx)                                — after Init handshake
         on_render(ctx)                              — on each Render event
+        on_render_seed(ctx, payload)                — on RenderSeed (headless only, before first Render)
         on_suspend()                                — on Suspend
         on_resume()                                 — on Resume
         on_shutdown()                               — on Shutdown
@@ -116,7 +117,6 @@ class App:
         on_pipe_message(ctx, pipe_id, payload)       — on PipeMessage
         on_path_changed(ctx, cwd)                    — on PathChanged
         on_inject(ctx, payload)                      — on Inject event
-        on_render_seed(ctx, payload)                 — on RenderSeed (headless render only)
         on_nav_back(ctx, view_id)                    — on NavBack event
         on_timer(ctx, timer_id)                      — on Timer event
         on_scroll(ctx, id, offset_y)                 — on Scroll event

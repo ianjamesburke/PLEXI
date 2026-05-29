@@ -77,11 +77,18 @@ class GhIssues(App):
 
     async def on_render_seed(self, _ctx: RenderContext, payload: dict) -> None:
         if "_issues" in payload:
-            self._issues  = payload["_issues"]
-            self._loading = payload.get("_loading", False)
-            self._sel     = payload.get("_sel", 0)
-            self._error   = payload.get("_error")
-            self._view    = payload.get("_view", self.VIEW_LIST)
+            self._issues         = payload["_issues"]
+            self._loading        = payload.get("_loading", False)
+            self._sel            = payload.get("_sel", 0)
+            self._error          = payload.get("_error")
+            self._detail         = payload.get("_detail")
+            self._detail_loading = bool(payload.get("_detail_loading", False))
+            requested_view       = payload.get("_view", self.VIEW_LIST)
+            self._view = (
+                requested_view
+                if requested_view != self.VIEW_DETAIL or self._detail or self._detail_loading
+                else self.VIEW_LIST
+            )
             self.emit.info(f"gh-issues: seeded {len(self._issues)} issues for headless render")
 
     # ── data ──────────────────────────────────────────────────────────────────
