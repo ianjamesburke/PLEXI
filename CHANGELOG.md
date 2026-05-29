@@ -1,6 +1,18 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.529] — 2026-05-29
+
+### Changes
+- fix(sdk/pgap): mouse-wheel scroll has no effect in SDK Scrollable containers (#1794) (#1796)
+- fix(apps/gh-issues): refactor to SDK ui.py components + iterate with --state render until no overlaps (#1792) (#1793)
+- ...
+- chore(skills): skip install in merge-pr — bump only after squash merge
+- chore(skills): trim validate-pr + merge-pr label churn and no-op rebase
+- chore: update pgap schema for RenderSeed variant
+- Cleaner state injection primitive for headless render / app testing (#1790) (#1791)
+- feat(sdk): declarative Arg class for app launch arguments (#1788) (#1789)
+- fix(demo): reject split-bounce as navigation in step 2
 ## [0.0.528] — 2026-05-29
 
 ### Changes
