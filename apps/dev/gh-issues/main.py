@@ -71,12 +71,14 @@ class GhIssues(App):
         self._error          : str | None = None
         self._detail         : dict | None = None
         self._root           = self.repo_dir or ""
+        self._render_seeded  = False
         ctx.status_summary("Loading…")
         self.emit.info(f"gh-issues init workspace={self._root!r}")
         self._fetch()
 
     async def on_render_seed(self, _ctx: RenderContext, payload: dict) -> None:
         if "_issues" in payload:
+            self._render_seeded  = True
             self._issues         = payload["_issues"]
             self._loading        = payload.get("_loading", False)
             self._sel            = payload.get("_sel", 0)
@@ -99,6 +101,8 @@ class GhIssues(App):
         asyncio.get_event_loop().create_task(asyncio.to_thread(self._load_list))
 
     def _load_list(self) -> None:
+        if getattr(self, "_render_seeded", False):
+            return
         rc, out, err = _gh(
             "issue", "list", "--state", "open",
             "--json", "number,title,state,labels,assignees,createdAt",

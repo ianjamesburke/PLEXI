@@ -1322,13 +1322,15 @@ pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str
         }
     };
 
-    // Optional: parse seed state JSON to inject via protocol
-    let seed_state: Option<serde_json::Value> = state.and_then(|s| {
+    // Optional: parse seed state JSON to inject via protocol.
+    // Either path (read or parse failure) is a hard error — the caller explicitly
+    // requested seeded state, so silently falling back would produce a misleading render.
+    let seed_state: Option<serde_json::Value> = if let Some(s) = state {
         let json = match std::fs::read_to_string(s) {
             Ok(j) => j,
             Err(e) => {
                 eprintln!("error: could not read state file '{s}': {e}");
-                return None;
+                return 1;
             }
         };
         match serde_json::from_str(&json) {
@@ -1338,10 +1340,12 @@ pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str
             }
             Err(e) => {
                 eprintln!("error: invalid JSON in state file '{s}': {e}");
-                None
+                return 1;
             }
         }
-    });
+    } else {
+        None
+    };
 
     // Resolve the app binary
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));

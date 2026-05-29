@@ -1023,6 +1023,7 @@ class App:
                     # Headless-only: sent by `plexi app render --state` before the first
                     # Render event. Awaited so state is applied before on_render fires.
                     # Does not affect live inject behavior.
+                    sys.stderr.write("plexi_sdk: render_seed received — applying headless seed state\n")
                     ctx = self._make_ctx()
                     await self._dispatch_hook(self.on_render_seed, ctx, ev.get("payload", {}))
 
