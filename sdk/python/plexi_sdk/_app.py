@@ -143,6 +143,9 @@ class App:
     dispatched outside a render frame.
     """
 
+    # Populated by __init_subclass__ when Arg fields are declared on a subclass.
+    _arg_specs: "list[tuple[str, Arg]]" = []
+
     # Background color applied automatically before each on_render call.
     # Set to None to disable the default background and manage clearing manually.
     default_background: "str | None" = _DEFAULT_BG
@@ -537,9 +540,11 @@ class App:
                 if arg_spec.nargs is not None:
                     pkw["nargs"] = arg_spec.nargs
                     pkw["default"] = raw_default if raw_default is not None else []
-                else:
+                elif arg_spec.default is not _MISSING:
+                    # Explicit default → optional positional
                     pkw["nargs"] = "?"
                     pkw["default"] = raw_default
+                # else: no nargs, no default → required positional (argparse enforces)
                 if arg_spec.arg_type is not None and arg_spec.arg_type is not bool:
                     pkw["type"] = arg_spec.arg_type
                 parser.add_argument(dest, **pkw)
