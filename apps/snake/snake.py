@@ -6,12 +6,9 @@ separate Rust sub-project. The spec allows either; Python is 80 lines vs a
 new cargo crate + cross-compile setup. This is the intentional choice.
 """
 
-import sys
-import os
-
 import threading
 import time
-from plexi_sdk import App, RenderContext, BG, ACCENT, FG, RED, GREEN, MUTED
+from plexi_sdk import App, RenderContext, BG, ACCENT, FG, RED, GREEN, MUTED, Arg
 from plexi_sdk._pipe import Pipe
 
 CELL = 18.0          # cell size in logical px
@@ -31,20 +28,14 @@ DIR_MAP = {
 }
 
 
-def _parse_pipe_id() -> "str | None":
-    for arg in sys.argv[1:]:
-        if arg.startswith("--pipe="):
-            return arg[len("--pipe="):]
-    return None
-
-
 class SnakeApp(App):
+    pipe_id: Arg[str | None] = Arg("--pipe", default=None)
+
     def on_init(self, ctx: RenderContext) -> None:
         self._pipe: "Pipe | None" = None
-        pipe_id = _parse_pipe_id()
-        if pipe_id:
-            self._pipe = self.emit.pipe_open(pipe_id, mode="json", direction="out")
-            self.emit.info(f"snake: pipe open pipe_id={pipe_id}")
+        if self.pipe_id:
+            self._pipe = self.emit.pipe_open(self.pipe_id, mode="json", direction="out")
+            self.emit.info(f"snake: pipe open pipe_id={self.pipe_id}")
         self._reset()
         self._timer_thread = threading.Thread(
             target=self._tick_loop, daemon=True

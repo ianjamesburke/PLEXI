@@ -13,6 +13,48 @@ from ._pipe import Pipe
 from ._render_context import RenderContext
 
 
+# ── Arg descriptor ────────────────────────────────────────────────────────────
+
+_MISSING: Any = object()
+
+
+class Arg:
+    """Declare a typed launch argument on an App subclass.
+
+    The SDK parses sys.argv before on_init runs and sets the resolved value as
+    an instance attribute with the same name as the class-level declaration.
+
+    Usage::
+
+        class MyApp(App):
+            repo_dir: Arg[str | None] = Arg("--repo-dir", default=lambda ctx: ctx.workspace_root)
+            limit: Arg[int] = Arg("--limit", type=int, default=100)
+            count: Arg[int] = Arg(positional=True, type=int, default=10)
+
+            async def on_init(self, ctx):
+                print(self.repo_dir)  # already resolved
+    """
+
+    def __init__(
+        self,
+        *flags: str,
+        positional: bool = False,
+        type: Any = None,
+        default: Any = _MISSING,
+        dest: "str | None" = None,
+        nargs: Any = None,
+    ) -> None:
+        self.flags = flags
+        self.positional = positional
+        self.arg_type = type
+        self.default = default
+        self.dest = dest
+        self.nargs = nargs
+
+    def __class_getitem__(cls, _item: Any) -> "type[Arg]":
+        return cls
+
+
 def _log_task_exception(task: asyncio.Task) -> None:
     """Done callback for background tasks — logs unhandled exceptions."""
     try:
@@ -108,7 +150,6 @@ class App:
     def __init__(self) -> None:
         self._sdk_initialized: bool = True
         self.app_id: str = ""
-        self.args: list[str] = sys.argv[1:]
         self.workspace_root: str = ""
         self.capabilities: list[str] = []
         self.feature_flags: list[str] = []
@@ -186,6 +227,21 @@ class App:
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
+
+        # Collect Arg descriptors declared directly on this class
+        own_specs: "list[tuple[str, Arg]]" = [
+            (name, value)
+            for name, value in cls.__dict__.items()
+            if isinstance(value, Arg)
+        ]
+        # Merge with parent's specs (own overrides parent entries with the same name)
+        parent_specs: "list[tuple[str, Arg]]" = list(getattr(cls, "_arg_specs", []))
+        if own_specs:
+            own_names = {n for n, _ in own_specs}
+            cls._arg_specs = [(n, s) for n, s in parent_specs if n not in own_names] + own_specs
+        else:
+            cls._arg_specs = parent_specs
+
         orig_init = cls.__dict__.get("__init__")
         if orig_init is not None:
             def wrapped(self_inner: "App", *args: Any, _orig: Any = orig_init, **kw: Any) -> None:
@@ -450,6 +506,78 @@ class App:
         ctx._compact_threshold = self._compact_threshold
         ctx._regular_threshold = self._regular_threshold
         return ctx
+
+    def _parse_launch_args(self, ctx: RenderContext) -> None:
+        """Parse sys.argv against declared Arg specs and set resolved instance attributes.
+
+        Called automatically before on_init when the class declares Arg fields.
+        Lambda defaults receive ctx and are resolved here.
+        """
+        import argparse as _argparse
+        specs: "list[tuple[str, Arg]]" = type(self)._arg_specs
+        if not specs:
+            return
+
+        parser = _argparse.ArgumentParser(add_help=False)
+        lambda_defaults: "dict[str, Any]" = {}
+
+        for attr_name, arg_spec in specs:
+            dest = arg_spec.dest or attr_name
+            is_lambda = callable(arg_spec.default) and not isinstance(arg_spec.default, type)
+            if is_lambda:
+                raw_default: Any = None
+                lambda_defaults[attr_name] = arg_spec.default
+            elif arg_spec.default is _MISSING:
+                raw_default = None
+            else:
+                raw_default = arg_spec.default
+
+            if arg_spec.positional:
+                pkw: "dict[str, Any]" = {}
+                if arg_spec.nargs is not None:
+                    pkw["nargs"] = arg_spec.nargs
+                    pkw["default"] = raw_default if raw_default is not None else []
+                else:
+                    pkw["nargs"] = "?"
+                    pkw["default"] = raw_default
+                if arg_spec.arg_type is not None and arg_spec.arg_type is not bool:
+                    pkw["type"] = arg_spec.arg_type
+                parser.add_argument(dest, **pkw)
+            else:
+                if not arg_spec.flags:
+                    continue
+                okw: "dict[str, Any]" = {"dest": dest, "default": raw_default}
+                if arg_spec.arg_type is bool:
+                    okw["action"] = "store_true"
+                elif arg_spec.arg_type is not None:
+                    okw["type"] = arg_spec.arg_type
+                if arg_spec.nargs is not None:
+                    okw["nargs"] = arg_spec.nargs
+                parser.add_argument(*arg_spec.flags, **okw)
+
+        argv = [a for a in sys.argv[1:] if a != "--plexi-introspect"]
+        try:
+            ns, _ = parser.parse_known_args(argv)
+        except SystemExit as e:
+            sys.exit(e.code)
+
+        for attr_name, arg_spec in specs:
+            dest = arg_spec.dest or attr_name
+            value = getattr(ns, dest, None)
+
+            if value is None and arg_spec.default is _MISSING and not arg_spec.positional:
+                flag = arg_spec.flags[0] if arg_spec.flags else attr_name
+                sys.stderr.write(f"{flag}: required argument missing\n")
+                sys.exit(1)
+
+            if value is None and attr_name in lambda_defaults:
+                value = lambda_defaults[attr_name](ctx)
+
+            setattr(self, attr_name, value)
+        self.emit.info(
+            f"args: parsed {len(specs)} arg(s): "
+            + ", ".join(f"{n}={getattr(self, n)!r}" for n, _ in specs)
+        )
 
     def run(self) -> None:
         """Start the PGAP v3 asyncio event loop. Blocks until Shutdown.
@@ -779,6 +907,8 @@ class App:
                                       if f in ("pane_groups_v1",)]
                     _emit({"type": "ready", "sdk": SDK_ID, "features_used": features_used})
                     self.emit.info(f"sdk: default_background={self.default_background!r}")
+                    if getattr(type(self), "_arg_specs", None):
+                        self._parse_launch_args(self._make_ctx())
                     await self._dispatch_hook(self.on_init, self._make_ctx())
 
                 elif t == "render":

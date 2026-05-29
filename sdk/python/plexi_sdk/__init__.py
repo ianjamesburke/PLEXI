@@ -474,4 +474,4 @@ from ._protocol import AiResponse, MidiPortInfo, MidiDeviceList, AudioDeviceInfo
 from ._emitter import Emitter, _emit, _make_async_queue, _LOCK
 from ._pipe import Pipe
 from ._render_context import RenderContext, COMPACT_DEFAULT, REGULAR_DEFAULT
-from ._app import App
+from ._app import App, Arg

@@ -13,11 +13,10 @@ Form view:   host-managed text_input per arg/flag; first field auto-focused;
 """
 
 import json
-import sys
 import threading
 from pathlib import Path
 
-from plexi_sdk import App, RenderContext, CapabilityDeniedError
+from plexi_sdk import App, RenderContext, CapabilityDeniedError, Arg
 from plexi_sdk.ui import (
     Column, AppBar, FormField, FooterKeys,
     ListItem, Label, Spacer, Card,
@@ -30,21 +29,6 @@ from plexi_sdk.widgets import ListView
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
-
-def _parse_descriptor_path(argv: list[str]) -> str | None:
-    i = 0
-    while i < len(argv):
-        if argv[i] == "--descriptor" and i + 1 < len(argv):
-            return argv[i + 1]
-        i += 1
-    for arg in argv:
-        if not arg.startswith("-"):
-            return arg
-    sample = Path(__file__).parent / "sample.json"
-    if sample.exists():
-        return str(sample)
-    return None
-
 
 def _load_descriptor(path: str) -> dict:
     p = Path(path).expanduser().resolve()
@@ -90,6 +74,8 @@ def _build_command(cli: str, path: list[str], field_values: dict[str, str],
 # ── App ────────────────────────────────────────────────────────────────────────
 
 class DescriptorRendererApp(App):
+    descriptor: Arg[str | None] = Arg("--descriptor", default=None)
+    descriptor_pos: Arg[str | None] = Arg(positional=True, nargs="?", default=None)
 
     def on_init(self, ctx: RenderContext) -> None:
         self._descriptor: dict | None = None
@@ -109,7 +95,8 @@ class DescriptorRendererApp(App):
         # UI components
         self._list = ListView(item_height=ListItem.HEIGHT_DOUBLE)
 
-        path = _parse_descriptor_path(sys.argv[1:])
+        sample = Path(__file__).parent / "sample.json"
+        path = self.descriptor or self.descriptor_pos or (str(sample) if sample.exists() else None)
         if not path:
             self._error = "No descriptor path. Usage: descriptor-renderer --descriptor <path.json>"
             self._view = "error"
