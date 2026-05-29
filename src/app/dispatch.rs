@@ -8,7 +8,7 @@ use super::PlexiApp;
 mod tests {
     use super::*;
     use crate::app_permissions::AppPermissions;
-    use crate::app_protocol::{NotifyKind, NotifyScope};
+    use crate::app_protocol::{NotifyKind, NotifyScope, PlexiEvent};
     use crate::process_app::ProcessApp;
     use crate::testing::HostHarness;
     /// Regression guard for issue #879: parked background app notifications
@@ -62,6 +62,75 @@ mod tests {
             "source_context_id should be the park-time context_id ({park_context_id}), not hardcoded 0"
         );
     }
+
+    /// Regression guard for issue #1795: key events must not reach an app pane
+    /// when the egui viewport reports `focused = Some(false)` (window out of OS focus).
+    ///
+    /// Strategy: call `dispatch_app_key_events` directly with a hand-crafted context
+    /// that holds a `Paste` event (Paste queues to `outbound_events` directly, so it
+    /// is readable via `effects_drain` before any `flush_outbound_events` call drains
+    /// the queue). With the guard in place, `dispatch_app_key_events` returns before
+    /// `handle_key` is reached, so `outbound_events` stays empty.
+    #[test]
+    fn no_key_dispatch_when_viewport_unfocused() {
+        let mut h = HostHarness::new();
+        let pane = h.add_test_pane();
+
+        // Stabilise egui tile structure (bare-pane root rewrites itself on first render).
+        h.run_frames(1);
+
+        // Point window focus at the app pane tile.
+        let tile_id = {
+            let win = &h.app.windows[0];
+            win.tree
+                .tiles
+                .iter()
+                .find_map(|(id, tile)| match tile {
+                    egui_tiles::Tile::Pane(p) if *p == pane => Some(*id),
+                    _ => None,
+                })
+                .expect("test pane must have a tile")
+        };
+        h.app.windows[0].focused_pane = Some(tile_id);
+
+        // Build a fresh egui context with viewport focused = Some(false) and a Paste
+        // event. We call dispatch_app_key_events directly rather than through a full
+        // frame so flush_outbound_events (called inside ui()) cannot drain the queue
+        // before we inspect it.
+        let test_ctx = egui::Context::default();
+        let viewports: egui::ViewportIdMap<egui::ViewportInfo> =
+            std::iter::once((egui::ViewportId::ROOT, {
+                let mut info = egui::ViewportInfo::default();
+                info.focused = Some(false);
+                info
+            }))
+            .collect();
+
+        let _ = test_ctx.run(
+            egui::RawInput {
+                viewports,
+                events: vec![egui::Event::Paste("should-not-arrive".into())],
+                ..Default::default()
+            },
+            |ctx| {
+                h.app.dispatch_app_key_events(ctx);
+            },
+        );
+
+        // outbound_events must be empty: the viewport-focus guard must have returned
+        // before handle_key was reached. Paste queues to outbound_events directly
+        // (unlike Key/Text which go through send_event), so it would be visible here
+        // if the guard were absent.
+        let events = h.effects_drain(pane);
+        let paste_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, PlexiEvent::Paste { .. }))
+            .collect();
+        assert!(
+            paste_events.is_empty(),
+            "Paste must not reach the app when the viewport is unfocused; got {paste_events:?}"
+        );
+    }
 }
 
 impl PlexiApp {
@@ -71,6 +140,12 @@ impl PlexiApp {
     /// apps can surface notifications and other commands while the
     /// focused pane is something else (or while a modal holds focus).
     pub(super) fn dispatch_app_key_events(&mut self, ctx: &egui::Context) {
+        // Block key delivery when the OS has focus elsewhere. `active_window` is not
+        // cleared on blur, so without this guard keys route to the last-active pane
+        // even while a different app (or Plexi window) owns the keyboard.
+        if !ctx.input(|i| i.viewport().focused.unwrap_or(true)) {
+            return;
+        }
         let active = self.active_window;
         let Some(focused_tile) = self.windows[active].focused_pane else {
             return;
