@@ -122,10 +122,10 @@ git push origin --delete $BRANCH 2>/dev/null || true  # remote may already be go
 
 ---
 
-## Step 6 — Bump, Install, Push
+## Step 6 — Bump and Push
 
 ```bash
-just bump && just install
+just bump
 git push
 ```
 
