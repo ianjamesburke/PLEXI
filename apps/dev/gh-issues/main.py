@@ -3,7 +3,7 @@
 
 Two views:
   - LIST: scrollable issue rows with number badge, title, labels
-  - DETAIL: terminal-style metadata table + markdown body
+  - DETAIL: metadata card + scrollable markdown body
 
 Keys: j/k navigate · Enter open detail · Esc back · o open in browser
       r refresh · n new issue in terminal
@@ -14,18 +14,38 @@ import subprocess
 
 from plexi_sdk import (
     App, RenderContext, Arg,
-    BG, SURFACE, FG, ACCENT, MUTED, HIGHLIGHT,
-    BODY, CAPTION, HEADING, HINT,
-    GREEN, RED, YELLOW,
+    theme,
+    BODY, CAPTION, HINT,
     PAD, PAD_TIGHT,
 )
-from plexi_sdk.ui import ListRow, RowChip, LeadingBadge
+from plexi_sdk.ui import (
+    AppBar, FooterKeys, InfoTable, Section,
+    Scrollable, Column, Label, Spacer,
+    ListRow, RowChip, LeadingBadge,
+    Component,
+    TEXT_BODY,
+    SPACE_MD,
+    _markdown_measure_lines,
+)
 
-# ── Layout ────────────────────────────────────────────────────────────────────
 
-HEADER_H = 52
-ROW_H    = 38
-KEY_COL  = 90
+# ── Private markdown component ────────────────────────────────────────────────
+
+class _MarkdownBlock(Component):
+    """Embeds ctx.markdown() in the declarative component tree."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+    def measure(self, avail_w: float) -> float:
+        if not self.text:
+            return 0.0
+        lines = _markdown_measure_lines(self.text, avail_w, TEXT_BODY, max_lines=400)
+        return max(1, lines) * (TEXT_BODY + 5.0)
+
+    def render(self, ctx, x: float, y: float, w: float, _h: float) -> None:
+        if self.text:
+            ctx.markdown(x, y, w, self.text)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -46,12 +66,12 @@ def _gh(*args: str, cwd: str | None = None, timeout: float = 15.0) -> tuple[int,
 def _label_color(name: str) -> str:
     n = name.lower()
     if any(w in n for w in ("bug", "error", "p0", "p1")):
-        return RED
+        return theme.danger
     if any(w in n for w in ("p2", "enhancement", "feat")):
-        return YELLOW
+        return theme.warning
     if any(w in n for w in ("ready", "done", "p3", "p4")):
-        return GREEN
-    return ACCENT
+        return theme.success
+    return theme.accent
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -72,6 +92,8 @@ class GhIssues(App):
         self._detail         : dict | None = None
         self._root           = self.repo_dir or ""
         self._render_seeded  = False
+        # Stable Scrollable instance — scroll offset persists across renders.
+        self._body_scroll    = Scrollable(Label(""))
         ctx.status_summary("Loading…")
         self.emit.info(f"gh-issues init workspace={self._root!r}")
         self._fetch()
@@ -117,7 +139,6 @@ class GhIssues(App):
             return
         try:
             self._issues = json.loads(out)
-            # clamp selection to new list bounds
             self._sel = max(0, min(self._sel, len(self._issues) - 1)) if self._issues else 0
         except Exception as exc:
             self.emit.warn(f"gh issue list json parse error: {exc}")
@@ -150,59 +171,63 @@ class GhIssues(App):
     # ── render ────────────────────────────────────────────────────────────────
 
     def on_render(self, ctx: RenderContext) -> None:
-        ctx.clear(BG)
-        self._draw_header(ctx)
-
-        if self._loading:
-            ctx.text(PAD, HEADER_H + PAD, "Loading…", size=BODY, color=MUTED)
-            return
-        if self._error:
-            ctx.text(PAD, HEADER_H + PAD, f"Error: {self._error}",
-                     size=CAPTION, color=RED, max_width=ctx.w - PAD * 2)
-            ctx.text(PAD, HEADER_H + PAD + BODY + PAD_TIGHT,
-                     "r — retry", size=HINT, color=MUTED)
-            return
+        ctx.clear(theme.bg)
 
         if self._view == self.VIEW_DETAIL:
             if self._detail_loading:
-                ctx.text(PAD, HEADER_H + PAD, "Loading issue…", size=BODY, color=MUTED)
-                return
-            self._draw_detail(ctx)
-        else:
-            self._draw_list(ctx)
+                ctx.render(Column([
+                    AppBar("Issues", accent=theme.accent),
+                    Spacer(size=SPACE_MD),
+                    Label("Loading issue…", tone="body", color=theme.muted),
+                ], padding_top=0))
+            elif self._error:
+                ctx.render(Column([
+                    AppBar("Error", accent=theme.accent),
+                    Spacer(size=SPACE_MD),
+                    Label(f"Error: {self._error}", tone="body", color=theme.danger),
+                    Spacer(grow=True),
+                    FooterKeys([("escape", "back")]),
+                ], padding_top=0))
+            else:
+                self._draw_detail(ctx)
+            return
 
-    def _draw_header(self, ctx: RenderContext) -> None:
-        ctx.rect(0, 0, ctx.w, HEADER_H, fill=SURFACE)
-        ctx.rect(0, HEADER_H - 1, ctx.w, 1, fill=BG)
-
-        mid_y = HEADER_H / 2
-        ctx.text(PAD, mid_y - HEADING / 2, "Issues", size=HEADING, color=ACCENT,
-                 bold=True, monospace=True)
-
-        if not self._loading:
-            ctx.badge(
-                x=PAD + 76, y_center=mid_y,
-                label=f"{len(self._issues)} open",
-                fill=SURFACE, fg=MUTED, font_size=HINT, radius=3.0,
-            )
-
-        ctx.shortcuts(
-            x=ctx.w / 2, y=mid_y - HINT / 2,
-            max_width=ctx.w / 2 - PAD,
-            pairs=[
-                (["j", "k"], "navigate"),
-                ("↩", "detail"),
-                ("o", "browser"),
-                ("r", "refresh"),
-                ("n", "new"),
-            ],
+        # Header: AppBar (title + count). Shortcuts live in a bottom footer.
+        appbar = AppBar(
+            "Issues",
+            subtitle=f"{len(self._issues)} open" if not self._loading else None,
+            accent=theme.accent,
         )
+        footer = FooterKeys([
+            (["j", "k"], "navigate"),
+            ("↩", "detail"),
+            ("o", "browser"),
+            ("r", "refresh"),
+            ("n", "new"),
+        ])
+        appbar_h  = appbar.measure(ctx.w)
+        footer_h  = footer.measure(ctx.w)
+        list_top  = appbar_h
+        appbar.render(ctx, 0.0, 0.0, ctx.w, appbar_h)
+        footer.render(ctx, 0.0, ctx.h - footer_h, ctx.w, footer_h)
 
-    def _draw_list(self, ctx: RenderContext) -> None:
+        if self._loading:
+            ctx.text(PAD, list_top + PAD, "Loading…", size=BODY, color=theme.muted)
+            return
+        if self._error:
+            ctx.text(PAD, list_top + PAD, f"Error: {self._error}",
+                     size=CAPTION, color=theme.danger, max_width=ctx.w - PAD * 2)
+            ctx.text(PAD, list_top + PAD + BODY + PAD_TIGHT,
+                     "r — retry", size=HINT, color=theme.muted)
+            return
+
+        self._draw_list(ctx, list_top, footer_h)
+
+    def _draw_list(self, ctx: RenderContext, list_top: float, footer_h: float) -> None:
         rows = [
             ListRow(
                 id=f"issue-{issue['number']}",
-                leading=LeadingBadge(f"#{issue['number']}", color="accent"),
+                leading=LeadingBadge(f"#{issue['number']}", color=theme.accent),
                 primary=issue.get("title", ""),
                 chips=[
                     RowChip(lbl.get("name", ""), _label_color(lbl.get("name", "")))
@@ -211,64 +236,38 @@ class GhIssues(App):
             ).to_dict()
             for issue in self._issues
         ]
-        ctx.list_view(
-            "issues",
-            rows,
-            selected=self._sel,
-            loading=False,
-            y=float(HEADER_H),
-        )
+        list_h = max(0.0, ctx.h - list_top - footer_h)
+        ctx.list_view("issues", rows, selected=self._sel,
+                      y=float(list_top), h=float(list_h))
 
     def _draw_detail(self, ctx: RenderContext) -> None:
         if self._detail is None:
             return
-        d  = self._detail
-        y  = float(HEADER_H + PAD)
+        d             = self._detail
+        labels_str    = ", ".join(lb.get("name", "") for lb in d.get("labels", []) if lb) or "none"
+        assignees_str = ", ".join(a.get("login", "") for a in d.get("assignees", []) if a) or "unassigned"
+        body_text     = (d.get("body") or "").strip()
+        number        = d.get("number", "")
+        title         = d.get("title", "")
 
-        ctx.text(PAD, y, "← esc", size=HINT, color=MUTED)
-        y += HINT + PAD
-
-        # title
-        ctx.text(PAD, y, d["title"], size=HEADING, color=FG,
-                 bold=True, max_width=ctx.w - PAD * 2)
-        y += HEADING + PAD
-
-        # metadata table (1073 style: SURFACE bg, GREEN keys, FG values)
-        labels_str    = ", ".join(lb["name"] for lb in d.get("labels", [])) or "none"
-        assignees_str = ", ".join(a["login"] for a in d.get("assignees", [])) or "unassigned"
-        rows = [
-            ("number",    f"#{d['number']}"),
-            ("state",     d.get("state", "open")),
-            ("labels",    labels_str),
-            ("assignees", assignees_str),
-            ("opened",    (d.get("createdAt") or "")[:10]),
-        ]
-        T_ROW_H = 28
-        table_h = T_ROW_H * len(rows)
-        ctx.rect(PAD, y, ctx.w - PAD * 2, table_h, fill=SURFACE, radius=6.0)
-        for i, (key, value) in enumerate(rows):
-            ry = y + i * T_ROW_H
-            if i > 0:
-                ctx.rect(PAD, ry, ctx.w - PAD * 2, 1, fill=BG)
-            ty = ry + (T_ROW_H - CAPTION) / 2
-            ctx.text(PAD + 10, ty, key,   size=CAPTION, color=GREEN, monospace=True)
-            ctx.text(PAD + 10 + KEY_COL, ty, value, size=CAPTION, color=FG,
-                     monospace=True, max_width=ctx.w - PAD - 10 - KEY_COL - PAD)
-        y += table_h + PAD
-
-        # body (markdown)
-        body = (d.get("body") or "").strip()
-        if body:
-            ctx.text(PAD, y, "body", size=CAPTION, color=MUTED, monospace=True)
-            y += CAPTION + PAD_TIGHT
-            ctx.markdown(PAD, y, ctx.w - PAD * 2, body)
-
-        # footer shortcuts
-        ctx.shortcuts(
-            x=PAD, y=ctx.h - PAD - HINT,
-            max_width=ctx.w - PAD * 2,
-            pairs=[("o", "open in browser"), ("esc", "back")],
+        self._body_scroll.child = (
+            _MarkdownBlock(body_text) if body_text
+            else Label("No body.", tone="caption", color=theme.muted)
         )
+
+        ctx.render(Column([
+            AppBar(f"← #{number}  {title}", accent=theme.accent),
+            InfoTable([
+                ("number",    f"#{number}"),
+                ("state",     d.get("state", "open")),
+                ("labels",    labels_str),
+                ("assignees", assignees_str),
+                ("opened",    (d.get("createdAt") or "")[:10]),
+            ]),
+            Section("Body"),
+            self._body_scroll,
+            FooterKeys([("o", "open in browser"), ("escape", "back")]),
+        ], padding_top=0))
 
     # ── input ─────────────────────────────────────────────────────────────────
 
@@ -297,6 +296,9 @@ class GhIssues(App):
                     rc, _, _ = _gh("issue", "view", str(num), "--web",
                                    cwd=self._root or None)
                     self.emit.info(f"gh-issues: open #{num} in browser rc={rc}")
+            else:
+                if self._body_scroll.handle_key(key):
+                    self.emit.schedule_render()
 
     def on_list_select(self, ctx: RenderContext, _id: str, index: int) -> None:
         self._sel = index
@@ -317,9 +319,11 @@ class GhIssues(App):
             return
         issue = self._issues[self._sel]
         self.emit.info(f"gh-issues: open detail #{issue['number']}")
-        self._view           = self.VIEW_DETAIL
-        self._detail         = None
-        self._detail_loading = True
+        self._view                      = self.VIEW_DETAIL
+        self._detail                    = None
+        self._detail_loading            = True
+        self._error                     = None
+        self._body_scroll.scroll_offset = 0.0
         asyncio.get_event_loop().create_task(
             asyncio.to_thread(self._load_detail, issue["number"])
         )

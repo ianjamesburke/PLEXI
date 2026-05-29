@@ -909,6 +909,10 @@ class App:
                     self.feature_flags = ev.get("feature_flags", [])
                     self._compact_threshold = ev.get("compact_threshold", 280.0)
                     self._regular_threshold = ev.get("regular_threshold", 480.0)
+                    # Apply host theme (light/dark + user overrides) so app-drawn
+                    # chrome matches the host. Mutates the shared singleton in place.
+                    from ._theme import theme as _theme
+                    _theme.update_from(ev.get("theme"))
                     # Send Ready
                     features_used = [f for f in self.feature_flags
                                       if f in ("pane_groups_v1",)]

@@ -442,6 +442,12 @@ impl ProcessApp {
             pythonpath.push(':');
             pythonpath.push_str(&bundle_sdk.to_string_lossy());
         }
+        // Dev override: PLEXI_SDK_PATH wins over the embedded/bundled SDK so the
+        // worktree SDK can be iterated live without a rebuild (see config::sdk_path_override).
+        if let Some(dev_sdk) = crate::config::sdk_path_override() {
+            pythonpath = format!("{}:{}", dev_sdk.to_string_lossy(), pythonpath);
+            log::info!("process_app[{type_id}]: PLEXI_SDK_PATH override active -> {}", dev_sdk.display());
+        }
 
         // Static capability validation — runs before the real spawn.
         // For Python apps only; non-Python apps skip. Subprocess failures log warn and proceed.
@@ -1347,6 +1353,7 @@ impl App for ProcessApp {
                 feature_flags: vec!["pane_groups_v1".into()],
                 compact_threshold: self.compact_threshold,
                 regular_threshold: self.regular_threshold,
+                theme: ctx.colors.to_theme_map(),
             });
             // Inject persisted state before first render so on_inject runs with data.
             let state = load_app_state(&self.type_id, &self.workspace_root);

@@ -406,6 +406,7 @@ pub(crate) fn render_draw_commands(
                 const PAD_X: f32 = 12.0;
                 const CHIP_GAP: f32 = 4.0;
                 const CHIP_PAD_X: f32 = 8.0;
+                const BADGE_TEXT_GAP: f32 = 8.0;
                 const SPACE_XS: f32 = 4.0;
                 const SCROLLBAR_W: f32 = 3.0;
                 const FONT_CAPTION: f32 = 13.0;
@@ -548,7 +549,7 @@ pub(crate) fn render_draw_commands(
                                         // render_badge takes origin + pane-local coords
                                         let badge_x = list_rect.min.x - pane_rect.min.x + PAD_X;
                                         let badge_y = row_abs_y - pane_rect.min.y + h_item / 2.0;
-                                        render_badge(
+                                        let badge_w = render_badge(
                                             ui,
                                             pane_rect.min,
                                             list_clip,
@@ -556,11 +557,15 @@ pub(crate) fn render_draw_commands(
                                             badge_y,
                                             label,
                                             color,
-                                            "#1e1e2e",
+                                            contrast_text_hex(color),
                                             FONT_HINT,
                                             3.0,
                                         );
-                                        list_rect.min.x + LEADING_W
+                                        // Flow the title past the badge's real width so wide
+                                        // labels (e.g. "#1792") never clip the title; keep at
+                                        // least the old fixed slot so short badges stay aligned.
+                                        (list_rect.min.x + PAD_X + badge_w + BADGE_TEXT_GAP)
+                                            .max(list_rect.min.x + LEADING_W)
                                     }
                                     Some(ListViewLeading::Avatar { handle }) => {
                                         let avatar_r = 14.0;
@@ -654,12 +659,48 @@ pub(crate) fn render_draw_commands(
                                     cx += chip_w + CHIP_GAP;
                                 }
 
-                                // Primary text
+                                // Primary text — elide so the title never runs
+                                // under the right-aligned chips / trailing text.
+                                let primary_font = egui::FontId::proportional(FONT_CAPTION);
+                                let has_right = !row.chips.is_empty() || row.trailing.is_some();
+                                let text_right = if has_right {
+                                    list_rect.max.x - PAD_X - trailing_reserve - chips_reserve - BADGE_TEXT_GAP
+                                } else {
+                                    list_rect.max.x - PAD_X
+                                };
+                                let avail_w = (text_right - text_start_x).max(0.0);
+                                let display_primary: std::borrow::Cow<'_, str> = {
+                                    let galley = ui.fonts(|f| {
+                                        f.layout_no_wrap(
+                                            row.primary.clone(),
+                                            primary_font.clone(),
+                                            colors.text_primary,
+                                        )
+                                    });
+                                    if galley.size().x > avail_w {
+                                        let mut lo = 0usize;
+                                        let mut hi = row.primary.chars().count();
+                                        while lo + 1 < hi {
+                                            let mid = (lo + hi) / 2;
+                                            let candidate: String =
+                                                row.primary.chars().take(mid).collect::<String>() + "…";
+                                            let g = ui.fonts(|f| {
+                                                f.layout_no_wrap(candidate, primary_font.clone(), colors.text_primary)
+                                            });
+                                            if g.size().x <= avail_w { lo = mid; } else { hi = mid; }
+                                        }
+                                        std::borrow::Cow::Owned(
+                                            row.primary.chars().take(lo).collect::<String>() + "…",
+                                        )
+                                    } else {
+                                        std::borrow::Cow::Borrowed(row.primary.as_str())
+                                    }
+                                };
                                 painter.text(
                                     egui::pos2(text_start_x, primary_y),
                                     egui::Align2::LEFT_TOP,
-                                    row.primary.as_str(),
-                                    egui::FontId::proportional(FONT_CAPTION),
+                                    display_primary.as_ref(),
+                                    primary_font,
                                     colors.text_primary,
                                 );
 
@@ -744,9 +785,15 @@ pub(crate) fn render_draw_commands(
                 if !md_rect.is_positive() {
                     continue;
                 }
+                // Lay the markdown out at the full requested rect (whose top may
+                // sit above the clip when a Scrollable has offset it upward), and
+                // clip to the visible intersection. Using md_rect as the layout
+                // rect would re-anchor content to the top of the visible area
+                // every frame, so a scroll offset would move the scrollbar but
+                // never the text.
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
-                        .max_rect(md_rect)
+                        .max_rect(requested_rect)
                         .layout(egui::Layout::top_down(egui::Align::LEFT)),
                 );
                 child.set_clip_rect(md_rect);
@@ -969,6 +1016,22 @@ pub(crate) fn render_draw_commands(
 // overlays that reuse these helpers always match.
 
 /// Render a Badge pill. `x` is the left edge; `y` is the vertical centre.
+/// Renders a pill badge at (`origin.x + x`, vertically centred on `origin.y + y_center`).
+/// Returns the pill width so callers can flow following content past the badge
+/// instead of assuming a fixed slot (which clips wide labels like `#1792`).
+/// Pick a legible text color for a filled chip/badge based on the fill's
+/// perceptual luminance. Dark fills get light text, light fills get dark text.
+/// Returns a hex string so it can be threaded through the `&str` fg params.
+pub(crate) fn contrast_text_hex(fill: &str) -> &'static str {
+    match parse_color(fill) {
+        Some(c) => {
+            let lum = 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32;
+            if lum > 140.0 { "#1e1e2e" } else { "#ffffff" }
+        }
+        None => "#1e1e2e",
+    }
+}
+
 pub(crate) fn render_badge(
     ui: &mut egui::Ui,
     origin: egui::Pos2,
@@ -980,7 +1043,7 @@ pub(crate) fn render_badge(
     fg: &str,
     font_size: f32,
     radius: f32,
-) {
+) -> f32 {
     let fill_color = parse_color(fill).unwrap_or(egui::Color32::from_rgb(0x89, 0xb4, 0xfa));
     let fg_color = parse_color(fg).unwrap_or(egui::Color32::from_rgb(0x1e, 0x1e, 0x2e));
     let font_id = egui::FontId::proportional(font_size);
@@ -1001,6 +1064,7 @@ pub(crate) fn render_badge(
     let text_x = pill_rect.center().x - text_w / 2.0;
     let text_y = pill_rect.center().y - text_h / 2.0;
     painter.galley(egui::pos2(text_x, text_y), galley, fg_color);
+    pill_w
 }
 
 /// Render a single KeyChip at absolute position (`origin.x + x`, `origin.y + y`).

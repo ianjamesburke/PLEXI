@@ -33,6 +33,8 @@ pub struct Colors {
     pub border: Color32,
     // Semantic state colors
     pub danger: Color32,
+    pub success: Color32,
+    pub warning: Color32,
     // Terminal fg/bg as bytes for dynamic colors
     pub terminal_fg_bytes: [u8; 3],
     pub terminal_bg_bytes: [u8; 3],
@@ -55,10 +57,60 @@ impl Colors {
             border: parse_hex_or(&cfg.border, Color32::from_rgb(0x2a, 0x2a, 0x3c)),
             // Derive from the theme's ANSI red; fallback matches the Dracula red used in event_log.rs.
             danger: parse_hex_or(&cfg.red, Color32::from_rgb(0xff, 0x55, 0x55)),
+            success: parse_hex_or(&cfg.green, Color32::from_rgb(0xa6, 0xe3, 0xa1)),
+            warning: parse_hex_or(&cfg.yellow, Color32::from_rgb(0xf9, 0xe2, 0xaf)),
             terminal_fg_bytes: hex_to_bytes(cfg.foreground.as_deref(), [0xe8, 0xe6, 0xed]),
             terminal_bg_bytes: hex_to_bytes(cfg.background.as_deref(), [0x29, 0x2a, 0x44]),
         }
     }
+
+    /// Serialize the semantic color roles to a `role -> #rrggbb` map for the
+    /// SDK `Init` payload. Apps read these via `ctx.theme.<role>` so app-drawn
+    /// chrome tracks the host theme (light/dark + user `[theme]` overrides).
+    /// Both the SDK-semantic names (bg/surface/muted/...) and ANSI aliases
+    /// (red/green/yellow) are emitted so apps can pull whichever they need.
+    pub fn to_theme_map(&self) -> std::collections::HashMap<String, String> {
+        fn hex(c: Color32) -> String {
+            format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
+        }
+        // `bg` is the color the host paints behind the app pane (terminal_bg),
+        // so an app that clears to theme.bg matches its container in any theme.
+        [
+            ("bg", self.terminal_bg),
+            ("bg_darkest", self.bg_darkest),
+            ("surface", self.bg_active),
+            ("highlight", self.bg_hover),
+            ("border", self.border),
+            ("fg", self.text_primary),
+            ("muted", self.text_dim),
+            ("text_section", self.text_section),
+            ("accent", self.accent),
+            ("danger", self.danger),
+            ("red", self.danger),
+            ("success", self.success),
+            ("green", self.success),
+            ("warning", self.warning),
+            ("yellow", self.warning),
+        ]
+        .into_iter()
+        .map(|(k, c)| (k.to_string(), hex(c)))
+        .collect()
+    }
+}
+
+/// Resolve the active `Colors` from a loaded config: merges the user's
+/// `[theme]` overrides over the named preset (or pure user config if no
+/// preset). Shared by the GUI and the headless `app render` path.
+pub fn colors_from_config(config: &crate::config::PlexiConfig) -> Colors {
+    let user_theme = config.theme.clone().unwrap_or_default();
+    let cfg = match &config.theme_preset {
+        Some(preset_name) => match preset_colors(preset_name) {
+            Some(preset) => apply_preset(&preset, &user_theme),
+            None => user_theme,
+        },
+        None => user_theme,
+    };
+    Colors::from_config(&cfg)
 }
 
 fn hex_to_bytes(s: Option<&str>, default: [u8; 3]) -> [u8; 3] {
