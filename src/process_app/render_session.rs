@@ -66,6 +66,7 @@ impl RenderSession {
         image_cache: &mut super::image_cache::ImageCache,
         app_dir: &std::path::Path,
         net_http_granted: bool,
+        is_focused: bool,
     ) {
         log::debug!("render_session: render pane_id={} cmds={}", pane_id, frame.len());
 
@@ -90,7 +91,7 @@ impl RenderSession {
         let scroll_consumed = self.render_scroll_regions(ui, pane_rect, frame);
 
         // ── Pass 4: ListView interaction (j/k/enter, scroll gesture) ─────────
-        self.render_list_views(ui, pane_rect, frame);
+        self.render_list_views(ui, pane_rect, frame, is_focused);
 
         // ── Pass 5: app scroll delta for SDK Scrollable ───────────────────────
         if !scroll_consumed {
@@ -368,6 +369,7 @@ impl RenderSession {
         ui: &mut egui::Ui,
         pane_rect: egui::Rect,
         frame: &[RenderCommand],
+        is_focused: bool,
     ) {
         use crate::app_protocol::PlexiEvent;
 
@@ -425,8 +427,9 @@ impl RenderSession {
                 }
             }
 
-            // j / down
-            let j_pressed = ui.input(|i|
+            // j / down — only when this pane has focus; prevents routing to
+            // background app while a terminal pane is focused (#1795)
+            let j_pressed = is_focused && ui.input(|i|
                 i.key_pressed(egui::Key::J) || i.key_pressed(egui::Key::ArrowDown)
             );
             if j_pressed && sel + 1 < n {
@@ -441,7 +444,7 @@ impl RenderSession {
             }
 
             // k / up
-            let k_pressed = ui.input(|i|
+            let k_pressed = is_focused && ui.input(|i|
                 i.key_pressed(egui::Key::K) || i.key_pressed(egui::Key::ArrowUp)
             );
             if k_pressed && sel > 0 {
@@ -456,7 +459,7 @@ impl RenderSession {
             }
 
             // Enter
-            let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
+            let enter_pressed = is_focused && ui.input(|i| i.key_pressed(egui::Key::Enter));
             if enter_pressed {
                 log::info!("ListView[{id}]: enter → activate {sel}");
                 self.outbound_events.push(PlexiEvent::ListActivate {

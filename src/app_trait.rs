@@ -12,6 +12,8 @@ pub(crate) enum KeyDisposition {
 /// Context passed to an app during rendering.
 pub struct AppRenderContext<'a> {
     pub colors: &'a Colors,
+    /// Whether this pane is the currently focused pane in its window.
+    pub is_focused: bool,
 }
 
 /// Commands an app can issue back to the system.

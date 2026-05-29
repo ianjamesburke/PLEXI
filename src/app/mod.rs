@@ -4367,6 +4367,7 @@ impl eframe::App for PlexiApp {
                                     } else if let Some(a) = pane.as_app_mut() {
                                         let app_ctx = crate::app_trait::AppRenderContext {
                                             colors: &self.colors,
+                                            is_focused: true, // zoomed pane is always focused
                                         };
                                         a.runtime.ui(ui, &app_ctx);
                                     }
