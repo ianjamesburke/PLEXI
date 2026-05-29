@@ -160,15 +160,11 @@ esac
 
 ### Pass
 
-Append to issue Ship Log:
-```markdown
-**Validate attempt <N>:** PASS
-**Test date:** <YYYY-MM-DD>
-```
-
-Set pipeline state:
+Append to issue Ship Log and set pipeline state in one call:
 ```bash
+CURRENT_BODY=$(gh issue view $ISSUE_NUMBER --json body --jq '.body')
 gh issue edit $ISSUE_NUMBER \
+  --body "$(printf '%s\n**Validate attempt %s:** PASS\n**Test date:** %s' "$CURRENT_BODY" "$((ATTEMPT_COUNT+1))" "$(date +%Y-%m-%d)")" \
   --add-label "pipeline:merge" \
   --add-label "ready" \
   --remove-label "pipeline:validate" \

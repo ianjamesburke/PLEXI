@@ -36,13 +36,7 @@ Extract:
 cd "$(git rev-parse --show-toplevel)"
 ```
 
-Mark issue as actively in merge phase:
-```bash
-gh issue edit $ISSUE_NUMBER \
-  --add-label "in progress" \
-  --remove-label "pipeline:validate" \
-  --add-label "pipeline:merge" 2>/dev/null || true
-```
+> Labels are already correct when invoked inline from validate-pr. No label edit needed here.
 
 ---
 
@@ -60,13 +54,16 @@ fi
 
 ---
 
-## Step 2 — Rebase and Push
+## Step 2 — Rebase and Push (conditional)
 
 ```bash
 git fetch origin
-git -C worktrees/$BRANCH rebase origin/alpha
-# On conflict: git -C worktrees/$BRANCH add <files> && GIT_EDITOR=true git -C worktrees/$BRANCH rebase --continue
-git -C worktrees/$BRANCH push --force-with-lease origin HEAD
+BEHIND=$(git -C worktrees/$BRANCH rev-list HEAD..origin/alpha --count 2>/dev/null || echo 0)
+if [ "$BEHIND" -gt 0 ]; then
+  git -C worktrees/$BRANCH rebase origin/alpha
+  # On conflict: git -C worktrees/$BRANCH add <files> && GIT_EDITOR=true git -C worktrees/$BRANCH rebase --continue
+  git -C worktrees/$BRANCH push --force-with-lease origin HEAD
+fi
 ```
 
 > If anything non-obvious happened this PR: add one entry to `GOTCHAS.md` in the feature worktree and commit it there before pushing. It lands in the squash commit. Do not write to alpha's GOTCHAS.md directly.
