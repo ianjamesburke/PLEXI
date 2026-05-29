@@ -330,7 +330,7 @@ impl RenderSession {
             }
         }
 
-        log::debug!("render_session: forwarding wheel delta_y={} to app", scroll_delta.y);
+        log::info!("render_session: forwarding wheel delta_y={} to app", scroll_delta.y);
         self.outbound_events.push(PlexiEvent::Scroll { delta_y: scroll_delta.y });
     }
 
