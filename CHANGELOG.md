@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.526] — 2026-05-29
+
+### Changes
+- feat(sdk): declarative Arg class for app launch arguments (#1788) (#1789)
+- fix(demo): reject split-bounce as navigation in step 2
 ## [0.0.525] — 2026-05-28
 
 ### Changes
