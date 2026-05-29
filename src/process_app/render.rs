@@ -406,6 +406,7 @@ pub(crate) fn render_draw_commands(
                 const PAD_X: f32 = 12.0;
                 const CHIP_GAP: f32 = 4.0;
                 const CHIP_PAD_X: f32 = 8.0;
+                const BADGE_TEXT_GAP: f32 = 8.0;
                 const SPACE_XS: f32 = 4.0;
                 const SCROLLBAR_W: f32 = 3.0;
                 const FONT_CAPTION: f32 = 13.0;
@@ -563,7 +564,6 @@ pub(crate) fn render_draw_commands(
                                         // Flow the title past the badge's real width so wide
                                         // labels (e.g. "#1792") never clip the title; keep at
                                         // least the old fixed slot so short badges stay aligned.
-                                        const BADGE_TEXT_GAP: f32 = 8.0;
                                         (list_rect.min.x + PAD_X + badge_w + BADGE_TEXT_GAP)
                                             .max(list_rect.min.x + LEADING_W)
                                     }
@@ -659,12 +659,48 @@ pub(crate) fn render_draw_commands(
                                     cx += chip_w + CHIP_GAP;
                                 }
 
-                                // Primary text
+                                // Primary text — elide so the title never runs
+                                // under the right-aligned chips / trailing text.
+                                let primary_font = egui::FontId::proportional(FONT_CAPTION);
+                                let has_right = !row.chips.is_empty() || row.trailing.is_some();
+                                let text_right = if has_right {
+                                    list_rect.max.x - PAD_X - trailing_reserve - chips_reserve - BADGE_TEXT_GAP
+                                } else {
+                                    list_rect.max.x - PAD_X
+                                };
+                                let avail_w = (text_right - text_start_x).max(0.0);
+                                let display_primary: std::borrow::Cow<'_, str> = {
+                                    let galley = ui.fonts(|f| {
+                                        f.layout_no_wrap(
+                                            row.primary.clone(),
+                                            primary_font.clone(),
+                                            colors.text_primary,
+                                        )
+                                    });
+                                    if galley.size().x > avail_w {
+                                        let mut lo = 0usize;
+                                        let mut hi = row.primary.chars().count();
+                                        while lo + 1 < hi {
+                                            let mid = (lo + hi) / 2;
+                                            let candidate: String =
+                                                row.primary.chars().take(mid).collect::<String>() + "…";
+                                            let g = ui.fonts(|f| {
+                                                f.layout_no_wrap(candidate, primary_font.clone(), colors.text_primary)
+                                            });
+                                            if g.size().x <= avail_w { lo = mid; } else { hi = mid; }
+                                        }
+                                        std::borrow::Cow::Owned(
+                                            row.primary.chars().take(lo).collect::<String>() + "…",
+                                        )
+                                    } else {
+                                        std::borrow::Cow::Borrowed(row.primary.as_str())
+                                    }
+                                };
                                 painter.text(
                                     egui::pos2(text_start_x, primary_y),
                                     egui::Align2::LEFT_TOP,
-                                    row.primary.as_str(),
-                                    egui::FontId::proportional(FONT_CAPTION),
+                                    display_primary.as_ref(),
+                                    primary_font,
                                     colors.text_primary,
                                 );
 

@@ -680,6 +680,11 @@ class FooterKeys(Component):
     in the footer context.
     """
     shortcuts: List[tuple]  # list of (key_or_keys, description)
+    # Draw the separating rule above the chip row. True for true footers
+    # (bottom of a pane). Set False when this row sits directly under an
+    # AppBar, whose own bottom divider already separates it — otherwise the
+    # two rules stack with dead space between them.
+    divider: bool = True
 
     # TOP_GAP reduced from SPACE_MD (12px) to SPACE_SM (8px) — trimmer chrome.
     TOP_GAP = SPACE_SM
@@ -691,16 +696,20 @@ class FooterKeys(Component):
     ROW_H = CHIP_H + 2.0  # reduced from +4.0 — tighter without cramping chips
 
     def measure(self, avail_w: float) -> float:
+        if not self.divider:
+            return self.TOP_GAP + self.ROW_H
         return self.TOP_GAP + 1.0 + self.TOP_GAP + self.ROW_H
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         # Opaque BG backdrop so any content scrolled behind the footer doesn't
         # bleed through the divider line.
         ctx.rect(x, y, w, h, theme.bg)
-        line_y = y + self.TOP_GAP
-        ctx.rect(x, line_y, w, 1.0, theme.highlight)
-
-        chip_row_y = line_y + 1.0 + self.TOP_GAP
+        if self.divider:
+            line_y = y + self.TOP_GAP
+            ctx.rect(x, line_y, w, 1.0, theme.highlight)
+            chip_row_y = line_y + 1.0 + self.TOP_GAP
+        else:
+            chip_row_y = y + self.TOP_GAP
 
         # Single host-measured shortcuts row — host owns ALL geometry:
         # chip widths from real font metrics, inter-group flow, and

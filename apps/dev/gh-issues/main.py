@@ -204,7 +204,7 @@ class GhIssues(App):
             ("o", "browser"),
             ("r", "refresh"),
             ("n", "new"),
-        ])
+        ], divider=False)
         appbar_h    = appbar.measure(ctx.w)
         shortcuts_h = shortcuts.measure(ctx.w)
         appbar.render(ctx, 0.0, 0.0, ctx.w, appbar_h)
