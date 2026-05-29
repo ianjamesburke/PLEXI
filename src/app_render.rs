@@ -16,8 +16,14 @@ const FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 const PROTOCOL: &str = "pgap/3";
 
 /// Spawn the app at `bin_path`, collect one frame at `width`×`height`, render to PNG bytes.
-pub fn render_app_to_png(app_id: &str, bin_path: &Path, width: u32, height: u32) -> Result<Vec<u8>, String> {
-    let commands = spawn_and_collect_frame(app_id, bin_path, width, height)?;
+pub fn render_app_to_png(
+    app_id: &str,
+    bin_path: &Path,
+    width: u32,
+    height: u32,
+    seed_state: Option<serde_json::Value>,
+) -> Result<Vec<u8>, String> {
+    let commands = spawn_and_collect_frame(app_id, bin_path, width, height, seed_state)?;
     render_commands_to_png(&commands, width, height)
 }
 
@@ -27,6 +33,7 @@ fn spawn_and_collect_frame(
     bin_path: &Path,
     width: u32,
     height: u32,
+    seed_state: Option<serde_json::Value>,
 ) -> Result<Vec<RenderCommand>, String> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
@@ -108,6 +115,15 @@ fn spawn_and_collect_frame(
                 log::warn!("app_render[{app_id}]: parse error before Ready: {e} (line: {line})");
             }
         }
+    }
+
+    // Send RenderSeed if caller provided seed data
+    if let Some(payload) = seed_state {
+        let seed = PlexiEvent::RenderSeed { payload };
+        let seed_json = serde_json::to_string(&seed)
+            .map_err(|e| format!("failed to serialize RenderSeed: {e}"))?;
+        writeln!(stdin, "{seed_json}").map_err(|e| format!("failed to write RenderSeed: {e}"))?;
+        log::info!("app_render[{app_id}]: sent RenderSeed");
     }
 
     // Send Render

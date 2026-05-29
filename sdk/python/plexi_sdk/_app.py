@@ -100,6 +100,7 @@ class App:
     Awaited (block the event loop until they return):
         on_init(ctx)                                — after Init handshake
         on_render(ctx)                              — on each Render event
+        on_render_seed(ctx, payload)                — on RenderSeed (headless only, before first Render)
         on_suspend()                                — on Suspend
         on_resume()                                 — on Resume
         on_shutdown()                               — on Shutdown
@@ -271,6 +272,7 @@ class App:
     def on_pipe_message(self, _ctx: RenderContext, _pipe_id: str, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
     def on_path_changed(self, _ctx: RenderContext, _cwd: str) -> "Coroutine[Any, Any, None] | None": return None
     def on_inject(self, _ctx: RenderContext, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
+    def on_render_seed(self, _ctx: RenderContext, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
     def on_nav_back(self, _ctx: RenderContext, _view_id: str) -> "Coroutine[Any, Any, None] | None":
         """Called when the host emits ``NavBack`` — user pressed Cmd+[ or the
         back arrow in the pane chrome. ``view_id`` is the view being navigated
@@ -1016,6 +1018,14 @@ class App:
                     self._app_state = ev.get("payload") or {}
                     ctx = self._make_ctx()
                     self._dispatch_hook_task(self.on_inject, ctx, ev.get("payload", {}))
+
+                elif t == "render_seed":
+                    # Headless-only: sent by `plexi app render --state` before the first
+                    # Render event. Awaited so state is applied before on_render fires.
+                    # Does not affect live inject behavior.
+                    sys.stderr.write("plexi_sdk: render_seed received — applying headless seed state\n")
+                    ctx = self._make_ctx()
+                    await self._dispatch_hook(self.on_render_seed, ctx, ev.get("payload", {}))
 
                 elif t == "midi_input_opened":
                     # Confirms an OpenMidiInput call landed a CoreMIDI source.
