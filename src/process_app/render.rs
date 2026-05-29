@@ -785,9 +785,15 @@ pub(crate) fn render_draw_commands(
                 if !md_rect.is_positive() {
                     continue;
                 }
+                // Lay the markdown out at the full requested rect (whose top may
+                // sit above the clip when a Scrollable has offset it upward), and
+                // clip to the visible intersection. Using md_rect as the layout
+                // rect would re-anchor content to the top of the visible area
+                // every frame, so a scroll offset would move the scrollbar but
+                // never the text.
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
-                        .max_rect(md_rect)
+                        .max_rect(requested_rect)
                         .layout(egui::Layout::top_down(egui::Align::LEFT)),
                 );
                 child.set_clip_rect(md_rect);
