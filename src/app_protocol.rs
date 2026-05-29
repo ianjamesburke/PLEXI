@@ -392,6 +392,13 @@ pub enum PlexiEvent {
     /// `max(0, content_height - viewport_height)`.
     ScrollOffset { id: String, offset_y: f32 },
 
+    /// Emitted when the mouse wheel moves over an app pane that has no
+    /// host-managed scroll region or list_view under the cursor.
+    /// `delta_y` is the raw `smooth_scroll_delta.y` value from egui (positive =
+    /// scroll up). SDK `Scrollable` components call `handle_scroll(delta_y)` from
+    /// the app's `on_scroll_delta` handler.
+    Scroll { delta_y: f32 },
+
     /// Emitted when j/k/up/down changes the list selection.
     /// `id` matches the `list_view` id field; `index` is the new selected index.
     ListSelect { id: String, index: usize },

@@ -46,11 +46,14 @@ impl RenderSession {
         }
     }
 
-    /// Execute all three rendering passes for one frame.
+    /// Execute all rendering passes for one frame.
     ///
     /// Pass 1 — draw commands (painter-only, no egui allocation)
     /// Pass 2 — TextInput widgets (real egui widgets with buffer state)
     /// Pass 3 — scroll region scan (pointer interaction, emits ScrollOffset events)
+    /// Pass 4 — ListView interaction (j/k/enter, scroll gesture)
+    /// Pass 5 — app scroll delta (emits Scroll for SDK Scrollable when wheel
+    ///           moves over the pane but no host-managed region consumed it)
     pub(crate) fn render(
         &mut self,
         ui: &mut egui::Ui,
@@ -84,10 +87,15 @@ impl RenderSession {
         self.render_text_inputs(ui, pane_rect, frame, pane_id, colors);
 
         // ── Pass 3: scroll region scan ───────────────────────────────────────
-        self.render_scroll_regions(ui, pane_rect, frame);
+        let scroll_consumed = self.render_scroll_regions(ui, pane_rect, frame);
 
         // ── Pass 4: ListView interaction (j/k/enter, scroll gesture) ─────────
         self.render_list_views(ui, pane_rect, frame);
+
+        // ── Pass 5: app scroll delta for SDK Scrollable ───────────────────────
+        if !scroll_consumed {
+            self.render_app_scroll(ui, pane_rect, frame);
+        }
     }
 
     /// Pass 2: render every `RenderCommand::TextInput` as a real egui `TextEdit`.
@@ -238,18 +246,20 @@ impl RenderSession {
     }
 
     /// Pass 3: scan for scroll regions and emit `ScrollOffset` events.
+    /// Returns true if a `BeginScroll` region consumed the wheel input so that
+    /// Pass 5 knows not to emit a fallback `PlexiEvent::Scroll`.
     fn render_scroll_regions(
         &mut self,
         ui: &mut egui::Ui,
         pane_rect: egui::Rect,
         frame: &[RenderCommand],
-    ) {
+    ) -> bool {
         let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
         if scroll_delta.y == 0.0 {
-            return;
+            return false;
         }
         let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) else {
-            return;
+            return false;
         };
 
         let mut scroll_regions: Vec<(&String, egui::Rect, f32)> = Vec::new();
@@ -277,9 +287,51 @@ impl RenderSession {
                         offset_y: next,
                     });
                 }
-                break;
+                return true;
             }
         }
+        false
+    }
+
+    /// Pass 5: forward raw wheel delta to the app as `PlexiEvent::Scroll` so
+    /// SDK `Scrollable` components can update their offset. Only fires when no
+    /// `BeginScroll` region consumed the event (Pass 3 returns false) and the
+    /// cursor is over the pane but not over a `ListView` rect (Pass 4 handles
+    /// those).
+    fn render_app_scroll(
+        &mut self,
+        ui: &mut egui::Ui,
+        pane_rect: egui::Rect,
+        frame: &[RenderCommand],
+    ) {
+        let scroll_delta = ui.input(|i| i.smooth_scroll_delta);
+        if scroll_delta.y == 0.0 {
+            return;
+        }
+        let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos()) else {
+            return;
+        };
+        if !pane_rect.contains(pointer_pos) {
+            return;
+        }
+
+        // Skip if the cursor is inside a ListView (Pass 4 already handled it).
+        for cmd in frame {
+            if let RenderCommand::ListView { x, y, w, h, .. } = cmd {
+                let list_w = if *w > 0.0 { *w } else { pane_rect.width() };
+                let list_h = if *h > 0.0 { *h } else { pane_rect.height() - y };
+                let list_rect = egui::Rect::from_min_size(
+                    egui::pos2(pane_rect.min.x + x, pane_rect.min.y + y),
+                    egui::vec2(list_w, list_h),
+                );
+                if list_rect.contains(pointer_pos) {
+                    return;
+                }
+            }
+        }
+
+        log::debug!("render_session: forwarding wheel delta_y={} to app", scroll_delta.y);
+        self.outbound_events.push(PlexiEvent::Scroll { delta_y: scroll_delta.y });
     }
 
     /// Private helper: drain the buffer for `id` and push a `TextSubmitted` event

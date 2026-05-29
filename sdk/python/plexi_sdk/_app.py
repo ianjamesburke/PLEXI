@@ -299,6 +299,7 @@ class App:
 
     def on_timer(self, _ctx: RenderContext, _timer_id: str) -> "Coroutine[Any, Any, None] | None": return None
     def on_scroll(self, _ctx: RenderContext, _id: str, _offset_y: float) -> "Coroutine[Any, Any, None] | None": return None
+    def on_scroll_delta(self, _ctx: RenderContext, _delta_y: float) -> "Coroutine[Any, Any, None] | None": return None
     def on_list_select(self, _ctx: "RenderContext", _id: str, _index: int) -> "Coroutine[Any, Any, None] | None":
         """Called when a list_view selection changes via j/k/up/down."""
         return None
@@ -1059,6 +1060,17 @@ class App:
                         await self._dispatch_hook(self.on_scroll, ctx, scroll_id, offset_y)
                     except Exception as e:
                         sys.stderr.write(f"on_scroll handler raised: {e}\n")
+
+                elif t == "scroll":
+                    # Raw wheel delta for SDK Scrollable containers (#1794).
+                    # Fires when the cursor is over the app pane but not over a
+                    # host-managed BeginScroll region or ListView.
+                    delta_y = float(ev.get("delta_y", 0.0))
+                    ctx = self._make_ctx()
+                    try:
+                        await self._dispatch_hook(self.on_scroll_delta, ctx, delta_y)
+                    except Exception as e:
+                        sys.stderr.write(f"on_scroll_delta handler raised: {e}\n")
 
                 elif t == "list_select":
                     _lid = ev.get("id")

@@ -488,12 +488,8 @@ class Scrollable(Component):
     Keyboard scroll: j/k or arrow-down/up keys update `scroll_offset`.
     Apps drive this by calling `handle_key(key)` from their `on_key` handler.
 
-    # IMPL-NOTE: Wheel/touch event plumbing is deferred. The PGAP protocol
-    # doesn't yet carry scroll-wheel events from the host to the app. Once
-    # PlexiEvent::Scroll is wired through (a follow-up to #314), Scrollable
-    # can subscribe to it here with no breaking changes. For now, keyboard
-    # scroll (j/k) is the v1 input source. Apps that need wheel scroll today
-    # should use the host-managed DrawCommand::List primitive instead.
+    Mouse-wheel scroll: call `handle_scroll(delta_y)` from the app's
+    `on_scroll_delta` handler (receives `PlexiEvent::Scroll` from the host).
     """
     child: Component
     scroll_offset: float = field(default=0.0, repr=False)
@@ -541,6 +537,24 @@ class Scrollable(Component):
             self.scroll_offset = max(0.0, self.scroll_offset - self.key_step)
             return True
         return False
+
+    def handle_scroll(self, delta_y: float) -> bool:
+        """Update scroll_offset from a mouse-wheel delta.
+
+        Returns True (always consumes the event). Call from the app's
+        on_scroll_delta handler:
+
+            def on_scroll_delta(self, ctx, delta_y):
+                self._scrollable.handle_scroll(delta_y)
+                ctx.request_render()
+
+        `delta_y` is positive when scrolling up (matches egui's
+        smooth_scroll_delta convention). The offset is clamped to
+        [0, content_height - viewport_height].
+        """
+        self.scroll_offset = max(0.0, self.scroll_offset - delta_y)
+        self._clamp_offset(self._avail_h)
+        return True
 
     def ensure_visible(self, top: float, bottom: float, margin: float = 0.0) -> None:
         """See `ensure_visible(...)` free function. Wrapper for Scrollable's
