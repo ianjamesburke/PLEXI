@@ -149,6 +149,11 @@ pub enum PlexiEvent {
     /// Sent at startup with persisted app state (workspace if available, else global).
     /// Also usable from `pgap_test_harness` to seed deterministic state.
     InjectState { payload: serde_json::Value },
+    /// Sent by the headless renderer to seed app state before the first render.
+    /// Unlike InjectState (which fires on_inject as a background task and is a live
+    /// protocol event), RenderSeed fires on_render_seed awaited, so state is applied
+    /// before the Render event arrives. Live app behavior is completely unaffected.
+    RenderSeed { payload: serde_json::Value },
     /// Host broker response to a `DrawCommand::HttpRequest`. `error` is present
     /// when the request failed; `body` may still carry a partial response.
     HttpResponse {

@@ -75,6 +75,15 @@ class GhIssues(App):
         self.emit.info(f"gh-issues init workspace={self._root!r}")
         self._fetch()
 
+    async def on_render_seed(self, _ctx: RenderContext, payload: dict) -> None:
+        if "_issues" in payload:
+            self._issues  = payload["_issues"]
+            self._loading = payload.get("_loading", False)
+            self._sel     = payload.get("_sel", 0)
+            self._error   = payload.get("_error")
+            self._view    = payload.get("_view", self.VIEW_LIST)
+            self.emit.info(f"gh-issues: seeded {len(self._issues)} issues for headless render")
+
     # ── data ──────────────────────────────────────────────────────────────────
 
     def _fetch(self) -> None:

@@ -1322,8 +1322,8 @@ pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str
         }
     };
 
-    // Optional: pre-seed app state
-    let seeded_path = state.and_then(|s| {
+    // Optional: parse seed state JSON to inject via protocol
+    let seed_state: Option<serde_json::Value> = state.and_then(|s| {
         let json = match std::fs::read_to_string(s) {
             Ok(j) => j,
             Err(e) => {
@@ -1331,16 +1331,16 @@ pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str
                 return None;
             }
         };
-        let dest = crate::config::config_dir().join("app_states").join(format!("{id}.json"));
-        if let Some(parent) = dest.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        match serde_json::from_str(&json) {
+            Ok(v) => {
+                log::info!("app_render[{id}]: loaded seed state from '{s}'");
+                Some(v)
+            }
+            Err(e) => {
+                eprintln!("error: invalid JSON in state file '{s}': {e}");
+                None
+            }
         }
-        if let Err(e) = std::fs::write(&dest, &json) {
-            eprintln!("error: could not write state to {}: {e}", dest.display());
-            return None;
-        }
-        log::info!("app_render[{id}]: pre-seeded state from '{s}' → {}", dest.display());
-        Some(dest)
     });
 
     // Resolve the app binary
@@ -1350,29 +1350,17 @@ pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str
         Some(a) => a.bin_path.clone(),
         None => {
             eprintln!("error: app '{id}' not found — run `plexi app list` to see installed apps");
-            if let Some(path) = seeded_path {
-                let _ = std::fs::remove_file(path);
-            }
             return 1;
         }
     };
 
-    let png_bytes = match crate::app_render::render_app_to_png(id, &app_bin, width, height) {
+    let png_bytes = match crate::app_render::render_app_to_png(id, &app_bin, width, height, seed_state) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: render failed: {e}");
-            if let Some(path) = seeded_path {
-                let _ = std::fs::remove_file(path);
-            }
             return 1;
         }
     };
-
-    // Clean up seeded state if we wrote it
-    if let Some(ref path) = seeded_path {
-        let _ = std::fs::remove_file(path);
-        log::info!("app_render[{id}]: cleaned up seeded state at {}", path.display());
-    }
 
     // Write output
     match output {
