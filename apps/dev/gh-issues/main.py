@@ -181,6 +181,14 @@ class GhIssues(App):
                     Spacer(size=SPACE_MD),
                     Label("Loading issue…", tone="body", color=MUTED),
                 ], padding_top=0))
+            elif self._error:
+                ctx.render(Column([
+                    AppBar("Error", accent=ACCENT),
+                    Spacer(size=SPACE_MD),
+                    Label(f"Error: {self._error}", tone="body", color=RED),
+                    Spacer(grow=True),
+                    FooterKeys([("escape", "back")]),
+                ], padding_top=0))
             else:
                 self._draw_detail(ctx)
             return
@@ -235,9 +243,11 @@ class GhIssues(App):
         if self._detail is None:
             return
         d             = self._detail
-        labels_str    = ", ".join(lb["name"] for lb in d.get("labels", [])) or "none"
-        assignees_str = ", ".join(a["login"] for a in d.get("assignees", [])) or "unassigned"
+        labels_str    = ", ".join(lb.get("name", "") for lb in d.get("labels", []) if lb) or "none"
+        assignees_str = ", ".join(a.get("login", "") for a in d.get("assignees", []) if a) or "unassigned"
         body_text     = (d.get("body") or "").strip()
+        number        = d.get("number", "")
+        title         = d.get("title", "")
 
         self._body_scroll.child = (
             _MarkdownBlock(body_text) if body_text
@@ -245,9 +255,9 @@ class GhIssues(App):
         )
 
         ctx.render(Column([
-            AppBar(f"← #{d['number']}  {d['title']}", accent=ACCENT),
+            AppBar(f"← #{number}  {title}", accent=ACCENT),
             InfoTable([
-                ("number",    f"#{d['number']}"),
+                ("number",    f"#{number}"),
                 ("state",     d.get("state", "open")),
                 ("labels",    labels_str),
                 ("assignees", assignees_str),
@@ -311,6 +321,7 @@ class GhIssues(App):
         self._view                      = self.VIEW_DETAIL
         self._detail                    = None
         self._detail_loading            = True
+        self._error                     = None
         self._body_scroll.scroll_offset = 0.0
         asyncio.get_event_loop().create_task(
             asyncio.to_thread(self._load_detail, issue["number"])
