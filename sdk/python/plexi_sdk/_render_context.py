@@ -33,6 +33,10 @@ class RenderContext:
         self.workspace_root = workspace_root
         self.capabilities = capabilities
         self.feature_flags = feature_flags
+        # Active host theme (light/dark + user overrides). Read colors via
+        # ctx.theme.<role>, e.g. ctx.theme.accent / ctx.theme.bg / ctx.theme.danger.
+        from ._theme import theme as _theme
+        self.theme = _theme
         self._app = app
         self.emit: "Emitter" = app.emit
         # Seconds elapsed since the previous on_render call. 0.0 on first frame.
@@ -169,17 +173,17 @@ class RenderContext:
         self._queue(d)
 
     def markdown(self, x: float, y: float, w: float, text: str,
-                 base_size: float = 14.0, color: str = FG) -> None:
+                 base_size: float = 14.0, color: "str | None" = None) -> None:
         """Render markdown text via the host's egui_commonmark renderer.
 
         The host creates a child Ui at (x, y) with width w and renders the
         markdown with proper formatting (bold, italic, code blocks, lists, etc.).
 
         `base_size` — body font size in pt (headers scale relative to this).
-        `color`     — default text colour (hex).
+        `color`     — body text colour (hex); defaults to the active theme fg.
         """
         self._queue({"type": "markdown", "x": x, "y": y, "w": w, "text": text,
-                     "base_size": base_size, "color": color})
+                     "base_size": base_size, "color": color or self.theme.fg})
 
     def image(self, src: str, x: float, y: float, w: float, h: float,
               fit: str = "contain") -> None:
@@ -463,9 +467,11 @@ class RenderContext:
                      "color": color, "width": width})
 
     # ── SDK v2 declarative UI entry point ──
-    def render(self, tree: Any, fill: str = "#1e1e2e") -> None:
+    def render(self, tree: Any, fill: "str | None" = None) -> None:
         """Render a declarative UI tree (see `plexi_sdk.ui`). Clears the pane
         to `fill` first, then lays out `tree` into the full pane rect.
+
+        `fill` defaults to the active host theme background (`ctx.theme.bg`).
 
         Example:
             from plexi_sdk.ui import Column, Header, Footer, Spacer

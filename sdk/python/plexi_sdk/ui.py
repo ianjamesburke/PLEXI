@@ -80,6 +80,11 @@ RED = "#f38ba8"
 GREEN = "#a6e3a1"
 YELLOW = "#f9e2af"
 
+# Live host theme — populated from the Init payload (light/dark + user
+# overrides). Components read `theme.<role>` at render time so they track the
+# active theme; the constants above remain as pre-Init / fallback defaults.
+from ._theme import theme
+
 # ── Utilities ──────────────────────────────────────────────────────────────
 
 
@@ -268,10 +273,10 @@ class Label(Component):
         if self.color:
             return self.color
         return {
-            "body": FG,
-            "caption": FG,
-            "hint": MUTED,
-        }.get(self.tone, FG)
+            "body": theme.fg,
+            "caption": theme.fg,
+            "hint": theme.muted,
+        }.get(self.tone, theme.fg)
 
     def _lines(self, avail_w: float) -> List[str]:
         return _wrap_to_width(self.text, avail_w, self._font_size(),
@@ -337,7 +342,7 @@ class AppBar(Component):
     """
     title: str
     subtitle: Optional[str] = None
-    accent: str = FG
+    accent: Optional[str] = None  # default: theme.fg (resolved at render time)
 
     TITLE_SIZE = 16.0
     SUBTITLE_SIZE = TEXT_HINT
@@ -352,7 +357,8 @@ class AppBar(Component):
         return self._band() + self.DIVIDER_H
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        ctx.rect(x, y, w, h, BG)
+        ctx.rect(x, y, w, h, theme.bg)
+        accent = self.accent or theme.fg
         band = self._band()
         text_x = x + SPACE_MD
         text_w = w - 2 * SPACE_MD
@@ -361,17 +367,17 @@ class AppBar(Component):
             title_y = y + (band - block_h) / 2.0
             sub_y = title_y + self.TITLE_SIZE + SPACE_XS
             ctx.text(text_x, title_y, self.title,
-                     size=self.TITLE_SIZE, color=self.accent, bold=True,
+                     size=self.TITLE_SIZE, color=accent, bold=True,
                      max_width=text_w, elide=True)
             ctx.text(text_x, sub_y, self.subtitle,
-                     size=self.SUBTITLE_SIZE, color=MUTED,
+                     size=self.SUBTITLE_SIZE, color=theme.muted,
                      max_width=text_w, elide=True)
         else:
             text_y = y + (band - self.TITLE_SIZE) / 2.0
             ctx.text(text_x, text_y, self.title,
-                     size=self.TITLE_SIZE, color=self.accent, bold=True,
+                     size=self.TITLE_SIZE, color=accent, bold=True,
                      max_width=text_w, elide=True)
-        ctx.rect(x, y + band, w, self.DIVIDER_H, HIGHLIGHT)
+        ctx.rect(x, y + band, w, self.DIVIDER_H, theme.highlight)
 
 
 @dataclass
@@ -389,10 +395,10 @@ class Section(Component):
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         label_y = y + SPACE_SM
         ctx.text(x, label_y, self.title.upper(),
-                 size=TEXT_HINT, color=MUTED, bold=True,
+                 size=TEXT_HINT, color=theme.muted, bold=True,
                  max_width=w, elide=True)
         line_y = label_y + TEXT_HINT + SPACE_XS
-        ctx.rect(x, line_y, w, 1.0, HIGHLIGHT)
+        ctx.rect(x, line_y, w, 1.0, theme.highlight)
 
 
 @dataclass
@@ -574,8 +580,8 @@ class Scrollable(Component):
             # Clamp thumb to track
             thumb_y = min(thumb_y, y + track_h - thumb_h)
             bar_x = x + w - self._SCROLLBAR_W
-            ctx.rect(bar_x, y, self._SCROLLBAR_W, track_h, HIGHLIGHT)
-            ctx.rect(bar_x, thumb_y, self._SCROLLBAR_W, thumb_h, MUTED)
+            ctx.rect(bar_x, y, self._SCROLLBAR_W, track_h, theme.highlight)
+            ctx.rect(bar_x, thumb_y, self._SCROLLBAR_W, thumb_h, theme.muted)
 
 
 def ensure_visible(scroll_offset: float, viewport_h: float,
@@ -690,9 +696,9 @@ class FooterKeys(Component):
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         # Opaque BG backdrop so any content scrolled behind the footer doesn't
         # bleed through the divider line.
-        ctx.rect(x, y, w, h, BG)
+        ctx.rect(x, y, w, h, theme.bg)
         line_y = y + self.TOP_GAP
-        ctx.rect(x, line_y, w, 1.0, HIGHLIGHT)
+        ctx.rect(x, line_y, w, 1.0, theme.highlight)
 
         chip_row_y = line_y + 1.0 + self.TOP_GAP
 
@@ -1314,12 +1320,13 @@ class Column(Component):
 # ── Public render entry point ──────────────────────────────────────────────
 
 
-def render_tree(ctx, root: Component, fill: str = BG) -> None:
+def render_tree(ctx, root: Component, fill: Optional[str] = None) -> None:
     """Clear the pane to `fill`, then render `root` into the full pane rect.
 
+    `fill` defaults to the active host theme background (`theme.bg`).
     Apps normally call `ctx.render(root)` instead, which calls this.
     """
-    ctx.clear(fill)
+    ctx.clear(fill or theme.bg)
     root.render(ctx, 0.0, 0.0, ctx.w, ctx.h)
 
 
@@ -1339,8 +1346,8 @@ class InfoTable(Component):
     """
     rows: List[tuple]  # list of (key_label, value_text)
     key_width: float = 100.0
-    background: str = SURFACE
-    border: str = HIGHLIGHT
+    background: Optional[str] = None  # default: theme.surface
+    border: Optional[str] = None      # default: theme.highlight
     radius: float = RADIUS_MD
 
     ROW_H = 30.0
@@ -1353,11 +1360,13 @@ class InfoTable(Component):
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         # Background + border
-        ctx.rect(x, y, w, h, self.background, radius=self.radius)
-        ctx.rect(x, y, w, 1.0, self.border)
-        ctx.rect(x, y + h - 1.0, w, 1.0, self.border)
-        ctx.rect(x, y, 1.0, h, self.border)
-        ctx.rect(x + w - 1.0, y, 1.0, h, self.border)
+        background = self.background or theme.surface
+        border = self.border or theme.highlight
+        ctx.rect(x, y, w, h, background, radius=self.radius)
+        ctx.rect(x, y, w, 1.0, border)
+        ctx.rect(x, y + h - 1.0, w, 1.0, border)
+        ctx.rect(x, y, 1.0, h, border)
+        ctx.rect(x + w - 1.0, y, 1.0, h, border)
 
         val_x = x + self.PAD_H + self.key_width + self.PAD_H
         val_w = w - self.PAD_H - self.key_width - self.PAD_H * 2
@@ -1368,18 +1377,18 @@ class InfoTable(Component):
 
             # Key (green, monospace)
             ctx.text(x + self.PAD_H, cy, str(key),
-                     size=TEXT_CAPTION, color=GREEN, monospace=True,
+                     size=TEXT_CAPTION, color=theme.success, monospace=True,
                      align="left_center", max_width=self.key_width, elide=True)
 
             # Value (FG, monospace)
             ctx.text(val_x, cy, str(value),
-                     size=TEXT_CAPTION, color=FG, monospace=True,
+                     size=TEXT_CAPTION, color=theme.fg, monospace=True,
                      align="left_center", max_width=val_w, elide=True)
 
             # Row divider (skip last row)
             if i < len(self.rows) - 1:
                 div_y = row_y + self.ROW_H
-                ctx.rect(x + 1.0, div_y, w - 2.0, 1.0, BG)
+                ctx.rect(x + 1.0, div_y, w - 2.0, 1.0, theme.bg)
 
 
 @dataclass

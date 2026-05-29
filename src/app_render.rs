@@ -4,7 +4,6 @@
 
 use crate::app_protocol::{ControlCommand, DrawCommand, PlexiEvent, Rect as ProtoRect, RenderCommand};
 use crate::theme::Colors;
-use egui::Color32;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::path::Path;
@@ -55,9 +54,14 @@ fn spawn_and_collect_frame(
             cmd.env(k, v);
         }
     }
-    // PYTHONPATH: config-dir SDK first, then bundle SDK if present.
+    // PYTHONPATH: dev override (PLEXI_SDK_PATH) first, then config-dir SDK,
+    // then bundle SDK if present.
     let sdk_dir = crate::config::config_dir().join("sdk");
     let mut pythonpath = sdk_dir.to_string_lossy().into_owned();
+    if let Some(dev_sdk) = crate::config::sdk_path_override() {
+        pythonpath = format!("{}:{}", dev_sdk.to_string_lossy(), pythonpath);
+        log::info!("app_render[{app_id}]: PLEXI_SDK_PATH override active -> {}", dev_sdk.display());
+    }
     let bundle_sdk = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()))
@@ -86,6 +90,7 @@ fn spawn_and_collect_frame(
         feature_flags: vec![],
         compact_threshold: 280.0,
         regular_threshold: 480.0,
+        theme: render_colors().to_theme_map(),
     };
     let init_json = serde_json::to_string(&init)
         .map_err(|e| format!("failed to serialize Init: {e}"))?;
@@ -190,7 +195,7 @@ fn render_commands_to_png(commands: &[RenderCommand], width: u32, height: u32) -
         ..Default::default()
     };
 
-    let colors = default_colors();
+    let colors = render_colors();
     let mut cm_cache = egui_commonmark::CommonMarkCache::default();
     let peaks: HashMap<String, f32> = HashMap::new();
     let mut img_cache = crate::process_app::image_cache::ImageCache::new();
@@ -345,22 +350,10 @@ fn render_commands_to_png(commands: &[RenderCommand], width: u32, height: u32) -
     Ok(png_data)
 }
 
-fn default_colors() -> Colors {
-    Colors {
-        bg_darkest: Color32::from_rgb(0x11, 0x11, 0x1b),
-        bg_sidebar: Color32::from_rgb(0x18, 0x18, 0x25),
-        bg_toolbar: Color32::from_rgb(0x18, 0x18, 0x25),
-        terminal_bg: Color32::from_rgb(0x29, 0x2a, 0x44),
-        bg_hover: Color32::from_rgb(0x2a, 0x2a, 0x3c),
-        bg_sidebar_hover: Color32::from_rgb(0x2e, 0x2e, 0x48),
-        bg_active: Color32::from_rgb(0x31, 0x31, 0x44),
-        text_primary: Color32::from_rgb(0xcd, 0xd6, 0xf4),
-        text_dim: Color32::from_rgb(0x6c, 0x70, 0x86),
-        text_section: Color32::from_rgb(0x58, 0x5b, 0x70),
-        accent: Color32::from_rgb(0x89, 0xb4, 0xfa),
-        border: Color32::from_rgb(0x2a, 0x2a, 0x3c),
-        danger: Color32::from_rgb(0xff, 0x55, 0x55),
-        terminal_fg_bytes: [0xe8, 0xe6, 0xed],
-        terminal_bg_bytes: [0x29, 0x2a, 0x44],
-    }
+/// Resolve the colors used for headless render: the user's actual configured
+/// theme when a config exists, falling back to the built-in dark defaults.
+/// This makes `app render` output match what the GUI shows (light/dark + overrides).
+fn render_colors() -> Colors {
+    let config = crate::config::PlexiConfig::load_with_workspace(None);
+    crate::theme::colors_from_config(&config)
 }

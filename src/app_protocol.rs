@@ -65,6 +65,11 @@ pub enum PlexiEvent {
         compact_threshold: f32,
         #[serde(default = "default_regular_threshold")]
         regular_threshold: f32,
+        /// Active host theme as a `role -> #rrggbb` map (see `Colors::to_theme_map`).
+        /// Lets app-drawn chrome track the host theme (light/dark + user overrides).
+        /// Empty map ⇒ app falls back to its built-in dark constants.
+        #[serde(default)]
+        theme: std::collections::HashMap<String, String>,
     },
     /// Request a new frame. App replies with DrawCommands terminated by FrameDone.
     Render {

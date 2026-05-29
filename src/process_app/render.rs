@@ -548,7 +548,7 @@ pub(crate) fn render_draw_commands(
                                         // render_badge takes origin + pane-local coords
                                         let badge_x = list_rect.min.x - pane_rect.min.x + PAD_X;
                                         let badge_y = row_abs_y - pane_rect.min.y + h_item / 2.0;
-                                        render_badge(
+                                        let badge_w = render_badge(
                                             ui,
                                             pane_rect.min,
                                             list_clip,
@@ -560,7 +560,12 @@ pub(crate) fn render_draw_commands(
                                             FONT_HINT,
                                             3.0,
                                         );
-                                        list_rect.min.x + LEADING_W
+                                        // Flow the title past the badge's real width so wide
+                                        // labels (e.g. "#1792") never clip the title; keep at
+                                        // least the old fixed slot so short badges stay aligned.
+                                        const BADGE_TEXT_GAP: f32 = 8.0;
+                                        (list_rect.min.x + PAD_X + badge_w + BADGE_TEXT_GAP)
+                                            .max(list_rect.min.x + LEADING_W)
                                     }
                                     Some(ListViewLeading::Avatar { handle }) => {
                                         let avatar_r = 14.0;
@@ -969,6 +974,9 @@ pub(crate) fn render_draw_commands(
 // overlays that reuse these helpers always match.
 
 /// Render a Badge pill. `x` is the left edge; `y` is the vertical centre.
+/// Renders a pill badge at (`origin.x + x`, vertically centred on `origin.y + y_center`).
+/// Returns the pill width so callers can flow following content past the badge
+/// instead of assuming a fixed slot (which clips wide labels like `#1792`).
 pub(crate) fn render_badge(
     ui: &mut egui::Ui,
     origin: egui::Pos2,
@@ -980,7 +988,7 @@ pub(crate) fn render_badge(
     fg: &str,
     font_size: f32,
     radius: f32,
-) {
+) -> f32 {
     let fill_color = parse_color(fill).unwrap_or(egui::Color32::from_rgb(0x89, 0xb4, 0xfa));
     let fg_color = parse_color(fg).unwrap_or(egui::Color32::from_rgb(0x1e, 0x1e, 0x2e));
     let font_id = egui::FontId::proportional(font_size);
@@ -1001,6 +1009,7 @@ pub(crate) fn render_badge(
     let text_x = pill_rect.center().x - text_w / 2.0;
     let text_y = pill_rect.center().y - text_h / 2.0;
     painter.galley(egui::pos2(text_x, text_y), galley, fg_color);
+    pill_w
 }
 
 /// Render a single KeyChip at absolute position (`origin.x + x`, `origin.y + y`).

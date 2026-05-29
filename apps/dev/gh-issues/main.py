@@ -14,9 +14,8 @@ import subprocess
 
 from plexi_sdk import (
     App, RenderContext, Arg,
-    BG, ACCENT, MUTED,
+    theme,
     BODY, CAPTION, HINT,
-    GREEN, RED, YELLOW,
     PAD, PAD_TIGHT,
 )
 from plexi_sdk.ui import (
@@ -67,12 +66,12 @@ def _gh(*args: str, cwd: str | None = None, timeout: float = 15.0) -> tuple[int,
 def _label_color(name: str) -> str:
     n = name.lower()
     if any(w in n for w in ("bug", "error", "p0", "p1")):
-        return RED
+        return theme.danger
     if any(w in n for w in ("p2", "enhancement", "feat")):
-        return YELLOW
+        return theme.warning
     if any(w in n for w in ("ready", "done", "p3", "p4")):
-        return GREEN
-    return ACCENT
+        return theme.success
+    return theme.accent
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -172,20 +171,20 @@ class GhIssues(App):
     # ── render ────────────────────────────────────────────────────────────────
 
     def on_render(self, ctx: RenderContext) -> None:
-        ctx.clear(BG)
+        ctx.clear(theme.bg)
 
         if self._view == self.VIEW_DETAIL:
             if self._detail_loading:
                 ctx.render(Column([
-                    AppBar("Issues", accent=ACCENT),
+                    AppBar("Issues", accent=theme.accent),
                     Spacer(size=SPACE_MD),
-                    Label("Loading issue…", tone="body", color=MUTED),
+                    Label("Loading issue…", tone="body", color=theme.muted),
                 ], padding_top=0))
             elif self._error:
                 ctx.render(Column([
-                    AppBar("Error", accent=ACCENT),
+                    AppBar("Error", accent=theme.accent),
                     Spacer(size=SPACE_MD),
-                    Label(f"Error: {self._error}", tone="body", color=RED),
+                    Label(f"Error: {self._error}", tone="body", color=theme.danger),
                     Spacer(grow=True),
                     FooterKeys([("escape", "back")]),
                 ], padding_top=0))
@@ -197,7 +196,7 @@ class GhIssues(App):
         appbar = AppBar(
             "Issues",
             subtitle=f"{len(self._issues)} open" if not self._loading else None,
-            accent=ACCENT,
+            accent=theme.accent,
         )
         shortcuts = FooterKeys([
             (["j", "k"], "navigate"),
@@ -213,13 +212,13 @@ class GhIssues(App):
         list_top = appbar_h + shortcuts_h
 
         if self._loading:
-            ctx.text(PAD, list_top + PAD, "Loading…", size=BODY, color=MUTED)
+            ctx.text(PAD, list_top + PAD, "Loading…", size=BODY, color=theme.muted)
             return
         if self._error:
             ctx.text(PAD, list_top + PAD, f"Error: {self._error}",
-                     size=CAPTION, color=RED, max_width=ctx.w - PAD * 2)
+                     size=CAPTION, color=theme.danger, max_width=ctx.w - PAD * 2)
             ctx.text(PAD, list_top + PAD + BODY + PAD_TIGHT,
-                     "r — retry", size=HINT, color=MUTED)
+                     "r — retry", size=HINT, color=theme.muted)
             return
 
         self._draw_list(ctx, list_top)
@@ -228,7 +227,7 @@ class GhIssues(App):
         rows = [
             ListRow(
                 id=f"issue-{issue['number']}",
-                leading=LeadingBadge(f"#{issue['number']}", color="accent"),
+                leading=LeadingBadge(f"#{issue['number']}", color=theme.accent),
                 primary=issue.get("title", ""),
                 chips=[
                     RowChip(lbl.get("name", ""), _label_color(lbl.get("name", "")))
@@ -251,11 +250,11 @@ class GhIssues(App):
 
         self._body_scroll.child = (
             _MarkdownBlock(body_text) if body_text
-            else Label("No body.", tone="caption", color=MUTED)
+            else Label("No body.", tone="caption", color=theme.muted)
         )
 
         ctx.render(Column([
-            AppBar(f"← #{number}  {title}", accent=ACCENT),
+            AppBar(f"← #{number}  {title}", accent=theme.accent),
             InfoTable([
                 ("number",    f"#{number}"),
                 ("state",     d.get("state", "open")),

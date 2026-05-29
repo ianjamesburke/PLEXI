@@ -612,6 +612,27 @@ pub fn config_dir() -> PathBuf {
         .join(config_dir_name())
 }
 
+/// Dev override: when `PLEXI_SDK_PATH` is set, Python apps import the SDK from
+/// that directory (which must contain the `plexi_sdk` package) instead of the
+/// binary-embedded copy. This enables live SDK iteration — edit
+/// `sdk/python/plexi_sdk/*.py`, re-render, no rebuild. Returns the path only if
+/// it exists and actually contains a `plexi_sdk` package; otherwise `None` so a
+/// stale/typo'd value fails loudly via the missing-import rather than silently.
+pub fn sdk_path_override() -> Option<PathBuf> {
+    let raw = std::env::var_os("PLEXI_SDK_PATH")?;
+    let path = PathBuf::from(raw);
+    if path.join("plexi_sdk").join("__init__.py").is_file() {
+        Some(path)
+    } else {
+        eprintln!(
+            "PLEXI_SDK_PATH={} does not contain a plexi_sdk package (expected {}/plexi_sdk/__init__.py) — ignoring",
+            path.display(),
+            path.display()
+        );
+        None
+    }
+}
+
 pub const CONFIG_TEMPLATE: &str = include_str!("../scripts/default-config.toml");
 
 /// Ensures the config file exists, creating it from the default template if not.

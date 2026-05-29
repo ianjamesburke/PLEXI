@@ -1,7 +1,7 @@
 ---
 name: create-plexi-app
 description: Use when building, scaffolding, or modifying a Plexi Python app. Covers manifest, SDK surface, key-handling, the dev loop, render verification, and logging requirements.
-skill_version: "0.0.470"
+skill_version: "0.0.471"
 ---
 
 # Build a Plexi App
@@ -113,6 +113,9 @@ MyApp().run()
 | `ctx.info/warn/error/debug(msg)` | Log from render |
 | `ctx.notify(title, body)` | Fire-and-forget notification |
 | `ctx.schedule_render(after_ms)` | Request re-render after delay |
+| `ctx.theme` | Live host theme — read colors via `ctx.theme.<role>` |
+
+**Theme (`ctx.theme`):** populated from the `Init` payload; reflects light/dark mode AND the user's custom `[theme]` overrides in `config.toml`. Roles (all `#rrggbb` strings): `bg`, `bg_darkest`, `surface`, `highlight`, `border`, `fg`, `muted`, `text_section`, `accent`, `danger` (alias `red`), `success` (alias `green`), `warning` (alias `yellow`). Also a module-level singleton: `from plexi_sdk import theme` — same object, useful in module-level helpers that lack a `ctx`. Prefer `ctx.theme.<role>` over the frozen `BG`/`FG`/... constants so the app tracks the host theme.
 
 **Prefer `ctx.render(tree)` from `plexi_sdk.ui`** for standard layouts — use raw draw calls only for custom visuals.
 
@@ -157,7 +160,7 @@ ctx.render(Column([
 
 ### Constants (`from plexi_sdk import ...`)
 
-**Colors (Catppuccin Mocha):** `BG`, `SURFACE`, `HIGHLIGHT`, `ACCENT`, `MUTED`, `FG`, `RED`, `GREEN`, `YELLOW`  
+**Colors (dark-mode fallbacks only):** `BG`, `SURFACE`, `HIGHLIGHT`, `ACCENT`, `MUTED`, `FG`, `RED`, `GREEN`, `YELLOW` — frozen Catppuccin Mocha. Theme-aware apps should prefer `ctx.theme.<role>` (or the imported `theme` singleton) so they respect light/dark + user `[theme]` overrides.  
 **Font sizes:** `TITLE=22`, `HEADING=18`, `BODY=15`, `CAPTION=13`, `HINT=12`, `MONO_BODY=14`, `MONO_SMALL=12`  
 **Layout:** `PAD=16`, `PAD_TIGHT=8`, `HEADER_H=48`, `STATUS_H=44`  
 **Notification priorities:** `PRIORITY_LOW=0`, `PRIORITY_NORMAL=50`, `PRIORITY_HIGH=100`, `PRIORITY_CRITICAL=200`  
@@ -255,6 +258,16 @@ Tell the user: "Open this in your terminal pane — do NOT run it from Claude Co
 
 **Never surface an app to the user without passing render verify first.**
 
+### Editing the SDK itself — `PLEXI_SDK_PATH`
+
+The SDK is embedded into the binary at build time and re-extracted to the profile dir on every launch. Editing `sdk/python/plexi_sdk/*.py` in a worktree does **nothing** until you rebuild + reinstall the binary — unless you set `PLEXI_SDK_PATH`. It prepends your worktree SDK to `PYTHONPATH`, loading it live. Honored by both `app render` (headless) and live pane launches.
+
+```bash
+PLEXI_SDK_PATH="$PWD/sdk/python" <plexi-binary> app render <app-id> --state state.json --output /tmp/<app-id>.png
+```
+
+Without it, you must rebuild + reinstall the binary to test SDK changes.
+
 ---
 
 ## Logging requirements (not optional)
@@ -334,4 +347,5 @@ Any alpha below 160 is effectively invisible on Catppuccin Mocha dark background
 | Using `ctrl` for primary shortcuts | Prefer `meta` (⌘) on macOS |
 | `ctx.text(w - N, y, hint, CAPTION, MUTED)` near right edge | Use `ctx.text(max(w/2, w - N), y, hint, CAPTION, MUTED, align="right")` — prevents left-clip in narrow panes |
 | `dim(FG, 80)` or `dim(FG, 120)` for labels | Minimum readable alpha is 160 — use `dim(FG, 160)` for de-emphasized text |
+| Frozen `BG`/`FG`/`MUTED` constants for app-drawn chrome | Use `ctx.theme.bg` / `ctx.theme.fg` / `ctx.theme.muted` so the app tracks the host theme (light/dark + user overrides) |
 | Pyright variance warnings on `list[Label]` in `Card([...])` | Benign — `List[Component]` invariance is a type stub issue, not a runtime error. Do not restructure correct code to silence it. |
