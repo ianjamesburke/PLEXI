@@ -15,7 +15,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
 
-from plexi_sdk import App, RenderContext, dim
+from plexi_sdk import App, RenderContext, dim, Arg
 
 GRAVITY = 300.0      # px/s²
 DAMPING = 0.78       # energy retained on wall bounce
@@ -56,12 +56,11 @@ def _new_ball(x: float, y: float, idx: int,
 
 
 class BallsApp(App):
-    # Override the default dark background with the physics demo's deep-space color.
     default_background = "#0d0d1a"
+    count: Arg[int] = Arg(positional=True, type=int, default=10)
 
     def on_init(self, ctx: RenderContext) -> None:
-        count = int(self.args[0]) if self.args else 10
-        count = max(1, min(count, MAX_BALLS))
+        count = max(1, min(self.count, MAX_BALLS))
         self.balls: list[Ball] = []
         w, h = ctx.w, ctx.h
         for i in range(count):

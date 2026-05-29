@@ -12,16 +12,16 @@ Form view:   host-managed text_input per field; first field auto-focused;
 Result view: Shows tool call output inline. Escape or Back returns to list.
 """
 
+import argparse
 import asyncio
 import json
 import os
 import select
 import subprocess
-import sys
 import threading
 from typing import IO
 
-from plexi_sdk import App, RenderContext
+from plexi_sdk import App, RenderContext, Arg
 from plexi_sdk.ui import (
     Column, AppBar, FormField, Scrollable, FooterKeys,
     ListItem, Label, Spacer, Card,
@@ -130,6 +130,7 @@ class McpClient:
 # ── App ────────────────────────────────────────────────────────────────────────
 
 class McpRendererApp(App):
+    cmd: Arg[list] = Arg(positional=True, nargs=argparse.REMAINDER, default=[])
 
     def on_init(self, ctx: RenderContext) -> None:
         self._view: str = "loading"   # loading | error | list | form | result
@@ -153,17 +154,16 @@ class McpRendererApp(App):
         self._client: McpClient | None = None
         self._tools_ready = threading.Event()
 
-        argv = sys.argv[1:]
-        if not argv:
+        if not self.cmd:
             self._error = "Usage: plexi open mcp-renderer <command> [args...]\nExample: plexi open mcp-renderer npx -y @modelcontextprotocol/server-filesystem /tmp"
             self._view = "error"
             ctx.status_summary("mcp-renderer: no command")
             return
 
         ctx.status_summary("mcp-renderer: connecting…")
-        self.emit.info(f"mcp-renderer: spawning {argv!r}")
+        self.emit.info(f"mcp-renderer: spawning {self.cmd!r}")
         try:
-            threading.Thread(target=self._connect, args=(argv,), daemon=True).start()
+            threading.Thread(target=self._connect, args=(self.cmd,), daemon=True).start()
         except RuntimeError as e:
             self._error = f"Failed to start connection thread: {e}"
             self._view = "error"
@@ -211,7 +211,7 @@ class McpRendererApp(App):
     # ── Render ────────────────────────────────────────────────────────────────
 
     def on_render(self, ctx: RenderContext) -> None:
-        cmd_name = sys.argv[1] if len(sys.argv) > 1 else "mcp"
+        cmd_name = self.cmd[0] if self.cmd else "mcp"
         tool_count = len(self._tools)
         subtitle = f"{tool_count} tool{'s' if tool_count != 1 else ''}" if tool_count else None
 

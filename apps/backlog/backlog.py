@@ -11,7 +11,6 @@ Items from the channel backlog are prefixed with [ch] in the list.
 Pass -g/--global to show only channel-level items: plexi open backlog -g
 """
 
-import argparse
 import os
 import shutil
 import subprocess
@@ -19,7 +18,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
-from plexi_sdk import App, RenderContext, BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, RED, GREEN
+from plexi_sdk import App, RenderContext, BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, RED, GREEN, Arg
 from plexi_sdk.ui import SelectList
 
 def _detect_channel_backlog_dir() -> "Path | None":
@@ -51,13 +50,9 @@ BOTTOM_BAR_H = 26.0
 
 
 class BacklogApp(App):
+    global_only: Arg[bool] = Arg("-g", "--global", dest="global_only", type=bool, default=False)
 
     def on_init(self, ctx: RenderContext) -> None:
-        parser = argparse.ArgumentParser(add_help=False)
-        parser.add_argument("-g", "--global", dest="global_only", action="store_true")
-        parsed, _ = parser.parse_known_args(self.args)
-        self.global_only: bool = parsed.global_only
-
         self.backlog_dir = Path(ctx.workspace_root) / ".plexi" / "backlog"
         self.channel_dir = _detect_channel_backlog_dir()
         self.items: list = []         # list[Path]

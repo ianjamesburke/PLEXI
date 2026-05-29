@@ -13,7 +13,7 @@ import json
 import subprocess
 
 from plexi_sdk import (
-    App, RenderContext,
+    App, RenderContext, Arg,
     BG, SURFACE, FG, ACCENT, MUTED, HIGHLIGHT,
     BODY, CAPTION, HEADING, HINT,
     GREEN, RED, YELLOW,
@@ -60,6 +60,8 @@ class GhIssues(App):
     VIEW_LIST   = "list"
     VIEW_DETAIL = "detail"
 
+    repo_dir: Arg[str | None] = Arg("--repo-dir", default=lambda ctx: ctx.workspace_root)
+
     async def on_init(self, ctx: RenderContext) -> None:
         self._view           = self.VIEW_LIST
         self._issues         : list[dict] = []
@@ -68,7 +70,7 @@ class GhIssues(App):
         self._detail_loading = False
         self._error          : str | None = None
         self._detail         : dict | None = None
-        self._root           = ctx.workspace_root or ""
+        self._root           = self.repo_dir or ""
         ctx.status_summary("Loading…")
         self.emit.info(f"gh-issues init workspace={self._root!r}")
         self._fetch()
