@@ -544,9 +544,9 @@ class Scrollable(Component):
         Returns True (always consumes the event). Call from the app's
         on_scroll_delta handler:
 
-            def on_scroll_delta(self, ctx, delta_y):
+            def on_scroll_delta(self, _ctx, delta_y):
                 self._scrollable.handle_scroll(delta_y)
-                ctx.request_render()
+                self.emit.schedule_render()
 
         `delta_y` is positive when scrolling up (matches egui's
         smooth_scroll_delta convention). The offset is clamped to

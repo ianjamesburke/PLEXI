@@ -312,7 +312,7 @@ class GhIssues(App):
     def on_click(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> None:
         pass
 
-    def on_scroll_delta(self, ctx: RenderContext, delta_y: float) -> None:
+    def on_scroll_delta(self, _ctx: RenderContext, delta_y: float) -> None:
         if self._view == self.VIEW_DETAIL:
             self._body_scroll.handle_scroll(delta_y)
             self.emit.schedule_render()
