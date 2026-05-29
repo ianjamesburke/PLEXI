@@ -289,6 +289,7 @@ At every exit point (success, blocked, fail):
 - Never skip base verification after `wtp add`
 - No `todo!()` or `unimplemented!()` outside `#[cfg(test)]`
 - No `#[allow(dead_code)]` or `#[allow(unused)]`
+- `cargo build` must pass after all changes
 - Subagents stage only — orchestrator owns the commit
 - Never dispatch subagent without the Phase 3 spec
 - Every implementation needs a logging plan
