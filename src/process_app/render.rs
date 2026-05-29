@@ -557,7 +557,7 @@ pub(crate) fn render_draw_commands(
                                             badge_y,
                                             label,
                                             color,
-                                            "#1e1e2e",
+                                            contrast_text_hex(color),
                                             FONT_HINT,
                                             3.0,
                                         );
@@ -1013,6 +1013,19 @@ pub(crate) fn render_draw_commands(
 /// Renders a pill badge at (`origin.x + x`, vertically centred on `origin.y + y_center`).
 /// Returns the pill width so callers can flow following content past the badge
 /// instead of assuming a fixed slot (which clips wide labels like `#1792`).
+/// Pick a legible text color for a filled chip/badge based on the fill's
+/// perceptual luminance. Dark fills get light text, light fills get dark text.
+/// Returns a hex string so it can be threaded through the `&str` fg params.
+pub(crate) fn contrast_text_hex(fill: &str) -> &'static str {
+    match parse_color(fill) {
+        Some(c) => {
+            let lum = 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32;
+            if lum > 140.0 { "#1e1e2e" } else { "#ffffff" }
+        }
+        None => "#1e1e2e",
+    }
+}
+
 pub(crate) fn render_badge(
     ui: &mut egui::Ui,
     origin: egui::Pos2,
