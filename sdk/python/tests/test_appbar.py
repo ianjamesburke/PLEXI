@@ -12,16 +12,16 @@ def test_appbar_text_y_centered() -> None:
     explicit accent, the title color resolves to the active theme foreground."""
     bar = AppBar("test")
 
-    # measure() must return BAND_H + DIVIDER_H = 36 + 1 = 37.0
-    assert bar.measure(200) == 37.0
+    # measure() must return BAND_H + DIVIDER_H = 34 + 1 = 35.0
+    assert bar.measure(200) == 35.0
 
     ctx = MagicMock()
-    bar.render(ctx, x=0, y=0, w=200, h=37)
+    bar.render(ctx, x=0, y=0, w=200, h=35)
 
-    # Expected text_y: 0 + (36 - 16) / 2 = 10.0; text_x: x + SPACE_MD.
+    # Expected text_y: 0 + (34 - 16) / 2 = 9.0; text_x: x + SPACE_MD.
     ctx.text.assert_called_once_with(
         SPACE_MD,
-        10.0,
+        9.0,
         "test",
         size=AppBar.TITLE_SIZE,
         color=theme.fg,

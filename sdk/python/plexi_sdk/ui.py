@@ -346,8 +346,10 @@ class AppBar(Component):
 
     TITLE_SIZE = 16.0
     SUBTITLE_SIZE = TEXT_HINT
-    BAND_H = 36.0
-    BAND_H_DOUBLE = 52.0
+    BAND_H = 34.0
+    # Two-line band = SPACE_SM top + title + SPACE_XS + subtitle + SPACE_SM
+    # bottom = 8 + 16 + 4 + 12 + 8 = 48. Snug, symmetric padding.
+    BAND_H_DOUBLE = 48.0
     DIVIDER_H = 1.0
 
     def _band(self) -> float:
@@ -697,7 +699,8 @@ class FooterKeys(Component):
 
     def measure(self, avail_w: float) -> float:
         if not self.divider:
-            return self.TOP_GAP + self.ROW_H
+            # Symmetric padding above and below the chip row.
+            return self.TOP_GAP + self.ROW_H + self.TOP_GAP
         return self.TOP_GAP + 1.0 + self.TOP_GAP + self.ROW_H
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
@@ -709,7 +712,8 @@ class FooterKeys(Component):
             ctx.rect(x, line_y, w, 1.0, theme.highlight)
             chip_row_y = line_y + 1.0 + self.TOP_GAP
         else:
-            chip_row_y = y + self.TOP_GAP
+            # Center the chip row vertically within its symmetric band.
+            chip_row_y = y + self.TOP_GAP + (self.ROW_H - self.CHIP_H) / 2.0
 
         # Single host-measured shortcuts row — host owns ALL geometry:
         # chip widths from real font metrics, inter-group flow, and
