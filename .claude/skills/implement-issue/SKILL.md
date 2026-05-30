@@ -81,10 +81,13 @@ git fetch origin && git status --porcelain && git log origin/alpha..HEAD --oneli
 
 If any unpushed commits listed: STOP immediately. Tell user to push first, then re-run. Do not read the issue, do not stash, do not proceed.
 
-If dirty: auto-stash:
+If dirty: fail immediately:
 ```bash
-git stash push -m "implement-issue auto-stash before #<number>"
-IMPL_STASHED=true
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "ERROR: alpha has uncommitted changes — commit or stash before running implement-issue"
+  git status --short
+  exit 1
+fi
 ```
 
 Then: `git pull --rebase origin alpha`
@@ -271,15 +274,6 @@ After setting labels, invoke `/open-pr` inline in the same pane — do not spawn
 
 ---
 
-
-## Abort / Stash Pop
-
-At every exit point (success, blocked, fail):
-```bash
-[ "$IMPL_STASHED" = "true" ] && git stash pop
-```
-
----
 
 ## Rules
 
