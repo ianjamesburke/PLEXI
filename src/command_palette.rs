@@ -18,6 +18,7 @@ enum PaletteEntry {
         name: String,
         description: String,
         running_in_background: bool,
+        is_workspace_local: bool,
     },
 }
 
@@ -188,33 +189,70 @@ impl PlexiApp {
             ctx_entries
         };
 
-        // ── App entries ────────────────────────────────────────────────────
-        let app_entries: Vec<(String, String, String)> = self
+        // ── Workspace-aware app entries ────────────────────────────────────
+        // Use the workspace root cached at palette-open time (not re-resolved
+        // per frame) to avoid filesystem traversal in the egui draw loop.
+        let focused_workspace_root = self.palette_workspace_root.as_ref();
+
+        // If the cached workspace differs from what the registry was last loaded
+        // for, rescan once now so local apps for this workspace appear.
+        if focused_workspace_root != self.registry.loaded_workspace.as_ref() {
+            let home = dirs::home_dir();
+            let rescan_cwd = focused_workspace_root
+                .map(|p| p.as_path())
+                .or_else(|| home.as_deref())
+                .unwrap_or(std::path::Path::new("/"));
+            log::info!(
+                "palette: registry workspace ({:?}) differs from palette workspace ({:?}), rescanning",
+                self.registry.loaded_workspace,
+                focused_workspace_root,
+            );
+            self.registry = crate::app_registry::AppRegistry::load(rescan_cwd);
+        }
+
+        let app_entries: Vec<(String, String, String, bool)> = self
             .registry
             .list()
             .into_iter()
             .filter(|app| {
-                query.is_empty()
-                    || app.manifest.name.to_lowercase().contains(&query)
-                    || app.manifest.id.to_lowercase().contains(&query)
-                    || app.manifest.description.to_lowercase().contains(&query)
+                // Local apps are visible only when the focused pane is in their workspace.
+                // Use the same explicit predicate here as in the badge below — no wildcard.
+                let workspace_visible = match app.source {
+                    crate::app_registry::RegistrySource::Global => true,
+                    crate::app_registry::RegistrySource::LocalApp
+                    | crate::app_registry::RegistrySource::LocalAgent => {
+                        app.workspace_root.as_ref() == focused_workspace_root
+                    }
+                };
+                workspace_visible
+                    && (query.is_empty()
+                        || app.manifest.name.to_lowercase().contains(&query)
+                        || app.manifest.id.to_lowercase().contains(&query)
+                        || app.manifest.description.to_lowercase().contains(&query))
             })
             .map(|app| {
+                let is_local = matches!(
+                    app.source,
+                    crate::app_registry::RegistrySource::LocalApp
+                        | crate::app_registry::RegistrySource::LocalAgent
+                );
                 (
                     app.manifest.id.clone(),
                     app.manifest.name.clone(),
                     app.manifest.description.clone(),
+                    is_local,
                 )
             })
             .collect();
 
-        for (id, name, description) in app_entries {
+        for (id, name, description, is_workspace_local) in app_entries {
             let running_in_background = self.background_apps.contains_key(&id);
             entries.push(PaletteEntry::App {
                 id,
                 name,
                 description,
                 running_in_background,
+                is_workspace_local,
             });
         }
 
@@ -431,6 +469,7 @@ impl PlexiApp {
                                             name,
                                             description,
                                             running_in_background,
+                                            is_workspace_local,
                                         } => {
                                             if !shown_apps_header {
                                                 shown_apps_header = true;
@@ -466,6 +505,14 @@ impl PlexiApp {
                                                                 RichText::new("bg")
                                                                     .size(9.0)
                                                                     .color(colors.text_dim),
+                                                            );
+                                                        }
+                                                        if *is_workspace_local {
+                                                            ui.add_space(6.0);
+                                                            ui.label(
+                                                                RichText::new("ws")
+                                                                    .size(9.0)
+                                                                    .color(colors.accent),
                                                             );
                                                         }
                                                     });
