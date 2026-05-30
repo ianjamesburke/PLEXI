@@ -299,6 +299,10 @@ pub struct PlexiApp {
     pub(crate) show_command_palette: bool,
     pub(crate) palette_query: String,
     pub(crate) palette_selected: usize,
+    /// Cached workspace root for the focused pane at the moment the palette
+    /// was opened. Resolved once on open, not per-frame, to avoid repeated
+    /// filesystem traversal in the egui draw loop.
+    pub(crate) palette_workspace_root: Option<std::path::PathBuf>,
     pub(crate) context_visit_history: Vec<u64>,
     pub(crate) renaming_pane: Option<PaneId>,
     /// One-shot guard: true after `request_focus()` fires on the rename modal's
@@ -921,6 +925,7 @@ impl PlexiApp {
                     show_command_palette: false,
                     palette_query: String::new(),
                     palette_selected: 0,
+                    palette_workspace_root: None,
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
                     rename_pane_focus_requested: false,
@@ -1095,6 +1100,7 @@ impl PlexiApp {
             show_command_palette: false,
             palette_query: String::new(),
             palette_selected: 0,
+            palette_workspace_root: None,
             context_visit_history: Vec::new(),
             renaming_pane: None,
             rename_pane_focus_requested: false,
@@ -1258,6 +1264,7 @@ impl PlexiApp {
             show_command_palette: false,
             palette_query: String::new(),
             palette_selected: 0,
+            palette_workspace_root: None,
             context_visit_history: Vec::new(),
             renaming_pane: None,
             rename_pane_focus_requested: false,
@@ -3547,6 +3554,19 @@ impl eframe::App for PlexiApp {
                     if self.show_command_palette {
                         self.palette_query.clear();
                         self.palette_selected = 0;
+                        // Resolve focused pane workspace once at open-time — not per draw-frame —
+                        // to avoid filesystem traversal in the egui hot path.
+                        let win = &self.windows[self.active_window];
+                        self.palette_workspace_root = win
+                            .focused_pane
+                            .and_then(|tile_id| win.get_focused_pane_cwd(tile_id))
+                            .and_then(|cwd| crate::app_registry::resolve_workspace_root(&cwd));
+                        log::info!(
+                            "palette: opened, focused workspace = {:?}",
+                            self.palette_workspace_root
+                        );
+                    } else {
+                        self.palette_workspace_root = None;
                     }
                 }
                 Action::RenamePane => {

@@ -190,22 +190,20 @@ impl PlexiApp {
         };
 
         // ── Workspace-aware app entries ────────────────────────────────────
-        // Resolve the focused pane's workspace root so we can filter local apps.
-        let focused_workspace_root = self.windows[self.active_window]
-            .focused_pane
-            .and_then(|tile_id| self.windows[self.active_window].get_focused_pane_cwd(tile_id))
-            .and_then(|cwd| crate::app_registry::resolve_workspace_root(&cwd));
+        // Use the workspace root cached at palette-open time (not re-resolved
+        // per frame) to avoid filesystem traversal in the egui draw loop.
+        let focused_workspace_root = self.palette_workspace_root.as_ref();
 
-        // If the focused pane's workspace differs from what the registry was
-        // last loaded for, rescan now so local apps for the new workspace appear.
-        if focused_workspace_root != self.registry.loaded_workspace {
+        // If the cached workspace differs from what the registry was last loaded
+        // for, rescan once now so local apps for this workspace appear.
+        if focused_workspace_root != self.registry.loaded_workspace.as_ref() {
             let home = dirs::home_dir();
             let rescan_cwd = focused_workspace_root
-                .as_deref()
+                .map(|p| p.as_path())
                 .or_else(|| home.as_deref())
                 .unwrap_or(std::path::Path::new("/"));
             log::info!(
-                "palette: workspace changed ({:?} → {:?}), rescanning registry",
+                "palette: registry workspace ({:?}) differs from palette workspace ({:?}), rescanning",
                 self.registry.loaded_workspace,
                 focused_workspace_root,
             );
@@ -223,16 +221,7 @@ impl PlexiApp {
                     crate::app_registry::RegistrySource::Global => true,
                     crate::app_registry::RegistrySource::LocalApp
                     | crate::app_registry::RegistrySource::LocalAgent => {
-                        let visible = app.workspace_root.as_ref() == focused_workspace_root.as_ref();
-                        if !visible {
-                            log::debug!(
-                                "palette: hiding local app '{}' (workspace {:?} ≠ focused {:?})",
-                                app.manifest.id,
-                                app.workspace_root,
-                                focused_workspace_root,
-                            );
-                        }
-                        visible
+                        app.workspace_root.as_ref() == focused_workspace_root
                     }
                 };
                 workspace_visible
