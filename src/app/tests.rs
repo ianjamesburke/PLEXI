@@ -1134,6 +1134,9 @@ fn context_transition_rescans_registry() {
     // Two isolated temp roots with different workspace-local apps.
     let dir_a = std::env::temp_dir().join("plexi_test_1801_ctx_a");
     let dir_b = std::env::temp_dir().join("plexi_test_1801_ctx_b");
+    // Clean up from any prior failed run before creating fixtures.
+    let _ = std::fs::remove_dir_all(&dir_a);
+    let _ = std::fs::remove_dir_all(&dir_b);
 
     let manifest_a = concat!(
         "schema_version = 1\n",

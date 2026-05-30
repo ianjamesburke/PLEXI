@@ -3792,7 +3792,10 @@ impl eframe::App for PlexiApp {
                 .active()
                 .root
                 .clone()
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                .unwrap_or_else(|| {
+                    std::env::current_dir()
+                        .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+                });
             log::info!("app_registry_watcher: rescanning registry for root={}", root.display());
             self.registry = crate::app_registry::AppRegistry::load(&root);
         }
