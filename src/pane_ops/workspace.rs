@@ -160,6 +160,7 @@ impl PlexiApp {
         self.active_window = self.windows.len() - 1;
         self.context_active_window.insert(ctx_id, win_id);
         self.minimap.visible = false;
+        self.apply_context_transition_effects();
 
         // Auto-open inline rename so the user can name the context immediately.
         let new_ctx_idx = self.router.len() - 1;
@@ -233,6 +234,7 @@ impl PlexiApp {
         self.active_window = self.windows.len() - 1;
         self.context_active_window.insert(ctx_id, win_id);
         self.minimap.visible = false;
+        self.apply_context_transition_effects();
     }
 
     /// Create a new page immediately to the right of the active page on the
