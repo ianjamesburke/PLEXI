@@ -2213,6 +2213,14 @@
               "format": "float",
               "type": "number"
             },
+            "theme": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "default": {},
+              "description": "Active host theme as a `role -> #rrggbb` map (see `Colors::to_theme_map`).\nLets app-drawn chrome track the host theme (light/dark + user overrides).\nEmpty map ⇒ app falls back to its built-in dark constants.",
+              "type": "object"
+            },
             "type": {
               "const": "init",
               "type": "string"
@@ -3463,6 +3471,24 @@
             "type",
             "id",
             "offset_y"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Emitted when the mouse wheel moves over an app pane that has no\nhost-managed scroll region or list_view under the cursor.\n`delta_y` is the raw `smooth_scroll_delta.y` value from egui (positive =\nscroll up). SDK `Scrollable` components call `handle_scroll(delta_y)` from\nthe app's `on_scroll_delta` handler.",
+          "properties": {
+            "delta_y": {
+              "format": "float",
+              "type": "number"
+            },
+            "type": {
+              "const": "scroll",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "delta_y"
           ],
           "type": "object"
         },

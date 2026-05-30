@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.525"
+verified_version: "0.0.536"
 order: 7
 ---
 
@@ -63,6 +63,7 @@ Use --from-env to read the value from an existing environment variable instead o
 | `<friendly_name>` | string | yes | Name for this secret — also the environment variable name it will be injected as |
 | `--from-env` | flag | no | Read the value from the environment variable named FRIENDLY_NAME instead of prompting |
 | `--global` | flag | no | Store this secret globally so it's available in all projects, not just this one |
+| `--alias` | string | no | Use a different name for the Keychain entry than the canonical env var name.  Useful when the Keychain entry already exists under a different name. Example: plexi secret set OPENAI_API_KEY --alias openai_personal |
 
 ### `plexi secret get`
 
