@@ -17,6 +17,19 @@ use egui_tiles::{Tile, TileId, Tree};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Instantiate a builtin `App` by id, checked before the process registry.
+///
+/// Builtins are compiled-in and never require disk access. Add one line here
+/// when introducing a new builtin app type; the dispatch path in
+/// `launch_app_by_id_with_layout` requires no further changes.
+///
+/// `"terminal"` is intentionally absent — it is a PTY pane, not an `App`.
+fn builtin_factory(_id: &str, _args: &[String]) -> Option<Box<dyn App>> {
+    match _id {
+        _ => None,
+    }
+}
+
 impl PlexiApp {
     /// Convert a manifest-declared share fraction (0.0..1.0 exclusive) to a `ShareRatio`.
     /// Validates the range and falls back to 0.5 (1:1) on invalid input, logging a warning.
@@ -715,6 +728,18 @@ impl PlexiApp {
         log::info!("launch_app_by_id_with_layout: id={id} cwd={cwd:?} cwd_source={} context_root={:?}",
             if cwd_explicit { "explicit" } else { "resolved" },
             self.router.active().root);
+
+        // Builtin app factory — resolved before the process registry; builtins never touch disk.
+        if let Some(app) = builtin_factory(id, args) {
+            log::info!("launch_app_by_id_with_layout: '{id}' resolved as builtin");
+            let group = self.registry.group_for(id);
+            let hint = layout
+                .or_else(|| self.registry.layout_hint_for(id))
+                .unwrap_or_else(|| "overlay".to_string());
+            let perms = crate::app_permissions::AppPermissions::builtin();
+            self.open_builtin_app_pane(app, perms, cwd, group, Some(&hint), None);
+            return Ok(());
+        }
 
         // Re-attach a parked background app if one is waiting
         if let Some((_park_context_id, mut parked)) = self.background_apps.remove(id) {
