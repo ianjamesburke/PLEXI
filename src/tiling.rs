@@ -138,14 +138,8 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         };
 
         if let Some(app_pane) = pane.as_app_mut() {
-            // App panes: fill with bg_darkest so the inset band doesn't show
-            // terminal_bg through the gap — bg_darkest is dark enough to be
-            // nearly invisible against the SDK's default BG token. Use SPACE_MD
-            // inset so content has consistent breathing room from the pane edge.
             ui.painter().rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
-            let mut app_ui = ui.new_child(
-                egui::UiBuilder::new().max_rect(pane_rect.shrink(style::SPACE_MD)),
-            );
+            let mut app_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
             render::app_pane::render(&mut app_ui, app_pane, &self.colors, is_focused);
         } else if let Some(terminal) = pane.as_terminal_mut() {
             ui.painter().rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
