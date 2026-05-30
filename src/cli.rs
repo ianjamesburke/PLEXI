@@ -267,17 +267,37 @@ pub fn run_command(command_name: &str) -> i32 {
             // Load workspace context once — fail early if secrets are required but workspace
             // is not initialised (missing workspace.toml or secrets.toml).
             let ws_root = crate::app_registry::resolve_workspace_root(&cwd);
-            let ws_context: Option<(String, WorkspaceSecrets)> =
-                ws_root.as_ref().and_then(|root| {
-                    let cfg = WorkspaceConfig::load(root).ok().flatten()?;
-                    let router = WorkspaceSecrets::load(root).ok().flatten()?;
-                    Some((cfg.id, router))
-                });
+            let ws_context: Option<(String, WorkspaceSecrets)> = ws_root.as_ref().and_then(|root| {
+                let cfg = match WorkspaceConfig::load(root) {
+                    Ok(Some(c)) => c,
+                    Ok(None) => {
+                        log::warn!("run_command: workspace.toml missing at {}", root.display());
+                        return None;
+                    }
+                    Err(e) => {
+                        log::warn!("run_command: failed to load workspace.toml at {}: {e}", root.display());
+                        return None;
+                    }
+                };
+                let router = match WorkspaceSecrets::load(root) {
+                    Ok(Some(r)) => r,
+                    Ok(None) => {
+                        log::warn!("run_command: secrets.toml missing at {}", root.display());
+                        return None;
+                    }
+                    Err(e) => {
+                        log::warn!("run_command: failed to load secrets.toml at {}: {e}", root.display());
+                        return None;
+                    }
+                };
+                Some((cfg.id, router))
+            });
             match ws_context {
                 None => {
-                    log::warn!("run_command: secrets required but no initialized workspace found in {}", cwd.display());
-                    eprintln!("error: command requires secrets but no initialized workspace found.");
-                    eprintln!("  → plexi workspace init   (then: plexi secret set <NAME>)");
+                    log::warn!("run_command: secrets required but workspace context unavailable in {}", cwd.display());
+                    eprintln!("error: command requires secrets but workspace is not fully initialized.");
+                    eprintln!("  → plexi workspace init   (creates workspace.toml + secrets.toml)");
+                    eprintln!("  → plexi secret set <NAME>  (then store the required secrets)");
                     return 1;
                 }
                 Some((ws_id, router)) => {
@@ -625,6 +645,13 @@ fn require_workspace(
 ///   --global     store under `plexi:user:<name>` (cross-workspace)
 ///   default      walk up to nearest .plexi/ workspace, store workspace-scoped
 pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool, alias: Option<&str>) -> i32 {
+    // `--alias` is incompatible with `--global`: global secrets are resolved via
+    // `plexi:user:<canonical>` and there is no secrets.toml to hold an alias route.
+    if global && alias.is_some() {
+        eprintln!("error: --alias cannot be combined with --global.");
+        eprintln!("  Global secrets are always stored under their canonical name.");
+        return 1;
+    }
     // `friendly` is the canonical name (env var name used in app code).
     // `alias` overrides the Keychain entry name when the user wants a different friendly name.
     let effective_friendly = alias.unwrap_or(friendly);
