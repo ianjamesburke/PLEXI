@@ -4823,12 +4823,12 @@ pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
 /// already use `$line[1]`, so a global `$line[2]` → `$line[1]` substitution
 /// only affects the outer dispatch.
 fn fix_zsh_workspace_path_conflict(script: &str) -> String {
-    script
-        .replace(
-            "'::workspace_path -- Open a workspace directory (plexi <path>):_default' \\\n",
-            "",
-        )
-        .replace("$line[2]", "$line[1]")
+    let without_spec: String = script
+        .lines()
+        .filter(|line| !line.contains("::workspace_path"))
+        .flat_map(|line| [line, "\n"])
+        .collect();
+    without_spec.replace("$line[2]", "$line[1]")
 }
 
 #[cfg(test)]
