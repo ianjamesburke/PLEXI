@@ -530,6 +530,106 @@ fn write_gitignore_if_absent(workspace_root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+// ── Route auto-write ─────────────────────────────────────────────────────────
+
+/// After a `plexi secret set` Keychain write, record the canonical→friendly
+/// route in `<workspace_root>/.plexi/secrets.toml` under `[default]`.
+///
+/// - File absent: creates it with `fallback = true` + the route.
+/// - Canonical already maps to the same friendly: no-op (idempotent).
+/// - Canonical maps to a different friendly: updates the existing entry in-place.
+/// - Canonical not present: injects a new entry, preserving existing content.
+pub fn write_default_route(
+    workspace_root: &Path,
+    canonical: &str,
+    friendly: &str,
+) -> Result<(), String> {
+    let secrets_path = workspace_root.join(".plexi").join("secrets.toml");
+
+    if !secrets_path.exists() {
+        let dir = workspace_root.join(".plexi");
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("create {}: {e}", dir.display()))?;
+        let content = format!("fallback = true\n\n[default]\n{canonical} = \"{friendly}\"\n");
+        return std::fs::write(&secrets_path, content)
+            .map_err(|e| format!("write {}: {e}", secrets_path.display()));
+    }
+
+    let raw = std::fs::read_to_string(&secrets_path)
+        .map_err(|e| format!("read {}: {e}", secrets_path.display()))?;
+
+    // Idempotency: bail out only when the mapping already points at the same friendly name.
+    if let Ok(Some(router)) = WorkspaceSecrets::load(workspace_root) {
+        if router.default.get(canonical).map(|s| s.as_str()) == Some(friendly) {
+            return Ok(());
+        }
+    }
+
+    // Insert or update the canonical→friendly mapping.
+    let updated = upsert_default_route_line(&raw, canonical, friendly);
+    std::fs::write(&secrets_path, updated)
+        .map_err(|e| format!("write {}: {e}", secrets_path.display()))
+}
+
+/// Insert or update `canonical = "friendly"` in the `[default]` section of a
+/// raw `secrets.toml` string, creating the section if absent.
+/// If an existing `canonical = "..."` line is found, it is replaced in-place.
+/// All other content and comments are preserved.
+fn upsert_default_route_line(raw: &str, canonical: &str, friendly: &str) -> String {
+    let entry_line = format!("{canonical} = \"{friendly}\"");
+    let lines: Vec<&str> = raw.lines().collect();
+    let trailing_newline = raw.ends_with('\n');
+
+    if let Some(start) = lines.iter().position(|l| {
+        let t = l.trim();
+        t == "[default]"
+            || (t.starts_with("[default]") && t[9..].trim_start().starts_with('#'))
+    }) {
+        // End of section: next uncommented table header, or EOF.
+        let end = lines[start + 1..]
+            .iter()
+            .position(|l| {
+                let t = l.trim();
+                t.starts_with('[') && !t.starts_with('#')
+            })
+            .map(|p| start + 1 + p)
+            .unwrap_or(lines.len());
+
+        // Check for an existing entry for this canonical key and replace it if found.
+        let canonical_prefix = format!("{canonical} = ");
+        let existing = lines[start + 1..end]
+            .iter()
+            .position(|l| l.trim().starts_with(&canonical_prefix))
+            .map(|p| start + 1 + p);
+
+        let result = if let Some(idx) = existing {
+            let mut parts: Vec<&str> = Vec::with_capacity(lines.len());
+            parts.extend_from_slice(&lines[..idx]);
+            parts.push(&entry_line);
+            parts.extend_from_slice(&lines[idx + 1..]);
+            parts
+        } else {
+            // No existing entry — append inside section before next section header.
+            let mut parts: Vec<&str> = Vec::with_capacity(lines.len() + 1);
+            parts.extend_from_slice(&lines[..end]);
+            parts.push(&entry_line);
+            parts.extend_from_slice(&lines[end..]);
+            parts
+        };
+
+        let joined = result.join("\n");
+        if trailing_newline {
+            format!("{joined}\n")
+        } else {
+            joined
+        }
+    } else {
+        // No [default] section — append one.
+        let base = raw.trim_end_matches('\n');
+        format!("{base}\n\n[default]\n{entry_line}\n")
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -736,5 +836,120 @@ mod tests {
             raw, custom,
             "init must NOT overwrite an existing .gitignore"
         );
+    }
+
+    // ── write_default_route tests ──────────────────────────────────────────────
+
+    #[test]
+    fn write_default_route_creates_file_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".plexi")).unwrap();
+        write_default_route(tmp.path(), "AGE", "AGE").expect("should succeed");
+        let raw = std::fs::read_to_string(tmp.path().join(".plexi").join("secrets.toml")).unwrap();
+        assert!(raw.contains("fallback = true"), "missing fallback: {raw}");
+        assert!(raw.contains("[default]"), "missing section: {raw}");
+        assert!(raw.contains("AGE = \"AGE\""), "missing route: {raw}");
+        WorkspaceSecrets::parse(&raw).expect("created file must parse");
+    }
+
+    #[test]
+    fn write_default_route_idempotent_when_route_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".plexi")).unwrap();
+        let initial = "fallback = true\n\n[default]\nAGE = \"AGE\"\n";
+        std::fs::write(tmp.path().join(".plexi").join("secrets.toml"), initial).unwrap();
+        write_default_route(tmp.path(), "AGE", "AGE").expect("should succeed");
+        let raw = std::fs::read_to_string(tmp.path().join(".plexi").join("secrets.toml")).unwrap();
+        // Content must not grow — no duplicate entries.
+        assert_eq!(raw.matches("AGE = \"AGE\"").count(), 1, "duplicate entry: {raw}");
+    }
+
+    #[test]
+    fn write_default_route_appends_to_existing_default_section() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".plexi")).unwrap();
+        let initial = "fallback = true\n\n[default]\nGITHUB_TOKEN = \"gh_personal\"\n";
+        std::fs::write(tmp.path().join(".plexi").join("secrets.toml"), initial).unwrap();
+        write_default_route(tmp.path(), "AGE", "AGE").expect("should succeed");
+        let raw = std::fs::read_to_string(tmp.path().join(".plexi").join("secrets.toml")).unwrap();
+        assert!(raw.contains("GITHUB_TOKEN = \"gh_personal\""), "existing entry lost: {raw}");
+        assert!(raw.contains("AGE = \"AGE\""), "new entry missing: {raw}");
+        WorkspaceSecrets::parse(&raw).expect("file must still parse");
+    }
+
+    #[test]
+    fn write_default_route_appends_new_section_when_none_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".plexi")).unwrap();
+        let initial = "fallback = true\n\n# [default]\n# GITHUB_TOKEN = \"gh\"\n";
+        std::fs::write(tmp.path().join(".plexi").join("secrets.toml"), initial).unwrap();
+        write_default_route(tmp.path(), "AGE", "AGE").expect("should succeed");
+        let raw = std::fs::read_to_string(tmp.path().join(".plexi").join("secrets.toml")).unwrap();
+        assert!(raw.contains("[default]"), "section missing: {raw}");
+        assert!(raw.contains("AGE = \"AGE\""), "entry missing: {raw}");
+        WorkspaceSecrets::parse(&raw).expect("file must parse");
+    }
+
+    #[test]
+    fn write_default_route_with_alias_writes_friendly_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".plexi")).unwrap();
+        write_default_route(tmp.path(), "OPENAI_API_KEY", "openai_personal")
+            .expect("should succeed");
+        let raw = std::fs::read_to_string(tmp.path().join(".plexi").join("secrets.toml")).unwrap();
+        assert!(raw.contains("OPENAI_API_KEY = \"openai_personal\""), "route wrong: {raw}");
+    }
+
+    #[test]
+    fn write_default_route_updates_existing_entry_when_alias_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".plexi")).unwrap();
+        let initial = "fallback = true\n\n[default]\nOPENAI_API_KEY = \"old_alias\"\n";
+        std::fs::write(tmp.path().join(".plexi").join("secrets.toml"), initial).unwrap();
+        write_default_route(tmp.path(), "OPENAI_API_KEY", "new_alias").expect("should succeed");
+        let raw = std::fs::read_to_string(tmp.path().join(".plexi").join("secrets.toml")).unwrap();
+        assert!(raw.contains("OPENAI_API_KEY = \"new_alias\""), "updated entry missing: {raw}");
+        assert!(!raw.contains("old_alias"), "stale entry not removed: {raw}");
+        WorkspaceSecrets::parse(&raw).expect("must parse");
+    }
+
+    #[test]
+    fn upsert_default_route_line_appends_when_no_section() {
+        let raw = "fallback = true\n";
+        let out = upsert_default_route_line(raw, "X", "x_alias");
+        assert!(out.contains("[default]"), "{out}");
+        assert!(out.contains("X = \"x_alias\""), "{out}");
+        WorkspaceSecrets::parse(&out).expect("must parse: {out}");
+    }
+
+    #[test]
+    fn upsert_default_route_line_inserts_before_next_section() {
+        let raw = "fallback = true\n\n[default]\nA = \"a\"\n\n[apps.foo]\nB = \"b\"\n";
+        let out = upsert_default_route_line(raw, "C", "c");
+        // C must appear inside [default], before [apps.foo]
+        let default_pos = out.find("[default]").unwrap();
+        let apps_pos = out.find("[apps.foo]").unwrap();
+        let c_pos = out.find("C = \"c\"").unwrap();
+        assert!(c_pos > default_pos && c_pos < apps_pos, "C not in [default]: {out}");
+        WorkspaceSecrets::parse(&out).expect("must parse");
+    }
+
+    #[test]
+    fn upsert_default_route_line_handles_inline_comment_on_section_header() {
+        let raw = "fallback = true\n\n[default] # route table\nA = \"a\"\n";
+        let out = upsert_default_route_line(raw, "B", "b_alias");
+        assert!(out.contains("B = \"b_alias\""), "entry missing: {out}");
+        assert!(out.contains("[default] # route table"), "header modified: {out}");
+        WorkspaceSecrets::parse(&out).expect("must parse");
+    }
+
+    #[test]
+    fn upsert_default_route_line_replaces_existing_entry() {
+        let raw = "fallback = true\n\n[default]\nFOO = \"old\"\nBAR = \"bar\"\n";
+        let out = upsert_default_route_line(raw, "FOO", "new");
+        assert!(out.contains("FOO = \"new\""), "replacement missing: {out}");
+        assert!(!out.contains("FOO = \"old\""), "old entry not removed: {out}");
+        assert!(out.contains("BAR = \"bar\""), "sibling entry lost: {out}");
+        WorkspaceSecrets::parse(&out).expect("must parse");
     }
 }

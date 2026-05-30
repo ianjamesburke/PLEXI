@@ -205,6 +205,12 @@ pub enum SecretCmd {
         /// Store this secret globally so it's available in all projects, not just this one
         #[arg(long)]
         global: bool,
+        /// Use a different name for the Keychain entry than the canonical env var name.
+        ///
+        /// Useful when the Keychain entry already exists under a different name.
+        /// Example: plexi secret set OPENAI_API_KEY --alias openai_personal
+        #[arg(long)]
+        alias: Option<String>,
     },
     /// Print a stored secret's value to stdout.
     ///
