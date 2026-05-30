@@ -114,9 +114,24 @@ cd "$(git rev-parse --show-toplevel)/worktrees/$BRANCH"
 coderabbit review --agent --base alpha --type committed 2>&1
 ```
 
-Gemini (diff review):
+AI diff review (Gemini with Codex fallback):
 ```bash
-gh pr diff $PR_NUMBER | gemini -p "You are reviewing a PR for PLEXI, a Rust + Python terminal multiplexer. Review this diff for bugs, correctness issues, missing error handling, or anything that would block shipping. Be concise. Start with PASS if no blockers, or BLOCKERS: followed by a bullet list if there are issues." --yolo 2>&1
+DIFF=$(gh pr diff $PR_NUMBER)
+GEMINI_PROMPT="You are reviewing a PR for PLEXI, a Rust + Python terminal multiplexer. Review this diff for bugs, correctness issues, missing error handling, or anything that would block shipping. Be concise. Start with PASS if no blockers, or BLOCKERS: followed by a bullet list if there are issues."
+GEMINI_FINDINGS=""
+for MODEL in "gemini-2.5-pro" "gemini-2.5-flash" "gemini-1.5-flash"; do
+  GEMINI_FINDINGS=$(echo "$DIFF" | gemini -p "$GEMINI_PROMPT" --yolo -m "$MODEL" 2>&1)
+  [ $? -eq 0 ] && break
+  echo "gemini: $MODEL quota exhausted, trying next..."
+  GEMINI_FINDINGS=""
+done
+if [ -z "$GEMINI_FINDINGS" ]; then
+  echo "gemini: all models exhausted — falling back to codex review"
+  CODEX_REVIEW_PROMPT="Review this PR for bugs, correctness issues, missing error handling, or anything that would block shipping. Be concise. Start with PASS if no blockers, or BLOCKERS: followed by a bullet list."
+  GEMINI_FINDINGS=$(cd "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" && \
+    codex review "$CODEX_REVIEW_PROMPT" --base alpha 2>&1 || true)
+  [ -z "$GEMINI_FINDINGS" ] && GEMINI_FINDINGS="All AI diff reviewers exhausted — skipping."
+fi
 ```
 
 Capture both outputs as `CR_FINDINGS` and `GEMINI_FINDINGS`. These are surfaced verbatim in the testing block — do not summarize or filter them.
