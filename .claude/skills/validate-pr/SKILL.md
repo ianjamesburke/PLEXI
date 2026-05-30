@@ -97,37 +97,62 @@ tail -20 ~/.plexi-pr-$PR_NUMBER/plexi.log
 
 ---
 
+## Step 2b — Automated Quality Checks
+
+**Skip gate — assess before running.** Read the diff and changed file list, then classify the PR:
+
+- **Run checks** if any changed file contains: new logic, new branches, new error paths, behavioral changes, new API surface, bug fixes, or anything systemic that could break silently.
+- **Skip checks** if ALL changes are exclusively: color/spacing/font-size constants, help/doc strings, markdown files, config TOML values, label/copy text, or UI layout values that require human eyes to verify anyway. When skipping, set `CR_FINDINGS="skipped — cosmetic/style change, user verifies visually"` and `GEMINI_FINDINGS=""`.
+
+When in doubt, run. Skipping is only correct when you are confident a human looking at the UI is the only meaningful verification.
+
+**If running — both tools in parallel from inside the feature worktree:**
+
+CodeRabbit (structured agent output):
+```bash
+cd "$(git rev-parse --show-toplevel)/worktrees/$BRANCH"
+coderabbit review --agent --base alpha --type committed 2>&1
+```
+
+Gemini (diff review):
+```bash
+gh pr diff $PR_NUMBER | gemini -p "You are reviewing a PR for PLEXI, a Rust + Python terminal multiplexer. Review this diff for bugs, correctness issues, missing error handling, or anything that would block shipping. Be concise. Start with PASS if no blockers, or BLOCKERS: followed by a bullet list if there are issues." --yolo 2>&1
+```
+
+Capture both outputs as `CR_FINDINGS` and `GEMINI_FINDINGS`. These are surfaced verbatim in the testing block — do not summarize or filter them.
+
+---
+
 ## Step 3 — Write and Surface Testing Block
 
 **Spec gate:** Re-read the issue's Done When checklist before writing. Pass criteria map 1:1 to checklist items. No extra criteria.
 
-**Check for existing POC app:** scan `apps/` and `apps/dev/` in the feature worktree. If one exists, use it.
-
-**If more than one command, or copy-paste across panes is awkward:** write a `test_pr<N>.py` at the repo root instead of a markdown block.
-
-```python
-import subprocess, json, sys
-CLI = "/usr/local/bin/plexi-pr-<N>"  # full path required
-PASS = "\033[32mPASS\033[0m"; FAIL = "\033[31mFAIL\033[0m"
-failures = []
-def check(label, ok, detail=""):
-    if ok: print(f"  {PASS}  {label}")
-    else: print(f"  {FAIL}  {label}{': ' + detail if detail else ''}"); failures.append(label)
-# ... checks ...
-subprocess.run([CLI, "notify", "--title", "Test result", "--body", "PASS" if not failures else "FAIL"])
-if failures: sys.exit(1)
+**Fetch issue brief:**
+```bash
+ISSUE_TITLE=$(gh issue view $ISSUE_NUMBER --json title --jq '.title')
+ISSUE_WHAT=$(gh issue view $ISSUE_NUMBER --json body --jq '.body' \
+  | sed '/^---$/,/^---$/d' \
+  | grep -v '^#' \
+  | grep -v '^$' \
+  | head -3)
 ```
+This is the one-line context shown at the top of every testing block so the reviewer knows exactly what they're evaluating.
 
 **Surface testing block format:**
 ```
 [TESTING] PR #<n> — <title> (attempt <attempt+1>/3)
 PR: <pr-url>
 
-Instructions:
-1. <exact step>
-2. <exact step>
+Issue #<issue-number>: <ISSUE_TITLE>
+What this ships: <ISSUE_WHAT — first non-header paragraph from issue body>
 
-Pass criteria:
+CodeRabbit:
+<CR_FINDINGS verbatim, or "No findings.">
+
+Gemini:
+<GEMINI_FINDINGS verbatim>
+
+Pass criteria (from Done When):
 - <concrete observable outcome>
 
 Fail criteria:
@@ -141,8 +166,8 @@ Reply: "pass" | "fail: <description>" | "modify: <bounded change>"
 # Route reply to PM pane if PM dispatched this skill, otherwise this pane
 REPLY_PANE="${PM_PANE_ID:-$PLEXI_PANE_ID}"
 RESULT=$(plexi notify \
-  --title "PR #<n> ready to test (attempt $((ATTEMPT_COUNT+1))/3)" \
-  --body "<title>. Reply pass/fail/modify in pane." \
+  --title "PR #<n> quality checks done (attempt $((ATTEMPT_COUNT+1))/3)" \
+  --body "<title>. Review CodeRabbit + Gemini findings above, then reply pass/fail/modify." \
   --choice "a:Talk to Claude:pane_focus:$REPLY_PANE" \
   --choice "b:Open PR build" \
   --choice "c:Open PR")
@@ -313,12 +338,22 @@ Issue re-labeled ready for next attempt
 
 ## Diff-Review Testing Block (no install)
 
+Still run Step 2b (automated quality checks) even when install is skipped. Then surface:
+
 ```
 [TESTING] PR #<n> — <title> (diff review only)
+PR: <pr-url>
+
+Issue #<issue-number>: <ISSUE_TITLE>
+What this ships: <ISSUE_WHAT — first non-header paragraph from issue body>
 
 No binary install needed for this change.
 
-Review the diff: <pr-url>
+CodeRabbit:
+<CR_FINDINGS verbatim, or "No findings.">
+
+Gemini:
+<GEMINI_FINDINGS verbatim>
 
 Pass criteria:
 - <observable change visible in diff>
@@ -333,6 +368,10 @@ Reply: "pass" | "fail: <description>" | "modify: <change>"
 
 ## Rules
 
+- Step 2b quality checks (coderabbit + gemini) run unless the PR is exclusively cosmetic/style — assess the diff, then decide
+- Cosmetic = colors, spacing, font sizes, help strings, markdown, config values, UI copy — anything where human visual verification is the only meaningful check
+- CR_FINDINGS and GEMINI_FINDINGS are always shown verbatim — never summarized or filtered
+- Issue brief (ISSUE_TITLE + ISSUE_WHAT) must appear at the top of every testing block
 - `fail` without description: ask for it before taking any action
 - `modify` is only valid if pass criteria not yet met
 - Attempt count comes from the Ship Log, not arguments
