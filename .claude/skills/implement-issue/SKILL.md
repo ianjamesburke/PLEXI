@@ -161,10 +161,12 @@ Before writing code, produce a tight implementation spec.
   ```bash
   # Single issue:
   gh issue view <number> --json title,body,labels
-  # Bundle — run simultaneously:
-  gh issue view <n1> --json title,body,labels &
-  gh issue view <n2> --json title,body,labels &
+  # Bundle — run simultaneously, redirect to temp files to prevent stdout interleaving:
+  gh issue view <n1> --json title,body,labels > /tmp/issue_n1.json &
+  gh issue view <n2> --json title,body,labels > /tmp/issue_n2.json &
   wait
+  cat /tmp/issue_n1.json /tmp/issue_n2.json
+  rm /tmp/issue_n1.json /tmp/issue_n2.json
   ```
 - Source files for this change (see Implementation Map below)
 
@@ -247,16 +249,14 @@ git -C worktrees/<branch> push -u origin HEAD
 
 **Bundle mode:** branch name `feature/bundle-<n1>-<n2>`, implement and commit issues sequentially so each commit is independently bisectable:
 
-1. Implement issue N1 changes, then:
+1. For each issue (N1, N2, ...), implement changes and commit individually:
    ```bash
    git -C worktrees/<branch> add <files>
-   git -C worktrees/<branch> commit -m "fix/feat: <n1 description> (#<n1>)"
+   git -C worktrees/<branch> commit -m "fix/feat: <issue description> (#<issue_number>)"
    ```
-2. Write Ship Log entry to issue N1 body immediately after its commit (see Ship Log Format).
-3. Repeat for each remaining issue (N2, N3, ...) — one commit per issue.
-4. Push all commits: `git -C worktrees/<branch> push -u origin HEAD`
-5. After pushing, write Ship Log entries for any issues not yet logged.
-6. Set Pipeline Labels on ALL N issues (see Pipeline Labels).
+2. Push all commits: `git -C worktrees/<branch> push -u origin HEAD`
+3. After pushing, write a Ship Log entry to **each** issue body (see Ship Log Format).
+4. Set Pipeline Labels on ALL N issues (see Pipeline Labels).
 
 ---
 

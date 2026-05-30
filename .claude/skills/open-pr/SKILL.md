@@ -50,10 +50,12 @@ Must be a `feature/` or `fix/` branch. Fail if on `alpha`, `beta`, or `main`.
 ```bash
 # Single issue:
 gh issue view <number> --json title,body,labels --jq '{title: .title, body: .body}'
-# Bundle — fetch all N in parallel:
-gh issue view <n1> --json title,body,labels --jq '{title: .title, body: .body}' &
-gh issue view <n2> --json title,body,labels --jq '{title: .title, body: .body}' &
+# Bundle — fetch all N in parallel, redirect to temp files to prevent stdout interleaving:
+gh issue view <n1> --json title,body,labels --jq '{title: .title, body: .body}' > /tmp/issue_n1.json &
+gh issue view <n2> --json title,body,labels --jq '{title: .title, body: .body}' > /tmp/issue_n2.json &
 wait
+cat /tmp/issue_n1.json /tmp/issue_n2.json
+rm /tmp/issue_n1.json /tmp/issue_n2.json
 ```
 
 ---
