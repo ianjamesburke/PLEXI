@@ -46,9 +46,14 @@ Must be a `feature/` or `fix/` branch. Fail if on `alpha`, `beta`, or `main`.
 - `feature/<number>-...` → issue number is the first segment after `feature/`
 - Bundle: `feature/bundle-<n1>-<n2>-...` → multiple issue numbers
 
-**Fetch issue for PR body:**
+**Fetch issue(s) for PR body:**
 ```bash
+# Single issue:
 gh issue view <number> --json title,body,labels --jq '{title: .title, body: .body}'
+# Bundle — fetch all N in parallel:
+gh issue view <n1> --json title,body,labels --jq '{title: .title, body: .body}' &
+gh issue view <n2> --json title,body,labels --jq '{title: .title, body: .body}' &
+wait
 ```
 
 ---
@@ -64,7 +69,9 @@ if echo "$ISSUE_LABELS" | grep -q "bundle"; then
 fi
 ```
 
-**PR body — lightweight path:** When `LIGHTWEIGHT=true`, add the CodeRabbit ignore directive and a minimal body:
+**PR body — lightweight path:** When `LIGHTWEIGHT=true`, add the CodeRabbit ignore directive and a minimal body.
+
+For a **single issue**:
 ```bash
 PR_URL=$(gh pr create \
   --base alpha \
@@ -81,7 +88,28 @@ EOF
 )")
 ```
 
-**PR body — standard path:** Full body with Done When and Notes:
+For a **bundle** (`feature/bundle-<n1>-<n2>-...`):
+```bash
+PR_URL=$(gh pr create \
+  --base alpha \
+  --head <branch> \
+  --title "<short summary> (#<n1>, #<n2>)" \
+  --body "$(cat <<'EOF'
+<!-- coderabbitai:ignore -->
+Closes #<n1>, Closes #<n2>
+
+## Summary
+
+**#<n1> — <issue-n1-title>**
+- <bullet summarizing n1 change>
+
+**#<n2> — <issue-n2-title>**
+- <bullet summarizing n2 change>
+EOF
+)")
+```
+
+**PR body — standard path:** Full body with Done When and Notes. For bundles, repeat Closes and Done When for each issue:
 ```bash
 PR_URL=$(gh pr create \
   --base alpha \
@@ -103,21 +131,27 @@ Closes #<number>
 <any non-obvious implementation decisions or gotchas>
 EOF
 )")
+# Bundle standard path — one Closes per issue, one Done When block per issue:
+# Closes #<n1>, Closes #<n2>
+# ## Done When — #<n1>
+# <checklist>
+# ## Done When — #<n2>
+# <checklist>
 PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
 ```
 
-Update pipeline label:
+Update pipeline label on **each** issue in the bundle (or the single issue):
 ```bash
-gh issue edit <number> --add-label "in progress" --remove-label "pipeline:implement" --add-label "pipeline:open-pr" 2>/dev/null || true
+# Repeat for each issue number N:
+gh issue edit <N> --add-label "in progress" --remove-label "pipeline:implement" --add-label "pipeline:open-pr" 2>/dev/null || true
 ```
 
-Update project board to "In Review":
+Update project board to "In Review" for **each** issue in the bundle:
 ```bash
-_PROJ_ITEM=$(gh api graphql -f query='query($n:Int!){repository(owner:"ianjamesburke",name:"PLEXI"){issue(number:$n){projectItems(first:5){nodes{id project{id}}}}}}' -F n=<number> --jq '.data.repository.issue.projectItems.nodes[]|select(.project.id=="PVT_kwHOAkOgys4BXaQY")|.id')
+# Repeat for each issue number N:
+_PROJ_ITEM=$(gh api graphql -f query='query($n:Int!){repository(owner:"ianjamesburke",name:"PLEXI"){issue(number:$n){projectItems(first:5){nodes{id project{id}}}}}}' -F n=<N> --jq '.data.repository.issue.projectItems.nodes[]|select(.project.id=="PVT_kwHOAkOgys4BXaQY")|.id')
 [ -n "$_PROJ_ITEM" ] && gh api graphql -f query='mutation($i:ID!,$v:String!){updateProjectV2ItemFieldValue(input:{projectId:"PVT_kwHOAkOgys4BXaQY",itemId:$i,fieldId:"PVTSSF_lAHOAkOgys4BXaQYzhSnRw8",value:{singleSelectOptionId:$v}}){projectV2Item{id}}}' -f i="$_PROJ_ITEM" -f v="f1399a59" > /dev/null
 ```
-
-**Bundle mode:** PR title `<summary> (#<n1>, #<n2>[, ...])`. Body lists each issue's Done When separately.
 
 ---
 
@@ -200,7 +234,7 @@ Net: <N> fix(es) committed | no changes needed
 
 ## Ship Log Append
 
-Append to the issue's `## Ship Log` section:
+Append to the `## Ship Log` section in **each** issue's body (all N issues in bundle mode, the single issue otherwise):
 
 ```markdown
 **PR:** #<pr-number> — <pr-url>
@@ -208,26 +242,28 @@ Append to the issue's `## Ship Log` section:
 ```
 
 ```bash
-CURRENT_BODY=$(gh issue view <number> --json body --jq '.body')
+# Repeat for each issue number N:
+CURRENT_BODY=$(gh issue view <N> --json body --jq '.body')
 # Append the PR line to the most recent Ship Log entry
-gh issue edit <number> --body "<updated body>"
+gh issue edit <N> --body "<updated body>"
 ```
 
 ---
 
 ## Pipeline Labels
 
-After writing the Ship Log, set pipeline state:
+After writing the Ship Log, set pipeline state on **every** issue in the bundle (or the single issue):
 
 ```bash
-gh issue edit <number> \
+# Repeat for each issue number N:
+gh issue edit <N> \
   --add-label "pipeline:validate" \
   --add-label "ready" \
   --remove-label "pipeline:open-pr" \
   --remove-label "in progress"
 ```
 
-After setting labels, invoke `/validate-pr <pr-number>` inline in the same pane — do not spawn a new pane or wait for PM to dispatch.
+After setting labels on all issues, invoke `/validate-pr <pr-number>` inline in the same pane — do not spawn a new pane or wait for PM to dispatch.
 
 ---
 

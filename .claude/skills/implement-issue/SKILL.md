@@ -157,7 +157,15 @@ If mismatch: delete worktree and branch, redo.
 Before writing code, produce a tight implementation spec.
 
 **Read in parallel:**
-- Full issue body: `gh issue view <number> --json title,body,labels`
+- Full issue body (or all N bodies in bundle mode):
+  ```bash
+  # Single issue:
+  gh issue view <number> --json title,body,labels
+  # Bundle — run simultaneously:
+  gh issue view <n1> --json title,body,labels &
+  gh issue view <n2> --json title,body,labels &
+  wait
+  ```
 - Source files for this change (see Implementation Map below)
 
 **Implementation Map — verify, then trust.** If the issue body has an `## Implementation Map` section, it lists the exact files to touch (written by `/create-issue` during its codebase research). Do NOT re-run the broad grep/discovery sweep. Instead:
@@ -237,13 +245,24 @@ git -C worktrees/<branch> commit -m "<message>"
 git -C worktrees/<branch> push -u origin HEAD
 ```
 
-**Bundle mode:** branch name `feature/bundle-<n1>-<n2>`, implement all issues before pushing.
+**Bundle mode:** branch name `feature/bundle-<n1>-<n2>`, implement and commit issues sequentially so each commit is independently bisectable:
+
+1. Implement issue N1 changes, then:
+   ```bash
+   git -C worktrees/<branch> add <files>
+   git -C worktrees/<branch> commit -m "fix/feat: <n1 description> (#<n1>)"
+   ```
+2. Write Ship Log entry to issue N1 body immediately after its commit (see Ship Log Format).
+3. Repeat for each remaining issue (N2, N3, ...) — one commit per issue.
+4. Push all commits: `git -C worktrees/<branch> push -u origin HEAD`
+5. After pushing, write Ship Log entries for any issues not yet logged.
+6. Set Pipeline Labels on ALL N issues (see Pipeline Labels).
 
 ---
 
 ## Ship Log Format
 
-After pushing, append this section to the issue body. If a `## Ship Log` section already exists (prior attempt), append a new entry under it. If not, add the section.
+After pushing, append this section to the issue body. In bundle mode, write a Ship Log entry to **each** issue body. If a `## Ship Log` section already exists (prior attempt), append a new entry under it. If not, add the section.
 
 ```markdown
 ## Ship Log
@@ -272,17 +291,18 @@ gh issue edit <number> --body "$NEW_BODY"
 
 ## Pipeline Labels
 
-After pushing and writing the Ship Log, set pipeline state:
+After pushing and writing the Ship Log, set pipeline state on **every** issue in the bundle (or the single issue in single-issue mode):
 
 ```bash
-gh issue edit <number> \
+# Repeat for each issue number N:
+gh issue edit <N> \
   --add-label "pipeline:open-pr" \
   --add-label "ready" \
   --remove-label "pipeline:implement" \
   --remove-label "in progress"
 ```
 
-After setting labels, invoke `/open-pr` inline in the same pane — do not spawn a new pane or wait for PM to dispatch.
+After setting labels on all issues, invoke `/open-pr` inline in the same pane — do not spawn a new pane or wait for PM to dispatch.
 
 ---
 
