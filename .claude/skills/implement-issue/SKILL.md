@@ -97,6 +97,11 @@ Then: `git pull --rebase origin alpha`
 gh issue view <number> --json state,title,labels --jq '{state: .state, title: .title, labels: [.labels[].name]}'
 ```
 
+**Output this immediately after fetching — before any other work:**
+```
+ISSUE #<n>: <title>
+```
+
 If `CLOSED`: stop. "Issue #<n> is already closed — nothing to do."
 
 If labeled `in progress`: surface existing worktree + PR before proceeding. Ask for takeover confirmation — do not proceed until user confirms.
