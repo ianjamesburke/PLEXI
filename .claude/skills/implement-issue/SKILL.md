@@ -158,7 +158,19 @@ Before writing code, produce a tight implementation spec.
 
 **Read in parallel:**
 - Full issue body: `gh issue view <number> --json title,body,labels`
-- Relevant source files (grep for affected modules, then read them)
+- Source files for this change (see Implementation Map below)
+
+**Implementation Map — verify, then trust.** If the issue body has an `## Implementation Map` section, it lists the exact files to touch (written by `/create-issue` during its codebase research). Do NOT re-run the broad grep/discovery sweep. Instead:
+
+1. Cheap existence check — one batched pass confirming each mapped path still exists and each named symbol is still present:
+   ```bash
+   git -C worktrees/<branch> ls-files <path1> <path2> ...
+   grep -rn "<fn1>\|<fn2>" worktrees/<branch>/<mapped-files>
+   ```
+2. Every path/symbol resolves → read ONLY the mapped files. Common case; skips discovery entirely.
+3. A path is missing, a symbol moved, or the map is absent → the issue drifted since filing. Fall back to full discovery (grep affected modules, then read) for the unresolved parts only, and note "Map stale: <what moved>" in the spec.
+
+The map is a hint that survived a staleness check — never blindly trusted, never fully re-discovered when it holds.
 
 **Grep GOTCHAS.md and DEV_LOG.md (required):**
 ```bash
