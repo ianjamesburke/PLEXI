@@ -589,7 +589,7 @@ class RenderContext:
                                  content_height=100 * ROW_H)
                 for i, item in enumerate(self.items):
                     y = i * ROW_H - self.scroll_y
-                    ctx.text(8, y, item, size=14, color=theme.fg)
+                    ctx.text(8, y, item, size=14, color=ctx.theme.fg)
                 ctx.end_scroll()
         """
         self._queue({"type": "begin_scroll", "id": id, "x": x, "y": y,

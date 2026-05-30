@@ -957,7 +957,7 @@ class Card(Component):
     padding: float = SPACE_LG
     gap: float = SPACE_XS
     background: "str | None" = None
-    border: Optional[str] = None
+    border: Optional[str] = "__theme__"
     radius: float = RADIUS_MD
 
     def __post_init__(self):
@@ -982,13 +982,14 @@ class Card(Component):
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         ctx.rect(x, y, w, h, self.background or theme.surface, radius=self.radius)
-        if self.border:
+        border_color = theme.highlight if self.border == "__theme__" else self.border
+        if border_color:
             # Top + bottom + left + right 1px strokes. Drawn as four thin
             # rects because `ctx.rect` doesn't support a separate stroke.
-            ctx.rect(x, y, w, 1.0, self.border)
-            ctx.rect(x, y + h - 1.0, w, 1.0, self.border)
-            ctx.rect(x, y, 1.0, h, self.border)
-            ctx.rect(x + w - 1.0, y, 1.0, h, self.border)
+            ctx.rect(x, y, w, 1.0, border_color)
+            ctx.rect(x, y + h - 1.0, w, 1.0, border_color)
+            ctx.rect(x, y, 1.0, h, border_color)
+            ctx.rect(x + w - 1.0, y, 1.0, h, border_color)
         inner_x = x + self.padding
         inner_y = y + self.padding
         inner_w = w - 2 * self.padding
@@ -1444,7 +1445,7 @@ class ButtonRow(Component):
             label=self.label,
             fill=self.fill or theme.surface,
             hover_fill=self.hover_fill or theme.highlight,
-            active_fill=self.active_fill,
+            active_fill=self.active_fill or theme.text_section,
             text_color=self.text_color or theme.accent,
             font_size=self.font_size,
             radius=self.radius,
