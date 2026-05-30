@@ -286,6 +286,7 @@ On each re-entry after initial dispatch, lead with:
 - **Pane census uses `.title`, not `.name`.** `.name` returns null — always use `jq -r '.[].title // ""'`.
 - **Always use `--from-cursor` on repeat pane captures.** `plexi pane capture --from-cursor <N> <ID>` reads only lines written since the last check. Store cursors in `.claude/agent-memory/project-manager/pane-cursors.json`, keyed by pane ID. `lines: []` + `missed: false` = no new output.
 - **Close noop panes immediately.** If an agent exits without doing real work, `pane close` right away and free the slot.
+- **Bare-shell pane recovery.** If a dispatch pane shows a prompt with no agent running ("← for agents"), re-send the command: `$PLEXI pane send <ID> 'c "/ship-issue <N>"\n'` — use `\n` for Enter, never a trailing `Enter` argument.
 - **Bundle issues should be batched.** Issues labeled `bundle` are micro-changes. Group by primary area and send all same-area bundles to one lane in one PR. Never open one PR per bundle issue.
 - **Post-merge cleanup runs every cycle.** Check merged PRs for still-open linked issues and close them automatically.
 - **Auto-push alpha before dispatch.** open-lanes.sh aborts on unpushed commits — push first.
