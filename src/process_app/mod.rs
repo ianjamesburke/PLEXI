@@ -429,25 +429,11 @@ impl ProcessApp {
             }
         }
 
-        // Make the shared Plexi SDK importable by Python apps without per-app copies.
-        // Priority: user's local SDK (~/.plexi-alpha/sdk/) first, then the copy
-        // bundled inside the .app bundle (Contents/Resources/sdk/python/). The bundle path
-        // ensures apps work on a fresh install where just install-alpha was never run.
-        let sdk_dir = crate::config::config_dir().join("sdk");
-        let mut pythonpath = sdk_dir.to_string_lossy().into_owned();
-        if let Some(bundle_sdk) = bundle_contents
-            .map(|p| p.join("Resources").join("sdk").join("python"))
-            .filter(|p| p.exists())
-        {
-            pythonpath.push(':');
-            pythonpath.push_str(&bundle_sdk.to_string_lossy());
-        }
-        // Dev override: PLEXI_SDK_PATH wins over the embedded/bundled SDK so the
-        // worktree SDK can be iterated live without a rebuild (see config::sdk_path_override).
-        if let Some(dev_sdk) = crate::config::sdk_path_override() {
-            pythonpath = format!("{}:{}", dev_sdk.to_string_lossy(), pythonpath);
-            log::info!("process_app[{type_id}]: PLEXI_SDK_PATH override active -> {}", dev_sdk.display());
-        }
+        let bundle_sdk = bundle_contents
+            .as_ref()
+            .map(|p| p.join("Resources").join("sdk").join("python"));
+        let pythonpath = crate::config::build_pythonpath(bundle_sdk.as_deref());
+        log::info!("process_app[{type_id}]: PYTHONPATH={pythonpath}");
 
         // Static capability validation — runs before the real spawn.
         // For Python apps only; non-Python apps skip. Subprocess failures log warn and proceed.

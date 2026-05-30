@@ -54,23 +54,11 @@ fn spawn_and_collect_frame(
             cmd.env(k, v);
         }
     }
-    // PYTHONPATH: dev override (PLEXI_SDK_PATH) first, then config-dir SDK,
-    // then bundle SDK if present.
-    let sdk_dir = crate::config::config_dir().join("sdk");
-    let mut pythonpath = sdk_dir.to_string_lossy().into_owned();
-    if let Some(dev_sdk) = crate::config::sdk_path_override() {
-        pythonpath = format!("{}:{}", dev_sdk.to_string_lossy(), pythonpath);
-        log::info!("app_render[{app_id}]: PLEXI_SDK_PATH override active -> {}", dev_sdk.display());
-    }
     let bundle_sdk = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()))
-        .map(|p| p.join("Resources").join("sdk").join("python"))
-        .filter(|p| p.exists());
-    if let Some(bsdk) = bundle_sdk {
-        pythonpath.push(':');
-        pythonpath.push_str(&bsdk.to_string_lossy());
-    }
+        .map(|p| p.join("Resources").join("sdk").join("python"));
+    let pythonpath = crate::config::build_pythonpath(bundle_sdk.as_deref());
     cmd.env("PYTHONPATH", &pythonpath);
     log::info!("app_render[{app_id}]: PYTHONPATH={pythonpath}");
 
