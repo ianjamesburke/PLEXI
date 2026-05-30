@@ -6,7 +6,8 @@ import sys
 import time
 from typing import TYPE_CHECKING, Any
 
-from ._constants import FG, BG, ACCENT, BODY
+from ._constants import BODY
+from ._theme import theme as _sdk_theme
 from ._emitter import _emit, _LOCK
 
 if TYPE_CHECKING:
@@ -37,6 +38,7 @@ class RenderContext:
         # ctx.theme.<role>, e.g. ctx.theme.accent / ctx.theme.bg / ctx.theme.danger.
         from ._theme import theme as _theme
         self.theme = _theme
+        self.colors = _theme
         self._app = app
         self.emit: "Emitter" = app.emit
         # Seconds elapsed since the previous on_render call. 0.0 on first frame.
@@ -205,7 +207,7 @@ class RenderContext:
         _emit({"type": "copy_to_clipboard", "text": text})
 
     def badge(self, x: float, y_center: float, label: str,
-              fill: str = ACCENT, fg: str = BG,
+              fill: "str | None" = None, fg: "str | None" = None,
               font_size: float = 11.0, radius: float = 6.0) -> None:
         """Render a host-measured pill badge.
 
@@ -221,7 +223,7 @@ class RenderContext:
         `radius`   — corner radius (8.0 = fully rounded pill; 4.0 = tag chip).
         """
         self._queue({"type": "badge", "x": x, "y": y_center, "label": label,
-                     "fill": fill, "fg": fg, "font_size": font_size, "radius": radius})
+                     "fill": fill or _sdk_theme.accent, "fg": fg or _sdk_theme.bg, "font_size": font_size, "radius": radius})
 
     def button(self, id: str, x: float, y: float, w: float, h: float,
                label: str,
@@ -286,7 +288,7 @@ class RenderContext:
         `x`, `y`    — origin of the text row.
         `items`     — list of text segment dicts, each with keys:
                       - `text`      — string to display (required)
-                      - `color`     — color string (default: FG)
+                      - `color`     — color string (default: theme.fg)
                       - `size`      — font size in pt (default: BODY)
                       - `monospace` — bool (default: False)
         `gap`       — spacing between items in pixels (default: 8.0).
@@ -299,7 +301,7 @@ class RenderContext:
                 x=24.0, y=200.0,
                 items=[
                     {"text": "12:34:56", "color": "#6c7086", "size": CAPTION, "monospace": True},
-                    {"text": "key pressed", "color": FG, "size": CAPTION},
+                    {"text": "key pressed", "size": CAPTION},
                 ],
                 gap=12.0,
             )
@@ -311,7 +313,7 @@ class RenderContext:
                 raise ValueError("Each item in text_row must be a dict with 'text' key")
             wire_items.append({
                 "text": item["text"],
-                "color": item.get("color", FG),
+                "color": item.get("color") or _sdk_theme.fg,
                 "size": item.get("size", BODY),
                 "monospace": item.get("monospace", False),
             })
@@ -587,7 +589,7 @@ class RenderContext:
                                  content_height=100 * ROW_H)
                 for i, item in enumerate(self.items):
                     y = i * ROW_H - self.scroll_y
-                    ctx.text(8, y, item, size=14, color=FG)
+                    ctx.text(8, y, item, size=14, color=theme.fg)
                 ctx.end_scroll()
         """
         self._queue({"type": "begin_scroll", "id": id, "x": x, "y": y,
@@ -845,12 +847,12 @@ class RenderContext:
 
     # ── Declarative layout ──────────────────────────────────────────────────────
 
-    def badge_child(self, label: str, fill: str = "#89b4fa", fg: str = "#1e1e2e",
+    def badge_child(self, label: str, fill: "str | None" = None, fg: "str | None" = None,
                     font_size: float = 11.0, radius: float = 8.0) -> dict:
         """Return a layout child node for a Badge. Use inside ctx.row/column/stack."""
         return {"type": "leaf", "command": {
             "type": "badge", "x": 0.0, "y": 0.0,
-            "label": label, "fill": fill, "fg": fg,
+            "label": label, "fill": fill or _sdk_theme.accent, "fg": fg or _sdk_theme.bg,
             "font_size": font_size, "radius": radius,
         }}
 

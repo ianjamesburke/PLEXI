@@ -7,7 +7,7 @@ import sys
 from typing import Any, Coroutine
 
 from ._protocol import PROTOCOL_VERSION
-from ._constants import _SDK_VERSION, BG as _DEFAULT_BG
+from ._constants import _SDK_VERSION
 from ._emitter import Emitter, _emit, _sync_hook_scope
 from ._pipe import Pipe
 from ._render_context import RenderContext
@@ -149,7 +149,8 @@ class App:
 
     # Background color applied automatically before each on_render call.
     # Set to None to disable the default background and manage clearing manually.
-    default_background: "str | None" = _DEFAULT_BG
+    # "__theme__" (default) resolves to ctx.theme.bg at render time.
+    default_background: "str | None" = "__theme__"
 
     def __init__(self) -> None:
         self._sdk_initialized: bool = True
@@ -939,7 +940,8 @@ class App:
                     self._click_buf.clear()
                     ctx = self._make_ctx(frame_id, elapsed=elapsed, clicks=pending_clicks)
                     if self.default_background is not None:
-                        ctx.clear(self.default_background)
+                        bg = ctx.theme.bg if self.default_background == "__theme__" else self.default_background
+                        ctx.clear(bg)
                     try:
                         await self._dispatch_hook(self.on_render, ctx)
                         self._consecutive_render_errors = 0
@@ -1071,6 +1073,10 @@ class App:
                         await self._dispatch_hook(self.on_scroll_delta, ctx, delta_y)
                     except Exception as e:
                         sys.stderr.write(f"on_scroll_delta handler raised: {e}\n")
+
+                elif t == "theme":
+                    from ._theme import theme as _theme
+                    _theme.update_from(ev.get("colors"))
 
                 elif t == "list_select":
                     _lid = ev.get("id")

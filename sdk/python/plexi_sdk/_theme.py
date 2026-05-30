@@ -2,7 +2,7 @@
 
 Populated from the host ``Init`` payload so app-drawn chrome tracks the host
 theme (light/dark + user ``[theme]`` overrides in ``config.toml``). Until ``Init``
-arrives the attributes hold the built-in Catppuccin Mocha dark defaults, so apps
+arrives the attributes hold the built-in dark defaults, so apps
 and ``ui.py`` components still render correctly pre-handshake.
 
 The module exposes a single process-wide instance, ``theme``, which is mutated
@@ -17,7 +17,7 @@ SDK-semantic names (``bg``/``surface``/``muted``/...) and ANSI aliases
 from __future__ import annotations
 
 
-# Catppuccin Mocha dark defaults — used before Init and as fallback when the
+# Built-in dark defaults — used before Init and as fallback when the
 # host sends an empty/partial theme map.
 _DEFAULTS = {
     "bg": "#1e1e2e",
@@ -28,7 +28,7 @@ _DEFAULTS = {
     "fg": "#cdd6f4",
     "muted": "#6c7086",
     "text_section": "#585b70",
-    "accent": "#89b4fa",
+    "accent": "#7aa2f7",
     "danger": "#f38ba8",
     "red": "#f38ba8",
     "success": "#a6e3a1",

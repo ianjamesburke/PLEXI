@@ -8,7 +8,7 @@ Zero dependencies, pure stdlib.
 QUICK START
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    from plexi_sdk import App, BG, FG, BODY, ACCENT
+    from plexi_sdk import App, BODY
 
     class CounterApp(App):
         async def on_init(self, ctx):
@@ -24,9 +24,9 @@ QUICK START
             # Pure-sync render hooks work unchanged — no await needed here.
             # ctx.w / ctx.h are the current pane dimensions.
             # ctx.elapsed is seconds since the previous render (0.0 on first frame).
-            ctx.clear(BG)
+            ctx.clear(ctx.theme.bg)
             ctx.rect(20, 20, ctx.w - 40, 60, fill="#313244", radius=8.0)
-            ctx.text(36, 42, f"Count: {self.count}", size=BODY, color=FG)
+            ctx.text(36, 42, f"Count: {self.count}", size=BODY, color=ctx.theme.fg)
             ctx.text(36, 72, "Press +/- to change  •  q to quit", size=12.0, color="#6c7086")
 
         def on_key(self, ctx, key, mods):
@@ -124,16 +124,12 @@ Layout (float, pixels):
   HEADER_H   = 48.0   — standard header bar height
   STATUS_H   = 44.0   — status bar height
 
-Colors (hex strings, Catppuccin Mocha):
-  BG        = "#1e1e2e"   — main background
-  SURFACE   = "#313244"   — elevated surface / card
-  HIGHLIGHT = "#45475a"   — hover / selection highlight
-  ACCENT    = "#89b4fa"   — primary accent (blue)
-  MUTED     = "#6c7086"   — muted / disabled text
-  FG        = "#cdd6f4"   — primary foreground text
-  RED       = "#f38ba8"   — error / destructive
-  GREEN     = "#a6e3a1"   — success / positive
-  YELLOW    = "#f9e2af"   — warning / caution
+Colors:
+  Colors come from the host theme. Use ctx.theme.<role> or ctx.colors.<role>:
+    ctx.theme.bg, ctx.theme.accent, ctx.theme.fg, ctx.theme.muted,
+    ctx.theme.surface, ctx.theme.highlight, ctx.theme.border,
+    ctx.theme.danger, ctx.theme.success, ctx.theme.warning
+  The theme is auto-updated on config hot-reload and macOS appearance change.
 
 Color helpers:
   rgba(r, g, b, a=255) -> str  — build an 8-digit hex string #rrggbbaa
@@ -462,7 +458,6 @@ SDK_ID = f"plexi-sdk-py/{__version__}"
 from ._constants import (
     TITLE, HEADING, BODY, CAPTION, HINT, MONO_BODY, MONO_SMALL,
     PAD, PAD_TIGHT, HEADER_H, STATUS_H,
-    BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, RED, GREEN, YELLOW,
     PRIORITY_LOW, PRIORITY_NORMAL, PRIORITY_HIGH, PRIORITY_CRITICAL,
     rgba, dim,
 )
