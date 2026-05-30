@@ -68,21 +68,8 @@ RADIUS_LG = 12.0
 # Keep in sync with src/style.rs RADIUS_BADGE and _render_context.py badge().
 RADIUS_BADGE = 6.0
 
-# Palette — matches the Python-side constants from plexi_sdk/__init__.py.
-# Re-exported here so UI code doesn't have to import both.
-BG = "#1e1e2e"
-SURFACE = "#313244"
-HIGHLIGHT = "#45475a"
-ACCENT = "#89b4fa"
-MUTED = "#6c7086"
-FG = "#cdd6f4"
-RED = "#f38ba8"
-GREEN = "#a6e3a1"
-YELLOW = "#f9e2af"
-
-# Live host theme — populated from the Init payload (light/dark + user
-# overrides). Components read `theme.<role>` at render time so they track the
-# active theme; the constants above remain as pre-Init / fallback defaults.
+# Live host theme — populated from the Init payload (light/dark + user overrides).
+# Components read theme.<role> at render time so they track the active theme.
 from ._theme import theme
 
 # ── Utilities ──────────────────────────────────────────────────────────────
@@ -223,7 +210,7 @@ class Heading(Component):
     """
     text: str
     level: int = 1
-    color: str = FG
+    color: "str | None" = None
     bold: bool = True
 
     DESCENDER_PAD = 3.0
@@ -240,7 +227,7 @@ class Heading(Component):
 
     def render(self, ctx, x: float, y: float, w: float, _h: float) -> None:
         fs = self._font_size()
-        ctx.text(x, y, self.text, size=fs, color=self.color, bold=self.bold,
+        ctx.text(x, y, self.text, size=fs, color=self.color or theme.fg, bold=self.bold,
                  max_width=w, elide=True)
 
 
@@ -321,7 +308,7 @@ class Spacer(Component):
 @dataclass
 class Divider(Component):
     """A horizontal 1px rule."""
-    color: str = HIGHLIGHT
+    color: "str | None" = None
     margin_top: float = SPACE_SM
     margin_bottom: float = SPACE_SM
 
@@ -329,7 +316,7 @@ class Divider(Component):
         return 1.0 + self.margin_top + self.margin_bottom
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        ctx.rect(x, y + self.margin_top, w, 1.0, self.color)
+        ctx.rect(x, y + self.margin_top, w, 1.0, self.color or theme.highlight)
 
 
 @dataclass
@@ -462,14 +449,14 @@ class ScrollLog(Component):
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         if not self.lines:
             ctx.text(x, y, self.empty_text,
-                     size=self.line_size, color=MUTED)
+                     size=self.line_size, color=theme.muted)
             return
         line_h = self.line_size + 4.0
         visible = max(1, int(h / line_h))
         recent = list(reversed(self.lines[-visible:]))
         for i, line in enumerate(recent):
             ctx.text(x, y + i * line_h, line,
-                     size=self.line_size, color=FG, monospace=True,
+                     size=self.line_size, color=theme.fg, monospace=True,
                      max_width=w, elide=True)
 
 
@@ -649,7 +636,7 @@ class Footer(Component):
     """Small caption row. Wraps instead of clipping. The parent `Column`
     provides the outer bottom padding, so no extra padding is needed here."""
     text: str
-    color: str = MUTED
+    color: "str | None" = None
     max_lines: int = 2
 
     TOP_GAP = SPACE_MD
@@ -666,11 +653,11 @@ class Footer(Component):
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         line_y = y + self.TOP_GAP
-        ctx.rect(x, line_y, w, 1.0, HIGHLIGHT)
+        ctx.rect(x, line_y, w, 1.0, theme.highlight)
         text_y = line_y + 1.0 + self.TOP_GAP
         for i, line in enumerate(self._lines(w)):
             ctx.text(x, text_y + i * self.LINE_H, line,
-                     size=TEXT_HINT, color=self.color)
+                     size=TEXT_HINT, color=self.color or theme.muted)
 
 
 @dataclass
@@ -768,7 +755,7 @@ class ListItem(Component):
     leading: Optional[str] = None   # icon character or short label
     trailing: Optional[str] = None  # chevron, badge text
     selected: bool = False
-    background: Optional[str] = None  # default: SURFACE (or HIGHLIGHT when selected)
+    background: Optional[str] = None  # default: theme.surface (or theme.highlight when selected)
     radius: float = RADIUS_MD
 
     HEIGHT_SINGLE = 36.0
@@ -784,7 +771,7 @@ class ListItem(Component):
         return self._h()
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        bg = HIGHLIGHT if self.selected else (self.background or SURFACE)
+        bg = theme.highlight if self.selected else (self.background or theme.surface)
         ctx.rect(x, y, w, h, bg, radius=self.radius)
 
         inner_x = x + self._PAD_H
@@ -792,22 +779,22 @@ class ListItem(Component):
 
         if self.leading:
             ctx.text(inner_x, y + h / 2.0, self.leading,
-                     size=TEXT_BODY, color=MUTED, align="left_center")
+                     size=TEXT_BODY, color=theme.muted, align="left_center")
             inner_x += self._LEAD_SLOT
             inner_w -= self._LEAD_SLOT
 
         if self.trailing:
             ctx.text(x + w - self._PAD_H, y + h / 2.0, self.trailing,
-                     size=TEXT_HINT, color=MUTED, align="right_center")
+                     size=TEXT_HINT, color=theme.muted, align="right_center")
             inner_w -= self._TRAIL_SLOT
 
-        title_color = ACCENT if self.selected else FG
+        title_color = theme.accent if self.selected else theme.fg
         if self.subtitle:
             ctx.text(inner_x, y + h * 0.35, self.title,
                      size=TEXT_BODY, color=title_color, bold=True,
                      align="left_center", max_width=inner_w, elide=True)
             ctx.text(inner_x, y + h * 0.70, self.subtitle,
-                     size=TEXT_HINT, color=MUTED,
+                     size=TEXT_HINT, color=theme.muted,
                      align="left_center", max_width=inner_w, elide=True)
         else:
             ctx.text(inner_x, y + h / 2.0, self.title,
@@ -831,9 +818,9 @@ class Row(Component):
     leading: Optional[str] = None           # icon / short text, left slot
     trailing: Optional[str] = None          # badge / chevron, right slot
     font_size: float = TEXT_BODY
-    color: str = FG
-    leading_color: Optional[str] = None     # default: MUTED
-    trailing_color: Optional[str] = None    # default: MUTED
+    color: "str | None" = None
+    leading_color: Optional[str] = None     # default: theme.muted
+    trailing_color: Optional[str] = None    # default: theme.muted
     height: Optional[float] = None          # default: font_size + SPACE_MD
     bold: bool = False
 
@@ -854,7 +841,7 @@ class Row(Component):
         if self.leading:
             ctx.text(inner_x, yc, self.leading,
                      size=self.font_size,
-                     color=self.leading_color or MUTED,
+                     color=self.leading_color or theme.muted,
                      align="left_center")
             inner_x += self._LEAD_SLOT
             inner_w -= self._LEAD_SLOT
@@ -862,12 +849,12 @@ class Row(Component):
         if self.trailing:
             ctx.text(x + w, yc, self.trailing,
                      size=self.font_size,
-                     color=self.trailing_color or MUTED,
+                     color=self.trailing_color or theme.muted,
                      align="right_center")
             inner_w -= self._TRAIL_SLOT
 
         ctx.text(inner_x, yc, self.label,
-                 size=self.font_size, color=self.color, bold=self.bold,
+                 size=self.font_size, color=self.color or theme.fg, bold=self.bold,
                  align="left_center", max_width=inner_w, elide=True)
 
 
@@ -879,8 +866,8 @@ def badge(
     x: float,
     y_center: float,
     label: str,
-    fill: str = ACCENT,
-    fg: str = BG,
+    fill: "str | None" = None,
+    fg: "str | None" = None,
     font_size: float = TEXT_HINT,
     radius: float = RADIUS_BADGE,
 ) -> None:
@@ -895,14 +882,15 @@ def badge(
         y_center:  Vertical centre of the badge (e.g. the commit-node ``cy``).
         label:     Text to display inside the pill.
         fill:      Pill background colour.
-        fg:        Text colour (default ``BG`` — dark text on light pill).
+        fg:        Text colour (default: theme bg — dark text on light pill).
         font_size: Label pt size (default ``TEXT_HINT``).
         radius:    Corner radius. Use ``RADIUS_SM`` (4 px) for tag chips,
                    ``RADIUS_BADGE`` (6 px, default) for rounded badges without
                    the perfect-stadium look of ``RADIUS_MD`` (8 px).
     """
     ctx.badge(x=x, y_center=y_center, label=label,
-              fill=fill, fg=fg, font_size=font_size, radius=radius)
+              fill=fill or theme.accent, fg=fg or theme.bg,
+              font_size=font_size, radius=radius)
 
 
 # ── Loading pill (suspense indicator) ──────────────────────────────────────
@@ -949,7 +937,7 @@ def loading_pill(ctx, x: float, y: float, label: str = "Fetching…") -> float:
     # Use the host-measured badge; subtle styling (surface fill, muted fg).
     # Pill is anchored top-left here; convert to y_center for badge().
     ctx.badge(x=x, y_center=y + 9.0, label=text,
-              fill=HIGHLIGHT, fg=FG, font_size=TEXT_HINT,
+              fill=theme.highlight, fg=theme.fg, font_size=TEXT_HINT,
               radius=RADIUS_SM)
     # Approx width — not measured here because we don't need it for
     # placement (callers anchor by top-right of the parent region).
@@ -962,14 +950,14 @@ def loading_pill(ctx, x: float, y: float, label: str = "Fetching…") -> float:
 @dataclass
 class Card(Component):
     """Surface-colored container with inner padding. Stacks its children
-    vertically with a configurable gap. A 1px border in HIGHLIGHT separates
-    it from the pane background — essential when SURFACE and BG are close
+    vertically with a configurable gap. A 1px border in `theme.highlight` separates
+    it from the pane background — essential when surface and bg are close
     in brightness."""
     children: List[Component]
     padding: float = SPACE_LG
     gap: float = SPACE_XS
-    background: str = SURFACE
-    border: Optional[str] = HIGHLIGHT  # set to None for a borderless card
+    background: "str | None" = None
+    border: Optional[str] = "__theme__"
     radius: float = RADIUS_MD
 
     def __post_init__(self):
@@ -993,14 +981,15 @@ class Card(Component):
         return total + 2 * self.padding
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        ctx.rect(x, y, w, h, self.background, radius=self.radius)
-        if self.border:
+        ctx.rect(x, y, w, h, self.background or theme.surface, radius=self.radius)
+        border_color = theme.highlight if self.border == "__theme__" else self.border
+        if border_color:
             # Top + bottom + left + right 1px strokes. Drawn as four thin
             # rects because `ctx.rect` doesn't support a separate stroke.
-            ctx.rect(x, y, w, 1.0, self.border)
-            ctx.rect(x, y + h - 1.0, w, 1.0, self.border)
-            ctx.rect(x, y, 1.0, h, self.border)
-            ctx.rect(x + w - 1.0, y, 1.0, h, self.border)
+            ctx.rect(x, y, w, 1.0, border_color)
+            ctx.rect(x, y + h - 1.0, w, 1.0, border_color)
+            ctx.rect(x, y, 1.0, h, border_color)
+            ctx.rect(x + w - 1.0, y, 1.0, h, border_color)
         inner_x = x + self.padding
         inner_y = y + self.padding
         inner_w = w - 2 * self.padding
@@ -1068,10 +1057,11 @@ class ChatBubble(Component):
 
     def _bubble_colors(self) -> tuple:
         if self.role == "user":
-            return (ACCENT, "#1e1e2e")
+            return (theme.accent, theme.bg)
         if self.role == "error":
-            return ("#45171e", RED)
-        return (SURFACE, FG)
+            # Error background derived from theme.danger with darkening — no direct theme role.
+            return ("#45171e", theme.danger)
+        return (theme.surface, theme.fg)
 
     def _plain_text(self) -> str:
         text = self.text
@@ -1198,7 +1188,7 @@ class SelectList(Component):
 
         if not self.items:
             ctx.text(x + w / 2, y + h / 2, "No items",
-                     size=TEXT_HINT, color=MUTED, align="center")
+                     size=TEXT_HINT, color=theme.muted, align="center")
             return
 
         ctx.push_clip(x, y, w, h)
@@ -1231,8 +1221,8 @@ class SelectList(Component):
             thumb_y = y + (self._scroll_px / total_h) * h
             thumb_y = min(thumb_y, y + h - thumb_h)
             bar_x = x + w - sb_w
-            ctx.rect(bar_x, y, sb_w, h, HIGHLIGHT)
-            ctx.rect(bar_x, thumb_y, sb_w, thumb_h, MUTED)
+            ctx.rect(bar_x, y, sb_w, h, theme.highlight)
+            ctx.rect(bar_x, thumb_y, sb_w, thumb_h, theme.muted)
 
 
 @dataclass
@@ -1266,7 +1256,7 @@ class FormField(Component):
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         req_suffix = " *" if self.required else ""
         ctx.text(x, y, f"{self.label}{req_suffix}",
-                 size=TEXT_HINT, color=MUTED)
+                 size=TEXT_HINT, color=theme.muted)
         input_y = y + self.LABEL_H + self.LABEL_GAP
         self._input.render(ctx, x, input_y, w, self.height)
 
@@ -1437,10 +1427,10 @@ class ButtonRow(Component):
     """
     id: str
     label: str
-    text_color: str = ACCENT
-    fill: str = SURFACE
-    hover_fill: str = HIGHLIGHT
-    active_fill: str = "#585b70"
+    text_color: "str | None" = None
+    fill: "str | None" = None
+    hover_fill: "str | None" = None
+    active_fill: "str | None" = None
     font_size: float = TEXT_BODY
     radius: float = RADIUS_MD
     height: float = 36.0
@@ -1454,10 +1444,10 @@ class ButtonRow(Component):
             id=self.id,
             x=x, y=y, w=w, h=h,
             label=self.label,
-            fill=self.fill,
-            hover_fill=self.hover_fill,
-            active_fill=self.active_fill,
-            text_color=self.text_color,
+            fill=self.fill or theme.surface,
+            hover_fill=self.hover_fill or theme.highlight,
+            active_fill=self.active_fill or theme.text_section,
+            text_color=self.text_color or theme.accent,
             font_size=self.font_size,
             radius=self.radius,
         )
@@ -1551,8 +1541,6 @@ __all__ = [
     "TEXT_HINT", "TEXT_CAPTION", "TEXT_BODY", "TEXT_HEADING",
     "TEXT_TITLE", "TEXT_TITLE_XL",
     "RADIUS_SM", "RADIUS_MD", "RADIUS_LG", "RADIUS_BADGE",
-    "BG", "SURFACE", "HIGHLIGHT", "ACCENT", "MUTED", "FG",
-    "RED", "GREEN", "YELLOW",
     # components
     "Component", "Column", "Card",
     "AppBar", "Section", "KeyRow", "Heading", "Label",

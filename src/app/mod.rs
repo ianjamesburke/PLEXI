@@ -4901,6 +4901,7 @@ impl PlexiApp {
             let window_theme = if dark_mode { egui::SystemTheme::Dark } else { egui::SystemTheme::Light };
             self.ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(window_theme));
             log::info!("theme: set_window_theme dark_mode={dark_mode} (config reload)");
+            self.broadcast_theme_event();
         }
 
         // Terminal theme
@@ -4986,8 +4987,31 @@ impl PlexiApp {
                 let window_theme = if dark_mode { egui::SystemTheme::Dark } else { egui::SystemTheme::Light };
                 self.ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(window_theme));
                 self.theme = crate::theme::terminal_theme(&theme_cfg);
+                self.broadcast_theme_event();
             }
         }
+    }
+
+    /// Push the current host `Colors` to every running app as a `Theme` event.
+    /// Called after `self.colors` is updated — both on config hot-reload and on
+    /// macOS system-appearance change — so apps never need to poll for theme changes.
+    fn broadcast_theme_event(&mut self) {
+        let event = crate::app_protocol::PlexiEvent::Theme {
+            colors: self.colors.to_theme_map(),
+        };
+        for win in &mut self.windows {
+            for pane in win.panes.values_mut() {
+                if let Some(app) = pane.as_app_mut() {
+                    if let crate::pane::AppRuntime::Process(proc) = &mut app.runtime {
+                        proc.send_event(&event);
+                    }
+                }
+            }
+        }
+        for app_entry in self.background_apps.values_mut() {
+            app_entry.1.send_event(&event);
+        }
+        log::info!("theme: broadcast Theme event to all running apps");
     }
 
     /// Reconcile the confirm-close focus layer with `pending_close`. Mirrors

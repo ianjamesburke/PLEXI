@@ -118,6 +118,12 @@ pub enum PlexiEvent {
     Resume,
     /// App is being closed. Process must exit within a short timeout.
     Shutdown,
+    /// Host theme changed (config hot-reload or macOS system appearance toggle).
+    /// App should update its color state; the next render will pick up the new colors.
+    Theme {
+        /// Updated role → #rrggbb map. Same roles as the Init `theme` field.
+        colors: std::collections::HashMap<String, String>,
+    },
     /// Confirmation that a SpawnApp request succeeded.
     AppSpawned {
         /// The pane_id of the newly spawned app pane.

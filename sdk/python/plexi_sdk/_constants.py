@@ -18,17 +18,6 @@ PAD_TIGHT =  8.0
 HEADER_H  = 48.0
 STATUS_H  = 44.0
 
-# ── Colors (hex strings, Catppuccin Mocha) ────────────────────────────────────
-BG        = "#1e1e2e"
-SURFACE   = "#313244"
-HIGHLIGHT = "#45475a"
-ACCENT    = "#89b4fa"
-MUTED     = "#6c7086"
-FG        = "#cdd6f4"
-RED       = "#f38ba8"
-GREEN     = "#a6e3a1"
-YELLOW    = "#f9e2af"
-
 # ── Notification priority tiers ───────────────────────────────────────────────
 # Higher = more urgent. Queue sorts priority DESC, arrival ASC. See the
 # NOTIFICATIONS block in the module docstring for guidance on which tier to

@@ -78,8 +78,8 @@ class BadgeCommand:
     x: float
     y_center: float
     label: str
-    fill: str = "#89b4fa"  # ACCENT
-    fg: str = "#1e1e2e"    # BG
+    fill: str = ""
+    fg: str = ""
     font_size: float = 11.0
     radius: float = 8.0
 
