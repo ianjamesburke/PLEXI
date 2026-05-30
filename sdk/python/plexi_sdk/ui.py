@@ -1057,8 +1057,9 @@ class ChatBubble(Component):
 
     def _bubble_colors(self) -> tuple:
         if self.role == "user":
-            return (theme.accent, "#1e1e2e")
+            return (theme.accent, theme.bg)
         if self.role == "error":
+            # Error background derived from theme.danger with darkening — no direct theme role.
             return ("#45171e", theme.danger)
         return (theme.surface, theme.fg)
 
@@ -1429,7 +1430,7 @@ class ButtonRow(Component):
     text_color: "str | None" = None
     fill: "str | None" = None
     hover_fill: "str | None" = None
-    active_fill: str = "#585b70"
+    active_fill: "str | None" = None
     font_size: float = TEXT_BODY
     radius: float = RADIUS_MD
     height: float = 36.0

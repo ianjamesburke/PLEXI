@@ -1076,7 +1076,9 @@ class App:
 
                 elif t == "theme":
                     from ._theme import theme as _theme
-                    _theme.update_from(ev.get("colors"))
+                    colors = ev.get("colors")
+                    _theme.update_from(colors)
+                    self.emit.info(f"theme: applied update with {len(colors or {})} role override(s)")
 
                 elif t == "list_select":
                     _lid = ev.get("id")
