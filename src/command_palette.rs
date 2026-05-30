@@ -218,9 +218,11 @@ impl PlexiApp {
             .into_iter()
             .filter(|app| {
                 // Local apps are visible only when the focused pane is in their workspace.
+                // Use the same explicit predicate here as in the badge below — no wildcard.
                 let workspace_visible = match app.source {
                     crate::app_registry::RegistrySource::Global => true,
-                    _ => {
+                    crate::app_registry::RegistrySource::LocalApp
+                    | crate::app_registry::RegistrySource::LocalAgent => {
                         let visible = app.workspace_root.as_ref() == focused_workspace_root.as_ref();
                         if !visible {
                             log::debug!(
