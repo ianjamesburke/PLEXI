@@ -698,7 +698,7 @@ pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool, alias:
             return match store.set(&account, &value) {
                 Ok(()) => {
                     log::info!("secret_set:cli: stored globally account={account}");
-                    eprintln!("Stored '{friendly}' globally (plexi:user:{effective_friendly})");
+                    println!("Stored '{friendly}' globally (plexi:user:{effective_friendly})");
                     print_tip(&format!(
                         "reference '{friendly}' in commands.toml under `[secrets] required = [\"{friendly}\"]`."
                     ));
@@ -909,7 +909,7 @@ pub fn workspace_secret_delete(friendly: &str) -> i32 {
         let store = MacKeychain::new();
         match store.delete(&account) {
             Ok(()) => {
-                eprintln!("Deleted '{friendly}' from workspace {}", cfg.id);
+                println!("Deleted '{friendly}' from workspace {}", cfg.id);
                 0
             }
             Err(e) => {
