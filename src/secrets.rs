@@ -248,40 +248,6 @@ pub fn toggle_inject_secret(key: &str, app_id: &str, directory: &str) -> Option<
     Some(new_value)
 }
 
-/// Walk up from `launch_dir` to the user's home directory, returning the first
-/// matching secret. Returns `None` if no match is found at any level.
-#[cfg(target_os = "macos")]
-pub fn resolve_secret(key: &str, app_id: &str, launch_dir: &str) -> Option<Zeroizing<String>> {
-    use std::path::PathBuf;
-
-    let home = match dirs::home_dir() {
-        Some(h) => h,
-        None => {
-            warn!("secrets::resolve_secret: could not determine home directory");
-            return None;
-        }
-    };
-
-    let mut current = PathBuf::from(launch_dir);
-    loop {
-        let dir_str = current.to_string_lossy();
-        if let Some(value) = retrieve_secret(key, app_id, &dir_str) {
-            return Some(value);
-        }
-
-        if current == home {
-            break;
-        }
-
-        match current.parent() {
-            Some(parent) if parent != current => current = parent.to_path_buf(),
-            _ => break,
-        }
-    }
-
-    None
-}
-
 // ── Non-macOS stubs ────────────────────────────────────────────────────
 
 #[cfg(not(target_os = "macos"))]
@@ -300,10 +266,4 @@ pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<Zeroi
 pub fn delete_secret(key: &str, app_id: &str, directory: &str) -> bool {
     warn!("secrets::delete_secret({key}, {app_id}, {directory}): Keychain not available on this platform");
     false
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn resolve_secret(key: &str, app_id: &str, launch_dir: &str) -> Option<Zeroizing<String>> {
-    warn!("secrets::resolve_secret({key}, {app_id}, {launch_dir}): Keychain not available on this platform");
-    None
 }

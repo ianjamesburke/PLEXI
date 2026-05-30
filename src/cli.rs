@@ -253,15 +253,57 @@ pub fn run_command(command_name: &str) -> i32 {
         }
     }
 
-    // Resolve secrets from Keychain
-    let dir_str = cwd.to_string_lossy();
+    // Resolve secrets via workspace-routed v3 resolver.
     let mut resolved: Vec<(String, zeroize::Zeroizing<String>)> = Vec::new();
     let mut missing: Vec<&str> = Vec::new();
 
-    for key in &secret_keys {
-        match crate::secrets::resolve_secret(key, APP_ID, &dir_str) {
-            Some(value) => resolved.push((key.to_string(), value)),
-            None => missing.push(key),
+    if !secret_keys.is_empty() {
+        #[cfg(target_os = "macos")]
+        {
+            use crate::workspace_secrets::{
+                resolve, MacKeychain, ResolveOutcome, WorkspaceConfig, WorkspaceSecrets,
+            };
+            let store = MacKeychain::new();
+            // Load workspace context once — fail early if secrets are required but workspace
+            // is not initialised (missing workspace.toml or secrets.toml).
+            let ws_root = crate::app_registry::resolve_workspace_root(&cwd);
+            let ws_context: Option<(String, WorkspaceSecrets)> =
+                ws_root.as_ref().and_then(|root| {
+                    let cfg = WorkspaceConfig::load(root).ok().flatten()?;
+                    let router = WorkspaceSecrets::load(root).ok().flatten()?;
+                    Some((cfg.id, router))
+                });
+            match ws_context {
+                None => {
+                    log::warn!("run_command: secrets required but no initialized workspace found in {}", cwd.display());
+                    eprintln!("error: command requires secrets but no initialized workspace found.");
+                    eprintln!("  → plexi workspace init   (then: plexi secret set <NAME>)");
+                    return 1;
+                }
+                Some((ws_id, router)) => {
+                    for key in &secret_keys {
+                        match resolve(&ws_id, APP_ID, key, &router, &store) {
+                            ResolveOutcome::Found(value) => {
+                                resolved.push((key.to_string(), value));
+                            }
+                            ResolveOutcome::HardMissing { reason } => {
+                                log::warn!("run_command: secret '{key}' hard-missing: {reason}");
+                                missing.push(key);
+                            }
+                            ResolveOutcome::PromptUser => {
+                                log::info!("run_command: secret '{key}' not in workspace Keychain");
+                                missing.push(key);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            for key in &secret_keys {
+                missing.push(key);
+            }
         }
     }
 
@@ -582,9 +624,12 @@ fn require_workspace(
 /// Scope:
 ///   --global     store under `plexi:user:<name>` (cross-workspace)
 ///   default      walk up to nearest .plexi/ workspace, store workspace-scoped
-pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool) -> i32 {
+pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool, alias: Option<&str>) -> i32 {
+    // `friendly` is the canonical name (env var name used in app code).
+    // `alias` overrides the Keychain entry name when the user wants a different friendly name.
+    let effective_friendly = alias.unwrap_or(friendly);
     log::info!(
-        "secret_set:cli: friendly={friendly} from_env={from_env} global={global}"
+        "secret_set:cli: canonical={friendly} effective_friendly={effective_friendly} from_env={from_env} global={global}"
     );
     // Resolve value
     let value: String = if from_env {
@@ -622,12 +667,14 @@ pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool) -> i32
         let store = MacKeychain::new();
 
         if global {
-            let account = keychain_user_name(friendly);
+            let account = keychain_user_name(effective_friendly);
             return match store.set(&account, &value) {
                 Ok(()) => {
                     log::info!("secret_set:cli: stored globally account={account}");
-                    eprintln!("Stored '{friendly}' globally (plexi:user:{friendly})");
-                    print_tip("reference secrets in commands.toml under `[secrets] required = [\"...\"]`.");
+                    eprintln!("Stored '{friendly}' globally (plexi:user:{effective_friendly})");
+                    print_tip(&format!(
+                        "reference '{friendly}' in commands.toml under `[secrets] required = [\"{friendly}\"]`."
+                    ));
                     0
                 }
                 Err(e) => {
@@ -649,7 +696,7 @@ pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool) -> i32
                 return 1;
             }
         };
-        let account = keychain_workspace_name(&cfg.id, friendly);
+        let account = keychain_workspace_name(&cfg.id, effective_friendly);
         match store.set(&account, &value) {
             Ok(()) => {
                 log::info!(
@@ -662,7 +709,24 @@ pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool) -> i32
                     root.display(),
                     cfg.id
                 );
-                print_tip("reference secrets in commands.toml under `[secrets] required = [\"...\"]`.");
+                // Auto-write the canonical→friendly route to secrets.toml.
+                match crate::workspace_secrets::write_default_route(&root, friendly, effective_friendly) {
+                    Ok(()) => {
+                        log::info!(
+                            "secret_set:cli: wrote default route {friendly} → {effective_friendly} in secrets.toml"
+                        );
+                        print_tip(&format!(
+                            "Route written to .plexi/secrets.toml — use in commands.toml: [secrets] required = [\"{friendly}\"]"
+                        ));
+                    }
+                    Err(e) => {
+                        log::warn!("secret_set:cli: write_default_route failed: {e}");
+                        // Non-fatal — Keychain write succeeded.
+                        print_tip(&format!(
+                            "reference '{friendly}' in commands.toml under `[secrets] required = [\"{friendly}\"]`."
+                        ));
+                    }
+                }
                 0
             }
             Err(e) => {
@@ -674,7 +738,7 @@ pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool) -> i32
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (friendly, value, global);
+        let _ = (friendly, effective_friendly, value, global);
         eprintln!("error: keychain not available on this platform");
         1
     }
