@@ -103,5 +103,5 @@ def test_render_into_returns_consumed_height(render_into_app: Path) -> None:
     text_cmds = [c for c in cmds if c.get("type") == "text" and "content_y=" in c.get("text", "")]
     assert text_cmds, "Expected a text command reporting content_y"
     reported_y = float(text_cmds[0]["text"].split("=")[1])
-    # AppBar is 35px (34 band + 1 divider) and Section is ~33px — content should be > 0
-    assert reported_y > 0, f"content_y should be > 0, got {reported_y}"
+    # AppBar is 35px (34 band + 1 divider), Section is 32px (8+11+4+1+8) — total ~67px
+    assert 60 < reported_y < 80, f"content_y should be ~67px, got {reported_y}"

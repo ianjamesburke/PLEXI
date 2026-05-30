@@ -207,7 +207,7 @@ class GhIssues(App):
         ])
         list_top  = appbar.render_into(ctx, 0.0, 0.0, ctx.w)
         footer_h  = footer.measure(ctx.w)
-        footer.render_into(ctx, 0.0, ctx.h - footer_h, ctx.w)
+        footer.render(ctx, 0.0, ctx.h - footer_h, ctx.w, footer_h)
 
         if self._loading:
             ctx.text(PAD, list_top + PAD, "Loading…", size=BODY, color=theme.muted)

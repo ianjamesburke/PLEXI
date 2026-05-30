@@ -443,8 +443,10 @@ class AppHarness:
         excluding full-width background clears (w >= 95 % of pane width).
         Raises ``AssertionError`` with details on the first detected overlap.
 
-        ``allowlist`` is a list of ``(i, j)`` index pairs (0-based) to skip —
-        use for intentional overlays such as a tooltip over content.
+        ``allowlist`` is a list of ``(i, j)`` index pairs referencing the
+        **original draw command indices** in ``self._draw_commands`` (stable
+        across ``min_area`` / width-threshold changes). Order within each pair
+        does not matter — ``(3, 7)`` and ``(7, 3)`` are equivalent.
 
         Example::
 
@@ -452,9 +454,9 @@ class AppHarness:
                 h.run(1)
                 h.assert_no_overlap()
         """
-        allow: set = set(map(tuple, allowlist or []))
+        allow: set = {tuple(sorted(p)) for p in (allowlist or [])}
         rects: list = []
-        for cmd in self._draw_commands:
+        for idx, cmd in enumerate(self._draw_commands):
             if cmd.get("type") != "rect":
                 continue
             x = float(cmd.get("x", 0.0))
@@ -465,13 +467,13 @@ class AppHarness:
                 continue
             if w >= self._width * 0.95:
                 continue
-            rects.append((x, y, x + w, y + h))
+            rects.append((idx, (x, y, x + w, y + h)))
 
-        for i, (ax1, ay1, ax2, ay2) in enumerate(rects):
-            for j, (bx1, by1, bx2, by2) in enumerate(rects):
+        for i, (idx_a, (ax1, ay1, ax2, ay2)) in enumerate(rects):
+            for j, (idx_b, (bx1, by1, bx2, by2)) in enumerate(rects):
                 if j <= i:
                     continue
-                if (i, j) in allow:
+                if tuple(sorted((idx_a, idx_b))) in allow:
                     continue
                 ix1 = max(ax1, bx1)
                 iy1 = max(ay1, by1)
@@ -482,8 +484,8 @@ class AppHarness:
                     if overlap_area >= min_area:
                         raise AssertionError(
                             f"Overlapping draw rects detected: "
-                            f"rect[{i}] ({ax1:.0f},{ay1:.0f}→{ax2:.0f},{ay2:.0f}) "
-                            f"and rect[{j}] ({bx1:.0f},{by1:.0f}→{bx2:.0f},{by2:.0f}), "
+                            f"cmd[{idx_a}] ({ax1:.0f},{ay1:.0f}→{ax2:.0f},{ay2:.0f}) "
+                            f"and cmd[{idx_b}] ({bx1:.0f},{by1:.0f}→{bx2:.0f},{by2:.0f}), "
                             f"overlap={overlap_area:.0f}px²"
                         )
 
