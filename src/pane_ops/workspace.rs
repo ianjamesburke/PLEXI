@@ -160,6 +160,7 @@ impl PlexiApp {
         self.active_window = self.windows.len() - 1;
         self.context_active_window.insert(ctx_id, win_id);
         self.minimap.visible = false;
+        self.apply_context_transition_effects();
 
         // Auto-open inline rename so the user can name the context immediately.
         let new_ctx_idx = self.router.len() - 1;
@@ -233,6 +234,7 @@ impl PlexiApp {
         self.active_window = self.windows.len() - 1;
         self.context_active_window.insert(ctx_id, win_id);
         self.minimap.visible = false;
+        self.apply_context_transition_effects();
     }
 
     /// Create a new page immediately to the right of the active page on the
@@ -534,6 +536,8 @@ impl PlexiApp {
             .get(&new_ctx_id)
             .copied()
             .unwrap_or(page_count > 1);
+
+        self.apply_context_transition_effects();
     }
 
     pub(crate) fn pick_active_context_from_workspace(&mut self) {
@@ -563,6 +567,43 @@ impl PlexiApp {
             root.display()
         );
         self.router.get_mut(idx).root = Some(root);
+        self.apply_context_transition_effects();
+    }
+
+    /// Single choke point for all context-transition side effects.
+    ///
+    /// Must be called after every operation that changes the active context (either
+    /// which context is active or what root it points at). Owns, in order:
+    ///   1. Rescan the AppRegistry for the new context root.
+    ///   2. Restart the app_registry_watcher on the new root's watch dirs.
+    ///   3. Palette scope follows implicitly — the palette reads `self.registry` directly.
+    pub(crate) fn apply_context_transition_effects(&mut self) {
+        let root = self
+            .router
+            .active()
+            .root
+            .clone()
+            .unwrap_or_else(|| {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+            });
+        log::info!(
+            "transition_context: ctx_id={} root={} — rescanning registry + restarting watcher",
+            self.router.active().context_id,
+            root.display()
+        );
+        self.registry = crate::app_registry::AppRegistry::load(&root);
+        let watch_dirs = crate::app_registry::registry_watch_dirs(&root);
+        match crate::app_registry_watcher::start(watch_dirs) {
+            Some((watcher, rx)) => {
+                self._registry_watcher = Some(watcher);
+                self.registry_reload_rx = Some(rx);
+            }
+            None => {
+                self._registry_watcher = None;
+                self.registry_reload_rx = None;
+            }
+        }
     }
 
     /// Dissolve a portal: reparent all its panes into the parent window (the active

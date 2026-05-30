@@ -880,7 +880,7 @@ impl PlexiApp {
                 let window_count = windows.iter().filter(|w| w.context_id == active_ctx_id).count();
                 let mut host = crate::host::model::HostModel::new();
                 host.seed_next_pane_id(ws.next_pane_id);
-                return Self {
+                let mut app = Self {
                     pty_event_rx: rx,
                     pty_event_tx: tx,
                     theme: theme::terminal_theme(&theme_cfg),
@@ -978,6 +978,8 @@ impl PlexiApp {
                     last_system_theme: None,
 
                 };
+                app.apply_context_transition_effects();
+                return app;
             }
         }
 
@@ -1030,7 +1032,7 @@ impl PlexiApp {
                 None => (None, None),
             };
 
-        Self {
+        let mut app = Self {
             pty_event_rx: rx,
             pty_event_tx: tx,
             theme: theme::terminal_theme(&theme_cfg),
@@ -1148,7 +1150,9 @@ impl PlexiApp {
             last_logged_focus: None,
             focus_started_at: None,
             last_system_theme: None,
-        }
+        };
+        app.apply_context_transition_effects();
+        app
     }
 
     /// Search ALL windows (not just the active one) for a pane by ID.
@@ -3783,9 +3787,17 @@ impl eframe::App for PlexiApp {
                 hit
             });
         if registry_changed {
-            log::info!("app_registry_watcher: rescanning registry");
-            let cwd = std::env::current_dir().unwrap_or_default();
-            self.registry = crate::app_registry::AppRegistry::load(&cwd);
+            let root = self
+                .router
+                .active()
+                .root
+                .clone()
+                .unwrap_or_else(|| {
+                    std::env::current_dir()
+                        .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+                });
+            log::info!("app_registry_watcher: rescanning registry for root={}", root.display());
+            self.registry = crate::app_registry::AppRegistry::load(&root);
         }
 
         // Handle window close request (X button or macOS Cmd+Q OS event).
