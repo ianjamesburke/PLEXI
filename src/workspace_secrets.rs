@@ -580,7 +580,11 @@ fn upsert_default_route_line(raw: &str, canonical: &str, friendly: &str) -> Stri
     let lines: Vec<&str> = raw.lines().collect();
     let trailing_newline = raw.ends_with('\n');
 
-    if let Some(start) = lines.iter().position(|l| l.trim() == "[default]") {
+    if let Some(start) = lines.iter().position(|l| {
+        let t = l.trim();
+        t == "[default]"
+            || (t.starts_with("[default]") && t[9..].trim_start().starts_with('#'))
+    }) {
         // End of section: next uncommented table header, or EOF.
         let end = lines[start + 1..]
             .iter()
@@ -927,6 +931,15 @@ mod tests {
         let apps_pos = out.find("[apps.foo]").unwrap();
         let c_pos = out.find("C = \"c\"").unwrap();
         assert!(c_pos > default_pos && c_pos < apps_pos, "C not in [default]: {out}");
+        WorkspaceSecrets::parse(&out).expect("must parse");
+    }
+
+    #[test]
+    fn upsert_default_route_line_handles_inline_comment_on_section_header() {
+        let raw = "fallback = true\n\n[default] # route table\nA = \"a\"\n";
+        let out = upsert_default_route_line(raw, "B", "b_alias");
+        assert!(out.contains("B = \"b_alias\""), "entry missing: {out}");
+        assert!(out.contains("[default] # route table"), "header modified: {out}");
         WorkspaceSecrets::parse(&out).expect("must parse");
     }
 
