@@ -525,8 +525,11 @@ pub fn set_profile(name: Option<String>) {
 
 /// Ensure the profile directory exists and the Python SDK is up to date.
 /// Returns `true` if the profile directory was newly created (first launch),
-/// `false` if it already existed. The SDK is always overwritten so upgrades
-/// land the correct version without a fresh profile wipe.
+/// `false` if it already existed.
+///
+/// The embedded SDK is extracted only when missing or when the binary version
+/// changed since the last extract, so manual edits and symlinks in the profile
+/// SDK dir survive normal app launches.
 pub fn ensure_profile_initialized() -> bool {
     let dir = config_dir();
     let is_new = if !dir.exists() {
@@ -545,20 +548,37 @@ pub fn ensure_profile_initialized() -> bool {
         false
     };
 
-    // Always overwrite the SDK on every launch so upgrades always get the
-    // version embedded in the current binary, not a stale copy from a prior install.
-    let sdk_dest = dir.join("sdk").join("plexi_sdk");
-    let _ = std::fs::remove_dir_all(&sdk_dest);
-    if let Err(e) = std::fs::create_dir_all(&sdk_dest) {
-        eprintln!("profile init: failed to create sdk dir: {e}");
-    } else {
-        let embedded_sdk =
-            include_dir::include_dir!("$CARGO_MANIFEST_DIR/sdk/python/plexi_sdk");
-        if let Err(e) = embedded_sdk.extract(&sdk_dest) {
-            eprintln!("profile init: failed to seed SDK: {e}");
+    // Only re-extract when the embedded SDK version differs from what was last written.
+    // This preserves manual edits and symlinks placed in the profile SDK dir during
+    // normal launches while still ensuring upgrades land the correct version.
+    let sdk_dir = dir.join("sdk");
+    let stamp_path = sdk_dir.join(".sdk_version");
+    let current_version = env!("CARGO_PKG_VERSION");
+    let needs_extract = std::fs::read_to_string(&stamp_path)
+        .map(|v| v.trim() != current_version)
+        .unwrap_or(true);
+
+    if needs_extract {
+        let sdk_dest = sdk_dir.join("plexi_sdk");
+        let _ = std::fs::remove_dir_all(&sdk_dest);
+        if let Err(e) = std::fs::create_dir_all(&sdk_dest) {
+            eprintln!("profile init: failed to create sdk dir: {e}");
         } else {
-            log::info!("profile init: seeded SDK to {}", sdk_dest.display());
+            let embedded_sdk =
+                include_dir::include_dir!("$CARGO_MANIFEST_DIR/sdk/python/plexi_sdk");
+            if let Err(e) = embedded_sdk.extract(&sdk_dest) {
+                eprintln!("profile init: failed to seed SDK: {e}");
+            } else {
+                let _ = std::fs::create_dir_all(&sdk_dir);
+                let _ = std::fs::write(&stamp_path, current_version);
+                log::info!(
+                    "profile init: seeded SDK v{current_version} to {}",
+                    sdk_dest.display()
+                );
+            }
         }
+    } else {
+        log::info!("profile init: SDK v{current_version} up to date, skipping extract");
     }
 
     is_new
@@ -631,6 +651,25 @@ pub fn sdk_path_override() -> Option<PathBuf> {
         );
         None
     }
+}
+
+/// Builds the `PYTHONPATH` value for Python app subprocesses.
+///
+/// This is the single source for how PYTHONPATH is constructed. Both
+/// `ProcessApp::launch` and the static render path must call this so the
+/// priority is defined in exactly one place:
+///   `PLEXI_SDK_PATH` override → config-dir SDK → bundle SDK (when present)
+pub fn build_pythonpath(bundle_sdk: Option<&std::path::Path>) -> String {
+    let sdk_dir = config_dir().join("sdk");
+    let mut pythonpath = sdk_dir.to_string_lossy().into_owned();
+    if let Some(bsdk) = bundle_sdk.filter(|p| p.exists()) {
+        pythonpath.push(':');
+        pythonpath.push_str(&bsdk.to_string_lossy());
+    }
+    if let Some(dev_sdk) = sdk_path_override() {
+        pythonpath = format!("{}:{}", dev_sdk.to_string_lossy(), pythonpath);
+    }
+    pythonpath
 }
 
 pub const CONFIG_TEMPLATE: &str = include_str!("../scripts/default-config.toml");
