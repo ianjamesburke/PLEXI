@@ -16,6 +16,8 @@ if [ -z "$PLEXI_PANE_ID" ]; then
   echo "ERROR: must run inside a Plexi pane" >&2
   exit 1
 fi
+PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}
+$PLEXI pane name "PLEXI PM"
 ```
 
 ---
@@ -29,11 +31,13 @@ Read what the user said before fetching anything. Extract signals:
 | "just added issues" / "new issues" / "just filed" | Newest-first, skip scoring |
 | "score" / "prioritize" | Invoke `/score` skill first, then use scored order |
 | "stop" / "done watching" | Cancel loop — do not call ScheduleWakeup |
+| "wind down" / "drain" / "let it finish" / "no new lanes" | Set `DISPATCH=false` — existing lanes finish, no new ones open |
 | Number (e.g. "run 6 lanes", "use 3") | Set `MAX_LANES` to that number |
 | No signal | Default: newest-first, watch loop on |
 
 Set `ORDER_MODE` = `newest-first` (default) or `scored`.
 Set `WATCH` = true (default) or false.
+Set `DISPATCH` = true (default) or false. When false: existing lanes run to completion, pipeline stages (validate/merge) still resume, but no fresh issues are dispatched.
 Set `MAX_LANES` = number from message, or fall back to value in `.claude/agent-memory/project-manager/config.json` (`max_lanes`), or default 4.
 
 Persist any explicit `MAX_LANES` change to config:
@@ -79,18 +83,36 @@ Print one status line:
 
 ---
 
-## Step 2b — Pane census
+## Step 2b — Pane census + health check
 
-Before dispatching anything, build `ACTIVE_PANE_ISSUES` from live pane state. This is the authoritative source — GitHub labels lag behind pane reality.
+Build `ACTIVE_PANE_ISSUES` from live pane titles (authoritative — GitHub labels lag):
 
 ```bash
 PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}
-ACTIVE_PANE_ISSUES=$($PLEXI pane list 2>/dev/null \
-  | jq -r '.[].name // ""' \
-  | grep -oE '[0-9]+' || true)
+$PLEXI pane list 2>/dev/null | jq -r '.[].title // ""' | grep -oE '[0-9]+' || true
 ```
 
-Any issue number in `ACTIVE_PANE_ISSUES` must be skipped in Step 2c and Step 4 — a pane is already running for it.
+Note: the JSON field is `title`, not `name` — `.name` returns null and breaks the census.
+
+**Cursor store:** Load per-pane cursors from `.claude/agent-memory/project-manager/pane-cursors.json` (create as `{}` if missing). For each active issue pane ID:
+
+```bash
+# First capture (no stored cursor):
+$PLEXI pane capture --lines 10 <PANE_ID>
+
+# Subsequent captures (cursor from prior run):
+$PLEXI pane capture --from-cursor <CURSOR> <PANE_ID>
+```
+
+Each response is `{"cursor": N, "lines": [...], "missed": bool}`. Save the new `cursor` back to the store keyed by pane ID and persist to disk after each cycle. `lines: []` + `missed: false` = no new output.
+
+**Noop exit detection:** If captured lines show the agent exited without doing real work (e.g. "Issue is already closed", "Nothing to do", "already implemented", "already merged"), close the pane immediately and free the slot:
+
+```bash
+$PLEXI pane close <PANE_ID>
+```
+
+Remove its cursor entry from the store. Any issue whose pane was NOT closed must be skipped in Step 2c and Step 4.
 
 ---
 
@@ -114,21 +136,58 @@ Subtract resumed issues from `OPEN_SLOTS`.
 
 ---
 
-## Step 3 — If OPEN_SLOTS = 0, skip to Step 5
+## Step 2d — Post-merge issue cleanup
 
-All `MAX_LANES` lanes full. Jump directly to the watch loop.
+Check for PRs merged to alpha recently whose linked issues are still open, and close them:
+
+```bash
+gh pr list --state merged --base alpha --json number,headRefName --limit 20 \
+  | jq -r '.[] | select(.headRefName | test("^feature/[0-9]+-")) | [(.headRefName | split("/")[1] | split("-")[0]), (.number | tostring)] | join(" ")'
+```
+
+For each `ISSUE PR` pair: if `gh issue view $ISSUE --json state -q .state` == `OPEN`, close it:
+
+```bash
+gh issue close $ISSUE --comment "Closed — merged via PR #$PR."
+```
+
+Print: `[PM] Closed #<issue> — PR #<pr> already merged.`
+
+---
+
+## Step 3 — If OPEN_SLOTS = 0 or DISPATCH = false, skip to Step 5
+
+All `MAX_LANES` lanes full, or wind-down mode active. Jump directly to the watch loop.
+
+In wind-down mode, print:
+```
+[PM] Wind-down — no new lanes. <ACTIVE_LANE_COUNT> remaining. Loop ends when all drain to 0.
+```
+
+The watch loop ends when `DISPATCH=false` AND `ACTIVE_LANE_COUNT = 0`.
 
 ---
 
 ## Step 4 — Select candidates
 
-Fetch ready issues sorted newest-first (highest number first):
+Fetch ready issues with bundle flag, sorted newest-first:
 
 ```bash
 gh issue list --label "ready" --state open \
   --json number,title,labels --limit 100 \
-  | jq 'sort_by(-.number)'
+  | jq '[.[] | {number, title, areas: [.labels[].name | select(startswith("area:"))], bundle: ([.labels[].name] | contains(["bundle"]))}] | sort_by(-.number)'
 ```
+
+**Bundle batching (do this first before selecting individual issues):**
+
+Group all `bundle: true` issues by their primary area (first `area:*` label). For each group that has 2+ issues and none of whose areas conflict with `IN_PROGRESS_AREAS`:
+- Treat the entire group as ONE candidate consuming ONE lane slot.
+- The single lane will implement all issues in the group in one PR.
+- Dispatch as: `bash .claude/skills/dispatch/scripts/open-lanes.sh <N1> <N2> <N3> ...` (open-lanes supports multiple issues per lane for bundle mode).
+
+After bundle groups consume their slots, fill remaining slots with individual non-bundle issues.
+
+**For each non-bundle candidate (newest-first):**
 
 Skip any issue that:
 1. Is in `IN_PROGRESS_NUMBERS`
@@ -137,18 +196,35 @@ Skip any issue that:
 4. Body contains "Do not implement here" (epic tracker)
 5. Number is in `ACTIVE_PANE_ISSUES` (pane already running)
 
-Walk remaining candidates in order. For each:
-- If any of its `area:*` labels appear in `IN_PROGRESS_AREAS` or a previously selected candidate's areas: **skip** (parallel conflict).
-- Otherwise: select it, add its areas to the conflict set, decrement `OPEN_SLOTS`.
-- Stop when `OPEN_SLOTS` reaches 0 or candidates are exhausted.
+**Area conflict check — run this explicitly for every candidate before selecting:**
+
+Build `CONFLICT_AREAS` = union of:
+- All `area:*` labels from every issue currently in `ACTIVE_PANE_ISSUES` (pull their labels from the issue list or a `gh issue view` call)
+- All `area:*` labels from candidates already selected this cycle
+
+For each candidate, check: does ANY of its `area:*` labels appear in `CONFLICT_AREAS`?
+- If yes: **skip** — log why: `skip #1234 (area:cli/commands conflicts with #1231)`
+- If no: **select** — add all its `area:*` labels to `CONFLICT_AREAS`, decrement `OPEN_SLOTS`
+
+Example:
+```
+Active: #1803 (area:sdk/python, area:sdk/pgap, area:ui/widgets)
+Candidate #1820: area:sdk/python → CONFLICT → skip
+Candidate #1812: area:ui/tile-tree, area:host/config → no conflict → SELECT
+  CONFLICT_AREAS now includes area:ui/tile-tree, area:host/config
+Candidate #1811: area:ui/tile-tree → CONFLICT with #1812 → skip
+Candidate #1805: area:cli/commands → no conflict → SELECT
+```
+
+Stop when `OPEN_SLOTS` reaches 0 or candidates are exhausted.
 
 If `ORDER_MODE` = `scored`: invoke `/score` on the candidate list first, then walk in scored order instead of newest-first.
 
 Print selection:
 ```
 [PM] Dispatching <N>:
-  #1234 — Title          (area:cli)
-  #1231 — Title          (area:sdk)
+  #1234 — Title                   (area:cli)
+  #1231 + #1229 + #1227 — bundle  (area:ui/overlays)
 ```
 
 If no candidates:
@@ -161,6 +237,13 @@ Skip dispatch, go to Step 5.
 
 ## Step 4b — Dispatch
 
+Auto-push alpha if needed:
+```bash
+UNPUSHED=$(git log origin/alpha..HEAD --oneline 2>/dev/null | wc -l | tr -d ' ')
+[ "$UNPUSHED" -gt 0 ] && git push origin alpha
+```
+
+Then dispatch:
 ```bash
 bash .claude/skills/dispatch/scripts/open-lanes.sh <N1> [N2] [N3] [N4]
 ```
@@ -180,11 +263,11 @@ $PLEXI notify \
 
 If `WATCH` = false, stop here.
 
-Schedule a wake-up in **90 seconds** using `ScheduleWakeup` with prompt `/project-manager`. On each wake, the skill re-enters at Step 1 and runs the full cycle again.
+Schedule a wake-up in **240 seconds** using `ScheduleWakeup` with prompt `/project-manager`. On each wake, the skill re-enters at Step 1 and runs the full cycle again.
 
 Print:
 ```
-[PM] Watching — next check in 90s. Say "stop watching" to end.
+[PM] Watching — next check in 4m. Say "stop watching" to end, "wind down" to drain without refilling.
 ```
 
 The loop ends when:
@@ -200,9 +283,14 @@ On each re-entry after initial dispatch, lead with:
 
 ## Notes
 
-- **open-lanes.sh requires alpha clean.** Aborts if `git status --porcelain` is dirty.
+- **Pane census uses `.title`, not `.name`.** `.name` returns null — always use `jq -r '.[].title // ""'`.
+- **Always use `--from-cursor` on repeat pane captures.** `plexi pane capture --from-cursor <N> <ID>` reads only lines written since the last check. Store cursors in `.claude/agent-memory/project-manager/pane-cursors.json`, keyed by pane ID. `lines: []` + `missed: false` = no new output.
+- **Close noop panes immediately.** If an agent exits without doing real work, `pane close` right away and free the slot.
+- **Bundle issues should be batched.** Issues labeled `bundle` are micro-changes. Group by primary area and send all same-area bundles to one lane in one PR. Never open one PR per bundle issue.
+- **Post-merge cleanup runs every cycle.** Check merged PRs for still-open linked issues and close them automatically.
+- **Auto-push alpha before dispatch.** open-lanes.sh aborts on unpushed commits — push first.
 - **Channel binary** auto-detected via `$PLEXI_CHANNEL` — never hardcode.
-- **Newest-first is the default.** Higher issue numbers were filed more recently. Right for "I just added a bunch of issues."
+- **Newest-first is the default.** Higher issue numbers were filed more recently.
 - **Conflict detection is live, not scored.** Two issues conflict only if they share an `area:*` label with something currently in-progress.
 - **Scoring is opt-in.** Invoke `/score` before or say "score these first" to get conviction-ranked ordering.
 - **pipeline:* labels are live state.** Never read Ship Log to determine current pipeline stage — check labels.
