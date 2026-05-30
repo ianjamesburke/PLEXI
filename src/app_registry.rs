@@ -287,6 +287,9 @@ pub struct InstalledApp {
     /// value returned by `load_app` is a placeholder and is overwritten at
     /// insert time.
     pub source: RegistrySource,
+    /// For `LocalApp`/`LocalAgent` entries: the workspace root they belong to.
+    /// `None` for global entries.
+    pub workspace_root: Option<PathBuf>,
 }
 
 pub struct AppRegistry {
@@ -294,6 +297,10 @@ pub struct AppRegistry {
     apps: HashMap<String, InstalledApp>,
     /// Extension → app id mapping (first match wins).
     extension_map: HashMap<String, String>,
+    /// The workspace root the local scan was done for. `None` when no local
+    /// apps were scanned (either no workspace or workspace has no apps dir).
+    /// Used by the palette to detect when a rescan is needed.
+    pub loaded_workspace: Option<PathBuf>,
 }
 
 impl AppRegistry {
@@ -318,10 +325,11 @@ impl AppRegistry {
         let mut registry = Self {
             apps: HashMap::new(),
             extension_map: HashMap::new(),
+            loaded_workspace: None,
         };
 
         if global_dir.is_dir() {
-            registry.scan_dir(global_dir, RegistrySource::Global);
+            registry.scan_dir(global_dir, RegistrySource::Global, None);
         }
 
         // Local apps + agents — only scanned when a workspace root exists.
@@ -329,13 +337,14 @@ impl AppRegistry {
         // both shadow global, and a colliding id between local apps and local
         // agents lets the agent win (scanned later).
         if let Some(root) = resolve_workspace_root_with_channel(cwd, &channel_dir) {
+            registry.loaded_workspace = Some(root.clone());
             let local_apps = root.join(&channel_dir).join("apps");
             if local_apps.is_dir() {
-                registry.scan_dir(&local_apps, RegistrySource::LocalApp);
+                registry.scan_dir(&local_apps, RegistrySource::LocalApp, Some(root.clone()));
             }
             let local_agents = root.join(&channel_dir).join("agents");
             if local_agents.is_dir() {
-                registry.scan_dir(&local_agents, RegistrySource::LocalAgent);
+                registry.scan_dir(&local_agents, RegistrySource::LocalAgent, Some(root.clone()));
             }
         }
 
@@ -350,7 +359,7 @@ impl AppRegistry {
     /// Scan one directory of manifest-bearing subdirs, inserting discovered
     /// entries. Calls made later in `load()` shadow earlier ones; on shadow
     /// the displaced entry's source is logged so users can debug discovery.
-    fn scan_dir(&mut self, dir: &Path, source: RegistrySource) {
+    fn scan_dir(&mut self, dir: &Path, source: RegistrySource, workspace_root: Option<PathBuf>) {
         let read_dir = match std::fs::read_dir(dir) {
             Ok(d) => d,
             Err(e) => {
@@ -400,7 +409,7 @@ impl AppRegistry {
                         // Plain insert — local entries override global for extension map too.
                         self.extension_map.insert(ext.to_lowercase(), id.clone());
                     }
-                    self.apps.insert(id, InstalledApp { source, ..installed });
+                    self.apps.insert(id, InstalledApp { source, workspace_root: workspace_root.clone(), ..installed });
                 }
                 Err(e) => {
                     log::warn!("AppRegistry: skipping {:?}: {e}", entry_dir.file_name());
@@ -472,8 +481,9 @@ impl AppRegistry {
             launch: manifest.launch,
             secrets: manifest.secrets,
             bin_path,
-            // Placeholder — `scan_dir` overwrites this with the real source.
+            // Placeholders — `scan_dir` overwrites both with real values.
             source: RegistrySource::Global,
+            workspace_root: None,
         })
     }
 
@@ -1215,5 +1225,62 @@ startup_message = \"Starting Greeter…\"
         write_app(global.path(), "silent-app", "Silent App");
         let registry = AppRegistry::load_with_global(bare.path(), global.path());
         assert_eq!(registry.startup_message_for("silent-app"), None);
+    }
+
+    #[test]
+    fn local_app_has_workspace_root_populated() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        // channel_dir in tests == ".plexi" (binary name is "plexi")
+        let channel_dir = registry_config_dir();
+        let local_apps = workspace.path().join(&channel_dir).join("apps");
+        fs::create_dir_all(&local_apps).unwrap();
+        write_app(&local_apps, "ws-app", "Workspace App");
+
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let app = registry.get("ws-app").expect("workspace app should be discovered");
+        assert_eq!(app.source, RegistrySource::LocalApp);
+        let ws_root = app.workspace_root.as_ref().expect("workspace_root should be Some for local app");
+        assert_eq!(
+            ws_root.canonicalize().unwrap(),
+            workspace.path().canonicalize().unwrap(),
+        );
+    }
+
+    #[test]
+    fn global_app_has_no_workspace_root() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        write_app(global.path(), "global-app", "Global App");
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        let app = registry.get("global-app").expect("global app should be discovered");
+        assert_eq!(app.source, RegistrySource::Global);
+        assert!(app.workspace_root.is_none(), "global app must have no workspace_root");
+    }
+
+    #[test]
+    fn registry_loaded_workspace_is_set_after_local_scan() {
+        let global = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let channel_dir = registry_config_dir();
+        // Create the channel dir so resolve_workspace_root_with_channel finds it.
+        fs::create_dir_all(workspace.path().join(&channel_dir)).unwrap();
+
+        let registry = AppRegistry::load_with_global(workspace.path(), global.path());
+        let loaded = registry.loaded_workspace.as_ref().expect("loaded_workspace should be Some");
+        assert_eq!(
+            loaded.canonicalize().unwrap(),
+            workspace.path().canonicalize().unwrap(),
+        );
+    }
+
+    #[test]
+    fn registry_loaded_workspace_is_none_outside_workspace() {
+        let global = tempfile::tempdir().unwrap();
+        let bare = tempfile::tempdir().unwrap(); // no channel dir → not a workspace
+
+        let registry = AppRegistry::load_with_global(bare.path(), global.path());
+        assert!(registry.loaded_workspace.is_none(), "loaded_workspace should be None outside workspace");
     }
 }

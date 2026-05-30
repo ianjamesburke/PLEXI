@@ -18,6 +18,7 @@ enum PaletteEntry {
         name: String,
         description: String,
         running_in_background: bool,
+        is_workspace_local: bool,
     },
 }
 
@@ -188,33 +189,79 @@ impl PlexiApp {
             ctx_entries
         };
 
-        // ── App entries ────────────────────────────────────────────────────
-        let app_entries: Vec<(String, String, String)> = self
+        // ── Workspace-aware app entries ────────────────────────────────────
+        // Resolve the focused pane's workspace root so we can filter local apps.
+        let focused_workspace_root = self.windows[self.active_window]
+            .focused_pane
+            .and_then(|tile_id| self.windows[self.active_window].get_focused_pane_cwd(tile_id))
+            .and_then(|cwd| crate::app_registry::resolve_workspace_root(&cwd));
+
+        // If the focused pane's workspace differs from what the registry was
+        // last loaded for, rescan now so local apps for the new workspace appear.
+        if focused_workspace_root != self.registry.loaded_workspace {
+            let home = dirs::home_dir();
+            let rescan_cwd = focused_workspace_root
+                .as_deref()
+                .or_else(|| home.as_deref())
+                .unwrap_or(std::path::Path::new("/"));
+            log::info!(
+                "palette: workspace changed ({:?} → {:?}), rescanning registry",
+                self.registry.loaded_workspace,
+                focused_workspace_root,
+            );
+            self.registry = crate::app_registry::AppRegistry::load(rescan_cwd);
+        }
+
+        let app_entries: Vec<(String, String, String, bool)> = self
             .registry
             .list()
             .into_iter()
             .filter(|app| {
-                query.is_empty()
-                    || app.manifest.name.to_lowercase().contains(&query)
-                    || app.manifest.id.to_lowercase().contains(&query)
-                    || app.manifest.description.to_lowercase().contains(&query)
+                // Local apps are visible only when the focused pane is in their workspace.
+                let workspace_visible = match app.source {
+                    crate::app_registry::RegistrySource::Global => true,
+                    _ => {
+                        let visible = app.workspace_root.as_ref() == focused_workspace_root.as_ref();
+                        if !visible {
+                            log::debug!(
+                                "palette: hiding local app '{}' (workspace {:?} ≠ focused {:?})",
+                                app.manifest.id,
+                                app.workspace_root,
+                                focused_workspace_root,
+                            );
+                        }
+                        visible
+                    }
+                };
+                workspace_visible
+                    && (query.is_empty()
+                        || app.manifest.name.to_lowercase().contains(&query)
+                        || app.manifest.id.to_lowercase().contains(&query)
+                        || app.manifest.description.to_lowercase().contains(&query))
             })
             .map(|app| {
+                let is_local = matches!(
+                    app.source,
+                    crate::app_registry::RegistrySource::LocalApp
+                        | crate::app_registry::RegistrySource::LocalAgent
+                );
                 (
                     app.manifest.id.clone(),
                     app.manifest.name.clone(),
                     app.manifest.description.clone(),
+                    is_local,
                 )
             })
             .collect();
 
-        for (id, name, description) in app_entries {
+        for (id, name, description, is_workspace_local) in app_entries {
             let running_in_background = self.background_apps.contains_key(&id);
             entries.push(PaletteEntry::App {
                 id,
                 name,
                 description,
                 running_in_background,
+                is_workspace_local,
             });
         }
 
@@ -431,6 +478,7 @@ impl PlexiApp {
                                             name,
                                             description,
                                             running_in_background,
+                                            is_workspace_local,
                                         } => {
                                             if !shown_apps_header {
                                                 shown_apps_header = true;
@@ -466,6 +514,14 @@ impl PlexiApp {
                                                                 RichText::new("bg")
                                                                     .size(9.0)
                                                                     .color(colors.text_dim),
+                                                            );
+                                                        }
+                                                        if *is_workspace_local {
+                                                            ui.add_space(6.0);
+                                                            ui.label(
+                                                                RichText::new("ws")
+                                                                    .size(9.0)
+                                                                    .color(colors.accent),
                                                             );
                                                         }
                                                     });
