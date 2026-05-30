@@ -1119,3 +1119,95 @@ fn window_scoped_notification_visible_only_on_source_window() {
     h.app.active_window = 0;
     assert_eq!(h.app.visible_notification_count(), 1, "notification must reappear when returning to source window");
 }
+
+/// Issue #1801: context transition must rescan the registry and restart the watcher.
+///
+/// Creates two temp roots each with a distinct workspace-local app, switches the
+/// active context between them, and asserts that the registry always reflects the
+/// current root — no stale apps from the previous root survive the switch.
+#[test]
+fn context_transition_rescans_registry() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    // Two isolated temp roots with different workspace-local apps.
+    let dir_a = std::env::temp_dir().join("plexi_test_1801_ctx_a");
+    let dir_b = std::env::temp_dir().join("plexi_test_1801_ctx_b");
+
+    let manifest_a = concat!(
+        "schema_version = 1\n",
+        "[app]\n",
+        "id = \"test-1801-app-a\"\n",
+        "name = \"Test App A\"\n",
+        "entry = \"app.py\"\n",
+        "type = \"app\"\n",
+    );
+    let manifest_b = concat!(
+        "schema_version = 1\n",
+        "[app]\n",
+        "id = \"test-1801-app-b\"\n",
+        "name = \"Test App B\"\n",
+        "entry = \"app.py\"\n",
+        "type = \"app\"\n",
+    );
+
+    let apps_a = crate::app_registry::workspace_apps_dir(&dir_a);
+    std::fs::create_dir_all(apps_a.join("test-1801-app-a")).unwrap();
+    std::fs::write(apps_a.join("test-1801-app-a").join("manifest.toml"), manifest_a).unwrap();
+    std::fs::write(apps_a.join("test-1801-app-a").join("app.py"), b"").unwrap();
+
+    let apps_b = crate::app_registry::workspace_apps_dir(&dir_b);
+    std::fs::create_dir_all(apps_b.join("test-1801-app-b")).unwrap();
+    std::fs::write(apps_b.join("test-1801-app-b").join("manifest.toml"), manifest_b).unwrap();
+    std::fs::write(apps_b.join("test-1801-app-b").join("app.py"), b"").unwrap();
+
+    // Switch context 0 to root A and verify registry picks up app-a.
+    let idx0 = app.router.active_idx();
+    app.router.get_mut(idx0).root = Some(dir_a.clone());
+    app.apply_context_transition_effects();
+
+    let ids: Vec<String> = app.registry.list().into_iter().map(|a| a.manifest.id.clone()).collect();
+    assert!(ids.contains(&"test-1801-app-a".to_string()),
+        "registry should contain test-1801-app-a after setting root A, got: {ids:?}");
+    assert!(!ids.contains(&"test-1801-app-b".to_string()),
+        "registry should not contain test-1801-app-b while on root A, got: {ids:?}");
+
+    // Add a second context pointing at root B and switch to it.
+    let ctx_b_id = app.next_window_id;
+    app.next_window_id += 1;
+    let win_b_id = app.next_window_id;
+    app.next_window_id += 1;
+    app.router.push(crate::context::Context {
+        name: "Context B".into(),
+        path: dir_b.clone(),
+        root: Some(dir_b.clone()),
+        description: None,
+        context_id: ctx_b_id,
+        parent_id: None,
+        depth: 0,
+    });
+    app.windows.push(Window {
+        name: "Context B".into(),
+        path: dir_b.clone(),
+        tree: egui_tiles::Tree::empty("test_tree_b"),
+        panes: HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 0,
+        window_id: win_b_id,
+        context_id: ctx_b_id,
+    });
+    let ctx_b_idx = app.router.len() - 1;
+    app.switch_workspace(ctx_b_idx);
+
+    let ids: Vec<String> = app.registry.list().into_iter().map(|a| a.manifest.id.clone()).collect();
+    assert!(ids.contains(&"test-1801-app-b".to_string()),
+        "registry should contain test-1801-app-b after switching to root B, got: {ids:?}");
+    assert!(!ids.contains(&"test-1801-app-a".to_string()),
+        "registry should not contain test-1801-app-a while on root B, got: {ids:?}");
+
+    let _ = std::fs::remove_dir_all(&dir_a);
+    let _ = std::fs::remove_dir_all(&dir_b);
+}

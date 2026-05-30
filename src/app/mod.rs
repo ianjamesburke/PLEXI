@@ -3783,9 +3783,14 @@ impl eframe::App for PlexiApp {
                 hit
             });
         if registry_changed {
-            log::info!("app_registry_watcher: rescanning registry");
-            let cwd = std::env::current_dir().unwrap_or_default();
-            self.registry = crate::app_registry::AppRegistry::load(&cwd);
+            let root = self
+                .router
+                .active()
+                .root
+                .clone()
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            log::info!("app_registry_watcher: rescanning registry for root={}", root.display());
+            self.registry = crate::app_registry::AppRegistry::load(&root);
         }
 
         // Handle window close request (X button or macOS Cmd+Q OS event).
