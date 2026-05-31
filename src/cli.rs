@@ -954,9 +954,11 @@ fn ensure_plexi_sdk() -> bool {
 
     log::info!("ensure_plexi_sdk: plexi_sdk not importable, attempting install");
 
-    // Try uv pip install first.
+    // Try uv pip install first; suppress output so noisy venv warnings don't surface.
     let uv_ok = std::process::Command::new("uv")
         .args(["pip", "install", "plexi-sdk"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -967,21 +969,21 @@ fn ensure_plexi_sdk() -> bool {
         return true;
     }
 
-    // Fallback: plain pip.
-    match std::process::Command::new("pip").args(["install", "plexi-sdk"]).status() {
+    // Fallback: python3 -m pip to guarantee the same environment that python3 checked.
+    match std::process::Command::new("python3").args(["-m", "pip", "install", "plexi-sdk"]).status() {
         Ok(s) if s.success() => {
             println!("Installed plexi-sdk (via pip).");
-            log::info!("ensure_plexi_sdk: installed via pip");
+            log::info!("ensure_plexi_sdk: installed via python3 -m pip");
             true
         }
         Ok(_) => {
             eprintln!("warning: could not install plexi-sdk — install manually: pip install plexi-sdk");
-            log::warn!("ensure_plexi_sdk: pip install failed");
+            log::warn!("ensure_plexi_sdk: python3 -m pip install failed");
             false
         }
         Err(e) => {
-            eprintln!("warning: pip not found ({e}) — install manually: pip install plexi-sdk");
-            log::warn!("ensure_plexi_sdk: pip not found: {e}");
+            eprintln!("warning: pip not available ({e}) — install manually: pip install plexi-sdk");
+            log::warn!("ensure_plexi_sdk: python3 -m pip not available: {e}");
             false
         }
     }
