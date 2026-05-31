@@ -89,6 +89,8 @@ pub struct PlexiBehavior<'a> {
     /// Prevents terminal panes from calling `request_focus()` and stealing
     /// egui focus from the active overlay (egui resolves focus last-caller-wins).
     pub modal_open: bool,
+    /// True when the Command modifier is held — triggers the pane ID ghost overlay.
+    pub cmd_held: bool,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -188,6 +190,16 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     &self.colors, &mut cache, &audio_peaks,
                 );
             }
+        }
+
+        if self.cmd_held {
+            ui.painter().text(
+                pane_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("{}", pane_id),
+                egui::FontId::proportional(style::TEXT_PANE_ID_GHOST),
+                egui::Color32::from_rgba_unmultiplied(255, 255, 255, style::PANE_ID_GHOST_ALPHA),
+            );
         }
 
         UiResponse::None

@@ -4173,6 +4173,21 @@ impl eframe::App for PlexiApp {
                     }
                 }
 
+                let cmd_held = ui.input(|i| i.modifiers.command);
+                {
+                    let overlay_log_id = egui::Id::new("pane_id_overlay_on");
+                    let was_held: bool =
+                        ui.ctx().data(|d| d.get_temp(overlay_log_id).unwrap_or(false));
+                    if was_held != cmd_held {
+                        if cmd_held {
+                            log::info!("[pane-id-overlay] on");
+                        } else {
+                            log::info!("[pane-id-overlay] off");
+                        }
+                        ui.ctx().data_mut(|d| d.insert_temp(overlay_log_id, cmd_held));
+                    }
+                }
+
                 let mut behavior = PlexiBehavior {
                     panes: &mut ctx.panes,
                     focused_tile: if suppress_focus {
@@ -4193,6 +4208,7 @@ impl eframe::App for PlexiApp {
                     unfocused_opacity,
                     portal_info,
                     modal_open,
+                    cmd_held,
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ui.scope(|ui| {
