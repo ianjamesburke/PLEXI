@@ -36,28 +36,25 @@ pub(crate) fn paint_tab_dots(
     }
 }
 
-/// Per-pane summary carried in Portal tile preview data.
-#[derive(Clone, Default)]
-pub struct ChildPaneSummary {
-    pub pane_name: Option<String>,
-    pub cwd: Option<String>,
-    pub app_type: String,
-}
-
 /// Preview data for a Portal tile.
 #[derive(Clone)]
 pub struct PortalPreview {
     pub context_name: String,
-    pub panes: Vec<ChildPaneSummary>,
+    pub context_description: String,
+    pub pane_count: usize,
     pub notification_count: usize,
+    /// Normalized [0,1]×[0,1] rects for each leaf pane in the child window layout.
+    pub minimap_rects: Vec<egui::Rect>,
 }
 
 impl Default for PortalPreview {
     fn default() -> Self {
         PortalPreview {
             context_name: "(deleted)".to_string(),
-            panes: Vec::new(),
+            context_description: String::new(),
+            pane_count: 0,
             notification_count: 0,
+            minimap_rects: Vec::new(),
         }
     }
 }
@@ -163,33 +160,82 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 self.close_exited = Some(tile_id);
             }
         } else if pane.as_portal().is_some() {
-            // Portal tile — responsive PGAP-rendered preview.
+            // Portal tile — direct egui rendering.
             ui.painter().rect_filled(pane_rect, 0.0, self.colors.bg_darkest);
-            let preview = self.portal_info
-                .get(pane_id)
-                .cloned()
-                .unwrap_or_default();
+            let preview = self.portal_info.get(pane_id).cloned().unwrap_or_default();
+            let osc_status: &'static str = pane.as_portal()
+                .and_then(|p| p.context_state.as_ref())
+                .map(|s| match s.status {
+                    crate::context_state::ContextStatus::Working => "busy",
+                    crate::context_state::ContextStatus::Error => "error",
+                    _ => "idle",
+                })
+                .unwrap_or("idle");
+            log::info!(
+                "portal render: ctx={:?} status={} panes={}",
+                preview.context_name, osc_status, preview.pane_count,
+            );
 
-            let tiers = crate::tiling::portal_responsive_tiers(&preview, &self.colors);
-            let avail_w = pane_rect.width();
-            let avail_h = pane_rect.height();
-            if let Some(tier) = crate::process_app::render::select_responsive_tier(
-                &tiers, avail_w, avail_h,
-            ) {
-                log::info!(
-                    "portal responsive: aspect={} for {}x{}",
-                    tier.aspect, avail_w, avail_h,
+            let padding = style::SPACE_MD;
+            let inner = pane_rect.shrink(padding);
+            let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+            portal_ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                // Context name
+                ui.label(
+                    egui::RichText::new(&preview.context_name)
+                        .size(style::TEXT_BODY)
+                        .strong()
+                        .color(self.colors.text_primary),
                 );
-                let clip = pane_rect;
-                let mut cache = egui_commonmark::CommonMarkCache::default();
-                let audio_peaks = HashMap::new();
-                crate::process_app::render::render_layout_node(
-                    ui, pane_rect, clip,
-                    style::SPACE_MD, style::SPACE_MD,
-                    &tier.direction, &tier.children, tier.gap,
-                    &self.colors, &mut cache, &audio_peaks,
-                );
-            }
+                // Description (if set)
+                if !preview.context_description.is_empty() {
+                    ui.scope(|ui| {
+                        ui.set_max_width(inner.width());
+                        crate::widgets::description_label(ui, &preview.context_description, &self.colors);
+                    });
+                }
+                // Status chip + pane count + notification count
+                ui.horizontal(|ui| {
+                    crate::widgets::status_chip(ui, osc_status, &self.colors);
+                    let count_label = if preview.notification_count > 0 {
+                        format!("{} panes · {} notifs", preview.pane_count, preview.notification_count)
+                    } else {
+                        format!("{} panes", preview.pane_count)
+                    };
+                    ui.label(
+                        egui::RichText::new(count_label)
+                            .size(style::TEXT_HINT)
+                            .color(self.colors.text_dim),
+                    );
+                });
+                ui.add_space(style::SPACE_SM);
+                // Mini-map: proportional rects for each leaf pane
+                if !preview.minimap_rects.is_empty() {
+                    let map_h = (inner.height() * 0.35).clamp(24.0, 80.0);
+                    let (map_area, _) = ui.allocate_exact_size(
+                        egui::vec2(inner.width(), map_h),
+                        egui::Sense::hover(),
+                    );
+                    let origin = map_area.min;
+                    let map_size = map_area.size();
+                    let stroke = egui::Stroke::new(1.0, self.colors.text_dim.linear_multiply(0.35));
+                    for norm in &preview.minimap_rects {
+                        let scaled = egui::Rect::from_min_max(
+                            egui::pos2(origin.x + norm.min.x * map_size.x, origin.y + norm.min.y * map_size.y),
+                            egui::pos2(origin.x + norm.max.x * map_size.x, origin.y + norm.max.y * map_size.y),
+                        );
+                        ui.painter().rect_stroke(scaled.shrink(1.0), 2.0, stroke, egui::StrokeKind::Middle);
+                    }
+                }
+            });
+            // Shortcut hint pinned to bottom-right
+            ui.painter().text(
+                egui::pos2(pane_rect.right() - padding, pane_rect.bottom() - padding),
+                egui::Align2::RIGHT_BOTTOM,
+                "\u{2318}\u{21e7}\u{21b5} zoom in",
+                egui::FontId::proportional(style::TEXT_HINT),
+                self.colors.text_dim.linear_multiply(0.5),
+            );
         }
 
         if self.ctrl_held {
@@ -293,201 +339,77 @@ pub(crate) fn write_dropped_paths_to_terminal(ui: &egui::Ui, t: &mut TerminalPan
     }
 }
 
-// ── Portal responsive tier builder ────────────────────────────────────────────
+// ── Portal mini-map ───────────────────────────────────────────────────────────
 
-use crate::app_protocol::{LayoutChild, LayoutDirection, RenderCommand, ResponsiveTier};
-
-/// Build the three responsive tiers for a Portal preview card.
-///
-/// - Landscape: horizontal row with context name + pane count + notification badge
-/// - Square: column with abbreviated info
-/// - Portrait: compact vertical stack
-pub(crate) fn portal_responsive_tiers(
-    preview: &PortalPreview,
-    colors: &Colors,
-) -> Vec<ResponsiveTier> {
-    let ctx_name = &preview.context_name;
-    let pane_count = preview.panes.len();
-    let notif_count = preview.notification_count;
-    let text_primary = format!("#{:02x}{:02x}{:02x}", colors.text_primary.r(), colors.text_primary.g(), colors.text_primary.b());
-    let text_dim = format!("#{:02x}{:02x}{:02x}", colors.text_dim.r(), colors.text_dim.g(), colors.text_dim.b());
-
-    let name_leaf = LayoutChild::Leaf {
-        command: Box::new(RenderCommand::Text {
-            x: 0.0, y: 0.0,
-            text: ctx_name.to_string(),
-            size: style::TEXT_TITLE_XL,
-            color: text_primary.clone(),
-            monospace: false,
-            bold: true,
-            align: "top_left".to_string(),
-            max_width: None,
-            elide: false,
-            selectable: false,
-            max_lines: None,
-        }),
-    };
-
-    let pane_count_leaf = LayoutChild::Leaf {
-        command: Box::new(RenderCommand::Text {
-            x: 0.0, y: 0.0,
-            text: format!("{pane_count} panes"),
-            size: style::TEXT_CAPTION,
-            color: text_dim.clone(),
-            monospace: false,
-            bold: false,
-            align: "top_left".to_string(),
-            max_width: None,
-            elide: false,
-            selectable: false,
-            max_lines: None,
-        }),
-    };
-
-    let shortcut_leaf = LayoutChild::Leaf {
-        command: Box::new(RenderCommand::Text {
-            x: 0.0, y: 0.0,
-            text: "\u{2318}\u{21E7}\u{21B5} zoom in".to_string(),
-            size: style::TEXT_HINT,
-            color: text_dim.clone(),
-            monospace: false,
-            bold: false,
-            align: "top_left".to_string(),
-            max_width: None,
-            elide: false,
-            selectable: false,
-            max_lines: None,
-        }),
-    };
-
-    // Wide/landscape: show last cwd segment per pane.
-    let pane_detail_leaves: Vec<LayoutChild> = preview.panes.iter().take(3).map(|p| {
-        let label = p.cwd.as_deref()
-            .and_then(|c| std::path::Path::new(c).file_name())
-            .map(|s| s.to_string_lossy().into_owned())
-            .or_else(|| p.pane_name.clone())
-            .unwrap_or_else(|| p.app_type.clone());
-        LayoutChild::Leaf {
-            command: Box::new(RenderCommand::Text {
-                x: 0.0, y: 0.0,
-                text: label,
-                size: style::TEXT_HINT,
-                color: text_dim.clone(),
-                monospace: true,
-                bold: false,
-                align: "top_left".to_string(),
-                max_width: None,
-                elide: false,
-                selectable: false,
-                max_lines: None,
-            }),
-        }
-    }).collect();
-
-    let mut landscape_children = vec![
-        name_leaf.clone(),
-        pane_count_leaf.clone(),
-    ];
-    landscape_children.extend(pane_detail_leaves);
-    landscape_children.push(shortcut_leaf.clone());
-    if notif_count > 0 {
-        landscape_children.push(LayoutChild::Leaf {
-            command: Box::new(RenderCommand::Badge {
-                x: 0.0, y: 0.0,
-                label: format!("{notif_count}"),
-                fill: "#ff6464".to_string(),
-                fg: "#ffffff".to_string(),
-                font_size: style::TEXT_HINT,
-                radius: 8.0,
-            }),
-        });
-    }
-
-    let mut square_children = vec![
-        name_leaf.clone(),
-        pane_count_leaf.clone(),
-    ];
-    if notif_count > 0 {
-        square_children.push(LayoutChild::Leaf {
-            command: Box::new(RenderCommand::Badge {
-                x: 0.0, y: 0.0,
-                label: format!("{notif_count}"),
-                fill: "#ff6464".to_string(),
-                fg: "#ffffff".to_string(),
-                font_size: style::TEXT_HINT,
-                radius: 8.0,
-            }),
-        });
-    }
-
-    let mut portrait_children = vec![
-        LayoutChild::Leaf {
-            command: Box::new(RenderCommand::Text {
-                x: 0.0, y: 0.0,
-                text: ctx_name.to_string(),
-                size: style::TEXT_CAPTION,
-                color: text_primary.clone(),
-                monospace: false,
-                bold: true,
-                align: "top_left".to_string(),
-                max_width: None,
-                elide: false,
-                selectable: false,
-                max_lines: None,
-            }),
-        },
-        LayoutChild::Leaf {
-            command: Box::new(RenderCommand::Text {
-                x: 0.0, y: 0.0,
-                text: format!("{pane_count}p"),
-                size: style::TEXT_HINT,
-                color: text_dim.clone(),
-                monospace: false,
-                bold: false,
-                align: "top_left".to_string(),
-                max_width: None,
-                elide: false,
-                selectable: false,
-                max_lines: None,
-            }),
-        },
-    ];
-    if notif_count > 0 {
-        portrait_children.push(LayoutChild::Leaf {
-            command: Box::new(RenderCommand::Text {
-                x: 0.0, y: 0.0,
-                text: format!("\u{25CF} {notif_count}"),
-                size: style::TEXT_HINT,
-                color: "#ff6464".to_string(),
-                monospace: false,
-                bold: false,
-                align: "top_left".to_string(),
-                max_width: None,
-                elide: false,
-                selectable: false,
-                max_lines: None,
-            }),
-        });
-    }
-
-    vec![
-        ResponsiveTier {
-            aspect: "landscape".to_string(),
-            direction: LayoutDirection::Row,
-            children: landscape_children,
-            gap: style::SPACE_MD,
-        },
-        ResponsiveTier {
-            aspect: "portrait".to_string(),
-            direction: LayoutDirection::Column,
-            children: portrait_children,
-            gap: style::SPACE_SM,
-        },
-        ResponsiveTier {
-            aspect: "square".to_string(),
-            direction: LayoutDirection::Column,
-            children: square_children,
-            gap: style::SPACE_SM,
-        },
-    ]
+/// Compute normalized [0,1]×[0,1] rects for each leaf pane in a tile tree.
+/// Used by the Portal tile renderer to draw a proportional mini-map preview.
+pub(crate) fn compute_minimap_rects(
+    tiles: &egui_tiles::Tiles<PaneId>,
+    root: egui_tiles::TileId,
+) -> Vec<egui::Rect> {
+    let full = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    let mut out = Vec::new();
+    collect_tile_rects(tiles, root, full, &mut out);
+    out
 }
+
+fn collect_tile_rects(
+    tiles: &egui_tiles::Tiles<PaneId>,
+    tile_id: egui_tiles::TileId,
+    rect: egui::Rect,
+    out: &mut Vec<egui::Rect>,
+) {
+    match tiles.get(tile_id) {
+        Some(egui_tiles::Tile::Pane(_)) => out.push(rect),
+        Some(egui_tiles::Tile::Container(container)) => match container {
+            egui_tiles::Container::Linear(linear) => {
+                let is_h = linear.dir == egui_tiles::LinearDir::Horizontal;
+                let total = if is_h { rect.width() } else { rect.height() };
+                let sizes = linear.shares.split(&linear.children, total);
+                let mut offset = if is_h { rect.min.x } else { rect.min.y };
+                for (&child_id, &size) in linear.children.iter().zip(&sizes) {
+                    let child_rect = if is_h {
+                        egui::Rect::from_min_max(
+                            egui::pos2(offset, rect.min.y),
+                            egui::pos2(offset + size, rect.max.y),
+                        )
+                    } else {
+                        egui::Rect::from_min_max(
+                            egui::pos2(rect.min.x, offset),
+                            egui::pos2(rect.max.x, offset + size),
+                        )
+                    };
+                    collect_tile_rects(tiles, child_id, child_rect, out);
+                    offset += size;
+                }
+            }
+            egui_tiles::Container::Tabs(tabs) => {
+                let child = tabs.active.or_else(|| tabs.children.first().copied());
+                if let Some(child_id) = child {
+                    collect_tile_rects(tiles, child_id, rect, out);
+                }
+            }
+            egui_tiles::Container::Grid(grid) => {
+                let children: Vec<egui_tiles::TileId> = grid.children().copied().collect();
+                let n = children.len();
+                if n > 0 {
+                    let cols = ((n as f32).sqrt().ceil() as usize).max(1);
+                    let rows = (n + cols - 1) / cols;
+                    let w = rect.width() / cols as f32;
+                    let h = rect.height() / rows as f32;
+                    for (i, child_id) in children.iter().enumerate() {
+                        let col = i % cols;
+                        let row = i / cols;
+                        let child_rect = egui::Rect::from_min_max(
+                            egui::pos2(rect.min.x + col as f32 * w, rect.min.y + row as f32 * h),
+                            egui::pos2(rect.min.x + (col + 1) as f32 * w, rect.min.y + (row + 1) as f32 * h),
+                        );
+                        collect_tile_rects(tiles, *child_id, child_rect, out);
+                    }
+                }
+            }
+        },
+        None => {}
+    }
+}
+
