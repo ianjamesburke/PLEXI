@@ -58,20 +58,7 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
             .join("\n")
             .trim()
             .to_string();
-        // For `routine`, omit the collapsed bullet block — the explicit reference below
-        // replaces it with properly-formatted markdown.
-        let emit = if full_path == "plexi routine" {
-            normalized
-                .lines()
-                .take_while(|l| !l.starts_with("## "))
-                .collect::<Vec<_>>()
-                .join("\n")
-                .trim()
-                .to_string()
-        } else {
-            normalized
-        };
-        println!("{emit}");
+        println!("{normalized}");
         println!();
     }
 

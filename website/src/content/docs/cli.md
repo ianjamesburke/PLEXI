@@ -1,7 +1,3 @@
-   Compiling plexi v0.0.555 (/Users/ianburke/Documents/GitHub/PLEXI/worktrees/feature/bundle-1849-1850-1855-1856-cli-polish-demo-fixes)
-   Compiling gen_cli_docs v0.1.0 (/Users/ianburke/Documents/GitHub/PLEXI/worktrees/feature/bundle-1849-1850-1855-1856-cli-polish-demo-fixes/tools/gen_cli_docs)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.07s
-     Running `target/debug/gen_cli_docs`
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.

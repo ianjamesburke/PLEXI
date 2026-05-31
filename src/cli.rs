@@ -4692,7 +4692,7 @@ pub fn notes_open_cli() -> i32 {
 
     let has_notes = notes_dir.is_dir()
         && std::fs::read_dir(&notes_dir)
-            .map(|d| d.filter_map(|e| e.ok()).any(|e| e.path().extension().map_or(false, |x| x == "md")))
+            .map(|d| d.filter_map(|e| e.ok()).any(|e| std::path::Path::new(&e.file_name()).extension().map_or(false, |x| x == "md")))
             .unwrap_or(false);
     if !has_notes {
         eprintln!("No notes yet. Create one with \u{2318}+Shift+Space.");
