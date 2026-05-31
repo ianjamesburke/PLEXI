@@ -765,7 +765,7 @@ impl PlexiApp {
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(
-                                        RichText::new(format!("\u{2191} v{latest} available"))
+                                        RichText::new(format!("Run plexi update to upgrade to v{latest}"))
                                             .size(style::TEXT_HINT)
                                             .color(self.colors.accent),
                                     );
@@ -4182,13 +4182,20 @@ impl PlexiApp {
                             ui.add_space(style::SPACE_MD);
                             ui.label(
                                 RichText::new(
-                                    "Open Terminal, paste this command, and press Enter.\n\
+                                    "Open Terminal and run this command.\n\
                                      You'll be asked for your password."
                                 )
                                 .size(style::TEXT_CAPTION)
                                 .color(colors.text_dim),
                             );
                             ui.add_space(style::SPACE_SM);
+                            ui.label(
+                                RichText::new("Run this in the terminal:")
+                                    .size(style::TEXT_CAPTION)
+                                    .color(colors.text_dim)
+                                    .strong(),
+                            );
+                            ui.add_space(2.0);
 
                             // Copyable install command with code-block styling.
                             egui::Frame::new()
