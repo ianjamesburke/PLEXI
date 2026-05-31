@@ -68,6 +68,12 @@ pub const SCRIM_ALPHA: u8 = 190;
 pub const MODAL_PADDING_H: i8 = 32;
 pub const MODAL_PADDING_V: i8 = 28;
 
+// ── Pane ID overlay ────────────────────────────────────────────────────────
+/// Font size for the ⌘-hold pane ID ghost number (large, centered over pane content).
+pub const TEXT_PANE_ID_GHOST: f32 = 64.0;
+/// Alpha (0–255) of the ghost pane ID number — dim enough that content reads through.
+pub const PANE_ID_GHOST_ALPHA: u8 = 55;
+
 // ── App protocol — Badge geometry ─────────────────────────────────────────
 // Padding tokens for the host-rendered Badge DrawCommand. Shared with the
 // Python SDK constants in plexi_sdk/ui.py so both sides agree on pill size.
