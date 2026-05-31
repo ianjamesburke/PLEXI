@@ -43,6 +43,7 @@ pub(crate) fn render_draw_commands(
     workspace_root: &std::path::Path,
     net_http_granted: bool,
     list_view_scroll_offsets: &mut HashMap<String, f32>,
+    list_view_last_aligned_sel: &mut HashMap<String, usize>,
 ) {
     let origin = pane_rect.min;
 
@@ -419,24 +420,31 @@ pub(crate) fn render_draw_commands(
                     heights.iter().sum::<f32>() + SPACE_XS * (heights.len().saturating_sub(1)) as f32
                 };
 
-                // Scroll-to-selected: ensure selected row is visible
+                // Scroll-to-selected: only fire when the selection index changes.
+                // Running this every frame would override mouse-wheel offsets on the
+                // next repaint (selected item snaps back into view unconditionally).
                 let scroll_y_ref = list_view_scroll_offsets.entry(id.clone()).or_insert(0.0);
                 if !items.is_empty() {
                     let sel = (*selected).min(items.len().saturating_sub(1));
-                    let mut item_top = 0.0f32;
-                    for (i, h_item) in heights.iter().enumerate() {
-                        if i == sel {
-                            let item_bot = item_top + h_item;
-                            if *h_item > list_h {
-                                *scroll_y_ref = item_top;
-                            } else if item_top < *scroll_y_ref {
-                                *scroll_y_ref = item_top;
-                            } else if item_bot > *scroll_y_ref + list_h {
-                                *scroll_y_ref = (item_bot - list_h).max(0.0);
+                    let last_sel = list_view_last_aligned_sel.get(id.as_str()).copied();
+                    if last_sel != Some(sel) {
+                        let mut item_top = 0.0f32;
+                        for (i, h_item) in heights.iter().enumerate() {
+                            if i == sel {
+                                let item_bot = item_top + h_item;
+                                if *h_item > list_h {
+                                    *scroll_y_ref = item_top;
+                                } else if item_top < *scroll_y_ref {
+                                    *scroll_y_ref = item_top;
+                                } else if item_bot > *scroll_y_ref + list_h {
+                                    *scroll_y_ref = (item_bot - list_h).max(0.0);
+                                }
+                                break;
                             }
-                            break;
+                            item_top += h_item + SPACE_XS;
                         }
-                        item_top += h_item + SPACE_XS;
+                        list_view_last_aligned_sel.insert(id.clone(), sel);
+                        log::debug!("list_view scroll-to-sel: id={id:?} sel={sel} offset={scroll_y_ref}");
                     }
                     let max_scroll = (total_h - list_h).max(0.0);
                     *scroll_y_ref = scroll_y_ref.clamp(0.0, max_scroll);

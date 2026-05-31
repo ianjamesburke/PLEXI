@@ -21,6 +21,10 @@ pub(crate) struct RenderSession {
     scroll_offsets: HashMap<String, f32>,
     /// Per-ListView scroll offsets. Key = list_view id; value = current vertical offset.
     list_view_scroll_offsets: HashMap<String, f32>,
+    /// Tracks the last selected index that triggered a scroll-to-selected alignment.
+    /// Scroll-to-selected only fires when the selection index changes, so mouse-wheel
+    /// scrolls are not overridden every frame.
+    list_view_last_aligned_sel: HashMap<String, usize>,
     /// True when the current frame contains a ListView command.
     /// When true, `handle_key` in mod.rs suppresses j/k/up/down/enter forwarding.
     pub(crate) list_view_intercepts_nav: bool,
@@ -40,6 +44,7 @@ impl RenderSession {
             text_input_has_focus: false,
             scroll_offsets: HashMap::new(),
             list_view_scroll_offsets: HashMap::new(),
+            list_view_last_aligned_sel: HashMap::new(),
             list_view_intercepts_nav: false,
             pane_just_focused: false,
             outbound_events: Vec::new(),
@@ -82,6 +87,7 @@ impl RenderSession {
             app_dir,
             net_http_granted,
             &mut self.list_view_scroll_offsets,
+            &mut self.list_view_last_aligned_sel,
         );
 
         // ── Pass 2: TextInput widgets ────────────────────────────────────────
@@ -384,6 +390,7 @@ impl RenderSession {
             })
             .collect();
         self.list_view_scroll_offsets.retain(|id, _| live_ids.contains(id));
+        self.list_view_last_aligned_sel.retain(|id, _| live_ids.contains(id));
 
         let mut handled_nav = false;
         for cmd in frame {
