@@ -235,7 +235,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_foreground: s("#f4f2f9"),
         }),
         "dracula" => Some(ThemeConfig {
-            bg_darkest: s("#282a36"),
+            bg_darkest: s("#1e1f29"),
             bg_sidebar: s("#21222c"),
             bg_toolbar: s("#21222c"),
             terminal_bg: s("#282a36"),
@@ -268,7 +268,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_foreground: s("#ffffff"),
         }),
         "tokyo-night" => Some(ThemeConfig {
-            bg_darkest: s("#1a1b26"),
+            bg_darkest: s("#13131d"),
             bg_sidebar: s("#16161e"),
             bg_toolbar: s("#16161e"),
             terminal_bg: s("#1a1b26"),
@@ -400,7 +400,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_foreground: s("#3c3836"),
         }),
         "nord" => Some(ThemeConfig {
-            bg_darkest: s("#2e3440"),
+            bg_darkest: s("#242933"),
             bg_sidebar: s("#3b4252"),
             bg_toolbar: s("#3b4252"),
             terminal_bg: s("#2e3440"),
@@ -433,7 +433,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_foreground: s("#e5e9f0"),
         }),
         "solarized-dark" => Some(ThemeConfig {
-            bg_darkest: s("#002b36"),
+            bg_darkest: s("#00212b"),
             bg_sidebar: s("#073642"),
             bg_toolbar: s("#073642"),
             terminal_bg: s("#002b36"),
