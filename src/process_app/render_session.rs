@@ -408,6 +408,43 @@ impl RenderSession {
                 egui::vec2(list_w, list_h),
             );
 
+            // Click detection — independent of keyboard handled_nav state
+            if !items.is_empty() && !*loading {
+                let response = ui.interact(list_rect, ui.id().with(id), egui::Sense::click());
+                if response.clicked() || response.double_clicked() {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        let scroll_y = self.list_view_scroll_offsets.get(id.as_str()).copied().unwrap_or(0.0);
+                        let mut item_top = 0.0f32;
+                        for (i, item) in items.iter().enumerate() {
+                            let h = item.height();
+                            let row_abs_y = list_rect.min.y + item_top - scroll_y;
+                            if pos.y >= row_abs_y && pos.y < row_abs_y + h {
+                                if response.double_clicked() {
+                                    log::info!("ListView[{id}]: double-click → activate {i}");
+                                    self.outbound_events.push(PlexiEvent::ListSelect {
+                                        id: id.clone(),
+                                        index: i,
+                                    });
+                                    self.outbound_events.push(PlexiEvent::ListActivate {
+                                        id: id.clone(),
+                                        index: i,
+                                    });
+                                } else {
+                                    log::info!("ListView[{id}]: click → select {i}");
+                                    self.outbound_events.push(PlexiEvent::ListSelect {
+                                        id: id.clone(),
+                                        index: i,
+                                    });
+                                }
+                                ui.ctx().request_repaint();
+                                break;
+                            }
+                            item_top += h;
+                        }
+                    }
+                }
+            }
+
             if handled_nav || *loading || items.is_empty() {
                 continue;
             }
@@ -420,9 +457,7 @@ impl RenderSession {
             if scroll_delta.y != 0.0 {
                 if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
                     if list_rect.contains(pos) {
-                        const SPACE_XS: f32 = 4.0;
-                        let total_h: f32 = items.iter().map(|item| item.height()).sum::<f32>()
-                            + SPACE_XS * (n.saturating_sub(1)) as f32;
+                        let total_h: f32 = items.iter().map(|item| item.height()).sum::<f32>();
                         let max_scroll = (total_h - list_h).max(0.0);
                         let prev = self.list_view_scroll_offsets.get(id.as_str()).copied().unwrap_or(0.0);
                         let next = (prev - scroll_delta.y).clamp(0.0, max_scroll);
