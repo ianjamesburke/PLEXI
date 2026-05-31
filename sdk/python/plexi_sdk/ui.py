@@ -715,7 +715,7 @@ class FooterKeys(Component):
         if not self.divider:
             # Symmetric padding above and below the chip row.
             return self.TOP_GAP + self.ROW_H + self.TOP_GAP
-        return self.TOP_GAP + 1.0 + self.TOP_GAP + self.ROW_H
+        return self.TOP_GAP + 1.0 + self.TOP_GAP + self.ROW_H + self.TOP_GAP
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         # Opaque BG backdrop so any content scrolled behind the footer doesn't
@@ -724,7 +724,7 @@ class FooterKeys(Component):
         if self.divider:
             line_y = y + self.TOP_GAP
             ctx.rect(x, line_y, w, 1.0, theme.highlight)
-            chip_row_y = line_y + 1.0 + self.TOP_GAP
+            chip_row_y = line_y + 1.0 + self.TOP_GAP + (self.ROW_H - self.CHIP_H) / 2.0
         else:
             # Center the chip row vertically within its symmetric band.
             chip_row_y = y + self.TOP_GAP + (self.ROW_H - self.CHIP_H) / 2.0

@@ -6,7 +6,8 @@ handle_key / hit_test / set_selected give full keyboard and pointer control.
 
 from __future__ import annotations
 
-from plexi_sdk.ui import Component, HIGHLIGHT, MUTED
+from plexi_sdk._theme import theme
+from plexi_sdk.ui import Component
 
 
 class _ListViewRenderer(Component):
@@ -155,5 +156,5 @@ class ListView:
             thumb_y = y + (self._scroll_offset / total_h) * h
             thumb_y = min(thumb_y, y + h - thumb_h)
             bar_x = x + w - sb_w
-            ctx.rect(bar_x, y, sb_w, h, HIGHLIGHT)
-            ctx.rect(bar_x, thumb_y, sb_w, thumb_h, MUTED)
+            ctx.rect(bar_x, y, sb_w, h, theme.highlight)
+            ctx.rect(bar_x, thumb_y, sb_w, thumb_h, theme.muted)
