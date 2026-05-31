@@ -3980,41 +3980,31 @@ impl eframe::App for PlexiApp {
                         .filter_map(|(pid, p)| p.portal_target().map(|cid| (*pid, cid)))
                         .collect();
                     for (pane_id, child_ctx_id) in portal_panes {
-                        let ctx_name = self.router.iter()
-                            .find(|c| c.context_id == child_ctx_id)
+                        let ctx_entry = self.router.iter().find(|c| c.context_id == child_ctx_id);
+                        let ctx_name = ctx_entry
                             .map(|c| c.name.clone())
                             .unwrap_or_else(|| "(deleted)".to_string());
-                        let mut pane_entries: Vec<(crate::tiling::PaneId, &crate::pane::Pane)> = self.windows.iter()
+                        let ctx_description = ctx_entry
+                            .and_then(|c| c.description.clone())
+                            .unwrap_or_default();
+                        let pane_count = self.windows.iter()
                             .filter(|w| w.context_id == child_ctx_id)
-                            .flat_map(|w| w.panes.iter().map(|(id, p)| (*id, p)))
-                            .collect();
-                        pane_entries.sort_by_key(|(id, _)| *id);
-                        let pane_summaries: Vec<crate::tiling::ChildPaneSummary> = pane_entries.iter()
-                            .filter_map(|(_, p)| match *p {
-                                crate::pane::Pane::Terminal(t) => {
-                                    let cwd = crate::shell::get_pid_cwd(t.backend.child_pid())
-                                        .map(|path| path.to_string_lossy().into_owned());
-                                    Some(crate::tiling::ChildPaneSummary {
-                                        pane_name: t.name.clone().or_else(|| t.pty_title.clone()),
-                                        cwd,
-                                        app_type: "terminal".to_string(),
-                                    })
-                                }
-                                crate::pane::Pane::App(a) => {
-                                    Some(crate::tiling::ChildPaneSummary {
-                                        pane_name: Some(a.name.clone()),
-                                        cwd: Some(a.workspace_root.to_string_lossy().into_owned()),
-                                        app_type: a.runtime.type_id().to_string(),
-                                    })
-                                }
-                                crate::pane::Pane::Portal(_) => None,
-                            })
-                            .collect();
+                            .flat_map(|w| w.panes.values())
+                            .filter(|p| !matches!(p, crate::pane::Pane::Portal(_)))
+                            .count();
                         let notif_count = self.context_notification_count_recursive(child_ctx_id);
+                        let minimap_rects = self.windows.iter()
+                            .find(|w| w.context_id == child_ctx_id)
+                            .and_then(|w| w.tree.root.map(|root| {
+                                crate::tiling::compute_minimap_rects(&w.tree.tiles, root)
+                            }))
+                            .unwrap_or_default();
                         map.insert(pane_id, crate::tiling::PortalPreview {
                             context_name: ctx_name,
-                            panes: pane_summaries,
+                            context_description: ctx_description,
+                            pane_count,
                             notification_count: notif_count,
+                            minimap_rects,
                         });
                     }
                     map
