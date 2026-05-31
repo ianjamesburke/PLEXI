@@ -4722,6 +4722,22 @@ pub fn notes_open_cli() -> i32 {
     pane_send_cli(pane_id, &cmd)
 }
 
+fn print_demo_divider() {
+    eprintln!("  \x1b[2m────────────────────\x1b[0m");
+    eprintln!();
+}
+
+fn print_step_header(step: u8, total: u8, title: &str) {
+    print_demo_divider();
+    eprintln!("  \x1b[1mStep {} of {}   {}\x1b[0m", step, total, title);
+    eprintln!();
+}
+
+fn print_step_complete(step: u8, total: u8) {
+    eprintln!("  \x1b[1;32m\u{2713} {}/{}\x1b[0m", step, total);
+    eprintln!();
+}
+
 pub fn demo_cli() -> i32 {
     let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
         Ok(v) => v,
@@ -4761,9 +4777,8 @@ pub fn demo_cli() -> i32 {
     eprintln!();
 
     // Step 1 — split
-    eprintln!("  Step 1 of 2   Split a pane");
-    eprintln!();
-    eprintln!("  Press  \x1b[1m[ \u{2318}D ]\x1b[0m  to split the current pane.");
+    print_step_header(1, 2, "Split a pane");
+    eprintln!("    Press  \x1b[1m[ \u{2318}D ]\x1b[0m  to split the current pane.");
     eprintln!();
 
     // Capture the new pane's ID from the split event so step 2 can verify
@@ -4784,18 +4799,16 @@ pub fn demo_cli() -> i32 {
             return 1;
         }
     };
-    eprintln!("  \x1b[1;32m\u{2713} 1/2\x1b[0m");
-    eprintln!();
+    print_step_complete(1, 2);
 
     // Step 2 — navigate
-    eprintln!("  Step 2 of 2   Navigate panes");
+    print_step_header(2, 2, "Navigate panes");
+    eprintln!("       \x1b[2m^\x1b[0m");
+    eprintln!("       K");
+    eprintln!("    H     L");
+    eprintln!("       J");
     eprintln!();
-    eprintln!("     \x1b[2m^\x1b[0m");
-    eprintln!("     K");
-    eprintln!("  H     L");
-    eprintln!("     J");
-    eprintln!();
-    eprintln!("  Press  \x1b[1m[ \u{2318}H ]\x1b[0m  to return to this pane, then  \x1b[1m[ \u{2318}L ]\x1b[0m  to go back.");
+    eprintln!("    Press  \x1b[1m[ \u{2318}H ]\x1b[0m  to return to this pane, then  \x1b[1m[ \u{2318}L ]\x1b[0m  to go back.");
     eprintln!();
 
     // Require a confirmed round-trip between split_pane and demo pane.
@@ -4824,7 +4837,7 @@ pub fn demo_cli() -> i32 {
         return 1;
     }
 
-    eprintln!("  \x1b[1;32m\u{2713} 2/2   You know Plexi.\x1b[0m");
+    eprintln!("  \x1b[1;32m\u{2713} 2/2 \u{2014} You know Plexi.\x1b[0m");
     eprintln!();
     log::info!("demo_cli: tutorial completed for pane_id={my_pane_id}");
     0
