@@ -857,6 +857,86 @@ fn depth_four_chain_has_portal_tiles() {
     }
 }
 
+/// Issue #1854: closing a context portal must reset the parent window's focused_pane
+/// if it was pointing at the now-deleted Portal tile. Otherwise focus is permanently lost.
+#[test]
+fn delete_context_portal_resets_stale_focused_pane() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    // Add a real pane to the root window and record its tile ID.
+    let (root_pane_tile, _root_pane_id) = app.add_test_pane();
+    let root_id = app.router.active().context_id;
+
+    // Create a child context.
+    let child_id = 9901u64;
+    let child_win_id = 9902u64;
+    app.router.push(crate::context::Context {
+        name: "Child".to_string(),
+        path: std::path::PathBuf::from("/tmp/child_1854"),
+        root: None,
+        description: None,
+        context_id: child_id,
+        parent_id: Some(root_id),
+        depth: 1,
+    });
+    app.context_active_window.insert(child_id, child_win_id);
+    {
+        let mut tiles = egui_tiles::Tiles::default();
+        let r = tiles.insert_pane(99991u64);
+        app.windows.push(crate::context::Window {
+            name: String::new(),
+            path: std::path::PathBuf::from("/tmp/child_1854"),
+            tree: egui_tiles::Tree::new("child_1854", r, tiles),
+            panes: std::collections::HashMap::new(),
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 0,
+            window_id: child_win_id,
+            context_id: child_id,
+        });
+    }
+
+    // Insert a Portal pane into the root window pointing at the child context.
+    let portal_pane_id = 88801u64;
+    let portal_tile;
+    {
+        let root_win = &mut app.windows[0];
+        portal_tile = root_win.tree.tiles.insert_pane(portal_pane_id);
+        root_win.panes.insert(
+            portal_pane_id,
+            crate::pane::Pane::Portal(Box::new(crate::pane::PortalPane {
+                pane_id: portal_pane_id,
+                target_context_id: child_id,
+                context_state: None,
+            })),
+        );
+    }
+
+    // Simulate focus being on the Portal tile (the buggy pre-delete state).
+    app.windows[0].focused_pane = Some(portal_tile);
+
+    // Delete the child context — this removes the Portal tile from the root window.
+    let child_idx = app.router.position(|c| c.context_id == child_id).unwrap();
+    app.delete_context(child_idx);
+
+    // focused_pane must NOT still point to the now-deleted Portal tile.
+    let root_win = app.windows.iter().find(|w| w.context_id == root_id).unwrap();
+    assert_ne!(
+        root_win.focused_pane,
+        Some(portal_tile),
+        "focused_pane must not point to the deleted Portal tile"
+    );
+    // And it must be reset to the surviving pane.
+    assert_eq!(
+        root_win.focused_pane,
+        Some(root_pane_tile),
+        "focused_pane must be reset to the surviving root pane tile"
+    );
+}
+
 /// Issue #1392: deleting a context must cascade to all descendants AND
 /// clean up router.depth_stack entries pointing to deleted contexts.
 #[test]

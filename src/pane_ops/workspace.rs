@@ -345,6 +345,20 @@ impl PlexiApp {
             }
         }
 
+        // 4b. Reset any focused_pane that now points to a removed Portal tile.
+        for win in &mut self.windows {
+            if let Some(fp) = win.focused_pane {
+                if win.tree.tiles.get(fp).is_none() {
+                    win.focused_pane = win.tree.root
+                        .and_then(|root| win.find_first_pane_in(root));
+                    log::info!(
+                        "delete_context: stale focused_pane reset for window ctx_id={}",
+                        win.context_id
+                    );
+                }
+            }
+        }
+
         // 5. Remove from router. Iterate until none remain (positions shift after each removal).
         loop {
             let next = self.router.position(|c| deleted.contains(&c.context_id));
