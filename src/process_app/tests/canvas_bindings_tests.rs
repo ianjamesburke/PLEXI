@@ -1,31 +1,20 @@
 use super::super::*;
+use crate::app_permissions::AppPermissions;
 use crate::app_protocol::{
     ArtifactOpenMode, AppRequest, PathTokenMode, PlexiEvent,
 };
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 fn make_app(capabilities: HashSet<Capability>) -> Option<ProcessApp> {
-    let sh = ["/bin/sh", "/usr/bin/sh"]
-        .iter()
-        .find(|p| std::path::Path::new(p).exists())
-        .map(PathBuf::from)?;
-    let workspace_root = std::env::temp_dir();
-    let mut app = ProcessApp::launch(
-        "test_bindings",
-        "Test Bindings",
-        &sh,
-        &workspace_root,
-        &["-c".to_string(), "sleep 1".to_string()],
-        workspace_root.clone(),
-        capabilities,
-        false,
-        None,
-    )
-    .ok()?;
-    // Stamp a non-zero pane id so the AppCommand sender_pane_id is
-    // distinguishable from "unset".
-    app.set_pane_id(7);
+    let (app, _tx) = ProcessApp::new_for_test(
+        7,
+        AppPermissions {
+            capabilities,
+            blocked: HashSet::new(),
+            is_builtin: false,
+            allowed_hosts: vec![],
+        },
+    );
     Some(app)
 }
 

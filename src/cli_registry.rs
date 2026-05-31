@@ -221,12 +221,11 @@ fn parse_all_embedded() -> Result<usize, RegistryError> {
     let mut count = 0;
     for entry in EMBEDDED_REGISTRY.entries() {
         if let Some(dir) = entry.as_dir() {
-            let cli = dir
-                .path()
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("?")
-                .to_string();
+            let dir_name = dir.path().file_name().and_then(|s| s.to_str()).unwrap_or("?");
+            if dir_name == "mcp" {
+                continue;
+            }
+            let cli = dir_name.to_string();
             for f in dir.files() {
                 let path_repr = f.path().to_string_lossy().into_owned();
                 let json = f.contents_utf8().ok_or_else(|| RegistryError::Io {
