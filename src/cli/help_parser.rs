@@ -35,7 +35,7 @@ pub fn parse_help_to_descriptor(binary: &str) -> Result<String, CliParseError> {
     let help_text = run_with_timeout(binary, "--help")?;
     let version = run_version(binary);
 
-    let descriptor = crate::cli_crawl::parse_help(binary, &help_text, version);
+    let descriptor = crate::cli::crawl::parse_help(binary, &help_text, version);
     let count = descriptor.commands.len();
 
     let json = serde_json::to_string_pretty(&descriptor)?;

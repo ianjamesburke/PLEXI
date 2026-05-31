@@ -15,11 +15,7 @@ mod app_registry_watcher;
 mod app_trait;
 mod audio;
 mod cli;
-mod cli_args;
-mod cli_crawl;
-mod cli_help_parser;
-mod cli_registry;
-mod cli_setup;
+
 mod command_palette;
 mod config;
 mod config_watcher;
@@ -217,7 +213,7 @@ fn main() -> eframe::Result {
             Some(a.clone())
         })
         .collect();
-    use crate::cli_args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd, ConfigCmd, RoutineCmd, NotesCmd};
+    use crate::cli::args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd, ConfigCmd, RoutineCmd, NotesCmd};
     use clap::Parser;
 
     match Cli::try_parse_from(&args) {
@@ -263,7 +259,7 @@ fn main() -> eframe::Result {
                             } else {
                                 let binary = cli_flag.unwrap();
                                 log::info!("app_open:cli: running --help parser for `{binary}`");
-                                match cli_help_parser::parse_help_to_descriptor(&binary) {
+                                match crate::cli::help_parser::parse_help_to_descriptor(&binary) {
                                     Ok(json) => {
                                         let id = uuid::Uuid::new_v4();
                                         let tmp = std::env::temp_dir()
@@ -487,7 +483,7 @@ fn main() -> eframe::Result {
                     Commands::Descriptor { cmd } => match cmd {
                         DescriptorCmd::Probe { command, no_registry, no_crawl, json, extra_args } => {
                             if json {
-                                match cli_help_parser::parse_help_to_descriptor(&command) {
+                                match crate::cli::help_parser::parse_help_to_descriptor(&command) {
                                     Ok(j) => { println!("{j}"); std::process::exit(0); }
                                     Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
                                 }
@@ -664,7 +660,7 @@ fn known_subcommands() -> &'static std::collections::HashSet<String> {
     use std::sync::OnceLock;
     static INSTANCE: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
     INSTANCE.get_or_init(|| {
-        crate::cli_args::Cli::command()
+        crate::cli::args::Cli::command()
             .get_subcommands()
             .flat_map(|c| {
                 std::iter::once(c.get_name().to_string())

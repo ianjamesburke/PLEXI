@@ -1,0 +1,142 @@
+pub fn validate_cli(path: &str) -> i32 {
+    let app_dir = std::path::Path::new(path);
+    if !app_dir.exists() {
+        eprintln!("validate: path does not exist: {path}");
+        return 1;
+    }
+    if !app_dir.is_dir() {
+        eprintln!("validate: path is not a directory: {path}");
+        return 1;
+    }
+
+    let manifest_path = app_dir.join("manifest.toml");
+    if !manifest_path.exists() {
+        eprintln!("✗ manifest.toml not found in {path}");
+        return 1;
+    }
+
+    let raw = match std::fs::read_to_string(&manifest_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("✗ cannot read manifest.toml: {e}");
+            return 1;
+        }
+    };
+
+    let toml_val: toml::Value = match raw.parse() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("✗ manifest.toml parse error: {e}");
+            return 1;
+        }
+    };
+
+    let mut errors: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+
+    // Required fields
+    let app_section = toml_val.get("app");
+    let required_fields = ["id", "name", "version", "entry"];
+    for field in &required_fields {
+        let val = app_section.and_then(|a| a.get(field)).and_then(|v| v.as_str());
+        if val.is_none() || val == Some("") {
+            errors.push(format!("  [app].{field} is missing or empty"));
+        }
+    }
+
+    // description is recommended but not required
+    let has_desc = app_section
+        .and_then(|a| a.get("description"))
+        .and_then(|v| v.as_str())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    if !has_desc {
+        warnings.push("  [app].description is missing (recommended)".to_string());
+    }
+
+    // Check entry file
+    let entry = app_section
+        .and_then(|a| a.get("entry"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !entry.is_empty() {
+        let entry_path = app_dir.join(entry);
+        if !entry_path.exists() {
+            errors.push(format!("  entry file not found: {}", entry_path.display()));
+        } else if entry.ends_with(".py") {
+            // Python syntax check via AST parse (no import, no SDK needed)
+            let py_check = std::process::Command::new("python3")
+                .arg("-c")
+                .arg("import ast, sys; ast.parse(open(sys.argv[1]).read())")
+                .arg(&entry_path)
+                .output();
+            match py_check {
+                Ok(out) if out.status.success() => {}
+                Ok(out) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    errors.push(format!("  Python syntax error in {entry}: {}", stderr.trim()));
+                }
+                Err(e) => {
+                    warnings.push(format!("  python3 not found — skipping syntax check: {e}"));
+                }
+            }
+        }
+    }
+
+    // capabilities validation
+    if let Some(caps) = app_section
+        .and_then(|a| a.get("capabilities"))
+        .and_then(|v| v.as_array())
+    {
+        let known: &[&str] = &[
+            "net.http", "net.dns", "fs.read", "fs.write",
+            "audio.record", "audio.play", "midi.in", "midi.out",
+            "ai.query", "panes.spawn", "video.decode",
+        ];
+        for cap in caps {
+            if let Some(s) = cap.as_str() {
+                if !known.contains(&s) {
+                    warnings.push(format!("  unknown capability: {s:?} — check the manifest reference"));
+                }
+            }
+        }
+    }
+
+    // Print results
+    let id = app_section
+        .and_then(|a| a.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(path);
+
+    if errors.is_empty() && warnings.is_empty() {
+        println!("✓ {id} — all checks passed");
+        log::info!("validate: {} passed", id);
+        return 0;
+    }
+
+    if !errors.is_empty() {
+        println!("✗ {id} — {} error(s):", errors.len());
+        for e in &errors {
+            println!("{e}");
+        }
+    }
+    if !warnings.is_empty() {
+        println!("⚠ {id} — {} warning(s):", warnings.len());
+        for w in &warnings {
+            println!("{w}");
+        }
+    }
+    log::warn!("validate: {} — {} errors, {} warnings", id, errors.len(), warnings.len());
+
+    if errors.is_empty() { 0 } else { 1 }
+}
+
+/// Resolve `path` argument (canonicalize if given, else use CWD).
+pub(super) fn resolve_path(path: Option<&str>) -> Result<std::path::PathBuf, String> {
+    match path {
+        Some(p) => std::fs::canonicalize(p)
+            .map_err(|e| format!("error: could not resolve path {p:?}: {e}")),
+        None => std::env::current_dir()
+            .map_err(|e| format!("error: could not get current directory: {e}")),
+    }
+}

@@ -4140,9 +4140,9 @@ impl PlexiApp {
     }
 
     pub(crate) fn draw_cli_setup_modal(&mut self, ctx: &egui::Context) {
-        let cli_name = crate::cli_setup::cli_name();
+        let cli_name = crate::cli::setup::cli_name();
         let colors = self.colors;
-        let cmd = crate::cli_setup::INSTALL_COMMAND;
+        let cmd = crate::cli::setup::INSTALL_COMMAND;
 
         egui::Area::new(egui::Id::new("cli_setup_modal"))
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
@@ -4246,9 +4246,9 @@ impl PlexiApp {
 
                                 if check_btn.clicked() {
                                     log::info!("cli_setup: user clicked Check for success");
-                                    if crate::cli_setup::is_installed() {
+                                    if crate::cli::setup::is_installed() {
                                         log::info!("cli_setup: CLI found - closing modal");
-                                        crate::cli_setup::mark_prompted();
+                                        crate::cli::setup::mark_prompted();
                                         self.cli_setup_check_result = None;
                                         self.show_cli_setup_prompt = false;
                                     } else {
@@ -4286,7 +4286,7 @@ impl PlexiApp {
             return;
         }
         let colors = self.colors;
-        let cmd = crate::cli_setup::INSTALL_COMMAND;
+        let cmd = crate::cli::setup::INSTALL_COMMAND;
 
         egui::Area::new(egui::Id::new("completions_banner"))
             .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -20.0))
@@ -4339,7 +4339,7 @@ impl PlexiApp {
                                 .clicked()
                             {
                                 log::info!("cli_setup: completions banner — user clicked Done, marking sentinel");
-                                crate::cli_setup::completions_mark_prompted();
+                                crate::cli::setup::completions_mark_prompted();
                                 self.show_completions_banner = false;
                             }
                             if ui
