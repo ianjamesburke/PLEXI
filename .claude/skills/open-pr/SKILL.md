@@ -62,6 +62,17 @@ rm /tmp/issue_n1.json /tmp/issue_n2.json
 
 ## Step 2 — Create PR
 
+**Idempotency guard — existing PR for this branch (run FIRST, before anything else):**
+```bash
+EXISTING_PR=$(gh pr list --head <branch> --state open --json number,url --jq '.[0] // empty')
+if [ -n "$EXISTING_PR" ]; then
+  PR_NUMBER=$(echo "$EXISTING_PR" | jq -r '.number')
+  PR_URL=$(echo "$EXISTING_PR" | jq -r '.url')
+  echo "[open-pr] PR #$PR_NUMBER already exists for <branch> — skipping creation, advancing pipeline labels."
+fi
+```
+If `EXISTING_PR` is non-empty, **do NOT run `gh pr create`** (it would error and abort the skill, stranding the issue at `pipeline:open-pr` forever). Skip directly to the **Pipeline Labels** step to advance the issue to `pipeline:validate`, then invoke `/validate-pr $PR_NUMBER`. This makes open-pr idempotent: re-running on an already-PR'd branch advances state instead of looping.
+
 **Lightweight PR detection:**
 ```bash
 ISSUE_LABELS=$(gh issue view <number> --json labels --jq '[.labels[].name] | join(",")')

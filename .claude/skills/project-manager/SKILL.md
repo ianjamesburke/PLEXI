@@ -122,15 +122,24 @@ Stalled issues already have a PR or partial work — resume them before dispatch
 
 | Label | Dispatch |
 |---|---|
-| `pipeline:open-pr` + `ready` | Detect branch: `git ls-remote origin "refs/heads/feature/<N>-*"` → `/open-pr <branch>` |
+| `pipeline:open-pr` + `ready` | **PR-exists check first** (below). If no PR → `/open-pr <branch>`. If PR exists → advance label and dispatch `/validate-pr <PR#>` instead. |
 | `pipeline:validate` + `ready` | Detect PR#, dispatch `/validate-pr <PR#>` |
 | `pipeline:merge` + `ready` | Detect PR#, dispatch `/merge-pr <PR#>` |
 
-Detect PR# for validate/merge:
+Detect PR# for any stage:
 ```bash
 gh pr list --state open --json number,headRefName \
   | jq --arg n "<N>" '.[] | select(.headRefName | test("^feature/\($n)-")) | .number'
 ```
+
+**PR-exists check for `pipeline:open-pr` issues (mandatory — prevents the re-open loop):**
+An issue can carry `pipeline:open-pr` while already having an open PR — this happens when `open-pr` errored after `gh pr create` but before the label flip, or when it was interrupted. Dispatching `/open-pr` again would error and re-strand the issue every cycle. So before dispatching open-pr, look up the PR# with the query above:
+- **No PR found** → dispatch `/open-pr <branch>` as normal.
+- **PR found** → the issue is actually past open-pr. Advance it and dispatch validate instead:
+  ```bash
+  gh issue edit <N> --add-label "pipeline:validate" --remove-label "pipeline:open-pr"
+  ```
+  then dispatch `/validate-pr <PR#>`. Print: `[PM] #<N> already has PR #<PR#> — advanced to pipeline:validate.`
 
 Subtract resumed issues from `OPEN_SLOTS`.
 
@@ -170,12 +179,15 @@ The watch loop ends when `DISPATCH=false` AND `ACTIVE_LANE_COUNT = 0`.
 
 ## Step 4 — Select candidates
 
-Fetch ready issues with bundle flag, sorted newest-first:
+Fetch ready issues with bundle flag, sorted newest-first.
+
+**Critical:** `ready` is added at every pipeline handoff (implement→open-pr→validate→merge), so it does NOT mean "fresh, dispatch me" — it means "ready for the next stage." A genuinely fresh issue has `ready` AND **no** `pipeline:*` label. Issues carrying any `pipeline:*` label belong to Step 2c (stalled resume), not fresh dispatch — the jq below excludes them so they never leak into a fresh lane:
 
 ```bash
 gh issue list --label "ready" --state open \
   --json number,title,labels --limit 100 \
-  | jq '[.[] | {number, title, areas: [.labels[].name | select(startswith("area:"))], bundle: ([.labels[].name] | contains(["bundle"]))}] | sort_by(-.number)'
+  | jq '[.[] | select([.labels[].name | startswith("pipeline:")] | any | not)
+        | {number, title, areas: [.labels[].name | select(startswith("area:"))], bundle: ([.labels[].name] | contains(["bundle"]))}] | sort_by(-.number)'
 ```
 
 **Bundle batching (do this first before selecting individual issues):**
