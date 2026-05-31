@@ -83,36 +83,48 @@ Print one status line:
 
 ---
 
-## Step 2b — Pane census + health check
+## Step 2b — Pane census + state read (title-driven)
 
-Build `ACTIVE_PANE_ISSUES` from live pane titles (authoritative — GitHub labels lag):
+**One cheap call gives every lane's state.** The pipeline skills (`implement-issue`, `open-pr`, `validate-pr`, `merge-pr`) write their current stage into the pane title as `#<issue> · <state>` (bundles: `#<n1>+<n2> · <state>`). Read titles instead of capturing pane content every cycle — capturing every lane every cycle is what exhausts this skill's context. Drop to `pane capture` only for the two cases that need detail: a `blocked` lane, or a working lane that has gone stale.
 
 ```bash
 PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}
-$PLEXI pane list 2>/dev/null | jq -r '.[].title // ""' | grep -oE '[0-9]+' || true
+$PLEXI pane list 2>/dev/null | jq -r '.[] | "\(.id)\t\(.title // "")"'
 ```
 
-Note: the JSON field is `title`, not `name` — `.name` returns null and breaks the census.
+The JSON field is `title`, not `name` (`.name` is null). Parse each lane row into:
+- `PANE_ID` — numeric id (first column)
+- `ISSUE_NUMS` — `grep -oE '[0-9]+'` on the part **before** ` · ` (the prefix). State words are digit-free by contract, so this only ever yields issue numbers — never a PR number.
+- `STATE` — the word after ` · ` (empty if the pane has no suffix yet)
 
-**Cursor store:** Load per-pane cursors from `.claude/agent-memory/project-manager/pane-cursors.json` (create as `{}` if missing). For each active issue pane ID:
+Build `ACTIVE_PANE_ISSUES` = union of all `ISSUE_NUMS` across lane panes.
 
+**State store:** Load `.claude/agent-memory/project-manager/pane-status.json` (create `{}` if missing), keyed by pane id → `{state, unchanged}`. For each lane pane, compare its current `STATE` to the stored one: changed → set `unchanged` to 0 and save the new state; same → increment `unchanged`. Persist after the cycle and drop entries for panes that no longer exist.
+
+**Act on each lane's state:**
+
+| State | Meaning | PM action |
+|---|---|---|
+| `impl` `pushed` `pr-open` `review` `validate` `fixing` `merging` | working | Leave alone. Counts as an active lane. |
+| _(no suffix)_ | just dispatched, pre-status | Leave alone. Counts as active. |
+| `needs-you` | waiting on the user's pass/fail/modify/approve reply | **Surface** (line below). Do NOT capture. Pane stays; counts as active. |
+| `done` | merged + closed; pane self-closes | Lane is finishing — its slot is free. Step 2d closes the issue if the pane's self-close lagged. |
+| `noop` | agent exited without real work | `$PLEXI pane close <PANE_ID>`, drop its store entry, free the slot. |
+| `blocked` | unrecoverable failure / hard reject | **Capture once** (below) for the cause, surface to user, leave the pane. Counts as active — do not refill over it. |
+
+Surface line for a `needs-you` lane:
+```
+[PM] ⏳ #<issue> awaiting your reply in pane <PANE_ID> — pass / fail / modify.
+```
+
+**Exception capture — only for `blocked` or stale lanes:**
 ```bash
-# First capture (no stored cursor):
-$PLEXI pane capture --lines 10 <PANE_ID>
-
-# Subsequent captures (cursor from prior run):
-$PLEXI pane capture --from-cursor <CURSOR> <PANE_ID>
+$PLEXI pane capture --lines 30 <PANE_ID>
 ```
+- `blocked` → surface the cause: `[PM] ⛔ #<issue> blocked in pane <PANE_ID>: <one-line cause from capture>`
+- **Stale** = a working-state pane whose `unchanged` count has reached **3** (≈12 min at the 4-min cadence). Capture once to check for a hang (idle shell prompt, panic, repeated error). If hung → surface like `blocked` and flag for the user. If it's just a genuinely long step (e.g. `just pr-install` compiling) → set `unchanged` back to 0 and leave it.
 
-Each response is `{"cursor": N, "lines": [...], "missed": bool}`. Save the new `cursor` back to the store keyed by pane ID and persist to disk after each cycle. `lines: []` + `missed: false` = no new output.
-
-**Noop exit detection:** If captured lines show the agent exited without doing real work (e.g. "Issue is already closed", "Nothing to do", "already implemented", "already merged"), close the pane immediately and free the slot:
-
-```bash
-$PLEXI pane close <PANE_ID>
-```
-
-Remove its cursor entry from the store. Any issue whose pane was NOT closed must be skipped in Step 2c and Step 4.
+**After acting:** remove every `noop` and `done` issue from `ACTIVE_PANE_ISSUES` — their slots are free for refill. Any issue still in `ACTIVE_PANE_ISSUES` (working, `needs-you`, or `blocked`) must be skipped in Step 2c and Step 4.
 
 ---
 
@@ -301,9 +313,11 @@ On each re-entry after initial dispatch, lead with:
 
 ## Notes
 
-- **Pane census uses `.title`, not `.name`.** `.name` returns null — always use `jq -r '.[].title // ""'`.
-- **Always use `--from-cursor` on repeat pane captures.** `plexi pane capture --from-cursor <N> <ID>` reads only lines written since the last check. Store cursors in `.claude/agent-memory/project-manager/pane-cursors.json`, keyed by pane ID. `lines: []` + `missed: false` = no new output.
-- **Close noop panes immediately.** If an agent exits without doing real work, `pane close` right away and free the slot.
+- **State comes from pane titles, not content.** Each lane writes its stage as `#<issue> · <state>`. One `plexi pane list` per cycle reads every lane's state — never capture pane content just to learn what stage a lane is in. Field is `.title`, not `.name`.
+- **Capture is the exception, not the routine.** Only `pane capture` a lane that is `blocked` (get the cause) or a working lane gone stale (`unchanged` ≥ 3 cycles — check for a hang). This is the whole point of the title scheme: it stops the PM burning context on per-pane captures every cycle.
+- **`needs-you` means surface, don't capture.** The validate-pr pane already printed the testing block in its own pane; the user reads it there. The PM just flags which pane awaits a reply.
+- **Close `noop` panes immediately.** A `noop` title means the agent exited without real work — `pane close` right away and free the slot.
+- **State store:** `.claude/agent-memory/project-manager/pane-status.json`, keyed by pane id → `{state, unchanged}`. Drives staleness detection and slot accounting.
 - **Bare-shell pane recovery.** If a dispatch pane shows a prompt with no agent running ("← for agents"), re-send the command: `$PLEXI pane send <ID> 'c "/ship-issue <N>"\n'` — use `\n` for Enter, never a trailing `Enter` argument.
 - **Bundle issues should be batched.** Issues labeled `bundle` are micro-changes. Group by primary area and send all same-area bundles to one lane in one PR. Never open one PR per bundle issue.
 - **Post-merge cleanup runs every cycle.** Check merged PRs for still-open linked issues and close them automatically.

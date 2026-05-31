@@ -28,6 +28,12 @@ Pipeline: pipeline:open-pr + ready set — invoking /open-pr inline
 
 > **Labels are the live state.** Never read the Ship Log to determine pipeline stage — read the issue labels. Ship Log is audit trail only.
 
+> **Pane status title.** This skill runs in a dispatched pane named `#<n>` (or `#<n1>+<n2>` for a bundle). At each phase boundary, update the pane title with the current stage so the project-manager can read state from `plexi pane list` instead of capturing pane content. The call is:
+> ```bash
+> plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · <state>"
+> ```
+> Use the exact issue-number prefix the pane already has (`#<n1>+<n2>` for a bundle). **The status word must never contain a digit** — the PM maps panes to issues with `grep -oE '[0-9]+'` on the title, so a PR number in the suffix would corrupt the census. States this skill sets: `impl`, `pushed`, `noop`, `blocked`.
+
 ---
 
 ## Phase 0 — Find the Issue
@@ -102,7 +108,7 @@ gh issue view <number> --json state,title,labels --jq '{state: .state, title: .t
 ISSUE #<n>: <title>
 ```
 
-If `CLOSED`: stop. "Issue #<n> is already closed — nothing to do."
+If `CLOSED`: set `plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<number> · noop"`, then stop. "Issue #<n> is already closed — nothing to do."
 
 If labeled `in progress`: surface existing worktree + PR before proceeding. Ask for takeover confirmation — do not proceed until user confirms.
 
@@ -110,11 +116,12 @@ If labeled `in progress`: surface existing worktree + PR before proceeding. Ask 
 ```bash
 gh issue view <number> --json body --jq '.body'
 ```
-Grep `src/` on alpha and `git log --oneline -20` against Done When criteria. If all criteria met: close the issue and stop.
+Grep `src/` on alpha and `git log --oneline -20` against Done When criteria. If all criteria met: set `plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<number> · noop"`, close the issue, and stop.
 
 **Label + pane setup:**
 ```bash
 gh issue edit <number> --add-label "in progress" --add-label "pipeline:implement"
+plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<number> · impl"
 IMPL_PANE=$PLEXI_PANE_ID
 _PROJ_ITEM=$(gh api graphql -f query='query($n:Int!){repository(owner:"ianjamesburke",name:"PLEXI"){issue(number:$n){projectItems(first:5){nodes{id project{id}}}}}}' -F n=<number> --jq '.data.repository.issue.projectItems.nodes[]|select(.project.id=="PVT_kwHOAkOgys4BXaQY")|.id')
 [ -n "$_PROJ_ITEM" ] && gh api graphql -f query='mutation($i:ID!,$v:String!){updateProjectV2ItemFieldValue(input:{projectId:"PVT_kwHOAkOgys4BXaQY",itemId:$i,fieldId:"PVTSSF_lAHOAkOgys4BXaQYzhSnRw8",value:{singleSelectOptionId:$v}}){projectV2Item{id}}}' -f i="$_PROJ_ITEM" -f v="47fc9ee4" > /dev/null
@@ -307,7 +314,10 @@ gh issue edit <N> \
   --remove-label "in progress"
 ```
 
-After setting labels on all issues, invoke `/open-pr` inline in the same pane — do not spawn a new pane or wait for PM to dispatch.
+Set the pane status to `pushed`, then invoke `/open-pr` inline in the same pane — do not spawn a new pane or wait for PM to dispatch:
+```bash
+plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · pushed"   # bundle: "#<n1>+<n2> · pushed"
+```
 
 ---
 
@@ -326,4 +336,4 @@ After setting labels on all issues, invoke `/open-pr` inline in the same pane �
 - Every implementation needs a logging plan
 - CLI changes must update `~/.claude/skills/plexi-cli/SKILL.md` in same PR
 - `cargo build --manifest-path <worktree>/Cargo.toml` — never rely on CWD
-- On unrecoverable failure: close PR if open, comment on issue under `## Prior Attempts`, remove `in progress`, add `ready`, exit
+- On unrecoverable failure: set `plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · blocked"`, close PR if open, comment on issue under `## Prior Attempts`, remove `in progress`, add `ready`, exit
