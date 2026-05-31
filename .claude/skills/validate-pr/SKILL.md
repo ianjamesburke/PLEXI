@@ -25,6 +25,12 @@ Phase 3 of the ship pipeline. Manages the test loop and all rejection paths.
 
 > **Labels are the live state.** Never read the Ship Log to determine pipeline stage — read the issue labels. Ship Log is audit trail only.
 
+> **Pane status title.** Runs in the same dispatched pane (named `#<n>`, or `#<n1>+<n2>` for a bundle). Update the title at each stage so the PM reads state from `plexi pane list` instead of capturing content:
+> ```bash
+> plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · <state>"
+> ```
+> **The status word must never contain a digit** (the PM maps panes to issues via `grep -oE '[0-9]+'` — a PR number in the suffix would corrupt the census). States this skill sets: `validate`, `needs-you` (waiting on the user — the PM surfaces this), `fixing`, `blocked`.
+
 ---
 
 ## Step 0 — Read Context
@@ -48,12 +54,13 @@ ATTEMPT_COUNT=$(gh issue view $ISSUE_NUMBER --json body --jq '.body' \
   | grep -cE '^\*\*Validate attempt [0-9]+:' || true)
 ```
 
-Mark issue as actively in this phase:
+Mark issue as actively in this phase and update pane status:
 ```bash
 gh issue edit $ISSUE_NUMBER \
   --add-label "in progress" \
   --remove-label "pipeline:open-pr" \
   --add-label "pipeline:validate" 2>/dev/null || true
+plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · validate"
 ```
 
 ---
@@ -178,6 +185,8 @@ Reply: "pass" | "fail: <description>" | "modify: <bounded change>"
 
 **Notification:**
 ```bash
+# Flip pane status to needs-you so the PM surfaces this lane as awaiting the user
+plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
 # Route reply to PM pane if PM dispatched this skill, otherwise this pane
 REPLY_PANE="${PM_PANE_ID:-$PLEXI_PANE_ID}"
 RESULT=$(plexi notify \
@@ -226,12 +235,13 @@ Valid only if pass criteria were **not** fully met. If criteria were met and use
 
 Fix the specific change on the feature branch, commit, push:
 ```bash
+plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · fixing"
 git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" add <files>
 git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" commit -m "fix: <description>"
 git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" push
 ```
 
-Re-run `just pr-install $PR_NUMBER` from the feature worktree. Re-surface the testing block. Do not expand scope.
+Re-run `just pr-install $PR_NUMBER` from the feature worktree. Re-surface the testing block (which flips status back to `needs-you`). Do not expand scope.
 
 Append to Ship Log:
 ```markdown
@@ -257,6 +267,7 @@ Report what the log shows.
 
 Apply the targeted fix to the feature branch, commit, push:
 ```bash
+plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · fixing"
 git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" add <files>
 git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" commit -m "fix: <description from failure>"
 git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" push
@@ -291,8 +302,9 @@ If `c` → STOP. Leave PR open. Remove attempt limit — user owns it from here.
 
 ## Hard Reject
 
-1. **Read the PR log:**
+1. **Mark the lane blocked and read the PR log:**
 ```bash
+plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · blocked"
 tail -100 ~/.plexi-pr-$PR_NUMBER/plexi.log
 ```
 
@@ -377,6 +389,11 @@ Fail criteria:
 - <what would look wrong>
 
 Reply: "pass" | "fail: <description>" | "modify: <change>"
+```
+
+Before firing the notification and waiting, flip pane status the same as the install path:
+```bash
+plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
 ```
 
 ---

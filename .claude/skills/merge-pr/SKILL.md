@@ -16,6 +16,12 @@ Phase 4 of the ship pipeline. Input: approved PR number. Output: clean alpha at 
 
 On completion, appends final entry to the issue's Ship Log, fires a notify, closes the pane, and outputs `[COMPLETE]` as the last line before close — never before.
 
+> **Pane status title.** Runs in the same dispatched pane (named `#<n>`, or `#<n1>+<n2>` for a bundle). Update the title so the PM reads state from `plexi pane list` instead of capturing content:
+> ```bash
+> plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · <state>"
+> ```
+> **The status word must never contain a digit** (the PM maps panes to issues via `grep -oE '[0-9]+'`). States this skill sets: `merging`, then `done` just before the pane self-closes.
+
 ---
 
 ## Step 0 — Read Context
@@ -31,9 +37,10 @@ Extract:
 
 **If already MERGED:** skip to Step 5 (close issue). Another session merged it.
 
-**CWD for all steps: the repo root. Set it now:**
+**CWD for all steps: the repo root. Set it now, and flip pane status to `merging`:**
 ```bash
 cd "$(git rev-parse --show-toplevel)"
+plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · merging"
 ```
 
 > Labels are already correct when invoked inline from validate-pr. No label edit needed here.
@@ -210,6 +217,7 @@ Then immediately close — no stopping after the marker:
 
 **Clean exit (no deferred threads):**
 ```bash
+plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · done"
 (RESULT=$(plexi notify \
   --title "Shipped #$ISSUE_NUMBER" \
   --body "<title> — v$VERSION" \
@@ -221,6 +229,9 @@ plexi pane close
 
 **Soft exit (deferred threads / improvements proposed):**
 ```bash
+# Use needs-you, NOT done — the pane stays alive for the user, and the PM must
+# not free the slot / close it while interaction is pending.
+plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
 plexi notify \
   --title "Shipped #$ISSUE_NUMBER — review needed" \
   --body "<title> — v$VERSION. <N> improvement(s) proposed." \
@@ -240,5 +251,5 @@ plexi notify \
 - Never pass `--delete-branch` to `gh pr merge` — git refuses to delete a branch checked out by a worktree
 - Never commit directly to alpha, beta, or main
 - Alpha must be clean when this skill exits
-- On unrecoverable failure: comment on issue, remove `in progress` and all `pipeline:*` labels, add `ready`, exit
+- On unrecoverable failure: set `plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · blocked"`, comment on issue, remove `in progress` and all `pipeline:*` labels, add `ready`, exit
 - `git status` clean check is the final gate before notify

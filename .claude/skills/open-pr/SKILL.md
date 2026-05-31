@@ -26,6 +26,12 @@ Pipeline: pipeline:validate + ready set — invoking /validate-pr inline
 
 > **Labels are the live state.** Never read the Ship Log to determine pipeline stage — read the issue labels. Ship Log is audit trail only.
 
+> **Pane status title.** Runs in the same dispatched pane as implement-issue (named `#<n>`, or `#<n1>+<n2>` for a bundle). Update the title at each stage so the PM reads state from `plexi pane list` instead of capturing content:
+> ```bash
+> plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · <state>"
+> ```
+> **The status word must never contain a digit** (the PM maps panes to issues via `grep -oE '[0-9]+'`). States this skill sets: `pr-open`, `review`.
+
 ---
 
 ## Step 1 — Detect Branch and Issue
@@ -166,9 +172,19 @@ _PROJ_ITEM=$(gh api graphql -f query='query($n:Int!){repository(owner:"ianjamesb
 [ -n "$_PROJ_ITEM" ] && gh api graphql -f query='mutation($i:ID!,$v:String!){updateProjectV2ItemFieldValue(input:{projectId:"PVT_kwHOAkOgys4BXaQY",itemId:$i,fieldId:"PVTSSF_lAHOAkOgys4BXaQYzhSnRw8",value:{singleSelectOptionId:$v}}){projectV2Item{id}}}' -f i="$_PROJ_ITEM" -f v="f1399a59" > /dev/null
 ```
 
+Update pane status:
+```bash
+plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · pr-open"   # bundle: "#<n1>+<n2> · pr-open"
+```
+
 ---
 
 ## Step 3 — AI Review
+
+Set pane status (skip if the review is bypassed below — it's a fast transition either way):
+```bash
+plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · review"
+```
 
 **Skip gate — lightweight PRs bypass AI review entirely:**
 ```bash
