@@ -704,7 +704,8 @@ impl PlexiApp {
                                         (&["\u{2318}", ","], "Open config"),
                                         (&["\u{2318}", "\u{21E7}", ","], "Reload config"),
                                         (&["\u{2318}", "\u{21E7}", "S"], "Secrets manager"),
-                                        (&["\u{2318}", "\u{21E7}", "R"], "Rename pane"),
+                                        (&["\u{2318}", "R"], "Rename pane"),
+                                        (&["\u{2318}", "\u{21E7}", "R"], "Rename context"),
                                         (&["\u{2318}", "/"], "This help"),
                                         (&["\u{2318}", "Q"], "Quit"),
                                     ];
@@ -1397,7 +1398,7 @@ impl PlexiApp {
 
                         // Hint
                         ui.label(
-                            RichText::new("Enter to send  ·  Shift+Enter for new line  ·  Esc to discard")
+                            RichText::new("Enter to pick destination  ·  Shift+Enter for new line  ·  Esc to discard  ·  ⌘, to configure")
                                 .color(self.colors.text_dim.linear_multiply(0.5))
                                 .size(style::TEXT_HINT)
                                 .family(egui::FontFamily::Monospace),
