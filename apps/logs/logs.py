@@ -273,8 +273,8 @@ class LogsApp(App):
             "ERROR": ctx.theme.danger,
             "WARN":  ctx.theme.warning,
             "INFO":  ctx.theme.accent,
-            "DEBUG": "#585b70",
-            "TRACE": "#45475a",
+            "DEBUG": ctx.theme.text_section,
+            "TRACE": ctx.theme.highlight,
         }
 
         # ── background ──────────────────────────────────────────────────────
@@ -407,7 +407,7 @@ class LogsApp(App):
             x += time_w
 
             # level badge — solid fill, host-measured, readable at any size
-            badge_fill = level_badge_fill.get(ll.level, "#45475a")
+            badge_fill = level_badge_fill.get(ll.level, ctx.theme.highlight)
             badge_fg   = ctx.theme.bg if ll.level in ("ERROR", "WARN", "INFO") else ctx.theme.fg
             ctx.badge(x, row_y + ROW_H / 2, ll.level[:4],
                       fill=badge_fill, fg=badge_fg,
