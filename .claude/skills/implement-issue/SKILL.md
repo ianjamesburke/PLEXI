@@ -80,43 +80,32 @@ depends_on: []
 
 ## Phase 1 — Pre-flight
 
-**Alpha gate — run this first, before any other check:**
+Run in parallel:
 ```bash
 git fetch origin && git status --porcelain && git log origin/alpha..HEAD --oneline
-```
-
-If any unpushed commits listed: STOP immediately. Tell user to push first, then re-run. Do not read the issue, do not stash, do not proceed.
-
-If dirty: fail immediately:
-```bash
-if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "ERROR: alpha has uncommitted changes — commit or stash before running implement-issue"
-  git status --short
-  exit 1
-fi
-```
-
-Then: `git pull --rebase origin alpha`
-
-**Check issue state:**
-```bash
 gh issue view <number> --json state,title,labels --jq '{state: .state, title: .title, labels: [.labels[].name]}'
 ```
 
-**Output this immediately after fetching — before any other work:**
+**Output immediately:**
 ```
 ISSUE #<n>: <title>
 ```
 
-If `CLOSED`: set `plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<number> · noop"`, then stop. "Issue #<n> is already closed — nothing to do."
+**Hard stops — check all before proceeding. Any failure exits immediately, no conditional paths:**
 
-If labeled `in progress`: surface existing worktree + PR before proceeding. Ask for takeover confirmation — do not proceed until user confirms.
+1. Unpushed commits on alpha → STOP. "Push alpha first, then re-run."
+2. Dirty working tree → STOP. Print `git status --short`. Do not stash, do not proceed.
+3. Issue is `CLOSED` → set pane `noop`, stop. "Issue #<n> is already closed."
+4. Issue does NOT have `ready` label → STOP. "ERROR: issue #<n> is not labeled `ready`. The PM gates dispatch on this label — triage the issue and label it `ready` first, or run /project-manager."
+5. Issue is labeled `in progress` → STOP. "ERROR: issue #<n> is already in progress." Surface existing worktree + any open PR. Do not proceed.
 
-**Check if already done** (skip if issue is labeled `ready` — PM pre-screened it):
+Then run in parallel:
 ```bash
-gh issue view <number> --json body --jq '.body'
+git pull --rebase origin alpha
+git ls-remote origin "refs/heads/feature/<issue-number>-*"
 ```
-Grep `src/` on alpha and `git log --oneline -20` against Done When criteria. If all criteria met: set `plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<number> · noop"`, close the issue, and stop.
+
+If ls-remote is non-empty: another agent owns this branch. Surface it and any existing PR, then stop.
 
 **Label + pane setup:**
 ```bash
@@ -126,17 +115,6 @@ IMPL_PANE=$PLEXI_PANE_ID
 _PROJ_ITEM=$(gh api graphql -f query='query($n:Int!){repository(owner:"ianjamesburke",name:"PLEXI"){issue(number:$n){projectItems(first:5){nodes{id project{id}}}}}}' -F n=<number> --jq '.data.repository.issue.projectItems.nodes[]|select(.project.id=="PVT_kwHOAkOgys4BXaQY")|.id')
 [ -n "$_PROJ_ITEM" ] && gh api graphql -f query='mutation($i:ID!,$v:String!){updateProjectV2ItemFieldValue(input:{projectId:"PVT_kwHOAkOgys4BXaQY",itemId:$i,fieldId:"PVTSSF_lAHOAkOgys4BXaQYzhSnRw8",value:{singleSelectOptionId:$v}}){projectV2Item{id}}}' -f i="$_PROJ_ITEM" -f v="47fc9ee4" > /dev/null
 ```
-
----
-
-## Phase 1b — Implementation Audit
-
-**Skip if issue is labeled `ready` and was dispatched with a specific number** — PM already screened it and implementation has not started. Proceed directly to Phase 2.
-
-Re-read Done When criteria against alpha `src/` and `git log --oneline -20`.
-
-- Partial: surface what's done vs missing, state the plan, ask open design questions. Wait for confirmation.
-- Nothing done: proceed, note "Audit: nothing on alpha yet."
 
 ---
 
@@ -324,7 +302,8 @@ plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · pushed"   # bundle: "#
 
 ## Rules
 
-- When a specific issue number is given, skip Phase 0 entirely and skip Phase 1b
+- When a specific issue number is given, skip Phase 0 entirely
+- Issue must be labeled `ready` to proceed — if not, fail immediately. No exceptions.
 - If the issue body contains a complete `## Action Plan` with named files, trust it. Do not re-read and re-grep those files to re-derive the plan.
 - Never branch from main — always from repo root (alpha)
 - Never skip base verification after `wtp add`
