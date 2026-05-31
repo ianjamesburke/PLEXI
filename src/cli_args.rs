@@ -1,11 +1,23 @@
-use clap::{Parser, Subcommand, builder::ValueHint};
+use clap::{Parser, Subcommand, builder::ValueHint, builder::styling::{AnsiColor, Effects, Styles}};
+
+fn plexi_styles() -> Styles {
+    Styles::styled()
+        .header(AnsiColor::Green.on_default() | Effects::BOLD)
+        .usage(AnsiColor::Green.on_default() | Effects::BOLD)
+        .literal(AnsiColor::Cyan.on_default() | Effects::BOLD)
+        .placeholder(AnsiColor::Yellow.on_default() | Effects::DIMMED)
+        .error(AnsiColor::Red.on_default() | Effects::BOLD)
+        .valid(AnsiColor::Green.on_default())
+        .invalid(AnsiColor::Red.on_default())
+}
 
 #[derive(Parser)]
 #[command(
     name = "plexi",
     about = "Plexi — the last app you'll ever need",
     version = env!("CARGO_PKG_VERSION"),
-    after_help = "Get started: plexi demo | Docs: https://plexiapp.com/docs"
+    after_help = "Get started: plexi demo | Docs: https://plexiapp.com/docs",
+    styles = plexi_styles(),
 )]
 pub struct Cli {
     /// Profile name (e.g. alpha, beta)
@@ -21,12 +33,14 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    // ── Workspace ─────────────────────────────────────────────────────────────
     /// Run a named command from your project's .plexi/commands.toml file.
     ///
     /// Define shell commands in .plexi/commands.toml and run them by name here.
     /// Any secrets listed in the command definition are injected as environment variables automatically.
     ///
     /// Example: plexi run dev
+    #[command(next_help_heading = "Workspace")]
     Run {
         /// Command name to run (omit to list available commands)
         command: Option<String>,
@@ -46,33 +60,59 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: SecretCmd,
     },
+    /// Manage workspace routines — scheduled shell commands.
+    ///
+    /// Routines are declared in `.plexi/routines.toml` and run automatically on schedule.
+    /// Use `plexi routine list` to see configured routines, or `plexi routine run <name>` to fire one manually.
+    Routine {
+        #[command(subcommand)]
+        cmd: RoutineCmd,
+    },
+    /// Manage the active context (the folder and project scope tied to the current pane).
+    Context {
+        #[command(subcommand)]
+        cmd: ContextCmd,
+    },
+
+    // ── Apps ──────────────────────────────────────────────────────────────────
     /// Manage your Plexi apps — open, install, list, scaffold, and inspect.
+    #[command(next_help_heading = "Apps")]
     App {
         #[command(subcommand)]
         cmd: AppCmd,
     },
-    /// Uninstalls the app, CLI, and optionally your profile data.
-    ///
-    /// Removes the current channel's app bundle (/Applications/Plexi.app), CLI binary (/usr/local/bin/plexi),
-    /// and shell completions. Your profile directory (~/.plexi/) holds your settings, secrets,
-    /// and app configurations — you will be asked whether to keep it.
-    ///
-    /// Example: plexi uninstall
-    Uninstall {
-        /// Keep your profile directory (~/.plexi/) — your settings, secrets, and app data stay on disk
-        #[arg(long = "keep-data")]
-        keep_data: bool,
-        /// Skip the confirmation prompt and proceed immediately (removes data unless --keep-data is set)
-        #[arg(long = "yes", short = 'y')]
-        yes: bool,
-    },
-    /// Update installed apps or Plexi itself.
-    ///
-    /// Run with the `apps` subcommand to update one or all installed apps.
-    /// Run with no subcommand to update the Plexi binary itself.
-    Update {
+    /// Watch installed CLI tools for changes to their available commands and options.
+    Registry {
         #[command(subcommand)]
-        subcommand: Option<UpdateCmd>,
+        cmd: RegistryCmd,
+    },
+
+    // ── Panes ─────────────────────────────────────────────────────────────────
+    /// Control panes — list, focus, send input, capture output, and more.
+    #[command(next_help_heading = "Panes")]
+    Pane {
+        #[command(subcommand)]
+        cmd: PaneCmd,
+    },
+    /// Open a plain terminal pane.
+    Terminal {
+        /// Optional shell command to run inside the new terminal
+        cmd: Option<String>,
+        /// Close the pane automatically when the command finishes
+        #[arg(long, short = 'e')]
+        ephemeral: bool,
+        /// Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, or new_window
+        #[arg(long, value_parser = ["split_h", "split_left", "split_right", "split_v", "split_below", "split_above", "tab", "new_window"])]
+        layout: Option<String>,
+        /// Open the new pane relative to this pane ID instead of the focused pane
+        #[arg(long)]
+        from_pane_id: Option<u64>,
+        /// Directory to open the terminal in
+        #[arg(long, value_hint = ValueHint::DirPath)]
+        cwd: Option<String>,
+        /// Keep focus on the current pane instead of jumping to the new one
+        #[arg(long)]
+        no_focus: bool,
     },
     /// Send a notification to the Plexi UI.
     Notify {
@@ -101,50 +141,12 @@ pub enum Commands {
         #[arg(long, value_name = "SCOPE", default_value = "global", value_parser = ["window", "context", "global"])]
         scope: Option<String>,
     },
-    /// Control panes — list, focus, send input, capture output, and more.
-    Pane {
-        #[command(subcommand)]
-        cmd: PaneCmd,
-    },
-    /// Open a plain terminal pane.
-    Terminal {
-        /// Optional shell command to run inside the new terminal
-        cmd: Option<String>,
-        /// Close the pane automatically when the command finishes
-        #[arg(long, short = 'e')]
-        ephemeral: bool,
-        /// Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, or new_window
-        #[arg(long, value_parser = ["split_h", "split_left", "split_right", "split_v", "split_below", "split_above", "tab", "new_window"])]
-        layout: Option<String>,
-        /// Open the new pane relative to this pane ID instead of the focused pane
-        #[arg(long)]
-        from_pane_id: Option<u64>,
-        /// Directory to open the terminal in
-        #[arg(long, value_hint = ValueHint::DirPath)]
-        cwd: Option<String>,
-        /// Keep focus on the current pane instead of jumping to the new one
-        #[arg(long)]
-        no_focus: bool,
-    },
-    /// Descriptor probe
-    #[command(hide = true)]
-    Descriptor {
-        #[command(subcommand)]
-        cmd: DescriptorCmd,
-    },
-    /// Watch installed CLI tools for changes to their available commands and options.
-    Registry {
-        #[command(subcommand)]
-        cmd: RegistryCmd,
-    },
-    /// Manage the active context (the folder and project scope tied to the current pane).
-    Context {
-        #[command(subcommand)]
-        cmd: ContextCmd,
-    },
+
+    // ── System ────────────────────────────────────────────────────────────────
     /// Print a shell completion script to stdout.
     ///
     /// Example: plexi completions zsh >> ~/.zshrc
+    #[command(next_help_heading = "System")]
     Completions {
         /// Shell name: zsh, bash, or fish
         shell: Option<String>,
@@ -153,14 +155,6 @@ pub enum Commands {
     Config {
         #[command(subcommand)]
         cmd: ConfigCmd,
-    },
-    /// Manage workspace routines — scheduled shell commands.
-    ///
-    /// Routines are declared in `.plexi/routines.toml` and run automatically on schedule.
-    /// Use `plexi routine list` to see configured routines, or `plexi routine run <name>` to fire one manually.
-    Routine {
-        #[command(subcommand)]
-        cmd: RoutineCmd,
     },
     /// Browse and open scratchpad notes created with Cmd+Shift+Space.
     ///
@@ -176,6 +170,37 @@ pub enum Commands {
     /// split a pane (⌘D) and navigate between panes (⌘L / ⌘H).
     /// Must be run inside a Plexi pane (PLEXI_PANE_ID must be set).
     Demo,
+    /// Update installed apps or Plexi itself.
+    ///
+    /// Run with the `apps` subcommand to update one or all installed apps.
+    /// Run with no subcommand to update the Plexi binary itself.
+    Update {
+        #[command(subcommand)]
+        subcommand: Option<UpdateCmd>,
+    },
+    /// Uninstalls the app, CLI, and optionally your profile data.
+    ///
+    /// Removes the current channel's app bundle (/Applications/Plexi.app), CLI binary (/usr/local/bin/plexi),
+    /// and shell completions. Your profile directory (~/.plexi/) holds your settings, secrets,
+    /// and app configurations — you will be asked whether to keep it.
+    ///
+    /// Example: plexi uninstall
+    Uninstall {
+        /// Keep your profile directory (~/.plexi/) — your settings, secrets, and app data stay on disk
+        #[arg(long = "keep-data")]
+        keep_data: bool,
+        /// Skip the confirmation prompt and proceed immediately (removes data unless --keep-data is set)
+        #[arg(long = "yes", short = 'y')]
+        yes: bool,
+    },
+
+    // ── Hidden ────────────────────────────────────────────────────────────────
+    /// Descriptor probe
+    #[command(hide = true)]
+    Descriptor {
+        #[command(subcommand)]
+        cmd: DescriptorCmd,
+    },
 }
 
 #[derive(Subcommand)]
