@@ -681,7 +681,10 @@ impl PlexiApp {
             let Ok(content) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let _ = std::fs::remove_file(&path);
+            if let Err(e) = std::fs::remove_file(&path) {
+                log::error!("spawn-queue: failed to remove spawn file {path:?}: {e}");
+                continue;
+            }
             let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) else {
                 continue;
             };

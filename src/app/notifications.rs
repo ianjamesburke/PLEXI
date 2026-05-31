@@ -127,6 +127,7 @@ impl PlexiApp {
                 }
                 log::info!("notify:snooze: woke notify_id={}", n.notify_id);
                 n.deliver_after = None;
+                n.enqueued_at = now;
             }
             if let Some(timeout) = n.timeout_secs {
                 if n.enqueued_at.elapsed() >= std::time::Duration::from_secs(timeout) {

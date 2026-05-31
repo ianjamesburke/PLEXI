@@ -127,7 +127,7 @@ impl PlexiApp {
                             let now = std::time::Instant::now();
                             let elapsed = self
                                 .welcome_delete_last_press
-                                .map(|t| now.duration_since(t))
+                                .and_then(|t| now.checked_duration_since(t))
                                 .unwrap_or(std::time::Duration::MAX);
                             if elapsed > std::time::Duration::from_millis(1500) {
                                 self.welcome_delete_press_count = 0;
