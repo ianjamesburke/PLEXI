@@ -15,7 +15,7 @@ Split the current pane, start work in the new pane, confirm it's running, then c
 /hand-off echo "hello"       # any shell command
 ```
 
-If invoked with no argument, ask: "What should the new pane run?"
+If invoked with no argument: scan the current conversation for the most recently scoped or confirmed issue number (e.g. a GitHub issue URL, "issue #N", or a RECOMMENDATION block pointing to issue N). If one is unambiguous, use `/implement-issue N` without asking. Only ask if no issue number is inferable.
 
 ---
 
