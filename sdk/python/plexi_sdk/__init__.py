@@ -129,7 +129,25 @@ Colors:
     ctx.theme.bg, ctx.theme.accent, ctx.theme.fg, ctx.theme.muted,
     ctx.theme.surface, ctx.theme.highlight, ctx.theme.border,
     ctx.theme.danger, ctx.theme.success, ctx.theme.warning
+  ctx.theme.is_dark — True when the active theme has a dark background.
   The theme is auto-updated on config hot-reload and macOS appearance change.
+
+App-defined palettes:
+  AppPalette lets apps declare their own light/dark color tokens that
+  auto-switch with the host theme. Declare once, resolve each frame:
+
+    from plexi_sdk import AppPalette
+
+    PALETTE = AppPalette(
+        dark={"card": "#1e1e2e", "label": "#cdd6f4"},
+        light={"card": "#eff1f5", "label": "#4c4f69"},
+    )
+
+    def on_render(self, ctx):
+        c = PALETTE.resolve(ctx.theme)  # picks dark or light dict
+        ctx.clear(ctx.theme.bg)
+        ctx.rect(16, 16, ctx.w - 32, 80, c["card"], radius=8.0)
+        ctx.text(28, 40, "Hello", size=15.0, color=c["label"])
 
 Color helpers:
   rgba(r, g, b, a=255) -> str  — build an 8-digit hex string #rrggbbaa
@@ -472,4 +490,6 @@ from ._render_context import RenderContext, COMPACT_DEFAULT, REGULAR_DEFAULT
 from ._app import App, Arg
 # Live host theme (light/dark + user overrides), populated from Init. Also on
 # ctx.theme. Read colors via theme.<role>: theme.bg, theme.accent, theme.danger…
-from ._theme import theme, Theme
+# theme.is_dark is True when the active theme has a dark background.
+# AppPalette lets apps declare their own light/dark token sets that auto-switch.
+from ._theme import theme, Theme, AppPalette
