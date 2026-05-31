@@ -1292,6 +1292,7 @@ impl PlexiApp {
         cwd_override
             .or_else(|| self.router.active().root.clone())
             .or_else(|| focused.and_then(|f| self.windows[self.active_window].get_focused_pane_cwd(f)))
+            .or_else(dirs::home_dir)
     }
 
     /// CWD for the first terminal pane created from the welcome screen (empty window).
@@ -2078,21 +2079,36 @@ mod context_root_cwd_tests {
     }
 
     #[test]
-    fn no_cwd_sources_returns_none() {
+    fn no_cwd_sources_falls_back_to_home_dir() {
         let app = test_app();
         assert!(app.router.active().root.is_none());
         let cwd = app.resolve_new_pane_cwd(None, None);
-        assert_eq!(cwd, None, "no context root and no focused pane returns None");
+        assert_eq!(cwd, dirs::home_dir(), "no context root and no focused pane falls back to home dir");
     }
 
     #[test]
-    fn welcome_tab_falls_back_to_window_path_when_no_root() {
+    fn split_from_portal_tile_falls_back_to_home_dir() {
+        use crate::pane::PortalPane;
+
         let mut app = test_app();
-        let test_dir = std::path::PathBuf::from("/tmp/test-dir");
-        app.windows[0].path = test_dir.clone();
+        assert!(app.router.active().root.is_none());
+        let pane_id: u64 = 99;
+        let portal = PortalPane { pane_id, target_context_id: 1, context_state: None };
+        let tile = app.windows[0].tree.tiles.insert_pane(pane_id);
+        app.windows[0].tree.root = Some(tile);
+        app.windows[0].focused_pane = Some(tile);
+        app.windows[0].panes.insert(pane_id, Pane::Portal(Box::new(portal)));
+        let cwd = app.resolve_new_pane_cwd(None, Some(tile));
+        assert_eq!(cwd, dirs::home_dir(), "splitting while a Portal tile is focused must fall back to home, not /");
+    }
+
+    #[test]
+    fn welcome_tab_falls_back_to_home_dir_when_no_root() {
+        let mut app = test_app();
+        app.windows[0].path = std::path::PathBuf::from("/tmp/test-dir");
         assert!(app.router.active().root.is_none());
         let cwd = app.cwd_for_welcome_tab();
-        assert_eq!(cwd, test_dir, "should use window.path when context root is None");
+        assert_eq!(cwd, dirs::home_dir().unwrap(), "welcome tab uses home dir when context root is None");
     }
 
     #[test]
