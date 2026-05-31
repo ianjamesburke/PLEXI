@@ -116,12 +116,7 @@ impl PlexiApp {
     }
 
     pub(crate) fn new_context(&mut self) {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let cwd = self.windows[self.active_window]
-            .focused_pane
-            .and_then(|t| self.windows[self.active_window].get_focused_pane_cwd(t))
-            .filter(|p| p != &PathBuf::from("/"))
-            .unwrap_or_else(|| home.clone());
+        let cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         log::info!("new_context: cwd={}", cwd.display());
         let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd.clone()), None, false)
         else {
