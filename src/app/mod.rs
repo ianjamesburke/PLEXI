@@ -2422,12 +2422,16 @@ impl eframe::App for PlexiApp {
                         .and_then(|p| p.portal_target());
                     if let Some(child_ctx_id) = portal_target {
                         // Focused pane is a Portal tile → zoom into its sub-context.
-                        log::info!("ToggleZoom on Portal: zooming into context_id={child_ctx_id}");
-                        let current_ctx_id = self.router.active().context_id;
-                        let current_win_id = self.windows[self.active_window].window_id;
-                        self.router.push_depth(current_ctx_id, current_win_id, focused_tile);
+                        // Verify the target context exists BEFORE pushing depth state;
+                        // push_depth must not fire if there is nothing to switch to.
                         if let Some(ctx_idx) = self.router.position(|c| c.context_id == child_ctx_id) {
+                            log::info!("ToggleZoom on Portal: zooming into context_id={child_ctx_id}");
+                            let current_ctx_id = self.router.active().context_id;
+                            let current_win_id = self.windows[self.active_window].window_id;
+                            self.router.push_depth(current_ctx_id, current_win_id, focused_tile);
                             self.switch_workspace(ctx_idx);
+                        } else {
+                            log::warn!("ToggleZoom on Portal: target context_id={child_ctx_id} not found in router");
                         }
                     } else {
                         // Non-Portal pane → toggle fullscreen zoom.
