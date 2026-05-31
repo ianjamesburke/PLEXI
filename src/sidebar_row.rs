@@ -3,10 +3,6 @@ use crate::theme::Colors;
 
 pub const ACTION_ZONE_WIDTH: f32 = 30.0;
 
-const PANE_DOT_RADIUS: f32 = 2.5;
-const PANE_DOT_SPACING: f32 = 8.0;
-const PANE_DOT_MAX: usize = 6;
-
 pub(crate) fn with_alpha(c: Color32, alpha: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), (c.a() as f32 * alpha) as u8)
 }
@@ -32,15 +28,20 @@ fn shorten_path(path: &str) -> String {
 pub enum SidebarAction {
     None,
     Activate,
+    /// Returned when clicking a sub-context (ctx_depth > 0) — caller pushes depth stack.
+    ZoomActivate,
     Rename,
     Delete,
     DragStart,
     DragEnd,
+    /// Returned when clicking an expanded pane row — caller focuses that pane.
+    ActivatePane(u64),
 }
 
-pub struct PaneDots {
-    pub count: usize,
-    pub focused_idx: Option<usize>,
+pub struct PaneRowItem {
+    pub pane_id: u64,
+    pub label: String,
+    pub is_focused: bool,
 }
 
 pub struct ContextItem {
@@ -52,21 +53,24 @@ pub struct ContextItem {
     pub ctx_name: String,
     pub ctx_index: Option<usize>,
     pub badge_count: usize,
+    /// Root path shown inline in the name row (truncated). Does not add height.
     pub subtitle: Option<String>,
-    pub pane_dots: Option<PaneDots>,
+    /// Total pane count shown as a dim chip in the name row.
+    pub pane_count: usize,
+    /// Expanded pane list rendered inside the scope when `is_expanded`.
+    pub pane_rows: Vec<PaneRowItem>,
+    pub is_expanded: bool,
 }
 
 impl ContextItem {
     pub fn draw(self, ui: &mut egui::Ui, id: Id, colors: &Colors) -> (SidebarAction, egui::Response) {
         let row_alpha = if self.is_dragging { 0.4_f32 } else { 1.0_f32 };
 
-        // Reserve background shape slot before rendering (same pattern as selectable_row in widgets.rs).
-        // Frame inner_margin interferes with ScrollArea height measurement — use scope + shape slot instead.
+        // Reserve background shape slot before rendering content.
         let bg_idx = ui.painter().add(egui::Shape::Noop);
 
         let indent = 20.0 + self.ctx_depth as f32 * 12.0;
 
-        // Capture fields for use inside closure
         let is_active = self.is_active;
         let is_dragging = self.is_dragging;
         let any_dragging = self.any_dragging;
@@ -75,22 +79,27 @@ impl ContextItem {
         let ctx_index = self.ctx_index;
         let badge_count = self.badge_count;
         let subtitle = self.subtitle.clone();
-        let pane_dots = self.pane_dots;
+        let pane_count = self.pane_count;
+        let pane_rows = self.pane_rows;
+        let is_expanded = self.is_expanded;
+        let ctx_depth = self.ctx_depth;
         let accent_color = colors.accent;
         let text_primary = colors.text_primary;
         let text_dim = colors.text_dim;
         let bg_active = colors.bg_active;
+        let bg_sidebar_hover = colors.bg_sidebar_hover;
 
         let text_color = with_alpha(
             if is_active { text_primary } else { text_dim },
             row_alpha,
         );
 
-        let name_row_height = ui.scope(|ui| {
+        let scope_out = ui.scope(|ui| {
             ui.set_width(ui.available_width());
+            let hover_pos = ui.input(|i| i.pointer.hover_pos());
 
-            // --- Section 1: Name row ---
-            let y_before_name = ui.cursor().min.y;
+            // --- Name row — single fixed-height row regardless of path or pane count ---
+            let y_before = ui.cursor().min.y;
             ui.horizontal(|ui| {
                 ui.add_space(indent);
                 if let Some(idx) = ctx_index {
@@ -102,99 +111,127 @@ impl ContextItem {
                         );
                     }
                 }
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(&ctx_name).size(12.0).color(text_color)
-                    )
-                    .selectable(false),
-                );
-                if badge_count > 0 {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.add_space(8.0);
-                        let badge_text = if badge_count > 9 {
-                            "9+".to_string()
-                        } else {
-                            badge_count.to_string()
-                        };
+
+                // Reserve space on the right for: action zone, pane count chip, badge.
+                let right_reserve = if action_enabled { ACTION_ZONE_WIDTH + 4.0 } else { 8.0 };
+                let badge_w = if badge_count > 0 { 26.0 } else { 0.0 };
+                let count_w = if pane_count > 0 { 18.0 } else { 0.0 };
+                let text_max = (ui.available_width() - right_reserve - badge_w - count_w).max(0.0);
+
+                // Name + subtitle share truncation zone so neither wraps and adds height.
+                ui.scope(|ui| {
+                    ui.set_max_width(text_max);
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(&ctx_name).size(12.0).color(text_color))
+                            .selectable(false)
+                            .truncate(),
+                    );
+                    if let Some(ref path) = subtitle {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!(" — {}", shorten_path(path)))
+                                    .size(10.0)
+                                    .color(with_alpha(text_dim, row_alpha * 0.7)),
+                            )
+                            .selectable(false)
+                            .truncate(),
+                        );
+                    }
+                });
+
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_space(if action_enabled { ACTION_ZONE_WIDTH } else { 0.0 });
+                    if badge_count > 0 {
+                        let badge_text = if badge_count > 9 { "9+".to_string() } else { badge_count.to_string() };
                         ui.label(
                             egui::RichText::new(badge_text)
                                 .size(10.0)
                                 .color(with_alpha(accent_color, row_alpha)),
                         );
-                    });
-                }
-            });
-            let name_row_height = ui.cursor().min.y - y_before_name;
-
-            // --- Section 2: Subtitle ---
-            if let Some(ref path) = subtitle {
-                ui.horizontal(|ui| {
-                    ui.add_space(indent);
-                    ui.label(
-                        egui::RichText::new(shorten_path(path))
-                            .size(9.5)
-                            .color(with_alpha(text_dim, row_alpha)),
-                    );
+                    }
+                    if pane_count > 0 {
+                        ui.label(
+                            egui::RichText::new(pane_count.to_string())
+                                .size(10.0)
+                                .color(with_alpha(text_dim, row_alpha * 0.5)),
+                        );
+                    }
                 });
-            }
+            });
+            let name_row_h = ui.cursor().min.y - y_before;
 
-            // --- Section 3: Pane dots ---
-            if let Some(ref dots) = pane_dots {
-                if dots.count > 0 {
-                    ui.horizontal(|ui| {
-                        ui.add_space(indent);
-                        let capped = dots.count.min(PANE_DOT_MAX);
-                        let dot_area_width = (capped as f32) * PANE_DOT_SPACING;
-                        let dot_size = Vec2::new(dot_area_width, PANE_DOT_RADIUS * 2.0 + 4.0);
-                        let (rect, _) = ui.allocate_exact_size(dot_size, Sense::hover());
-                        let painter = ui.painter();
-                        let cy = rect.center().y;
-                        for dot_i in 0..capped {
-                            let cx = rect.min.x + (dot_i as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS;
-                            let color = if dots.focused_idx == Some(dot_i) {
-                                with_alpha(accent_color, row_alpha)
+            // --- Pane rows — rendered inside scope to keep bg_idx deferred shape aligned ---
+            let mut pane_row_rects: Vec<(Rect, u64)> = Vec::new();
+            if is_expanded && !pane_rows.is_empty() {
+                let pane_indent = indent + 16.0;
+                for row in &pane_rows {
+                    let hover_bg_idx = ui.painter().add(egui::Shape::Noop);
+                    let pane_label_color = if row.is_focused {
+                        with_alpha(text_primary, row_alpha)
+                    } else {
+                        with_alpha(text_dim, row_alpha * 0.75)
+                    };
+                    let row_scope = ui.scope(|ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.add_space(pane_indent);
+                            if row.is_focused {
+                                ui.label(egui::RichText::new("▸").size(9.0).color(with_alpha(accent_color, row_alpha)));
                             } else {
-                                with_alpha(text_dim, if is_dragging { 0.15 } else { 0.35 })
-                            };
-                            painter.circle_filled(egui::pos2(cx, cy), PANE_DOT_RADIUS, color);
-                        }
-                        if dots.count > PANE_DOT_MAX {
-                            let overflow_x = rect.min.x + (capped as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS * 0.5;
-                            painter.text(
-                                egui::pos2(overflow_x, cy),
-                                egui::Align2::LEFT_CENTER,
-                                format!("+{}", dots.count - PANE_DOT_MAX),
-                                egui::FontId::proportional(8.0),
-                                with_alpha(text_dim, 0.5),
+                                ui.add_space(11.0);
+                            }
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&row.label).size(11.0).color(pane_label_color),
+                                )
+                                .selectable(false)
+                                .truncate(),
+                            );
+                        });
+                    });
+                    let pane_rect = row_scope.response.rect;
+                    if !is_dragging {
+                        if hover_pos.map_or(false, |p| pane_rect.contains(p)) {
+                            ui.painter().set(
+                                hover_bg_idx,
+                                egui::Shape::rect_filled(pane_rect, CornerRadius::ZERO, with_alpha(bg_sidebar_hover, 0.6)),
                             );
                         }
-                    });
+                    }
+                    pane_row_rects.push((pane_rect, row.pane_id));
                 }
             }
 
-            name_row_height
+            (name_row_h, pane_row_rects)
         });
 
-        let row_rect = name_row_height.response.rect;
-        let name_row_h = name_row_height.inner;
+        let row_rect = scope_out.response.rect;
+        let (name_row_h, pane_row_rects) = scope_out.inner;
 
-        // Interact on the full row
         let response = ui.interact(row_rect, id, Sense::click_and_drag());
         let hovered = response.hovered();
 
-        // Determine background fill
+        // Check pane row clicks by pointer position — avoids egui interaction conflicts.
+        let pane_action: Option<SidebarAction> = response
+            .interact_pointer_pos()
+            .filter(|_| response.clicked())
+            .and_then(|pos| {
+                pane_row_rects
+                    .iter()
+                    .find(|(rect, _)| rect.contains(pos))
+                    .map(|(_, pane_id)| SidebarAction::ActivatePane(*pane_id))
+            });
+
         let fill = if is_active {
             with_alpha(bg_active, row_alpha)
         } else if hovered && !is_dragging {
-            with_alpha(colors.bg_sidebar_hover, row_alpha)
+            with_alpha(bg_sidebar_hover, row_alpha)
         } else {
             Color32::TRANSPARENT
         };
 
-        // Paint background behind content
         ui.painter().set(bg_idx, egui::Shape::rect_filled(row_rect, CornerRadius::ZERO, fill));
 
-        // Active accent bar — full row height
         if is_active {
             ui.painter().rect_filled(
                 Rect::from_min_size(row_rect.min, Vec2::new(3.0, row_rect.height())),
@@ -203,7 +240,6 @@ impl ContextItem {
             );
         }
 
-        // Action zone — rightmost portion of the name row
         let action_zone = if action_enabled {
             Some(Rect::from_min_max(
                 egui::pos2(row_rect.max.x - ACTION_ZONE_WIDTH, row_rect.min.y),
@@ -215,7 +251,6 @@ impl ContextItem {
 
         let in_action = action_zone.map_or(false, |az| ui.rect_contains_pointer(az));
 
-        // Action glyph (✕) — shown on hover
         if let Some(az) = action_zone {
             if hovered && !is_dragging {
                 let glyph_color = with_alpha(
@@ -232,12 +267,10 @@ impl ContextItem {
             }
         }
 
-        // Tooltip for action zone
         if in_action {
             response.clone().on_hover_text("Delete context");
         }
 
-        // Cursor — single authority
         if in_action {
             ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
         } else {
@@ -255,8 +288,9 @@ impl ContextItem {
             }
         }
 
-        // Action priority chain
-        let action = if response.double_clicked() {
+        let action = if let Some(pa) = pane_action {
+            pa
+        } else if response.double_clicked() {
             SidebarAction::Rename
         } else if response.drag_started() {
             SidebarAction::DragStart
@@ -264,6 +298,8 @@ impl ContextItem {
             SidebarAction::DragEnd
         } else if response.clicked() && in_action && hovered {
             SidebarAction::Delete
+        } else if response.clicked() && ctx_depth > 0 {
+            SidebarAction::ZoomActivate
         } else if response.clicked() {
             SidebarAction::Activate
         } else {
