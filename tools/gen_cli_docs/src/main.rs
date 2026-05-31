@@ -47,7 +47,10 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
     println!("{heading} `{full_path}`");
     println!();
     if !about.is_empty() {
-        // Normalize multi-line about strings: blank lines become paragraph breaks
+        // Normalize multi-line about strings: blank lines become paragraph breaks.
+        // Clap joins consecutive doc comment lines with spaces, so the "about" text
+        // already has the routine's schedule bullets collapsed. Emit what clap gives us;
+        // the schedule reference block below re-emits the formatted version.
         let normalized = about
             .lines()
             .map(|l| l.trim())
@@ -55,7 +58,47 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
             .join("\n")
             .trim()
             .to_string();
-        println!("{normalized}");
+        // For `routine`, omit the collapsed bullet block — the explicit reference below
+        // replaces it with properly-formatted markdown.
+        let emit = if full_path == "plexi routine" {
+            normalized
+                .lines()
+                .take_while(|l| !l.starts_with("## "))
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_string()
+        } else {
+            normalized
+        };
+        println!("{emit}");
+        println!();
+    }
+
+    // Inject a hand-authored schedule reference block for `plexi routine`.
+    if full_path == "plexi routine" {
+        println!("### Routine file format (`.plexi/routines.toml`)");
+        println!();
+        println!("```toml");
+        println!("[[routine]]");
+        println!(r#"name      = "morning-sync""#);
+        println!(r#"command   = "./scripts/sync.sh""#);
+        println!(r#"schedule  = "daily at 09:00""#);
+        println!(r#"context   = "work"   # optional: only fires when this context is active"#);
+        println!(r#"ephemeral = true     # optional: close the spawned pane when the command exits"#);
+        println!("```");
+        println!();
+        println!("### Schedule formats");
+        println!();
+        println!("| Format | Example |");
+        println!("|---|---|");
+        println!("| `every N seconds` | `every 30 seconds` |");
+        println!("| `every N minutes` | `every 5 minutes` |");
+        println!("| `every N hours`   | `every 2 hours` |");
+        println!("| `daily at HH:MM`  | `daily at 09:00` |");
+        println!("| `weekly on <day> at HH:MM` | `weekly on monday at 09:00` |");
+        println!("| `monthly on N at HH:MM`    | `monthly on 1 at 08:00` |");
+        println!("| 5-field cron `m h dom mon dow` | `0 9 * * 1-5` |");
         println!();
     }
 
