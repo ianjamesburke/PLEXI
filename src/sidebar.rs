@@ -127,8 +127,8 @@ impl PlexiApp {
             let pane_rows: Vec<PaneRowItem> = if is_active && pane_count > 0 {
                 pane_ids.iter().enumerate().map(|(idx, &pane_id)| {
                     let label = self.windows.iter()
-                        .find(|w| w.context_id == ctx_id)
-                        .and_then(|w| w.panes.get(&pane_id))
+                        .filter(|w| w.context_id == ctx_id)
+                        .find_map(|w| w.panes.get(&pane_id))
                         .map(|p| match p {
                             crate::pane::Pane::Terminal(t) => {
                                 t.name.clone().unwrap_or_else(|| format!("terminal {}", idx + 1))
@@ -419,6 +419,8 @@ impl PlexiApp {
             if let Some((win_idx, tile_id)) = self.find_pane_in_any_window(pane_id) {
                 self.active_window = win_idx;
                 self.set_window_focused_pane(win_idx, tile_id);
+            } else {
+                log::warn!("sidebar: focus_pane target not found pane_id={pane_id}");
             }
         } else if let Some(i) = clicked_workspace {
             self.switch_workspace(i);
