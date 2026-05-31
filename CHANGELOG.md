@@ -1,6 +1,15 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.559] — 2026-05-31
+
+### Changes
+- fix(cli): notes open errors, demo step 2 bypass, routine docs (#1855, #1856, #1849, #1850) (#1864)
+- fix(host/context): reset stale focused_pane after context portal deletion (#1854) (#1862)
+- fix(apps): replace removed SDK color constants with ctx.theme.* (#1851) (#1863)
+- fix(ui/chrome): switch pane ID overlay trigger from ⌘-hold to ⌃-hold (#1852) (#1861)
+- chore(skills): increase PM watch interval from 4m to 5m
+- refactor(skills): simplify implement-issue Phase 1, require ready label as hard gate
 ## [0.0.558] — 2026-05-31
 
 ### Changes
