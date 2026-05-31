@@ -573,6 +573,7 @@ class Scrollable(Component):
         self._clamp_offset(self._avail_h)
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        ctx.register_scroll_consumer(self)
         self._avail_h = h
         # Measure child at our width (less scrollbar gutter).
         content_w = w - self._SCROLLBAR_W - 2.0

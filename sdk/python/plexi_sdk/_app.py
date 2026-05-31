@@ -229,6 +229,9 @@ class App:
         # Hold timer for ctx.button() active_fill (#1083): maps button id →
         # monotonic timestamp at which the active state expires.
         self._btn_active_until: dict[str, float] = {}
+        # Scroll consumers registered by components during the last completed
+        # render frame. Populated from ctx._scroll_consumers after on_render (#1802).
+        self._scroll_consumers: list = []
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -952,6 +955,8 @@ class App:
                             import traceback as _tb
                             _tb.print_exc()
                             raise
+                    # Snapshot scroll consumers registered during this frame (#1802).
+                    self._scroll_consumers = list(ctx._scroll_consumers)
                     ctx.frame_done()
 
                 elif t == "key":
@@ -1067,12 +1072,27 @@ class App:
                     # Raw wheel delta for SDK Scrollable containers (#1794).
                     # Fires when the cursor is over the app pane but not over a
                     # host-managed BeginScroll region or ListView.
+                    #
+                    # Component routing (#1802): if any component registered scroll
+                    # interest during the last render, dispatch to each and schedule
+                    # a re-render. Falls through to on_scroll_delta only when no
+                    # components are registered, preserving backward compatibility.
                     delta_y = float(ev.get("delta_y", 0.0))
-                    ctx = self._make_ctx()
-                    try:
-                        await self._dispatch_hook(self.on_scroll_delta, ctx, delta_y)
-                    except Exception as e:
-                        sys.stderr.write(f"on_scroll_delta handler raised: {e}\n")
+                    if self._scroll_consumers:
+                        for _consumer in self._scroll_consumers:
+                            try:
+                                _consumer.handle_scroll(delta_y)
+                            except Exception as e:
+                                sys.stderr.write(
+                                    f"scroll consumer {type(_consumer).__name__} handle_scroll raised: {e}\n"
+                                )
+                        self.emit.schedule_render()
+                    else:
+                        ctx = self._make_ctx()
+                        try:
+                            await self._dispatch_hook(self.on_scroll_delta, ctx, delta_y)
+                        except Exception as e:
+                            sys.stderr.write(f"on_scroll_delta handler raised: {e}\n")
 
                 elif t == "theme":
                     from ._theme import theme as _theme

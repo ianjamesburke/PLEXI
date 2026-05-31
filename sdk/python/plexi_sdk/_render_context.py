@@ -60,6 +60,19 @@ class RenderContext:
         expired = [bid for bid, exp in self._btn_active_until.items() if exp <= _now]
         for bid in expired:
             del self._btn_active_until[bid]
+        # Components that declare scroll interest by calling register_scroll_consumer()
+        # during render. The App saves this list after each frame and routes
+        # PlexiEvent::Scroll to these consumers automatically (#1802).
+        self._scroll_consumers: list = []
+
+    def register_scroll_consumer(self, component: Any) -> None:
+        """Declare that `component` wants to receive scroll events this frame.
+
+        Call from a component's render() method. The SDK will automatically
+        call component.handle_scroll(delta_y) on incoming scroll events and
+        schedule a re-render — no on_scroll_delta override needed in the app.
+        """
+        self._scroll_consumers.append(component)
 
     def _queue(self, obj: dict) -> None:
         """Buffer a render command for batch flush at frame_done()."""
