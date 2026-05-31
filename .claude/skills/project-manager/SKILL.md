@@ -293,11 +293,11 @@ PREV_ID=$PANE_ID; LAYOUT=split_v
 
 If `WATCH` = false, stop here.
 
-Schedule a wake-up in **240 seconds** using `ScheduleWakeup` with prompt `/project-manager`. On each wake, the skill re-enters at Step 1 and runs the full cycle again.
+Schedule a wake-up in **300 seconds** using `ScheduleWakeup` with prompt `/project-manager`. On each wake, the skill re-enters at Step 1 and runs the full cycle again.
 
 Print:
 ```
-[PM] Watching — next check in 4m. Say "stop watching" to end, "wind down" to drain without refilling.
+[PM] Watching — next check in 5m. Say "stop watching" to end, "wind down" to drain without refilling.
 ```
 
 The loop ends when:
