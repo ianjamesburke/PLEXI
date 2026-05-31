@@ -183,7 +183,7 @@ Fail criteria:
 Reply: "pass" | "fail: <description>" | "modify: <bounded change>"
 ```
 
-**Notification:**
+**Print the testing block above in your response first. Only after the testing block text is in your response, run the notification:**
 ```bash
 # Flip pane status to needs-you so the PM surfaces this lane as awaiting the user
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
@@ -281,7 +281,7 @@ Append to Ship Log:
 **Fix applied:** <what was pushed> (commit <hash>)
 ```
 
-Re-surface the testing block (attempt N+1/3). Fire the notification again. STOP.
+Re-surface the testing block (attempt N+1/3) in your response first, then fire the notification again. STOP.
 
 **If ATTEMPT_COUNT >= 3 (escalate to hard reject):**
 
