@@ -4795,28 +4795,30 @@ pub fn demo_cli() -> i32 {
     eprintln!("  H     L");
     eprintln!("     J");
     eprintln!();
-    eprintln!("  Press  \x1b[1m[ \u{2318}L ]\x1b[0m  to move focus right, then  \x1b[1m[ \u{2318}H ]\x1b[0m  to come back.");
+    eprintln!("  Press  \x1b[1m[ \u{2318}H ]\x1b[0m  to return to this pane, then  \x1b[1m[ \u{2318}L ]\x1b[0m  to go back.");
     eprintln!();
 
-    // Wait for focus to LEAVE this pane (user pressed ⌘L).
-    let focus_offset = match poll_event(&events_path, after_split_offset, |kind, obj| {
-        kind == "focus_changed"
-            && obj.get("pane_id").and_then(|v| v.as_u64()) == Some(my_pane_id)
-    }) {
-        Ok(offset) => offset,
-        Err(e) => {
-            eprintln!("error watching {}: {e}", events_path.display());
-            return 1;
+    // Require a confirmed round-trip between split_pane and demo pane.
+    // After the split, focus is on split_pane_id. The valid event sequence is:
+    //   focus_changed(split_pane_id)  — user left split pane via ⌘H
+    //   focus_changed(my_pane_id)     — user left demo pane via ⌘L
+    // Any other pane ID appearing between these two resets the state so that
+    // a second ⌘D split cannot satisfy the round-trip without actual navigation.
+    let mut saw_split_depart = false;
+    if let Err(e) = poll_event(&events_path, after_split_offset, |kind, obj| {
+        if kind != "focus_changed" { return false; }
+        let Some(pid) = obj.get("pane_id").and_then(|v| v.as_u64()) else { return false };
+        if !saw_split_depart {
+            if pid == split_pane_id {
+                saw_split_depart = true;
+            }
+            false
+        } else if pid == my_pane_id {
+            true
+        } else {
+            saw_split_depart = pid == split_pane_id;
+            false
         }
-    };
-
-    // Wait for focus to leave the split pane with duration_secs > 0 (user pressed ⌘H and
-    // spent deliberate time on the new pane). The split itself generates a 0-duration
-    // bounce-back that must not satisfy this check.
-    if let Err(e) = poll_event(&events_path, focus_offset, |kind, obj| {
-        kind == "focus_changed"
-            && obj.get("pane_id").and_then(|v| v.as_u64()) == Some(split_pane_id)
-            && obj.get("duration_secs").and_then(|v| v.as_u64()).unwrap_or(0) > 0
     }) {
         eprintln!("error watching {}: {e}", events_path.display());
         return 1;
