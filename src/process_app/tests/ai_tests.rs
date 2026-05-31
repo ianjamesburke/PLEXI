@@ -10,10 +10,10 @@
 //! path also confirms that the routing layer forwarded the right
 //! `model_tier`, `system`, and `messages` payload to the broker.
 use super::super::*;
+use crate::app_permissions::AppPermissions;
 use crate::app_protocol::{AiMessage, AppRequest, ModelTier, PlexiEvent};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, AiBrokerResponse};
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 /// Test broker: records every dispatch and returns a canned response.
@@ -30,23 +30,16 @@ impl AiBroker for CannedBroker {
 }
 
 fn make_app(capabilities: HashSet<Capability>) -> Option<ProcessApp> {
-    let sh = ["/bin/sh", "/usr/bin/sh"]
-        .iter()
-        .find(|p| std::path::Path::new(p).exists())
-        .map(PathBuf::from)?;
-    let workspace_root = std::env::temp_dir();
-    ProcessApp::launch(
-        "test_ai",
-        "Test AI",
-        &sh,
-        &workspace_root,
-        &["-c".to_string(), "sleep 1".to_string()],
-        workspace_root.clone(),
-        capabilities,
-        false,
-        None,
-    )
-    .ok()
+    let (app, _tx) = ProcessApp::new_for_test(
+        7,
+        AppPermissions {
+            capabilities,
+            blocked: HashSet::new(),
+            is_builtin: false,
+            allowed_hosts: vec![],
+        },
+    );
+    Some(app)
 }
 
 #[test]
@@ -171,7 +164,7 @@ fn granted_app_dispatches_to_broker() {
     // Broker must have been invoked exactly once with the correct payload.
     let calls = seen.lock().unwrap();
     assert_eq!(calls.len(), 1, "broker must be called exactly once");
-    assert_eq!(calls[0].app_id, "test_ai");
+    assert_eq!(calls[0].app_id, "test");
     assert_eq!(calls[0].model_tier, ModelTier::High);
     assert_eq!(calls[0].system, "be terse");
     assert_eq!(calls[0].messages.len(), 1);
