@@ -3786,12 +3786,12 @@ impl eframe::App for PlexiApp {
             self.reload_config();
         }
 
-        // Auto-switch catppuccin variant on macOS appearance change (#1776).
+        // Auto-switch paired theme variant on macOS appearance change (#1776, #1812).
         let current_system_theme = self.ctx.system_theme();
         if current_system_theme != self.last_system_theme {
             self.last_system_theme = current_system_theme;
             if let Some(sys_theme) = current_system_theme {
-                self.apply_catppuccin_auto_theme(sys_theme);
+                self.apply_auto_theme(sys_theme);
             }
         }
 
@@ -4957,23 +4957,19 @@ impl PlexiApp {
         }
         log::info!("ai_broker: config reloaded");
 
-        // Reset so the auto-switch re-evaluates against the current system theme (#1776).
-        // Without this, a config reload that restores a disk preset (e.g. mocha) would leave
-        // last_system_theme unchanged, silently suppressing the catppuccin auto-switch.
+        // Reset so the auto-switch re-evaluates against the current system theme (#1776, #1812).
+        // Without this, a config reload that restores a disk preset would leave
+        // last_system_theme unchanged, silently suppressing the auto-switch.
         self.last_system_theme = None;
         log::info!("Configuration reloaded from disk.");
     }
 
-    /// Auto-switch to the catppuccin variant that matches `system_theme`.
-    /// Only fires when the OS appearance changes and the configured preset is a catppuccin variant.
-    fn apply_catppuccin_auto_theme(&mut self, system_theme: egui::Theme) {
+    /// Auto-switch to the paired preset for `system_theme`.
+    /// No-ops if the configured preset has no paired variant (e.g. nord, dracula).
+    fn apply_auto_theme(&mut self, system_theme: egui::Theme) {
         let current_preset = self.config.theme_preset.as_deref().unwrap_or("");
-        if !crate::theme::is_catppuccin_preset(current_preset) {
+        let Some(new_preset) = crate::theme::paired_preset(current_preset, system_theme) else {
             return;
-        }
-        let new_preset = match system_theme {
-            egui::Theme::Light => "catppuccin-latte",
-            egui::Theme::Dark => "catppuccin-mocha",
         };
         log::info!("theme: auto-switch to {new_preset} (system_theme={system_theme:?})");
         if let Some(preset) = crate::theme::preset_colors(new_preset) {

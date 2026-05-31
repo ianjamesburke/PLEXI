@@ -138,7 +138,9 @@ fn canonical_preset_name(name: &str) -> Option<&'static str> {
         "catppuccin-latte" | "latte" => Some("catppuccin-latte"),
         "dracula" => Some("dracula"),
         "tokyo-night" | "tokyonight" | "tokyo" => Some("tokyo-night"),
+        "tokyo-day" | "tokyonight-day" => Some("tokyo-day"),
         "gruvbox" | "gruvbox-dark" => Some("gruvbox-dark"),
+        "gruvbox-light" => Some("gruvbox-light"),
         "nord" => Some("nord"),
         "solarized" | "solarized-dark" => Some("solarized-dark"),
         "solarized-light" => Some("solarized-light"),
@@ -148,12 +150,33 @@ fn canonical_preset_name(name: &str) -> Option<&'static str> {
 
 /// Returns true for presets with a light background — used to flip egui's dark_mode flag.
 pub fn is_light_preset(name: &str) -> bool {
-    matches!(canonical_preset_name(name), Some("catppuccin-latte") | Some("solarized-light"))
+    matches!(
+        canonical_preset_name(name),
+        Some("catppuccin-latte") | Some("solarized-light") | Some("gruvbox-light") | Some("tokyo-day")
+    )
 }
 
-/// Returns true if the preset is any catppuccin variant (latte or mocha).
-pub fn is_catppuccin_preset(name: &str) -> bool {
-    matches!(canonical_preset_name(name), Some("catppuccin-mocha" | "catppuccin-latte"))
+/// Returns the paired preset for `name` under `system_theme`, or `None` if the preset
+/// has no paired variant (nord, dracula), the name is unrecognized, or the preset is
+/// already correct for the current system appearance.
+pub fn paired_preset(name: &str, system_theme: egui::Theme) -> Option<&'static str> {
+    let canonical = canonical_preset_name(name)?;
+    match system_theme {
+        egui::Theme::Dark => match canonical {
+            "catppuccin-latte" => Some("catppuccin-mocha"),
+            "solarized-light" => Some("solarized-dark"),
+            "gruvbox-light" => Some("gruvbox-dark"),
+            "tokyo-day" => Some("tokyo-night"),
+            _ => None,
+        },
+        egui::Theme::Light => match canonical {
+            "catppuccin-mocha" => Some("catppuccin-latte"),
+            "solarized-dark" => Some("solarized-light"),
+            "gruvbox-dark" => Some("gruvbox-light"),
+            "tokyo-night" => Some("tokyo-day"),
+            _ => None,
+        },
+    }
 }
 
 /// Returns the list of available preset names.
@@ -164,7 +187,9 @@ pub fn preset_names() -> &'static [&'static str] {
         "catppuccin-latte",
         "dracula",
         "tokyo-night",
+        "tokyo-day",
         "gruvbox-dark",
+        "gruvbox-light",
         "nord",
         "solarized-dark",
         "solarized-light",
@@ -275,6 +300,39 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_white: s("#c0caf5"),
             bright_foreground: s("#c0caf5"),
         }),
+        "tokyo-day" => Some(ThemeConfig {
+            bg_darkest: s("#c4c8da"),
+            bg_sidebar: s("#d5d6db"),
+            bg_toolbar: s("#d5d6db"),
+            terminal_bg: s("#e1e2e7"),
+            bg_hover: s("#b4b5be"),
+            bg_sidebar_hover: s("#a8a9b4"),
+            bg_active: s("#9c9da8"),
+            text_primary: s("#3760bf"),
+            text_dim: s("#848cb5"),
+            text_section: s("#8990b3"),
+            accent: s("#2e7de9"),
+            border: s("#b4b5be"),
+            foreground: s("#3760bf"),
+            background: s("#e1e2e7"),
+            black: s("#e9e9ec"),
+            red: s("#f52a65"),
+            green: s("#587539"),
+            yellow: s("#8c6c3e"),
+            blue: s("#2e7de9"),
+            magenta: s("#9854f1"),
+            cyan: s("#007197"),
+            white: s("#6172b0"),
+            bright_black: s("#a1a6c5"),
+            bright_red: s("#f52a65"),
+            bright_green: s("#587539"),
+            bright_yellow: s("#8c6c3e"),
+            bright_blue: s("#2e7de9"),
+            bright_magenta: s("#9854f1"),
+            bright_cyan: s("#007197"),
+            bright_white: s("#3760bf"),
+            bright_foreground: s("#3760bf"),
+        }),
         "gruvbox-dark" => Some(ThemeConfig {
             bg_darkest: s("#1d2021"),
             bg_sidebar: s("#282828"),
@@ -307,6 +365,39 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_cyan: s("#8ec07c"),
             bright_white: s("#fbf1c7"),
             bright_foreground: s("#fbf1c7"),
+        }),
+        "gruvbox-light" => Some(ThemeConfig {
+            bg_darkest: s("#f2e5bc"),
+            bg_sidebar: s("#fbf1c7"),
+            bg_toolbar: s("#fbf1c7"),
+            terminal_bg: s("#fbf1c7"),
+            bg_hover: s("#ebdbb2"),
+            bg_sidebar_hover: s("#d5c4a1"),
+            bg_active: s("#bdae93"),
+            text_primary: s("#3c3836"),
+            text_dim: s("#7c6f64"),
+            text_section: s("#665c54"),
+            accent: s("#d65d0e"),
+            border: s("#d5c4a1"),
+            foreground: s("#3c3836"),
+            background: s("#fbf1c7"),
+            black: s("#fbf1c7"),
+            red: s("#cc241d"),
+            green: s("#98971a"),
+            yellow: s("#d79921"),
+            blue: s("#458588"),
+            magenta: s("#b16286"),
+            cyan: s("#689d6a"),
+            white: s("#7c6f64"),
+            bright_black: s("#928374"),
+            bright_red: s("#9d0006"),
+            bright_green: s("#79740e"),
+            bright_yellow: s("#b57614"),
+            bright_blue: s("#076678"),
+            bright_magenta: s("#8f3f71"),
+            bright_cyan: s("#427b58"),
+            bright_white: s("#3c3836"),
+            bright_foreground: s("#3c3836"),
         }),
         "nord" => Some(ThemeConfig {
             bg_darkest: s("#2e3440"),
