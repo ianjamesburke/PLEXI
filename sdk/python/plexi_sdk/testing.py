@@ -431,6 +431,64 @@ class AppHarness:
         """Save the last rendered frame as a PNG file."""
         save_snapshot(self.screenshot(), path)
 
+    def assert_no_overlap(
+        self,
+        *,
+        min_area: float = 100.0,
+        allowlist: "list[tuple[int, int]] | None" = None,
+    ) -> None:
+        """Assert no two non-background rect commands overlap significantly.
+
+        Collects all ``rect`` draw commands whose area >= ``min_area`` pixels,
+        excluding full-width background clears (w >= 95 % of pane width).
+        Raises ``AssertionError`` with details on the first detected overlap.
+
+        ``allowlist`` is a list of ``(i, j)`` index pairs referencing the
+        **original draw command indices** in ``self._draw_commands`` (stable
+        across ``min_area`` / width-threshold changes). Order within each pair
+        does not matter — ``(3, 7)`` and ``(7, 3)`` are equivalent.
+
+        Example::
+
+            with AppHarness("my_app.py", width=400, height=300) as h:
+                h.run(1)
+                h.assert_no_overlap()
+        """
+        allow: set = {tuple(sorted(p)) for p in (allowlist or [])}
+        rects: list = []
+        for idx, cmd in enumerate(self._draw_commands):
+            if cmd.get("type") != "rect":
+                continue
+            x = float(cmd.get("x", 0.0))
+            y = float(cmd.get("y", 0.0))
+            w = float(cmd.get("w", 0.0))
+            h = float(cmd.get("h", 0.0))
+            if w * h < min_area:
+                continue
+            if w >= self._width * 0.95:
+                continue
+            rects.append((idx, (x, y, x + w, y + h)))
+
+        for i, (idx_a, (ax1, ay1, ax2, ay2)) in enumerate(rects):
+            for j, (idx_b, (bx1, by1, bx2, by2)) in enumerate(rects):
+                if j <= i:
+                    continue
+                if tuple(sorted((idx_a, idx_b))) in allow:
+                    continue
+                ix1 = max(ax1, bx1)
+                iy1 = max(ay1, by1)
+                ix2 = min(ax2, bx2)
+                iy2 = min(ay2, by2)
+                if ix1 < ix2 and iy1 < iy2:
+                    overlap_area = (ix2 - ix1) * (iy2 - iy1)
+                    if overlap_area >= min_area:
+                        raise AssertionError(
+                            f"Overlapping draw rects detected: "
+                            f"cmd[{idx_a}] ({ax1:.0f},{ay1:.0f}→{ax2:.0f},{ay2:.0f}) "
+                            f"and cmd[{idx_b}] ({bx1:.0f},{by1:.0f}→{bx2:.0f},{by2:.0f}), "
+                            f"overlap={overlap_area:.0f}px²"
+                        )
+
     def close(self) -> None:
         """Shut down the app subprocess cleanly."""
         import subprocess as _subprocess

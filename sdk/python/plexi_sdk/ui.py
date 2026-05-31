@@ -182,6 +182,19 @@ class Component:
         """Emit draw commands. Implementations should stay within (x, y, w, h)."""
         raise NotImplementedError
 
+    def render_into(self, ctx, x: float, y: float, w: float) -> float:
+        """Measure, render, and return the consumed height.
+
+        Enables flow layout without manual y-coordinate arithmetic::
+
+            y = 0.0
+            y += appbar.render_into(ctx, 0, y, ctx.w)
+            y += section.render_into(ctx, 0, y, ctx.w)
+        """
+        h = self.measure(w)
+        self.render(ctx, x, y, w, h)
+        return h
+
     def _render_clipped(self, ctx, x: float, y: float, w: float, h: float) -> None:
         """Render this component clipped to its allocated rect.
 

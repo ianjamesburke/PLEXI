@@ -205,10 +205,8 @@ class GhIssues(App):
             ("r", "refresh"),
             ("n", "new"),
         ])
-        appbar_h  = appbar.measure(ctx.w)
+        list_top  = appbar.render_into(ctx, 0.0, 0.0, ctx.w)
         footer_h  = footer.measure(ctx.w)
-        list_top  = appbar_h
-        appbar.render(ctx, 0.0, 0.0, ctx.w, appbar_h)
         footer.render(ctx, 0.0, ctx.h - footer_h, ctx.w, footer_h)
 
         if self._loading:
