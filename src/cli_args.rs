@@ -339,6 +339,10 @@ pub enum AppCmd {
         name: String,
         #[arg(long, default_value = "python")]
         lang: String,
+        /// Open the new pane relative to this pane ID instead of the focused pane.
+        /// Defaults to PLEXI_PANE_ID if set in the environment.
+        #[arg(long)]
+        from_pane_id: Option<u64>,
     },
     /// Run an app directly from a local directory without installing or linking.
     ///
@@ -347,6 +351,10 @@ pub enum AppCmd {
     Run {
         /// Path to the app folder containing manifest.toml
         path: String,
+        /// Open the new pane relative to this pane ID instead of the focused pane.
+        /// Defaults to PLEXI_PANE_ID if set in the environment.
+        #[arg(long)]
+        from_pane_id: Option<u64>,
     },
     /// Check a Plexi app directory for errors before publishing or installing.
     Validate {
