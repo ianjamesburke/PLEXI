@@ -418,7 +418,11 @@ impl RenderSession {
                         for (i, item) in items.iter().enumerate() {
                             let h = item.height();
                             let row_abs_y = list_rect.min.y + item_top - scroll_y;
-                            if pos.y >= row_abs_y && pos.y < row_abs_y + h {
+                            let row_rect = egui::Rect::from_min_size(
+                                egui::pos2(list_rect.min.x, row_abs_y),
+                                egui::vec2(list_w, h),
+                            );
+                            if list_rect.intersect(row_rect).contains(pos) {
                                 if response.double_clicked() {
                                     log::info!("ListView[{id}]: double-click → activate {i}");
                                     self.outbound_events.push(PlexiEvent::ListSelect {
