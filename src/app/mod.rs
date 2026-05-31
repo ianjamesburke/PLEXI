@@ -4173,7 +4173,7 @@ impl eframe::App for PlexiApp {
                     }
                 }
 
-                let cmd_held = ui.input(|i| i.modifiers.command);
+                let cmd_held = ui.input(|i| i.modifiers.command) && ctx.panes.len() > 1;
                 {
                     let overlay_log_id = egui::Id::new("pane_id_overlay_on");
                     let was_held: bool =

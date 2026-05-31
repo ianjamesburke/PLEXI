@@ -193,12 +193,13 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
         }
 
         if self.cmd_held {
+            let c = self.colors.text_primary;
             ui.painter().text(
                 pane_rect.center(),
                 egui::Align2::CENTER_CENTER,
-                format!("{}", pane_id),
+                pane_id.to_string(),
                 egui::FontId::proportional(style::TEXT_PANE_ID_GHOST),
-                egui::Color32::from_rgba_unmultiplied(255, 255, 255, style::PANE_ID_GHOST_ALPHA),
+                egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), style::PANE_ID_GHOST_ALPHA),
             );
         }
 
