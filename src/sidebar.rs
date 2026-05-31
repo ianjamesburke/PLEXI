@@ -1,5 +1,5 @@
 use crate::context::WindowMenuAction;
-use crate::sidebar_row::{SidebarAction, ContextItem, PaneDots};
+use crate::sidebar_row::{SidebarAction, ContextItem, PaneRowItem};
 use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 use egui_tiles::Tile;
 
@@ -83,6 +83,8 @@ impl PlexiApp {
 
         let num_contexts = self.router.len();
         let mut clicked_workspace: Option<usize> = None;
+        let mut zoom_to_context: Option<usize> = None;
+        let mut focus_pane: Option<u64> = None;
         let mut delete_context: Option<usize> = None;
         let mut menu_action: Option<(usize, WindowMenuAction)> = None;
         let mut row_rects: Vec<Rect> = Vec::with_capacity(num_contexts);
@@ -98,7 +100,7 @@ impl PlexiApp {
             let is_dragging = self.drag_context == Some(i);
             let any_dragging = self.drag_context.is_some();
 
-            // Pane count + focused-dot index for this context
+            // Pane count + focused-pane index for this context
             let ctx_id = self.router.get(i).context_id;
             let mut pane_ids: Vec<u64> = self.windows.iter()
                 .filter(|w| w.context_id == ctx_id)
@@ -107,7 +109,7 @@ impl PlexiApp {
             pane_ids.sort_unstable();
             let pane_count = pane_ids.len();
 
-            let focused_dot_idx: Option<usize> = if is_active {
+            let focused_pane_idx: Option<usize> = if is_active {
                 self.windows.get(self.active_window)
                     .and_then(|w| w.focused_pane)
                     .and_then(|tile_id| {
@@ -119,6 +121,30 @@ impl PlexiApp {
                     })
             } else {
                 None
+            };
+
+            // Build pane rows for the active context — renders inside ContextItem scope.
+            let pane_rows: Vec<PaneRowItem> = if is_active && pane_count > 0 {
+                pane_ids.iter().enumerate().map(|(idx, &pane_id)| {
+                    let label = self.windows.iter()
+                        .filter(|w| w.context_id == ctx_id)
+                        .find_map(|w| w.panes.get(&pane_id))
+                        .map(|p| match p {
+                            crate::pane::Pane::Terminal(t) => {
+                                t.name.clone().unwrap_or_else(|| format!("terminal {}", idx + 1))
+                            }
+                            crate::pane::Pane::App(a) => a.name.clone(),
+                            crate::pane::Pane::Portal(_) => "portal".to_string(),
+                        })
+                        .unwrap_or_else(|| format!("pane {}", idx + 1));
+                    PaneRowItem {
+                        pane_id,
+                        label,
+                        is_focused: focused_pane_idx == Some(idx),
+                    }
+                }).collect()
+            } else {
+                vec![]
             };
 
             // --- Renaming: special-cased before ContextItem path ---
@@ -205,7 +231,9 @@ impl PlexiApp {
                 ctx_index: Some(i),
                 badge_count,
                 subtitle,
-                pane_dots: Some(PaneDots { count: pane_count, focused_idx: focused_dot_idx }),
+                pane_count,
+                pane_rows,
+                is_expanded: is_active,
             }.draw(ui, egui::Id::new(("ctx", i)), &self.colors);
 
             row_rects.push(response.rect);
@@ -270,6 +298,14 @@ impl PlexiApp {
                     SidebarAction::Activate => {
                         log::debug!("sidebar: activate ctx={i} active={}", self.router.active_idx());
                         clicked_workspace = Some(i);
+                    }
+                    SidebarAction::ZoomActivate => {
+                        log::info!("sidebar: zoom into sub-context ctx_idx={i}");
+                        zoom_to_context = Some(i);
+                    }
+                    SidebarAction::ActivatePane(pane_id) => {
+                        log::info!("sidebar: activate pane pane_id={pane_id}");
+                        focus_pane = Some(pane_id);
                     }
                     _ => {}
                 }
@@ -373,6 +409,19 @@ impl PlexiApp {
             }
         } else if let Some(i) = delete_context {
             self.delete_context(i);
+        } else if let Some(i) = zoom_to_context {
+            let current_ctx_id = self.router.active().context_id;
+            let current_win_id = self.windows[self.active_window].window_id;
+            let current_focused = self.windows[self.active_window].focused_pane;
+            self.router.push_depth(current_ctx_id, current_win_id, current_focused);
+            self.switch_workspace(i);
+        } else if let Some(pane_id) = focus_pane {
+            if let Some((win_idx, tile_id)) = self.find_pane_in_any_window(pane_id) {
+                self.active_window = win_idx;
+                self.set_window_focused_pane(win_idx, tile_id);
+            } else {
+                log::warn!("sidebar: focus_pane target not found pane_id={pane_id}");
+            }
         } else if let Some(i) = clicked_workspace {
             self.switch_workspace(i);
         }
