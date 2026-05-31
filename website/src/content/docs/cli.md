@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.536"
+verified_version: "0.0.555"
 order: 7
 ---
 
@@ -87,6 +87,93 @@ Delete a stored secret
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<friendly_name>` | string | yes |  |
+
+## `plexi routine`
+
+Manage workspace routines — scheduled shell commands.
+
+Routines are declared in `.plexi/routines.toml` and run automatically on schedule. Use `plexi routine list` to see configured routines, or `plexi routine run <name>` to fire one manually.
+
+| Subcommand | Description |
+|---|---|
+| `list` | List routines defined in .plexi/routines.toml with their schedule and next fire time |
+| `run` | Manually trigger a named routine from .plexi/routines.toml |
+
+### `plexi routine list`
+
+List routines defined in .plexi/routines.toml with their schedule and next fire time
+
+### `plexi routine run`
+
+Manually trigger a named routine from .plexi/routines.toml
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Name of the routine to run |
+
+## `plexi context`
+
+Manage the active context (the folder and project scope tied to the current pane)
+
+| Subcommand | Description |
+|---|---|
+| `new` | Open a new context with an optional name |
+| `open` | Switch the current pane to a context at the given path |
+| `set-root` | Change the root folder for the active context |
+| `current` | Print the id and name of the current pane's context as JSON |
+| `describe` | Set the description for the active context |
+| `zoom` | Zoom into a sub-context by its numeric context_id |
+| `zoom-out` | Zoom out of the current sub-context to the parent |
+
+### `plexi context new`
+
+Open a new context with an optional name
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | no | Name for the new context. Defaults to the directory basename |
+| `--path` | string | no | Root path for the new context. Defaults to current working directory |
+| `--parent` | string | no | Create as a child of the named context. Defaults to current context if inside one |
+
+### `plexi context open`
+
+Switch the current pane to a context at the given path
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<path>` | string | no |  |
+
+### `plexi context set-root`
+
+Change the root folder for the active context
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<path>` | string | no |  |
+
+### `plexi context current`
+
+Print the id and name of the current pane's context as JSON
+
+### `plexi context describe`
+
+Set the description for the active context
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<text>` | string | yes | Description text |
+
+### `plexi context zoom`
+
+Zoom into a sub-context by its numeric context_id
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<context_id>` | string | yes |  |
+
+### `plexi context zoom-out`
+
+Zoom out of the current sub-context to the parent
 
 ## `plexi app`
 
@@ -175,6 +262,7 @@ Scaffolds the folder structure and files you need to build a Plexi app. Use --la
 |---|---|---|---|
 | `<name>` | string | yes |  |
 | `--lang` | string | no | Default: `python`. |
+| `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane. Defaults to PLEXI_PANE_ID if set in the environment |
 
 ### `plexi app run`
 
@@ -185,6 +273,7 @@ Opens the app in a pane immediately. Edits to the app take effect on next launch
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<path>` | string | yes | Path to the app folder containing manifest.toml |
+| `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane. Defaults to PLEXI_PANE_ID if set in the environment |
 
 ### `plexi app validate`
 
@@ -204,52 +293,21 @@ Like `pip freeze` — captures exactly what's installed so you can replay it lat
 |---|---|---|---|
 | `<path>` | string | yes | Destination path for the TOML snapshot file |
 
-## `plexi uninstall`
+## `plexi registry`
 
-Uninstalls the app, CLI, and optionally your profile data.
-
-Removes the current channel's app bundle (/Applications/Plexi.app), CLI binary (/usr/local/bin/plexi), and shell completions. Your profile directory (~/.plexi/) holds your settings, secrets, and app configurations — you will be asked whether to keep it.
-
-Example: plexi uninstall
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--keep-data` | flag | no | Keep your profile directory (~/.plexi/) — your settings, secrets, and app data stay on disk |
-| `--yes` / `-y` | flag | no | Skip the confirmation prompt and proceed immediately (removes data unless --keep-data is set) |
-
-## `plexi update`
-
-Update installed apps or Plexi itself.
-
-Run with the `apps` subcommand to update one or all installed apps. Run with no subcommand to update the Plexi binary itself.
+Watch installed CLI tools for changes to their available commands and options
 
 | Subcommand | Description |
 |---|---|
-| `apps` | Pull the latest version of your installed apps |
+| `watch` | Check installed CLI tools for changes to their help output and update Plexi's knowledge of them |
 
-### `plexi update apps`
+### `plexi registry watch`
 
-Pull the latest version of your installed apps.
-
-Omit the app id to update all installed apps at once.
+Check installed CLI tools for changes to their help output and update Plexi's knowledge of them
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<id>` | string | no | App id to update (omit to update all installed apps) |
-
-## `plexi notify`
-
-Send a notification to the Plexi UI
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `--title` | string | yes | Notification title (required) |
-| `--body` | string | no | Notification body text |
-| `--level` | string | no | Severity level: info, warn, or error Default: `info`. |
-| `--choice` | string (repeatable) | no | Add a clickable button to the notification. Format: `key:Label` (returns key when clicked) or `Label:pane_focus:<pane_id>` (switches focus to that pane when clicked). Repeatable |
-| `--host-action` | string (repeatable) | no | Action to perform on the host when a button is clicked. Format: `key:action_type:action_arg`. Repeatable. The host runs this even after the process that sent the notification has exited |
-| `--timeout` | string | no | How many seconds before the notification disappears (0 = stays until dismissed) Default: `0`. |
-| `--scope` | string | no | Which panes see this notification: window, context, or global (default: global) Default: `global`. |
+| `<cli>` | string | no | Only check this one CLI tool instead of all of them |
 
 ## `plexi pane`
 
@@ -372,85 +430,19 @@ Open a plain terminal pane
 | `--cwd` | string | no | Directory to open the terminal in |
 | `--no-focus` | flag | no | Keep focus on the current pane instead of jumping to the new one |
 
-## `plexi registry`
+## `plexi notify`
 
-Watch installed CLI tools for changes to their available commands and options
-
-| Subcommand | Description |
-|---|---|
-| `watch` | Check installed CLI tools for changes to their help output and update Plexi's knowledge of them |
-
-### `plexi registry watch`
-
-Check installed CLI tools for changes to their help output and update Plexi's knowledge of them
+Send a notification to the Plexi UI
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<cli>` | string | no | Only check this one CLI tool instead of all of them |
-
-## `plexi context`
-
-Manage the active context (the folder and project scope tied to the current pane)
-
-| Subcommand | Description |
-|---|---|
-| `new` | Open a new context with an optional name |
-| `open` | Switch the current pane to a context at the given path |
-| `set-root` | Change the root folder for the active context |
-| `current` | Print the id and name of the current pane's context as JSON |
-| `describe` | Set the description for the active context |
-| `zoom` | Zoom into a sub-context by its numeric context_id |
-| `zoom-out` | Zoom out of the current sub-context to the parent |
-
-### `plexi context new`
-
-Open a new context with an optional name
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<name>` | string | no | Name for the new context. Defaults to the directory basename |
-| `--path` | string | no | Root path for the new context. Defaults to current working directory |
-| `--parent` | string | no | Create as a child of the named context. Defaults to current context if inside one |
-
-### `plexi context open`
-
-Switch the current pane to a context at the given path
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<path>` | string | no |  |
-
-### `plexi context set-root`
-
-Change the root folder for the active context
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<path>` | string | no |  |
-
-### `plexi context current`
-
-Print the id and name of the current pane's context as JSON
-
-### `plexi context describe`
-
-Set the description for the active context
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<text>` | string | yes | Description text |
-
-### `plexi context zoom`
-
-Zoom into a sub-context by its numeric context_id
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<context_id>` | string | yes |  |
-
-### `plexi context zoom-out`
-
-Zoom out of the current sub-context to the parent
+| `--title` | string | yes | Notification title (required) |
+| `--body` | string | no | Notification body text |
+| `--level` | string | no | Severity level: info, warn, or error Default: `info`. |
+| `--choice` | string (repeatable) | no | Add a clickable button to the notification. Format: `key:Label` (returns key when clicked) or `Label:pane_focus:<pane_id>` (switches focus to that pane when clicked). Repeatable |
+| `--host-action` | string (repeatable) | no | Action to perform on the host when a button is clicked. Format: `key:action_type:action_arg`. Repeatable. The host runs this even after the process that sent the notification has exited |
+| `--timeout` | string | no | How many seconds before the notification disappears (0 = stays until dismissed) Default: `0`. |
+| `--scope` | string | no | Which panes see this notification: window, context, or global (default: global) Default: `global`. |
 
 ## `plexi completions`
 
@@ -497,29 +489,6 @@ Overwrite config.toml with the built-in default template.
 
 Creates a backup at config.toml.bak before overwriting.
 
-## `plexi routine`
-
-Manage workspace routines — scheduled shell commands.
-
-Routines are declared in `.plexi/routines.toml` and run automatically on schedule. Use `plexi routine list` to see configured routines, or `plexi routine run <name>` to fire one manually.
-
-| Subcommand | Description |
-|---|---|
-| `list` | List routines defined in .plexi/routines.toml with their schedule and next fire time |
-| `run` | Manually trigger a named routine from .plexi/routines.toml |
-
-### `plexi routine list`
-
-List routines defined in .plexi/routines.toml with their schedule and next fire time
-
-### `plexi routine run`
-
-Manually trigger a named routine from .plexi/routines.toml
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<name>` | string | yes | Name of the routine to run |
-
 ## `plexi notes`
 
 Browse and open scratchpad notes created with Cmd+Shift+Space.
@@ -546,4 +515,37 @@ Requires fzf to be installed. Falls back to printing the notes directory when fz
 Interactive keybinding tutorial — learn split and navigate in real time.
 
 Walk through two fundamental Plexi interactions inside a live pane: split a pane (⌘D) and navigate between panes (⌘L / ⌘H). Must be run inside a Plexi pane (PLEXI_PANE_ID must be set).
+
+## `plexi update`
+
+Update installed apps or Plexi itself.
+
+Run with the `apps` subcommand to update one or all installed apps. Run with no subcommand to update the Plexi binary itself.
+
+| Subcommand | Description |
+|---|---|
+| `apps` | Pull the latest version of your installed apps |
+
+### `plexi update apps`
+
+Pull the latest version of your installed apps.
+
+Omit the app id to update all installed apps at once.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | no | App id to update (omit to update all installed apps) |
+
+## `plexi uninstall`
+
+Uninstalls the app, CLI, and optionally your profile data.
+
+Removes the current channel's app bundle (/Applications/Plexi.app), CLI binary (/usr/local/bin/plexi), and shell completions. Your profile directory (~/.plexi/) holds your settings, secrets, and app configurations — you will be asked whether to keep it.
+
+Example: plexi uninstall
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--keep-data` | flag | no | Keep your profile directory (~/.plexi/) — your settings, secrets, and app data stay on disk |
+| `--yes` / `-y` | flag | no | Skip the confirmation prompt and proceed immediately (removes data unless --keep-data is set) |
 
