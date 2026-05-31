@@ -4679,17 +4679,23 @@ pub fn notes_open_cli() -> i32 {
     let notes_dir = crate::config::config_dir().join("notes");
     let notes_dir_str = notes_dir.display().to_string();
 
-    let socket_set = std::env::var("PLEXI_SOCKET").is_ok();
-    let fzf_available = binary_in_path("fzf");
+    if !binary_in_path("fzf") {
+        eprintln!("error: fzf is not installed — run `brew install fzf` to enable the picker");
+        return 1;
+    }
 
-    if !socket_set || !fzf_available {
-        if !fzf_available {
-            eprintln!("hint: install fzf (`brew install fzf`) for an interactive picker");
-        }
-        if !socket_set {
-            eprintln!("hint: run inside a Plexi pane for interactive note picking");
-        }
-        println!("{notes_dir_str}");
+    if std::env::var("PLEXI_SOCKET").is_err() {
+        eprintln!("hint: run inside a Plexi pane for interactive note picking");
+        eprintln!("notes directory: {notes_dir_str}");
+        return 0;
+    }
+
+    let has_notes = notes_dir.is_dir()
+        && std::fs::read_dir(&notes_dir)
+            .map(|d| d.filter_map(|e| e.ok()).any(|e| e.path().extension().map_or(false, |x| x == "md")))
+            .unwrap_or(false);
+    if !has_notes {
+        eprintln!("No notes yet. Create one with \u{2318}+Shift+Space.");
         return 0;
     }
 
