@@ -275,15 +275,6 @@ $PLEXI pane name $PANE_ID "#<N1>+<N2>+<N3>"
 PREV_ID=$PANE_ID; LAYOUT=split_v
 ```
 
-Fire non-blocking notify:
-```bash
-PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}
-$PLEXI notify \
-  --title "PM: dispatched ${COUNT} lanes" \
-  --body "#<N1>, #<N2>... (<ACTIVE_LANE_COUNT + COUNT>/<MAX_LANES> active)" \
-  --choice "ok:Dismiss" &
-```
-
 ---
 
 ## Step 5 — Watch loop
