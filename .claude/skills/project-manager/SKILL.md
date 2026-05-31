@@ -195,7 +195,7 @@ gh issue list --label "ready" --state open \
 Group all `bundle: true` issues by their primary area (first `area:*` label). For each group that has 2+ issues and none of whose areas conflict with `IN_PROGRESS_AREAS`:
 - Treat the entire group as ONE candidate consuming ONE lane slot.
 - The single lane will implement all issues in the group in one PR.
-- Dispatch as: `bash .claude/skills/dispatch/scripts/open-lanes.sh <N1> <N2> <N3> ...` (open-lanes supports multiple issues per lane for bundle mode).
+- Dispatch as ONE pane: `$PLEXI terminal "c '/implement-issue <N1> <N2> <N3>'"`. Name the pane `#N1+N2+N3`.
 
 After bundle groups consume their slots, fill remaining slots with individual non-bundle issues.
 
@@ -255,9 +255,24 @@ UNPUSHED=$(git log origin/alpha..HEAD --oneline 2>/dev/null | wc -l | tr -d ' ')
 [ "$UNPUSHED" -gt 0 ] && git push origin alpha
 ```
 
-Then dispatch:
+Then open panes — one per lane. Use `split_h` for the first, `split_v` for each subsequent:
+
 ```bash
-bash .claude/skills/dispatch/scripts/open-lanes.sh <N1> [N2] [N3] [N4]
+PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}
+PREV_ID=$PLEXI_PANE_ID
+LAYOUT=split_h
+
+# Individual issue:
+PANE_ID=$($PLEXI terminal "c '/implement-issue <N>'" \
+  --layout $LAYOUT --from-pane-id $PREV_ID --cwd "$REPO_DIR" --no-focus)
+$PLEXI pane name $PANE_ID "#<N>"
+PREV_ID=$PANE_ID; LAYOUT=split_v
+
+# Bundle (all issues → one pane, one PR):
+PANE_ID=$($PLEXI terminal "c '/implement-issue <N1> <N2> <N3>'" \
+  --layout $LAYOUT --from-pane-id $PREV_ID --cwd "$REPO_DIR" --no-focus)
+$PLEXI pane name $PANE_ID "#<N1>+<N2>+<N3>"
+PREV_ID=$PANE_ID; LAYOUT=split_v
 ```
 
 Fire non-blocking notify:
@@ -301,7 +316,7 @@ On each re-entry after initial dispatch, lead with:
 - **Bare-shell pane recovery.** If a dispatch pane shows a prompt with no agent running ("← for agents"), re-send the command: `$PLEXI pane send <ID> 'c "/ship-issue <N>"\n'` — use `\n` for Enter, never a trailing `Enter` argument.
 - **Bundle issues should be batched.** Issues labeled `bundle` are micro-changes. Group by primary area and send all same-area bundles to one lane in one PR. Never open one PR per bundle issue.
 - **Post-merge cleanup runs every cycle.** Check merged PRs for still-open linked issues and close them automatically.
-- **Auto-push alpha before dispatch.** open-lanes.sh aborts on unpushed commits — push first.
+- **Auto-push alpha before dispatch.** `$PLEXI terminal` will clone a dirty tree — push first.
 - **Channel binary** auto-detected via `$PLEXI_CHANNEL` — never hardcode.
 - **Newest-first is the default.** Higher issue numbers were filed more recently.
 - **Conflict detection is live, not scored.** Two issues conflict only if they share an `area:*` label with something currently in-progress.

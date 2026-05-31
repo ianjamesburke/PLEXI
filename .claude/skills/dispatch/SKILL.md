@@ -1,6 +1,6 @@
 ---
 name: dispatch
-description: Use when the user wants to ship one or more issues. Runs open-lanes.sh to open parallel implement-issue panes — one per issue. Each pane self-orchestrates the full pipeline inline (implement → open-pr → validate-pr → merge-pr). An issue number is always required.
+description: Use when the user wants to ship one or more issues. Opens parallel implement-issue panes — one per issue, or one shared pane for a bundle. Each pane self-orchestrates the full pipeline inline (implement → open-pr → validate-pr → merge-pr). An issue number is always required.
 ---
 
 # Dispatch
@@ -51,10 +51,24 @@ Dispatching #1671 — fix(infra/skills): implement-issue preflight optimization
 ## Step 3 — Open lanes
 
 ```bash
-bash .claude/skills/dispatch/scripts/open-lanes.sh <issue1> [issue2...]
+PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}
+PREV_ID=$PLEXI_PANE_ID
+LAYOUT=split_h
+for ISSUE in <issue1> [issue2...]; do
+  PANE_ID=$($PLEXI terminal "c '/implement-issue $ISSUE'" \
+    --layout $LAYOUT \
+    --from-pane-id $PREV_ID \
+    --cwd "$PWD" \
+    --no-focus)
+  $PLEXI pane name $PANE_ID "#${ISSUE}"
+  PREV_ID=$PANE_ID
+  LAYOUT=split_v
+done
 ```
 
-This opens one Plexi terminal pane per issue, each running `c '/implement-issue N'`. The pipeline self-orchestrates inline from there:
+**Bundle mode:** if the user passes multiple issues that should share a single PR, open ONE pane with all numbers: `c '/implement-issue N1 N2 N3'`. Name the pane `#N1+N2+N3`.
+
+The pipeline self-orchestrates inline from there:
 
 ```
 implement-issue → open-pr → validate-pr (notify user, wait) → merge-pr
