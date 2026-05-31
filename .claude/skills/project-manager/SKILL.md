@@ -17,7 +17,8 @@ if [ -z "$PLEXI_PANE_ID" ]; then
   exit 1
 fi
 PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}
-$PLEXI pane name "PLEXI PM"
+# Only rename on first run — pane names persist across loop ticks
+[ ! -f .claude/agent-memory/project-manager/pane-cursors.json ] && $PLEXI pane name "PLEXI PM"
 ```
 
 ---

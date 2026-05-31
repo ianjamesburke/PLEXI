@@ -180,21 +180,19 @@ fi
 
 **Skip gate — small diffs:**
 ```bash
-STAT_LINE=$(gh pr diff "$PR_NUMBER" --stat | tail -1)
-CHANGED_LINES=$(printf '%s\n' "$STAT_LINE" | grep -oE '[0-9]+ insertions?' | grep -oE '[0-9]+')
-DELETED_LINES=$(printf '%s\n' "$STAT_LINE" | grep -oE '[0-9]+ deletions?' | grep -oE '[0-9]+')
-TOTAL_CHANGED=$(( ${CHANGED_LINES:-0} + ${DELETED_LINES:-0} ))
+# gh pr diff has no --stat flag; count changed lines from the patch directly
+TOTAL_CHANGED=$(gh pr diff "$PR_NUMBER" --patch 2>/dev/null | grep -cE "^\+[^+]|^-[^-]" || echo 0)
 if [ "$TOTAL_CHANGED" -le 10 ]; then
   echo "[AI REVIEW] Skipped — diff is $TOTAL_CHANGED lines (threshold: 10)."
   # Skip to Ship Log Append
 fi
 ```
 
-**1. CodeRabbit local review** (run from inside the feature worktree):
+**1. CodeRabbit local review** (run synchronously from inside the feature worktree — do NOT background it):
 ```bash
 cr 2>&1
 ```
-Fix `error`/`warning` severity findings. `info`/`suggestion` are advisory — apply if trivial. If fixes made: commit, push, re-run to confirm clean.
+Fix `error`/`warning` severity findings. `info`/`suggestion` are advisory — apply if trivial. If fixes made: commit, push, re-run to confirm clean. If `cr` hangs past 2 minutes, kill it and note "cr timed out" in the review block — do not poll or sleep-wait.
 
 **2. Inline bot review check (no waiting):**
 
