@@ -7,7 +7,7 @@ import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
 
-from plexi_sdk import App, RenderContext, BG, SURFACE, FG, ACCENT, RED, MUTED, PAD
+from plexi_sdk import App, RenderContext, PAD
 BTN_W = 64.0
 BTN_H = 48.0
 BTN_GAP = 8.0
@@ -87,20 +87,20 @@ class CalcApp(App):
 
     def on_render(self, ctx: RenderContext) -> None:
         # Display
-        ctx.rect(PAD, PAD, ctx.w - PAD * 2, 80.0, fill=SURFACE, radius=8.0)
+        ctx.rect(PAD, PAD, ctx.w - PAD * 2, 80.0, fill=ctx.theme.surface, radius=8.0)
         ctx.text(ctx.w - PAD - 8, PAD + 16, self.display,
-                 size=32.0, color=FG, align="right")
+                 size=32.0, color=ctx.theme.fg, align="right")
         if self.pending_op:
-            ctx.text(PAD + 8, PAD + 8, self.pending_op, size=12.0, color=MUTED)
+            ctx.text(PAD + 8, PAD + 8, self.pending_op, size=12.0, color=ctx.theme.muted)
 
         # Buttons
         for label, col, row in BUTTONS:
             x, y, w, h = _btn_rect(col, row)
             is_op = label in ("÷", "×", "+", "−", "=")
             is_clear = label == "C"
-            fill = ACCENT if is_op else (RED if is_clear else SURFACE)
+            fill = ctx.theme.accent if is_op else (ctx.theme.danger if is_clear else ctx.theme.surface)
             hover_fill = "#b9d0f7" if is_op else ("#f5a3b5" if is_clear else "#45475a")
-            text_color = BG if is_op else (BG if is_clear else FG)
+            text_color = ctx.theme.bg if is_op else (ctx.theme.bg if is_clear else ctx.theme.fg)
             if ctx.button(label, x, y, w, h, label,
                           fill=fill, hover_fill=hover_fill,
                           text_color=text_color, radius=6.0):
@@ -108,7 +108,7 @@ class CalcApp(App):
 
         # Keyboard hint
         ctx.text(PAD, ctx.h - 24, "0-9  + - * /  Enter: equals  Backspace: delete  Esc: clear",
-                 size=10.0, color=MUTED)
+                 size=10.0, color=ctx.theme.muted)
 
     def _backspace(self) -> None:
         if self.fresh or self.display == "0":

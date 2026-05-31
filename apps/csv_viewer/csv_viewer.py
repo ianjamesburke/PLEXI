@@ -7,7 +7,6 @@ from pathlib import Path
 
 from plexi_sdk import (  # type: ignore[attr-defined]
     App, RenderContext,
-    FG, MUTED, ACCENT, BG,
     BODY, CAPTION,
 )
 from plexi_sdk.ui import SelectList
@@ -100,7 +99,7 @@ class CsvViewer(App):
             self._headers = [f"Error: {e}"]
 
     def on_render(self, ctx: RenderContext) -> None:
-        ctx.clear(BG)
+        ctx.clear(ctx.theme.bg)
         if self._mode == "list":
             self._draw_list(ctx)
         else:
@@ -110,22 +109,22 @@ class CsvViewer(App):
         w, h = ctx.w, ctx.h
         y = PAD
 
-        ctx.text(PAD, y, str(self._dir), size=CAPTION, color=MUTED, monospace=True)
+        ctx.text(PAD, y, str(self._dir), size=CAPTION, color=ctx.theme.muted, monospace=True)
         y += 22.0
 
         if not self._files:
-            ctx.text(PAD, y, "No CSV files found.", size=BODY, color=MUTED)
-            ctx.text(PAD, h - 20, "esc  exit", size=CAPTION, color=MUTED)
+            ctx.text(PAD, y, "No CSV files found.", size=BODY, color=ctx.theme.muted)
+            ctx.text(PAD, h - 20, "esc  exit", size=CAPTION, color=ctx.theme.muted)
             return
 
         label = f"{len(self._files)} CSV file{'s' if len(self._files) != 1 else ''}"
-        ctx.text(PAD, y, label, size=BODY, color=FG)
+        ctx.text(PAD, y, label, size=BODY, color=ctx.theme.fg)
         y += 28.0
 
         self._file_list.selected_idx = self._selected
         self._file_list.render(ctx, 0, y, w, h - y - 30)
 
-        ctx.text(PAD, h - 20, "↑↓ / jk  navigate   ↵  open   esc  exit", size=CAPTION, color=MUTED)
+        ctx.text(PAD, h - 20, "↑↓ / jk  navigate   ↵  open   esc  exit", size=CAPTION, color=ctx.theme.muted)
 
     def _draw_detail(self, ctx: RenderContext) -> None:
         w, h = ctx.w, ctx.h
@@ -134,9 +133,9 @@ class CsvViewer(App):
         path = self._files[self._selected]
         y = PAD
 
-        ctx.text(PAD, y, path.name, size=BODY, color=FG, bold=True)
+        ctx.text(PAD, y, path.name, size=BODY, color=ctx.theme.fg, bold=True)
         y += 22.0
-        ctx.text(PAD, y, f"{len(self._rows)} rows × {len(self._headers)} columns", size=CAPTION, color=MUTED)
+        ctx.text(PAD, y, f"{len(self._rows)} rows × {len(self._headers)} columns", size=CAPTION, color=ctx.theme.muted)
         y += 22.0
 
         visible_cols = max(1, int((w - PAD) // COL_W))
@@ -148,7 +147,7 @@ class CsvViewer(App):
         for ci, col_idx in enumerate(range(col_start, col_end)):
             x = PAD + ci * COL_W
             label = self._headers[col_idx] if col_idx < len(self._headers) else ""
-            ctx.text(x + CELL_PAD, y + 4, label, size=CAPTION, color=ACCENT, bold=True,
+            ctx.text(x + CELL_PAD, y + 4, label, size=CAPTION, color=ctx.theme.accent, bold=True,
                      max_width=COL_W - CELL_PAD * 2)
         y += ROW_H + 2
 
@@ -169,7 +168,7 @@ class CsvViewer(App):
             for ci, col_idx in enumerate(range(col_start, col_end)):
                 x = PAD + ci * COL_W
                 cell = row[col_idx] if col_idx < len(row) else ""
-                ctx.text(x + CELL_PAD, row_y + 4, cell, size=CAPTION, color=FG,
+                ctx.text(x + CELL_PAD, row_y + 4, cell, size=CAPTION, color=ctx.theme.fg,
                          max_width=COL_W - CELL_PAD * 2)
 
         # Footer
@@ -178,7 +177,7 @@ class CsvViewer(App):
             info = f"row {row_start + 1}–{row_end} of {len(self._rows)}  ({pct}%)"
         else:
             info = "empty"
-        ctx.text(PAD, h - 20, f"{info}   ↑↓/jk scroll   ←→/hl columns   esc  back", size=CAPTION, color=MUTED)
+        ctx.text(PAD, h - 20, f"{info}   ↑↓/jk scroll   ←→/hl columns   esc  back", size=CAPTION, color=ctx.theme.muted)
 
 
 if __name__ == "__main__":
