@@ -96,13 +96,6 @@ osc_pane_title = true
 # model_medium = "llama3.3:70b"
 # model_high   = "qwq:32b"
 
-# ── Experimental Features ──────────────────────────────────────
-# Flip any flag to true and restart to enable.
-[beta]
-# crt           = false    # Retro CRT scanlines + green phosphor tint
-# ghost         = false    # Unfocused panes render at reduced opacity
-# ghost_opacity = 0.9     # Opacity for unfocused panes (0.0–1.0). Setting this enables ghost automatically.
-
 # ── Logging ────────────────────────────────────────────────────
 # [log]
 # level = "info"          # error | warn | info | debug  (default: info)
@@ -229,3 +222,11 @@ high   = "claude --dangerously-skip-permissions '{cmd}'"
 [cli]
 tips = true   # Set to false to suppress contextual tips after CLI commands.
 
+# ══════════════════════════════════════════════════════════════
+# Experimental / Beta
+# ══════════════════════════════════════════════════════════════
+# Flip any flag to true and restart to enable.
+[beta]
+# crt           = false    # Retro CRT scanlines + green phosphor tint
+# ghost         = false    # Unfocused panes render at reduced opacity
+# ghost_opacity = 0.9     # Opacity for unfocused panes (0.0–1.0). Setting this enables ghost automatically.
