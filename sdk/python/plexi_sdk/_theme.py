@@ -46,10 +46,15 @@ ROLES = tuple(_DEFAULTS.keys())
 
 def _luminance(hex_color: str) -> float:
     """Perceived luminance of a hex color (0.0 = black, 1.0 = white)."""
-    h = hex_color.lstrip("#")[:6]
+    h = hex_color.lstrip("#")
+    if len(h) in (3, 4):
+        h = "".join(c * 2 for c in h[:3])
     if len(h) < 6:
         return 0.0
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    try:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except ValueError:
+        return 0.0
     return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
 
 
@@ -127,6 +132,12 @@ class AppPalette:
     """
 
     def __init__(self, dark: "dict[str, str]", light: "dict[str, str]") -> None:
+        if set(dark.keys()) != set(light.keys()):
+            raise ValueError(
+                f"AppPalette: dark and light dicts must have the same keys. "
+                f"dark-only: {set(dark) - set(light)!r}, "
+                f"light-only: {set(light) - set(dark)!r}"
+            )
         self._dark = dark
         self._light = light
 

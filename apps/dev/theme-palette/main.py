@@ -102,10 +102,15 @@ class ThemePaletteApp(App):
 
 
 def _is_dark_color(hex_color: str) -> bool:
-    h = hex_color.lstrip("#")[:6]
+    h = hex_color.lstrip("#")
+    if len(h) in (3, 4):
+        h = "".join(c * 2 for c in h[:3])
     if len(h) < 6:
         return True
-    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    try:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except ValueError:
+        return True
     return (0.299 * r + 0.587 * g + 0.114 * b) / 255.0 < 0.5
 
 
