@@ -109,11 +109,11 @@ tail -20 ~/.plexi-pr-$PR_NUMBER/plexi.log
 **Skip gate — assess before running.** Read the diff and changed file list, then classify the PR:
 
 - **Run checks** if any changed file contains: new logic, new branches, new error paths, behavioral changes, new API surface, bug fixes, or anything systemic that could break silently.
-- **Skip checks** if ALL changes are exclusively: color/spacing/font-size constants, help/doc strings, markdown files, config TOML values, label/copy text, or UI layout values that require human eyes to verify anyway. When skipping, set `CR_FINDINGS="skipped — cosmetic/style change, user verifies visually"` and `GEMINI_FINDINGS=""`.
+- **Skip checks** if ALL changes are exclusively: color/spacing/font-size constants, help/doc strings, markdown files, config TOML values, label/copy text, or UI layout values that require human eyes to verify anyway. When skipping, set `CR_FINDINGS="skipped — cosmetic/style change, user verifies visually"` and `AI_FINDINGS=""`.
 
 When in doubt, run. Skipping is only correct when you are confident a human looking at the UI is the only meaningful verification.
 
-**If running — both tools in parallel from inside the feature worktree:**
+**If running — CodeRabbit in parallel with the AI diff review chain:**
 
 CodeRabbit (structured agent output):
 ```bash
@@ -121,27 +121,33 @@ cd "$(git rev-parse --show-toplevel)/worktrees/$BRANCH"
 coderabbit review --agent --base alpha --type committed 2>&1
 ```
 
-AI diff review (Gemini with Codex fallback):
+AI diff review — Codex first, Gemini fallback:
 ```bash
 DIFF=$(gh pr diff $PR_NUMBER)
-GEMINI_PROMPT="You are reviewing a PR for PLEXI, a Rust + Python terminal multiplexer. Review this diff for bugs, correctness issues, missing error handling, or anything that would block shipping. Be concise. Start with PASS if no blockers, or BLOCKERS: followed by a bullet list if there are issues."
-GEMINI_FINDINGS=""
-for MODEL in "gemini-2.5-pro" "gemini-2.5-flash" "gemini-1.5-flash"; do
-  GEMINI_FINDINGS=$(echo "$DIFF" | gemini -p "$GEMINI_PROMPT" --yolo -m "$MODEL" 2>&1)
-  [ $? -eq 0 ] && break
-  echo "gemini: $MODEL quota exhausted, trying next..."
-  GEMINI_FINDINGS=""
-done
-if [ -z "$GEMINI_FINDINGS" ]; then
-  echo "gemini: all models exhausted — falling back to codex review"
-  CODEX_REVIEW_PROMPT="Review this PR for bugs, correctness issues, missing error handling, or anything that would block shipping. Be concise. Start with PASS if no blockers, or BLOCKERS: followed by a bullet list."
-  GEMINI_FINDINGS=$(cd "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" && \
-    codex review "$CODEX_REVIEW_PROMPT" --base alpha 2>&1 || true)
-  [ -z "$GEMINI_FINDINGS" ] && GEMINI_FINDINGS="All AI diff reviewers exhausted — skipping."
+REVIEW_PROMPT="You are reviewing a PR for PLEXI, a Rust + Python terminal multiplexer. Review this diff for bugs, correctness issues, missing error handling, or anything that would block shipping. Be concise. Start with PASS if no blockers, or BLOCKERS: followed by a bullet list if there are issues."
+AI_FINDINGS=""
+
+# 1. Codex (OpenAI quota pool — try first)
+AI_FINDINGS=$(cd "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" && \
+  codex review "$REVIEW_PROMPT" --base alpha 2>&1)
+[ $? -ne 0 ] || [ -z "$AI_FINDINGS" ] && AI_FINDINGS=""
+
+# 2. Gemini fallback chain (if Codex failed or returned empty)
+if [ -z "$AI_FINDINGS" ]; then
+  for MODEL in "gemini-3.1-pro" "gemini-2.5-pro" "gemini-3-flash" "gemini-2.5-flash-lite"; do
+    OUTPUT=$(echo "$DIFF" | gemini -p "$REVIEW_PROMPT" --yolo -m "$MODEL" 2>&1)
+    if [ $? -eq 0 ] && ! echo "$OUTPUT" | grep -qi "exhausted\|quota"; then
+      AI_FINDINGS="$OUTPUT"
+      break
+    fi
+    echo "gemini: $MODEL unavailable, trying next..."
+  done
 fi
+
+[ -z "$AI_FINDINGS" ] && AI_FINDINGS="All AI diff reviewers unavailable — skipping automated review."
 ```
 
-Capture both outputs as `CR_FINDINGS` and `GEMINI_FINDINGS`. These are surfaced verbatim in the testing block — do not summarize or filter them.
+Capture both outputs as `CR_FINDINGS` and `AI_FINDINGS`. These are surfaced verbatim in the testing block — do not summarize or filter them.
 
 ---
 
@@ -171,8 +177,8 @@ What this ships: <ISSUE_WHAT — first non-header paragraph from issue body>
 CodeRabbit:
 <CR_FINDINGS verbatim, or "No findings.">
 
-Gemini:
-<GEMINI_FINDINGS verbatim>
+AI review:
+<AI_FINDINGS verbatim>
 
 Pass criteria (from Done When):
 - <concrete observable outcome>
@@ -191,7 +197,7 @@ plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
 REPLY_PANE="${PM_PANE_ID:-$PLEXI_PANE_ID}"
 RESULT=$(plexi notify \
   --title "PR #<n> quality checks done (attempt $((ATTEMPT_COUNT+1))/3)" \
-  --body "<title>. Review CodeRabbit + Gemini findings above, then reply pass/fail/modify." \
+  --body "<title>. Review CodeRabbit + AI findings above, then reply pass/fail/modify." \
   --choice "a:Talk to Claude:pane_focus:$REPLY_PANE" \
   --choice "b:Open PR build" \
   --choice "c:Open PR")
@@ -379,8 +385,8 @@ No binary install needed for this change.
 CodeRabbit:
 <CR_FINDINGS verbatim, or "No findings.">
 
-Gemini:
-<GEMINI_FINDINGS verbatim>
+AI review:
+<AI_FINDINGS verbatim>
 
 Pass criteria:
 - <observable change visible in diff>
@@ -400,9 +406,9 @@ plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
 
 ## Rules
 
-- Step 2b quality checks (coderabbit + gemini) run unless the PR is exclusively cosmetic/style — assess the diff, then decide
+- Step 2b quality checks (coderabbit + AI diff review) run unless the PR is exclusively cosmetic/style — assess the diff, then decide
 - Cosmetic = colors, spacing, font sizes, help strings, markdown, config values, UI copy — anything where human visual verification is the only meaningful check
-- CR_FINDINGS and GEMINI_FINDINGS are always shown verbatim — never summarized or filtered
+- CR_FINDINGS and AI_FINDINGS are always shown verbatim — never summarized or filtered
 - Issue brief (ISSUE_TITLE + ISSUE_WHAT) must appear at the top of every testing block
 - `fail` without description: ask for it before taking any action
 - `modify` is only valid if pass criteria not yet met
