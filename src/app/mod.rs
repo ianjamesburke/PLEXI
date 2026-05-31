@@ -2412,17 +2412,19 @@ impl eframe::App for PlexiApp {
                     self.save_workspace();
                 }
                 Action::ToggleZoom => {
-                    let focused_tile = self.windows[self.active_window].focused_pane;
-                    let focused_pane_id = focused_tile.and_then(|tile_id| {
-                        self.windows[self.active_window].tree.tiles.get(tile_id)
+                    let (focused_tile, portal_target) = {
+                        let win = &self.windows[self.active_window];
+                        let tile = win.focused_pane;
+                        let target = tile
+                            .and_then(|tile_id| win.tree.tiles.get(tile_id))
                             .and_then(|t| if let egui_tiles::Tile::Pane(p) = t { Some(*p) } else { None })
-                    });
-                    let portal_target = focused_pane_id
-                        .and_then(|pane_id| self.windows[self.active_window].panes.get(&pane_id))
-                        .and_then(|p| p.portal_target());
+                            .and_then(|pane_id| win.panes.get(&pane_id))
+                            .and_then(|p| p.portal_target());
+                        (tile, target)
+                    };
                     if let Some(child_ctx_id) = portal_target {
                         // Focused pane is a Portal tile → zoom into its sub-context.
-                        // Verify the target context exists BEFORE pushing depth state;
+                        // Verify target context exists BEFORE pushing depth state;
                         // push_depth must not fire if there is nothing to switch to.
                         if let Some(ctx_idx) = self.router.position(|c| c.context_id == child_ctx_id) {
                             log::info!("ToggleZoom on Portal: zooming into context_id={child_ctx_id}");
