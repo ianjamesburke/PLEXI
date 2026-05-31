@@ -196,32 +196,19 @@ cr 2>&1
 ```
 Fix `error`/`warning` severity findings. `info`/`suggestion` are advisory — apply if trivial. If fixes made: commit, push, re-run to confirm clean.
 
-**2. Poll for Gemini / CodeRabbit bot:**
+**2. Inline bot review check (no waiting):**
 
-Wait 5 minutes, then check every 60s up to 10 minutes (6 checks):
+Check immediately for any Gemini / CodeRabbit bot comments already posted:
 ```bash
-echo "Waiting 5 minutes for AI reviewers..."
-sleep 300
-for i in $(seq 1 6); do
-  COMMENT_COUNT=$(gh pr view $PR_NUMBER --json comments \
-    --jq '[.comments[] | select(.author.login | test("gemini|coderabbit"; "i"))] | length')
-  REVIEW_COUNT=$(gh api repos/ianjamesburke/PLEXI/pulls/$PR_NUMBER/reviews \
-    --jq '[.[] | select(.user.login | test("gemini|coderabbit"; "i"))] | length')
-  INLINE_COUNT=$(gh api repos/ianjamesburke/PLEXI/pulls/$PR_NUMBER/comments \
-    --jq '[.[] | select(.user.login | test("gemini|coderabbit"; "i"))] | length')
-  TOTAL=$((COMMENT_COUNT + REVIEW_COUNT + INLINE_COUNT))
-  if [ "$TOTAL" -gt 0 ]; then
-    gh pr view $PR_NUMBER --json comments \
-      --jq '.comments[] | select(.author.login | test("gemini|coderabbit"; "i")) | "[\(.author.login)] \(.body)"'
-    gh api repos/ianjamesburke/PLEXI/pulls/$PR_NUMBER/reviews \
-      --jq '.[] | select(.user.login | test("gemini|coderabbit"; "i")) | "[\(.user.login)] \(.body)"'
-    gh api repos/ianjamesburke/PLEXI/pulls/$PR_NUMBER/comments \
-      --jq '.[] | select(.user.login | test("gemini|coderabbit"; "i")) | "[\(.user.login)] \(.body)"'
-    break
-  fi
-  [ "$i" -lt 6 ] && echo "Check $i/6 — no feedback yet, waiting 60s..." && sleep 60
-done
+gh pr view $PR_NUMBER --json comments \
+  --jq '.comments[] | select(.author.login | test("gemini|coderabbit"; "i")) | "[\(.author.login)] \(.body)"'
+gh api repos/ianjamesburke/PLEXI/pulls/$PR_NUMBER/reviews \
+  --jq '.[] | select(.user.login | test("gemini|coderabbit"; "i")) | "[\(.user.login)] \(.body)"'
+gh api repos/ianjamesburke/PLEXI/pulls/$PR_NUMBER/comments \
+  --jq '.[] | select(.user.login | test("gemini|coderabbit"; "i")) | "[\(.user.login)] \(.body)"'
 ```
+
+If no output: note "No bot feedback at PR creation time" in the review block and move on. Do not wait or poll.
 
 For each finding:
 - Correctness/bug/type safety → fix, commit, push
@@ -288,4 +275,4 @@ After setting labels on all issues, invoke `/validate-pr <pr-number>` inline in 
 - Bundle mode: close all issues in Phase 6 of merge-pr
 - The final approver is always the user — AI reviews inform the fix pass, never gate the merge
 - If `cr` unavailable: note "cr not available" in the review block
-- No bot feedback after 10 minutes: note "No feedback received (10 min timeout)"
+- No bot feedback at creation time: note "No bot feedback at PR creation time" and move on — never wait or poll
