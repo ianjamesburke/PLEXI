@@ -157,30 +157,23 @@ pub fn is_light_preset(name: &str) -> bool {
 }
 
 /// Returns the paired preset for `name` under `system_theme`, or `None` if the preset
-/// has no paired variant (nord, dracula) or the name is unrecognized.
+/// has no paired variant (nord, dracula), the name is unrecognized, or the preset is
+/// already correct for the current system appearance.
 pub fn paired_preset(name: &str, system_theme: egui::Theme) -> Option<&'static str> {
     let canonical = canonical_preset_name(name)?;
     match system_theme {
         egui::Theme::Dark => match canonical {
             "catppuccin-latte" => Some("catppuccin-mocha"),
-            "catppuccin-mocha" => Some("catppuccin-mocha"),
             "solarized-light" => Some("solarized-dark"),
-            "solarized-dark" => Some("solarized-dark"),
             "gruvbox-light" => Some("gruvbox-dark"),
-            "gruvbox-dark" => Some("gruvbox-dark"),
             "tokyo-day" => Some("tokyo-night"),
-            "tokyo-night" => Some("tokyo-night"),
             _ => None,
         },
         egui::Theme::Light => match canonical {
             "catppuccin-mocha" => Some("catppuccin-latte"),
-            "catppuccin-latte" => Some("catppuccin-latte"),
             "solarized-dark" => Some("solarized-light"),
-            "solarized-light" => Some("solarized-light"),
             "gruvbox-dark" => Some("gruvbox-light"),
-            "gruvbox-light" => Some("gruvbox-light"),
             "tokyo-night" => Some("tokyo-day"),
-            "tokyo-day" => Some("tokyo-day"),
             _ => None,
         },
     }
