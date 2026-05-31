@@ -408,7 +408,6 @@ pub(crate) fn render_draw_commands(
                 const CHIP_GAP: f32 = 4.0;
                 const CHIP_PAD_X: f32 = 8.0;
                 const BADGE_TEXT_GAP: f32 = 8.0;
-                const SPACE_XS: f32 = 4.0;
                 const SCROLLBAR_W: f32 = 3.0;
                 const FONT_CAPTION: f32 = 13.0;
                 const FONT_HINT: f32 = 12.0;
@@ -417,7 +416,7 @@ pub(crate) fn render_draw_commands(
                 let total_h = if heights.is_empty() {
                     0.0
                 } else {
-                    heights.iter().sum::<f32>() + SPACE_XS * (heights.len().saturating_sub(1)) as f32
+                    heights.iter().sum::<f32>()
                 };
 
                 // Scroll-to-selected: only fire when the selection index changes.
@@ -441,7 +440,7 @@ pub(crate) fn render_draw_commands(
                                 }
                                 break;
                             }
-                            item_top += h_item + SPACE_XS;
+                            item_top += h_item;
                         }
                         list_view_last_aligned_sel.insert(id.clone(), sel);
                         log::debug!("list_view scroll-to-sel: id={id:?} sel={sel} offset={scroll_y_ref}");
@@ -473,7 +472,7 @@ pub(crate) fn render_draw_commands(
                             egui::vec2(list_w * 0.6, FONT_CAPTION),
                         );
                         painter.rect_filled(txt_rect, 3.0, colors.border);
-                        sy += LVI::ROW_H_BASE + SPACE_XS;
+                        sy += LVI::ROW_H_BASE;
                     }
                     // return is inside the match arm — use continue instead
                 }
@@ -519,7 +518,7 @@ pub(crate) fn render_draw_commands(
                     for (i, item) in items.iter().enumerate() {
                         let h_item = heights[i];
                         let row_abs_y = list_rect.min.y + item_top - scroll_y;
-                        item_top += h_item + SPACE_XS;
+                        item_top += h_item;
 
                         if row_abs_y + h_item < list_rect.min.y || row_abs_y > list_rect.max.y {
                             continue;
