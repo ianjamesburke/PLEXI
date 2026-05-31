@@ -360,3 +360,5 @@ mod tests {
         }
     }
 }
+
+pub use super::registry_watch::watch_cli;

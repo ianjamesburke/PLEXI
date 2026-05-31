@@ -5,6 +5,7 @@
 //! without pulling in the full GUI/audio dependency tree.
 
 pub mod app_protocol;
+#[path = "cli/args.rs"]
 pub mod cli_args;
 
 // Stub modules: only the types used by app_protocol via crate:: references.
