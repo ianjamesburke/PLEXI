@@ -947,7 +947,7 @@ fn app_init_config_dir() -> String {
 ///
 /// The app is immediately discoverable by the registry without any additional
 /// install step, and hot reload watches the actual source.
-pub fn app_init(name: &str, lang: &str) -> i32 {
+pub fn app_init(name: &str, lang: &str, from_pane_id: Option<u64>) -> i32 {
     if name.is_empty() {
         eprintln!("Usage: plexi app init [--lang python|rust] <name>");
         return 1;
@@ -1047,8 +1047,8 @@ pub fn app_init(name: &str, lang: &str) -> i32 {
                 // Auto-open the app if PLEXI_SOCKET is set (running inside a pane).
                 if std::env::var("PLEXI_SOCKET").is_ok() {
                     let path_str = app_dir.to_string_lossy().to_string();
-                    log::info!("app_init: auto-opening '{name}' via app_run from_path={path_str}");
-                    let exit_code = app_run(&path_str);
+                    log::info!("app_init: auto-opening '{name}' via app_run from_path={path_str} from_pane_id={from_pane_id:?}");
+                    let exit_code = app_run(&path_str, from_pane_id);
                     if exit_code != 0 {
                         eprintln!("warning: app created but could not auto-open (exit {exit_code}) — run: plexi app run {}", app_dir.display());
                     }
@@ -1240,7 +1240,7 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> 
 /// `plexi app run <path>` — open any directory with a valid manifest.toml as an app pane.
 ///
 /// No install, no link required. Edits take effect on next launch.
-pub fn app_run(path: &str) -> i32 {
+pub fn app_run(path: &str, from_pane_id: Option<u64>) -> i32 {
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => { eprintln!("error: {e}"); return 1; }
@@ -1281,9 +1281,9 @@ pub fn app_run(path: &str) -> i32 {
             .join(format!("spawn-pane-response-{id}.json"))
             .to_string_lossy()
             .into_owned();
-        let from_pane_id = std::env::var("PLEXI_PANE_ID")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok());
+        let from_pane_id = from_pane_id.or_else(|| {
+            std::env::var("PLEXI_PANE_ID").ok()?.parse::<u64>().ok()
+        });
         let mut payload = serde_json::json!({
             "type": "spawn_pane",
             "type_id": "",
@@ -1293,7 +1293,7 @@ pub fn app_run(path: &str) -> i32 {
         if let Some(pid) = from_pane_id {
             payload["from_pane_id"] = serde_json::Value::Number(pid.into());
         }
-        log::info!("app_run:cli: sending via socket path={abs_path} response_file={response_file}");
+        log::info!("app_run:cli: sending via socket path={abs_path} from_pane_id={from_pane_id:?} response_file={response_file}");
         let code = send_to_socket(payload);
         if code != 0 {
             return code;
@@ -5076,7 +5076,7 @@ mod app_run_tests {
 
     #[test]
     fn app_run_nonexistent_path_returns_1() {
-        let code = super::app_run("/tmp/plexi-test-nonexistent-path-xyzzy-12345");
+        let code = super::app_run("/tmp/plexi-test-nonexistent-path-xyzzy-12345", None);
         assert_eq!(code, 1);
     }
 
@@ -5084,7 +5084,7 @@ mod app_run_tests {
     fn app_run_dir_without_manifest_returns_1() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().to_string_lossy().to_string();
-        let code = super::app_run(&path);
+        let code = super::app_run(&path, None);
         assert_eq!(code, 1);
     }
 
@@ -5093,7 +5093,7 @@ mod app_run_tests {
         let dir = TempDir::new().unwrap();
         std::fs::write(dir.path().join("manifest.toml"), "this is not valid toml ][[[").unwrap();
         let path = dir.path().to_string_lossy().to_string();
-        let code = super::app_run(&path);
+        let code = super::app_run(&path, None);
         assert_eq!(code, 1);
     }
 }

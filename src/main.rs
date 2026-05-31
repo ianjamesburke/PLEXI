@@ -314,14 +314,14 @@ fn main() -> eframe::Result {
                                 }
                             }
                         }
-                        AppCmd::Init { name, lang } => std::process::exit(cli::app_init(&name, &lang)),
+                        AppCmd::Init { name, lang, from_pane_id } => std::process::exit(cli::app_init(&name, &lang, from_pane_id)),
                         AppCmd::Uninstall { id, yes } => std::process::exit(cli::app_uninstall(&id, yes)),
                         AppCmd::List => std::process::exit(cli::app_list()),
                         AppCmd::Render { id, size, state, output } => {
                             std::process::exit(cli::app_render(&id, &size, state.as_deref(), output.as_deref()))
                         }
                         AppCmd::Info { id } => std::process::exit(cli::app_info(&id)),
-                        AppCmd::Run { path } => std::process::exit(cli::app_run(&path)),
+                        AppCmd::Run { path, from_pane_id } => std::process::exit(cli::app_run(&path, from_pane_id)),
                         AppCmd::Validate { path } => {
                             log::info!("app_validate:cli: path={path}");
                             std::process::exit(cli::validate_cli(&path));

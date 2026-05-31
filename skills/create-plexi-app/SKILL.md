@@ -1,7 +1,7 @@
 ---
 name: create-plexi-app
 description: Use when building, scaffolding, or modifying a Plexi Python app. Covers manifest, SDK surface, key-handling, the dev loop, render verification, and logging requirements.
-skill_version: "0.0.471"
+skill_version: "0.0.549"
 ---
 
 # Build a Plexi App
@@ -30,10 +30,12 @@ Substitute the correct binary and log path everywhere in this skill. Default to 
 Never hand-write a `manifest.toml`. Always scaffold:
 
 ```bash
-<plexi-binary> app init <app-name>
+<plexi-binary> app init <app-name> ${PLEXI_PANE_ID:+--from-pane-id $PLEXI_PANE_ID}
 ```
 
-This creates `<cwd>/.plexi/apps/<app-name>/` with a valid manifest and `main.py`. The app is immediately registered in the workspace — no additional install step needed. Editing an init-generated manifest is fine; writing one from scratch produces subtle schema errors.
+This creates `<cwd>/<channel-dir>/apps/<app-name>/` (e.g. `.plexi-alpha/apps/<app-name>/` on alpha) with a valid manifest and `main.py`. The app is immediately registered in the workspace — no additional install step needed. Editing an init-generated manifest is fine; writing one from scratch produces subtle schema errors.
+
+`${PLEXI_PANE_ID:+--from-pane-id $PLEXI_PANE_ID}` passes the agent's pane ID when running inside a Plexi pane so the new app pane opens adjacent to the agent, not the focused pane. It expands to nothing when `PLEXI_PANE_ID` is unset (outside a pane).
 
 After scaffolding, prune unused imports from `main.py` before implementing. The template imports several UI components; remove any you won't use (Pyright will flag them).
 
@@ -221,7 +223,7 @@ The home/root guard blocks `plexi app init` in `~/` directly. Use a neutral stag
 
 ```bash
 mkdir -p /tmp/plexi-scaffold && cd /tmp/plexi-scaffold
-<plexi-binary> app init <app-name>
+<plexi-binary> app init <app-name> ${PLEXI_PANE_ID:+--from-pane-id $PLEXI_PANE_ID}
 # App lands in ~/.plexi-alpha/apps/<app-name>/ — global registry, always accessible
 ```
 
@@ -235,16 +237,15 @@ mkdir -p ~/Documents/GitHub/PLEXI/apps/<app-name>
 # Copy an existing app as template
 ```
 
-### After scaffolding — open immediately
+### After scaffolding — auto-open
 
-After `app init`, always open the app in a split pane so the user sees hot reload working:
+When running inside a Plexi pane (`PLEXI_SOCKET` is set, which is the normal agent case), `app init` auto-opens the app immediately after scaffolding — no additional step needed.
+
+If `PLEXI_SOCKET` is not set (running outside a Plexi pane), `app init` prints the path and exits. Open the app manually once inside a Plexi pane:
 
 ```bash
-# In a separate terminal pane (not Claude Code's pane — it blocks):
 <plexi-binary> open <app-id>
 ```
-
-Tell the user: "Open this in your terminal pane — do NOT run it from Claude Code's pane or it will block."
 
 `watch = true` in the manifest handles file-change hot reload automatically. The dev loop is: edit `main.py` → save → pane updates.
 
