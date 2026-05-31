@@ -64,7 +64,7 @@ class ThemePaletteApp(App):
         x = PAD
         for label, color in host_swatches:
             ctx.rect(x, y, SWATCH_W, SWATCH_H, color, radius=6.0)
-            ctx.text(x + 4, y + SWATCH_H - 14, label, size=9.0, color=t.bg if _is_dark_color(color) else t.fg)
+            ctx.text(x + 4, y + SWATCH_H - 14, label, size=9.0, color=t.fg if _is_dark_color(color) else t.bg)
             x += SWATCH_W + SWATCH_GAP
 
         # App palette swatches
@@ -83,7 +83,7 @@ class ThemePaletteApp(App):
         x = PAD
         for label, color in app_swatches:
             ctx.rect(x, y, SWATCH_W, SWATCH_H, color, radius=6.0)
-            ctx.text(x + 4, y + SWATCH_H - 14, label, size=9.0, color=t.bg if _is_dark_color(color) else "#1e1e2e")
+            ctx.text(x + 4, y + SWATCH_H - 14, label, size=9.0, color="#cdd6f4" if _is_dark_color(color) else "#1e1e2e")
             x += SWATCH_W + SWATCH_GAP
 
         # Sample card using palette
@@ -94,7 +94,7 @@ class ThemePaletteApp(App):
         ctx.rect(PAD, y, card_w, 72, c["card"], radius=8.0)
         ctx.rect(PAD + 12, y + 14, 4, 44, c["accent"], radius=2.0)
         ctx.text(PAD + 24, y + 14, "AppPalette token: card", size=CAPTION, color=c["label"], bold=True)
-        ctx.text(PAD + 24, y + 33, f"Switches automatically with host theme — no if/else needed.", size=HINT, color=c["sub"])
+        ctx.text(PAD + 24, y + 33, "Switches automatically with host theme — no if/else needed.", size=HINT, color=c["sub"])
         ctx.text(PAD + 24, y + 50, f"Current mode: {mode}", size=HINT, color=c["accent"])
 
         # Footer
