@@ -1,6 +1,26 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.569] — 2026-05-31
+
+### Changes
+- refactor(cli): split src/cli.rs (5,322 lines) into focused submodules (#1870) (#1875)
+- feat(contexts): new context defaults to home dir instead of inheriting pane cwd (#1693) (#1876)
+- chore(config): move [beta] to bottom, add heavy separator (#1684) (#1877)
+- refactor(app): split src/app/mod.rs (5,534 lines) into focused submodules (#1865) (#1874)
+- fix(host/list_view): remove row gap and wire click events (#1871) (#1872)
+- feat(host/context): portal view redesign — mini-map, OSC state, description, direct egui render (#1859) (#1873)
+- refactor(sdk/pgap): component-owned input routing (#1802) (#1869)
+- fix(host/pane-ops): split from Portal tile falls back to home dir (#1853) (#1867)
+- feat(cli): improve plexi demo terminal UI with section headers and dividers (#1755) (#1868)
+- docs(file-explorer): add website docs page and welcome screen tip (#1736) (#1866)
+- refactor(skills): flip AI review order in validate-pr — Codex first, Gemini fallback
+- fix(cli): notes open errors, demo step 2 bypass, routine docs (#1855, #1856, #1849, #1850) (#1864)
+- fix(host/context): reset stale focused_pane after context portal deletion (#1854) (#1862)
+- fix(apps): replace removed SDK color constants with ctx.theme.* (#1851) (#1863)
+- fix(ui/chrome): switch pane ID overlay trigger from ⌘-hold to ⌃-hold (#1852) (#1861)
+- chore(skills): increase PM watch interval from 4m to 5m
+- refactor(skills): simplify implement-issue Phase 1, require ready label as hard gate
 ## [0.0.568] — 2026-05-31
 
 ### Changes
