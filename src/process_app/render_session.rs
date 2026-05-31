@@ -408,42 +408,52 @@ impl RenderSession {
                 egui::vec2(list_w, list_h),
             );
 
-            // Click detection — independent of keyboard handled_nav state
+            // Click detection — use raw input rather than ui.interact() to avoid
+            // the pane-level Sense::click_and_drag() widget (mod.rs) claiming
+            // the event first (last-registered widget wins in egui).
             if !items.is_empty() && !*loading {
-                let response = ui.interact(list_rect, ui.id().with(id), egui::Sense::click());
-                if response.clicked() || response.double_clicked() {
-                    if let Some(pos) = response.interact_pointer_pos() {
-                        let scroll_y = self.list_view_scroll_offsets.get(id.as_str()).copied().unwrap_or(0.0);
-                        let mut item_top = 0.0f32;
-                        for (i, item) in items.iter().enumerate() {
-                            let h = item.height();
-                            let row_abs_y = list_rect.min.y + item_top - scroll_y;
-                            let row_rect = egui::Rect::from_min_size(
-                                egui::pos2(list_rect.min.x, row_abs_y),
-                                egui::vec2(list_w, h),
-                            );
-                            if list_rect.intersect(row_rect).contains(pos) {
-                                if response.double_clicked() {
-                                    log::info!("ListView[{id}]: double-click → activate {i}");
-                                    self.outbound_events.push(PlexiEvent::ListSelect {
-                                        id: id.clone(),
-                                        index: i,
-                                    });
-                                    self.outbound_events.push(PlexiEvent::ListActivate {
-                                        id: id.clone(),
-                                        index: i,
-                                    });
-                                } else {
-                                    log::info!("ListView[{id}]: click → select {i}");
-                                    self.outbound_events.push(PlexiEvent::ListSelect {
-                                        id: id.clone(),
-                                        index: i,
-                                    });
+                let is_double = ui.input(|i| {
+                    i.pointer.button_double_clicked(egui::PointerButton::Primary)
+                });
+                let is_click = ui.input(|i| {
+                    i.pointer.button_released(egui::PointerButton::Primary)
+                        && !i.pointer.is_decidedly_dragging()
+                });
+                if is_double || is_click {
+                    if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                        if list_rect.contains(pos) {
+                            let scroll_y = self.list_view_scroll_offsets.get(id.as_str()).copied().unwrap_or(0.0);
+                            let mut item_top = 0.0f32;
+                            for (i, item) in items.iter().enumerate() {
+                                let h = item.height();
+                                let row_abs_y = list_rect.min.y + item_top - scroll_y;
+                                let row_rect = egui::Rect::from_min_size(
+                                    egui::pos2(list_rect.min.x, row_abs_y),
+                                    egui::vec2(list_w, h),
+                                );
+                                if list_rect.intersect(row_rect).contains(pos) {
+                                    if is_double {
+                                        log::info!("ListView[{id}]: double-click → activate {i}");
+                                        self.outbound_events.push(PlexiEvent::ListSelect {
+                                            id: id.clone(),
+                                            index: i,
+                                        });
+                                        self.outbound_events.push(PlexiEvent::ListActivate {
+                                            id: id.clone(),
+                                            index: i,
+                                        });
+                                    } else {
+                                        log::info!("ListView[{id}]: click → select {i}");
+                                        self.outbound_events.push(PlexiEvent::ListSelect {
+                                            id: id.clone(),
+                                            index: i,
+                                        });
+                                    }
+                                    ui.ctx().request_repaint();
+                                    break;
                                 }
-                                ui.ctx().request_repaint();
-                                break;
+                                item_top += h;
                             }
-                            item_top += h;
                         }
                     }
                 }
