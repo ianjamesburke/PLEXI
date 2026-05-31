@@ -617,7 +617,7 @@ impl PlexiApp {
                                         colors,
                                     );
                                     ui.label(
-                                        RichText::new("Zoom pane")
+                                        RichText::new("Zoom pane / enter context")
                                             .size(style::TEXT_HINT)
                                             .color(colors.text_dim),
                                     );

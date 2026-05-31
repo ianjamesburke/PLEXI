@@ -15,7 +15,7 @@ pub enum Pane {
     App(Box<AppPane>),
     /// A tile that represents a child context nested inside this one.
     /// Renders a summary card with pane count, status, and per-pane summaries.
-    /// Cmd+Shift+Enter zooms in.
+    /// Cmd+Enter zooms into the sub-context when this tile has focus.
     Portal(Box<PortalPane>),
 }
 
