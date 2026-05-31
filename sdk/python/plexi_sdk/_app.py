@@ -1080,7 +1080,12 @@ class App:
                     delta_y = float(ev.get("delta_y", 0.0))
                     if self._scroll_consumers:
                         for _consumer in self._scroll_consumers:
-                            _consumer.handle_scroll(delta_y)
+                            try:
+                                _consumer.handle_scroll(delta_y)
+                            except Exception as e:
+                                sys.stderr.write(
+                                    f"scroll consumer {type(_consumer).__name__} handle_scroll raised: {e}\n"
+                                )
                         self.emit.schedule_render()
                     else:
                         ctx = self._make_ctx()
