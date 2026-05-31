@@ -6,7 +6,6 @@ import re
 
 from plexi_sdk import App, RenderContext
 from plexi_sdk.ui import (
-    BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, RED, YELLOW,
     TEXT_HINT, TEXT_CAPTION,
     SPACE_SM,
 )
@@ -29,14 +28,6 @@ BADGE_ADV = 50.0
 FILTERS    = ["ALL", "ERROR", "WARN", "INFO", "DEBUG"]
 FILTER_KEY = {"a": 0, "e": 1, "w": 2, "i": 3, "d": 4}
 
-# Solid fill colours for ctx.badge() — readable on dark rows
-LEVEL_BADGE_FILL: dict[str, str] = {
-    "ERROR": RED,
-    "WARN":  YELLOW,
-    "INFO":  ACCENT,
-    "DEBUG": "#585b70",
-    "TRACE": "#45475a",
-}
 
 ROW_ALT        = "#1a1a2a"
 COPY_ROW_BG    = "#1e2d1e"   # subtle green tint for copy-mode selected rows
@@ -278,15 +269,23 @@ class LogsApp(App):
         w, h = ctx.w, ctx.h
         filtered = self._filtered()
 
+        level_badge_fill = {
+            "ERROR": ctx.theme.danger,
+            "WARN":  ctx.theme.warning,
+            "INFO":  ctx.theme.accent,
+            "DEBUG": "#585b70",
+            "TRACE": "#45475a",
+        }
+
         # ── background ──────────────────────────────────────────────────────
-        ctx.rect(0, 0, w, h, BG)
+        ctx.rect(0, 0, w, h, ctx.theme.bg)
 
         # ── top bar ─────────────────────────────────────────────────────────
-        ctx.rect(0, 0, w, BAR_H, SURFACE)
+        ctx.rect(0, 0, w, BAR_H, ctx.theme.surface)
 
         if self._search_mode:
             ctx.text(PAD, BAR_H / 2 - TEXT_CAPTION / 2, "/",
-                     size=TEXT_CAPTION, color=ACCENT, bold=True)
+                     size=TEXT_CAPTION, color=ctx.theme.accent, bold=True)
             search_x = PAD + 14.0
             submitted = ctx.text_input(
                 "search",
@@ -303,17 +302,17 @@ class LogsApp(App):
                 self._copy_anchor = None
         else:
             ctx.text(PAD, BAR_H / 2 - TEXT_CAPTION / 2, "Logs",
-                     size=TEXT_CAPTION, color=FG, bold=True)
+                     size=TEXT_CAPTION, color=ctx.theme.fg, bold=True)
 
             chip_x = 50.0
             for i, label in enumerate(FILTERS):
                 active = i == self._filter_idx
                 if ctx.button(
                     f"filter_{i}", chip_x, 5.0, CHIP_W, BAR_H - 10.0, label,
-                    fill=ACCENT if active else HIGHLIGHT,
+                    fill=ctx.theme.accent if active else ctx.theme.highlight,
                     hover_fill="#a6c5f5" if active else "#45475a",
                     active_fill="#6ea8f5" if active else "#585b70",
-                    text_color=BG if active else MUTED,
+                    text_color=ctx.theme.bg if active else ctx.theme.muted,
                     font_size=12.0,
                     radius=5.0,
                 ):
@@ -326,11 +325,11 @@ class LogsApp(App):
             if self._search_q:
                 ctx.text(w - PAD, BAR_H / 2 - TEXT_HINT / 2,
                          f"/{self._search_q}",
-                         size=TEXT_HINT, color=ACCENT, align="right")
+                         size=TEXT_HINT, color=ctx.theme.accent, align="right")
 
         # ── footer ──────────────────────────────────────────────────────────
         foot_y = h - FOOT_H
-        ctx.rect(0, foot_y, w, FOOT_H, SURFACE)
+        ctx.rect(0, foot_y, w, FOOT_H, ctx.theme.surface)
 
         if self._copy_mode:
             lo, hi = self._copy_range(len(filtered))
@@ -351,7 +350,7 @@ class LogsApp(App):
                 (["esc"], "cancel"),
             ], font_size=10.0)
             ctx.text(w - PAD, foot_y + FOOT_H / 2 - TEXT_HINT / 2,
-                     "SEARCH", size=TEXT_HINT, color=ACCENT,
+                     "SEARCH", size=TEXT_HINT, color=ctx.theme.accent,
                      align="right")
         else:
             ctx.shortcuts(PAD, foot_y + 5.0, w - PAD * 2, [
@@ -362,7 +361,7 @@ class LogsApp(App):
                 (["y"], "copy"),
             ], font_size=10.0)
             ctx.text(w - PAD, foot_y + FOOT_H / 2 - TEXT_HINT / 2,
-                     f"{len(filtered)} lines", size=TEXT_HINT, color=MUTED,
+                     f"{len(filtered)} lines", size=TEXT_HINT, color=ctx.theme.muted,
                      align="right")
 
         # ── log rows ────────────────────────────────────────────────────────
@@ -371,7 +370,7 @@ class LogsApp(App):
         self._viewport_h = list_h
 
         if not filtered:
-            ctx.text(PAD, list_y + 16, "no log entries", size=TEXT_CAPTION, color=MUTED)
+            ctx.text(PAD, list_y + 16, "no log entries", size=TEXT_CAPTION, color=ctx.theme.muted)
             return
 
         ctx.push_clip(0, list_y, w, list_h)
@@ -399,8 +398,8 @@ class LogsApp(App):
 
             x      = PAD
             text_y = row_y + ROW_H / 2 - TEXT_HINT / 2
-            dim_fg = COPY_ROW_FG if in_selection else MUTED
-            msg_fg = COPY_ROW_FG if in_selection else FG
+            dim_fg = COPY_ROW_FG if in_selection else ctx.theme.muted
+            msg_fg = COPY_ROW_FG if in_selection else ctx.theme.fg
 
             # timestamp
             ctx.text(x, text_y, ll.time,
@@ -408,8 +407,8 @@ class LogsApp(App):
             x += time_w
 
             # level badge — solid fill, host-measured, readable at any size
-            badge_fill = LEVEL_BADGE_FILL.get(ll.level, "#45475a")
-            badge_fg   = BG if ll.level in ("ERROR", "WARN", "INFO") else FG
+            badge_fill = level_badge_fill.get(ll.level, "#45475a")
+            badge_fg   = ctx.theme.bg if ll.level in ("ERROR", "WARN", "INFO") else ctx.theme.fg
             ctx.badge(x, row_y + ROW_H / 2, ll.level[:4],
                       fill=badge_fill, fg=badge_fg,
                       font_size=10.0, radius=4.0)
@@ -435,8 +434,8 @@ class LogsApp(App):
             thumb_h     = max(20.0, list_h * thumb_ratio)
             thumb_y     = list_y + (self._scroll / total_h) * list_h
             thumb_y     = min(thumb_y, list_y + list_h - thumb_h)
-            ctx.rect(w - 4, list_y, 4, list_h, HIGHLIGHT)
-            ctx.rect(w - 4, thumb_y, 4, thumb_h, MUTED)
+            ctx.rect(w - 4, list_y, 4, list_h, ctx.theme.highlight)
+            ctx.rect(w - 4, thumb_y, 4, thumb_h, ctx.theme.muted)
 
 
 LogsApp().run()

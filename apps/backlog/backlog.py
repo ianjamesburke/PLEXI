@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
-from plexi_sdk import App, RenderContext, BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, RED, GREEN, Arg
+from plexi_sdk import App, RenderContext, Arg
 from plexi_sdk.ui import SelectList
 
 def _detect_channel_backlog_dir() -> "Path | None":
@@ -209,18 +209,18 @@ class BacklogApp(App):
 
     def on_render(self, ctx: RenderContext) -> None:
         w, h = ctx.w, ctx.h
-        ctx.clear(BG)
+        ctx.clear(ctx.theme.bg)
 
         list_w = w * LIST_FRAC
         list_h = h - TOP - BOTTOM_BAR_H
 
         # Header
         title = "backlog (global)" if self.global_only else "backlog"
-        ctx.text(12, 10, title, size=12, color=ACCENT, bold=True,
+        ctx.text(12, 10, title, size=12, color=ctx.theme.accent, bold=True,
                  max_width=list_w - 100)
         item_count = len(self.filtered)
         count_label = f"{item_count} item{'s' if item_count != 1 else ''}"
-        ctx.text(list_w - 80, 10, count_label, size=11, color=MUTED,
+        ctx.text(list_w - 80, 10, count_label, size=11, color=ctx.theme.muted,
                  max_width=80)
 
         if self.global_only:
@@ -231,24 +231,24 @@ class BacklogApp(App):
             )
         if not has_any_dir:
             self.emit.info("backlog: no dirs found — showing empty-state guide")
-            ctx.text(12, TOP + 12, "No notes yet.", size=13, color=FG)
+            ctx.text(12, TOP + 12, "No notes yet.", size=13, color=ctx.theme.fg)
             if self.global_only:
                 ctx.text(12, TOP + 34,
                          "No channel-level backlog found. Press ⌘0 to create a Quick Note.",
-                         size=11, color=MUTED, max_width=w - 24)
+                         size=11, color=ctx.theme.muted, max_width=w - 24)
             else:
                 ctx.text(12, TOP + 34,
                          "Press ⌘0 to open Quick Note, then press Enter twice to send to your backlog.",
-                         size=11, color=MUTED, max_width=w - 24)
+                         size=11, color=ctx.theme.muted, max_width=w - 24)
             return
 
         # Divider
-        ctx.line(list_w, TOP - 4, list_w, h - BOTTOM_BAR_H, color=HIGHLIGHT, width=1.0)
+        ctx.line(list_w, TOP - 4, list_w, h - BOTTOM_BAR_H, color=ctx.theme.highlight, width=1.0)
 
         # ── Item list ────────────────────────────────────────────────────────────
         if not self.filtered:
             msg = "No results" if self.search_query else "Backlog is empty"
-            ctx.text(12, TOP + 12, msg, size=12, color=MUTED)
+            ctx.text(12, TOP + 12, msg, size=12, color=ctx.theme.muted)
         else:
             self._item_list.render(ctx, 0, TOP, list_w, list_h)
 
@@ -257,31 +257,31 @@ class BacklogApp(App):
         pw = w - px - 10
         if self.preview_path and self.preview_text is not None:
             ctx.text(px, TOP - 18, self.preview_path.name,
-                     size=11, color=ACCENT, bold=True, max_width=pw)
+                     size=11, color=ctx.theme.accent, bold=True, max_width=pw)
             lines = self.preview_text.splitlines()
             for li, line in enumerate(lines):
                 ly = TOP + li * 15.0
                 if ly > h - BOTTOM_BAR_H - 4:
                     break
                 # Dim markdown headings differently
-                color = FG if not line.startswith("#") else ACCENT
+                color = ctx.theme.fg if not line.startswith("#") else ctx.theme.accent
                 ctx.text(px, ly, line, size=11, color=color, monospace=True,
                          max_width=pw)
 
         # ── Bottom bar ───────────────────────────────────────────────────────────
         bar_y = h - BOTTOM_BAR_H
-        ctx.rect(0, bar_y, w, BOTTOM_BAR_H, SURFACE)
+        ctx.rect(0, bar_y, w, BOTTOM_BAR_H, ctx.theme.surface)
 
         if self.in_search:
             ctx.text(12, bar_y + 7,
                      f"/ {self.search_query}▌",   # block cursor
-                     size=12, color=ACCENT, monospace=True)
+                     size=12, color=ctx.theme.accent, monospace=True)
         elif self.status:
-            ctx.text(12, bar_y + 7, self.status, size=11, color=GREEN)
+            ctx.text(12, bar_y + 7, self.status, size=11, color=ctx.theme.success)
         else:
             ctx.text(12, bar_y + 7,
                      "j/k navigate  e open  n new  a archive  d delete  / search  r refresh",
-                     size=10, color=MUTED)
+                     size=10, color=ctx.theme.muted)
 
         # ── Add-item overlay (host-owned TextInput) ─────────────────────────────
         # Issue #283 showcase migration: a real callsite for the new
@@ -290,10 +290,10 @@ class BacklogApp(App):
         # `None` on subsequent frames.
         if self.in_add:
             ox, oy, ow, oh = w / 2 - 200, h / 2 - 36, 400, 86
-            ctx.rect(ox, oy, ow, oh, SURFACE, radius=6.0)
-            ctx.rect(ox, oy, ow, 1, HIGHLIGHT)
+            ctx.rect(ox, oy, ow, oh, ctx.theme.surface, radius=6.0)
+            ctx.rect(ox, oy, ow, 1, ctx.theme.highlight)
             ctx.text(ox + 16, oy + 12, "New backlog item",
-                     size=12, color=ACCENT, bold=True)
+                     size=12, color=ctx.theme.accent, bold=True)
             submitted = ctx.text_input(
                 "backlog-new",
                 x=ox + 16, y=oy + 36, w=ow - 32,
@@ -306,12 +306,12 @@ class BacklogApp(App):
         if self.confirm_delete and self.filtered:
             name = self.filtered[self.selected].name
             ox, oy, ow, oh = w / 2 - 170, h / 2 - 36, 340, 72
-            ctx.rect(ox, oy, ow, oh, SURFACE, radius=6.0)
-            ctx.rect(ox, oy, ow, 1, HIGHLIGHT)
-            ctx.text(ox + 16, oy + 14, f"Delete  ‘{name}’?",
-                     size=13, color=RED, bold=True)
+            ctx.rect(ox, oy, ow, oh, ctx.theme.surface, radius=6.0)
+            ctx.rect(ox, oy, ow, 1, ctx.theme.highlight)
+            ctx.text(ox + 16, oy + 14, f"Delete  '{name}'?",
+                     size=13, color=ctx.theme.danger, bold=True)
             ctx.text(ox + 16, oy + 36, "Enter → confirm    Esc → cancel",
-                     size=11, color=MUTED)
+                     size=11, color=ctx.theme.muted)
 
     # ── Keys ─────────────────────────────────────────────────────────────────────
 
