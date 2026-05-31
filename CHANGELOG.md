@@ -1,6 +1,13 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.557] — 2026-05-31
+
+### Changes
+- fix(apps): replace removed SDK color constants with ctx.theme.* (#1851) (#1863)
+- fix(ui/chrome): switch pane ID overlay trigger from ⌘-hold to ⌃-hold (#1852) (#1861)
+- chore(skills): increase PM watch interval from 4m to 5m
+- refactor(skills): simplify implement-issue Phase 1, require ready label as hard gate
 ## [0.0.556] — 2026-05-31
 
 ### Changes
