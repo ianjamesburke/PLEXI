@@ -1,6 +1,45 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.544] — 2026-05-31
+
+### Changes
+- refactor(pane-ops): extract builtin app factory table from launch_app_by_id_with_layout (#1738) (#1823)
+- ux(cli): add color and visual hierarchy to help output via Clap Styles API (#1805) (#1824)
+- fix(sdk/pgap): FooterKeys bottom padding and chip centering when divider=True (#1820) (#1825)
+- feat(theme): add Gruvbox Light + Tokyo Day presets, generalize OS auto-switching (#1812) (#1822)
+- refactor(render): render_badge returns Rect + Component.render_into + assert_no_overlap (#1803) (#1821)
+- chore(skills/open-pr): skill update
+- fix(pm): stop re-dispatch loop on issues that already have a PR
+- chore(pm): update project-manager skill
+- chore(pm): wind-down mode, bundle batching, cursor tracking, post-merge cleanup, pane title fix
+- chore(skills): print issue title at start of implement-issue
+- fix(cli): secret success confirmations write to stdout not stderr (#1819)
+- fix(ui): remove 12px inset border from integrated app panes (#1817)
+- fix(infra/skills): bundle mode Ship Log, Pipeline Labels, and Closes keywords for all N issues (#1815) (#1816)
+- chore(skills/validate-pr): add Gemini model fallback chain + Codex fallback
+- chore(skills): implement-issue trusts create-issue's Implementation Map
+- chore(skills): vendor PLEXI-specific create-issue into the repo
+- chore(skills/validate-pr): intelligent skip gate for Step 2b quality checks
+- chore: disable CodeRabbit auto-review on PRs (running locally via CLI instead)
+- feat(theme): host as single source of truth — push Colors over PGAP, delete SDK frozen palette, one system-theme event (#1799) (#1813)
+- feat: add theme map + scroll event to PGAP schema, bump CLI doc version
+- fix(cli/completions): nested command completions don't filter by context (#1777) (#1810)
+- fix(palette): workspace-scoped apps show in palette outside their context (#1770) (#1808)
+- fix(skills/implement-issue): replace auto-stash with fail-fast dirty check (#1809)
+- refactor(sdk): one SDK delivery path — single sdk_path() resolver, PLEXI_SDK_PATH override, no clobber-on-launch (#1800) (#1806)
+- refactor(context): single context-transition seam — one choke point owns registry rescan + watcher restart + palette scope (#1801) (#1807)
+- refactor(secrets): collapse v1/v2 + v3 into one resolver (#1798) (#1804)
+- fix(host/navigation): app key dispatch ignores OS window focus (#1795) (#1797)
+- fix(sdk/pgap): mouse-wheel scroll has no effect in SDK Scrollable containers (#1794) (#1796)
+- fix(apps/gh-issues): refactor to SDK ui.py components + iterate with --state render until no overlaps (#1792) (#1793)
+- ...
+- chore(skills): skip install in merge-pr — bump only after squash merge
+- chore(skills): trim validate-pr + merge-pr label churn and no-op rebase
+- chore: update pgap schema for RenderSeed variant
+- Cleaner state injection primitive for headless render / app testing (#1790) (#1791)
+- feat(sdk): declarative Arg class for app launch arguments (#1788) (#1789)
+- fix(demo): reject split-bounce as navigation in step 2
 ## [0.0.543] — 2026-05-31
 
 ### Changes
