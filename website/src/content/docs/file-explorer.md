@@ -17,10 +17,11 @@ Press `⌘E` from any focused terminal pane. The overlay opens over your current
 |--------|-----|
 | Move down | `j` or `↓` |
 | Move up | `k` or `↑` |
-| Open file / enter directory | `Enter` |
-| Go up one directory | `h` or `Backspace` |
+| Open file / enter directory | `Enter`, `l`, or `→` |
+| Go up one directory | `h`, `Backspace`, or `←` |
 | Search by name | `/` |
 | Toggle sort order | `s` |
+| Refresh listing | `r` |
 | Close | `Escape` |
 
 Files open in the focused terminal pane. Directories are entered in place — the overlay stays open until you press `Escape`.
