@@ -63,6 +63,9 @@ pub enum Commands {
     /// Manage workspace routines — scheduled shell commands.
     ///
     /// Routines are declared in `.plexi/routines.toml` and run automatically on schedule.
+    /// **Requires Plexi to be running** — there is no background daemon. Routines only fire
+    /// while the host process is open.
+    ///
     /// Use `plexi routine list` to see configured routines, or `plexi routine run <name>` to fire one manually.
     Routine {
         #[command(subcommand)]

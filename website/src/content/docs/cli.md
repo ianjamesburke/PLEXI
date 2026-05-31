@@ -92,7 +92,32 @@ Delete a stored secret
 
 Manage workspace routines — scheduled shell commands.
 
-Routines are declared in `.plexi/routines.toml` and run automatically on schedule. Use `plexi routine list` to see configured routines, or `plexi routine run <name>` to fire one manually.
+Routines are declared in `.plexi/routines.toml` and run automatically on schedule. **Requires Plexi to be running** — there is no background daemon. Routines only fire while the host process is open.
+
+Use `plexi routine list` to see configured routines, or `plexi routine run <name>` to fire one manually.
+
+### Routine file format (`.plexi/routines.toml`)
+
+```toml
+[[routine]]
+name      = "morning-sync"
+command   = "./scripts/sync.sh"
+schedule  = "daily at 09:00"
+context   = "work"   # optional: only fires when this context is active
+ephemeral = true     # optional: close the spawned pane when the command exits
+```
+
+### Schedule formats
+
+| Format | Example |
+|---|---|
+| `every N seconds` | `every 30 seconds` |
+| `every N minutes` | `every 5 minutes` |
+| `every N hours`   | `every 2 hours` |
+| `daily at HH:MM`  | `daily at 09:00` |
+| `weekly on <day> at HH:MM` | `weekly on monday at 09:00` |
+| `monthly on N at HH:MM`    | `monthly on 1 at 08:00` |
+| 5-field cron `m h dom mon dow` | `0 9 * * 1-5` |
 
 | Subcommand | Description |
 |---|---|
