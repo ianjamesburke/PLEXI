@@ -1002,6 +1002,13 @@ pub(crate) fn render_draw_commands(
                     log::warn!("render: EndScroll on empty clip stack (app bug)");
                 }
             }
+
+            // ComponentTree is a PGAP v3.5 variant. The host renders it via
+            // render_component_tree() (task A2). Until that renderer lands, log
+            // a warning and drop — behaviour matches any unknown future variant.
+            RenderCommand::ComponentTree { .. } => {
+                log::warn!("render: ComponentTree not yet implemented — dropping (A2 pending)");
+            }
         }
     }
 
