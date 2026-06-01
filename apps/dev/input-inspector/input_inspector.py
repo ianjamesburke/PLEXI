@@ -19,6 +19,11 @@ if os.path.isdir(_sdk_path):
 from plexi_sdk import App, RenderContext, BG, SURFACE, HIGHLIGHT, FG, MUTED, ACCENT
 from plexi_sdk import BODY, CAPTION, PAD
 
+def _fmt_mods(mods: dict) -> str:
+    parts = [k[0].upper() for k in ("shift", "ctrl", "alt", "cmd") if mods.get(k)]
+    return "  [" + "+".join(parts) + "]" if parts else ""
+
+
 MAX_EVENTS = 200
 MOVE_LOG_MIN_INTERVAL = 1.0 / 30.0
 SCROLL_LOG_MIN_INTERVAL = 1.0 / 20.0
@@ -96,16 +101,18 @@ class InputInspectorApp(App):
     def on_click(self, ctx: RenderContext, x: float, y: float, button: str) -> None:
         self._push("click", f"click  {button}  ({x:.0f}, {y:.0f})")
 
-    def on_mouse_down(self, ctx: RenderContext, x: float, y: float, button: str) -> None:
+    def on_mouse_down(self, ctx: RenderContext, x: float, y: float, button: str, mods: dict = {}) -> None:  # noqa: ARG002
         if button not in self._held_buttons:
             self._held_buttons.append(button)
-        self._push("mouse_down", f"down   {button}  ({x:.0f}, {y:.0f})")
+        mod_str = _fmt_mods(mods)
+        self._push("mouse_down", f"down   {button}  ({x:.0f}, {y:.0f}){mod_str}")
 
-    def on_mouse_up(self, ctx: RenderContext, x: float, y: float, button: str) -> None:
+    def on_mouse_up(self, ctx: RenderContext, x: float, y: float, button: str, mods: dict = {}) -> None:  # noqa: ARG002
         self._held_buttons = [b for b in self._held_buttons if b != button]
-        self._push("mouse_up", f"up     {button}  ({x:.0f}, {y:.0f})")
+        mod_str = _fmt_mods(mods)
+        self._push("mouse_up", f"up     {button}  ({x:.0f}, {y:.0f}){mod_str}")
 
-    def on_mouse_move(self, ctx: RenderContext, x: float, y: float, buttons: list) -> None:
+    def on_mouse_move(self, ctx: RenderContext, x: float, y: float, buttons: list, mods: dict = {}) -> None:  # noqa: ARG002
         self._mouse_pos = (x, y)
         now = time.monotonic()
         button_state = tuple(buttons)
@@ -114,7 +121,8 @@ class InputInspectorApp(App):
             or button_state != self._last_move_buttons
         ):
             held = ", ".join(buttons) if buttons else "—"
-            self._push("mouse_move", f"move   ({x:.0f}, {y:.0f})  held={held}")
+            mod_str = _fmt_mods(mods)
+            self._push("mouse_move", f"move   ({x:.0f}, {y:.0f})  held={held}{mod_str}")
             self._last_move_log_at = now
             self._last_move_buttons = button_state
 

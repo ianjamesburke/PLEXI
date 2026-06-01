@@ -108,9 +108,9 @@ class App:
     Task (dispatched as asyncio tasks — event loop continues):
         on_key(ctx, key, mods)                      — on Key event
         on_click(ctx, x, y, button)                 — on Click event
-        on_mouse_down(ctx, x, y, button)            — on MouseDown event
-        on_mouse_up(ctx, x, y, button)              — on MouseUp event
-        on_mouse_move(ctx, x, y, buttons)           — on MouseMove event
+        on_mouse_down(ctx, x, y, button, mods={})   — on MouseDown event
+        on_mouse_up(ctx, x, y, button, mods={})     — on MouseUp event
+        on_mouse_move(ctx, x, y, buttons, mods={})  — on MouseMove event
         on_command(ctx, text)                        — on Command event
         on_paste(ctx, text)                          — on Paste event
         on_text_submitted(ctx, id, text)             — on TextInput Enter press
@@ -268,9 +268,9 @@ class App:
     def on_render(self, _ctx: RenderContext) -> None: pass
     def on_key(self, _ctx: RenderContext, _key: str, _mods: dict) -> "Coroutine[Any, Any, None] | None": return None
     def on_click(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> "Coroutine[Any, Any, None] | None": return None
-    def on_mouse_down(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> "Coroutine[Any, Any, None] | None": return None
-    def on_mouse_up(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> "Coroutine[Any, Any, None] | None": return None
-    def on_mouse_move(self, _ctx: RenderContext, _x: float, _y: float, _buttons: list) -> "Coroutine[Any, Any, None] | None": return None
+    def on_mouse_down(self, _ctx: RenderContext, _x: float, _y: float, _button: str, _mods: dict = {}) -> "Coroutine[Any, Any, None] | None": return None
+    def on_mouse_up(self, _ctx: RenderContext, _x: float, _y: float, _button: str, _mods: dict = {}) -> "Coroutine[Any, Any, None] | None": return None
+    def on_mouse_move(self, _ctx: RenderContext, _x: float, _y: float, _buttons: list, _mods: dict = {}) -> "Coroutine[Any, Any, None] | None": return None
     def on_command(self, _ctx: RenderContext, _text: str) -> "Coroutine[Any, Any, None] | None": return None
     def on_paste(self, _ctx: RenderContext, _text: str) -> "Coroutine[Any, Any, None] | None": return None
     def on_pipe_message(self, _ctx: RenderContext, _pipe_id: str, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
@@ -972,19 +972,19 @@ class App:
                 elif t == "mouse_down":
                     ctx = self._make_ctx()
                     await self._dispatch_hook(self.on_mouse_down, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
-                                              ev.get("button", "primary"))
+                                              ev.get("button", "primary"), ev.get("modifiers", {}))
 
                 elif t == "mouse_up":
                     ctx = self._make_ctx()
                     await self._dispatch_hook(self.on_mouse_up, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
-                                              ev.get("button", "primary"))
+                                              ev.get("button", "primary"), ev.get("modifiers", {}))
 
                 elif t == "mouse_move":
                     self._mx = ev.get("x", 0.0)
                     self._my = ev.get("y", 0.0)
                     ctx = self._make_ctx()
                     await self._dispatch_hook(self.on_mouse_move, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
-                                              ev.get("buttons", []))
+                                              ev.get("buttons", []), ev.get("modifiers", {}))
 
                 elif t == "command":
                     ctx = self._make_ctx()

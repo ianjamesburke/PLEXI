@@ -1667,6 +1667,13 @@ impl App for ProcessApp {
         if !pill_consumed_click {
             let origin = pane_rect.min;
 
+            // Read frame-level modifier state once; shared by all mouse events
+            // this frame so each event carries the same consistent snapshot.
+            let frame_mods = ui.input(|i| {
+                let m = i.modifiers;
+                Modifiers { shift: m.shift, ctrl: m.ctrl, alt: m.alt, cmd: m.command }
+            });
+
             // MouseDown — fires on the frame the primary or secondary button goes down.
             if let Some(pos) = mouse_response.interact_pointer_pos() {
                 let is_primary_down = ui.input(|i| {
@@ -1678,10 +1685,16 @@ impl App for ProcessApp {
                         && pane_rect.contains(i.pointer.interact_pos().unwrap_or(pos))
                 });
                 if is_primary_down {
+                    log::info!(
+                        "app::{}: mouse_down primary ({:.0},{:.0}) shift={} cmd={}",
+                        self.type_id, pos.x - origin.x, pos.y - origin.y,
+                        frame_mods.shift, frame_mods.cmd
+                    );
                     self.send_event(&PlexiEvent::MouseDown {
                         x: pos.x - origin.x,
                         y: pos.y - origin.y,
                         button: crate::app_protocol::MouseButton::Primary,
+                        modifiers: frame_mods.clone(),
                     });
                     needs_click_repaint = true;
                 }
@@ -1690,6 +1703,7 @@ impl App for ProcessApp {
                         x: pos.x - origin.x,
                         y: pos.y - origin.y,
                         button: crate::app_protocol::MouseButton::Secondary,
+                        modifiers: frame_mods.clone(),
                     });
                     needs_click_repaint = true;
                 }
@@ -1711,6 +1725,7 @@ impl App for ProcessApp {
                         x,
                         y,
                         button: crate::app_protocol::MouseButton::Primary,
+                        modifiers: frame_mods.clone(),
                     });
                     self.send_event(&PlexiEvent::Click {
                         x,
@@ -1724,6 +1739,7 @@ impl App for ProcessApp {
                         x,
                         y,
                         button: crate::app_protocol::MouseButton::Secondary,
+                        modifiers: frame_mods.clone(),
                     });
                     self.send_event(&PlexiEvent::Click {
                         x,
@@ -1757,6 +1773,7 @@ impl App for ProcessApp {
                             x: pos.x - origin.x,
                             y: pos.y - origin.y,
                             buttons,
+                            modifiers: frame_mods.clone(),
                         });
                         needs_tracking_repaint = true;
                     }

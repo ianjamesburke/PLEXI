@@ -266,7 +266,7 @@ class NodeCanvas(App):
 
     # ── Mouse events ──────────────────────────────────────────────────────────
 
-    def on_mouse_down(self, _ctx: RenderContext, x: float, y: float, button: str) -> None:
+    def on_mouse_down(self, _ctx: RenderContext, x: float, y: float, button: str, _mods: dict = {}) -> None:
         if button != "primary":
             return
 
@@ -297,7 +297,7 @@ class NodeCanvas(App):
             self._pan_anchor = (x, y, self._cam_x, self._cam_y)
             self.emit.info("node-canvas: pan start")
 
-    def on_mouse_move(self, _ctx: RenderContext, x: float, y: float, _buttons: list) -> None:
+    def on_mouse_move(self, _ctx: RenderContext, x: float, y: float, _buttons: list, _mods: dict = {}) -> None:
         if self._pan_anchor:
             ax, ay, cam_x, cam_y = self._pan_anchor
             self._cam_x = cam_x + (x - ax)
@@ -319,7 +319,7 @@ class NodeCanvas(App):
             self._drag_conn = (fn, fp, x, y)
             self.emit.schedule_render()
 
-    def on_mouse_up(self, _ctx: RenderContext, x: float, y: float, button: str) -> None:
+    def on_mouse_up(self, _ctx: RenderContext, x: float, y: float, button: str, _mods: dict = {}) -> None:
         if button != "primary":
             return
 
