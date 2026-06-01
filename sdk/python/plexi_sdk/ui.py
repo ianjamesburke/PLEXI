@@ -37,7 +37,14 @@ below the minimum pane size, or use `ScrollLog` for variable content.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Union
+from typing import List, Optional, Protocol, Union, runtime_checkable
+
+
+@runtime_checkable
+class HasToNode(Protocol):
+    """Anything that can serialize itself to a UiNode wire dict."""
+
+    def to_node(self) -> dict: ...
 
 # ── Style tokens ──────────────────────────────────────────────────────────
 # Keep these in sync with Rust's src/style.rs. Adding a token here without
@@ -1576,7 +1583,7 @@ class Tabs:
 
     def __init__(
         self,
-        tabs: "list[tuple[str, object]]",
+        tabs: "list[tuple[str, HasToNode]]",
         active: int = 0,
     ) -> None:
         self.tabs = tabs
@@ -1638,7 +1645,7 @@ class Grid:
     def __init__(
         self,
         columns: int,
-        children: "list[object]",
+        children: "list[HasToNode]",
         gap: float = 8.0,
     ) -> None:
         if columns < 1:
@@ -1729,7 +1736,7 @@ class Clickable:
         ctx.render_tree(clickable.to_node())
     """
 
-    def __init__(self, node_id: str, child: "object", on_click: bool = True) -> None:
+    def __init__(self, node_id: str, child: "HasToNode", on_click: bool = True) -> None:
         self.node_id = node_id
         self.child = child
         self.on_click = on_click
