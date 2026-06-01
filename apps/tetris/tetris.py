@@ -403,7 +403,7 @@ class TetrisApp(App):
         elif key in ("up", "k", "x"):
             self._try_rotate()
 
-        elif key in (" ", "Enter"):
+        elif key in ("space", "return"):
             self._hard_drop()
 
         elif key == "r":
