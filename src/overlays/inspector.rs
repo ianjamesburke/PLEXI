@@ -1,22 +1,4 @@
 use super::*;
-use crate::app_protocol::UiNode;
-
-/// Build a `UiNode::Text` for the pane ID label displayed in each inspector row.
-///
-/// Renders as `#<id>` at caption size with the dim text color.  Extracted so
-/// construction is testable without a live egui context.
-pub(crate) fn build_pane_id_label_node(pane_id: crate::tiling::PaneId, colors: &Colors) -> UiNode {
-    let color_hex = |c: egui::Color32| {
-        format!("#{:02x}{:02x}{:02x}{:02x}", c.r(), c.g(), c.b(), c.a())
-    };
-    UiNode::Text {
-        text: format!("#{pane_id}"),
-        size: style::TEXT_CAPTION,
-        color: color_hex(colors.text_dim),
-        bold: false,
-        monospace: false,
-    }
-}
 
 struct PaneRow {
     id: PaneId,
@@ -37,9 +19,11 @@ fn render_inspector_pane_row(
     let row_id = row.id;
     let (row_resp, _) = crate::widgets::selectable_row(ui, is_selected, colors, |ui| {
         ui.horizontal_centered(|ui| {
-            // Pane ID label via component tree.
-            let id_node = build_pane_id_label_node(row_id, colors);
-            crate::render_components::render_component_tree(ui, &id_node, colors);
+            ui.label(
+                RichText::new(format!("#{}", row_id))
+                    .size(style::TEXT_CAPTION)
+                    .color(colors.text_dim),
+            );
             crate::widgets::pane_type_badge(ui, row.kind, colors);
             let display_name: &str = if row.name.is_empty() { row.kind } else { &row.name };
             ui.label(
@@ -719,46 +703,5 @@ impl PlexiApp {
         _ctx: &egui::Context,
     ) -> crate::app_trait::KeyDisposition {
         crate::app_trait::KeyDisposition::Consumed
-    }
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod inspector_component_tree_tests {
-    use super::*;
-    use crate::app_protocol::UiNode;
-    use crate::config::ThemeConfig;
-
-    fn test_colors() -> Colors {
-        Colors::from_config(&ThemeConfig::default())
-    }
-
-    /// Pane ID label node must be `UiNode::Text` with `#<id>` format at caption size.
-    #[test]
-    fn pane_id_label_node_format() {
-        let colors = test_colors();
-        let node = build_pane_id_label_node(42, &colors);
-        if let UiNode::Text { text, size, bold, monospace, color } = node {
-            assert_eq!(text, "#42");
-            assert_eq!(size, style::TEXT_CAPTION);
-            assert!(!bold);
-            assert!(!monospace);
-            assert!(!color.is_empty(), "color must be set to text_dim hex");
-        } else {
-            panic!("expected UiNode::Text");
-        }
-    }
-
-    /// Pane ID 0 should still render as `#0` without panicking.
-    #[test]
-    fn pane_id_label_node_zero() {
-        let colors = test_colors();
-        let node = build_pane_id_label_node(0, &colors);
-        if let UiNode::Text { text, .. } = node {
-            assert_eq!(text, "#0");
-        } else {
-            panic!("expected UiNode::Text");
-        }
     }
 }

@@ -1,9 +1,7 @@
 use egui::{Align2, Color32, CornerRadius, RichText, Stroke, Vec2};
 
 use crate::app::PlexiApp;
-use crate::app_protocol::{StackDirection, UiNode, UiPadding};
 use crate::overlays::MODAL_WIDTH;
-use crate::theme::Colors;
 use crate::widgets::selectable_row;
 
 enum PaletteEntry {
@@ -484,23 +482,47 @@ impl PlexiApp {
                                                 ui.add_space(2.0);
                                             }
 
-                                            let row_node = build_app_row_node(
-                                                name,
-                                                description,
-                                                *running_in_background,
-                                                *is_workspace_local,
-                                                &colors,
-                                            );
                                             let (r, _) = selectable_row(
                                                 ui,
                                                 is_selected,
                                                 &colors,
                                                 |ui| {
-                                                    crate::render_components::render_component_tree(
-                                                        ui,
-                                                        &row_node,
-                                                        &colors,
-                                                    );
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(
+                                                            RichText::new("⬡")
+                                                                .size(10.0)
+                                                                .color(colors.accent),
+                                                        );
+                                                        ui.add_space(4.0);
+                                                        ui.label(
+                                                            RichText::new(name.as_str())
+                                                                .size(12.0)
+                                                                .color(colors.text_primary),
+                                                        );
+                                                        if *running_in_background {
+                                                            ui.add_space(6.0);
+                                                            ui.label(
+                                                                RichText::new("bg")
+                                                                    .size(9.0)
+                                                                    .color(colors.text_dim),
+                                                            );
+                                                        }
+                                                        if *is_workspace_local {
+                                                            ui.add_space(6.0);
+                                                            ui.label(
+                                                                RichText::new("ws")
+                                                                    .size(9.0)
+                                                                    .color(colors.accent),
+                                                            );
+                                                        }
+                                                    });
+                                                    if !description.is_empty() {
+                                                        ui.label(
+                                                            RichText::new(description.as_str())
+                                                                .size(9.0)
+                                                                .color(colors.text_dim),
+                                                        );
+                                                    }
                                                 },
                                             );
 
@@ -546,7 +568,6 @@ impl PlexiApp {
 
     /// Jump to a window by index, switching context if necessary.
     /// If `pane_id` is provided, also focuses that specific pane in the window.
-
     fn jump_to_context(&mut self, ctx_idx: usize, win_id: u64, pane_id: Option<u64>) {
         let target_ctx_id = self.windows[ctx_idx].context_id;
         if let Some(ctx_idx_sidebar) = self
@@ -586,175 +607,4 @@ impl PlexiApp {
         }
     }
 
-}
-
-// ── Free helpers — component-tree builders ────────────────────────────────────
-
-fn color_hex(c: Color32) -> String {
-    format!("#{:02x}{:02x}{:02x}{:02x}", c.r(), c.g(), c.b(), c.a())
-}
-
-/// Build a `UiNode` tree for an app palette row.
-///
-/// Returns a vertical `Stack` with:
-/// - a horizontal name row: hex icon + app name + optional "bg" / "ws" badges
-/// - an optional description line (dim, small)
-///
-/// Extracted so the node construction is testable without a live egui context.
-/// Used by `draw_command_palette` to render `PaletteEntry::App` rows.
-pub(crate) fn build_app_row_node(
-    name: &str,
-    description: &str,
-    running_in_background: bool,
-    is_workspace_local: bool,
-    colors: &Colors,
-) -> UiNode {
-    let mut name_children: Vec<UiNode> = vec![
-        UiNode::Text {
-            text: "⬡".to_string(),
-            size: 10.0,
-            color: color_hex(colors.accent),
-            bold: false,
-            monospace: false,
-        },
-        UiNode::Text {
-            text: name.to_string(),
-            size: 12.0,
-            color: color_hex(colors.text_primary),
-            bold: false,
-            monospace: false,
-        },
-    ];
-    if running_in_background {
-        name_children.push(UiNode::Text {
-            text: "bg".to_string(),
-            size: 9.0,
-            color: color_hex(colors.text_dim),
-            bold: false,
-            monospace: false,
-        });
-    }
-    if is_workspace_local {
-        name_children.push(UiNode::Text {
-            text: "ws".to_string(),
-            size: 9.0,
-            color: color_hex(colors.accent),
-            bold: false,
-            monospace: false,
-        });
-    }
-
-    let name_row = UiNode::Stack {
-        direction: StackDirection::Horizontal,
-        children: name_children,
-        gap: 4.0,
-        padding: UiPadding::default(),
-    };
-
-    if description.is_empty() {
-        name_row
-    } else {
-        UiNode::Stack {
-            direction: StackDirection::Vertical,
-            children: vec![
-                name_row,
-                UiNode::Text {
-                    text: description.to_string(),
-                    size: 9.0,
-                    color: color_hex(colors.text_dim),
-                    bold: false,
-                    monospace: false,
-                },
-            ],
-            gap: 2.0,
-            padding: UiPadding::default(),
-        }
-    }
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod command_palette_node_tests {
-    use super::*;
-    use crate::config::ThemeConfig;
-    use crate::theme::Colors;
-
-    fn test_colors() -> Colors {
-        Colors::from_config(&ThemeConfig::default())
-    }
-
-    /// The app row node must always include the app name as a `UiNode::Text`.
-    #[test]
-    fn command_row_node_includes_label() {
-        let colors = test_colors();
-        let node = build_app_row_node("MyApp", "", false, false, &colors);
-
-        // Without description the top-level node is the name row (horizontal Stack).
-        let children = match &node {
-            UiNode::Stack { children, direction, .. } => {
-                assert!(matches!(direction, StackDirection::Horizontal));
-                children
-            }
-            _ => panic!("expected UiNode::Stack for name-only row"),
-        };
-
-        // Second child is the app name text.
-        assert!(children.len() >= 2);
-        if let UiNode::Text { text, .. } = &children[1] {
-            assert_eq!(text, "MyApp");
-        } else {
-            panic!("expected UiNode::Text at index 1");
-        }
-    }
-
-    /// When `running_in_background` is true the name row contains a "bg" badge node.
-    #[test]
-    fn command_row_node_includes_bg_badge() {
-        let colors = test_colors();
-        let node = build_app_row_node("Foo", "", true, false, &colors);
-        let children = match &node {
-            UiNode::Stack { children, .. } => children,
-            _ => panic!("expected Stack"),
-        };
-        let has_bg = children.iter().any(|n| {
-            matches!(n, UiNode::Text { text, .. } if text == "bg")
-        });
-        assert!(has_bg, "expected 'bg' badge node");
-    }
-
-    /// When `is_workspace_local` is true the name row contains a "ws" badge node.
-    #[test]
-    fn command_row_node_includes_ws_badge() {
-        let colors = test_colors();
-        let node = build_app_row_node("Bar", "", false, true, &colors);
-        let children = match &node {
-            UiNode::Stack { children, .. } => children,
-            _ => panic!("expected Stack"),
-        };
-        let has_ws = children.iter().any(|n| {
-            matches!(n, UiNode::Text { text, .. } if text == "ws")
-        });
-        assert!(has_ws, "expected 'ws' badge node");
-    }
-
-    /// When a non-empty description is provided the top node is a vertical Stack
-    /// whose second child carries the description text.
-    #[test]
-    fn command_row_node_description_vertical_stack() {
-        let colors = test_colors();
-        let node = build_app_row_node("MyApp", "does stuff", false, false, &colors);
-        match &node {
-            UiNode::Stack { direction, children, .. } => {
-                assert!(matches!(direction, StackDirection::Vertical));
-                assert_eq!(children.len(), 2);
-                if let UiNode::Text { text, .. } = &children[1] {
-                    assert_eq!(text, "does stuff");
-                } else {
-                    panic!("expected description UiNode::Text at index 1");
-                }
-            }
-            _ => panic!("expected vertical Stack when description is non-empty"),
-        }
-    }
 }

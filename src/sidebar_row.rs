@@ -1,5 +1,4 @@
 use egui::{Align, Color32, CornerRadius, CursorIcon, Id, Layout, Rect, Sense, Vec2};
-use crate::app_protocol::UiNode;
 use crate::theme::Colors;
 
 pub const ACTION_ZONE_WIDTH: f32 = 30.0;
@@ -172,22 +171,22 @@ impl ContextItem {
                     } else {
                         with_alpha(text_dim, row_alpha * 0.75)
                     };
-                    // Pane label — rendered via component tree (E2 migration pattern).
-                    // The focus indicator glyph and truncating label are each a
-                    // `UiNode::Text`; both are laid out inside a horizontal stack so
-                    // visual output is identical to the previous direct-egui path.
-                    // TODO E3/E4: full migration of ContextItem name row pending.
-                    let label_node = build_pane_label_node(
-                        &row.label,
-                        row.is_focused,
-                        pane_label_color,
-                        with_alpha(accent_color, row_alpha),
-                    );
                     let row_scope = ui.scope(|ui| {
                         ui.set_width(ui.available_width());
                         ui.horizontal(|ui| {
                             ui.add_space(pane_indent);
-                            crate::render_components::render_component_tree(ui, &label_node, colors);
+                            if row.is_focused {
+                                ui.label(egui::RichText::new("▸").size(9.0).color(with_alpha(accent_color, row_alpha)));
+                            } else {
+                                ui.add_space(11.0);
+                            }
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&row.label).size(11.0).color(pane_label_color),
+                                )
+                                .selectable(false)
+                                .truncate(),
+                            );
                         });
                     });
                     let pane_rect = row_scope.response.rect;
@@ -308,110 +307,5 @@ impl ContextItem {
         };
 
         (action, response)
-    }
-}
-
-/// Build a `UiNode` for a single pane row label inside an expanded context.
-///
-/// Returns a horizontal `Stack` with:
-/// - a focus indicator glyph (`▸` or a blank spacer) as `UiNode::Text`
-/// - the pane label as `UiNode::Text`
-///
-/// Extracted so the node construction is testable without a live egui context.
-pub(crate) fn build_pane_label_node(
-    label: &str,
-    is_focused: bool,
-    label_color: Color32,
-    accent_color: Color32,
-) -> UiNode {
-    let color_hex = |c: Color32| {
-        format!("#{:02x}{:02x}{:02x}{:02x}", c.r(), c.g(), c.b(), c.a())
-    };
-
-    let indicator = UiNode::Text {
-        text: if is_focused { "▸".to_string() } else { "   ".to_string() },
-        size: 9.0,
-        color: color_hex(if is_focused { accent_color } else { Color32::TRANSPARENT }),
-        bold: false,
-        monospace: false,
-    };
-
-    let name = UiNode::Text {
-        text: label.to_string(),
-        size: 11.0,
-        color: color_hex(label_color),
-        bold: false,
-        monospace: false,
-    };
-
-    UiNode::Stack {
-        direction: crate::app_protocol::StackDirection::Horizontal,
-        children: vec![indicator, name],
-        gap: 0.0,
-        padding: crate::app_protocol::UiPadding::default(),
-    }
-}
-
-#[cfg(test)]
-mod sidebar_row_component_tree_tests {
-    use super::*;
-
-    /// `build_pane_label_node` returns a horizontal Stack with two Text children.
-    #[test]
-    fn pane_label_node_structure() {
-        let label_color = Color32::from_rgb(0xaa, 0xbb, 0xcc);
-        let accent_color = Color32::from_rgb(0x11, 0x22, 0x33);
-        let node = build_pane_label_node("my pane", true, label_color, accent_color);
-        if let UiNode::Stack { direction, children, gap, .. } = node {
-            assert_eq!(direction, crate::app_protocol::StackDirection::Horizontal);
-            assert_eq!(children.len(), 2);
-            assert_eq!(gap, 0.0);
-            // First child: focus indicator glyph
-            if let UiNode::Text { text, size, .. } = &children[0] {
-                assert_eq!(text, "▸");
-                assert_eq!(*size, 9.0);
-            } else {
-                panic!("expected UiNode::Text for indicator");
-            }
-            // Second child: pane label
-            if let UiNode::Text { text, size, .. } = &children[1] {
-                assert_eq!(text, "my pane");
-                assert_eq!(*size, 11.0);
-            } else {
-                panic!("expected UiNode::Text for label");
-            }
-        } else {
-            panic!("expected UiNode::Stack");
-        }
-    }
-
-    /// Non-focused rows use a blank spacer as the indicator.
-    #[test]
-    fn pane_label_node_unfocused_spacer() {
-        let node = build_pane_label_node("pane2", false, Color32::WHITE, Color32::WHITE);
-        if let UiNode::Stack { children, .. } = node {
-            if let UiNode::Text { text, .. } = &children[0] {
-                assert_ne!(text, "▸", "unfocused row must not show the focus glyph");
-            } else {
-                panic!("expected UiNode::Text");
-            }
-        } else {
-            panic!("expected UiNode::Stack");
-        }
-    }
-
-    /// Empty label produces a valid node without panicking.
-    #[test]
-    fn pane_label_node_empty_label() {
-        let node = build_pane_label_node("", false, Color32::WHITE, Color32::WHITE);
-        if let UiNode::Stack { children, .. } = node {
-            if let UiNode::Text { text, .. } = &children[1] {
-                assert_eq!(text, "");
-            } else {
-                panic!("expected UiNode::Text for label");
-            }
-        } else {
-            panic!("expected UiNode::Stack");
-        }
     }
 }

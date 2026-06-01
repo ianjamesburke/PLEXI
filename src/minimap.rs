@@ -176,16 +176,14 @@ pub fn render_minimap(
         egui::StrokeKind::Inside,
     );
 
-    // Workspace name — rendered via component tree (E2 migration pattern).
+    // Workspace name
     let name_x = panel_rect.center().x - name_w * 0.5;
     let name_y = panel_rect.min.y + padding * 0.5;
-    let name_rect = egui::Rect::from_min_size(
+    ui.painter().galley(
         egui::pos2(name_x, name_y),
-        egui::Vec2::new(name_w, name_h),
+        name_galley,
+        colors.text_primary,
     );
-    let name_node = build_workspace_name_node(workspace_name, colors.text_primary);
-    let mut name_ui = ui.new_child(egui::UiBuilder::new().max_rect(name_rect));
-    crate::render_components::render_component_tree(&mut name_ui, &name_node, colors);
 
     let grid_origin = egui::pos2(
         panel_min.x + (panel_w - grid_pixel_w) * 0.5,
@@ -264,57 +262,4 @@ pub fn render_minimap(
     }
 
     clicked
-}
-
-/// Build a `UiNode::Text` for the minimap workspace name label.
-///
-/// Extracted so the node construction is testable without a live egui context.
-/// Callers render via `render_component_tree` inside a positioned child UI.
-pub(crate) fn build_workspace_name_node(
-    workspace_name: &str,
-    color: egui::Color32,
-) -> crate::app_protocol::UiNode {
-    crate::app_protocol::UiNode::Text {
-        text: workspace_name.to_string(),
-        size: NAME_FONT_SIZE,
-        color: format!(
-            "#{:02x}{:02x}{:02x}{:02x}",
-            color.r(), color.g(), color.b(), color.a()
-        ),
-        bold: false,
-        monospace: false,
-    }
-}
-
-#[cfg(test)]
-mod minimap_component_tree_tests {
-    use super::*;
-
-    /// `build_workspace_name_node` produces a `UiNode::Text` with the correct
-    /// text, size, and a valid hex color string — no egui context required.
-    #[test]
-    fn workspace_name_node_fields() {
-        let color = egui::Color32::from_rgb(0xab, 0xcd, 0xef);
-        let node = build_workspace_name_node("my workspace", color);
-        if let crate::app_protocol::UiNode::Text { text, size, color: color_str, bold, monospace } = node {
-            assert_eq!(text, "my workspace");
-            assert_eq!(size, NAME_FONT_SIZE);
-            assert!(color_str.starts_with('#'), "color should be a hex string, got: {color_str}");
-            assert!(!bold);
-            assert!(!monospace);
-        } else {
-            panic!("expected UiNode::Text");
-        }
-    }
-
-    /// Empty workspace name produces a valid (empty text) node without panicking.
-    #[test]
-    fn workspace_name_node_empty_name() {
-        let node = build_workspace_name_node("", egui::Color32::WHITE);
-        if let crate::app_protocol::UiNode::Text { text, .. } = node {
-            assert_eq!(text, "");
-        } else {
-            panic!("expected UiNode::Text");
-        }
-    }
 }
