@@ -1,4 +1,24 @@
 use super::*;
+use crate::app_protocol::UiNode;
+
+/// Build a `UiNode::Text` for the welcome screen disclaimer line.
+///
+/// Renders in italic hint style at the dim text colour.  Extracted so
+/// construction is testable without a live egui context.
+pub(crate) fn build_welcome_disclaimer_node(colors: &crate::theme::Colors) -> UiNode {
+    let color_hex = |c: egui::Color32| {
+        format!("#{:02x}{:02x}{:02x}{:02x}", c.r(), c.g(), c.b(), c.a())
+    };
+    UiNode::Text {
+        text: "Caution: early-stage passion project. If you encounter \
+               any issues, don't hesitate to reach out."
+            .to_string(),
+        size: style::TEXT_HINT,
+        color: color_hex(colors.text_dim),
+        bold: false,
+        monospace: false,
+    }
+}
 
 impl PlexiApp {
     /// Render the spatial-grid minimap in the top-right corner of the work
@@ -130,14 +150,10 @@ impl PlexiApp {
                         });
                     }
                     ui.add_space(style::SPACE_MD);
-                    ui.label(
-                        RichText::new(
-                            "Caution: early-stage passion project. If you encounter \
-                             any issues, don't hesitate to reach out.",
-                        )
-                        .size(style::TEXT_HINT)
-                        .color(colors.text_dim)
-                        .italics(),
+                    // Disclaimer rendered via component tree.
+                    let disclaimer_node = build_welcome_disclaimer_node(&colors);
+                    crate::render_components::render_component_tree(
+                        ui, &disclaimer_node, &colors,
                     );
                     ui.add_space(style::SPACE_XL);
 
@@ -429,5 +445,38 @@ impl PlexiApp {
         _ctx: &egui::Context,
     ) -> crate::app_trait::KeyDisposition {
         crate::app_trait::KeyDisposition::Consumed
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod setup_component_tree_tests {
+    use super::*;
+    use crate::app_protocol::UiNode;
+    use crate::config::ThemeConfig;
+    use crate::theme::Colors;
+
+    fn test_colors() -> Colors {
+        Colors::from_config(&ThemeConfig::default())
+    }
+
+    /// Disclaimer node must be `UiNode::Text` containing the expected copy.
+    #[test]
+    fn welcome_disclaimer_node_structure() {
+        let colors = test_colors();
+        let node = build_welcome_disclaimer_node(&colors);
+        if let UiNode::Text { text, size, bold, monospace, color } = node {
+            assert!(
+                text.contains("Caution"),
+                "disclaimer must contain 'Caution'"
+            );
+            assert_eq!(size, style::TEXT_HINT);
+            assert!(!bold);
+            assert!(!monospace);
+            assert!(!color.is_empty(), "color must be set");
+        } else {
+            panic!("expected UiNode::Text");
+        }
     }
 }
