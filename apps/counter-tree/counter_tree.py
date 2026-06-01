@@ -1,8 +1,7 @@
 """Counter app demonstrating the component tree API (epic #1897 B3).
 
-Button/Input nodes are included for visual Style O verification only.
-ComponentEvent routing to Python apps is not yet in the SDK — button
-clicks and input changes have no effect until that is wired up.
+Button clicks route through on_component_event (issue #1904).
+Keyboard shortcuts (up/down/+/-) also work.
 """
 from plexi_sdk import App, State
 
@@ -11,7 +10,15 @@ class CounterTree(App):
     count = State(0)
     label = State("")
 
-    def on_key(self, ctx, key, mods):
+    def on_component_event(self, ctx, node_id, event_type, _payload):
+        if event_type == "click":
+            if node_id == "increment":
+                self.count += 1
+            elif node_id == "decrement":
+                self.count -= 1
+        ctx.info(f"component_event node_id={node_id!r} event_type={event_type!r}")
+
+    def on_key(self, _ctx, key, _mods):
         if key in ("up", "="):
             self.count += 1
         elif key in ("down", "-"):
