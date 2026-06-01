@@ -44,6 +44,7 @@ pub(crate) fn render_draw_commands(
     net_http_granted: bool,
     list_view_scroll_offsets: &mut HashMap<String, f32>,
     list_view_last_aligned_sel: &mut HashMap<String, usize>,
+    outbound_events: &mut Vec<crate::app_protocol::PlexiEvent>,
 ) {
     let origin = pane_rect.min;
 
@@ -1002,6 +1003,27 @@ pub(crate) fn render_draw_commands(
                     log::warn!("render: EndScroll on empty clip stack (app bug)");
                 }
             }
+
+            RenderCommand::ComponentTree { root } => {
+                log::info!(
+                    "render: ComponentTree received; rendering via render_component_tree; pane_origin={:?}",
+                    pane_rect.min
+                );
+                let component_events =
+                    crate::render_components::render_component_tree(ui, root, colors);
+                for evt in component_events {
+                    log::info!(
+                        "render: ComponentEvent node_id={} event_type={}",
+                        evt.node_id,
+                        evt.event_type
+                    );
+                    outbound_events.push(crate::app_protocol::PlexiEvent::ComponentEvent {
+                        node_id: evt.node_id,
+                        event_type: evt.event_type,
+                        payload: evt.payload,
+                    });
+                }
+            }
         }
     }
 
@@ -1664,7 +1686,7 @@ pub(crate) fn render_layout_node(
 }
 
 /// Parse a hex color string like `"#1e1e2e"` into Color32.
-pub(super) fn parse_color(hex: &str) -> Option<Color32> {
+pub(crate) fn parse_color(hex: &str) -> Option<Color32> {
     let hex = hex.trim_start_matches('#');
     if hex.len() == 6 {
         let r = u8::from_str_radix(&hex[0..2], 16).ok()?;

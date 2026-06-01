@@ -88,6 +88,7 @@ impl RenderSession {
             net_http_granted,
             &mut self.list_view_scroll_offsets,
             &mut self.list_view_last_aligned_sel,
+            &mut self.outbound_events,
         );
 
         // ── Pass 2: TextInput widgets ────────────────────────────────────────

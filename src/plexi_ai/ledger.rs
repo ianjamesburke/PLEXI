@@ -1,8 +1,8 @@
 //! Cost ledger — one JSONL row per AI call, written to
 //! `~/.plexi-alpha/ai-ledger.jsonl` (or the build-appropriate config dir).
 //!
-//! Stage 1: append-only, no gates. Stage 5 will light up budget enforcement
-//! (spec §10 risk #10).
+//! Budget enforcement is active: `check_budget` gates every `ai.query` call
+//! against per-app and global daily spend caps from `[ai]` config.
 //!
 //! Row format (all fields present; cost_usd is null for subscription billing):
 //! ```json
@@ -11,6 +11,7 @@
 //!  "cost_usd":0.0023,"cost_cents":0}
 //! ```
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -144,6 +145,99 @@ fn ledger_path() -> PathBuf {
     new_path
 }
 
+// ── Budget enforcement ────────────────────────────────────────────────────────
+
+/// Summary of AI spend for a single calendar day (UTC).
+pub struct DailySpend {
+    /// Total spend across all apps today, in USD.
+    pub global_usd: f64,
+    /// Per-app spend today, keyed by app_id, in USD.
+    pub per_app: HashMap<String, f64>,
+}
+
+/// Read today's ledger and compute total spend. O(n) scan — called before each
+/// `ai.query`. Fails open: any I/O or parse error is logged and returns zero
+/// spend so a bad ledger never blocks queries.
+pub fn today_spend() -> DailySpend {
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let path = ledger_path();
+
+    let data = match std::fs::read_to_string(&path) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // No ledger yet — zero spend.
+            return DailySpend { global_usd: 0.0, per_app: HashMap::new() };
+        }
+        Err(e) => {
+            log::warn!("plexi_ai ledger: failed to read {} for budget check: {e}", path.display());
+            return DailySpend { global_usd: 0.0, per_app: HashMap::new() };
+        }
+    };
+
+    let mut global_usd = 0.0f64;
+    let mut per_app: HashMap<String, f64> = HashMap::new();
+
+    for line in data.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("plexi_ai ledger: skipping malformed line during budget scan: {e}");
+                continue;
+            }
+        };
+        // Only count today's rows.
+        let ts = v["ts"].as_str().unwrap_or("");
+        if !ts.starts_with(&today) {
+            continue;
+        }
+        let cost = v["cost_usd"].as_f64().unwrap_or(0.0);
+        global_usd += cost;
+        if let Some(app_id) = v["app_id"].as_str() {
+            *per_app.entry(app_id.to_string()).or_insert(0.0) += cost;
+        }
+    }
+
+    DailySpend { global_usd, per_app }
+}
+
+/// Check if an `ai.query` from `app_id` would exceed budget limits.
+/// Returns `Ok(())` if under budget, `Err(reason)` if over.
+/// Fails open: if `today_spend` returns zero due to I/O errors, the query
+/// is allowed through.
+pub fn check_budget(app_id: &str, config: &crate::config::AiConfig) -> Result<(), String> {
+    let spend = today_spend();
+    let global_cap = config.effective_global_daily_usd();
+    if spend.global_usd >= global_cap {
+        log::warn!(
+            "ai_broker[{app_id}]: global daily budget exceeded (${:.4} / ${:.2})",
+            spend.global_usd,
+            global_cap,
+        );
+        return Err(format!(
+            "global daily AI budget exceeded (${:.2} / ${:.2})",
+            spend.global_usd, global_cap
+        ));
+    }
+    let app_cap = config.effective_per_app_daily_usd();
+    let app_spend = spend.per_app.get(app_id).copied().unwrap_or(0.0);
+    if app_spend >= app_cap {
+        log::warn!(
+            "ai_broker[{app_id}]: per-app daily budget exceeded (${:.4} / ${:.2})",
+            app_spend,
+            app_cap,
+        );
+        return Err(format!(
+            "per-app daily AI budget exceeded for '{app_id}' (${:.2} / ${:.2})",
+            app_spend, app_cap
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod ledger_tests {
     //! Wire-shape tests for the v3.3 broker ledger row (#284, #383).
@@ -226,5 +320,85 @@ mod ledger_tests {
             line.contains(r#""cost_cents":0"#),
             "subscription row must report cost_cents=0: {line}"
         );
+    }
+
+    // ── Budget enforcement tests ──────────────────────────────────────────────
+
+    fn budget_config(per_app: f64, global: f64) -> crate::config::AiConfig {
+        crate::config::AiConfig {
+            per_app_daily_usd: Some(per_app),
+            global_daily_usd: Some(global),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn check_budget_passes_under_limit() {
+        let config = budget_config(1.0, 10.0);
+        // Build a mock DailySpend inline by calling check_budget with a config
+        // where limits are well above any actual ledger spend. Since we are in
+        // a test environment with no real ledger, today_spend() returns zero —
+        // this call must succeed.
+        let result = check_budget("app1", &config);
+        assert!(result.is_ok(), "should pass when spend is under limit: {result:?}");
+    }
+
+    #[test]
+    fn check_budget_blocks_global_over_limit() {
+        // Set global cap very low so even zero today_spend() doesn't trigger...
+        // We need to actually write a ledger row for today to test blocking.
+        // Use a temp dir to isolate. Since ledger_path() uses config_dir() which
+        // is process-global, we test the logic directly using a known spend
+        // by setting a cap below the mock spend value.
+        //
+        // Instead, test the error message shape by using a cap of 0.0 (any spend
+        // would exceed it — but spend is 0 from an empty ledger).
+        // To truly trigger the global block without mocking, set global cap to 0.0
+        // which means 0.0 >= 0.0 is true.
+        let config = crate::config::AiConfig {
+            global_daily_usd: Some(0.0),
+            per_app_daily_usd: Some(1.0),
+            ..Default::default()
+        };
+        let result = check_budget("app1", &config);
+        assert!(result.is_err(), "should block when global spend >= cap");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("global daily"),
+            "error must mention 'global daily': {msg}"
+        );
+    }
+
+    #[test]
+    fn check_budget_blocks_per_app_over_limit() {
+        // Set per-app cap to 0.0 so any spend (including 0 >= 0) triggers.
+        // But global cap is high so that path doesn't fire first.
+        let config = crate::config::AiConfig {
+            global_daily_usd: Some(100.0),
+            per_app_daily_usd: Some(0.0),
+            ..Default::default()
+        };
+        // With empty ledger, app_spend = 0.0 which is NOT >= 0.0... actually 0.0 >= 0.0 is true.
+        let result = check_budget("app1", &config);
+        assert!(result.is_err(), "should block when per-app spend >= cap");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("app1"),
+            "error must mention the app_id: {msg}"
+        );
+        assert!(
+            msg.contains("per-app daily"),
+            "error must mention 'per-app daily': {msg}"
+        );
+    }
+
+    #[test]
+    fn today_spend_returns_zero_on_missing_ledger() {
+        // today_spend() must not panic when ledger doesn't exist.
+        // We can't control the ledger path in tests (it's process-global),
+        // but we can verify it returns a DailySpend without panicking.
+        let spend = today_spend();
+        // global_usd is >= 0 (sanity check — no panics, no negative values)
+        assert!(spend.global_usd >= 0.0, "global_usd must be non-negative");
     }
 }

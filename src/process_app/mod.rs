@@ -382,11 +382,23 @@ impl ProcessApp {
         // .py entries are launched via python3 directly — no shebang or executable bit required.
         let is_python = bin_path.extension().and_then(|e| e.to_str()) == Some("py");
         let py_exe: Option<std::ffi::OsString> = if is_python {
+            // Prefer the per-app venv Python when it exists (D2: per-app venv via uv).
+            let venv_python = bin_path
+                .parent()
+                .map(|app_dir| app_dir.join(".venv").join("bin").join("python"))
+                .filter(|p| p.exists());
+            if let Some(ref vp) = venv_python {
+                log::info!("ProcessApp[{type_id}]: using per-app venv Python at {}", vp.display());
+            }
             Some(
-                bundled_py_bin.as_ref()
-                    .map(|b| b.join("python3"))
-                    .filter(|p| p.exists())
-                    .map(|p| std::ffi::OsString::from(p))
+                venv_python
+                    .map(std::ffi::OsString::from)
+                    .or_else(|| {
+                        bundled_py_bin.as_ref()
+                            .map(|b| b.join("python3"))
+                            .filter(|p| p.exists())
+                            .map(std::ffi::OsString::from)
+                    })
                     .unwrap_or_else(|| std::ffi::OsString::from("python3")),
             )
         } else {
@@ -779,7 +791,7 @@ impl ProcessApp {
         struct NoopBroker;
         impl AiBroker for NoopBroker {
             fn dispatch(&self, _req: AiBrokerRequest) -> AiBrokerResponse {
-                AiBrokerResponse::ok("noop".to_string(), 0, 0)
+                AiBrokerResponse::ok_with_deltas("noop".to_string(), 0, 0, Vec::new())
             }
         }
 

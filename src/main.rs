@@ -40,6 +40,7 @@ mod pane_ops;
 mod plexi_descriptor;
 mod plexi_ai;
 mod render;
+mod render_components;
 mod process_app;
 mod headless_renderer;
 mod hot_reload;
@@ -285,7 +286,7 @@ fn main() -> eframe::Result {
                                 }
                             }
                         }
-                        AppCmd::Install { spec_or_path, pack } => {
+                        AppCmd::Install { spec_or_path, pack, version } => {
                             if let Some(p) = pack {
                                 log::info!("app_install:cli: pack={p}");
                                 std::process::exit(cli::install_pack_cli(&p));
@@ -301,10 +302,10 @@ fn main() -> eframe::Result {
                                     // to match a file in the current directory.
                                     let is_local = s.contains('/') || s.starts_with('.') || std::path::Path::new(&s).is_dir();
                                     if is_local {
-                                        log::info!("app_install:cli: local path={s}");
-                                        std::process::exit(cli::app_install(&s));
+                                        log::info!("app_install:cli: local path={s} version={version:?}");
+                                        std::process::exit(cli::app_install_with_pin(&s, version.as_deref()));
                                     } else {
-                                        log::info!("app_install:cli: remote spec={s}");
+                                        log::info!("app_install:cli: remote spec={s} version={version:?}");
                                         std::process::exit(cli::install_cli(&s));
                                     }
                                 }
@@ -325,6 +326,14 @@ fn main() -> eframe::Result {
                         AppCmd::Freeze { path } => {
                             log::info!("app_freeze:cli: path={path}");
                             std::process::exit(cli::freeze_cli(&path));
+                        }
+                        AppCmd::Publish { dry_run } => {
+                            log::info!("app_publish:cli: dry_run={dry_run}");
+                            std::process::exit(cli::app_publish(dry_run));
+                        }
+                        AppCmd::Update { id } => {
+                            log::info!("app_update:cli: id={id:?}");
+                            std::process::exit(cli::app_update_cli(id.as_deref()));
                         }
                     },
                     Commands::Uninstall { keep_data, yes } => std::process::exit(cli::plexi_uninstall_cli(keep_data, yes)),

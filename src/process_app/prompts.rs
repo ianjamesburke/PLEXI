@@ -299,6 +299,7 @@ pub(crate) fn show_prompt_modal(
                             let ws_root_clone = ws_root.clone();
                             let open_panes = crate::plexi_ai::broker::get_pane_snapshot();
                             let td = std::sync::Arc::clone(&tool_dispatcher);
+                            let req_id = q.request_id.clone();
                             std::thread::Builder::new()
                                 .name(format!("ai-query-deferred-{app_id}-{}", q.request_id))
                                 .spawn(move || {
@@ -312,8 +313,22 @@ pub(crate) fn show_prompt_modal(
                                         open_panes,
                                         tool_dispatcher: Some(td),
                                     });
+                                    // Send incremental stream chunks before the final AiResponse.
+                                    let n_chunks = resp.stream_deltas.len();
+                                    for (i, delta) in resp.stream_deltas.into_iter().enumerate() {
+                                        let done = i + 1 == n_chunks;
+                                        let chunk = PlexiEvent::AiStreamChunk {
+                                            request_id: req_id.clone(),
+                                            delta,
+                                            done,
+                                        };
+                                        if let Err(e) = tx.send(chunk) {
+                                            log::warn!("ai broker: deferred stream chunk receiver dropped: {e}");
+                                            return;
+                                        }
+                                    }
                                     let event = PlexiEvent::AiResponse {
-                                        request_id: q.request_id,
+                                        request_id: req_id,
                                         content: resp.content,
                                         tokens_in: resp.tokens_in,
                                         tokens_out: resp.tokens_out,

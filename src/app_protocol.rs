@@ -244,6 +244,17 @@ pub enum PlexiEvent {
         tokens_out: u32,
         error: Option<String>,
     },
+    /// Incremental token chunk from a streaming ai_query response.
+    /// Sent before the final `AiResponse` so apps can display tokens as they arrive.
+    /// The final `AiResponse` is still sent with complete content + token counts.
+    AiStreamChunk {
+        request_id: String,
+        /// Incremental text delta (may be empty for the final chunk before AiResponse)
+        delta: String,
+        /// True on the last chunk before AiResponse fires
+        #[serde(default)]
+        done: bool,
+    },
     /// Host-to-app tool invocation (#399). The broker calls a tool exposed via
     /// `DrawCommand::ExposeTools` by sending this event to the owning pane.
     /// The app must reply with `DrawCommand::ToolResult { call_id, … }`.
@@ -412,6 +423,18 @@ pub enum PlexiEvent {
     /// Emitted when Enter is pressed on the selected item.
     /// `id` matches the `list_view` id field; `index` is the activated item index.
     ListActivate { id: String, index: usize },
+
+    /// Fired when a user interacts with a node that has `Interactive` wrapping or
+    /// when a Button/Input node is activated.
+    ComponentEvent {
+        /// Matches the `node_id` on the Interactive/Button/Input node.
+        node_id: String,
+        /// One of: "click", "hover_enter", "hover_exit", "submit", "change"
+        event_type: String,
+        /// Optional payload (e.g. current text value for "change" events on Input)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload: Option<serde_json::Value>,
+    },
 }
 
 /// On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives
@@ -552,6 +575,185 @@ impl schemars::JsonSchema for LayoutChild {
     }
     fn json_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({})
+    }
+}
+
+// ── Component tree wire types (PGAP v3.5) ────────────────────────────────────
+
+/// Flex direction for a `UiNode::Stack`.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum StackDirection {
+    Vertical,
+    Horizontal,
+}
+
+impl Default for StackDirection {
+    fn default() -> Self {
+        Self::Vertical
+    }
+}
+
+/// Per-side padding for a `UiNode::Stack`.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Default, PartialEq)]
+pub struct UiPadding {
+    #[serde(default)]
+    pub top: f32,
+    #[serde(default)]
+    pub right: f32,
+    #[serde(default)]
+    pub bottom: f32,
+    #[serde(default)]
+    pub left: f32,
+}
+
+/// Component tree node. L0 primitives compose into rich UI; L1 sugar variants
+/// carry a mandatory `_l0: Box<UiNode>` for forward compatibility — the host
+/// always has an L0 fallback to render if it doesn't recognise the L1 tag.
+///
+/// `JsonSchema` is implemented manually to avoid schemars recursion issues
+/// (UiNode contains Box<UiNode>).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum UiNode {
+    // ── L0 primitives ────────────────────────────────────────────────────
+    /// Flex container — vertical or horizontal.
+    Stack {
+        #[serde(default)]
+        direction: StackDirection,
+        children: Vec<UiNode>,
+        #[serde(default)]
+        gap: f32,
+        #[serde(default)]
+        padding: UiPadding,
+    },
+    /// Scrollable single-child container.
+    Scroll {
+        child: Box<UiNode>,
+        #[serde(default)]
+        horizontal: bool,
+    },
+    /// Z-stack overlay — children rendered back-to-front at the same position.
+    Layer { children: Vec<UiNode> },
+    /// Inline text node.
+    Text {
+        text: String,
+        /// 0.0 means inherit from context.
+        #[serde(default)]
+        size: f32,
+        #[serde(default)]
+        color: String,
+        #[serde(default)]
+        bold: bool,
+        #[serde(default)]
+        monospace: bool,
+    },
+    /// Interaction wrapper — host fires `ComponentEvent` for click/hover.
+    Interactive {
+        node_id: String,
+        child: Box<UiNode>,
+        #[serde(default)]
+        on_click: bool,
+        #[serde(default)]
+        on_hover: bool,
+    },
+    /// Escape hatch: embed a flat `RenderCommand` inside the tree.
+    Raw { command: Box<RenderCommand> },
+    /// Future GPU surface placeholder — reserved, not yet rendered.
+    Surface { id: String },
+
+    // ── L1 sugar ─────────────────────────────────────────────────────────
+    /// Host-rendered button. `_l0` is the fallback L0 tree.
+    Button {
+        node_id: String,
+        label: String,
+        #[serde(default)]
+        disabled: bool,
+        _l0: Box<UiNode>,
+    },
+    /// Host-rendered text input. `_l0` is the fallback L0 tree.
+    Input {
+        node_id: String,
+        #[serde(default)]
+        placeholder: String,
+        value: String,
+        _l0: Box<UiNode>,
+    },
+    /// Host-rendered pill badge. `_l0` is the fallback L0 tree.
+    Badge {
+        label: String,
+        #[serde(default)]
+        fill: String,
+        #[serde(default)]
+        fg: String,
+        _l0: Box<UiNode>,
+    },
+    /// Coloured dot indicator. `_l0` is the fallback L0 tree.
+    Dot {
+        color: String,
+        /// 0.0 means default size.
+        #[serde(default)]
+        size: f32,
+        _l0: Box<UiNode>,
+    },
+}
+
+// Manual JsonSchema impl to avoid schemars recursion (UiNode contains Box<UiNode>).
+impl schemars::JsonSchema for UiNode {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "UiNode".into()
+    }
+    fn json_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({})
+    }
+}
+
+// Manual PartialEq impl — UiNode::Raw wraps RenderCommand which would require
+// PartialEq on hundreds of transitive types. Raw nodes are structural escape
+// hatches; we compare them via their serde round-trip JSON representation so
+// equality is still meaningful without cascading the derive requirement.
+impl PartialEq for UiNode {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (UiNode::Stack { direction: d1, children: c1, gap: g1, padding: p1 },
+             UiNode::Stack { direction: d2, children: c2, gap: g2, padding: p2 }) => {
+                d1 == d2 && c1 == c2 && g1 == g2 && p1 == p2
+            }
+            (UiNode::Scroll { child: c1, horizontal: h1 },
+             UiNode::Scroll { child: c2, horizontal: h2 }) => c1 == c2 && h1 == h2,
+            (UiNode::Layer { children: c1 }, UiNode::Layer { children: c2 }) => c1 == c2,
+            (UiNode::Text { text: t1, size: s1, color: co1, bold: b1, monospace: m1 },
+             UiNode::Text { text: t2, size: s2, color: co2, bold: b2, monospace: m2 }) => {
+                t1 == t2 && s1 == s2 && co1 == co2 && b1 == b2 && m1 == m2
+            }
+            (UiNode::Interactive { node_id: n1, child: c1, on_click: oc1, on_hover: oh1 },
+             UiNode::Interactive { node_id: n2, child: c2, on_click: oc2, on_hover: oh2 }) => {
+                n1 == n2 && c1 == c2 && oc1 == oc2 && oh1 == oh2
+            }
+            // Raw: compare via serde JSON round-trip to avoid cascading PartialEq.
+            (UiNode::Raw { command: cmd1 }, UiNode::Raw { command: cmd2 }) => {
+                serde_json::to_string(cmd1.as_ref()).ok()
+                    == serde_json::to_string(cmd2.as_ref()).ok()
+            }
+            (UiNode::Surface { id: i1 }, UiNode::Surface { id: i2 }) => i1 == i2,
+            (UiNode::Button { node_id: n1, label: l1, disabled: d1, _l0: lo1 },
+             UiNode::Button { node_id: n2, label: l2, disabled: d2, _l0: lo2 }) => {
+                n1 == n2 && l1 == l2 && d1 == d2 && lo1 == lo2
+            }
+            (UiNode::Input { node_id: n1, placeholder: ph1, value: v1, _l0: lo1 },
+             UiNode::Input { node_id: n2, placeholder: ph2, value: v2, _l0: lo2 }) => {
+                n1 == n2 && ph1 == ph2 && v1 == v2 && lo1 == lo2
+            }
+            (UiNode::Badge { label: l1, fill: f1, fg: fg1, _l0: lo1 },
+             UiNode::Badge { label: l2, fill: f2, fg: fg2, _l0: lo2 }) => {
+                l1 == l2 && f1 == f2 && fg1 == fg2 && lo1 == lo2
+            }
+            (UiNode::Dot { color: c1, size: s1, _l0: lo1 },
+             UiNode::Dot { color: c2, size: s2, _l0: lo2 }) => {
+                c1 == c2 && s1 == s2 && lo1 == lo2
+            }
+            _ => false,
+        }
     }
 }
 
@@ -934,6 +1136,10 @@ pub enum RenderCommand {
         y: f32,
         tiers: Vec<ResponsiveTier>,
     },
+
+    /// Component tree — host renders via render_component_tree(). Added in PGAP v3.5.
+    /// Host logs a warning and drops if it doesn't know this variant.
+    ComponentTree { root: UiNode },
 }
 
 /// A single tier in a responsive layout. Contains an aspect-ratio condition
@@ -3413,6 +3619,197 @@ mod tests {
                 assert_eq!(*index, 0);
             }
             other => panic!("expected ListActivate, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod ui_node_tests {
+    use super::*;
+
+    #[test]
+    fn stack_with_text_child_serializes_correctly() {
+        let node = UiNode::Stack {
+            direction: StackDirection::Vertical,
+            children: vec![UiNode::Text {
+                text: "hello".into(),
+                size: 0.0,
+                color: String::new(),
+                bold: false,
+                monospace: false,
+            }],
+            gap: 0.0,
+            padding: UiPadding::default(),
+        };
+        let json = serde_json::to_string(&node).expect("serialize");
+        assert!(json.contains(r#""type":"stack""#), "stack tag missing: {json}");
+        assert!(json.contains(r#""type":"text""#), "text tag missing: {json}");
+        assert!(json.contains(r#""text":"hello""#), "text content missing: {json}");
+    }
+
+    #[test]
+    fn button_with_l0_round_trips_serde() {
+        let node = UiNode::Button {
+            node_id: "btn1".into(),
+            label: "Click me".into(),
+            disabled: false,
+            _l0: Box::new(UiNode::Text {
+                text: "Click me".into(),
+                size: 0.0,
+                color: String::new(),
+                bold: false,
+                monospace: false,
+            }),
+        };
+        let json = serde_json::to_string(&node).expect("serialize");
+        assert!(json.contains(r#""type":"button""#), "button tag missing: {json}");
+        assert!(json.contains(r#""node_id":"btn1""#), "node_id missing: {json}");
+        assert!(json.contains(r#""_l0""#), "_l0 field key missing from serialized JSON: {json}");
+        let round_tripped: UiNode = serde_json::from_str(&json).expect("deserialize");
+        match round_tripped {
+            UiNode::Button { node_id, label, .. } => {
+                assert_eq!(node_id, "btn1");
+                assert_eq!(label, "Click me");
+            }
+            other => panic!("expected Button, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn draw_command_render_component_tree_deserializes() {
+        let root = UiNode::Text {
+            text: "hi".into(),
+            size: 14.0,
+            color: "#fff".into(),
+            bold: false,
+            monospace: false,
+        };
+        let root_json = serde_json::to_string(&root).expect("serialize root");
+        let json = format!(r#"{{"type":"component_tree","root":{root_json}}}"#);
+        let cmd: DrawCommand = serde_json::from_str(&json).expect("deserialize DrawCommand");
+        match cmd {
+            DrawCommand::Render(RenderCommand::ComponentTree { root: r }) => match r {
+                UiNode::Text { text, .. } => assert_eq!(text, "hi"),
+                other => panic!("expected Text root, got {other:?}"),
+            },
+            other => panic!("expected ComponentTree, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn component_event_serializes_correctly() {
+        let event = PlexiEvent::ComponentEvent {
+            node_id: "btn1".into(),
+            event_type: "click".into(),
+            payload: None,
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        assert!(
+            json.contains(r#""type":"component_event""#),
+            "event tag missing: {json}"
+        );
+        assert!(
+            json.contains(r#""node_id":"btn1""#),
+            "node_id missing: {json}"
+        );
+        assert!(
+            json.contains(r#""event_type":"click""#),
+            "event_type missing: {json}"
+        );
+        // payload:None should be omitted (skip_serializing_if)
+        assert!(!json.contains("payload"), "payload should be absent: {json}");
+
+        // Some(payload) case — payload key and value must appear.
+        let event_with_payload = PlexiEvent::ComponentEvent {
+            node_id: "inp1".into(),
+            event_type: "change".into(),
+            payload: Some(serde_json::json!({"value": "hello"})),
+        };
+        let json2 = serde_json::to_string(&event_with_payload).unwrap();
+        assert!(json2.contains(r#""payload""#), "payload Some case must include payload key: {json2}");
+        assert!(json2.contains(r#""value""#), "payload Some case must include value: {json2}");
+    }
+
+    #[test]
+    fn surface_node_round_trips_serde() {
+        // Surface is reserved for the GPU surface layer (A2). Verify it serializes
+        // and deserializes correctly so the variant is exercised and not silently dead.
+        let node = UiNode::Surface { id: "canvas".into() };
+        let json = serde_json::to_string(&node).expect("serialize");
+        assert!(json.contains(r#""type":"surface""#), "surface tag: {json}");
+        assert!(json.contains(r#""id":"canvas""#), "id missing: {json}");
+        let round_tripped: UiNode = serde_json::from_str(&json).expect("deserialize");
+        match round_tripped {
+            UiNode::Surface { id } => assert_eq!(id, "canvas"),
+            other => panic!("expected Surface, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod ai_stream_chunk_tests {
+    use super::*;
+
+    /// AiStreamChunk round-trips through serde with all fields present.
+    #[test]
+    fn ai_stream_chunk_round_trips_serde() {
+        let event = PlexiEvent::AiStreamChunk {
+            request_id: "req-123".to_string(),
+            delta: "Hello, ".to_string(),
+            done: false,
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        assert!(
+            json.contains(r#""type":"ai_stream_chunk""#),
+            "type tag missing: {json}"
+        );
+        assert!(
+            json.contains(r#""request_id":"req-123""#),
+            "request_id missing: {json}"
+        );
+        assert!(
+            json.contains(r#""delta":"Hello, ""#),
+            "delta missing: {json}"
+        );
+
+        let round_tripped: PlexiEvent = serde_json::from_str(&json).expect("deserialize");
+        match round_tripped {
+            PlexiEvent::AiStreamChunk { request_id, delta, done } => {
+                assert_eq!(request_id, "req-123");
+                assert_eq!(delta, "Hello, ");
+                assert!(!done);
+            }
+            other => panic!("expected AiStreamChunk, got {other:?}"),
+        }
+    }
+
+    /// done=true round-trips correctly.
+    #[test]
+    fn ai_stream_chunk_done_true_round_trips() {
+        let event = PlexiEvent::AiStreamChunk {
+            request_id: "req-456".to_string(),
+            delta: String::new(),
+            done: true,
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        let round_tripped: PlexiEvent = serde_json::from_str(&json).expect("deserialize");
+        match round_tripped {
+            PlexiEvent::AiStreamChunk { done, .. } => assert!(done, "done must be true"),
+            other => panic!("expected AiStreamChunk, got {other:?}"),
+        }
+    }
+
+    /// done defaults to false when absent from JSON (serde(default)).
+    #[test]
+    fn ai_stream_chunk_done_defaults_to_false() {
+        let json = r#"{"type":"ai_stream_chunk","request_id":"r1","delta":"hi"}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialize");
+        match event {
+            PlexiEvent::AiStreamChunk { done, delta, .. } => {
+                assert!(!done, "done should default to false when absent");
+                assert_eq!(delta, "hi");
+            }
+            other => panic!("expected AiStreamChunk, got {other:?}"),
         }
     }
 }

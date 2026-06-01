@@ -338,6 +338,22 @@ class App:
         """
         return None
 
+    def on_ai_stream_chunk(self, _request_id: str, _delta: str, _done: bool) -> None:
+        """Called for each incremental token chunk from a streaming ai_query response.
+
+        Fired before the final ``ai_response`` event so apps can display tokens
+        as they arrive. ``_delta`` is the incremental text; ``_done`` is ``True``
+        on the last chunk before ``AiResponse`` fires.
+
+        Override to stream tokens into a display buffer::
+
+            def on_ai_stream_chunk(self, request_id, delta, done):
+                self.streaming_text += delta
+                self.emit.schedule_render()
+
+        Default: no-op. Apps that only care about the final result can ignore this.
+        """
+
     def on_midi_input_opened(
         self,
         _pipe_id: str,
@@ -395,6 +411,17 @@ class App:
             self.emit.expose_tools(list(self._tool_defs.values()))
             return fn
         return decorator
+
+    def view(self) -> object | None:
+        """Override to return a declarative component tree.
+
+        Return ``None`` (the default) to use the flat draw-command path via
+        ``on_render``. When overridden, the host renderer will walk the returned
+        tree instead of calling ``on_render``.
+
+        ``UiNode`` is defined in ``plexi_sdk.ui`` (epic #1897, task A2).
+        """
+        return None
 
     def on_suspend(self) -> None: pass
     def on_resume(self) -> None: pass
@@ -731,6 +758,17 @@ class App:
                         status = ev.get("status", "error")
                         message = ev.get("message")
                         q.put_nowait((status, message))
+
+                elif t == "ai_stream_chunk":
+                    # Incremental token chunk from a streaming ai_query response.
+                    # Dispatch to on_ai_stream_chunk if the app has overridden it.
+                    if type(self).on_ai_stream_chunk is not App.on_ai_stream_chunk:
+                        self._dispatch_hook_task(
+                            self.on_ai_stream_chunk,
+                            str(ev.get("request_id", "")),
+                            str(ev.get("delta", "")),
+                            bool(ev.get("done", False)),
+                        )
 
                 elif t == "ai_response":
                     # v3.3 ai.query broker (#284). Hand the whole event dict to

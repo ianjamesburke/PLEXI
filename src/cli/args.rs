@@ -302,6 +302,10 @@ pub enum AppCmd {
         /// Install from a pack file or 'core'
         #[arg(long)]
         pack: Option<String>,
+        /// Pin the app to a specific version (e.g. --version 1.2.3).
+        /// The pinned version is recorded and shown by `plexi app update`.
+        #[arg(long, value_name = "SEMVER")]
+        version: Option<String>,
     },
     /// Remove an installed app by id.
     ///
@@ -372,6 +376,27 @@ pub enum AppCmd {
         /// Destination path for the TOML snapshot file
         #[arg(value_hint = ValueHint::FilePath)]
         path: String,
+    },
+    /// Package the app in the current directory and print the registry submission payload.
+    ///
+    /// Validates all required fields, checks that the entry file exists, and prints the
+    /// JSON payload that would be submitted to the Plexi app registry.
+    ///
+    /// The actual HTTP submission is future work — this command proves the manifest is
+    /// correct and ready for publishing.
+    Publish {
+        /// Print the payload without submitting (currently the only mode — actual registry upload is future work)
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Check installed apps for available updates.
+    ///
+    /// Compares each app's recorded installed version against the version in its manifest.
+    /// In v1 this is a local check only — no network calls are made.
+    /// Use `plexi update apps` for git-checkout apps.
+    Update {
+        /// App id to check (omit to check all installed apps)
+        id: Option<String>,
     },
 }
 
