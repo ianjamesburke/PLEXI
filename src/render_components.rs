@@ -172,23 +172,29 @@ pub(crate) fn render_component_tree(
 
         UiNode::Button { node_id, label, disabled, .. } => {
             const BTN_PAD_V: f32 = 5.0;
-            let text_color = if *disabled { colors.text_dim } else { colors.text_primary };
             let font_id = egui::FontId::proportional(crate::style::TEXT_BODY);
-            let galley = ui.fonts(|f| f.layout_no_wrap(label.clone(), font_id, text_color));
+            // Layout with placeholder color; painter.galley() overrides per-state below.
+            let galley = ui.fonts(|f| {
+                f.layout_no_wrap(label.clone(), font_id, egui::Color32::WHITE)
+            });
             let text_w = galley.size().x;
             let text_h = galley.size().y;
             let btn_w = (text_w + crate::style::SPACE_SM * 2.0).max(48.0);
             let btn_h = text_h + BTN_PAD_V * 2.0;
             let (rect, _) = ui.allocate_exact_size(egui::vec2(btn_w, btn_h), egui::Sense::hover());
-            // The pane-wide ui.interact(pane_rect, ...) registered after this
-            // render pass wins egui's pointer priority. Use raw input instead of
-            // response.hovered()/clicked() to bypass the consumption ordering.
+            // Use raw PointerState — button_down/button_pressed read pointer_events directly
+            // and are not affected by the pane-wide Sense::click_and_drag() widget registered
+            // later at process_app/mod.rs:1676.
             let pointer_pos =
                 ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()));
             let is_hovered = !*disabled && pointer_pos.map_or(false, |p| rect.contains(p));
-            let is_clicked = is_hovered && ui.input(|i| i.pointer.primary_clicked());
+            let is_down =
+                is_hovered && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
+            let is_just_pressed =
+                is_hovered && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
             let painter = ui.painter();
-            painter.rect_filled(rect, crate::style::RADIUS_MD, colors.bg_active);
+            let fill = if is_down { colors.accent } else { colors.bg_active };
+            painter.rect_filled(rect, crate::style::RADIUS_MD, fill);
             if !*disabled {
                 let stroke_color = if is_hovered { colors.accent } else { colors.border };
                 painter.rect_stroke(
@@ -201,11 +207,13 @@ pub(crate) fn render_component_tree(
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
             }
+            let text_color =
+                if *disabled { colors.text_dim } else if is_down { colors.bg_active } else { colors.text_primary };
             let text_pos =
                 egui::pos2(rect.center().x - text_w / 2.0, rect.center().y - text_h / 2.0);
             painter.galley(text_pos, galley, text_color);
-            if is_clicked {
-                log::info!("render_components: Button click node_id={node_id}");
+            if is_just_pressed {
+                log::info!("render_components: Button press node_id={node_id}");
                 events.push(ComponentEventPayload {
                     node_id: node_id.clone(),
                     event_type: "click".into(),
