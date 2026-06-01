@@ -327,6 +327,10 @@ fn main() -> eframe::Result {
                             log::info!("app_freeze:cli: path={path}");
                             std::process::exit(cli::freeze_cli(&path));
                         }
+                        AppCmd::Publish { dry_run } => {
+                            log::info!("app_publish:cli: dry_run={dry_run}");
+                            std::process::exit(cli::app_publish(dry_run));
+                        }
                     },
                     Commands::Uninstall { keep_data, yes } => std::process::exit(cli::plexi_uninstall_cli(keep_data, yes)),
                     Commands::Update { subcommand } => match subcommand {

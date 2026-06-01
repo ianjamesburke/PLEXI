@@ -110,6 +110,18 @@ pub struct AppManifestApp {
     /// on a dynamic port and injects PLEXI_MCP_PORT into the app's environment.
     #[serde(default)]
     pub mcp: Option<McpSection>,
+
+    /// App author name or org.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+
+    /// Keyword tags for discovery (e.g. ["productivity", "ai", "audio"]).
+    #[serde(default)]
+    pub tags: Vec<String>,
+
+    /// Source repository URL.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 /// Manifest `[app] type` field — chooses the host rendering surface for
@@ -1282,5 +1294,51 @@ startup_message = \"Starting Greeter…\"
 
         let registry = AppRegistry::load_with_global(bare.path(), global.path());
         assert!(registry.loaded_workspace.is_none(), "loaded_workspace should be None outside workspace");
+    }
+
+    // ── D1: manifest distribution fields (author, tags, repo) ────────────
+
+    #[test]
+    fn manifest_with_author_tags_repo_deserializes() {
+        let raw = r#"
+schema_version = 1
+
+[app]
+id = "fancy-app"
+type = "app"
+name = "Fancy App"
+version = "1.2.3"
+entry = "main.py"
+description = "A fancy app"
+author = "Jane Doe"
+tags = ["productivity", "ai"]
+repo = "https://github.com/example/fancy-app"
+"#;
+        let manifest: AppManifest = toml::from_str(raw).expect("should parse");
+        assert_eq!(manifest.app.author.as_deref(), Some("Jane Doe"));
+        assert_eq!(manifest.app.tags, vec!["productivity", "ai"]);
+        assert_eq!(
+            manifest.app.repo.as_deref(),
+            Some("https://github.com/example/fancy-app")
+        );
+    }
+
+    #[test]
+    fn manifest_without_distribution_fields_deserializes() {
+        // Existing manifests without author/tags/repo must still load cleanly.
+        let raw = r#"
+schema_version = 1
+
+[app]
+id = "minimal-app"
+type = "app"
+name = "Minimal App"
+version = "0.1.0"
+entry = "main.py"
+"#;
+        let manifest: AppManifest = toml::from_str(raw).expect("should parse");
+        assert!(manifest.app.author.is_none());
+        assert!(manifest.app.tags.is_empty());
+        assert!(manifest.app.repo.is_none());
     }
 }

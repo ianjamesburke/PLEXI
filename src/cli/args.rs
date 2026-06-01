@@ -373,6 +373,18 @@ pub enum AppCmd {
         #[arg(value_hint = ValueHint::FilePath)]
         path: String,
     },
+    /// Package the app in the current directory and print the registry submission payload.
+    ///
+    /// Validates all required fields, checks that the entry file exists, and prints the
+    /// JSON payload that would be submitted to the Plexi app registry.
+    ///
+    /// The actual HTTP submission is future work — this command proves the manifest is
+    /// correct and ready for publishing.
+    Publish {
+        /// Print the payload without submitting (currently the only mode — actual registry upload is future work)
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
