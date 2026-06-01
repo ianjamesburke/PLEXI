@@ -196,20 +196,25 @@ class LogsApp(App):
                 self._copy_row    = min(self._copy_row, len(filtered) - 1)
                 self._copy_anchor = None
 
-    def on_mouse_down(self, _ctx: RenderContext, _x: float, y: float, button: str) -> None:  # noqa: ARG002
-        if button != "left":
+    def on_mouse_down(self, _ctx: RenderContext, _x: float, y: float, button: str, mods: dict = {}) -> None:  # noqa: ARG002
+        if button not in ("left", "primary"):
             return
         row = self._row_at_y(y)
         if row is None:
             return
         self._copy_mode   = True
-        self._copy_anchor = row
-        self._copy_row    = row
         self._is_dragging = True
-        self.emit.info(f"logs: mouse select started at row {row}")
+        if mods.get("shift") and self._copy_anchor is not None:
+            # Extend existing selection — anchor stays, only row moves.
+            self._copy_row = row
+            self.emit.info(f"logs: shift-click extend selection to row {row}")
+        else:
+            self._copy_anchor = row
+            self._copy_row    = row
+            self.emit.info(f"logs: mouse select started at row {row}")
 
-    def on_mouse_move(self, _ctx: RenderContext, _x: float, y: float, buttons: list) -> None:
-        if not self._is_dragging or "left" not in buttons:
+    def on_mouse_move(self, _ctx: RenderContext, _x: float, y: float, buttons: list, _mods: dict = {}) -> None:  # noqa: ARG002
+        if not self._is_dragging or not any(b in buttons for b in ("left", "primary")):
             self._is_dragging = False
             return
         row = self._row_at_y(y)
@@ -217,8 +222,8 @@ class LogsApp(App):
             self._copy_row = row
             self._ensure_copy_row_visible()
 
-    def on_mouse_up(self, _ctx: RenderContext, _x: float, _y: float, button: str) -> None:  # noqa: ARG002
-        if button == "left":
+    def on_mouse_up(self, _ctx: RenderContext, _x: float, _y: float, button: str, _mods: dict = {}) -> None:  # noqa: ARG002
+        if button in ("left", "primary"):
             self._is_dragging = False
 
     def _row_at_y(self, y: float) -> "int | None":

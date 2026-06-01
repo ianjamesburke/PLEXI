@@ -84,13 +84,13 @@ pub enum PlexiEvent {
     /// Mouse click at logical coordinates within the app surface.
     Click { x: f32, y: f32, button: MouseButton },
     /// Pointer button pressed (fires on the frame the button goes down).
-    MouseDown { x: f32, y: f32, button: MouseButton },
+    MouseDown { x: f32, y: f32, button: MouseButton, modifiers: Modifiers },
     /// Pointer button released (fires on the frame the button goes up).
-    MouseUp { x: f32, y: f32, button: MouseButton },
+    MouseUp { x: f32, y: f32, button: MouseButton, modifiers: Modifiers },
     /// Pointer moved over the app surface. Only fires when the app has opted in
     /// via `DrawCommand::SetMouseTracking { enabled: true }`. Pane-local
     /// coordinates; `buttons` lists which buttons are currently held.
-    MouseMove { x: f32, y: f32, buttons: Vec<MouseButton> },
+    MouseMove { x: f32, y: f32, buttons: Vec<MouseButton>, modifiers: Modifiers },
     /// User submitted a command via the command bar.
     Command { text: String },
     /// Response to a runtime CapabilityRequest.
