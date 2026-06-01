@@ -36,6 +36,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "font_size", "theme_preset", "theme", "beta", "log",
     "notifications", "ai", "confirm_quit", "confirm_close",
     "keybindings", "quick_note", "focus_history_depth", "agents", "cli",
+    "pane_gap", "pane_title_font_size",
 ];
 const KNOWN_AGENTS: &[&str] = &["low", "medium", "high"];
 const KNOWN_CLI: &[&str] = &["tips"];
@@ -272,6 +273,10 @@ impl KeybindingsConfig {
 #[derive(Deserialize, Default, Clone)]
 pub struct PlexiConfig {
     pub font_size: Option<f32>,
+    /// Inter-pane gap width in pixels. Default: 4.0. Clamped to [0.0, 20.0].
+    pub pane_gap: Option<f32>,
+    /// Pane title bar font size. Default: 11.0. Clamped to [6.0, 32.0].
+    pub pane_title_font_size: Option<f32>,
     pub theme_preset: Option<String>,
     pub theme: Option<ThemeConfig>,
     pub beta: Option<BetaConfig>,
@@ -804,6 +809,12 @@ impl PlexiConfig {
         }
         if other.confirm_close.is_some() {
             self.confirm_close = other.confirm_close;
+        }
+        if other.pane_gap.is_some() {
+            self.pane_gap = other.pane_gap;
+        }
+        if other.pane_title_font_size.is_some() {
+            self.pane_title_font_size = other.pane_title_font_size;
         }
         match (self.theme.as_mut(), other.theme) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
