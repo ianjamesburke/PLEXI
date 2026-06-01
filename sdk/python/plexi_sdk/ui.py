@@ -1549,6 +1549,252 @@ class ListRow:
         }
 
 
+# ── UiNode component tree (PGAP v3.5) ─────────────────────────────────────
+#
+# These classes produce ``dict`` values matching the ``UiNode`` wire format
+# defined in ``src/app_protocol.rs``.  ``to_node()`` returns a plain dict
+# with a ``"type"`` field; B3 (``ctx.render_tree``) will serialise the tree
+# to the host.  L0 types return their dict directly; L1 sugar types include
+# an additional ``"_l0"`` key with the L0 fallback tree.
+
+
+class Tabs:
+    """Tabbed container. Renders as a horizontal tab bar + active content area.
+
+    Decomposes to a vertical Stack containing:
+    - a horizontal Stack of Interactive(Text) tab buttons
+    - the active tab's content node
+
+    Example::
+
+        tabs = Tabs([
+            ("Overview", overview_node),
+            ("Details", details_node),
+        ], active=0)
+        ctx.render_tree(tabs.to_node())
+    """
+
+    def __init__(
+        self,
+        tabs: "list[tuple[str, object]]",
+        active: int = 0,
+    ) -> None:
+        self.tabs = tabs
+        self.active = active
+
+    def to_node(self) -> dict:
+        tab_buttons = []
+        for i, (label, _content) in enumerate(self.tabs):
+            bold = i == self.active
+            tab_buttons.append({
+                "type": "interactive",
+                "node_id": f"tab_{i}",
+                "child": {
+                    "type": "text",
+                    "text": label,
+                    "bold": bold,
+                },
+                "on_click": True,
+                "on_hover": False,
+            })
+
+        tab_bar: dict = {
+            "type": "stack",
+            "direction": "horizontal",
+            "children": tab_buttons,
+            "gap": SPACE_SM,
+        }
+
+        active_content = None
+        if self.tabs:
+            idx = max(0, min(self.active, len(self.tabs) - 1))
+            content = self.tabs[idx][1]
+            active_content = content.to_node() if hasattr(content, "to_node") else content
+
+        children: list = [tab_bar]
+        if active_content is not None:
+            children.append(active_content)
+
+        return {
+            "type": "stack",
+            "direction": "vertical",
+            "children": children,
+            "gap": 0.0,
+        }
+
+
+class Grid:
+    """Fixed-column grid layout.
+
+    Decomposes to a vertical Stack of rows, where each row is a horizontal
+    Stack of up to ``columns`` children.
+
+    Example::
+
+        grid = Grid(2, [item_a, item_b, item_c, item_d], gap=8.0)
+        ctx.render_tree(grid.to_node())
+    """
+
+    def __init__(
+        self,
+        columns: int,
+        children: "list[object]",
+        gap: float = 8.0,
+    ) -> None:
+        if columns < 1:
+            raise ValueError(f"Grid columns must be >= 1, got {columns}")
+        self.columns = columns
+        self.children = children
+        self.gap = gap
+
+    def to_node(self) -> dict:
+        rows: list = []
+        for row_start in range(0, max(1, len(self.children)), self.columns):
+            row_items = self.children[row_start:row_start + self.columns]
+            row_nodes = []
+            for child in row_items:
+                row_nodes.append(child.to_node() if hasattr(child, "to_node") else child)
+            rows.append({
+                "type": "stack",
+                "direction": "horizontal",
+                "children": row_nodes,
+                "gap": self.gap,
+            })
+
+        return {
+            "type": "stack",
+            "direction": "vertical",
+            "children": rows,
+            "gap": self.gap,
+        }
+
+
+class Toggle:
+    """On/off toggle switch (L1 sugar).
+
+    The ``_l0`` fallback is an Interactive wrapper around a text indicator.
+
+    Example::
+
+        toggle = Toggle("dark_mode", value=True, label="Dark mode")
+        ctx.render_tree(toggle.to_node())
+    """
+
+    def __init__(self, node_id: str, value: bool, label: str = "") -> None:
+        self.node_id = node_id
+        self.value = value
+        self.label = label
+
+    def to_node(self) -> dict:
+        indicator = "● " if self.value else "○ "
+        display_text = indicator + self.label if self.label else indicator.strip()
+
+        l0_child: dict = {
+            "type": "text",
+            "text": display_text,
+        }
+        l0: dict = {
+            "type": "interactive",
+            "node_id": self.node_id,
+            "child": l0_child,
+            "on_click": True,
+            "on_hover": False,
+        }
+
+        return {
+            "type": "interactive",
+            "node_id": self.node_id,
+            "child": {
+                "type": "stack",
+                "direction": "horizontal",
+                "children": [
+                    {"type": "text", "text": self.label} if self.label else
+                    {"type": "text", "text": ""},
+                    {"type": "text", "text": "on" if self.value else "off"},
+                ],
+                "gap": SPACE_SM,
+            },
+            "on_click": True,
+            "on_hover": False,
+            "_l0": l0,
+        }
+
+
+class Clickable:
+    """Makes any component clickable by wrapping it in an Interactive node.
+
+    Example::
+
+        clickable = Clickable("my_btn", child_node)
+        ctx.render_tree(clickable.to_node())
+    """
+
+    def __init__(self, node_id: str, child: "object", on_click: bool = True) -> None:
+        self.node_id = node_id
+        self.child = child
+        self.on_click = on_click
+
+    def to_node(self) -> dict:
+        child_node = self.child.to_node() if hasattr(self.child, "to_node") else self.child
+        return {
+            "type": "interactive",
+            "node_id": self.node_id,
+            "child": child_node,
+            "on_click": self.on_click,
+            "on_hover": False,
+        }
+
+
+class ProgressBar:
+    """Horizontal progress bar (L0 decomposition).
+
+    Decomposes to a horizontal Stack with a filled portion and an empty
+    portion sized proportionally to ``value / max_value``.
+
+    Example::
+
+        bar = ProgressBar(0.75, color="accent")
+        ctx.render_tree(bar.to_node())
+    """
+
+    def __init__(
+        self,
+        value: float,
+        max_value: float = 1.0,
+        color: str = "",
+    ) -> None:
+        self.value = value
+        self.max_value = max_value
+        self.color = color
+
+    def to_node(self) -> dict:
+        safe_max = self.max_value if self.max_value > 0 else 1.0
+        ratio = max(0.0, min(1.0, self.value / safe_max))
+        empty_ratio = 1.0 - ratio
+
+        filled: dict = {
+            "type": "text",
+            "text": "█" * max(1, round(ratio * 20)),
+            "color": self.color or "accent",
+        }
+        empty: dict = {
+            "type": "text",
+            "text": "░" * max(0, round(empty_ratio * 20)),
+            "color": "dim",
+        }
+
+        children: list = [filled]
+        if empty_ratio > 0:
+            children.append(empty)
+
+        return {
+            "type": "stack",
+            "direction": "horizontal",
+            "children": children,
+            "gap": 0.0,
+        }
+
+
 __all__ = [
     # tokens
     "SPACE_XS", "SPACE_SM", "SPACE_MD", "SPACE_LG", "SPACE_XL",
@@ -1570,4 +1816,6 @@ __all__ = [
     "render_tree",
     # ListView row helpers
     "ListRow", "RowChip", "LeadingBadge", "LeadingAvatar", "LeadingIcon",
+    # UiNode component tree (PGAP v3.5)
+    "Tabs", "Grid", "Toggle", "Clickable", "ProgressBar",
 ]
