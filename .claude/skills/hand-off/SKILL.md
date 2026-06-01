@@ -45,6 +45,23 @@ For a bare integer argument: treat as `/implement-issue N`.
 
 ---
 
+## Step 2b — Ensure `ready` label (implement-issue only)
+
+If the resolved command is `/implement-issue N` (or a bare integer), extract the issue number(s) and add the `ready` label to each one that doesn't already have it:
+
+```bash
+# For each issue number in the command:
+LABELS=$(gh issue view $N --json labels --jq '[.labels[].name]')
+if ! echo "$LABELS" | grep -q '"ready"'; then
+  gh issue edit $N --add-label "ready"
+  echo "Labeled #$N ready."
+fi
+```
+
+Skip this step for any other command.
+
+---
+
 ## Step 3 — Split and launch
 
 ```bash
