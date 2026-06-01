@@ -5,7 +5,7 @@
 //! `Input`, `Interactive`) fire `ComponentEvent`s back to the app via the
 //! returned `Vec<ComponentEventPayload>` (task A3).
 
-use egui::{Color32, Ui};
+use egui::Ui;
 
 use crate::app_protocol::{StackDirection, UiNode};
 use crate::theme::Colors;
@@ -171,11 +171,37 @@ pub(crate) fn render_component_tree(
         // ── L1 sugar ─────────────────────────────────────────────────────────
 
         UiNode::Button { node_id, label, disabled, .. } => {
-            let response = ui.add_enabled(!disabled, egui::Button::new(label.as_str()));
-            if response.clicked() {
-                log::info!(
-                    "render_components: Button click node_id={node_id}"
+            const BTN_PAD_H: f32 = 8.0;
+            const BTN_PAD_V: f32 = 5.0;
+            let text_color = if *disabled { colors.text_dim } else { colors.text_primary };
+            let font_id = egui::FontId::proportional(crate::style::TEXT_BODY);
+            let galley = ui.fonts(|f| f.layout_no_wrap(label.clone(), font_id, text_color));
+            let text_w = galley.size().x;
+            let text_h = galley.size().y;
+            let btn_w = (text_w + BTN_PAD_H * 2.0).max(48.0);
+            let btn_h = text_h + BTN_PAD_V * 2.0;
+            let sense = if *disabled { egui::Sense::hover() } else { egui::Sense::click() };
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(btn_w, btn_h), sense);
+            let painter = ui.painter();
+            painter.rect_filled(rect, crate::style::RADIUS_MD, colors.bg_active);
+            if !*disabled {
+                let stroke_color =
+                    if response.hovered() { colors.accent } else { colors.border };
+                painter.rect_stroke(
+                    rect,
+                    crate::style::RADIUS_MD,
+                    egui::Stroke::new(1.0, stroke_color),
+                    egui::StrokeKind::Inside,
                 );
+                if response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+            }
+            let text_pos = egui::pos2(rect.center().x - text_w / 2.0, rect.min.y + BTN_PAD_V);
+            painter.galley(text_pos, galley, text_color);
+            if response.clicked() {
+                log::info!("render_components: Button click node_id={node_id}");
                 events.push(ComponentEventPayload {
                     node_id: node_id.clone(),
                     event_type: "click".into(),
@@ -186,9 +212,12 @@ pub(crate) fn render_component_tree(
 
         UiNode::Input { node_id, value, placeholder, .. } => {
             let mut val_buf = value.clone();
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut val_buf)
-                    .hint_text(placeholder.as_str()),
+            let response = crate::widgets::styled_text_input(
+                ui,
+                &mut val_buf,
+                placeholder.as_str(),
+                egui::Id::new(node_id.as_str()),
+                colors,
             );
             if response.changed() {
                 log::debug!(
@@ -221,16 +250,24 @@ pub(crate) fn render_component_tree(
                 parse_color(fill).unwrap_or(colors.accent)
             };
             let fg_color = if fg.is_empty() {
-                Color32::from_rgb(0x1e, 0x1e, 0x2e)
+                colors.text_primary
             } else {
-                parse_color(fg).unwrap_or(Color32::from_rgb(0x1e, 0x1e, 0x2e))
+                parse_color(fg).unwrap_or(colors.text_primary)
             };
             egui::Frame::new()
                 .fill(fill_color)
-                .corner_radius(egui::CornerRadius::same(4))
-                .inner_margin(egui::Margin::symmetric(6, 2))
+                .stroke(egui::Stroke::new(1.0, colors.border))
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(egui::Margin::symmetric(
+                    crate::style::BADGE_PAD_H as i8,
+                    crate::style::BADGE_PAD_V as i8,
+                ))
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new(label.as_str()).color(fg_color).size(12.0));
+                    ui.label(
+                        egui::RichText::new(label.as_str())
+                            .color(fg_color)
+                            .size(crate::style::TEXT_CAPTION),
+                    );
                 });
         }
 
