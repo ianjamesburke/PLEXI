@@ -38,15 +38,18 @@ class CounterTree(App):
                             "type": "button",
                             "node_id": "decrement",
                             "label": "−",
+                            "_l0": {"type": "text", "text": "−"},
                         },
                         {
                             "type": "badge",
                             "label": f"{self.count}",
+                            "_l0": {"type": "text", "text": f"{self.count}"},
                         },
                         {
                             "type": "button",
                             "node_id": "increment",
                             "label": "+",
+                            "_l0": {"type": "text", "text": "+"},
                         },
                     ],
                 },
@@ -55,6 +58,7 @@ class CounterTree(App):
                     "node_id": "label_input",
                     "value": self.label,
                     "placeholder": "Enter a label…",
+                    "_l0": {"type": "text", "text": self.label},
                 },
                 {
                     "type": "text",
