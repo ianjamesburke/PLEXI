@@ -179,31 +179,32 @@ pub(crate) fn render_component_tree(
             let text_h = galley.size().y;
             let btn_w = (text_w + crate::style::SPACE_SM * 2.0).max(48.0);
             let btn_h = text_h + BTN_PAD_V * 2.0;
-            // Allocate layout space, then interact with a stable node_id so
-            // press+release tracking survives across frames (same pattern as
-            // Interactive node — auto-ID from allocate_exact_size is not stable).
             let (rect, _) = ui.allocate_exact_size(egui::vec2(btn_w, btn_h), egui::Sense::hover());
-            let sense = if *disabled { egui::Sense::hover() } else { egui::Sense::click() };
-            let response = ui.interact(rect, egui::Id::new(node_id.as_str()), sense);
+            // The pane-wide ui.interact(pane_rect, ...) registered after this
+            // render pass wins egui's pointer priority. Use raw input instead of
+            // response.hovered()/clicked() to bypass the consumption ordering.
+            let pointer_pos =
+                ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()));
+            let is_hovered = !*disabled && pointer_pos.map_or(false, |p| rect.contains(p));
+            let is_clicked = is_hovered && ui.input(|i| i.pointer.primary_clicked());
             let painter = ui.painter();
             painter.rect_filled(rect, crate::style::RADIUS_MD, colors.bg_active);
             if !*disabled {
-                let stroke_color =
-                    if response.hovered() { colors.accent } else { colors.border };
+                let stroke_color = if is_hovered { colors.accent } else { colors.border };
                 painter.rect_stroke(
                     rect,
                     crate::style::RADIUS_MD,
                     egui::Stroke::new(1.0, stroke_color),
                     egui::StrokeKind::Inside,
                 );
-                if response.hovered() {
+                if is_hovered {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
             }
             let text_pos =
                 egui::pos2(rect.center().x - text_w / 2.0, rect.center().y - text_h / 2.0);
             painter.galley(text_pos, galley, text_color);
-            if response.clicked() {
+            if is_clicked {
                 log::info!("render_components: Button click node_id={node_id}");
                 events.push(ComponentEventPayload {
                     node_id: node_id.clone(),
