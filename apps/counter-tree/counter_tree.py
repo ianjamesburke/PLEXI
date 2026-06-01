@@ -1,4 +1,9 @@
-"""Counter app demonstrating the component tree API (epic #1897 B3)."""
+"""Counter app demonstrating the component tree API (epic #1897 B3).
+
+Button/Input nodes are included for visual Style O verification only.
+ComponentEvent routing to Python apps is not yet in the SDK — button
+clicks and input changes have no effect until that is wired up.
+"""
 from plexi_sdk import App, State
 
 

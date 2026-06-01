@@ -171,14 +171,13 @@ pub(crate) fn render_component_tree(
         // ── L1 sugar ─────────────────────────────────────────────────────────
 
         UiNode::Button { node_id, label, disabled, .. } => {
-            const BTN_PAD_H: f32 = 8.0;
             const BTN_PAD_V: f32 = 5.0;
             let text_color = if *disabled { colors.text_dim } else { colors.text_primary };
             let font_id = egui::FontId::proportional(crate::style::TEXT_BODY);
             let galley = ui.fonts(|f| f.layout_no_wrap(label.clone(), font_id, text_color));
             let text_w = galley.size().x;
             let text_h = galley.size().y;
-            let btn_w = (text_w + BTN_PAD_H * 2.0).max(48.0);
+            let btn_w = (text_w + crate::style::SPACE_SM * 2.0).max(48.0);
             let btn_h = text_h + BTN_PAD_V * 2.0;
             let sense = if *disabled { egui::Sense::hover() } else { egui::Sense::click() };
             let (rect, response) =
@@ -198,7 +197,8 @@ pub(crate) fn render_component_tree(
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
             }
-            let text_pos = egui::pos2(rect.center().x - text_w / 2.0, rect.min.y + BTN_PAD_V);
+            let text_pos =
+                egui::pos2(rect.center().x - text_w / 2.0, rect.center().y - text_h / 2.0);
             painter.galley(text_pos, galley, text_color);
             if response.clicked() {
                 log::info!("render_components: Button click node_id={node_id}");
@@ -257,7 +257,7 @@ pub(crate) fn render_component_tree(
             egui::Frame::new()
                 .fill(fill_color)
                 .stroke(egui::Stroke::new(1.0, colors.border))
-                .corner_radius(egui::CornerRadius::same(6))
+                .corner_radius(egui::CornerRadius::same(crate::style::RADIUS_BADGE as u8))
                 .inner_margin(egui::Margin::symmetric(
                     crate::style::BADGE_PAD_H as i8,
                     crate::style::BADGE_PAD_V as i8,
