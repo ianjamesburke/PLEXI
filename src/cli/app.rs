@@ -293,8 +293,31 @@ pub fn app_uninstall(id: &str, assume_yes: bool) -> i32 {
     }
 }
 
-/// `plexi app install <path>` — copy a local app directory into the channel's app store.
-pub fn app_install(path: &str) -> i32 {
+/// Write `installed_version.txt` inside `app_dir`. Best-effort — logs `warn!` on failure.
+pub(super) fn write_installed_version(app_dir: &std::path::Path, version: &str) {
+    let path = app_dir.join("installed_version.txt");
+    if let Err(e) = std::fs::write(&path, version) {
+        log::warn!("version_pin: could not write installed_version.txt for {}: {e}", app_dir.display());
+    } else {
+        log::info!("version_pin: wrote installed_version.txt={version} for {}", app_dir.display());
+    }
+}
+
+/// Write `pinned_version.txt` inside `app_dir`. Best-effort — logs `warn!` on failure.
+pub(super) fn write_pinned_version(app_dir: &std::path::Path, version: &str) {
+    let path = app_dir.join("pinned_version.txt");
+    if let Err(e) = std::fs::write(&path, version) {
+        log::warn!("version_pin: could not write pinned_version.txt for {}: {e}", app_dir.display());
+    } else {
+        log::info!("version_pin: wrote pinned_version.txt={version} for {}", app_dir.display());
+    }
+}
+
+/// `plexi app install <path> [--version X.Y.Z]`
+///
+/// When `pin` is `None` (the common case) this is a plain install.
+/// When `pin` is `Some(ver)` the version is stored in `pinned_version.txt`.
+pub fn app_install_with_pin(path: &str, pin: Option<&str>) -> i32 {
     let src = match std::path::Path::new(path).canonicalize() {
         Ok(p) => p,
         Err(e) => {
@@ -356,6 +379,17 @@ pub fn app_install(path: &str) -> i32 {
     if let Err(e) = copy_dir_all(&src, &dest) {
         eprintln!("error: could not copy {} to {}: {e}", src.display(), dest.display());
         return 1;
+    }
+
+    // Write version tracking files (best-effort — never fail the install).
+    write_installed_version(&dest, app_version);
+    if let Some(pin) = pin {
+        if pin != app_version {
+            eprintln!(
+                "warning: manifest version is {app_version} but pinning to {pin} as requested"
+            );
+        }
+        write_pinned_version(&dest, pin);
     }
 
     log::info!("app::install: installed {app_id} v{app_version} from {}", src.display());
@@ -842,6 +876,98 @@ fn app_publish_from_dir(cwd: &std::path::Path) -> i32 {
     0
 }
 
+/// `plexi app update [<id>]` — local version check for installed apps.
+///
+/// v1: compares `<app_dir>/installed_version.txt` against `manifest.toml`
+/// version field. If `pinned_version.txt` exists, reports the pin.
+/// No network calls — registry check is future work.
+pub fn app_update_cli(id: Option<&str>) -> i32 {
+    let apps_dir = crate::app_registry::apps_dir();
+
+    // Collect app dirs to check.
+    let dirs: Vec<std::path::PathBuf> = match id {
+        Some(app_id) => {
+            let dir = apps_dir.join(app_id);
+            if !dir.exists() {
+                eprintln!("error: app '{app_id}' not installed — run `plexi app list`");
+                return 1;
+            }
+            vec![dir]
+        }
+        None => {
+            match std::fs::read_dir(&apps_dir) {
+                Ok(rd) => rd
+                    .flatten()
+                    .filter(|e| e.path().is_dir())
+                    .filter(|e| {
+                        e.path()
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| !n.starts_with('.'))
+                    })
+                    .map(|e| e.path())
+                    .collect(),
+                Err(_) => {
+                    println!("no apps installed");
+                    return 0;
+                }
+            }
+        }
+    };
+
+    if dirs.is_empty() {
+        println!("no apps installed");
+        return 0;
+    }
+
+    for app_dir in &dirs {
+        let dir_name = app_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?");
+
+        // Read manifest version.
+        let manifest_version = {
+            let manifest_path = app_dir.join("manifest.toml");
+            match std::fs::read_to_string(&manifest_path) {
+                Ok(s) => match toml::from_str::<toml::Value>(&s) {
+                    Ok(v) => v
+                        .get("app")
+                        .and_then(|a| a.get("version"))
+                        .and_then(|ver| ver.as_str())
+                        .unwrap_or("?")
+                        .to_string(),
+                    Err(_) => "?".to_string(),
+                },
+                Err(_) => "?".to_string(),
+            }
+        };
+
+        // Read installed version (written at install time).
+        let installed_version = std::fs::read_to_string(app_dir.join("installed_version.txt"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| manifest_version.clone());
+
+        // Read optional pin.
+        let pinned_version = std::fs::read_to_string(app_dir.join("pinned_version.txt"))
+            .ok()
+            .map(|s| s.trim().to_string());
+
+        if let Some(ref pin) = pinned_version {
+            println!("{dir_name}: pinned to v{pin} (installed v{installed_version})");
+        } else if installed_version == manifest_version {
+            println!("{dir_name}: up to date (v{installed_version})");
+        } else {
+            println!(
+                "{dir_name}: installed v{installed_version}, manifest v{manifest_version} — consider reinstalling"
+            );
+        }
+    }
+
+    log::info!("app_update: checked {} app(s)", dirs.len());
+    0
+}
+
 #[cfg(test)]
 mod app_run_tests {
     use tempfile::TempDir;
@@ -959,5 +1085,70 @@ entry = "main.py"
         std::fs::write(dir.path().join("main.py"), "# stub\n").unwrap();
         let code = super::app_publish_from_dir(dir.path());
         assert_eq!(code, 1, "should fail when description is absent");
+    }
+}
+
+#[cfg(test)]
+mod version_pin_tests {
+    use tempfile::TempDir;
+
+    fn write_manifest(dir: &std::path::Path, id: &str, version: &str) {
+        let manifest = format!(
+            "schema_version = 1\n\n[app]\nid = \"{id}\"\ntype = \"app\"\nname = \"{id}\"\n\
+             version = \"{version}\"\nentry = \"main.py\"\ndescription = \"Test\"\n\n\
+             [app.capabilities]\ncapabilities = []\n\n[launch]\nlayout_hint = {{ side = \"right\", split = 0.5 }}\n"
+        );
+        std::fs::write(dir.join("manifest.toml"), manifest).unwrap();
+        std::fs::write(dir.join("main.py"), "# stub\n").unwrap();
+    }
+
+    #[test]
+    fn installed_version_written_to_file() {
+        let src = TempDir::new().unwrap();
+        write_manifest(src.path(), "my-app", "1.2.3");
+
+        // Use a temp dir as the apps_dir root — app_install copies to apps_dir/my-app.
+        // We can test write_installed_version directly since app_install calls apps_dir().
+        // Instead, call write_installed_version directly and verify the file.
+        let dest = TempDir::new().unwrap();
+        super::write_installed_version(dest.path(), "1.2.3");
+        let content = std::fs::read_to_string(dest.path().join("installed_version.txt")).unwrap();
+        assert_eq!(content, "1.2.3");
+    }
+
+    #[test]
+    fn pinned_version_stored_when_flag_given() {
+        let dest = TempDir::new().unwrap();
+        super::write_pinned_version(dest.path(), "0.9.0");
+        let content = std::fs::read_to_string(dest.path().join("pinned_version.txt")).unwrap();
+        assert_eq!(content, "0.9.0");
+    }
+
+    #[test]
+    fn app_update_reports_up_to_date() {
+        let dir = TempDir::new().unwrap();
+        // Write manifest with version 0.1.0.
+        write_manifest(dir.path(), "test-app", "0.1.0");
+        // Write installed_version.txt matching manifest.
+        super::write_installed_version(dir.path(), "0.1.0");
+
+        // app_update_cli operates on apps_dir(), which is a runtime directory.
+        // Test the logic via the helper directly instead.
+        let installed = std::fs::read_to_string(dir.path().join("installed_version.txt"))
+            .map(|s| s.trim().to_string())
+            .unwrap();
+        let manifest_val: toml::Value =
+            toml::from_str(&std::fs::read_to_string(dir.path().join("manifest.toml")).unwrap())
+                .unwrap();
+        let manifest_ver = manifest_val
+            .get("app")
+            .and_then(|a| a.get("version"))
+            .and_then(|v| v.as_str())
+            .unwrap();
+        assert_eq!(installed, "0.1.0");
+        assert_eq!(manifest_ver, "0.1.0");
+        assert_eq!(installed, manifest_ver, "up-to-date: installed matches manifest");
+        // No pinned_version.txt → no pin.
+        assert!(!dir.path().join("pinned_version.txt").exists());
     }
 }

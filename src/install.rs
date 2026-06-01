@@ -245,6 +245,7 @@ fn install_one_git(
 
     chmod_python_entries(&dest);
     provision_venv(&id, &dest, &manifest);
+    write_installed_version_file(&dest, &manifest.app.version);
     log::info!("install: {} ← {url} ({})", id, git_ref.unwrap_or("default"));
     Ok(InstallOutcome {
         id,
@@ -293,11 +294,28 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
         .map_err(|e| format!("extract local '{name}' → {}: {e}", target_root.display()))?;
     chmod_python_entries(&dest);
     provision_venv(&id, &dest, &manifest);
+    write_installed_version_file(&dest, &manifest.app.version);
     log::info!("install: {id} ← local:{name}");
     Ok(InstallOutcome {
         id,
         status: InstallStatus::Installed(dest),
     })
+}
+
+/// Write `<app_dir>/installed_version.txt`. Best-effort — never fails the install.
+fn write_installed_version_file(app_dir: &Path, version: &str) {
+    let path = app_dir.join("installed_version.txt");
+    if let Err(e) = std::fs::write(&path, version) {
+        log::warn!(
+            "install: could not write installed_version.txt for {}: {e}",
+            app_dir.display()
+        );
+    } else {
+        log::info!(
+            "install: wrote installed_version.txt={version} for {}",
+            app_dir.display()
+        );
+    }
 }
 
 /// Read + validate `manifest.toml` from a freshly-cloned repo. Returns a
