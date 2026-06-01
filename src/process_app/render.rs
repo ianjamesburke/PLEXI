@@ -1672,7 +1672,7 @@ pub(crate) fn render_layout_node(
 }
 
 /// Parse a hex color string like `"#1e1e2e"` into Color32.
-pub(super) fn parse_color(hex: &str) -> Option<Color32> {
+pub(crate) fn parse_color(hex: &str) -> Option<Color32> {
     let hex = hex.trim_start_matches('#');
     if hex.len() == 6 {
         let r = u8::from_str_radix(&hex[0..2], 16).ok()?;

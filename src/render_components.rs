@@ -89,6 +89,8 @@ pub(crate) fn render_component_tree(ui: &mut Ui, node: &UiNode, colors: &Colors)
             // Delegate to the existing flat renderer for a single draw command.
             // We use the Ui clip rect as the pane_rect so relative offsets work.
             let pane_rect = ui.clip_rect();
+            // V1: fresh cache per Raw node — loses cache state across frames.
+            // A future pass will thread parent caches through. See epic #1897 A2.
             crate::process_app::render::render_draw_commands(
                 ui,
                 pane_rect,
@@ -120,8 +122,10 @@ pub(crate) fn render_component_tree(ui: &mut Ui, node: &UiNode, colors: &Colors)
             // node_id and change event wiring deferred to A3.
             // Clone the value so we have a mutable binding; changes are
             // discarded each frame until A3 wires events.
-            let mut buf = value.clone();
-            ui.text_edit_singleline(&mut buf);
+            // non-interactive: prevents the input from capturing host key events
+            // before A3 wires events.
+            let mut val_buf = value.clone();
+            ui.add(egui::TextEdit::singleline(&mut val_buf).interactive(false));
         }
 
         UiNode::Badge { label, fill, fg, .. } => {
@@ -193,27 +197,7 @@ fn render_stack(
     }
 }
 
-/// Parse a CSS hex color string (`#rrggbb` or `#rrggbbaa`) into `Color32`.
-/// Returns `None` on any parse failure — callers must supply a fallback.
-fn parse_color(hex: &str) -> Option<Color32> {
-    let hex = hex.trim_start_matches('#');
-    match hex.len() {
-        6 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            Some(Color32::from_rgb(r, g, b))
-        }
-        8 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-            let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
-            Some(Color32::from_rgba_premultiplied(r, g, b, a))
-        }
-        _ => None,
-    }
-}
+use crate::process_app::render::parse_color;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
