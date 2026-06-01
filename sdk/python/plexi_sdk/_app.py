@@ -396,6 +396,17 @@ class App:
             return fn
         return decorator
 
+    def view(self) -> "UiNode | None":
+        """Override to return a declarative component tree.
+
+        Return ``None`` (the default) to use the flat draw-command path via
+        ``on_render``. When overridden, the host renderer will walk the returned
+        tree instead of calling ``on_render``.
+
+        ``UiNode`` is defined in ``plexi_sdk.ui`` (epic #1897, task A2).
+        """
+        return None
+
     def on_suspend(self) -> None: pass
     def on_resume(self) -> None: pass
     def on_shutdown(self) -> None: pass

@@ -488,6 +488,7 @@ from ._emitter import Emitter, _emit, _make_async_queue, _LOCK
 from ._pipe import Pipe
 from ._render_context import RenderContext, COMPACT_DEFAULT, REGULAR_DEFAULT
 from ._app import App, Arg
+from ._state import State
 # Live host theme (light/dark + user overrides), populated from Init. Also on
 # ctx.theme. Read colors via theme.<role>: theme.bg, theme.accent, theme.danger…
 # theme.is_dark is True when the active theme has a dark background.
