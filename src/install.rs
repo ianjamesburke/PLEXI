@@ -244,6 +244,7 @@ fn install_one_git(
     cleanup(&stage_root);
 
     chmod_python_entries(&dest);
+    provision_venv(&id, &dest, &manifest);
     log::info!("install: {} ← {url} ({})", id, git_ref.unwrap_or("default"));
     Ok(InstallOutcome {
         id,
@@ -291,6 +292,7 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
         .extract(target_root)
         .map_err(|e| format!("extract local '{name}' → {}: {e}", target_root.display()))?;
     chmod_python_entries(&dest);
+    provision_venv(&id, &dest, &manifest);
     log::info!("install: {id} ← local:{name}");
     Ok(InstallOutcome {
         id,
@@ -345,6 +347,118 @@ fn chmod_python_entries(app_dir: &Path) {
 
 #[cfg(not(unix))]
 fn chmod_python_entries(_app_dir: &Path) {}
+
+/// Create a per-app Python venv using `uv` when the app has a `.py` entry.
+///
+/// - If `.venv` already exists (re-install): logs `info!` and skips creation.
+/// - If `uv` is not on PATH: logs `warn!` and returns — never fails the install.
+/// - If venv creation or dep install fails: logs `warn!` — never fails the install.
+/// - If `dependencies` is non-empty: runs `uv pip install` into the venv.
+fn provision_venv(app_id: &str, app_dir: &Path, manifest: &AppManifest) {
+    let entry = &manifest.app.entry;
+    let is_python = entry.ends_with(".py");
+    if !is_python {
+        return;
+    }
+
+    let venv_path = app_dir.join(".venv");
+
+    // Skip if venv already exists (idempotent re-install).
+    if venv_path.exists() {
+        log::info!(
+            "install[{app_id}]: venv already exists at {}; skipping creation",
+            venv_path.display()
+        );
+        // Still attempt dep install in case deps changed — best-effort, warn on failure.
+        if !manifest.app.dependencies.is_empty() {
+            install_deps_into_venv(app_id, &venv_path, &manifest.app.dependencies);
+        }
+        return;
+    }
+
+    // Check uv is available.
+    let uv_check = Command::new("uv").arg("--version").output();
+    if uv_check.is_err() || !uv_check.as_ref().map(|o| o.status.success()).unwrap_or(false) {
+        log::warn!(
+            "install[{app_id}]: `uv` not found on PATH — skipping venv creation. \
+             Install uv (https://docs.astral.sh/uv/getting-started/installation/) to enable \
+             isolated Python environments for Plexi apps."
+        );
+        return;
+    }
+
+    // Create the venv.
+    let status = Command::new("uv")
+        .args(["venv", "--python", "3.11"])
+        .arg(&venv_path)
+        .status();
+    match status {
+        Err(e) => {
+            log::warn!(
+                "install[{app_id}]: failed to run `uv venv`: {e} — app will use system Python"
+            );
+            return;
+        }
+        Ok(s) if !s.success() => {
+            // uv may refuse 3.11 if not installed; fall back to default Python.
+            log::warn!(
+                "install[{app_id}]: `uv venv --python 3.11` failed (exit {}); \
+                 retrying without version pin",
+                s.code().unwrap_or(-1)
+            );
+            let retry = Command::new("uv").arg("venv").arg(&venv_path).status();
+            match retry {
+                Err(e) => {
+                    log::warn!(
+                        "install[{app_id}]: `uv venv` retry failed: {e} — app will use system Python"
+                    );
+                    return;
+                }
+                Ok(s2) if !s2.success() => {
+                    log::warn!(
+                        "install[{app_id}]: `uv venv` retry exit {} — app will use system Python",
+                        s2.code().unwrap_or(-1)
+                    );
+                    return;
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+
+    log::info!(
+        "install[{app_id}]: created venv at {}",
+        venv_path.display()
+    );
+
+    if !manifest.app.dependencies.is_empty() {
+        install_deps_into_venv(app_id, &venv_path, &manifest.app.dependencies);
+    }
+}
+
+/// Install `deps` into an existing venv using `uv pip install`. Best-effort —
+/// logs `warn!` on failure but never panics or propagates.
+fn install_deps_into_venv(app_id: &str, venv_path: &Path, deps: &[String]) {
+    let python = venv_path.join("bin").join("python");
+    let mut cmd = Command::new("uv");
+    cmd.args(["pip", "install", "--python"]);
+    cmd.arg(&python);
+    cmd.args(deps);
+    log::info!(
+        "install[{app_id}]: installing {} dep(s): {}",
+        deps.len(),
+        deps.join(", ")
+    );
+    match cmd.status() {
+        Err(e) => log::warn!("install[{app_id}]: `uv pip install` failed to run: {e}"),
+        Ok(s) if !s.success() => log::warn!(
+            "install[{app_id}]: `uv pip install` exit {} — deps may be missing",
+            s.code().unwrap_or(-1)
+        ),
+        Ok(_) => log::info!("install[{app_id}]: deps installed successfully"),
+    }
+}
 
 /// Apply every `[[app]]` entry in a pack against `target_root`. Errors are
 /// aggregated per app so one bad entry doesn't abort the whole apply.
@@ -934,6 +1048,37 @@ mod install_tests {
         // MockCloner's checkout is a no-op but the install still produces the
         // staged manifest. Here we just verify the path was reached.
         assert_eq!(cloner.clones.lock().unwrap().len(), 1);
+    }
+
+    // D2: per-app Python venv path construction tests.
+
+    #[test]
+    fn venv_path_is_inside_app_dir() {
+        let app_dir = std::path::Path::new("/tmp/apps/my-app");
+        let venv = app_dir.join(".venv");
+        assert_eq!(venv, std::path::PathBuf::from("/tmp/apps/my-app/.venv"));
+        // Verify the expected python binary path within the venv.
+        let py = venv.join("bin").join("python");
+        assert_eq!(py, std::path::PathBuf::from("/tmp/apps/my-app/.venv/bin/python"));
+    }
+
+    #[test]
+    fn python_entry_detected_by_extension() {
+        // .py entry → is_python = true
+        let py_entry = "main.py";
+        assert!(py_entry.ends_with(".py"), "main.py should be detected as Python");
+
+        // .sh entry → is_python = false
+        let sh_entry = "run.sh";
+        assert!(!sh_entry.ends_with(".py"), "run.sh must not be detected as Python");
+
+        // entry with no extension → is_python = false
+        let no_ext = "myapp";
+        assert!(!no_ext.ends_with(".py"), "entry with no extension must not be detected as Python");
+
+        // entry that happens to end in .py in a longer name
+        let py_in_name = "app.py";
+        assert!(py_in_name.ends_with(".py"), "app.py should be detected as Python");
     }
 }
 

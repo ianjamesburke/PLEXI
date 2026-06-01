@@ -122,6 +122,11 @@ pub struct AppManifestApp {
     /// Source repository URL.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<String>,
+
+    /// Python package dependencies. Installed via `uv pip install` at install time
+    /// into a per-app venv at `<app_dir>/.venv`. Empty when omitted.
+    #[serde(default)]
+    pub dependencies: Vec<String>,
 }
 
 /// Manifest `[app] type` field — chooses the host rendering surface for
