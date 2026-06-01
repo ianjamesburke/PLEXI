@@ -190,7 +190,7 @@ fn granted_app_dispatches_to_broker() {
     let seen: Arc<Mutex<Vec<AiBrokerRequest>>> = Arc::new(Mutex::new(Vec::new()));
     app.ai_broker = Arc::new(CannedBroker {
         seen: Arc::clone(&seen),
-        response: AiBrokerResponse::ok("Pong.".to_string(), 12, 4),
+        response: AiBrokerResponse::ok_with_deltas("Pong.".to_string(), 12, 4, Vec::new()),
     });
 
     app.route_command(AppRequest::AiQuery {

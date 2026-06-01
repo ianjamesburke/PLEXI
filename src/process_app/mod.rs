@@ -779,7 +779,7 @@ impl ProcessApp {
         struct NoopBroker;
         impl AiBroker for NoopBroker {
             fn dispatch(&self, _req: AiBrokerRequest) -> AiBrokerResponse {
-                AiBrokerResponse::ok("noop".to_string(), 0, 0)
+                AiBrokerResponse::ok_with_deltas("noop".to_string(), 0, 0, Vec::new())
             }
         }
 

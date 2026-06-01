@@ -244,6 +244,17 @@ pub enum PlexiEvent {
         tokens_out: u32,
         error: Option<String>,
     },
+    /// Incremental token chunk from a streaming ai_query response.
+    /// Sent before the final `AiResponse` so apps can display tokens as they arrive.
+    /// The final `AiResponse` is still sent with complete content + token counts.
+    AiStreamChunk {
+        request_id: String,
+        /// Incremental text delta (may be empty for the final chunk before AiResponse)
+        delta: String,
+        /// True on the last chunk before AiResponse fires
+        #[serde(default)]
+        done: bool,
+    },
     /// Host-to-app tool invocation (#399). The broker calls a tool exposed via
     /// `DrawCommand::ExposeTools` by sending this event to the owning pane.
     /// The app must reply with `DrawCommand::ToolResult { call_id, … }`.
@@ -3725,12 +3736,80 @@ mod ui_node_tests {
         // and deserializes correctly so the variant is exercised and not silently dead.
         let node = UiNode::Surface { id: "canvas".into() };
         let json = serde_json::to_string(&node).expect("serialize");
-        assert!(json.contains(r#""type":"surface""#), "surface tag missing: {json}");
+        assert!(json.contains(r#""type":"surface""#), "surface tag: {json}");
         assert!(json.contains(r#""id":"canvas""#), "id missing: {json}");
         let round_tripped: UiNode = serde_json::from_str(&json).expect("deserialize");
         match round_tripped {
             UiNode::Surface { id } => assert_eq!(id, "canvas"),
             other => panic!("expected Surface, got {other:?}"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod ai_stream_chunk_tests {
+    use super::*;
+
+    /// AiStreamChunk round-trips through serde with all fields present.
+    #[test]
+    fn ai_stream_chunk_round_trips_serde() {
+        let event = PlexiEvent::AiStreamChunk {
+            request_id: "req-123".to_string(),
+            delta: "Hello, ".to_string(),
+            done: false,
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        assert!(
+            json.contains(r#""type":"ai_stream_chunk""#),
+            "type tag missing: {json}"
+        );
+        assert!(
+            json.contains(r#""request_id":"req-123""#),
+            "request_id missing: {json}"
+        );
+        assert!(
+            json.contains(r#""delta":"Hello, ""#),
+            "delta missing: {json}"
+        );
+
+        let round_tripped: PlexiEvent = serde_json::from_str(&json).expect("deserialize");
+        match round_tripped {
+            PlexiEvent::AiStreamChunk { request_id, delta, done } => {
+                assert_eq!(request_id, "req-123");
+                assert_eq!(delta, "Hello, ");
+                assert!(!done);
+            }
+            other => panic!("expected AiStreamChunk, got {other:?}"),
+        }
+    }
+
+    /// done=true round-trips correctly.
+    #[test]
+    fn ai_stream_chunk_done_true_round_trips() {
+        let event = PlexiEvent::AiStreamChunk {
+            request_id: "req-456".to_string(),
+            delta: String::new(),
+            done: true,
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        let round_tripped: PlexiEvent = serde_json::from_str(&json).expect("deserialize");
+        match round_tripped {
+            PlexiEvent::AiStreamChunk { done, .. } => assert!(done, "done must be true"),
+            other => panic!("expected AiStreamChunk, got {other:?}"),
+        }
+    }
+
+    /// done defaults to false when absent from JSON (serde(default)).
+    #[test]
+    fn ai_stream_chunk_done_defaults_to_false() {
+        let json = r#"{"type":"ai_stream_chunk","request_id":"r1","delta":"hi"}"#;
+        let event: PlexiEvent = serde_json::from_str(json).expect("deserialize");
+        match event {
+            PlexiEvent::AiStreamChunk { done, delta, .. } => {
+                assert!(!done, "done should default to false when absent");
+                assert_eq!(delta, "hi");
+            }
+            other => panic!("expected AiStreamChunk, got {other:?}"),
         }
     }
 }

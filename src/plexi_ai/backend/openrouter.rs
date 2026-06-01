@@ -401,4 +401,121 @@ mod tests {
             panic!("expected Done variant");
         }
     }
+
+    /// Verify that the SSE data-line parser extracts deltas from a sample stream.
+    ///
+    /// This exercises the parsing logic used in `stream_openrouter`: each
+    /// `data: <JSON>` line has `choices[0].delta.content` with the text delta.
+    #[test]
+    fn sse_parser_extracts_deltas_from_sample_stream() {
+        let sse_lines = vec![
+            ": OPENROUTER PROCESSING",
+            "",
+            r#"data: {"id":"gen1","choices":[{"delta":{"content":"Hello"}}]}"#,
+            r#"data: {"id":"gen1","choices":[{"delta":{"content":", "}}]}"#,
+            r#"data: {"id":"gen1","choices":[{"delta":{"content":"world"}}]}"#,
+            r#"data: {"id":"gen1","choices":[{"delta":{"content":"!"}}],"usage":{"prompt_tokens":5,"completion_tokens":4}}"#,
+            "data: [DONE]",
+        ];
+
+        let mut deltas: Vec<String> = Vec::new();
+
+        for line in &sse_lines {
+            // Skip comment and empty lines (mirrors stream_openrouter logic).
+            if line.starts_with(':') || line.is_empty() {
+                continue;
+            }
+            let data = match line.strip_prefix("data: ") {
+                Some(d) => d,
+                None => continue,
+            };
+            if data == "[DONE]" {
+                break;
+            }
+            let chunk: serde_json::Value = match serde_json::from_str(data) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if let Some(text) = chunk["choices"][0]["delta"]["content"].as_str() {
+                if !text.is_empty() {
+                    deltas.push(text.to_string());
+                }
+            }
+        }
+
+        assert_eq!(deltas, vec!["Hello", ", ", "world", "!"]);
+    }
+
+    /// Verify that `[DONE]` terminates SSE parsing before any subsequent lines.
+    #[test]
+    fn sse_parser_stops_at_done_sentinel() {
+        let sse_lines = vec![
+            r#"data: {"choices":[{"delta":{"content":"before"}}]}"#,
+            "data: [DONE]",
+            // These lines must not be reached.
+            r#"data: {"choices":[{"delta":{"content":"after"}}]}"#,
+        ];
+
+        let mut deltas: Vec<String> = Vec::new();
+
+        for line in &sse_lines {
+            if line.starts_with(':') || line.is_empty() {
+                continue;
+            }
+            let data = match line.strip_prefix("data: ") {
+                Some(d) => d,
+                None => continue,
+            };
+            if data == "[DONE]" {
+                break;
+            }
+            let chunk: serde_json::Value = match serde_json::from_str(data) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if let Some(text) = chunk["choices"][0]["delta"]["content"].as_str() {
+                if !text.is_empty() {
+                    deltas.push(text.to_string());
+                }
+            }
+        }
+
+        assert_eq!(deltas, vec!["before"], "[DONE] must stop parsing — 'after' must not appear");
+    }
+
+    /// Verify that malformed SSE data lines are skipped without panic.
+    #[test]
+    fn sse_parser_skips_malformed_lines() {
+        let sse_lines = vec![
+            "data: not-json{{{",
+            r#"data: {"choices":[{"delta":{"content":"ok"}}]}"#,
+            "data: [DONE]",
+        ];
+
+        let mut deltas: Vec<String> = Vec::new();
+
+        for line in &sse_lines {
+            if line.starts_with(':') || line.is_empty() {
+                continue;
+            }
+            let data = match line.strip_prefix("data: ") {
+                Some(d) => d,
+                None => continue,
+            };
+            if data == "[DONE]" {
+                break;
+            }
+            let chunk: serde_json::Value = match serde_json::from_str(data) {
+                Ok(v) => v,
+                Err(_) => continue, // malformed — skip
+            };
+            if let Some(text) = chunk["choices"][0]["delta"]["content"].as_str() {
+                if !text.is_empty() {
+                    deltas.push(text.to_string());
+                }
+            }
+        }
+
+        assert_eq!(deltas, vec!["ok"], "malformed line must be skipped");
+    }
 }

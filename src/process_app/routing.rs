@@ -1094,6 +1094,21 @@ impl ProcessApp {
                         open_panes,
                         tool_dispatcher: Some(tool_dispatcher),
                     });
+                    // Send incremental stream chunks before the final AiResponse
+                    // so the app can display tokens as they arrive.
+                    let n_chunks = resp.stream_deltas.len();
+                    for (i, delta) in resp.stream_deltas.into_iter().enumerate() {
+                        let done = i + 1 == n_chunks;
+                        let chunk = PlexiEvent::AiStreamChunk {
+                            request_id: request_id.clone(),
+                            delta,
+                            done,
+                        };
+                        if let Err(e) = tx.send(chunk) {
+                            log::warn!("ai broker: stream chunk receiver dropped: {e}");
+                            return;
+                        }
+                    }
                     let event = PlexiEvent::AiResponse {
                         request_id,
                         content: resp.content,

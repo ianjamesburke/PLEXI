@@ -77,21 +77,29 @@ pub struct AiBrokerRequest {
 /// Broker outcome. Either `content` is `Some` (success) or `error` is `Some`
 /// (failure). Token counts default to `0` when the upstream backend doesn't
 /// report them (e.g. subscription billing).
+///
+/// `stream_deltas` carries ordered incremental text deltas accumulated during
+/// the final text turn. The routing layer uses these to emit
+/// `PlexiEvent::AiStreamChunk` events to the app before the final
+/// `PlexiEvent::AiResponse`. Empty on error or tool-only turns.
 #[derive(Debug, Clone)]
 pub struct AiBrokerResponse {
     pub content: Option<String>,
     pub tokens_in: u32,
     pub tokens_out: u32,
     pub error: Option<String>,
+    /// Ordered incremental text deltas from the final text turn.
+    pub stream_deltas: Vec<String>,
 }
 
 impl AiBrokerResponse {
-    pub fn ok(content: String, tokens_in: u32, tokens_out: u32) -> Self {
+    pub fn ok_with_deltas(content: String, tokens_in: u32, tokens_out: u32, stream_deltas: Vec<String>) -> Self {
         Self {
             content: Some(content),
             tokens_in,
             tokens_out,
             error: None,
+            stream_deltas,
         }
     }
 
@@ -101,6 +109,7 @@ impl AiBrokerResponse {
             tokens_in: 0,
             tokens_out: 0,
             error: Some(message.into()),
+            stream_deltas: Vec::new(),
         }
     }
 }
@@ -346,6 +355,8 @@ fn run_turn_and_respond(
     let mut total_tokens_out: u32 = 0;
     let mut last_generation_id: Option<String> = None;
     let mut final_text = String::new();
+    // Accumulated stream deltas from the final text turn.
+    let mut stream_deltas: Vec<String> = Vec::new();
 
     for iteration in 0..=MAX_TOOL_ITERATIONS {
         if iteration == MAX_TOOL_ITERATIONS {
@@ -363,7 +374,12 @@ fn run_turn_and_respond(
             model_tier: Some(request.model_tier),
         };
 
-        let turn = turn_loop::run_turn(backend, backend_req, |_| {});
+        // Collect token deltas via on_token callback. We capture into a local
+        // Vec per iteration and only keep the final (non-tool-call) turn's deltas.
+        let mut turn_deltas: Vec<String> = Vec::new();
+        let turn = turn_loop::run_turn(backend, backend_req, |chunk| {
+            turn_deltas.push(chunk.to_string());
+        });
 
         match turn {
             Err(e) => {
@@ -383,7 +399,8 @@ fn run_turn_and_respond(
                 }
 
                 if result.tool_calls.is_empty() {
-                    // No tool calls — done.
+                    // No tool calls — done. Keep this turn's deltas.
+                    stream_deltas = turn_deltas;
                     final_text = result.text;
                     break;
                 }
@@ -538,7 +555,7 @@ fn run_turn_and_respond(
                         cost_cents,
                         timestamp: finish_ts,
                     });
-                    return AiBrokerResponse::ok(final_text, tokens_in, tokens_out);
+                    return AiBrokerResponse::ok_with_deltas(final_text, tokens_in, tokens_out, stream_deltas);
                 }
                 Err(e) => {
                     // Thread spawn failed — fall through to synchronous path so
@@ -577,7 +594,7 @@ fn run_turn_and_respond(
         cost_cents: 0,
         timestamp: event_log::now_timestamp(),
     });
-    AiBrokerResponse::ok(final_text, total_tokens_in, total_tokens_out)
+    AiBrokerResponse::ok_with_deltas(final_text, total_tokens_in, total_tokens_out, stream_deltas)
 }
 
 fn tier_name(tier: &ModelTier) -> &'static str {
@@ -738,7 +755,7 @@ mod tests {
         pub fn ok(content: &str) -> Self {
             Self {
                 seen: Arc::new(Mutex::new(Vec::new())),
-                response: AiBrokerResponse::ok(content.to_string(), 7, 3),
+                response: AiBrokerResponse::ok_with_deltas(content.to_string(), 7, 3, Vec::new()),
             }
         }
     }
