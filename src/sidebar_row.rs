@@ -116,7 +116,7 @@ impl ContextItem {
                 let right_reserve = if action_enabled { ACTION_ZONE_WIDTH + 4.0 } else { 8.0 };
                 let badge_w = if badge_count > 0 { 26.0 } else { 0.0 };
                 let count_w = if pane_count > 0 { 18.0 } else { 0.0 };
-                let text_max = (ui.available_width() - right_reserve - badge_w - count_w).max(0.0);
+                let text_max = (ui.available_width() - right_reserve - badge_w - count_w - ui.spacing().item_spacing.x * 2.0).max(0.0);
 
                 // Name + subtitle share truncation zone so neither wraps and adds height.
                 ui.scope(|ui| {
@@ -180,13 +180,16 @@ impl ContextItem {
                             } else {
                                 ui.add_space(11.0);
                             }
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&row.label).size(11.0).color(pane_label_color),
-                                )
-                                .selectable(false)
-                                .truncate(),
-                            );
+                            ui.scope(|ui| {
+                                ui.set_max_width(ui.available_width());
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&row.label).size(11.0).color(pane_label_color),
+                                    )
+                                    .selectable(false)
+                                    .truncate(),
+                                );
+                            });
                         });
                     });
                     let pane_rect = row_scope.response.rect;

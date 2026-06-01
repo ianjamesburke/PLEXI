@@ -40,6 +40,8 @@ impl PlexiApp {
 
         // Breadcrumb bar — only shown when navigated into a sub-context.
         if self.router.current_depth() > 0 {
+            ui.scope(|ui| {
+            ui.set_max_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.add_space(16.0);
                 let mut path_ids: Vec<u64> = self.router.depth_stack.iter()
@@ -77,6 +79,7 @@ impl PlexiApp {
                         ui.label(RichText::new("\u{203A}").color(self.colors.text_dim));
                     }
                 }
+            });
             });
             ui.separator();
         }
