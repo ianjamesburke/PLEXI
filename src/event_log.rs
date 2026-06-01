@@ -142,6 +142,17 @@ pub enum HostEvent {
         direction: String,
         timestamp: String,
     },
+    /// A pane was closed.
+    PaneClosed {
+        pane_id: u64,
+        timestamp: String,
+    },
+    /// A new context was created.
+    ContextCreated {
+        context_id: u64,
+        name: String,
+        timestamp: String,
+    },
 }
 
 // ── Wire envelope ─────────────────────────────────────────────────────────────

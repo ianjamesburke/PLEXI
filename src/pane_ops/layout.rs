@@ -588,6 +588,11 @@ impl PlexiApp {
                         self.delete_window(ctx_idx);
                     }
                 }
+                log::info!("close_pane_by_id: emitting PaneClosed pane_id={pane_id}");
+                crate::event_log::emit(crate::event_log::HostEvent::PaneClosed {
+                    pane_id,
+                    timestamp: crate::event_log::now_timestamp(),
+                });
                 return;
             }
         }
