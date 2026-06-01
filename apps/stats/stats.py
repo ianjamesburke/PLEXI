@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
 
-from plexi_sdk import App, RenderContext, FG, MUTED, ACCENT, HINT, CAPTION, BODY, dim
+from plexi_sdk import App, RenderContext, HINT, CAPTION, BODY, dim
 
 PALETTE = [
     "#f38ba8", "#a6e3a1", "#89b4fa", "#f9e2af",
@@ -290,11 +290,11 @@ class StatsApp(App):
         w, h = ctx.w, ctx.h
 
         if not self.root or not self.view_root:
-            ctx.text(w / 2 - 80, h / 2, "No events found", size=BODY, color=MUTED)
+            ctx.text(w / 2 - 80, h / 2, "No events found", size=BODY, color=ctx.theme.muted)
             if self.events_path:
-                ctx.text(w / 2 - 120, h / 2 + 24, f"Path: {self.events_path}", size=HINT, color=MUTED)
+                ctx.text(w / 2 - 120, h / 2 + 24, f"Path: {self.events_path}", size=HINT, color=ctx.theme.muted)
             else:
-                ctx.text(w / 2 - 120, h / 2 + 24, "No events.jsonl found", size=HINT, color=MUTED)
+                ctx.text(w / 2 - 120, h / 2 + 24, "No events.jsonl found", size=HINT, color=ctx.theme.muted)
             return
 
         vr = self.view_root
@@ -302,8 +302,8 @@ class StatsApp(App):
 
         # breadcrumb bar
         ctx.rect(0, 0, w, BREADCRUMB_H, fill="#181825")
-        ctx.text(8, 5, f"{breadcrumb_path} › 24h overview", size=HINT, color=MUTED, bold=True)
-        ctx.text(w - 200, 5, "r refresh · click drill · esc back", size=HINT, color=dim(MUTED, 120))
+        ctx.text(8, 5, f"{breadcrumb_path} › 24h overview", size=HINT, color=ctx.theme.muted, bold=True)
+        ctx.text(w - 200, 5, "r refresh · click drill · esc back", size=HINT, color=dim(ctx.theme.muted, 120))
 
         # treemap region
         treemap_y = BREADCRUMB_H
@@ -324,23 +324,23 @@ class StatsApp(App):
             if cw >= MIN_CELL_W and ch >= MIN_CELL_H:
                 parent_label = _shorten(os.path.dirname(node.path))
                 if parent_label and parent_label != _shorten(vr.path):
-                    ctx.text(cx + 6, cy + ch - 14 - BODY - HINT - 2, parent_label, size=HINT, color=dim(FG, 100))
+                    ctx.text(cx + 6, cy + ch - 14 - BODY - HINT - 2, parent_label, size=HINT, color=dim(ctx.theme.fg, 100))
 
-                ctx.text(cx + 6, cy + ch - 14 - BODY, node.label, size=BODY, color=FG, bold=True)
-                ctx.text(cx + 6, cy + ch - 14, _fmt_duration(node.total_duration), size=CAPTION, color=dim(FG, 180))
+                ctx.text(cx + 6, cy + ch - 14 - BODY, node.label, size=BODY, color=ctx.theme.fg, bold=True)
+                ctx.text(cx + 6, cy + ch - 14, _fmt_duration(node.total_duration), size=CAPTION, color=dim(ctx.theme.fg, 180))
 
                 if node.visits > 0:
-                    ctx.text(cx + cw - 40, cy + 6, f"{node.visits}x", size=HINT, color=dim(FG, 100))
+                    ctx.text(cx + cw - 40, cy + 6, f"{node.visits}x", size=HINT, color=dim(ctx.theme.fg, 100))
 
         # stats bar
         stats_y = treemap_y + treemap_h
         ctx.rect(0, stats_y, w, STATS_BAR_H, fill="#181825")
-        ctx.line(0, stats_y, w, stats_y, color=dim(MUTED, 60), width=1.0)
-        ctx.line(0, stats_y + STATS_BAR_H, w, stats_y + STATS_BAR_H, color=dim(MUTED, 60), width=1.0)
+        ctx.line(0, stats_y, w, stats_y, color=dim(ctx.theme.muted, 60), width=1.0)
+        ctx.line(0, stats_y + STATS_BAR_H, w, stats_y + STATS_BAR_H, color=dim(ctx.theme.muted, 60), width=1.0)
 
         stats_text_y = stats_y + (STATS_BAR_H - CAPTION) / 2
         third = w / 3
-        ctx.text(third * 0.5, stats_text_y, f"{_fmt_duration(self.total_time)} active", size=CAPTION, color=ACCENT, bold=True, align="center")
+        ctx.text(third * 0.5, stats_text_y, f"{_fmt_duration(self.total_time)} active", size=CAPTION, color=ctx.theme.accent, bold=True, align="center")
         ctx.text(third * 1.5, stats_text_y, f"{self.total_visits} visits", size=CAPTION, color="#a6e3a1", bold=True, align="center")
         ctx.text(third * 2.5, stats_text_y, f"{self.total_projects} projects", size=CAPTION, color="#f9e2af", bold=True, align="center")
 
@@ -374,7 +374,7 @@ class StatsApp(App):
             labels.append((frac, lbl))
         for frac, lbl in labels:
             mx = frac * w
-            ctx.text(mx, marker_y, lbl, size=HINT, color=dim(MUTED, 120), align="center")
+            ctx.text(mx, marker_y, lbl, size=HINT, color=dim(ctx.theme.muted, 120), align="center")
 
         self.highlight_path = None
 

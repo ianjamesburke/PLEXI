@@ -11,7 +11,6 @@ from typing import Any
 
 from plexi_sdk import (
     App, RenderContext,
-    BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, GREEN,
     BODY, CAPTION, HINT, HEADING, PAD,
 )
 
@@ -241,14 +240,14 @@ class CalendarApp(App):
     # ── Render ────────────────────────────────────────────────────────────────
 
     def on_render(self, ctx: RenderContext) -> None:
-        ctx.clear(BG)
+        ctx.clear(ctx.theme.bg)
 
         # Header bar
         header_h = 48.0
-        ctx.rect(0, 0, ctx.w, header_h, fill=SURFACE)
+        ctx.rect(0, 0, ctx.w, header_h, fill=ctx.theme.surface)
         month_name = date(self._year, self._month, 1).strftime("%B %Y")
-        ctx.text(PAD, 10.0, "Calendar", size=HEADING, color=FG, bold=True)
-        ctx.text(PAD, 30.0, month_name, size=CAPTION, color=MUTED)
+        ctx.text(PAD, 10.0, "Calendar", size=HEADING, color=ctx.theme.fg, bold=True)
+        ctx.text(PAD, 30.0, month_name, size=CAPTION, color=ctx.theme.muted)
 
         # Day-of-week column headers
         grid_left = PAD
@@ -256,7 +255,7 @@ class CalendarApp(App):
         cell_w = grid_w / 7.0
         dow_y = header_h + 8.0
         for i, name in enumerate(DAY_NAMES):
-            ctx.text(grid_left + i * cell_w + 6.0, dow_y, name, size=CAPTION, color=MUTED)
+            ctx.text(grid_left + i * cell_w + 6.0, dow_y, name, size=CAPTION, color=ctx.theme.muted)
 
         # Month grid
         cells_top = dow_y + 20.0
@@ -273,18 +272,18 @@ class CalendarApp(App):
             is_selected = (day_num == self._day)
 
             if is_selected:
-                ctx.rect(cx + 2, cy + 2, cell_w - 4, CELL_H - 4, fill=ACCENT, radius=CELL_RADIUS)
-                text_col = BG
+                ctx.rect(cx + 2, cy + 2, cell_w - 4, CELL_H - 4, fill=ctx.theme.accent, radius=CELL_RADIUS)
+                text_col = ctx.theme.bg
             elif is_today:
-                ctx.rect(cx + 2, cy + 2, cell_w - 4, CELL_H - 4, fill=SURFACE, radius=CELL_RADIUS)
-                text_col = ACCENT
+                ctx.rect(cx + 2, cy + 2, cell_w - 4, CELL_H - 4, fill=ctx.theme.surface, radius=CELL_RADIUS)
+                text_col = ctx.theme.accent
             else:
-                text_col = FG
+                text_col = ctx.theme.fg
 
             ctx.text(cx + 6.0, cy + 8.0, str(day_num), size=BODY, color=text_col)
 
             if self._events_for(d_str):
-                dot_col = BG if is_selected else ACCENT
+                dot_col = ctx.theme.bg if is_selected else ctx.theme.accent
                 ctx.circle(cx + cell_w / 2.0, cy + CELL_H - 10.0, 3.0, fill=dot_col)
 
             col += 1
@@ -308,9 +307,9 @@ class CalendarApp(App):
 
         # Footer bar
         fy = ctx.h - footer_h
-        ctx.rect(0, fy, ctx.w, footer_h, fill=SURFACE)
+        ctx.rect(0, fy, ctx.w, footer_h, fill=ctx.theme.surface)
         if self._status:
-            ctx.text(PAD, fy + 14.0, self._status, size=CAPTION, color=GREEN)
+            ctx.text(PAD, fy + 14.0, self._status, size=CAPTION, color=ctx.theme.success)
         elif self._mode == "view":
             ctx.shortcuts(PAD, fy + 14.0, ctx.w - 2 * PAD, [
                 (["j", "k"], "day"),
@@ -328,17 +327,17 @@ class CalendarApp(App):
         date_str = self._selected_date_str()
         evs = self._events_for(date_str)
         d_label = date(self._year, self._month, self._day).strftime("%A, %B %-d")
-        ctx.text(x, y, d_label, size=CAPTION, color=MUTED)
+        ctx.text(x, y, d_label, size=CAPTION, color=ctx.theme.muted)
         ey = y + 20.0
         if not evs:
-            ctx.text(x, ey, "No events", size=BODY, color=MUTED)
+            ctx.text(x, ey, "No events", size=BODY, color=ctx.theme.muted)
             return
         for ev in evs:
             if ey + 24 > y + h:
                 break
             time_part = f"{ev['time']}  " if ev.get("time") else ""
-            ctx.rect(x, ey, w, 22.0, fill=SURFACE, radius=4.0)
-            ctx.text(x + 8.0, ey + 4.0, f"{time_part}{ev['title']}", size=CAPTION, color=FG)
+            ctx.rect(x, ey, w, 22.0, fill=ctx.theme.surface, radius=4.0)
+            ctx.text(x + 8.0, ey + 4.0, f"{time_part}{ev['title']}", size=CAPTION, color=ctx.theme.fg)
             ey += 26.0
 
     def _draw_input_modal(self, ctx: RenderContext) -> None:
@@ -346,7 +345,7 @@ class CalendarApp(App):
         mh = 120.0
         mx = (ctx.w - mw) / 2.0
         my = (ctx.h - mh) / 2.0
-        ctx.rect(mx, my, mw, mh, fill=SURFACE, radius=8.0)
+        ctx.rect(mx, my, mw, mh, fill=ctx.theme.surface, radius=8.0)
 
         title_text = "Edit Event" if self._editing_id else "Add Event"
         stage_prompt = {
@@ -355,11 +354,11 @@ class CalendarApp(App):
             "time":  "Time (HH:MM, or Enter to skip):",
         }[self._add_stage]
 
-        ctx.text(mx + 16.0, my + 12.0, title_text, size=BODY, color=FG, bold=True)
-        ctx.text(mx + 16.0, my + 36.0, stage_prompt, size=CAPTION, color=MUTED)
-        ctx.rect(mx + 16.0, my + 56.0, mw - 32.0, 30.0, fill=HIGHLIGHT, radius=4.0)
-        ctx.text(mx + 22.0, my + 64.0, self._input + "▌", size=BODY, color=FG)
-        ctx.text(mx + 16.0, my + 98.0, "↵ confirm  esc cancel", size=HINT, color=MUTED)
+        ctx.text(mx + 16.0, my + 12.0, title_text, size=BODY, color=ctx.theme.fg, bold=True)
+        ctx.text(mx + 16.0, my + 36.0, stage_prompt, size=CAPTION, color=ctx.theme.muted)
+        ctx.rect(mx + 16.0, my + 56.0, mw - 32.0, 30.0, fill=ctx.theme.highlight, radius=4.0)
+        ctx.text(mx + 22.0, my + 64.0, self._input + "▌", size=BODY, color=ctx.theme.fg)
+        ctx.text(mx + 16.0, my + 98.0, "↵ confirm  esc cancel", size=HINT, color=ctx.theme.muted)
 
     def _draw_delete_modal(self, ctx: RenderContext) -> None:
         evs = self._events_for(self._selected_date_str())
@@ -370,10 +369,10 @@ class CalendarApp(App):
         mh = 90.0
         mx = (ctx.w - mw) / 2.0
         my = (ctx.h - mh) / 2.0
-        ctx.rect(mx, my, mw, mh, fill=SURFACE, radius=8.0)
-        ctx.text(mx + 16.0, my + 12.0, "Delete event?", size=BODY, color=FG, bold=True)
-        ctx.text(mx + 16.0, my + 34.0, evs[0]["title"], size=CAPTION, color=MUTED)
-        ctx.text(mx + 16.0, my + 62.0, "y  confirm    n / esc  cancel", size=HINT, color=MUTED)
+        ctx.rect(mx, my, mw, mh, fill=ctx.theme.surface, radius=8.0)
+        ctx.text(mx + 16.0, my + 12.0, "Delete event?", size=BODY, color=ctx.theme.fg, bold=True)
+        ctx.text(mx + 16.0, my + 34.0, evs[0]["title"], size=CAPTION, color=ctx.theme.muted)
+        ctx.text(mx + 16.0, my + 62.0, "y  confirm    n / esc  cancel", size=HINT, color=ctx.theme.muted)
 
 
 if __name__ == "__main__":

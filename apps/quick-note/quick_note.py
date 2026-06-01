@@ -11,7 +11,7 @@ from datetime import datetime
 
 from plexi_sdk import (
     App, RenderContext,
-    FG, MUTED, SURFACE, GREEN, BODY, CAPTION, HINT,
+    BODY, CAPTION, HINT,
     PRIORITY_LOW,
 )
 from plexi_sdk.ui import Component
@@ -143,7 +143,7 @@ class QuickNoteApp(App):
         if self._mode == "compose":
             cy = y
             for i, line in enumerate(self._lines):
-                color = FG if i == 0 else (MUTED if i > 0 else FG)
+                color = ctx.theme.fg if i == 0 else (ctx.theme.muted if i > 0 else ctx.theme.fg)
                 size = 18.0 if i == 0 else BODY
                 cursor = "▌" if i == self._cursor_line else ""
                 ctx.text(x, cy, line + cursor, size=size, color=color)
@@ -157,14 +157,14 @@ class QuickNoteApp(App):
                 ctx.simple_list(items, selected=self._selected, item_height=40.0,
                          x=x, y=y, w=w, h=h)
             else:
-                ctx.text(x, y + 16, "No notes yet.", size=BODY, color=MUTED)
+                ctx.text(x, y + 16, "No notes yet.", size=BODY, color=ctx.theme.muted)
             # Preview panel (right side if wide enough)
             if w > 520 and self._preview:
                 px = x + w * 0.5
-                ctx.rect(px, y, w - (px - x), h, fill=SURFACE)
+                ctx.rect(px, y, w - (px - x), h, fill=ctx.theme.surface)
                 py = y + 12
                 for ln in self._preview.split("\n")[: int((h - 16) / 18)]:
-                    ctx.text(px + 12, py, ln, size=CAPTION, color=FG)
+                    ctx.text(px + 12, py, ln, size=CAPTION, color=ctx.theme.fg)
                     py += 18
 
     def _shortcut_footer(self):
@@ -190,7 +190,7 @@ class QuickNoteApp(App):
             Spacer(size=HINT),
         ]
         if self._status:
-            children.append(Footer(self._status, color=GREEN))
+            children.append(Footer(self._status, color=ctx.theme.success))
         children.append(self._shortcut_footer())
         ctx.render(Column(children))
 
