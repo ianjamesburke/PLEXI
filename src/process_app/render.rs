@@ -1007,7 +1007,8 @@ pub(crate) fn render_draw_commands(
             // render_component_tree() (task A2). Until that renderer lands, log
             // a warning and drop — behaviour matches any unknown future variant.
             RenderCommand::ComponentTree { .. } => {
-                log::warn!("render: ComponentTree not yet implemented — dropping (A2 pending)");
+                // Surface nodes silently no-op until GPU surface layer is implemented (A2).
+                log::warn!("render: ComponentTree not yet implemented — dropping (A2 pending); pane_origin={:?}", pane_rect.min);
             }
         }
     }

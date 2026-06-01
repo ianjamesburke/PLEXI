@@ -584,7 +584,7 @@ impl Default for StackDirection {
 }
 
 /// Per-side padding for a `UiNode::Stack`.
-#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Default)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Default, PartialEq)]
 pub struct UiPadding {
     #[serde(default)]
     pub top: f32,
@@ -694,6 +694,55 @@ impl schemars::JsonSchema for UiNode {
     }
     fn json_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
         schemars::json_schema!({})
+    }
+}
+
+// Manual PartialEq impl — UiNode::Raw wraps RenderCommand which would require
+// PartialEq on hundreds of transitive types. Raw nodes are structural escape
+// hatches; we compare them via their serde round-trip JSON representation so
+// equality is still meaningful without cascading the derive requirement.
+impl PartialEq for UiNode {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (UiNode::Stack { direction: d1, children: c1, gap: g1, padding: p1 },
+             UiNode::Stack { direction: d2, children: c2, gap: g2, padding: p2 }) => {
+                d1 == d2 && c1 == c2 && g1 == g2 && p1 == p2
+            }
+            (UiNode::Scroll { child: c1, horizontal: h1 },
+             UiNode::Scroll { child: c2, horizontal: h2 }) => c1 == c2 && h1 == h2,
+            (UiNode::Layer { children: c1 }, UiNode::Layer { children: c2 }) => c1 == c2,
+            (UiNode::Text { text: t1, size: s1, color: co1, bold: b1, monospace: m1 },
+             UiNode::Text { text: t2, size: s2, color: co2, bold: b2, monospace: m2 }) => {
+                t1 == t2 && s1 == s2 && co1 == co2 && b1 == b2 && m1 == m2
+            }
+            (UiNode::Interactive { node_id: n1, child: c1, on_click: oc1, on_hover: oh1 },
+             UiNode::Interactive { node_id: n2, child: c2, on_click: oc2, on_hover: oh2 }) => {
+                n1 == n2 && c1 == c2 && oc1 == oc2 && oh1 == oh2
+            }
+            // Raw: compare via serde JSON round-trip to avoid cascading PartialEq.
+            (UiNode::Raw { command: cmd1 }, UiNode::Raw { command: cmd2 }) => {
+                serde_json::to_string(cmd1.as_ref()).ok()
+                    == serde_json::to_string(cmd2.as_ref()).ok()
+            }
+            (UiNode::Surface { id: i1 }, UiNode::Surface { id: i2 }) => i1 == i2,
+            (UiNode::Button { node_id: n1, label: l1, disabled: d1, _l0: lo1 },
+             UiNode::Button { node_id: n2, label: l2, disabled: d2, _l0: lo2 }) => {
+                n1 == n2 && l1 == l2 && d1 == d2 && lo1 == lo2
+            }
+            (UiNode::Input { node_id: n1, placeholder: ph1, value: v1, _l0: lo1 },
+             UiNode::Input { node_id: n2, placeholder: ph2, value: v2, _l0: lo2 }) => {
+                n1 == n2 && ph1 == ph2 && v1 == v2 && lo1 == lo2
+            }
+            (UiNode::Badge { label: l1, fill: f1, fg: fg1, _l0: lo1 },
+             UiNode::Badge { label: l2, fill: f2, fg: fg2, _l0: lo2 }) => {
+                l1 == l2 && f1 == f2 && fg1 == fg2 && lo1 == lo2
+            }
+            (UiNode::Dot { color: c1, size: s1, _l0: lo1 },
+             UiNode::Dot { color: c2, size: s2, _l0: lo2 }) => {
+                c1 == c2 && s1 == s2 && lo1 == lo2
+            }
+            _ => false,
+        }
     }
 }
 
@@ -3604,6 +3653,7 @@ mod ui_node_tests {
         let json = serde_json::to_string(&node).expect("serialize");
         assert!(json.contains(r#""type":"button""#), "button tag missing: {json}");
         assert!(json.contains(r#""node_id":"btn1""#), "node_id missing: {json}");
+        assert!(json.contains(r#""_l0""#), "_l0 field key missing from serialized JSON: {json}");
         let round_tripped: UiNode = serde_json::from_str(&json).expect("deserialize");
         match round_tripped {
             UiNode::Button { node_id, label, .. } => {
@@ -3657,5 +3707,30 @@ mod ui_node_tests {
         );
         // payload:None should be omitted (skip_serializing_if)
         assert!(!json.contains("payload"), "payload should be absent: {json}");
+
+        // Some(payload) case — payload key and value must appear.
+        let event_with_payload = PlexiEvent::ComponentEvent {
+            node_id: "inp1".into(),
+            event_type: "change".into(),
+            payload: Some(serde_json::json!({"value": "hello"})),
+        };
+        let json2 = serde_json::to_string(&event_with_payload).unwrap();
+        assert!(json2.contains(r#""payload""#), "payload Some case must include payload key: {json2}");
+        assert!(json2.contains(r#""value""#), "payload Some case must include value: {json2}");
+    }
+
+    #[test]
+    fn surface_node_round_trips_serde() {
+        // Surface is reserved for the GPU surface layer (A2). Verify it serializes
+        // and deserializes correctly so the variant is exercised and not silently dead.
+        let node = UiNode::Surface { id: "canvas".into() };
+        let json = serde_json::to_string(&node).expect("serialize");
+        assert!(json.contains(r#""type":"surface""#), "surface tag missing: {json}");
+        assert!(json.contains(r#""id":"canvas""#), "id missing: {json}");
+        let round_tripped: UiNode = serde_json::from_str(&json).expect("deserialize");
+        match round_tripped {
+            UiNode::Surface { id } => assert_eq!(id, "canvas"),
+            other => panic!("expected Surface, got {other:?}"),
+        }
     }
 }
