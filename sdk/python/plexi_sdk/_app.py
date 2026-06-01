@@ -304,6 +304,7 @@ class App:
     def on_timer(self, _ctx: RenderContext, _timer_id: str) -> "Coroutine[Any, Any, None] | None": return None
     def on_scroll(self, _ctx: RenderContext, _id: str, _offset_y: float) -> "Coroutine[Any, Any, None] | None": return None
     def on_scroll_delta(self, _ctx: RenderContext, _delta_y: float) -> "Coroutine[Any, Any, None] | None": return None
+    def on_component_event(self, _ctx: RenderContext, _node_id: str, _event_type: str, _payload) -> "Coroutine[Any, Any, None] | None": return None
     def on_list_select(self, _ctx: "RenderContext", _id: str, _index: int) -> "Coroutine[Any, Any, None] | None":
         """Called when a list_view selection changes via j/k/up/down."""
         return None
@@ -1035,6 +1036,15 @@ class App:
                 elif t == "pipe_message":
                     ctx = self._make_ctx()
                     self._dispatch_hook_task(self.on_pipe_message, ctx, ev.get("pipe_id", ""), ev.get("payload"))
+
+                elif t == "component_event":
+                    ctx = self._make_ctx()
+                    self._dispatch_hook_task(
+                        self.on_component_event, ctx,
+                        ev.get("node_id", ""),
+                        ev.get("event_type", ""),
+                        ev.get("payload"),
+                    )
 
                 elif t == "path_changed":
                     ctx = self._make_ctx()
