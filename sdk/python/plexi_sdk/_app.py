@@ -304,7 +304,7 @@ class App:
     def on_timer(self, _ctx: RenderContext, _timer_id: str) -> "Coroutine[Any, Any, None] | None": return None
     def on_scroll(self, _ctx: RenderContext, _id: str, _offset_y: float) -> "Coroutine[Any, Any, None] | None": return None
     def on_scroll_delta(self, _ctx: RenderContext, _delta_y: float) -> "Coroutine[Any, Any, None] | None": return None
-    def on_component_event(self, _ctx: RenderContext, _node_id: str, _event_type: str, _payload) -> "Coroutine[Any, Any, None] | None": return None
+    def on_component_event(self, _ctx: RenderContext, _node_id: str, _event_type: str, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
     def on_list_select(self, _ctx: "RenderContext", _id: str, _index: int) -> "Coroutine[Any, Any, None] | None":
         """Called when a list_view selection changes via j/k/up/down."""
         return None
