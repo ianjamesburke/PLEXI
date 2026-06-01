@@ -1,9 +1,15 @@
-"""Counter app demonstrating the component tree API (epic #1897 B3)."""
+"""Counter app demonstrating the component tree API (epic #1897 B3).
+
+Button/Input nodes are included for visual Style O verification only.
+ComponentEvent routing to Python apps is not yet in the SDK — button
+clicks and input changes have no effect until that is wired up.
+"""
 from plexi_sdk import App, State
 
 
 class CounterTree(App):
     count = State(0)
+    label = State("")
 
     def on_key(self, ctx, key, mods):
         if key in ("up", "="):
@@ -15,12 +21,44 @@ class CounterTree(App):
         ctx.render_tree({
             "type": "stack",
             "direction": "vertical",
+            "gap": 8.0,
             "children": [
                 {
                     "type": "text",
                     "text": f"Count: {self.count}",
                     "size": 18.0,
                     "color": "#cdd6f4",
+                },
+                {
+                    "type": "stack",
+                    "direction": "horizontal",
+                    "gap": 8.0,
+                    "children": [
+                        {
+                            "type": "button",
+                            "node_id": "decrement",
+                            "label": "−",
+                            "_l0": {"type": "text", "text": "−"},
+                        },
+                        {
+                            "type": "badge",
+                            "label": f"{self.count}",
+                            "_l0": {"type": "text", "text": f"{self.count}"},
+                        },
+                        {
+                            "type": "button",
+                            "node_id": "increment",
+                            "label": "+",
+                            "_l0": {"type": "text", "text": "+"},
+                        },
+                    ],
+                },
+                {
+                    "type": "input",
+                    "node_id": "label_input",
+                    "value": self.label,
+                    "placeholder": "Enter a label…",
+                    "_l0": {"type": "text", "text": self.label},
                 },
                 {
                     "type": "text",

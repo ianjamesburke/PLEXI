@@ -5,7 +5,7 @@
 //! `Input`, `Interactive`) fire `ComponentEvent`s back to the app via the
 //! returned `Vec<ComponentEventPayload>` (task A3).
 
-use egui::{Color32, Ui};
+use egui::Ui;
 
 use crate::app_protocol::{StackDirection, UiNode};
 use crate::theme::Colors;
@@ -171,11 +171,49 @@ pub(crate) fn render_component_tree(
         // ── L1 sugar ─────────────────────────────────────────────────────────
 
         UiNode::Button { node_id, label, disabled, .. } => {
-            let response = ui.add_enabled(!disabled, egui::Button::new(label.as_str()));
-            if response.clicked() {
-                log::info!(
-                    "render_components: Button click node_id={node_id}"
+            const BTN_PAD_V: f32 = 5.0;
+            let font_id = egui::FontId::proportional(crate::style::TEXT_BODY);
+            // Layout with placeholder color; painter.galley() overrides per-state below.
+            let galley = ui.fonts(|f| {
+                f.layout_no_wrap(label.clone(), font_id, egui::Color32::WHITE)
+            });
+            let text_w = galley.size().x;
+            let text_h = galley.size().y;
+            let btn_w = (text_w + crate::style::SPACE_SM * 2.0).max(48.0);
+            let btn_h = text_h + BTN_PAD_V * 2.0;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(btn_w, btn_h), egui::Sense::hover());
+            // Use raw PointerState — button_down/button_pressed read pointer_events directly
+            // and are not affected by the pane-wide Sense::click_and_drag() widget registered
+            // later at process_app/mod.rs:1676.
+            let pointer_pos =
+                ui.input(|i| i.pointer.interact_pos().or_else(|| i.pointer.hover_pos()));
+            let is_hovered = !*disabled && pointer_pos.map_or(false, |p| rect.contains(p));
+            let is_down =
+                is_hovered && ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
+            let is_just_pressed =
+                is_hovered && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
+            let painter = ui.painter();
+            let fill = if is_down { colors.accent } else { colors.bg_active };
+            painter.rect_filled(rect, crate::style::RADIUS_MD, fill);
+            if !*disabled {
+                let stroke_color = if is_hovered { colors.accent } else { colors.border };
+                painter.rect_stroke(
+                    rect,
+                    crate::style::RADIUS_MD,
+                    egui::Stroke::new(1.0, stroke_color),
+                    egui::StrokeKind::Inside,
                 );
+                if is_hovered {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+            }
+            let text_color =
+                if *disabled { colors.text_dim } else if is_down { colors.bg_active } else { colors.text_primary };
+            let text_pos =
+                egui::pos2(rect.center().x - text_w / 2.0, rect.center().y - text_h / 2.0);
+            painter.galley(text_pos, galley, text_color);
+            if is_just_pressed {
+                log::info!("render_components: Button press node_id={node_id}");
                 events.push(ComponentEventPayload {
                     node_id: node_id.clone(),
                     event_type: "click".into(),
@@ -186,9 +224,12 @@ pub(crate) fn render_component_tree(
 
         UiNode::Input { node_id, value, placeholder, .. } => {
             let mut val_buf = value.clone();
-            let response = ui.add(
-                egui::TextEdit::singleline(&mut val_buf)
-                    .hint_text(placeholder.as_str()),
+            let response = crate::widgets::styled_text_input(
+                ui,
+                &mut val_buf,
+                placeholder.as_str(),
+                egui::Id::new(node_id.as_str()),
+                colors,
             );
             if response.changed() {
                 log::debug!(
@@ -221,16 +262,24 @@ pub(crate) fn render_component_tree(
                 parse_color(fill).unwrap_or(colors.accent)
             };
             let fg_color = if fg.is_empty() {
-                Color32::from_rgb(0x1e, 0x1e, 0x2e)
+                colors.text_primary
             } else {
-                parse_color(fg).unwrap_or(Color32::from_rgb(0x1e, 0x1e, 0x2e))
+                parse_color(fg).unwrap_or(colors.text_primary)
             };
             egui::Frame::new()
                 .fill(fill_color)
-                .corner_radius(egui::CornerRadius::same(4))
-                .inner_margin(egui::Margin::symmetric(6, 2))
+                .stroke(egui::Stroke::new(1.0, colors.border))
+                .corner_radius(egui::CornerRadius::same(crate::style::RADIUS_BADGE as u8))
+                .inner_margin(egui::Margin::symmetric(
+                    crate::style::BADGE_PAD_H as i8,
+                    crate::style::BADGE_PAD_V as i8,
+                ))
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new(label.as_str()).color(fg_color).size(12.0));
+                    ui.label(
+                        egui::RichText::new(label.as_str())
+                            .color(fg_color)
+                            .size(crate::style::TEXT_CAPTION),
+                    );
                 });
         }
 
