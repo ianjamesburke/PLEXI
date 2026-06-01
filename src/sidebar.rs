@@ -121,21 +121,41 @@ impl PlexiApp {
             // Build pane rows for the active context — renders inside ContextItem scope.
             let pane_rows: Vec<PaneRowItem> = if is_active && pane_count > 0 {
                 pane_ids.iter().enumerate().map(|(idx, &pane_id)| {
-                    let label = self.windows.iter()
+                    let pane_opt = self.windows.iter()
                         .filter(|w| w.context_id == ctx_id)
-                        .find_map(|w| w.panes.get(&pane_id))
-                        .map(|p| match p {
-                            crate::pane::Pane::Terminal(t) => {
-                                t.name.clone().unwrap_or_else(|| format!("terminal {}", idx + 1))
-                            }
-                            crate::pane::Pane::App(a) => a.name.clone(),
-                            crate::pane::Pane::Portal(_) => "portal".to_string(),
-                        })
-                        .unwrap_or_else(|| format!("pane {}", idx + 1));
+                        .find_map(|w| w.panes.get(&pane_id));
+                    let (label, kind, status) = match pane_opt {
+                        Some(crate::pane::Pane::Terminal(t)) => (
+                            t.name.clone().unwrap_or_else(|| format!("terminal {}", idx + 1)),
+                            "Terminal".to_string(),
+                            "running".to_string(),
+                        ),
+                        Some(crate::pane::Pane::App(a)) => {
+                            use crate::process_app::LifecycleState;
+                            let st = match a.runtime.lifecycle_state() {
+                                LifecycleState::Running => "running",
+                                LifecycleState::Booting => "idle",
+                                LifecycleState::Hung | LifecycleState::Crashed | LifecycleState::ProtocolError => "crashed",
+                            };
+                            (a.name.clone(), "App".to_string(), st.to_string())
+                        }
+                        Some(crate::pane::Pane::Portal(_)) => (
+                            "portal".to_string(),
+                            "Portal".to_string(),
+                            "idle".to_string(),
+                        ),
+                        None => (
+                            format!("pane {}", idx + 1),
+                            "Terminal".to_string(),
+                            "idle".to_string(),
+                        ),
+                    };
                     PaneRowItem {
                         pane_id,
                         label,
                         is_focused: focused_pane_idx == Some(idx),
+                        kind,
+                        status,
                     }
                 }).collect()
             } else {
