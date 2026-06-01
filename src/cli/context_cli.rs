@@ -2,35 +2,36 @@ use super::{send_to_socket};
 use super::validate::resolve_path;
 
 pub fn context_new_cli(name: Option<&str>, path: Option<&str>, parent: Option<&str>) -> i32 {
-    let root = match resolve_path(path) {
-        Ok(p) => p,
-        Err(e) => { eprintln!("{e}"); return 1; }
+    // Only resolve root when the user explicitly passed a path argument.
+    // Without an explicit path, we let the host use the focused pane's cwd.
+    let explicit_root = match path {
+        Some(_) => match resolve_path(path) {
+            Ok(p) => Some(p),
+            Err(e) => { eprintln!("{e}"); return 1; }
+        },
+        None => None,
     };
-    // Default parent: current context when inside a Plexi pane and --parent omitted.
-    let resolved_parent = parent
+    // Only pass parent_name when the user explicitly provided --parent.
+    // Auto-resolving from PLEXI_CONTEXT_NAME would route to new_child_context
+    // (which always creates a fresh terminal), bypassing the wrap behavior.
+    let explicit_parent = parent
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            std::env::var("PLEXI_CONTEXT_NAME")
-                .ok()
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-        });
+        .map(|s| s.to_string());
     log::info!(
-        "context_new_cli: name={:?} root={} parent={:?}",
+        "context_new_cli: name={:?} root={:?} parent={:?}",
         name,
-        root.display(),
-        resolved_parent.as_deref()
+        explicit_root.as_ref().map(|p: &std::path::PathBuf| p.display().to_string()),
+        explicit_parent.as_deref()
     );
-    let mut payload = serde_json::json!({
-        "type": "create_context",
-        "root": root,
-    });
+    let mut payload = serde_json::json!({ "type": "create_context" });
+    if let Some(r) = explicit_root {
+        payload["root"] = serde_json::Value::String(r.to_string_lossy().into_owned());
+    }
     if let Some(n) = name {
         payload["name"] = serde_json::Value::String(n.to_string());
     }
-    if let Some(p) = resolved_parent {
+    if let Some(p) = explicit_parent {
         payload["parent_name"] = serde_json::Value::String(p);
     }
     send_to_socket(payload)
