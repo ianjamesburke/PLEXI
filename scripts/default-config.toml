@@ -3,6 +3,8 @@
 # ║  Changes take effect on next launch.                        ║
 # ╚══════════════════════════════════════════════════════════════╝
 
+config_version = 1
+
 font_size = 14.0
 
 # Gap between panes in pixels. Default: 4. Range: 0–20.

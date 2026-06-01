@@ -53,6 +53,10 @@ Each build channel is a **fully isolated instance** — its own binary, app bund
 
 **PR builds** are ephemeral isolated instances installed by `just pr-install <N>` from inside the feature worktree. They never capture the bare `plexi` symlink. Remove them after merge with `just pr-clean <N>`.
 
+**Alpha config stays default.** `~/.plexi-alpha/config.toml` is reset to the default template on every `just install`. Never customize it — use beta or main for personal config. PR builds seed from the alpha config, so a customized alpha would pollute every PR channel.
+
+**Beta config is the staging ground.** `~/.plexi-beta/config.toml` is your personal staging config — customize it freely for migration testing and advanced feature exploration. It is NOT reset on install.
+
 **Workspace** (`.plexi/workspace.toml`) is a separate per-project concept — the directory a user initializes with `plexi workspace init` inside their project root. It is not the same as the profile dir. Never run `workspace init` from `~` — it would create `~/.plexi/workspace.toml`, colliding with the main channel profile dir.
 
 **When writing test instructions for a PR build:** use `plexi-pr-<N>` (not `plexi`), and if the feature requires workspace context, direct the user to `cd` into a real project dir first.

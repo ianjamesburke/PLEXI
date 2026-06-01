@@ -33,7 +33,7 @@ impl std::fmt::Display for ConfigDiagnostic {
 }
 
 const KNOWN_TOP_LEVEL: &[&str] = &[
-    "font_size", "theme_preset", "theme", "beta", "log",
+    "config_version", "font_size", "theme_preset", "theme", "beta", "log",
     "notifications", "ai", "confirm_quit", "confirm_close",
     "keybindings", "quick_note", "focus_history_depth", "agents", "cli",
     "pane_gap", "pane_title_font_size",
@@ -272,6 +272,7 @@ impl KeybindingsConfig {
 
 #[derive(Deserialize, Default, Clone)]
 pub struct PlexiConfig {
+    pub config_version: Option<u32>,
     pub font_size: Option<f32>,
     /// Inter-pane gap width in pixels. Default: 4.0. Clamped to [0.0, 20.0].
     pub pane_gap: Option<f32>,
@@ -680,6 +681,72 @@ pub fn build_pythonpath(bundle_sdk: Option<&std::path::Path>) -> String {
 
 pub const CONFIG_TEMPLATE: &str = include_str!("../scripts/default-config.toml");
 
+pub const CURRENT_CONFIG_VERSION: u32 = 1;
+
+/// Migrates an existing config file forward to `CURRENT_CONFIG_VERSION`.
+///
+/// Uses line-based text manipulation to preserve comments. Each version bump
+/// adds a migration arm keyed by the target version. After all migrations run,
+/// the `config_version` line is written back so subsequent calls are no-ops.
+pub fn migrate_config(path: &Path) {
+    let data = match std::fs::read_to_string(path) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            log::warn!("config migrate: failed to read {}: {e}", path.display());
+            return;
+        }
+    };
+
+    let current_version = toml::from_str::<PlexiConfig>(&data)
+        .ok()
+        .and_then(|c| c.config_version)
+        .unwrap_or(0);
+
+    if current_version >= CURRENT_CONFIG_VERSION {
+        return;
+    }
+
+    log::info!(
+        "config migrate: {} at v{current_version}, migrating to v{CURRENT_CONFIG_VERSION}",
+        path.display()
+    );
+
+    let mut lines: Vec<String> = data.lines().map(str::to_owned).collect();
+    let mut version = current_version;
+
+    // v0 → v1: add config_version field after the opening comment header
+    if version < 1 {
+        if !lines.iter().any(|l| l.starts_with("config_version")) {
+            let insert_at = lines
+                .iter()
+                .position(|l| !l.starts_with('#') && !l.trim().is_empty())
+                .unwrap_or(0);
+            lines.insert(insert_at, String::new());
+            lines.insert(insert_at, "config_version = 1".to_string());
+        } else {
+            for l in lines.iter_mut() {
+                if l.starts_with("config_version") {
+                    *l = "config_version = 1".to_string();
+                    break;
+                }
+            }
+        }
+        version = 1;
+    }
+
+    let trailing_newline = data.ends_with('\n');
+    let mut updated = lines.join("\n");
+    if trailing_newline {
+        updated.push('\n');
+    }
+
+    match std::fs::write(path, &updated) {
+        Ok(()) => log::info!("config migrate: {} migrated to v{version}", path.display()),
+        Err(e) => log::error!("config migrate: failed to write {}: {e}", path.display()),
+    }
+}
+
 /// Ensures the config file exists, creating it from the default template if not.
 /// Returns the config file path.
 pub fn ensure_config_exists() -> std::path::PathBuf {
@@ -755,6 +822,7 @@ impl PlexiConfig {
                 Err(e) => log::warn!("config: could not write default config to {path:?}: {e}"),
             }
         }
+        migrate_config(&path);
         Self::load_from_path(&path).unwrap_or_default()
     }
 
@@ -1276,6 +1344,46 @@ mod tests {
             merged.theme.as_ref().and_then(|t| t.bg_darkest.clone()),
             Some("#000000".to_string())
         );
+    }
+
+    #[test]
+    fn migrate_config_adds_version_to_v0() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "font_size = 14.0\n").unwrap();
+        migrate_config(&path);
+        let result = fs::read_to_string(&path).unwrap();
+        assert!(
+            result.contains("config_version = 1"),
+            "version should be added: {result}"
+        );
+        assert!(
+            result.contains("font_size = 14.0"),
+            "font_size should be preserved: {result}"
+        );
+    }
+
+    #[test]
+    fn migrate_config_no_op_when_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let content = "config_version = 1\nfont_size = 14.0\n";
+        fs::write(&path, content).unwrap();
+        migrate_config(&path);
+        let result = fs::read_to_string(&path).unwrap();
+        assert_eq!(result, content, "should not modify an already-current config");
+    }
+
+    #[test]
+    fn migrate_config_preserves_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let content = "# My comment\nfont_size = 14.0\n";
+        fs::write(&path, content).unwrap();
+        migrate_config(&path);
+        let result = fs::read_to_string(&path).unwrap();
+        assert!(result.contains("# My comment"), "comments should be preserved: {result}");
+        assert!(result.contains("config_version = 1"), "version should be added: {result}");
     }
 
 }

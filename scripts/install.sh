@@ -159,7 +159,13 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 CONFIG="$profile_dir/config.toml"
-if [ ! -f "$CONFIG" ]; then
+if [[ "$channel" == "alpha" ]]; then
+  # Alpha always runs with the default template — never user-customized.
+  # PR builds seed their config from alpha, so a custom alpha would
+  # pollute every PR channel. Reset on every install.
+  cat "$SCRIPT_DIR/default-config.toml" > "$CONFIG"
+  echo "config: reset to defaults (alpha channel stays default)"
+elif [ ! -f "$CONFIG" ]; then
   ALPHA_CONFIG="$HOME/.plexi-alpha/config.toml"
   if [[ "$channel" == pr-* ]] && [ -f "$ALPHA_CONFIG" ]; then
     cp "$ALPHA_CONFIG" "$CONFIG"
