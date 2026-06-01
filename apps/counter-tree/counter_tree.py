@@ -10,7 +10,7 @@ class CounterTree(App):
     count = State(0)
     label = State("")
 
-    def on_component_event(self, ctx, node_id, event_type, payload):
+    def on_component_event(self, ctx, node_id, event_type, _payload):
         if event_type == "click":
             if node_id == "increment":
                 self.count += 1
@@ -18,7 +18,7 @@ class CounterTree(App):
                 self.count -= 1
         ctx.info(f"component_event node_id={node_id!r} event_type={event_type!r}")
 
-    def on_key(self, ctx, key, mods):
+    def on_key(self, _ctx, key, _mods):
         if key in ("up", "="):
             self.count += 1
         elif key in ("down", "-"):
