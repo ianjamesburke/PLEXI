@@ -294,6 +294,7 @@ impl PlexiApp {
         let new_ctx_idx = self.router.len() - 1;
         self.renaming_window = Some(new_ctx_idx);
         self.rename_buffer = self.router.get(new_ctx_idx).name.clone();
+        self.save_workspace();
         log::info!(
             "new_context_empty: emitting ContextCreated context_id={ctx_id} name={}",
             self.rename_buffer
