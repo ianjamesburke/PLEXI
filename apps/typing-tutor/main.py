@@ -121,7 +121,7 @@ class _LevelGrid(Component):
             ctx.rect(cx + card_w - bw, cy, bw, card_h, fill=border)
 
             text_color = ctx.theme.fg if unlocked else ctx.theme.muted
-            num_color = ctx.theme.accent if selected else (ctx.theme.accent if unlocked else ctx.theme.muted)
+            num_color = ctx.theme.accent if selected or unlocked else ctx.theme.muted
             ctx.text(cx + 10, cy + 10, f"{i + 1}", size=TEXT_BODY,
                      color=num_color, bold=True)
             ctx.text(cx + 10, cy + 28, level.name, size=TEXT_HINT, color=text_color)

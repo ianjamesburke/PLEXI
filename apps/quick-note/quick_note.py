@@ -143,7 +143,7 @@ class QuickNoteApp(App):
         if self._mode == "compose":
             cy = y
             for i, line in enumerate(self._lines):
-                color = ctx.theme.fg if i == 0 else (ctx.theme.muted if i > 0 else ctx.theme.fg)
+                color = ctx.theme.fg if i == 0 else ctx.theme.muted
                 size = 18.0 if i == 0 else BODY
                 cursor = "▌" if i == self._cursor_line else ""
                 ctx.text(x, cy, line + cursor, size=size, color=color)
