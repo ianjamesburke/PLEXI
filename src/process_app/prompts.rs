@@ -3,11 +3,13 @@
 use crate::app_permissions::AppPermissions;
 use crate::app_protocol::PlexiEvent;
 use crate::event_log::{self, HostEvent};
+use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest};
 use crate::workspace_secrets::SecretStore;
 use std::collections::VecDeque;
 use std::path::Path;
+use std::sync::{mpsc::Sender, Arc};
 
-use super::PendingPrompt;
+use super::{DeferredAiQuery, PendingPrompt};
 
 /// Persist a granted secret to the keychain so the user is not prompted again.
 ///
@@ -91,6 +93,10 @@ pub(crate) fn show_prompt_modal(
     _config_dir: &Path,
     permission_store: &mut crate::app_permissions::PermissionStore,
     colors: &crate::theme::Colors,
+    deferred_ai_queries: &mut VecDeque<DeferredAiQuery>,
+    ai_broker: Arc<dyn AiBroker>,
+    http_tx: Sender<PlexiEvent>,
+    pane_id: u64,
 ) {
     let Some(prompt) = pending_prompts.front() else {
         return;
@@ -268,6 +274,70 @@ pub(crate) fn show_prompt_modal(
                     request_id,
                     granted: actually_granted,
                 });
+                // Drain any AiQuery requests that were withheld pending this consent.
+                if capability == "ai.query" && !deferred_ai_queries.is_empty() {
+                    if actually_granted {
+                        log::info!(
+                            "prompts: ai.query granted for {} — re-dispatching {} deferred queries",
+                            type_id,
+                            deferred_ai_queries.len()
+                        );
+                        while let Some(q) = deferred_ai_queries.pop_front() {
+                            let broker = Arc::clone(&ai_broker);
+                            let app_id = type_id.to_string();
+                            let tx = http_tx.clone();
+                            let ws_root = workspace_root.to_path_buf();
+                            let open_panes = crate::plexi_ai::broker::get_pane_snapshot();
+                            let tool_dispatcher = std::sync::Arc::new(
+                                crate::plexi_ai::tool_dispatch::ToolDispatcher::from_registry(
+                                    pane_id,
+                                    type_id.to_string(),
+                                    ws_root.clone(),
+                                ),
+                            );
+                            std::thread::Builder::new()
+                                .name(format!("ai-query-deferred-{app_id}-{}", q.request_id))
+                                .spawn(move || {
+                                    let resp = broker.dispatch(AiBrokerRequest {
+                                        app_id,
+                                        model_tier: q.model_tier,
+                                        system: q.system,
+                                        messages: q.messages,
+                                        tools: q.tools,
+                                        workspace_root: Some(ws_root),
+                                        open_panes,
+                                        tool_dispatcher: Some(tool_dispatcher),
+                                    });
+                                    let event = PlexiEvent::AiResponse {
+                                        request_id: q.request_id,
+                                        content: resp.content,
+                                        tokens_in: resp.tokens_in,
+                                        tokens_out: resp.tokens_out,
+                                        error: resp.error,
+                                    };
+                                    if let Err(e) = tx.send(event) {
+                                        log::warn!("ai broker: deferred response receiver dropped: {e}");
+                                    }
+                                })
+                                .expect("failed to spawn deferred ai-query thread");
+                        }
+                    } else {
+                        log::info!(
+                            "prompts: ai.query denied for {} — erroring {} deferred queries",
+                            type_id,
+                            deferred_ai_queries.len()
+                        );
+                        while let Some(q) = deferred_ai_queries.pop_front() {
+                            outbound_events.push_back(PlexiEvent::AiResponse {
+                                request_id: q.request_id,
+                                content: None,
+                                tokens_in: 0,
+                                tokens_out: 0,
+                                error: Some("capability denied by user".to_string()),
+                            });
+                        }
+                    }
+                }
             }
             Some(PendingPrompt::Secret { key }) => {
                 let value = if actually_granted && !secret_input_buf.is_empty() {

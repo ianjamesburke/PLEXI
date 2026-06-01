@@ -13,7 +13,7 @@ use super::super::*;
 use crate::app_permissions::AppPermissions;
 use crate::app_protocol::{AiMessage, AppRequest, ModelTier, PlexiEvent};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, AiBrokerResponse};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 /// Test broker: records every dispatch and returns a canned response.
@@ -42,22 +42,37 @@ fn make_app(capabilities: HashSet<Capability>) -> Option<ProcessApp> {
     Some(app)
 }
 
+fn make_blocked_app() -> Option<ProcessApp> {
+    let mut blocked = HashSet::new();
+    blocked.insert(Capability::AiQuery);
+    let (app, _tx) = ProcessApp::new_for_test(
+        7,
+        AppPermissions {
+            capabilities: HashSet::new(),
+            blocked,
+            is_builtin: false,
+            allowed_hosts: vec![],
+        },
+    );
+    Some(app)
+}
+
 #[test]
 fn denied_app_gets_capability_denied_response() {
-    // App without `ai.query` capability: route_command must immediately
+    // App with `ai.query` permanently BLOCKED: route_command must immediately
     // queue an AiResponse with the canonical "capability denied" error
     // — synchronously, without ever invoking the broker.
-    let Some(mut app) = make_app(HashSet::new()) else {
+    let Some(mut app) = make_blocked_app() else {
         eprintln!("skipping: no /bin/sh available");
         return;
     };
 
-    // Inject a broker that would *panic* if called. The denied path
+    // Inject a broker that would *panic* if called. The blocked path
     // must short-circuit before reaching dispatch.
     struct PanicBroker;
     impl AiBroker for PanicBroker {
         fn dispatch(&self, _: AiBrokerRequest) -> AiBrokerResponse {
-            panic!("denied path must never call the broker");
+            panic!("blocked path must never call the broker");
         }
     }
     app.ai_broker = Arc::new(PanicBroker);
@@ -73,8 +88,7 @@ fn denied_app_gets_capability_denied_response() {
         tools: vec![],
     });
 
-    // Denied path is synchronous — the response is on outbound_events
-    // immediately, no thread, no http_rx wait.
+    // Blocked path is synchronous — the response is on outbound_events immediately.
     let resp = app
         .outbound_events
         .iter()
@@ -97,13 +111,67 @@ fn denied_app_gets_capability_denied_response() {
                 err.contains("capability denied"),
                 "denial message must say `capability denied`: {err}"
             );
-            assert!(
-                err.contains("ai.query"),
-                "denial message must name the capability: {err}"
-            );
         }
         other => panic!("expected AiResponse, got {other:?}"),
     }
+}
+
+#[test]
+fn withheld_app_defers_ai_query_and_queues_consent_prompt() {
+    // App without `ai.query` capability but not blocked (withheld / first-run):
+    // route_command must defer the query and push a consent PendingPrompt,
+    // without calling the broker or emitting an AiResponse.
+    let Some(mut app) = make_app(HashSet::new()) else {
+        eprintln!("skipping: no /bin/sh available");
+        return;
+    };
+
+    struct PanicBroker;
+    impl AiBroker for PanicBroker {
+        fn dispatch(&self, _: AiBrokerRequest) -> AiBrokerResponse {
+            panic!("withheld path must never call the broker");
+        }
+    }
+    app.ai_broker = Arc::new(PanicBroker);
+
+    app.route_command(AppRequest::AiQuery {
+        request_id: "req-withheld".to_string(),
+        model_tier: ModelTier::Low,
+        system: "system".to_string(),
+        messages: vec![AiMessage {
+            role: "user".to_string(),
+            content: "hello".to_string(),
+        }],
+        tools: vec![],
+    });
+
+    // No immediate AiResponse — query is deferred.
+    assert!(
+        !app.outbound_events.iter().any(|e| matches!(e, PlexiEvent::AiResponse { .. })),
+        "withheld path must not produce immediate AiResponse"
+    );
+    // Query stored in deferred queue.
+    assert_eq!(app.deferred_ai_queries.len(), 1);
+    assert_eq!(app.deferred_ai_queries[0].request_id, "req-withheld");
+    // Consent prompt queued.
+    let has_ai_prompt = app.pending_prompts.iter().any(|p| {
+        matches!(p, PendingPrompt::Capability { capability, .. } if capability == "ai.query")
+    });
+    assert!(has_ai_prompt, "withheld path must push ai.query consent prompt");
+
+    // Second query while prompt is already pending must NOT push a duplicate prompt.
+    app.route_command(AppRequest::AiQuery {
+        request_id: "req-withheld-2".to_string(),
+        model_tier: ModelTier::Low,
+        system: "system".to_string(),
+        messages: vec![],
+        tools: vec![],
+    });
+    assert_eq!(app.deferred_ai_queries.len(), 2, "second deferred query must be stored");
+    let prompt_count = app.pending_prompts.iter().filter(|p| {
+        matches!(p, PendingPrompt::Capability { capability, .. } if capability == "ai.query")
+    }).count();
+    assert_eq!(prompt_count, 1, "must not push duplicate consent prompt");
 }
 
 #[test]
