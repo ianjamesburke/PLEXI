@@ -462,6 +462,11 @@ pub struct PlexiApp {
     pub(crate) focus_started_at: Option<std::time::Instant>,
     /// Last observed system theme for auto-switching catppuccin variants (#1776).
     pub(crate) last_system_theme: Option<egui::Theme>,
+    /// App commands held while a modal overlay owns keyboard input. Released and
+    /// dispatched on the first frame where `input_captured_by_overlay()` is false.
+    /// Only overlay-unsafe side effects are held here; safe commands (ShowNotification,
+    /// pipes, queries) are dispatched immediately even during overlay ownership.
+    pub(crate) overlay_held_cmds: Vec<crate::app_trait::AppCommand>,
 }
 
 #[cfg(test)]
@@ -993,6 +998,7 @@ impl PlexiApp {
                     last_logged_focus: None,
                     focus_started_at: None,
                     last_system_theme: None,
+                    overlay_held_cmds: Vec::new(),
 
                 };
                 app.apply_context_transition_effects();
@@ -1169,6 +1175,7 @@ impl PlexiApp {
             last_logged_focus: None,
             focus_started_at: None,
             last_system_theme: None,
+            overlay_held_cmds: Vec::new(),
         };
         app.apply_context_transition_effects();
         app
@@ -1341,6 +1348,7 @@ impl PlexiApp {
             last_logged_focus: None,
             focus_started_at: None,
             last_system_theme: None,
+            overlay_held_cmds: Vec::new(),
         }, pane_ipc_tx)
     }
 
@@ -1430,6 +1438,40 @@ impl PlexiApp {
             .find(|c| c.context_id == context_id)
             .and_then(|c| c.description.clone())
             .unwrap_or_default()
+    }
+}
+
+/// Returns true for app commands that must NOT execute while a modal overlay
+/// owns keyboard input. Safe commands (ShowNotification, pipes, queries) always
+/// dispatch immediately. Unsafe commands (layout/terminal mutations, focus changes)
+/// are held in `overlay_held_cmds` and released on the next modal-free frame.
+fn is_overlay_unsafe_cmd(cmd: &crate::app_trait::AppCommand) -> bool {
+    use crate::app_trait::AppCommand;
+    match cmd {
+        AppCommand::SpawnApp { .. }
+        | AppCommand::SpawnPane { .. }
+        | AppCommand::RequestLinkedTerminal { .. }
+        | AppCommand::RunInLinkedTerminal { .. }
+        | AppCommand::InsertPathToken { .. }
+        | AppCommand::OpenArtifact { .. } => true,
+        AppCommand::DeliverNotifyAction { host_action, .. } => {
+            host_action.as_deref().map(|a| a.starts_with("pane_focus:")).unwrap_or(false)
+        }
+        _ => false,
+    }
+}
+
+fn overlay_unsafe_cmd_name(cmd: &crate::app_trait::AppCommand) -> &'static str {
+    use crate::app_trait::AppCommand;
+    match cmd {
+        AppCommand::SpawnApp { .. } => "SpawnApp",
+        AppCommand::SpawnPane { .. } => "SpawnPane",
+        AppCommand::RequestLinkedTerminal { .. } => "RequestLinkedTerminal",
+        AppCommand::RunInLinkedTerminal { .. } => "RunInLinkedTerminal",
+        AppCommand::InsertPathToken { .. } => "InsertPathToken",
+        AppCommand::OpenArtifact { .. } => "OpenArtifact",
+        AppCommand::DeliverNotifyAction { .. } => "DeliverNotifyAction(pane_focus)",
+        _ => "unknown",
     }
 }
 
@@ -1545,7 +1587,18 @@ impl eframe::App for PlexiApp {
         // while a modal holds focus. Background apps emitting notifications
         // must reach the queue *now*, not be buffered until the modal
         // closes (which caused the "ghost queue appears on reopen" bug).
-        let deferred_app_cmds = self.drain_all_app_commands();
+        let fresh_cmds = self.drain_all_app_commands();
+        // When the overlay releases, prepend any held unsafe commands so they
+        // execute before new commands this frame (FIFO order preserved).
+        let deferred_app_cmds: Vec<_> = if !self.input_captured_by_overlay() && !self.overlay_held_cmds.is_empty() {
+            let released = std::mem::take(&mut self.overlay_held_cmds);
+            log::info!("app_cmd: releasing {} held command(s) — overlay released", released.len());
+            let mut all = released;
+            all.extend(fresh_cmds);
+            all
+        } else {
+            fresh_cmds
+        };
         self.sync_app_cwd();
 
         // Dispatch any DeliverNotifyAction commands the early modal render
@@ -1555,6 +1608,18 @@ impl eframe::App for PlexiApp {
         // Handle deferred app commands returned from dispatch_app_key_events.
         for cmd in deferred_app_cmds {
             use crate::app_trait::AppCommand;
+            // Hold overlay-unsafe side effects (layout/terminal mutations, focus changes)
+            // while a modal owns input. Safe commands (ShowNotification, pipes, queries)
+            // dispatch immediately. Released on the next modal-free frame.
+            if self.input_captured_by_overlay() && is_overlay_unsafe_cmd(&cmd) {
+                log::info!(
+                    "app_cmd: deferring {} — overlay active ({} total held)",
+                    overlay_unsafe_cmd_name(&cmd),
+                    self.overlay_held_cmds.len() + 1,
+                );
+                self.overlay_held_cmds.push(cmd);
+                continue;
+            }
             match cmd {
                 AppCommand::SpawnApp {
                     type_id,
