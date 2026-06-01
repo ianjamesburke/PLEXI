@@ -5,6 +5,12 @@
 
 font_size = 14.0
 
+# Gap between panes in pixels. Default: 4. Range: 0–20.
+# pane_gap = 4
+
+# Font size for the pane name bar (shown when a pane is renamed). Default: 11. Range: 6–32.
+# pane_title_font_size = 11
+
 # ── Theme ──────────────────────────────────────────────────────
 # Pick a preset OR customize individual colors below.
 # Presets: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, gruvbox-dark, nord, solarized-dark, solarized-light
