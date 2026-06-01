@@ -4,7 +4,7 @@
 import time
 from enum import Enum
 
-from plexi_sdk import App, RenderContext
+from plexi_sdk import App, RenderContext, dim
 from plexi_sdk.ui import (
     Column, AppBar, Card, Label, Spacer, FooterKeys, Component,
     SPACE_SM, SPACE_XS,
@@ -112,7 +112,7 @@ class _LevelGrid(Component):
             elif unlocked:
                 bg, border, bw = ctx.theme.surface, ctx.theme.highlight, 1.0
             else:
-                bg, border, bw = ctx.theme.bg, ctx.theme.muted + "55", 1.0
+                bg, border, bw = ctx.theme.bg, dim(ctx.theme.muted, 85), 1.0
 
             ctx.rect(cx, cy, card_w, card_h, fill=bg, radius=RADIUS_MD)
             ctx.rect(cx, cy, card_w, bw, fill=border)
@@ -166,7 +166,7 @@ class _CharGrid(Component):
 
             if i < app._typed:
                 if i in app._errors:
-                    ctx.rect(cx - 1, cy - 1, cell_w, cell_h, fill=ctx.theme.danger + "44", radius=2.0)
+                    ctx.rect(cx - 1, cy - 1, cell_w, cell_h, fill=dim(ctx.theme.danger, 68), radius=2.0)
                     ctx.text(cx, cy, ch, size=char_size, color=ctx.theme.danger, monospace=True)
                 else:
                     ctx.text(cx, cy, ch, size=char_size, color=ctx.theme.success, monospace=True)
