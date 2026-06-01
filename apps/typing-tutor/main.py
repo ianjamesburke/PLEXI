@@ -4,13 +4,12 @@
 import time
 from enum import Enum
 
-from plexi_sdk import App, RenderContext
+from plexi_sdk import App, RenderContext, dim
 from plexi_sdk.ui import (
     Column, AppBar, Card, Label, Spacer, FooterKeys, Component,
     SPACE_SM, SPACE_XS,
     TEXT_HINT, TEXT_CAPTION, TEXT_BODY,
     RADIUS_MD,
-    BG, SURFACE, HIGHLIGHT, ACCENT, MUTED, FG, RED, GREEN,
 )
 
 from levels import LEVELS
@@ -109,11 +108,11 @@ class _LevelGrid(Component):
             stars = app._level_stars[i]
 
             if selected:
-                bg, border, bw = SURFACE, ACCENT, 2.0
+                bg, border, bw = ctx.theme.surface, ctx.theme.accent, 2.0
             elif unlocked:
-                bg, border, bw = SURFACE, HIGHLIGHT, 1.0
+                bg, border, bw = ctx.theme.surface, ctx.theme.highlight, 1.0
             else:
-                bg, border, bw = BG, MUTED + "55", 1.0
+                bg, border, bw = ctx.theme.bg, dim(ctx.theme.muted, 85), 1.0
 
             ctx.rect(cx, cy, card_w, card_h, fill=bg, radius=RADIUS_MD)
             ctx.rect(cx, cy, card_w, bw, fill=border)
@@ -121,19 +120,19 @@ class _LevelGrid(Component):
             ctx.rect(cx, cy, bw, card_h, fill=border)
             ctx.rect(cx + card_w - bw, cy, bw, card_h, fill=border)
 
-            text_color = FG if unlocked else MUTED
-            num_color = ACCENT if selected else (ACCENT if unlocked else MUTED)
+            text_color = ctx.theme.fg if unlocked else ctx.theme.muted
+            num_color = ctx.theme.accent if selected or unlocked else ctx.theme.muted
             ctx.text(cx + 10, cy + 10, f"{i + 1}", size=TEXT_BODY,
                      color=num_color, bold=True)
             ctx.text(cx + 10, cy + 28, level.name, size=TEXT_HINT, color=text_color)
             ctx.text(cx + 10, cy + card_h - 20,
                      "★" * stars + "☆" * (5 - stars),
-                     size=TEXT_HINT, color=ACCENT if stars > 0 else MUTED)
+                     size=TEXT_HINT, color=ctx.theme.accent if stars > 0 else ctx.theme.muted)
 
             if not unlocked:
                 ctx.rect(cx, cy, card_w, card_h, fill="#00000066", radius=RADIUS_MD)
                 ctx.text(cx + card_w / 2, cy + card_h / 2,
-                         f"🔒 Need {level.stars_needed}★", size=TEXT_HINT, color=MUTED,
+                         f"🔒 Need {level.stars_needed}★", size=TEXT_HINT, color=ctx.theme.muted,
                          align="center")
 
 
@@ -167,15 +166,15 @@ class _CharGrid(Component):
 
             if i < app._typed:
                 if i in app._errors:
-                    ctx.rect(cx - 1, cy - 1, cell_w, cell_h, fill=RED + "44", radius=2.0)
-                    ctx.text(cx, cy, ch, size=char_size, color=RED, monospace=True)
+                    ctx.rect(cx - 1, cy - 1, cell_w, cell_h, fill=dim(ctx.theme.danger, 68), radius=2.0)
+                    ctx.text(cx, cy, ch, size=char_size, color=ctx.theme.danger, monospace=True)
                 else:
-                    ctx.text(cx, cy, ch, size=char_size, color=GREEN, monospace=True)
+                    ctx.text(cx, cy, ch, size=char_size, color=ctx.theme.success, monospace=True)
             elif i == app._typed:
-                ctx.rect(cx - 1, cy - 1, cell_w, cell_h, fill=ACCENT, radius=2.0)
-                ctx.text(cx, cy, ch, size=char_size, color=BG, monospace=True)
+                ctx.rect(cx - 1, cy - 1, cell_w, cell_h, fill=ctx.theme.accent, radius=2.0)
+                ctx.text(cx, cy, ch, size=char_size, color=ctx.theme.bg, monospace=True)
             else:
-                ctx.text(cx, cy, ch, size=char_size, color=MUTED, monospace=True)
+                ctx.text(cx, cy, ch, size=char_size, color=ctx.theme.muted, monospace=True)
 
 
 class _TimerBar(Component):
@@ -195,15 +194,15 @@ class _TimerBar(Component):
         elapsed = time.time() - app._start_time
         time_remaining = max(0.0, level.time_sec - elapsed)
 
-        timer_color = RED if time_remaining < 10 else FG
+        timer_color = ctx.theme.danger if time_remaining < 10 else ctx.theme.fg
         ctx.text(x + SPACE_SM, y + SPACE_XS,
                  f"Time: {time_remaining:.0f}s", size=TEXT_CAPTION, color=timer_color)
 
         bar_y = y + TEXT_CAPTION + SPACE_XS * 2
         bar_w = w - SPACE_SM * 2
-        ctx.rect(x + SPACE_SM, bar_y, bar_w, 8.0, fill=SURFACE, radius=4.0)
+        ctx.rect(x + SPACE_SM, bar_y, bar_w, 8.0, fill=ctx.theme.surface, radius=4.0)
         progress = app._typed / max(len(level.text), 1)
-        ctx.rect(x + SPACE_SM, bar_y, bar_w * progress, 8.0, fill=GREEN, radius=4.0)
+        ctx.rect(x + SPACE_SM, bar_y, bar_w * progress, 8.0, fill=ctx.theme.success, radius=4.0)
         ctx.schedule_render(100)
 
 
@@ -400,20 +399,20 @@ class TypingTutorApp(App):
         timed_out = elapsed >= level.time_sec
         if stars == 0:
             msg = "Time's up!" if timed_out else "Keep practicing — error rate too high"
-            msg_color = RED
+            msg_color = ctx.theme.danger
         elif stars == 5:
             msg = "Perfect run!"
-            msg_color = GREEN
+            msg_color = ctx.theme.success
         else:
             msg = "Nice work!"
-            msg_color = ACCENT
+            msg_color = ctx.theme.accent
 
         ctx.render(Column([
             AppBar(title=f"Level {level.id} — {level.name}"),
             Spacer(grow=True),
             Card([
                 Label("★" * stars + "☆" * (5 - stars),
-                      color=ACCENT if stars > 0 else MUTED, bold=True),
+                      color=ctx.theme.accent if stars > 0 else ctx.theme.muted, bold=True),
                 Label(f"Accuracy:  {accuracy:.1f}%"),
                 Label(f"Time:      {elapsed:.1f}s / {level.time_sec}s"),
                 Label(msg, color=msg_color),

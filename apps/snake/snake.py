@@ -8,8 +8,7 @@ new cargo crate + cross-compile setup. This is the intentional choice.
 
 import threading
 import time
-from plexi_sdk import App, RenderContext, BG, ACCENT, FG, RED, GREEN, MUTED, Arg
-from plexi_sdk._pipe import Pipe
+from plexi_sdk import App, RenderContext, Arg, Pipe
 
 CELL = 18.0          # cell size in logical px
 TICK = 0.15          # seconds per game tick
@@ -97,22 +96,22 @@ class SnakeApp(App):
         ox = (ctx.w - COLS * CELL) / 2
         oy = (ctx.h - ROWS * CELL) / 2
         # Background
-        ctx.rect(0, 0, ctx.w, ctx.h, fill=BG)
+        ctx.rect(0, 0, ctx.w, ctx.h, fill=ctx.theme.bg)
         # Grid border
         ctx.rect(ox - 2, oy - 2, COLS * CELL + 4, ROWS * CELL + 4,
-                 fill=MUTED, radius=2.0)
+                 fill=ctx.theme.muted, radius=2.0)
         ctx.rect(ox, oy, COLS * CELL, ROWS * CELL, fill="#11111b")
         # Food
         fx, fy = self._food
         ctx.rect(ox + fx * CELL + 2, oy + fy * CELL + 2,
-                 CELL - 4, CELL - 4, fill=RED, radius=4.0)
+                 CELL - 4, CELL - 4, fill=ctx.theme.danger, radius=4.0)
         # Snake
         for i, (sx, sy) in enumerate(self._snake):
-            color = ACCENT if i == 0 else GREEN
+            color = ctx.theme.accent if i == 0 else ctx.theme.success
             ctx.rect(ox + sx * CELL + 1, oy + sy * CELL + 1,
                      CELL - 2, CELL - 2, fill=color, radius=2.0)
         # Score
-        ctx.text(ox, oy - 28, f"Score: {self._score}", size=14.0, color=FG)
+        ctx.text(ox, oy - 28, f"Score: {self._score}", size=14.0, color=ctx.theme.fg)
         # Game over
         if self._dead:
             msg = "GAME OVER — press R to restart"
@@ -120,7 +119,7 @@ class SnakeApp(App):
                      300, 36, fill="#1e1e2e", radius=6.0)
             ctx.text(ox + COLS * CELL / 2 - 140,
                      oy + ROWS * CELL / 2 - 8,
-                     msg, size=13.0, color=RED)
+                     msg, size=13.0, color=ctx.theme.danger)
 
     def on_shutdown(self) -> None:
         self._running = False

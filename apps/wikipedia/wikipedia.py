@@ -7,7 +7,7 @@ import urllib.parse
 
 from plexi_sdk import (
     App, RenderContext, CapabilityDeniedError,
-    FG, MUTED, ACCENT, SURFACE, BODY, CAPTION, RED,
+    BODY, CAPTION,
 )
 from plexi_sdk.ui import (
     Column, AppBar, Spacer, Footer, FooterKeys, Component,
@@ -131,24 +131,24 @@ class WikiApp(App):
         def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
             app = self._app
             if app._mode == "search":
-                ctx.text(x, y, "Search:", size=BODY, color=FG)
-                ctx.rect(x, y + 24, w, 32, fill=SURFACE, radius=4.0)
+                ctx.text(x, y, "Search:", size=BODY, color=ctx.theme.fg)
+                ctx.rect(x, y + 24, w, 32, fill=ctx.theme.surface, radius=4.0)
                 ctx.text(x + 8, y + 32, app._query + "▌",
-                         size=BODY, color=FG, monospace=True)
+                         size=BODY, color=ctx.theme.fg, monospace=True)
                 if app._error_msg:
                     ctx.text(x, y + 72, f"Error: {app._error_msg}",
-                             size=12, color=RED, max_width=w)
+                             size=12, color=ctx.theme.danger, max_width=w)
                 else:
                     ctx.text(x, y + 72, "Type a query and press Enter",
-                             size=12, color=MUTED)
+                             size=12, color=ctx.theme.muted)
             elif app._mode == "results":
-                ctx.text(x, y, f'Results for "{app._query}":', size=BODY, color=FG)
+                ctx.text(x, y, f'Results for "{app._query}":', size=BODY, color=ctx.theme.fg)
                 items = [{"label": r, "secondary": None} for r in app._results]
                 ctx.simple_list(items, selected=app._selected, item_height=40.0,
                          x=x, y=y + 28, w=w, h=max(0.0, h - 28))
             elif app._mode == "article":
                 title = app._results[app._selected] if app._results else ""
-                ctx.text(x, y, title, size=18.0, color=ACCENT, bold=True)
+                ctx.text(x, y, title, size=18.0, color=ctx.theme.accent, bold=True)
                 # Word-wrap extract into lines (rough 8px/char estimate).
                 words = app._extract.split()
                 line, lines = "", []
@@ -163,7 +163,7 @@ class WikiApp(App):
                     lines.append(line)
                 ty = y + 30
                 for ln in lines[: int(max(0.0, (h - 30)) / 20)]:
-                    ctx.text(x, ty, ln, size=CAPTION, color=FG)
+                    ctx.text(x, ty, ln, size=CAPTION, color=ctx.theme.fg)
                     ty += 20
 
     def _footer_component(self):
