@@ -14,7 +14,6 @@ import os
 
 from plexi_sdk import App, RenderContext
 from plexi_sdk.ui import (
-    BG, FG, MUTED, ACCENT, SURFACE, HIGHLIGHT,
     TEXT_HINT, TEXT_CAPTION, TEXT_BODY, TEXT_HEADING, TEXT_TITLE, TEXT_TITLE_XL,
     SPACE_XS, SPACE_SM, SPACE_MD, SPACE_LG, SPACE_XL,
     RADIUS_MD,
@@ -353,7 +352,7 @@ class ScreenTimeApp(App):
         # pane, draws the title/subtitle/divider (Header) and the footer
         # caption. We then paint the data surface (clock/grid/settings) on
         # top of the middle spacer the Column reserved.
-        ctx.render(self._chrome_tree())
+        ctx.render(self._chrome_tree(ctx))
 
         if self._error:
             ctx.text(SPACE_XL, ctx.h / 2, f"Error: {self._error}",
@@ -374,7 +373,7 @@ class ScreenTimeApp(App):
     _CHROME_PAD = SPACE_XL
     _CHROME_GAP = SPACE_MD
 
-    def _chrome_tree(self) -> Column:
+    def _chrome_tree(self, ctx: RenderContext) -> Column:
         if self._mode == MODE_CLOCK:
             hints = [
                 KeyRow("h/l", "previous / next day"),
@@ -410,7 +409,7 @@ class ScreenTimeApp(App):
                 FooterKeys([(kr.key, kr.description) for kr in hints]),
             ]
         children: list = [
-            AppBar("Screen Time", accent=ACCENT),
+            AppBar("Screen Time", accent=ctx.theme.accent),
             Spacer(grow=True),
             *footer_components,
         ]
@@ -490,16 +489,16 @@ class ScreenTimeApp(App):
             ctx.arc(cx, cy, r_outer, start, end, color)
 
         # Inner circle creates the donut.
-        ctx.circle(cx, cy, r_inner, BG)
+        ctx.circle(cx, cy, r_inner, ctx.theme.bg)
 
         # ── Center label (total hours + date) ───────────────────────────
         total_h = self._day_total / 3600
         lbl = f"{total_h:.1f}h" if total_h > 0 else "—"
         ctx.text(cx, cy - 4, lbl,
-                 size=TEXT_TITLE, color=FG, bold=True, align="center")
+                 size=TEXT_TITLE, color=ctx.theme.fg, bold=True, align="center")
         sublbl = "today" if is_today else self._view_date.strftime("%-m/%-d")
         ctx.text(cx, cy + 14, sublbl,
-                 size=TEXT_HINT, color=MUTED, align="center")
+                 size=TEXT_HINT, color=ctx.theme.muted, align="center")
 
         # ── Hour labels at 12 / 3 / 6 / 9 o'clock ───────────────────────
         for hour in (0, 6, 12, 18):
@@ -509,7 +508,7 @@ class ScreenTimeApp(App):
             lx = cx + math.cos(angle) * label_r
             ly = cy + math.sin(angle) * label_r
             ctx.text(lx, ly, label,
-                     size=TEXT_HINT, color=MUTED, align="center")
+                     size=TEXT_HINT, color=ctx.theme.muted, align="center")
 
         # ── Elapsed arc + clock hand + now-dot (today only) ─────────────
         if is_today:
@@ -528,21 +527,21 @@ class ScreenTimeApp(App):
                 for i in range(steps):
                     s = -math.pi / 2 + i * step_span
                     e = s + step_span
-                    ctx.arc(cx, cy, ring_r, s, e, ACCENT)
-                ctx.circle(cx, cy, ring_r - 2, BG)
+                    ctx.arc(cx, cy, ring_r, s, e, ctx.theme.accent)
+                ctx.circle(cx, cy, ring_r - 2, ctx.theme.bg)
 
             # Clock hand — line from center to the ring edge at `now`.
             hand_r = r_outer * 0.95
             hx = cx + math.cos(now_angle) * hand_r
             hy = cy + math.sin(now_angle) * hand_r
-            ctx.line(cx, cy, hx, hy, ACCENT, width=2.0)
+            ctx.line(cx, cy, hx, hy, ctx.theme.accent, width=2.0)
 
             # Current-time dot, just outside the ring.
             tick_r = r_outer + 4
             ctx.circle(
                 cx + math.cos(now_angle) * tick_r,
                 cy + math.sin(now_angle) * tick_r,
-                4, ACCENT,
+                4, ctx.theme.accent,
             )
 
     def _draw_clock_legend(self, ctx: RenderContext,
@@ -560,10 +559,10 @@ class ScreenTimeApp(App):
                 break
             ctx.circle(lx + 5, ly + 10, 5, color)
             ctx.text(lx + 16, ly + row_h / 2, name[:18],
-                     size=TEXT_CAPTION, color=FG, align="left_center")
+                     size=TEXT_CAPTION, color=ctx.theme.fg, align="left_center")
             stat = f"{secs/3600:.1f}h"
             ctx.text(lx + col_w - SPACE_SM, ly + row_h / 2, stat,
-                     size=TEXT_CAPTION, color=MUTED, align="right_center")
+                     size=TEXT_CAPTION, color=ctx.theme.muted, align="right_center")
 
     # ── Monthly view ─────────────────────────────────────────────────────────
 
@@ -587,7 +586,7 @@ class ScreenTimeApp(App):
 
             if date == datetime.date.today():
                 ctx.rect(SPACE_XL + col * cell_w + 2, top + row * cell_h + 2,
-                         cell_w - 4, cell_h - 4, SURFACE, radius=RADIUS_MD)
+                         cell_w - 4, cell_h - 4, ctx.theme.surface, radius=RADIUS_MD)
 
             if slices and total > 0:
                 angle = -math.pi / 2
@@ -595,39 +594,39 @@ class ScreenTimeApp(App):
                     end = angle + secs / total * 2 * math.pi
                     ctx.arc(cx, cy, r, angle, end, color)
                     angle = end
-                ctx.circle(cx, cy, r * 0.4, BG)
+                ctx.circle(cx, cy, r * 0.4, ctx.theme.bg)
             else:
-                ctx.circle(cx, cy, r, HIGHLIGHT)
+                ctx.circle(cx, cy, r, ctx.theme.highlight)
 
             day_label = str(date.day)
             ctx.text(cx, cy - r - 8, day_label,
                      size=TEXT_HINT,
-                     color=ACCENT if date == datetime.date.today() else MUTED,
+                     color=ctx.theme.accent if date == datetime.date.today() else ctx.theme.muted,
                      align="center")
 
             if total > 0:
                 h_lbl = f"{total/3600:.0f}h"
                 ctx.text(cx, cy + r + 10, h_lbl,
-                         size=TEXT_HINT, color=MUTED, align="center")
+                         size=TEXT_HINT, color=ctx.theme.muted, align="center")
 
     # ── Settings ─────────────────────────────────────────────────────────────
 
     def _draw_settings(self, ctx: RenderContext) -> None:
         top = self._content_top() + SPACE_LG
         ctx.text(SPACE_XL, top, "Log directory",
-                 size=TEXT_HEADING, color=FG, bold=True)
+                 size=TEXT_HEADING, color=ctx.theme.fg, bold=True)
         ctx.text(SPACE_XL, top + TEXT_HEADING + SPACE_XS,
                  "Folder containing *_screen.jsonl files",
-                 size=TEXT_CAPTION, color=MUTED)
+                 size=TEXT_CAPTION, color=ctx.theme.muted)
 
         box_y = top + TEXT_HEADING + SPACE_XS + TEXT_CAPTION + SPACE_MD
-        ctx.rect(SPACE_XL, box_y, ctx.w - SPACE_XL * 2, 44, SURFACE, radius=RADIUS_MD)
+        ctx.rect(SPACE_XL, box_y, ctx.w - SPACE_XL * 2, 44, ctx.theme.surface, radius=RADIUS_MD)
         max_chars = max(1, int((ctx.w - SPACE_XL * 2 - SPACE_MD * 2) / 8))
         display = self._settings_buf[-max_chars:] + "▌"
         ctx.text(SPACE_XL + SPACE_MD, box_y + 22, display,
-                 size=TEXT_BODY, color=FG, monospace=True, align="left_center")
+                 size=TEXT_BODY, color=ctx.theme.fg, monospace=True, align="left_center")
         ctx.text(SPACE_XL, box_y + 56, "Return to confirm · Esc to cancel",
-                 size=TEXT_HINT, color=MUTED)
+                 size=TEXT_HINT, color=ctx.theme.muted)
 
 
 if __name__ == "__main__":
