@@ -179,9 +179,12 @@ pub(crate) fn render_component_tree(
             let text_h = galley.size().y;
             let btn_w = (text_w + crate::style::SPACE_SM * 2.0).max(48.0);
             let btn_h = text_h + BTN_PAD_V * 2.0;
+            // Allocate layout space, then interact with a stable node_id so
+            // press+release tracking survives across frames (same pattern as
+            // Interactive node — auto-ID from allocate_exact_size is not stable).
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(btn_w, btn_h), egui::Sense::hover());
             let sense = if *disabled { egui::Sense::hover() } else { egui::Sense::click() };
-            let (rect, response) =
-                ui.allocate_exact_size(egui::vec2(btn_w, btn_h), sense);
+            let response = ui.interact(rect, egui::Id::new(node_id.as_str()), sense);
             let painter = ui.painter();
             painter.rect_filled(rect, crate::style::RADIUS_MD, colors.bg_active);
             if !*disabled {
