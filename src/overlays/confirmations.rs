@@ -28,7 +28,7 @@ impl PlexiApp {
                 egui::Frame::new()
                     .fill(self.colors.bg_sidebar)
                     .stroke(Stroke::new(1.0, self.colors.border))
-                    .corner_radius(R6)
+                    .corner_radius(crate::style::RADIUS_LG)
                     .inner_margin(egui::Margin::symmetric(16, 10))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
@@ -104,7 +104,7 @@ impl PlexiApp {
                 egui::Frame::new()
                     .fill(self.colors.bg_sidebar)
                     .stroke(egui::Stroke::new(1.0, self.colors.border))
-                    .corner_radius(R6)
+                    .corner_radius(crate::style::RADIUS_LG)
                     .inner_margin(egui::Margin::symmetric(20, 16))
                     .show(ui, |ui| {
                         ui.set_width(MODAL_WIDTH);
@@ -127,9 +127,9 @@ impl PlexiApp {
                                     egui::Button::new(
                                         RichText::new("Close")
                                             .size(12.0)
-                                            .color(self.colors.text_primary),
+                                            .color(self.colors.bg_darkest),
                                     )
-                                    .fill(self.colors.bg_active),
+                                    .fill(self.colors.danger),
                                 )
                                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                                 .clicked()
@@ -144,7 +144,7 @@ impl PlexiApp {
                                             .size(12.0)
                                             .color(self.colors.text_dim),
                                     )
-                                    .frame(false),
+                                    .fill(self.colors.bg_active),
                                 )
                                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                                 .clicked()
@@ -307,7 +307,7 @@ impl PlexiApp {
                 egui::Frame::new()
                     .fill(colors.bg_sidebar)
                     .stroke(egui::Stroke::new(1.0, colors.border))
-                    .corner_radius(R6)
+                    .corner_radius(crate::style::RADIUS_LG)
                     .inner_margin(egui::Margin::symmetric(20, 16))
                     .show(ui, |ui| {
                         ui.set_width(MODAL_WIDTH);
@@ -341,9 +341,9 @@ impl PlexiApp {
                                     egui::Button::new(
                                         RichText::new("Close all")
                                             .size(12.0)
-                                            .color(colors.text_primary),
+                                            .color(colors.bg_darkest),
                                     )
-                                    .fill(colors.bg_active),
+                                    .fill(colors.danger),
                                 )
                                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                                 .clicked()
@@ -356,7 +356,7 @@ impl PlexiApp {
                                     egui::Button::new(
                                         RichText::new("Dissolve")
                                             .size(12.0)
-                                            .color(colors.text_primary),
+                                            .color(colors.text_dim),
                                     )
                                     .fill(colors.bg_active),
                                 )
@@ -373,7 +373,7 @@ impl PlexiApp {
                                             .size(12.0)
                                             .color(colors.text_dim),
                                     )
-                                    .frame(false),
+                                    .fill(colors.bg_active),
                                 )
                                 .on_hover_cursor(egui::CursorIcon::PointingHand)
                                 .clicked()
