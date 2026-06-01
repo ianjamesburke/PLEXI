@@ -430,6 +430,7 @@ impl PlexiApp {
                                                 &colors,
                                                 |ui| {
                                                     ui.horizontal(|ui| {
+                                                        crate::widgets::key_chip(ui, "ctx", &colors);
                                                         if !workspace_name.is_empty() {
                                                             ui.label(
                                                                 RichText::new(workspace_name.as_str())
@@ -496,11 +497,14 @@ impl PlexiApp {
                                                 is_selected,
                                                 &colors,
                                                 |ui| {
-                                                    crate::render_components::render_component_tree(
-                                                        ui,
-                                                        &row_node,
-                                                        &colors,
-                                                    );
+                                                    ui.horizontal(|ui| {
+                                                        crate::widgets::key_chip(ui, "app", &colors);
+                                                        crate::render_components::render_component_tree(
+                                                            ui,
+                                                            &row_node,
+                                                            &colors,
+                                                        );
+                                                    });
                                                 },
                                             );
 
@@ -519,6 +523,15 @@ impl PlexiApp {
                                     }
                                 }
                             });
+
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            crate::widgets::key_combo_list(ui, &[&["↑↓"]], Some("navigate"), &colors);
+                            ui.add_space(crate::style::SPACE_MD);
+                            crate::widgets::key_combo_list(ui, &[&["↵"]], Some("select"), &colors);
+                            ui.add_space(crate::style::SPACE_MD);
+                            crate::widgets::key_combo_list(ui, &[&["esc"]], Some("dismiss"), &colors);
+                        });
 
                         if let Some(i) = hover_select {
                             if mouse_moved {
