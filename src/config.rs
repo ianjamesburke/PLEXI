@@ -52,7 +52,7 @@ const KNOWN_THEME: &[&str] = &[
 const KNOWN_BETA: &[&str] = &["crt", "ghost", "ghost_opacity", "osc_pane_title"];
 const KNOWN_LOG: &[&str] = &["level", "retention_days"];
 const KNOWN_NOTIFICATIONS: &[&str] = &["enabled", "focus_mode", "interrupt_threshold"];
-const KNOWN_AI: &[&str] = &["backend", "openrouter", "ollama"];
+const KNOWN_AI: &[&str] = &["backend", "openrouter", "ollama", "per_app_daily_usd", "global_daily_usd"];
 const KNOWN_AI_OPENROUTER: &[&str] = &["api_key_env", "model_low", "model_medium", "model_high"];
 const KNOWN_AI_OLLAMA: &[&str] = &["host", "model_low", "model_medium", "model_high"];
 const KNOWN_KEYBINDINGS: &[&str] = &[
@@ -314,6 +314,22 @@ pub struct AiConfig {
     pub backend: Option<String>,
     pub openrouter: Option<OpenRouterBackendConfig>,
     pub ollama: Option<OllamaBackendConfig>,
+    /// Per-app daily spend cap in USD. Default $1.00.
+    pub per_app_daily_usd: Option<f64>,
+    /// Global daily spend cap across all apps in USD. Default $10.00.
+    pub global_daily_usd: Option<f64>,
+}
+
+impl AiConfig {
+    /// Resolved per-app daily spend cap. Falls back to $1.00 if unset.
+    pub fn effective_per_app_daily_usd(&self) -> f64 {
+        self.per_app_daily_usd.unwrap_or(1.0)
+    }
+
+    /// Resolved global daily spend cap. Falls back to $10.00 if unset.
+    pub fn effective_global_daily_usd(&self) -> f64 {
+        self.global_daily_usd.unwrap_or(10.0)
+    }
 }
 
 /// OpenRouter backend configuration.
@@ -347,6 +363,12 @@ impl AiConfig {
     pub fn overlay(&mut self, other: Self) {
         if other.backend.is_some() {
             self.backend = other.backend;
+        }
+        if other.per_app_daily_usd.is_some() {
+            self.per_app_daily_usd = other.per_app_daily_usd;
+        }
+        if other.global_daily_usd.is_some() {
+            self.global_daily_usd = other.global_daily_usd;
         }
         match (self.openrouter.as_mut(), other.openrouter) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),

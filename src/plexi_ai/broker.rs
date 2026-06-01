@@ -146,6 +146,12 @@ impl AiBroker for LiveAiBroker {
             }
         };
 
+        // Budget gate — fail open on ledger I/O errors (today_spend returns 0 on error).
+        if let Err(reason) = ledger::check_budget(&request.app_id, ai_config) {
+            log::warn!("ai_broker[{}]: request denied by budget gate — {reason}", request.app_id);
+            return AiBrokerResponse::err(format!("budget_exceeded: {reason}"));
+        }
+
         let backend_name = ai_config.backend.as_deref().unwrap_or("openrouter");
 
         match backend_name {
@@ -754,6 +760,7 @@ mod tests {
                 model_high: Some("anthropic/claude-opus-4-7".to_string()),
             }),
             ollama: None,
+            ..Default::default()
         }
     }
 
@@ -872,6 +879,7 @@ mod tests {
             backend: Some("ollama".to_string()),
             openrouter: None,
             ollama: None,
+            ..Default::default()
         }));
         let resp = broker.dispatch(AiBrokerRequest {
             app_id: "test".to_string(),
