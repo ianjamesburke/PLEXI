@@ -109,7 +109,7 @@ def test_state_augmented_assignment() -> None:
 def test_view_returns_none_by_default() -> None:
     """App.view() returns None when not overridden."""
     app = App()
-    assert app.view() is None
+    assert app.view() is None  # type: ignore[misc]
 
 
 def test_view_can_be_overridden() -> None:

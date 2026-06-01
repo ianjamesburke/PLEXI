@@ -396,7 +396,7 @@ class App:
             return fn
         return decorator
 
-    def view(self) -> "UiNode | None":
+    def view(self) -> object | None:
         """Override to return a declarative component tree.
 
         Return ``None`` (the default) to use the flat draw-command path via

@@ -20,10 +20,10 @@ class State:
         self._default = default
         self._name: str = ""  # set by __set_name__
 
-    def __set_name__(self, owner: type, name: str) -> None:
+    def __set_name__(self, _owner: type, name: str) -> None:
         self._name = f"_state_{name}"
 
-    def __get__(self, obj: Any, objtype: Any = None) -> Any:
+    def __get__(self, obj: Any, _objtype: Any = None) -> Any:
         if obj is None:
             return self
         return getattr(obj, self._name, self._default)
