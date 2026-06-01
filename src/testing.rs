@@ -775,4 +775,163 @@ mod tests {
         });
     }
 
+    // -- Layer 2 post-CentralPanel focus guard (#1601) -------------------------
+
+    /// Helper: simulate a CentralPanel pane widget stealing egui focus between two frames.
+    /// Returns the egui Id of the "stealing" widget so callers can assert against it.
+    fn steal_focus(h: &HostHarness) -> egui::Id {
+        let steal_id = egui::Id::new("fake_pane_text_input_steal");
+        h.ctx.memory_mut(|m| m.request_focus(steal_id));
+        steal_id
+    }
+
+    /// Regression guard for #1601: rename-pane TextEdit must retain egui focus
+    /// after CentralPanel renders. The between-frame steal simulates a pane TextInput
+    /// calling request_focus during CentralPanel — the post-CentralPanel block must
+    /// re-claim focus for `rename_pane_input` before the frame ends.
+    #[test]
+    fn rename_pane_overlay_focus_wins_after_central_panel_steal() {
+        use crate::app::FocusLayer;
+        let mut h = HostHarness::new();
+        let pane = h.add_test_pane();
+        h.app.renaming_pane = Some(pane);
+        h.app.rename_buffer = "test name".to_string();
+        h.app.push_focus_layer(FocusLayer::RenamePane);
+        // Frame 1: one-shot fires, focus = rename_pane_input.
+        h.run_frames(1);
+        // Simulate CentralPanel pane widget stealing focus.
+        steal_focus(&h);
+        // Frame 2: post-CentralPanel block must reclaim rename_pane_input.
+        h.run_frames(1);
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(egui::Id::new("rename_pane_input")),
+            "rename_pane_input must win focus back after a CentralPanel pane widget steals it"
+        );
+    }
+
+    /// Regression guard for #1601: context-rename TextEdit (modal path, sidebar hidden)
+    /// must retain egui focus after CentralPanel renders.
+    #[test]
+    fn context_rename_overlay_focus_wins_after_central_panel_steal() {
+        use crate::app::FocusLayer;
+        let mut h = HostHarness::new();
+        h.app.renaming_window = Some(0);
+        h.app.rename_buffer = "new context".to_string();
+        h.app.sidebar_visible = false;
+        h.app.push_focus_layer(FocusLayer::ContextRename);
+        h.run_frames(1);
+        steal_focus(&h);
+        h.run_frames(1);
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(egui::Id::new("rename_context_input")),
+            "rename_context_input must win focus back after a CentralPanel pane widget steals it"
+        );
+    }
+
+    /// Regression guard for #1601: edit-description TextEdit must retain egui focus
+    /// after CentralPanel renders.
+    #[test]
+    fn edit_description_overlay_focus_wins_after_central_panel_steal() {
+        use crate::app::FocusLayer;
+        let mut h = HostHarness::new();
+        h.app.editing_description = Some(0);
+        h.app.description_buffer = "my description".to_string();
+        h.app.push_focus_layer(FocusLayer::ContextDescription);
+        h.run_frames(1);
+        steal_focus(&h);
+        h.run_frames(1);
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(egui::Id::new("edit_description_input")),
+            "edit_description_input must win focus back after a CentralPanel pane widget steals it"
+        );
+    }
+
+    /// Regression guard for #1601: generic text-input overlay field must retain
+    /// egui focus after CentralPanel renders.
+    #[test]
+    fn text_input_overlay_focus_wins_after_central_panel_steal() {
+        use crate::app::{FocusLayer, TextInputOverlay, OverlayTarget};
+        let mut h = HostHarness::new();
+        h.app.text_overlay = Some((
+            TextInputOverlay {
+                label: "Root directory".to_string(),
+                hint: "/path/to/project".to_string(),
+                buffer: String::new(),
+                focus_requested: false,
+            },
+            OverlayTarget::ContextRoot(0),
+        ));
+        h.app.push_focus_layer(FocusLayer::TextInput);
+        h.run_frames(1);
+        steal_focus(&h);
+        h.run_frames(1);
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(egui::Id::new("text_input_overlay_field")),
+            "text_input_overlay_field must win focus back after a CentralPanel pane widget steals it"
+        );
+    }
+
+    /// Regression guard for #1601: capability/secret prompt TextEdit must retain
+    /// egui focus after CentralPanel renders. The secret TextEdit now carries a
+    /// stable `capability_secret_input` Id so the post-CentralPanel block can
+    /// target it by name.
+    #[test]
+    fn capability_secret_overlay_focus_wins_after_central_panel_steal() {
+        use crate::app::FocusLayer;
+        use crate::process_app::PendingPrompt;
+        use crate::pane::AppRuntime;
+
+        let mut h = HostHarness::new();
+        let pane = h.add_test_pane();
+
+        // Focus the pane so sync_capability_modal_focus can find it.
+        let tile_id = {
+            let win = &h.app.windows[0];
+            win.tree.tiles.iter()
+                .find_map(|(id, tile)| match tile {
+                    egui_tiles::Tile::Pane(p) if *p == pane => Some(id),
+                    _ => None,
+                })
+                .expect("test pane must have a tile")
+        };
+        h.app.windows[0].focused_pane = Some(*tile_id);
+
+        // Queue a Secret prompt on the pane.
+        {
+            let win = &mut h.app.windows[0];
+            let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+                panic!("expected App pane");
+            };
+            let AppRuntime::Process(ref mut proc) = app_pane.runtime else {
+                panic!("expected Process runtime");
+            };
+            proc.pending_prompts.push_back(PendingPrompt::Secret {
+                key: "API_KEY".to_string(),
+            });
+        }
+
+        // Frame 1: sync pushes CapabilityModal layer; modal renders; post-CentralPanel
+        // requests focus on capability_secret_input.
+        h.run_frames(1);
+        assert!(
+            h.app.focus_stack.iter().any(|l| *l == FocusLayer::CapabilityModal),
+            "CapabilityModal must be on the focus stack when the focused pane has a pending Secret prompt"
+        );
+
+        // Simulate CentralPanel pane widget stealing focus.
+        steal_focus(&h);
+
+        // Frame 2: post-CentralPanel block must reclaim capability_secret_input.
+        h.run_frames(1);
+        assert_eq!(
+            h.ctx.memory(|m| m.focused()),
+            Some(egui::Id::new("capability_secret_input")),
+            "capability_secret_input must win focus back after a CentralPanel pane widget steals it"
+        );
+    }
+
 }

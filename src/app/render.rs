@@ -793,5 +793,49 @@ impl PlexiApp {
         if self.inspector_renaming {
             ctx.memory_mut(|m| m.request_focus(egui::Id::new("inspector_rename_input")));
         }
+
+        // Same pattern for all remaining text-owning overlays. Each overlay's one-shot
+        // request fires during early overlay dispatch (BEFORE CentralPanel), so pane
+        // TextInput widgets rendered in CentralPanel steal focus back. Re-requesting
+        // here wins the last-write-wins contest for the frame.
+        if self.renaming_pane.is_some() {
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("rename_pane_input")));
+        }
+        if self.renaming_window.is_some() && !self.sidebar_visible {
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("rename_context_input")));
+        }
+        if self.editing_description.is_some() {
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("edit_description_input")));
+        }
+        if self.text_overlay.is_some() {
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("text_input_overlay_field")));
+        }
+        // Capability/secret modal: only re-request for Secret prompts — Capability prompts
+        // have no text field, so requesting a non-existent ID would leave egui holding a
+        // stale focus pointer that interferes with button interactions.
+        if matches!(self.focus_stack.last(), Some(FocusLayer::CapabilityModal)) {
+            let has_secret_prompt = {
+                let win = &self.windows[self.active_window];
+                win.focused_pane
+                    .and_then(|tile_id| Self::find_pane_in_tile(&win.tree, tile_id))
+                    .and_then(|pane_id| win.panes.get(&pane_id))
+                    .and_then(|pane| pane.as_app())
+                    .map(|app| {
+                        if let crate::pane::AppRuntime::Process(ref proc) = app.runtime {
+                            matches!(
+                                proc.pending_prompts.front(),
+                                Some(crate::process_app::PendingPrompt::Secret { .. })
+                            )
+                        } else {
+                            false
+                        }
+                    })
+                    .unwrap_or(false)
+            };
+            if has_secret_prompt {
+                log::debug!("capability_modal: re-requesting focus for capability_secret_input post-CentralPanel");
+                ctx.memory_mut(|m| m.request_focus(egui::Id::new("capability_secret_input")));
+            }
+        }
     }
 }

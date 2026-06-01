@@ -168,6 +168,7 @@ pub(crate) fn show_prompt_modal(
                             egui::Stroke::new(1.0, colors.border);
                         let response = ui.add(
                             egui::TextEdit::singleline(secret_input_buf)
+                                .id(egui::Id::new("capability_secret_input"))
                                 .password(true)
                                 .margin(egui::Margin::symmetric(8, 5)),
                         );
