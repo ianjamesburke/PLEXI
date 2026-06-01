@@ -1294,3 +1294,57 @@ fn context_transition_rescans_registry() {
     let _ = std::fs::remove_dir_all(&dir_a);
     let _ = std::fs::remove_dir_all(&dir_b);
 }
+
+/// Issue #1858: `new_context` should wrap the focused pane into a new child context
+/// rather than create an empty sibling context.
+#[test]
+fn new_context_wraps_focused_pane_into_child() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let parent_ctx_id = app.router.active().context_id;
+
+    // Add a non-portal pane and make it focused.
+    let (tile_id, pane_id) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_id);
+
+    assert_eq!(app.router.len(), 1, "setup: 1 context before new_context");
+    assert_eq!(app.windows[0].panes.len(), 1, "setup: 1 pane before new_context");
+
+    app.new_context();
+
+    // Router should now have 2 contexts.
+    assert_eq!(app.router.len(), 2, "child context registered");
+
+    // Active context is the child.
+    let child_ctx_id = app.router.active().context_id;
+    assert_ne!(child_ctx_id, parent_ctx_id, "active context switched to child");
+
+    // Depth stack has one entry (parent was pushed before zoom).
+    assert_eq!(app.router.current_depth(), 1, "depth stack grew by 1");
+
+    // The child context has 1 window with the original pane id.
+    let child_win_idx = app.windows.iter().position(|w| w.context_id == child_ctx_id)
+        .expect("child context has a window");
+    assert_eq!(app.windows[child_win_idx].panes.len(), 1, "child window has 1 pane");
+    assert!(
+        app.windows[child_win_idx].panes.contains_key(&pane_id),
+        "child window contains the extracted pane"
+    );
+
+    // Parent window has exactly 1 pane — the Portal tile pointing to the child.
+    let parent_win_idx = app.windows.iter().position(|w| w.context_id == parent_ctx_id)
+        .expect("parent context has a window");
+    assert_eq!(app.windows[parent_win_idx].panes.len(), 1, "parent window has 1 pane (the portal)");
+    let has_portal = app.windows[parent_win_idx].panes.values()
+        .any(|p| p.portal_target() == Some(child_ctx_id));
+    assert!(has_portal, "parent window has a Portal pointing to the child context");
+
+    // Inline rename was opened for the new context.
+    assert_eq!(
+        app.renaming_window,
+        Some(app.router.len() - 1),
+        "inline rename opened for child context"
+    );
+}
