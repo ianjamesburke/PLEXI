@@ -1000,19 +1000,64 @@ impl ProcessApp {
                 if let PermissionCheck::Denied(_reason) =
                     check(&self.permissions, Capability::AiQuery)
                 {
-                    log::warn!(
-                        "ProcessApp[{}]: AiQuery {request_id} denied — capability not declared",
-                        self.type_id
-                    );
-                    self.outbound_events.push_back(PlexiEvent::AiResponse {
-                        request_id,
-                        content: None,
-                        tokens_in: 0,
-                        tokens_out: 0,
-                        error: Some(
-                            "capability denied: ai.query not declared in manifest".to_string(),
-                        ),
-                    });
+                    if is_blocked(&self.permissions, Capability::AiQuery) {
+                        // Permanently blocked by user — deny immediately.
+                        log::warn!(
+                            "ProcessApp[{}]: AiQuery {request_id} denied — ai.query permanently blocked",
+                            self.type_id
+                        );
+                        self.outbound_events.push_back(PlexiEvent::AiResponse {
+                            request_id,
+                            content: None,
+                            tokens_in: 0,
+                            tokens_out: 0,
+                            error: Some("capability denied: ai.query blocked".to_string()),
+                        });
+                    } else {
+                        // Withheld — capability declared but first-run consent not yet given.
+                        // Defer the query and trigger the consent modal.
+                        // Cap the deferred queue to prevent thread exhaustion when consent
+                        // is slow or the app fires many queries before the modal is shown.
+                        if self.deferred_ai_queries.len() >= 16 {
+                            log::warn!(
+                                "ProcessApp[{}]: AiQuery {request_id} dropped — deferred queue full (>=16 pending consent)",
+                                self.type_id
+                            );
+                            self.outbound_events.push_back(PlexiEvent::AiResponse {
+                                request_id,
+                                content: None,
+                                tokens_in: 0,
+                                tokens_out: 0,
+                                error: Some(
+                                    "capability withheld: too many deferred queries pending consent"
+                                        .to_string(),
+                                ),
+                            });
+                            return;
+                        }
+                        log::info!(
+                            "ProcessApp[{}]: AiQuery {request_id} withheld — queuing for ai.query consent",
+                            self.type_id
+                        );
+                        self.deferred_ai_queries.push_back(super::DeferredAiQuery {
+                            request_id,
+                            model_tier,
+                            system,
+                            messages,
+                            tools,
+                        });
+                        // Deduplicate: only push a prompt if one isn't already pending.
+                        let already_pending = self.pending_prompts.iter().any(|p| {
+                            matches!(p, super::PendingPrompt::Capability { capability, .. }
+                                if capability == "ai.query")
+                        });
+                        if !already_pending {
+                            self.pending_prompts.push_back(super::PendingPrompt::Capability {
+                                request_id: uuid::Uuid::new_v4().to_string(),
+                                capability: "ai.query".to_string(),
+                            });
+                        }
+                    }
                     return;
                 }
 

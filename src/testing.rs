@@ -283,18 +283,19 @@ mod tests {
 
     /// Regression guard for PR #536: `AiQuery` was silently dropped into
     /// `pending_frame` (visual buffer) instead of being routed through
-    /// `route_command`. Confirmed by the fact that `outbound_events` stays
-    /// empty — the command was never dispatched.
+    /// `route_command`. Confirmed by the fact that routing state stays
+    /// unchanged — the command was never dispatched.
     ///
-    /// Uses a pane with no `ai.query` capability so the denial response lands
-    /// synchronously on `outbound_events` — no background thread, no sleep.
-    /// The capability-denied path still proves the regression: if AiQuery
-    /// were dropped into `pending_frame` the denial would never happen and
-    /// `outbound_events` would remain empty.
+    /// Uses a pane with no `ai.query` capability (withheld / first-run).
+    /// With the consent-auto-trigger fix, the withheld path defers the query
+    /// and queues a consent prompt instead of emitting an immediate AiResponse.
+    /// Either path proves the routing regression was not reintroduced: if
+    /// AiQuery were dropped into `pending_frame`, neither the deferred queue
+    /// nor the pending prompt would be populated.
     #[test]
     fn ai_query_reaches_route_command_not_pending_frame() {
         let mut h = HostHarness::new();
-        // No capabilities → AiQuery hits the synchronous denial path in route_command.
+        // No capabilities (withheld) → AiQuery defers and queues consent prompt.
         let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
 
         h.inject(pane, ai_query("req-1"));
@@ -311,14 +312,28 @@ mod tests {
             proc.background_tick();
         }
 
-        let effects = h.effects_drain(pane);
+        // Withheld path: query is deferred + consent prompt queued.
+        let (has_deferred, has_prompt) = {
+            let win = &mut h.app.windows[0];
+            let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+                panic!("expected App pane");
+            };
+            let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+                panic!("expected Process runtime");
+            };
+            let has_deferred = !proc.deferred_ai_queries.is_empty();
+            let has_prompt = proc.pending_prompts.iter().any(|p| {
+                matches!(p, crate::process_app::PendingPrompt::Capability { capability, .. }
+                    if capability == "ai.query")
+            });
+            (has_deferred, has_prompt)
+        };
         assert!(
-            !effects.is_empty(),
-            "AiQuery must produce an outbound event — got none. \
+            has_deferred,
+            "AiQuery must be deferred — got none. \
              This means it was silently dropped instead of being routed."
         );
-        let has_ai_response = effects.iter().any(|e| matches!(e, PlexiEvent::AiResponse { .. }));
-        assert!(has_ai_response, "Expected AiResponse in effects, got: {:?}", effects);
+        assert!(has_prompt, "ai.query consent prompt must be queued after deferred AiQuery");
     }
 
     // -- State snapshot -------------------------------------------------------

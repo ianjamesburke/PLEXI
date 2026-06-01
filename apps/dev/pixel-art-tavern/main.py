@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
-from plexi_sdk import App, RenderContext, MUTED
+from plexi_sdk import App, RenderContext
 
 # ── Design constants ──────────────────────────────────────────────────────────
 PIXEL   = 4.0    # logical px per sprite pixel
@@ -257,7 +257,7 @@ class TavernApp(App):
 
         # Title
         ctx.text(PAD, PAD, "The Rusty Flagon", size=HEADING, color=Y, bold=True, monospace=True)
-        ctx.text(PAD, PAD + HEADING + 4, "A pixel art tavern", size=CAPTION, color=MUTED, monospace=True)
+        ctx.text(PAD, PAD + HEADING + 4, "A pixel art tavern", size=CAPTION, color=ctx.theme.muted, monospace=True)
 
     def _tick(self, dt: float) -> None:
         self._total_elapsed += dt
@@ -315,7 +315,7 @@ class TavernApp(App):
         ctx.text(ctx.w / 2, py + 14, "Press Space to start", size=BODY, color=W,
                  align="top_center", monospace=True, bold=False, elide=False, selectable=False)
         ctx.text(ctx.w / 2, py + 14 + BODY + 8, "NPCs will converse via AI",
-                 size=CAPTION, color=MUTED,
+                 size=CAPTION, color=ctx.theme.muted,
                  align="top_center", monospace=True, bold=False, elide=False, selectable=False)
 
     def _draw_scene(self, ctx: RenderContext, floor_y: float,

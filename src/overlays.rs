@@ -2718,7 +2718,8 @@ impl PlexiApp {
         // Take fields out of the ProcessApp, call the modal, put them back.
         // Two separate borrows so Rust doesn't see a conflict.
         let (mut pending_prompts, mut outbound_events, mut permissions,
-             mut secret_input_buf, mut permission_store, type_id, workspace_root) = {
+             mut secret_input_buf, mut permission_store, mut deferred_ai_queries,
+             type_id, workspace_root, ai_broker, http_tx, proc_pane_id) = {
             let pane = match self.windows[active].panes.get_mut(&pane_id) {
                 Some(crate::pane::Pane::App(a)) => a,
                 _ => return,
@@ -2733,8 +2734,12 @@ impl PlexiApp {
                 std::mem::take(&mut proc.permissions),
                 std::mem::take(&mut proc.secret_input_buf),
                 std::mem::take(&mut proc.permission_store),
+                std::mem::take(&mut proc.deferred_ai_queries),
                 proc.type_id.clone(),
                 proc.workspace_root.clone(),
+                std::sync::Arc::clone(&proc.ai_broker),
+                proc.http_tx.clone(),
+                proc.pane_id,
             )
         };
 
@@ -2750,6 +2755,10 @@ impl PlexiApp {
             &config_dir,
             &mut permission_store,
             &colors,
+            &mut deferred_ai_queries,
+            ai_broker,
+            http_tx,
+            proc_pane_id,
         );
 
         // Put the data back.
@@ -2763,6 +2772,7 @@ impl PlexiApp {
         proc.permissions = permissions;
         proc.secret_input_buf = secret_input_buf;
         proc.permission_store = permission_store;
+        proc.deferred_ai_queries = deferred_ai_queries;
     }
 
     /// Context-close confirmation dialog. Shows pane inventory with three choices:

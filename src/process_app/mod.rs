@@ -23,7 +23,7 @@ pub(crate) use lifecycle::{LifecycleState, LifecycleTracker};
 use render_session::RenderSession;
 
 use crate::app_permissions::{AppPermissions, Capability};
-use crate::app_protocol::{ControlCommand, DrawCommand, Modifiers, PlexiEvent, RenderCommand};
+use crate::app_protocol::{AiMessage, AiTool, ControlCommand, DrawCommand, Modifiers, ModelTier, PlexiEvent, RenderCommand};
 use crate::app_trait::{App, AppCommand, AppRenderContext};
 use crate::audio::{AudioDevice, CaptureSession};
 use crate::midi::{MidiDevice, MidiInputSession, MidiOutputHandle};
@@ -57,6 +57,21 @@ pub enum PendingPrompt {
     Secret {
         key: String,
     },
+}
+
+// ---------------------------------------------------------------------------
+// DeferredAiQuery — an AiQuery held pending first-run consent
+// ---------------------------------------------------------------------------
+
+/// A `AiQuery` request deferred because `ai.query` was withheld pending consent.
+/// Drained and re-dispatched (or errored) when the user resolves the modal.
+#[derive(Debug)]
+pub(crate) struct DeferredAiQuery {
+    pub(crate) request_id: String,
+    pub(crate) model_tier: ModelTier,
+    pub(crate) system: String,
+    pub(crate) messages: Vec<AiMessage>,
+    pub(crate) tools: Vec<AiTool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +163,9 @@ pub struct ProcessApp {
     pub(crate) pipe_registry: Arc<Mutex<TypedPipeRegistry>>,
     pub(crate) run_registry: RunRegistry,
     pub(crate) pending_prompts: VecDeque<PendingPrompt>,
+    /// AiQuery requests withheld pending first-run `ai.query` consent.
+    /// Drained on consent resolution — dispatched if granted, errored if denied.
+    pub(crate) deferred_ai_queries: VecDeque<DeferredAiQuery>,
     pub(crate) status_summary: Option<String>,
     /// Navigation stack maintained by `DrawCommand::PushNav` / `PopNav`.
     /// Each entry carries a stable `view_id` and a display `title`. When the
@@ -667,6 +685,7 @@ impl ProcessApp {
             ))),
             run_registry: RunRegistry::new(),
             pending_prompts: VecDeque::new(),
+            deferred_ai_queries: VecDeque::new(),
             status_summary: None,
             nav_stack: Vec::new(),
             outbound_events: VecDeque::new(),
@@ -812,6 +831,7 @@ impl ProcessApp {
             ))),
             run_registry: RunRegistry::new(),
             pending_prompts: VecDeque::new(),
+            deferred_ai_queries: VecDeque::new(),
             status_summary: None,
             nav_stack: Vec::new(),
             outbound_events: VecDeque::new(),
