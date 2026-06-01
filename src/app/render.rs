@@ -6,6 +6,9 @@ use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
 use egui_tiles::Tile;
 use std::collections::HashMap;
 
+const FLASH_DUR: f32 = 0.4;
+const FLASH_TAU: f32 = 0.10;
+
 impl PlexiApp {
     /// Early per-frame work that runs before overlay dispatch and panel rendering.
     /// Handles adopted context paths, finder service drains, notification polling,
@@ -444,14 +447,12 @@ impl PlexiApp {
                 if zoomed_pane.is_none() && !suppress_focus {
                     if let Some(tile_id) = ctx.focused_pane {
                         if let Some(rect) = ctx.tree.tiles.rect(tile_id) {
-                            let gap = self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0);
-                            const FLASH_DUR: f32 = 0.4;
-                            const TAU: f32 = 0.10;
+                            let gap = behavior.pane_gap;
                             let stroke_color = if let Some(ref flash) = self.click_flash {
-                                if flash.tile == tile_id {
+                                if flash.window_id == ctx.window_id && flash.tile == tile_id {
                                     let elapsed = flash.started_at.elapsed().as_secs_f32();
                                     if elapsed < FLASH_DUR {
-                                        let boost = (-elapsed / TAU).exp();
+                                        let boost = (-elapsed / FLASH_TAU).exp();
                                         ui.ctx().request_repaint();
                                         self.colors.accent.gamma_multiply((1.0 + boost).clamp(1.0, 2.0))
                                     } else {
@@ -476,7 +477,6 @@ impl PlexiApp {
 
                 // Expire click_flash once FLASH_DUR has elapsed.
                 if let Some(ref flash) = self.click_flash {
-                    const FLASH_DUR: f32 = 0.4;
                     if flash.started_at.elapsed().as_secs_f32() >= FLASH_DUR {
                         self.click_flash = None;
                     }
@@ -492,8 +492,9 @@ impl PlexiApp {
 
                 if canvas_focus_changed {
                     if let Some(new_tile) = ctx.focused_pane {
-                        log::info!("focus: canvas click flash → tile={:?}", new_tile);
-                        self.click_flash = Some(ClickFlash { tile: new_tile, started_at: std::time::Instant::now() });
+                        let win_id = ctx.window_id;
+                        log::info!("focus: canvas click flash → win={win_id} tile={new_tile:?}");
+                        self.click_flash = Some(ClickFlash { window_id: win_id, tile: new_tile, started_at: std::time::Instant::now() });
                     }
                 }
 

@@ -256,6 +256,7 @@ struct EdgePulse {
 }
 
 pub(crate) struct ClickFlash {
+    pub(crate) window_id: u64,
     pub(crate) tile: egui_tiles::TileId,
     pub(crate) started_at: std::time::Instant,
 }
@@ -1186,7 +1187,9 @@ impl PlexiApp {
     /// so that the grep pattern `windows[active].focused_pane = ` has zero matches outside tests.
     pub(crate) fn set_window_focused_pane(&mut self, win_idx: usize, tile: egui_tiles::TileId) {
         self.windows[win_idx].focused_pane = Some(tile);
-        self.click_flash = Some(ClickFlash { tile, started_at: std::time::Instant::now() });
+        let window_id = self.windows[win_idx].window_id;
+        log::info!("focus: flash set — win={window_id} tile={tile:?}");
+        self.click_flash = Some(ClickFlash { window_id, tile, started_at: std::time::Instant::now() });
     }
 
     /// Restore focused pane in a specific window from a saved `Option<TileId>`.
