@@ -263,6 +263,15 @@ impl AppRuntime {
             app.pending_notification_count = count;
         }
     }
+
+    /// Current lifecycle state — used for sidebar status dots.
+    /// Builtin apps are always Running (they don't have a process lifecycle).
+    pub fn lifecycle_state(&self) -> crate::process_app::LifecycleState {
+        match self {
+            AppRuntime::Process(app) => app.lifecycle.state(),
+            AppRuntime::Builtin(_) => crate::process_app::LifecycleState::Running,
+        }
+    }
 }
 
 #[allow(dead_code)]

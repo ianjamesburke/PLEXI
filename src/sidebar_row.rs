@@ -43,6 +43,10 @@ pub struct PaneRowItem {
     pub pane_id: u64,
     pub label: String,
     pub is_focused: bool,
+    /// Pane type: "Terminal" | "App" | "Portal"
+    pub kind: String,
+    /// Lifecycle status: "running" | "busy" | "crashed" | "idle" (Portal/unknown)
+    pub status: String,
 }
 
 pub struct ContextItem {
@@ -187,6 +191,23 @@ impl ContextItem {
                         ui.set_width(ui.available_width());
                         ui.horizontal(|ui| {
                             ui.add_space(pane_indent);
+                            // Type badge ("term" / "app" / "portal")
+                            crate::widgets::pane_type_badge(ui, &row.kind, colors);
+                            ui.add_space(4.0);
+                            // Status dot — 5px filled circle
+                            let dot_color = match row.status.as_str() {
+                                "busy" => with_alpha(accent_color, row_alpha),
+                                "running" => with_alpha(Color32::from_rgb(0x4c, 0xaf, 0x50), row_alpha),
+                                "crashed" | "hung" | "error" => with_alpha(colors.danger, row_alpha),
+                                _ => with_alpha(text_dim, row_alpha * 0.5),
+                            };
+                            let dot_radius = 2.5_f32;
+                            let (dot_rect, _) = ui.allocate_exact_size(
+                                Vec2::new(dot_radius * 2.0, dot_radius * 2.0),
+                                Sense::hover(),
+                            );
+                            ui.painter().circle_filled(dot_rect.center(), dot_radius, dot_color);
+                            ui.add_space(4.0);
                             crate::render_components::render_component_tree(ui, &label_node, colors);
                         });
                     });
