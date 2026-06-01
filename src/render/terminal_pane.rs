@@ -35,6 +35,7 @@ pub fn render(
     pane_names: &HashMap<PaneId, String>,
     tab_info: &HashMap<TileId, (usize, usize)>,
     workspace_root: Option<&Path>,
+    pane_title_font_size: f32,
 ) -> bool {
     if terminal.exited {
         let rect = ui.max_rect();
@@ -61,6 +62,7 @@ pub fn render(
         pane_names,
         colors,
         outside_workspace,
+        pane_title_font_size,
     );
 
     let font_size = terminal.font_size;
@@ -102,6 +104,7 @@ fn render_name_bar_and_dots(
     pane_names: &HashMap<PaneId, String>,
     colors: &Colors,
     outside_workspace: bool,
+    name_font_size: f32,
 ) {
     let name_bar_height = 20.0;
     let has_name = pane_names.contains_key(pane_id);
@@ -137,7 +140,7 @@ fn render_name_bar_and_dots(
                 bar_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 name,
-                egui::FontId::proportional(11.0),
+                egui::FontId::proportional(name_font_size),
                 colors.text_dim,
             );
         }

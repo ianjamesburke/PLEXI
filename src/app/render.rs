@@ -1,7 +1,6 @@
 //! Rendering helpers extracted from the main `eframe::App::update()` loop.
 
-use super::FocusLayer;
-use super::PlexiApp;
+use super::{ClickFlash, FocusLayer, PlexiApp};
 use crate::tiling::{PaneId, PlexiBehavior};
 use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
 use egui_tiles::Tile;
@@ -423,6 +422,8 @@ impl PlexiApp {
                     portal_info,
                     modal_open,
                     ctrl_held,
+                    pane_gap: self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0),
+                    pane_title_font_size: self.config.pane_title_font_size.unwrap_or(11.0).clamp(6.0, 32.0),
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ui.scope(|ui| {
@@ -443,8 +444,26 @@ impl PlexiApp {
                 if zoomed_pane.is_none() && !suppress_focus {
                     if let Some(tile_id) = ctx.focused_pane {
                         if let Some(rect) = ctx.tree.tiles.rect(tile_id) {
-                            let gap = 4.0;
-                            let stroke = egui::Stroke::new(gap, self.colors.accent);
+                            let gap = self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0);
+                            const FLASH_DUR: f32 = 0.4;
+                            const TAU: f32 = 0.10;
+                            let stroke_color = if let Some(ref flash) = self.click_flash {
+                                if flash.tile == tile_id {
+                                    let elapsed = flash.started_at.elapsed().as_secs_f32();
+                                    if elapsed < FLASH_DUR {
+                                        let boost = (-elapsed / TAU).exp();
+                                        ui.ctx().request_repaint();
+                                        self.colors.accent.gamma_multiply((1.0 + boost).clamp(1.0, 2.0))
+                                    } else {
+                                        self.colors.accent
+                                    }
+                                } else {
+                                    self.colors.accent
+                                }
+                            } else {
+                                self.colors.accent
+                            };
+                            let stroke = egui::Stroke::new(gap, stroke_color);
                             ui.painter().rect_stroke(
                                 rect,
                                 0.0,
@@ -455,6 +474,14 @@ impl PlexiApp {
                     }
                 }
 
+                // Expire click_flash once FLASH_DUR has elapsed.
+                if let Some(ref flash) = self.click_flash {
+                    const FLASH_DUR: f32 = 0.4;
+                    if flash.started_at.elapsed().as_secs_f32() >= FLASH_DUR {
+                        self.click_flash = None;
+                    }
+                }
+
                 let canvas_focus_changed = if let Some(new) = behavior.new_focused {
                     let changed = Some(new) != canvas_old_focus;
                     ctx.focused_pane = Some(new);
@@ -462,6 +489,13 @@ impl PlexiApp {
                 } else {
                     false
                 };
+
+                if canvas_focus_changed {
+                    if let Some(new_tile) = ctx.focused_pane {
+                        log::info!("focus: canvas click flash → tile={:?}", new_tile);
+                        self.click_flash = Some(ClickFlash { tile: new_tile, started_at: std::time::Instant::now() });
+                    }
+                }
 
                 let should_close_exited = behavior.close_exited.is_some();
 

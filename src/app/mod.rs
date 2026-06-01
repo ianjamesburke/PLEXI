@@ -255,6 +255,11 @@ struct EdgePulse {
     started_at: std::time::Instant,
 }
 
+pub(crate) struct ClickFlash {
+    pub(crate) tile: egui_tiles::TileId,
+    pub(crate) started_at: std::time::Instant,
+}
+
 pub struct PlexiApp {
     pub(crate) pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
     pub(crate) pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
@@ -437,6 +442,8 @@ pub struct PlexiApp {
     pane_anims: Vec<PaneSwapAnim>,
     /// Boundary edge pulse — shown when a swap is attempted at the wall.
     edge_pulse: Option<EdgePulse>,
+    /// Exponential accent flash on focus change (#1141).
+    pub(crate) click_flash: Option<ClickFlash>,
     /// Channel receiver fed by the background update-check thread. Sends the
     /// latest version string exactly once if a newer release is available.
     update_rx: Option<std::sync::mpsc::Receiver<String>>,
@@ -978,6 +985,7 @@ impl PlexiApp {
                     pane_snapshot_len: 0,
                     pane_anims: Vec::new(),
                     edge_pulse: None,
+                    click_flash: None,
                     update_rx: Some(update_rx),
                     update_available: None,
                     pane_ipc_rx,
@@ -1153,6 +1161,7 @@ impl PlexiApp {
             pane_snapshot_len: 0,
             pane_anims: Vec::new(),
             edge_pulse: None,
+            click_flash: None,
             update_rx: Some(update_rx),
             update_available: None,
             pane_ipc_rx,
@@ -1177,6 +1186,7 @@ impl PlexiApp {
     /// so that the grep pattern `windows[active].focused_pane = ` has zero matches outside tests.
     pub(crate) fn set_window_focused_pane(&mut self, win_idx: usize, tile: egui_tiles::TileId) {
         self.windows[win_idx].focused_pane = Some(tile);
+        self.click_flash = Some(ClickFlash { tile, started_at: std::time::Instant::now() });
     }
 
     /// Restore focused pane in a specific window from a saved `Option<TileId>`.
@@ -1318,6 +1328,7 @@ impl PlexiApp {
             pane_snapshot_len: 0,
             pane_anims: Vec::new(),
             edge_pulse: None,
+            click_flash: None,
             show_cli_setup_prompt: false,
             cli_setup_check_result: None,
             show_completions_banner: false,

@@ -88,6 +88,10 @@ pub struct PlexiBehavior<'a> {
     pub modal_open: bool,
     /// True when the Control modifier is held — triggers the pane ID ghost overlay.
     pub ctrl_held: bool,
+    /// Resolved inter-pane gap width (from config, default 4.0).
+    pub pane_gap: f32,
+    /// Resolved pane title bar font size (from config, default 11.0).
+    pub pane_title_font_size: f32,
 }
 
 impl Behavior<PaneId> for PlexiBehavior<'_> {
@@ -155,6 +159,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 &self.pane_names,
                 &self.tab_info,
                 self.workspace_root.as_deref(),
+                self.pane_title_font_size,
             );
             if close_exited {
                 self.close_exited = Some(tile_id);
@@ -290,7 +295,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
     }
 
     fn gap_width(&self, _style: &egui::Style) -> f32 {
-        4.0
+        self.pane_gap
     }
 
     fn resize_stroke(&self, _style: &egui::Style, resize_state: ResizeState) -> egui::Stroke {
