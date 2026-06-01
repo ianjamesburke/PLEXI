@@ -361,7 +361,8 @@ impl PlexiApp {
 
 #[cfg(test)]
 mod ownership_tests {
-    use crate::app_protocol::ArtifactOpenMode;
+    use crate::app::FocusLayer;
+    use crate::app_protocol::{ArtifactOpenMode, NotifyKind, NotifyScope};
     use crate::app_trait::AppCommand;
     use crate::pane::{AppRuntime, Pane};
     use crate::testing::HostHarness;
@@ -479,6 +480,113 @@ mod ownership_tests {
             } if *sid == pane_id && *cid == 1)
         });
         assert!(found, "QueryContextState must appear in drained commands");
+    }
+
+    /// ShowNotification is overlay-safe: must reach `pending_notifications` even
+    /// when a modal holds keyboard input (otherwise notifications from background
+    /// apps would be silently lost while the user is interacting with a modal).
+    #[test]
+    fn show_notification_safe_while_overlay_active() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_test_pane();
+        h.run_frames(1); // stabilize tile layout
+
+        // Simulate a modal owning keyboard input.
+        h.app.push_focus_layer(FocusLayer::NotificationModal);
+        h.app.show_notification_modal = true;
+        // Test constructor initialises notifications_enabled = false; enable it so
+        // ShowNotification is not silently dropped by the master-switch guard.
+        h.app.notifications_enabled = true;
+        assert!(h.app.input_captured_by_overlay(), "overlay must be active");
+
+        push_command(
+            &mut h,
+            pane_id,
+            AppCommand::ShowNotification {
+                notify_id: "overlay-safe-notify".to_string(),
+                sender_pane_id: pane_id,
+                source_context_id: 0,
+                level: "info".to_string(),
+                title: "notification while modal open".to_string(),
+                body: String::new(),
+                kind: NotifyKind::Message,
+                options: vec![],
+                input_prompt: None,
+                required: false,
+                priority: 0,
+                scope: NotifyScope::Context,
+                image_inline: None,
+                image_pipe_id: None,
+                timeout_secs: None,
+                on_dismiss: None,
+            },
+        );
+
+        h.run_frames(1);
+
+        let found = h
+            .app
+            .pending_notifications
+            .iter()
+            .any(|n| n.notify_id == "overlay-safe-notify");
+        assert!(
+            found,
+            "ShowNotification must reach pending_notifications immediately even while overlay is active"
+        );
+        assert!(
+            h.app.overlay_held_cmds.is_empty(),
+            "ShowNotification must not be placed in the overlay hold queue"
+        );
+    }
+
+    /// SpawnPane is overlay-unsafe: must be held while a modal owns input and
+    /// released only after the overlay is dismissed.
+    #[test]
+    fn spawn_pane_deferred_while_overlay_active_released_after() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_test_pane();
+        h.run_frames(1); // stabilize
+
+        // Simulate a modal owning keyboard input.
+        h.app.push_focus_layer(FocusLayer::NotificationModal);
+        h.app.show_notification_modal = true;
+        assert!(h.app.input_captured_by_overlay(), "overlay must be active");
+
+        push_command(
+            &mut h,
+            pane_id,
+            AppCommand::SpawnPane {
+                type_id: "__test_nonexistent__".to_string(),
+                layout: "split".to_string(),
+                args: vec![],
+                pipe_id: None,
+                from_pane_id: Some(pane_id),
+                request_id: Some("defer-test".to_string()),
+                target_context: None,
+            },
+        );
+
+        h.run_frames(1);
+
+        // SpawnPane must be held, not dispatched.
+        assert_eq!(
+            h.app.overlay_held_cmds.len(),
+            1,
+            "SpawnPane must be held in overlay_held_cmds while overlay is active"
+        );
+
+        // Dismiss the modal.
+        h.app.show_notification_modal = false;
+        h.app.pop_focus_layer(&FocusLayer::NotificationModal);
+        assert!(!h.app.input_captured_by_overlay(), "overlay must be inactive after pop");
+
+        h.run_frames(1);
+
+        // Hold queue must be empty — the command was released this frame.
+        assert!(
+            h.app.overlay_held_cmds.is_empty(),
+            "overlay_held_cmds must be empty after overlay releases"
+        );
     }
 
     /// QueryContextState for non-descendant context: the dispatch handler
