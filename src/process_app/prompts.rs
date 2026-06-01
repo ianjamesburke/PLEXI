@@ -282,19 +282,23 @@ pub(crate) fn show_prompt_modal(
                             type_id,
                             deferred_ai_queries.len()
                         );
+                        // Build ToolDispatcher once — pane_id, type_id, workspace_root are
+                        // identical for all queries in this queue.
+                        let ws_root = workspace_root.to_path_buf();
+                        let tool_dispatcher = std::sync::Arc::new(
+                            crate::plexi_ai::tool_dispatch::ToolDispatcher::from_registry(
+                                pane_id,
+                                type_id.to_string(),
+                                ws_root.clone(),
+                            ),
+                        );
                         while let Some(q) = deferred_ai_queries.pop_front() {
                             let broker = Arc::clone(&ai_broker);
                             let app_id = type_id.to_string();
                             let tx = http_tx.clone();
-                            let ws_root = workspace_root.to_path_buf();
+                            let ws_root_clone = ws_root.clone();
                             let open_panes = crate::plexi_ai::broker::get_pane_snapshot();
-                            let tool_dispatcher = std::sync::Arc::new(
-                                crate::plexi_ai::tool_dispatch::ToolDispatcher::from_registry(
-                                    pane_id,
-                                    type_id.to_string(),
-                                    ws_root.clone(),
-                                ),
-                            );
+                            let td = std::sync::Arc::clone(&tool_dispatcher);
                             std::thread::Builder::new()
                                 .name(format!("ai-query-deferred-{app_id}-{}", q.request_id))
                                 .spawn(move || {
@@ -304,9 +308,9 @@ pub(crate) fn show_prompt_modal(
                                         system: q.system,
                                         messages: q.messages,
                                         tools: q.tools,
-                                        workspace_root: Some(ws_root),
+                                        workspace_root: Some(ws_root_clone),
                                         open_panes,
-                                        tool_dispatcher: Some(tool_dispatcher),
+                                        tool_dispatcher: Some(td),
                                     });
                                     let event = PlexiEvent::AiResponse {
                                         request_id: q.request_id,

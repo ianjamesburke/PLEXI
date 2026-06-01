@@ -1016,6 +1016,25 @@ impl ProcessApp {
                     } else {
                         // Withheld — capability declared but first-run consent not yet given.
                         // Defer the query and trigger the consent modal.
+                        // Cap the deferred queue to prevent thread exhaustion when consent
+                        // is slow or the app fires many queries before the modal is shown.
+                        if self.deferred_ai_queries.len() >= 16 {
+                            log::warn!(
+                                "ProcessApp[{}]: AiQuery {request_id} dropped — deferred queue full (>=16 pending consent)",
+                                self.type_id
+                            );
+                            self.outbound_events.push_back(PlexiEvent::AiResponse {
+                                request_id,
+                                content: None,
+                                tokens_in: 0,
+                                tokens_out: 0,
+                                error: Some(
+                                    "capability withheld: too many deferred queries pending consent"
+                                        .to_string(),
+                                ),
+                            });
+                            return;
+                        }
                         log::info!(
                             "ProcessApp[{}]: AiQuery {request_id} withheld — queuing for ai.query consent",
                             self.type_id
