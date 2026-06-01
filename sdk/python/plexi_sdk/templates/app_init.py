@@ -45,7 +45,7 @@ class __CLASS_NAME__(App):
             Section("ACTIONS"),
             Card([
                 self._btn,
-                Label(f"Clicks: {self.click_count}", tone="caption"),
+                Label(f"Clicks: {self.click_count}", color=ctx.theme.accent),
                 Label(f"state stored in app_states/{self.app_id}.json — survives hot reload", tone="muted"),
             ]),
             Section("KEYBOARD SHORTCUTS"),
@@ -61,12 +61,16 @@ class __CLASS_NAME__(App):
         ]))
 
     def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
-        if key == "Escape":
+        if key == "escape":
             self.emit.close_self()
         elif key == "i":
             self.click_count += 1
             ctx.save_state({"clicks": self.click_count})
             ctx.status_summary(f"Clicked {self.click_count} time(s)")
+
+    # For async I/O (http, AI, secrets) make the handler async:
+    # async def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
+    #     result = await self.emit.http_get(url)  # non-blocking I/O
 
 
 __CLASS_NAME__().run()
