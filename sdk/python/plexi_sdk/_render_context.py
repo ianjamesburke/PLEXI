@@ -858,6 +858,26 @@ class RenderContext:
         """Query the state of a context. Host responds via on_context_state."""
         self.emit.query_context_state(context_id)
 
+    # ── Component tree emission (epic #1897 B3) ────────────────────────────────
+
+    def render_tree(self, node: "dict | Any") -> None:
+        """Emit a component tree command to the host.
+
+        node can be any object with a to_node() method (HasToNode), or a raw
+        dict matching the UiNode wire format.
+
+        Emitted as: {"type": "component_tree", "root": <UiNode dict>}
+        """
+        if isinstance(node, dict):
+            root = node
+        elif hasattr(node, "to_node"):
+            root = node.to_node()
+        else:
+            raise TypeError(
+                f"render_tree: expected HasToNode or dict, got {type(node).__name__}"
+            )
+        self._queue({"type": "component_tree", "root": root})
+
     # ── Declarative layout ──────────────────────────────────────────────────────
 
     def badge_child(self, label: str, fill: "str | None" = None, fg: "str | None" = None,

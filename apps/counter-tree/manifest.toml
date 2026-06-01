@@ -1,0 +1,12 @@
+schema_version = 1
+
+[app]
+id = "counter-tree"
+type = "app"
+name = "Counter Tree"
+version = "0.1.0"
+description = "Counter app demonstrating the component tree API (epic #1897 B3)."
+entry = "counter_tree.py"
+
+[app.capabilities]
+capabilities = []
