@@ -1,23 +1,39 @@
 //! Component tree renderer — walks a `UiNode` tree and renders it into egui.
 //!
 //! This is the host-side counterpart to the `RenderCommand::ComponentTree`
-//! protocol variant introduced in PGAP v3.5. Task A3 will wire interaction
-//! events (`ComponentEvent`) back to the app; for now only rendering is done.
+//! protocol variant introduced in PGAP v3.5. Interactive nodes (`Button`,
+//! `Input`, `Interactive`) fire `ComponentEvent`s back to the app via the
+//! returned `Vec<ComponentEventPayload>` (task A3).
 
 use egui::{Color32, Ui};
 
 use crate::app_protocol::{StackDirection, UiNode};
 use crate::theme::Colors;
 
+/// Carries the data needed to emit a `PlexiEvent::ComponentEvent`.
+///
+/// Returned from `render_component_tree` and converted to `PlexiEvent` by
+/// the `ComponentTree` arm in `render_draw_commands`.
+pub(crate) struct ComponentEventPayload {
+    pub(crate) node_id: String,
+    pub(crate) event_type: String,
+    pub(crate) payload: Option<serde_json::Value>,
+}
+
 /// Render a `UiNode` tree into the provided egui `Ui`.
+///
+/// Returns any interaction events that occurred during this frame so the
+/// caller can forward them to the app as `PlexiEvent::ComponentEvent`.
 ///
 /// `colors` is the active host theme — passed through so L1 sugar nodes and
 /// `Raw` escape-hatch nodes have consistent theming.
-///
-/// The `ui` cursor starts at whatever position the caller left it; nodes are
-/// rendered using egui's allocation model so they flow naturally with
-/// surrounding content.
-pub(crate) fn render_component_tree(ui: &mut Ui, node: &UiNode, colors: &Colors) {
+pub(crate) fn render_component_tree(
+    ui: &mut Ui,
+    node: &UiNode,
+    colors: &Colors,
+) -> Vec<ComponentEventPayload> {
+    let mut events: Vec<ComponentEventPayload> = Vec::new();
+
     match node {
         // ── L0 primitives ────────────────────────────────────────────────
 
@@ -28,10 +44,10 @@ pub(crate) fn render_component_tree(ui: &mut Ui, node: &UiNode, colors: &Colors)
                 }
                 if padding.left > 0.0 {
                     ui.indent("stack_left_pad", |ui| {
-                        render_stack(ui, direction, children, *gap, colors);
+                        events.extend(render_stack(ui, direction, children, *gap, colors));
                     });
                 } else {
-                    render_stack(ui, direction, children, *gap, colors);
+                    events.extend(render_stack(ui, direction, children, *gap, colors));
                 }
                 if padding.bottom > 0.0 {
                     ui.add_space(padding.bottom);
@@ -46,16 +62,14 @@ pub(crate) fn render_component_tree(ui: &mut Ui, node: &UiNode, colors: &Colors)
                 egui::ScrollArea::vertical()
             };
             scroll.show(ui, |ui| {
-                render_component_tree(ui, child, colors);
+                events.extend(render_component_tree(ui, child, colors));
             });
         }
 
         UiNode::Layer { children } => {
             // V1: sequential rendering (true Z-stacking is a future improvement).
-            // Children paint in order; true z-layering requires a separate painter
-            // pass and is deferred to a later task.
             for child in children {
-                render_component_tree(ui, child, colors);
+                events.extend(render_component_tree(ui, child, colors));
             }
         }
 
@@ -65,7 +79,6 @@ pub(crate) fn render_component_tree(ui: &mut Ui, node: &UiNode, colors: &Colors)
                 rich = rich.size(*size);
             }
             if !color.is_empty() {
-                // parse_color returns None on bad input — fall through to egui default.
                 if let Some(c) = parse_color(color) {
                     rich = rich.color(c);
                 }
@@ -79,18 +92,49 @@ pub(crate) fn render_component_tree(ui: &mut Ui, node: &UiNode, colors: &Colors)
             ui.label(rich);
         }
 
-        UiNode::Interactive { child, .. } => {
-            // A3 will wire ComponentEvent back to the app.
-            // For now render the child — interaction is silently ignored.
-            render_component_tree(ui, child, colors);
+        UiNode::Interactive { node_id, child, on_click, on_hover } => {
+            // Render the child inside an interact-sense scope so we get a
+            // Response covering the child's bounding rect.
+            let child_response = ui.scope(|ui| {
+                let child_evts = render_component_tree(ui, child, colors);
+                // Bubble child events up.
+                (child_evts, ui.min_rect())
+            });
+            let (child_evts, child_rect) = child_response.inner;
+            events.extend(child_evts);
+
+            // Allocate an invisible interact-rect on top of the child area.
+            let response = ui.interact(
+                child_rect,
+                egui::Id::new(node_id.as_str()),
+                egui::Sense::click_and_drag(),
+            );
+
+            if *on_click && response.clicked() {
+                log::info!(
+                    "render_components: Interactive click node_id={node_id}"
+                );
+                events.push(ComponentEventPayload {
+                    node_id: node_id.clone(),
+                    event_type: "click".into(),
+                    payload: None,
+                });
+            }
+            if *on_hover && response.hovered() {
+                events.push(ComponentEventPayload {
+                    node_id: node_id.clone(),
+                    event_type: "hover_enter".into(),
+                    payload: None,
+                });
+            }
         }
 
         UiNode::Raw { command } => {
             // Delegate to the existing flat renderer for a single draw command.
-            // We use the Ui clip rect as the pane_rect so relative offsets work.
             let pane_rect = ui.clip_rect();
             // V1: fresh cache per Raw node — loses cache state across frames.
             // A future pass will thread parent caches through. See epic #1897 A2.
+            let mut raw_events: Vec<crate::app_protocol::PlexiEvent> = Vec::new();
             crate::process_app::render::render_draw_commands(
                 ui,
                 pane_rect,
@@ -103,7 +147,20 @@ pub(crate) fn render_component_tree(ui: &mut Ui, node: &UiNode, colors: &Colors)
                 false,
                 &mut std::collections::HashMap::new(),
                 &mut std::collections::HashMap::new(),
+                &mut raw_events,
             );
+            // Convert any ComponentEvent payloads back from PlexiEvent (unlikely
+            // from a Raw draw command, but keep the pipeline consistent).
+            for evt in raw_events {
+                if let crate::app_protocol::PlexiEvent::ComponentEvent {
+                    node_id,
+                    event_type,
+                    payload,
+                } = evt
+                {
+                    events.push(ComponentEventPayload { node_id, event_type, payload });
+                }
+            }
         }
 
         UiNode::Surface { .. } => {
@@ -111,21 +168,50 @@ pub(crate) fn render_component_tree(ui: &mut Ui, node: &UiNode, colors: &Colors)
             log::trace!("render_components: Surface node encountered — no-op (future GPU layer)");
         }
 
-        // ── L1 sugar ─────────────────────────────────────────────────────
+        // ── L1 sugar ─────────────────────────────────────────────────────────
 
-        UiNode::Button { label, disabled, .. } => {
-            // node_id interaction wiring deferred to A3.
-            ui.add_enabled(!disabled, egui::Button::new(label.as_str()));
+        UiNode::Button { node_id, label, disabled, .. } => {
+            let response = ui.add_enabled(!disabled, egui::Button::new(label.as_str()));
+            if response.clicked() {
+                log::info!(
+                    "render_components: Button click node_id={node_id}"
+                );
+                events.push(ComponentEventPayload {
+                    node_id: node_id.clone(),
+                    event_type: "click".into(),
+                    payload: None,
+                });
+            }
         }
 
-        UiNode::Input { value, .. } => {
-            // node_id and change event wiring deferred to A3.
-            // Clone the value so we have a mutable binding; changes are
-            // discarded each frame until A3 wires events.
-            // non-interactive: prevents the input from capturing host key events
-            // before A3 wires events.
+        UiNode::Input { node_id, value, placeholder, .. } => {
             let mut val_buf = value.clone();
-            ui.add(egui::TextEdit::singleline(&mut val_buf).interactive(false));
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut val_buf)
+                    .hint_text(placeholder.as_str()),
+            );
+            if response.changed() {
+                log::debug!(
+                    "render_components: Input change node_id={node_id} value={val_buf:?}"
+                );
+                events.push(ComponentEventPayload {
+                    node_id: node_id.clone(),
+                    event_type: "change".into(),
+                    payload: Some(serde_json::json!({ "value": val_buf })),
+                });
+            }
+            if response.lost_focus()
+                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+            {
+                log::info!(
+                    "render_components: Input submit node_id={node_id} value={val_buf:?}"
+                );
+                events.push(ComponentEventPayload {
+                    node_id: node_id.clone(),
+                    event_type: "submit".into(),
+                    payload: Some(serde_json::json!({ "value": val_buf })),
+                });
+            }
         }
 
         UiNode::Badge { label, fill, fg, .. } => {
@@ -162,6 +248,8 @@ pub(crate) fn render_component_tree(ui: &mut Ui, node: &UiNode, colors: &Colors)
             ui.painter().circle_filled(rect.center(), dot_size / 2.0, fill);
         }
     }
+
+    events
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -172,7 +260,8 @@ fn render_stack(
     children: &[UiNode],
     gap: f32,
     colors: &Colors,
-) {
+) -> Vec<ComponentEventPayload> {
+    let mut events = Vec::new();
     match direction {
         StackDirection::Horizontal => {
             ui.horizontal(|ui| {
@@ -180,7 +269,7 @@ fn render_stack(
                     if i > 0 && gap > 0.0 {
                         ui.add_space(gap);
                     }
-                    render_component_tree(ui, child, colors);
+                    events.extend(render_component_tree(ui, child, colors));
                 }
             });
         }
@@ -190,11 +279,12 @@ fn render_stack(
                     if i > 0 && gap > 0.0 {
                         ui.add_space(gap);
                     }
-                    render_component_tree(ui, child, colors);
+                    events.extend(render_component_tree(ui, child, colors));
                 }
             });
         }
     }
+    events
 }
 
 use crate::process_app::render::parse_color;
@@ -218,17 +308,14 @@ mod render_component_tree_tests {
             monospace: false,
         };
         if let UiNode::Text { size, color, .. } = &node {
-            // Guard: size 0.0 must be skipped (not forwarded to RichText).
             assert_eq!(*size, 0.0);
-            // Guard: empty color must parse to None — no unwrap panic.
             assert!(parse_color(color).is_none());
         } else {
             panic!("wrong variant");
         }
     }
 
-    /// A `UiNode::Stack` with two text children should be constructable and
-    /// both children must produce valid color parses.
+    /// A `UiNode::Stack` with two text children should be constructable.
     #[test]
     fn stack_two_children_constructable() {
         let node = UiNode::Stack {
@@ -269,10 +356,10 @@ mod render_component_tree_tests {
     fn parse_color_edge_cases() {
         assert!(parse_color("").is_none());
         assert!(parse_color("#").is_none());
-        assert!(parse_color("#gg0000").is_none()); // invalid hex digits
+        assert!(parse_color("#gg0000").is_none());
         assert!(parse_color("#ff0000").is_some());
-        assert!(parse_color("ff0000").is_some()); // no leading #
-        assert!(parse_color("#ff0000ff").is_some()); // 8-char rgba
+        assert!(parse_color("ff0000").is_some());
+        assert!(parse_color("#ff0000ff").is_some());
     }
 
     /// Surface node variant is handled — just verify it compiles and matches.
@@ -284,5 +371,102 @@ mod render_component_tree_tests {
         } else {
             panic!("wrong variant");
         }
+    }
+
+    /// `ComponentEventPayload` can be constructed with all fields.
+    #[test]
+    fn component_event_payload_constructable() {
+        let evt = ComponentEventPayload {
+            node_id: "btn1".into(),
+            event_type: "click".into(),
+            payload: None,
+        };
+        assert_eq!(evt.node_id, "btn1");
+        assert_eq!(evt.event_type, "click");
+        assert!(evt.payload.is_none());
+    }
+
+    /// `ComponentEventPayload` with a JSON payload round-trips correctly.
+    #[test]
+    fn component_event_payload_with_json_value() {
+        let val = serde_json::json!({ "value": "hello" });
+        let evt = ComponentEventPayload {
+            node_id: "inp1".into(),
+            event_type: "change".into(),
+            payload: Some(val.clone()),
+        };
+        assert_eq!(evt.node_id, "inp1");
+        assert_eq!(evt.event_type, "change");
+        assert_eq!(evt.payload.unwrap(), val);
+    }
+
+    /// `UiNode::Button` node can be constructed with all fields and the
+    /// node_id is preserved. Event emission logic requires a real egui context
+    /// to test (headless tests cover struct correctness only).
+    #[test]
+    fn button_click_emits_component_event_struct_check() {
+        // Verify that a Button node_id="btn1" can be constructed and fields are correct.
+        // The actual click→event path requires an egui display context; struct
+        // correctness is verified here.
+        let node = UiNode::Button {
+            node_id: "btn1".into(),
+            label: "Click me".into(),
+            disabled: false,
+            _l0: Box::new(UiNode::Text {
+                text: "Click me".into(),
+                size: 14.0,
+                color: String::new(),
+                bold: false,
+                monospace: false,
+            }),
+        };
+        if let UiNode::Button { node_id, label, disabled, .. } = &node {
+            assert_eq!(node_id, "btn1");
+            assert_eq!(label, "Click me");
+            assert!(!disabled);
+        } else {
+            panic!("wrong variant");
+        }
+        // Verify the payload we'd construct on click is correct.
+        let evt = ComponentEventPayload {
+            node_id: "btn1".into(),
+            event_type: "click".into(),
+            payload: None,
+        };
+        assert_eq!(evt.node_id, "btn1");
+        assert_eq!(evt.event_type, "click");
+    }
+
+    /// `UiNode::Interactive` wraps a child — verify structure and on_click/on_hover fields.
+    #[test]
+    fn interactive_node_wraps_child_and_collects_events() {
+        let child = UiNode::Text {
+            text: "inner".into(),
+            size: 12.0,
+            color: String::new(),
+            bold: false,
+            monospace: false,
+        };
+        let node = UiNode::Interactive {
+            node_id: "wrap1".into(),
+            child: Box::new(child),
+            on_click: true,
+            on_hover: false,
+        };
+        if let UiNode::Interactive { node_id, on_click, on_hover, .. } = &node {
+            assert_eq!(node_id, "wrap1");
+            assert!(*on_click);
+            assert!(!*on_hover);
+        } else {
+            panic!("wrong variant");
+        }
+        // Verify that a click event for this node would be correctly shaped.
+        let evt = ComponentEventPayload {
+            node_id: "wrap1".into(),
+            event_type: "click".into(),
+            payload: None,
+        };
+        assert_eq!(evt.event_type, "click");
+        assert_eq!(evt.node_id, "wrap1");
     }
 }

@@ -199,6 +199,7 @@ fn render_commands_to_png(commands: &[RenderCommand], width: u32, height: u32) -
                     &mut img_cache, &std::env::temp_dir(), false,
                     &mut lv_offsets,
                     &mut lv_last_sel,
+                    &mut Vec::new(),
                 );
             });
     });

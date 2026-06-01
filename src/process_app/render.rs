@@ -44,6 +44,7 @@ pub(crate) fn render_draw_commands(
     net_http_granted: bool,
     list_view_scroll_offsets: &mut HashMap<String, f32>,
     list_view_last_aligned_sel: &mut HashMap<String, usize>,
+    outbound_events: &mut Vec<crate::app_protocol::PlexiEvent>,
 ) {
     let origin = pane_rect.min;
 
@@ -1008,7 +1009,20 @@ pub(crate) fn render_draw_commands(
                     "render: ComponentTree received; rendering via render_component_tree; pane_origin={:?}",
                     pane_rect.min
                 );
-                crate::render_components::render_component_tree(ui, root, colors);
+                let component_events =
+                    crate::render_components::render_component_tree(ui, root, colors);
+                for evt in component_events {
+                    log::info!(
+                        "render: ComponentEvent node_id={} event_type={}",
+                        evt.node_id,
+                        evt.event_type
+                    );
+                    outbound_events.push(crate::app_protocol::PlexiEvent::ComponentEvent {
+                        node_id: evt.node_id,
+                        event_type: evt.event_type,
+                        payload: evt.payload,
+                    });
+                }
             }
         }
     }
