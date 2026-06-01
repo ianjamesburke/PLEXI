@@ -40,6 +40,7 @@ mod pane_ops;
 mod plexi_descriptor;
 mod plexi_ai;
 mod render;
+mod render_components;
 mod process_app;
 mod headless_renderer;
 mod hot_reload;
