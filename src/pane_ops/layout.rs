@@ -687,6 +687,11 @@ impl PlexiApp {
             }
 
             let removed = if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.remove(tile_id) {
+                log::info!("close_tile: emitting PaneClosed pane_id={pane_id}");
+                crate::event_log::emit(crate::event_log::HostEvent::PaneClosed {
+                    pane_id,
+                    timestamp: crate::event_log::now_timestamp(),
+                });
                 ctx.panes.remove(&pane_id)
             } else {
                 None

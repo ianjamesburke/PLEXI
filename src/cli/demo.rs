@@ -35,11 +35,11 @@ pub fn demo_cli() -> i32 {
     eprintln!("\x1b[1;36m");
     eprintln!("  Plexi — Quick Tutorial");
     eprintln!("\x1b[0m");
-    eprintln!("  Two moves. That's all you need to know.");
+    eprintln!("  Seven moves. That's all you need to know.");
     eprintln!();
 
     // Step 1 — split
-    print_step_header(1, 2, "Split a pane");
+    print_step_header(1, 7, "Split a pane");
     eprintln!("    Press  \x1b[1m[ \u{2318}D ]\x1b[0m  to split the current pane.");
     eprintln!();
 
@@ -61,10 +61,10 @@ pub fn demo_cli() -> i32 {
             return 1;
         }
     };
-    print_step_complete(1, 2);
+    print_step_complete(1, 7);
 
     // Step 2 — navigate
-    print_step_header(2, 2, "Navigate panes");
+    print_step_header(2, 7, "Navigate panes");
     eprintln!("       \x1b[2m^\x1b[0m");
     eprintln!("       K");
     eprintln!("    H     L");
@@ -80,7 +80,7 @@ pub fn demo_cli() -> i32 {
     // Any other pane ID appearing between these two resets the state so that
     // a second ⌘D split cannot satisfy the round-trip without actual navigation.
     let mut saw_split_depart = false;
-    if let Err(e) = poll_event(&events_path, after_split_offset, |kind, obj| {
+    let after_nav_offset = match poll_event(&events_path, after_split_offset, |kind, obj| {
         if kind != "focus_changed" { return false; }
         let Some(pid) = obj.get("pane_id").and_then(|v| v.as_u64()) else { return false };
         if !saw_split_depart {
@@ -95,11 +95,99 @@ pub fn demo_cli() -> i32 {
             false
         }
     }) {
+        Ok(offset) => offset,
+        Err(e) => {
+            eprintln!("error watching {}: {e}", events_path.display());
+            return 1;
+        }
+    };
+    print_step_complete(2, 7);
+
+    // Step 3 — close pane
+    print_step_header(3, 7, "Close a pane");
+    eprintln!("    Press  \x1b[1m[ \u{2318}W ]\x1b[0m  to close the split pane.");
+    eprintln!();
+    let after_close_offset = match poll_event(&events_path, after_nav_offset, |kind, obj| {
+        if kind == "pane_closed" {
+            if let Some(id) = obj.get("pane_id").and_then(|v| v.as_u64()) {
+                return id == split_pane_id;
+            }
+        }
+        false
+    }) {
+        Ok(offset) => offset,
+        Err(e) => {
+            eprintln!("error watching {}: {e}", events_path.display());
+            return 1;
+        }
+    };
+    print_step_complete(3, 7);
+
+    // Step 4 — open an app
+    print_step_header(4, 7, "Open an app");
+    eprintln!("    Open a new split (\x1b[1m\u{2318}D\x1b[0m), then in the new pane run:");
+    eprintln!("    \x1b[1mplexi open balls\x1b[0m");
+    eprintln!();
+    let after_app_offset = match poll_event(&events_path, after_close_offset, |kind, _| {
+        kind == "app_spawned"
+    }) {
+        Ok(offset) => offset,
+        Err(e) => {
+            eprintln!("error watching {}: {e}", events_path.display());
+            return 1;
+        }
+    };
+    print_step_complete(4, 7);
+
+    // Step 5 — send a notification
+    print_step_header(5, 7, "Send a notification");
+    eprintln!("    In any pane, run:");
+    eprintln!("    \x1b[1mplexi notify --title \"Hello\"\x1b[0m");
+    eprintln!();
+    let after_notify_offset = match poll_event(&events_path, after_app_offset, |kind, _| {
+        kind == "notification_posted"
+    }) {
+        Ok(offset) => offset,
+        Err(e) => {
+            eprintln!("error watching {}: {e}", events_path.display());
+            return 1;
+        }
+    };
+    print_step_complete(5, 7);
+
+    // Step 6 — scaffold a new app (keypress-advance; app init has no event log path)
+    print_step_header(6, 7, "Scaffold a new app");
+    eprintln!("    In any pane, run:");
+    eprintln!("    \x1b[1mplexi app init my-app\x1b[0m");
+    eprintln!();
+    eprintln!("    Then switch back here and press  \x1b[1m[Enter]\x1b[0m  to continue.");
+    eprintln!();
+    {
+        use std::io::BufRead;
+        let _ = std::io::stdin().lock().lines().next();
+    }
+    // Snapshot offset after keypress so step 7 only catches context_created events
+    // that follow — not any that may have been emitted during steps 1–6.
+    let after_app_init_offset = std::fs::metadata(&events_path)
+        .map(|m| m.len())
+        .unwrap_or(after_notify_offset);
+    print_step_complete(6, 7);
+
+    // Step 7 — create a new context
+    print_step_header(7, 7, "Create a context");
+    eprintln!("    In any pane, run:");
+    eprintln!("    \x1b[1mplexi context new\x1b[0m");
+    eprintln!();
+    eprintln!("    Contexts are how you organise work in Plexi.");
+    eprintln!();
+    if let Err(e) = poll_event(&events_path, after_app_init_offset, |kind, _| {
+        kind == "context_created"
+    }) {
         eprintln!("error watching {}: {e}", events_path.display());
         return 1;
     }
 
-    eprintln!("  \x1b[1;32m\u{2713} 2/2 \u{2014} You know Plexi.\x1b[0m");
+    eprintln!("  \x1b[1;32m\u{2713} 7/7 \u{2014} Plexi is yours.\x1b[0m");
     eprintln!();
     log::info!("demo_cli: tutorial completed for pane_id={my_pane_id}");
     0

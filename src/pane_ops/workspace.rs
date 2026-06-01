@@ -235,6 +235,15 @@ impl PlexiApp {
         self.rename_buffer = ctx_name;
 
         self.save_workspace();
+        log::info!(
+            "new_context: emitting ContextCreated context_id={child_ctx_id} name={}",
+            self.rename_buffer
+        );
+        crate::event_log::emit(crate::event_log::HostEvent::ContextCreated {
+            context_id: child_ctx_id,
+            name: self.rename_buffer.clone(),
+            timestamp: crate::event_log::now_timestamp(),
+        });
     }
 
     /// Fallback path for `new_context` when no non-portal pane is focused:
@@ -285,6 +294,16 @@ impl PlexiApp {
         let new_ctx_idx = self.router.len() - 1;
         self.renaming_window = Some(new_ctx_idx);
         self.rename_buffer = self.router.get(new_ctx_idx).name.clone();
+        self.save_workspace();
+        log::info!(
+            "new_context_empty: emitting ContextCreated context_id={ctx_id} name={}",
+            self.rename_buffer
+        );
+        crate::event_log::emit(crate::event_log::HostEvent::ContextCreated {
+            context_id: ctx_id,
+            name: self.rename_buffer.clone(),
+            timestamp: crate::event_log::now_timestamp(),
+        });
     }
 
     /// Create a new context at a specific directory path. The terminal pane
