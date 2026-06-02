@@ -121,7 +121,6 @@ impl PlexiApp {
     }
 
     /// Create a new standalone empty context at the home directory.
-    /// create a standalone empty context at the home directory.
     fn new_context_empty(&mut self) {
         let cwd = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         log::info!("new_context_empty: cwd={}", cwd.display());
