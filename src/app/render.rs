@@ -114,11 +114,7 @@ impl PlexiApp {
         egui::CentralPanel::default()
             .frame(egui::Frame {
                 fill: self.colors.bg_darkest,
-                inner_margin: if self.sidebar_visible {
-                    egui::Margin { left: 2, top: 4, right: 4, bottom: 4 }
-                } else {
-                    egui::Margin::same(4)
-                },
+                inner_margin: egui::Margin::same(4),
                 outer_margin: egui::Margin::ZERO,
                 ..Default::default()
             })
