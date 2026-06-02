@@ -36,6 +36,13 @@ pub(crate) fn paint_tab_dots(
     }
 }
 
+/// What kind of pane occupies a minimap slot.
+#[derive(Clone, Copy, PartialEq)]
+pub enum PaneKind {
+    Terminal,
+    App,
+}
+
 /// Preview data for a Portal tile.
 #[derive(Clone)]
 pub struct PortalPreview {
@@ -45,6 +52,10 @@ pub struct PortalPreview {
     pub notification_count: usize,
     /// Normalized [0,1]×[0,1] rects for each leaf pane in the child window layout.
     pub minimap_rects: Vec<egui::Rect>,
+    /// Which minimap slot is currently focused in the child window.
+    pub focused_index: Option<usize>,
+    /// Type of each pane, parallel to `minimap_rects`.
+    pub pane_kinds: Vec<PaneKind>,
 }
 
 impl Default for PortalPreview {
@@ -55,6 +66,8 @@ impl Default for PortalPreview {
             pane_count: 0,
             notification_count: 0,
             minimap_rects: Vec::new(),
+            focused_index: None,
+            pane_kinds: Vec::new(),
         }
     }
 }
@@ -176,30 +189,22 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     _ => "idle",
                 })
                 .unwrap_or("idle");
-            log::info!(
-                "portal render: ctx={:?} status={} panes={}",
-                preview.context_name, osc_status, preview.pane_count,
-            );
-
             let padding = style::SPACE_MD;
             let inner = pane_rect.shrink(padding);
             let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
             portal_ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                // Context name
                 ui.label(
                     egui::RichText::new(&preview.context_name)
                         .size(style::TEXT_BODY)
                         .strong()
                         .color(self.colors.text_primary),
                 );
-                // Description (if set)
                 if !preview.context_description.is_empty() {
                     ui.scope(|ui| {
                         ui.set_max_width(inner.width());
                         crate::widgets::description_label(ui, &preview.context_description, &self.colors);
                     });
                 }
-                // Status chip + pane count + notification count
                 ui.horizontal(|ui| {
                     crate::widgets::status_chip(ui, osc_status, &self.colors);
                     let count_label = if preview.notification_count > 0 {
@@ -214,7 +219,6 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     );
                 });
                 ui.add_space(style::SPACE_SM);
-                // Mini-map: proportional rects for each leaf pane
                 if !preview.minimap_rects.is_empty() {
                     let map_h = (inner.height() * 0.35).clamp(24.0, 80.0);
                     let (map_area, _) = ui.allocate_exact_size(
@@ -223,13 +227,81 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     );
                     let origin = map_area.min;
                     let map_size = map_area.size();
-                    let stroke = egui::Stroke::new(1.0, self.colors.text_dim.linear_multiply(0.35));
-                    for norm in &preview.minimap_rects {
+                    let painter = ui.painter();
+                    let accent = self.colors.accent;
+                    let text_dim = self.colors.text_dim;
+                    let bg_active = self.colors.bg_active;
+                    for (i, norm) in preview.minimap_rects.iter().enumerate() {
                         let scaled = egui::Rect::from_min_max(
                             egui::pos2(origin.x + norm.min.x * map_size.x, origin.y + norm.min.y * map_size.y),
                             egui::pos2(origin.x + norm.max.x * map_size.x, origin.y + norm.max.y * map_size.y),
                         );
-                        ui.painter().rect_stroke(scaled.shrink(1.0), 2.0, stroke, egui::StrokeKind::Middle);
+                        let cell = scaled.shrink(1.0);
+                        let is_focused = preview.focused_index == Some(i);
+                        let kind = preview.pane_kinds.get(i).copied().unwrap_or(PaneKind::Terminal);
+
+                        // Background fill
+                        let fill = if is_focused {
+                            egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 38)
+                        } else {
+                            egui::Color32::from_rgba_unmultiplied(bg_active.r(), bg_active.g(), bg_active.b(), 102)
+                        };
+                        painter.rect_filled(cell, 2.0, fill);
+
+                        // Soft glow behind focused pane
+                        if is_focused {
+                            let glow_rect = cell.expand(2.0);
+                            painter.rect_stroke(
+                                glow_rect,
+                                3.0,
+                                egui::Stroke::new(2.0, egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 26)),
+                                egui::StrokeKind::Outside,
+                            );
+                        }
+
+                        // Border
+                        let border_stroke = if is_focused {
+                            egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 153))
+                        } else {
+                            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(text_dim.r(), text_dim.g(), text_dim.b(), 51))
+                        };
+                        painter.rect_stroke(cell, 2.0, border_stroke, egui::StrokeKind::Middle);
+
+                        // Fake content lines simulating terminal scrollback
+                        let line_alpha: u8 = 25;
+                        let line_color = egui::Color32::from_rgba_unmultiplied(text_dim.r(), text_dim.g(), text_dim.b(), line_alpha);
+                        let line_widths: &[f32] = if kind == PaneKind::App {
+                            &[0.6, 0.4]
+                        } else {
+                            &[0.80, 0.60, 0.45, 0.70, 0.35]
+                        };
+                        let content_w = cell.width() - 4.0;
+                        let line_spacing = (cell.height() - 4.0) / (line_widths.len() as f32 + 1.0);
+                        for (li, &frac) in line_widths.iter().enumerate() {
+                            let y = cell.min.y + line_spacing * (li as f32 + 1.0);
+                            let x_start = if kind == PaneKind::App {
+                                cell.min.x + 2.0 + content_w * (1.0 - frac) * 0.5
+                            } else {
+                                cell.min.x + 2.0
+                            };
+                            let x_end = x_start + content_w * frac;
+                            painter.line_segment(
+                                [egui::pos2(x_start, y), egui::pos2(x_end, y)],
+                                egui::Stroke::new(1.0, line_color),
+                            );
+                        }
+
+                        // Pane type label — only when rect is wide enough
+                        if cell.width() > 40.0 {
+                            let label = if kind == PaneKind::App { "app" } else { "term" };
+                            painter.text(
+                                egui::pos2(cell.min.x + 3.0, cell.min.y + 2.0),
+                                egui::Align2::LEFT_TOP,
+                                label,
+                                egui::FontId::proportional(style::TEXT_HINT),
+                                egui::Color32::from_rgba_unmultiplied(text_dim.r(), text_dim.g(), text_dim.b(), 77),
+                            );
+                        }
                     }
                 }
             });
@@ -346,12 +418,12 @@ pub(crate) fn write_dropped_paths_to_terminal(ui: &egui::Ui, t: &mut TerminalPan
 
 // ── Portal mini-map ───────────────────────────────────────────────────────────
 
-/// Compute normalized [0,1]×[0,1] rects for each leaf pane in a tile tree.
-/// Used by the Portal tile renderer to draw a proportional mini-map preview.
+/// Compute normalized [0,1]×[0,1] rects for each leaf pane in a tile tree,
+/// paired with each leaf's `TileId` so callers can look up pane type and focus.
 pub(crate) fn compute_minimap_rects(
     tiles: &egui_tiles::Tiles<PaneId>,
     root: egui_tiles::TileId,
-) -> Vec<egui::Rect> {
+) -> Vec<(egui::Rect, egui_tiles::TileId)> {
     let full = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
     let mut out = Vec::new();
     collect_tile_rects(tiles, root, full, &mut out);
@@ -362,10 +434,10 @@ fn collect_tile_rects(
     tiles: &egui_tiles::Tiles<PaneId>,
     tile_id: egui_tiles::TileId,
     rect: egui::Rect,
-    out: &mut Vec<egui::Rect>,
+    out: &mut Vec<(egui::Rect, egui_tiles::TileId)>,
 ) {
     match tiles.get(tile_id) {
-        Some(egui_tiles::Tile::Pane(_)) => out.push(rect),
+        Some(egui_tiles::Tile::Pane(_)) => out.push((rect, tile_id)),
         Some(egui_tiles::Tile::Container(container)) => match container {
             egui_tiles::Container::Linear(linear) => {
                 let is_h = linear.dir == egui_tiles::LinearDir::Horizontal;

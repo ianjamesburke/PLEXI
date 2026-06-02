@@ -220,18 +220,37 @@ impl PlexiApp {
                             .filter(|p| !matches!(p, crate::pane::Pane::Portal(_)))
                             .count();
                         let notif_count = self.context_notification_count_recursive(child_ctx_id);
-                        let minimap_rects = self.windows.iter()
+                        let (minimap_rects, focused_index, pane_kinds) = self.windows.iter()
                             .find(|w| w.context_id == child_ctx_id)
                             .and_then(|w| w.tree.root.map(|root| {
-                                crate::tiling::compute_minimap_rects(&w.tree.tiles, root)
+                                let leaves = crate::tiling::compute_minimap_rects(&w.tree.tiles, root);
+                                let focused = w.focused_pane.and_then(|fid| {
+                                    leaves.iter().position(|(_, tid)| *tid == fid)
+                                });
+                                let kinds: Vec<crate::tiling::PaneKind> = leaves.iter().map(|(_, tid)| {
+                                    match w.tree.tiles.get(*tid) {
+                                        Some(egui_tiles::Tile::Pane(pid)) => {
+                                            if w.panes.get(pid).and_then(|p| p.as_app()).is_some() {
+                                                crate::tiling::PaneKind::App
+                                            } else {
+                                                crate::tiling::PaneKind::Terminal
+                                            }
+                                        }
+                                        _ => crate::tiling::PaneKind::Terminal,
+                                    }
+                                }).collect();
+                                let rects = leaves.into_iter().map(|(r, _)| r).collect();
+                                (rects, focused, kinds)
                             }))
-                            .unwrap_or_default();
+                            .unwrap_or_else(|| (Vec::new(), None, Vec::new()));
                         map.insert(pane_id, crate::tiling::PortalPreview {
                             context_name: ctx_name,
                             context_description: ctx_description,
                             pane_count,
                             notification_count: notif_count,
                             minimap_rects,
+                            focused_index,
+                            pane_kinds,
                         });
                     }
                     map
