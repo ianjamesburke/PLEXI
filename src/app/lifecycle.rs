@@ -527,7 +527,10 @@ impl PlexiApp {
                 crate::app_protocol::AppRequest::CreateContext { root, name, parent_name } => {
                     log::info!("pane_ipc: kind=create_context root={:?} name={:?} parent_name={:?}", root, name, parent_name);
                     if let Some(pname) = parent_name {
-                        let path = root.as_ref().cloned().unwrap_or_else(|| std::path::PathBuf::from("."));
+                        let path = root.as_ref().cloned().unwrap_or_else(|| {
+                            let p = self.router.active().path.clone();
+                            if p.is_absolute() { p } else { dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")) }
+                        });
                         let current_ctx_id = self.router.active().context_id;
                         let current_win_id = self.windows[self.active_window].window_id;
                         let current_focused = self.windows[self.active_window].focused_pane;

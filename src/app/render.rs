@@ -226,22 +226,25 @@ impl PlexiApp {
                                 let root = w.tree.root?;
                                 let leaves = crate::tiling::compute_minimap_rects(&w.tree.tiles, root);
                                 let panes = leaves.iter().map(|(norm_rect, tile_id)| {
-                                    let kind = match w.tree.tiles.get(*tile_id) {
-                                        Some(egui_tiles::Tile::Pane(pid)) => {
-                                            if w.panes.get(pid).and_then(|p| p.as_app()).is_some() {
-                                                crate::tiling::PaneKind::App
-                                            } else {
-                                                crate::tiling::PaneKind::Terminal
-                                            }
-                                        }
+                                    let pane_ref = match w.tree.tiles.get(*tile_id) {
+                                        Some(egui_tiles::Tile::Pane(pid)) => w.panes.get(pid),
+                                        _ => None,
+                                    };
+                                    let kind = match pane_ref {
+                                        Some(p) if p.as_app().is_some() => crate::tiling::PaneKind::App,
                                         _ => crate::tiling::PaneKind::Terminal,
                                     };
+                                    let title = pane_ref.and_then(|p| {
+                                        p.as_terminal().and_then(|t| t.name.clone())
+                                            .or_else(|| p.as_app().map(|a| a.name.clone()))
+                                    });
                                     let focused = w.focused_pane == Some(*tile_id);
                                     crate::tiling::MiniPane {
                                         norm_rect: *norm_rect,
                                         kind,
                                         focused,
                                         has_content: true,
+                                        title,
                                     }
                                 }).collect();
                                 Some(crate::tiling::MiniWindow {

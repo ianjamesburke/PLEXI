@@ -52,6 +52,8 @@ pub struct MiniPane {
     pub focused: bool,
     /// True when the pane has meaningful content (always true for running panes).
     pub has_content: bool,
+    /// OSC title or app name, if available.
+    pub title: Option<String>,
 }
 
 /// One window in the child context, with its spatial grid position.
@@ -554,7 +556,6 @@ pub(crate) fn paint_portal_minimap(
                 painter.rect_stroke(cell, 2.0, egui::Stroke::new(1.0, dim_border), egui::StrokeKind::Middle);
             }
 
-            // Content lines — only drawn when pane has actual content; empty panes stay blank.
             if !pane.has_content {
                 continue;
             }
@@ -567,51 +568,122 @@ pub(crate) fn paint_portal_minimap(
             let line_color = egui::Color32::from_rgba_unmultiplied(
                 colors.text_dim.r(), colors.text_dim.g(), colors.text_dim.b(), line_alpha,
             );
-
-            // Deterministic pseudo-random widths based on pane index
-            let num_lines = if pane.kind == PaneKind::App { 4 } else {
-                ((content_area.height() / 3.5) as usize).clamp(3, 12)
-            };
-            let line_step = content_area.height() / (num_lines as f32 + 1.0);
             let content_w = content_area.width();
 
-            for li in 0..num_lines {
-                // Deterministic width: vary by pane_idx and line index
-                let frac = if pane.kind == PaneKind::App {
-                    let widths = [0.55f32, 0.38, 0.62, 0.44];
-                    widths[li % widths.len()]
-                } else {
-                    let raw = (pane_idx * 7 + li * 13) % 100;
-                    0.25 + (raw as f32 / 100.0) * 0.65
-                };
-                let y = content_area.min.y + line_step * (li as f32 + 1.0);
-                let x_start = if pane.kind == PaneKind::App {
-                    content_area.min.x + content_w * (1.0 - frac) * 0.5
-                } else {
-                    content_area.min.x
-                };
-                let x_end = (x_start + content_w * frac).min(content_area.max.x);
-                painter.line_segment(
-                    [egui::pos2(x_start, y), egui::pos2(x_end, y)],
-                    egui::Stroke::new(1.5, line_color),
-                );
+            // Title label (OSC title or app name) at top of pane
+            let mut content_top = content_area.min.y;
+            if let Some(ref title) = pane.title {
+                if cell.width() > 30.0 && cell.height() > 16.0 {
+                    let title_alpha: u8 = if pane.focused { 102 } else { 51 };
+                    let title_color = egui::Color32::from_rgba_unmultiplied(
+                        colors.text_dim.r(), colors.text_dim.g(), colors.text_dim.b(), title_alpha,
+                    );
+                    let font_size = if cell.width() > 80.0 { 9.0 } else { 7.0 };
+                    painter.text(
+                        egui::pos2(content_area.min.x + 1.0, content_area.min.y),
+                        egui::Align2::LEFT_TOP,
+                        title,
+                        egui::FontId::proportional(font_size),
+                        title_color,
+                    );
+                    content_top += font_size + 2.0;
+                }
+            }
+            let draw_area = egui::Rect::from_min_max(
+                egui::pos2(content_area.min.x, content_top),
+                content_area.max,
+            );
+            if draw_area.height() < 4.0 {
+                continue;
             }
 
-            // Block cursor on focused pane — last line, end of text
-            if pane.focused && num_lines > 0 {
-                let cursor_line = num_lines - 1;
-                let raw = (pane_idx * 7 + cursor_line * 13) % 100;
-                let frac = 0.25 + (raw as f32 / 100.0) * 0.65;
-                let cy = content_area.min.y + line_step * (cursor_line as f32 + 1.0);
-                let cx = (content_area.min.x + content_w * frac + 1.0).min(content_area.max.x - 3.0);
-                let cursor_rect = egui::Rect::from_min_size(
-                    egui::pos2(cx, cy - 1.0),
-                    egui::vec2(6.0, 2.0),
+            if pane.kind == PaneKind::App {
+                // Mock UI: header bar, content blocks, bottom bar
+                let block_color = egui::Color32::from_rgba_unmultiplied(
+                    colors.text_dim.r(), colors.text_dim.g(), colors.text_dim.b(), line_alpha / 2,
                 );
-                let cursor_color = egui::Color32::from_rgba_unmultiplied(
-                    colors.accent.r(), colors.accent.g(), colors.accent.b(), 102,
+                let bar_h = (draw_area.height() * 0.08).clamp(2.0, 4.0);
+
+                // Top bar (menu/toolbar)
+                let top_bar = egui::Rect::from_min_size(
+                    draw_area.min,
+                    egui::vec2(content_w, bar_h),
                 );
-                painter.rect_filled(cursor_rect, 0.0, cursor_color);
+                painter.rect_filled(top_bar, 1.0, block_color);
+
+                // Content area with 2-3 blocks
+                let body_top = draw_area.min.y + bar_h + 2.0;
+                let body_h = draw_area.height() - bar_h * 2.0 - 6.0;
+                if body_h > 4.0 {
+                    // Sidebar block (left 30%)
+                    let sidebar_w = (content_w * 0.28).min(content_w - 4.0);
+                    let sidebar = egui::Rect::from_min_size(
+                        egui::pos2(draw_area.min.x, body_top),
+                        egui::vec2(sidebar_w, body_h),
+                    );
+                    painter.rect_filled(sidebar, 1.0, block_color);
+
+                    // Main content block (right 68%)
+                    let main_x = draw_area.min.x + sidebar_w + 2.0;
+                    let main_w = content_w - sidebar_w - 2.0;
+                    if main_w > 4.0 {
+                        let main_block = egui::Rect::from_min_size(
+                            egui::pos2(main_x, body_top),
+                            egui::vec2(main_w, body_h * 0.6),
+                        );
+                        painter.rect_filled(main_block, 1.0, block_color);
+
+                        // Secondary block below main
+                        let sec_top = body_top + body_h * 0.6 + 2.0;
+                        let sec_h = body_h * 0.38;
+                        if sec_h > 2.0 {
+                            let sec_block = egui::Rect::from_min_size(
+                                egui::pos2(main_x, sec_top),
+                                egui::vec2(main_w, sec_h),
+                            );
+                            painter.rect_filled(sec_block, 1.0, block_color);
+                        }
+                    }
+                }
+
+                // Bottom bar (status bar)
+                let bot_bar = egui::Rect::from_min_size(
+                    egui::pos2(draw_area.min.x, draw_area.max.y - bar_h),
+                    egui::vec2(content_w, bar_h),
+                );
+                painter.rect_filled(bot_bar, 1.0, block_color);
+            } else {
+                // Terminal: pseudo-random content lines
+                let num_lines = ((draw_area.height() / 3.5) as usize).clamp(3, 12);
+                let line_step = draw_area.height() / (num_lines as f32 + 1.0);
+
+                for li in 0..num_lines {
+                    let raw = (pane_idx * 7 + li * 13) % 100;
+                    let frac = 0.25 + (raw as f32 / 100.0) * 0.65;
+                    let y = draw_area.min.y + line_step * (li as f32 + 1.0);
+                    let x_end = (draw_area.min.x + content_w * frac).min(draw_area.max.x);
+                    painter.line_segment(
+                        [egui::pos2(draw_area.min.x, y), egui::pos2(x_end, y)],
+                        egui::Stroke::new(1.5, line_color),
+                    );
+                }
+
+                // Block cursor on focused terminal
+                if pane.focused && num_lines > 0 {
+                    let cursor_line = num_lines - 1;
+                    let raw = (pane_idx * 7 + cursor_line * 13) % 100;
+                    let frac = 0.25 + (raw as f32 / 100.0) * 0.65;
+                    let cy = draw_area.min.y + line_step * (cursor_line as f32 + 1.0);
+                    let cx = (draw_area.min.x + content_w * frac + 1.0).min(draw_area.max.x - 3.0);
+                    let cursor_rect = egui::Rect::from_min_size(
+                        egui::pos2(cx, cy - 1.0),
+                        egui::vec2(6.0, 2.0),
+                    );
+                    let cursor_color = egui::Color32::from_rgba_unmultiplied(
+                        colors.accent.r(), colors.accent.g(), colors.accent.b(), 102,
+                    );
+                    painter.rect_filled(cursor_rect, 0.0, cursor_color);
+                }
             }
         }
     }
