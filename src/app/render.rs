@@ -96,8 +96,9 @@ impl PlexiApp {
         // Sidebar
         if self.sidebar_visible {
             egui::SidePanel::left("sidebar")
-                .exact_width(220.0)
-                .resizable(false)
+                .default_width(220.0)
+                .width_range(140.0..=400.0)
+                .resizable(true)
                 .show_separator_line(false)
                 .frame(
                     egui::Frame::new()

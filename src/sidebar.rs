@@ -1,5 +1,5 @@
 use crate::context::WindowMenuAction;
-use crate::sidebar_row::{SidebarAction, ContextItem, PaneRowItem};
+use crate::sidebar_row::{SidebarAction, ContextItem, PaneDots};
 use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 use egui_tiles::Tile;
 
@@ -38,53 +38,8 @@ impl PlexiApp {
         });
         ui.add_space(4.0);
 
-        // Breadcrumb bar — only shown when navigated into a sub-context.
-        if self.router.current_depth() > 0 {
-            ui.horizontal(|ui| {
-                ui.add_space(16.0);
-                let mut path_ids: Vec<u64> = self.router.depth_stack.iter()
-                    .map(|(ctx_id, _, _)| *ctx_id)
-                    .collect();
-                path_ids.push(self.router.active().context_id);
-
-                let dim = path_ids.len() >= 3;
-                let truncate = path_ids.len() >= 5;
-
-                // Indices into path_ids to display. usize::MAX is the ellipsis placeholder.
-                let display_indices: Vec<usize> = if truncate {
-                    let last = path_ids.len() - 1;
-                    vec![0, usize::MAX, last - 1, last]
-                } else {
-                    (0..path_ids.len()).collect()
-                };
-
-                for (pos, &idx) in display_indices.iter().enumerate() {
-                    if idx == usize::MAX {
-                        ui.label(RichText::new("…").color(self.colors.text_dim));
-                    } else {
-                        let name = self.router.iter()
-                            .find(|c| c.context_id == path_ids[idx])
-                            .map(|c| c.name.as_str())
-                            .unwrap_or("?");
-                        let text = if dim {
-                            RichText::new(name).color(self.colors.text_dim)
-                        } else {
-                            RichText::new(name)
-                        };
-                        let _ = ui.small_button(text);
-                    }
-                    if pos < display_indices.len() - 1 {
-                        ui.label(RichText::new("\u{203A}").color(self.colors.text_dim));
-                    }
-                }
-            });
-            ui.separator();
-        }
-
         let num_contexts = self.router.len();
         let mut clicked_workspace: Option<usize> = None;
-        let mut zoom_to_context: Option<usize> = None;
-        let mut focus_pane: Option<u64> = None;
         let mut delete_context: Option<usize> = None;
         let mut menu_action: Option<(usize, WindowMenuAction)> = None;
         let mut row_rects: Vec<Rect> = Vec::with_capacity(num_contexts);
@@ -123,28 +78,14 @@ impl PlexiApp {
                 None
             };
 
-            // Build pane rows for the active context — renders inside ContextItem scope.
-            let pane_rows: Vec<PaneRowItem> = if is_active && pane_count > 0 {
-                pane_ids.iter().enumerate().map(|(idx, &pane_id)| {
-                    let label = self.windows.iter()
-                        .filter(|w| w.context_id == ctx_id)
-                        .find_map(|w| w.panes.get(&pane_id))
-                        .map(|p| match p {
-                            crate::pane::Pane::Terminal(t) => {
-                                t.name.clone().unwrap_or_else(|| format!("terminal {}", idx + 1))
-                            }
-                            crate::pane::Pane::App(a) => a.name.clone(),
-                            crate::pane::Pane::Portal(_) => "portal".to_string(),
-                        })
-                        .unwrap_or_else(|| format!("pane {}", idx + 1));
-                    PaneRowItem {
-                        pane_id,
-                        label,
-                        is_focused: focused_pane_idx == Some(idx),
-                    }
-                }).collect()
+            // Build pane dots for this context row.
+            let pane_dots = if pane_count > 0 {
+                Some(PaneDots {
+                    count: pane_count,
+                    focused_idx: focused_pane_idx,
+                })
             } else {
-                vec![]
+                None
             };
 
             // --- Renaming: special-cased before ContextItem path ---
@@ -212,7 +153,6 @@ impl PlexiApp {
 
             // --- Normal row via ContextItem ---
             let ctx_name = self.router.get(i).name.clone();
-            let ctx_depth = self.router.get(i).depth;
             let badge_count = if is_active {
                 self.visible_notification_count()
             } else {
@@ -226,14 +166,11 @@ impl PlexiApp {
                 is_dragging,
                 any_dragging,
                 action_enabled: num_contexts > 1 && !any_dragging,
-                ctx_depth,
                 ctx_name,
                 ctx_index: Some(i),
                 badge_count,
                 subtitle,
-                pane_count,
-                pane_rows,
-                is_expanded: is_active,
+                pane_dots,
             }.draw(ui, egui::Id::new(("ctx", i)), &self.colors);
 
             row_rects.push(response.rect);
@@ -298,14 +235,6 @@ impl PlexiApp {
                     SidebarAction::Activate => {
                         log::debug!("sidebar: activate ctx={i} active={}", self.router.active_idx());
                         clicked_workspace = Some(i);
-                    }
-                    SidebarAction::ZoomActivate => {
-                        log::info!("sidebar: zoom into sub-context ctx_idx={i}");
-                        zoom_to_context = Some(i);
-                    }
-                    SidebarAction::ActivatePane(pane_id) => {
-                        log::info!("sidebar: activate pane pane_id={pane_id}");
-                        focus_pane = Some(pane_id);
                     }
                     _ => {}
                 }
@@ -409,19 +338,6 @@ impl PlexiApp {
             }
         } else if let Some(i) = delete_context {
             self.delete_context(i);
-        } else if let Some(i) = zoom_to_context {
-            let current_ctx_id = self.router.active().context_id;
-            let current_win_id = self.windows[self.active_window].window_id;
-            let current_focused = self.windows[self.active_window].focused_pane;
-            self.router.push_depth(current_ctx_id, current_win_id, current_focused);
-            self.switch_workspace(i);
-        } else if let Some(pane_id) = focus_pane {
-            if let Some((win_idx, tile_id)) = self.find_pane_in_any_window(pane_id) {
-                self.active_window = win_idx;
-                self.set_window_focused_pane(win_idx, tile_id);
-            } else {
-                log::warn!("sidebar: focus_pane target not found pane_id={pane_id}");
-            }
         } else if let Some(i) = clicked_workspace {
             self.switch_workspace(i);
         }
