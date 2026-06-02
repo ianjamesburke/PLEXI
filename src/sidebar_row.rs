@@ -149,7 +149,10 @@ impl ContextItem {
                     ui.horizontal(|ui| {
                         ui.add_space(indent);
                         let capped = dots.count.min(PANE_DOT_MAX);
-                        let dot_area_width = (capped as f32) * PANE_DOT_SPACING;
+                        let mut dot_area_width = (capped as f32) * PANE_DOT_SPACING;
+                        if dots.count > PANE_DOT_MAX {
+                            dot_area_width += 20.0;
+                        }
                         let dot_size = Vec2::new(dot_area_width, PANE_DOT_RADIUS * 2.0 + 4.0);
                         let (rect, _) = ui.allocate_exact_size(dot_size, Sense::hover());
                         let painter = ui.painter();
@@ -165,12 +168,17 @@ impl ContextItem {
                         }
                         if dots.count > PANE_DOT_MAX {
                             let overflow_x = rect.min.x + (capped as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS * 0.5;
+                            let overflow_color = if dots.focused_idx.map_or(false, |idx| idx >= PANE_DOT_MAX) {
+                                with_alpha(accent_color, row_alpha)
+                            } else {
+                                with_alpha(text_dim, 0.5)
+                            };
                             painter.text(
                                 egui::pos2(overflow_x, cy),
                                 egui::Align2::LEFT_CENTER,
                                 format!("+{}", dots.count - PANE_DOT_MAX),
                                 egui::FontId::proportional(8.0),
-                                with_alpha(text_dim, 0.5),
+                                overflow_color,
                             );
                         }
                     });

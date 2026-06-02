@@ -1304,7 +1304,11 @@ fn new_context_creates_top_level_empty_context() {
 
     let original_ctx_id = app.router.active().context_id;
 
+    let (_tile_id, _pane_id) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(_tile_id);
+
     assert_eq!(app.router.len(), 1, "setup: 1 context before new_context");
+    assert_eq!(app.windows[0].panes.len(), 1, "setup: 1 pane before new_context");
 
     app.new_context();
 
@@ -1329,7 +1333,8 @@ fn new_context_creates_top_level_empty_context() {
     // Original context's panes are untouched.
     let orig_win_idx = app.windows.iter().position(|w| w.context_id == original_ctx_id)
         .expect("original context still has a window");
-    assert_eq!(app.windows[orig_win_idx].panes.len(), 0, "original panes untouched");
+    assert_eq!(app.windows[orig_win_idx].panes.len(), 1, "original panes untouched");
+    assert!(app.windows[orig_win_idx].panes.contains_key(&_pane_id), "original pane still present");
 
     // Inline rename was opened for the new context.
     assert_eq!(
