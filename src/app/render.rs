@@ -220,15 +220,13 @@ impl PlexiApp {
                             .filter(|p| !matches!(p, crate::pane::Pane::Portal(_)))
                             .count();
                         let notif_count = self.context_notification_count_recursive(child_ctx_id);
-                        let (minimap_rects, focused_index, pane_kinds) = self.windows.iter()
-                            .find(|w| w.context_id == child_ctx_id)
-                            .and_then(|w| w.tree.root.map(|root| {
+                        let child_windows: Vec<crate::tiling::MiniWindow> = self.windows.iter()
+                            .filter(|w| w.context_id == child_ctx_id)
+                            .filter_map(|w| {
+                                let root = w.tree.root?;
                                 let leaves = crate::tiling::compute_minimap_rects(&w.tree.tiles, root);
-                                let focused = w.focused_pane.and_then(|fid| {
-                                    leaves.iter().position(|(_, tid)| *tid == fid)
-                                });
-                                let kinds: Vec<crate::tiling::PaneKind> = leaves.iter().map(|(_, tid)| {
-                                    match w.tree.tiles.get(*tid) {
+                                let panes = leaves.iter().map(|(norm_rect, tile_id)| {
+                                    let kind = match w.tree.tiles.get(*tile_id) {
                                         Some(egui_tiles::Tile::Pane(pid)) => {
                                             if w.panes.get(pid).and_then(|p| p.as_app()).is_some() {
                                                 crate::tiling::PaneKind::App
@@ -237,20 +235,30 @@ impl PlexiApp {
                                             }
                                         }
                                         _ => crate::tiling::PaneKind::Terminal,
+                                    };
+                                    let focused = w.focused_pane == Some(*tile_id);
+                                    crate::tiling::MiniPane {
+                                        norm_rect: *norm_rect,
+                                        kind,
+                                        focused,
+                                        has_content: true,
                                     }
                                 }).collect();
-                                let rects = leaves.into_iter().map(|(r, _)| r).collect();
-                                (rects, focused, kinds)
-                            }))
-                            .unwrap_or_else(|| (Vec::new(), None, Vec::new()));
+                                Some(crate::tiling::MiniWindow {
+                                    grid_x: w.grid_x,
+                                    grid_y: w.grid_y,
+                                    panes,
+                                })
+                            })
+                            .collect();
+                        let window_count = child_windows.len();
                         map.insert(pane_id, crate::tiling::PortalPreview {
                             context_name: ctx_name,
                             context_description: ctx_description,
                             pane_count,
                             notification_count: notif_count,
-                            minimap_rects,
-                            focused_index,
-                            pane_kinds,
+                            windows: child_windows,
+                            window_count,
                         });
                     }
                     map

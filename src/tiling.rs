@@ -43,6 +43,25 @@ pub enum PaneKind {
     App,
 }
 
+/// A single pane slot within one window's minimap.
+#[derive(Clone)]
+pub struct MiniPane {
+    /// Normalized [0,1]×[0,1] rect within its window body.
+    pub norm_rect: egui::Rect,
+    pub kind: PaneKind,
+    pub focused: bool,
+    /// True when the pane has meaningful content (always true for running panes).
+    pub has_content: bool,
+}
+
+/// One window in the child context, with its spatial grid position.
+#[derive(Clone)]
+pub struct MiniWindow {
+    pub grid_x: u32,
+    pub grid_y: u32,
+    pub panes: Vec<MiniPane>,
+}
+
 /// Preview data for a Portal tile.
 #[derive(Clone)]
 pub struct PortalPreview {
@@ -50,12 +69,8 @@ pub struct PortalPreview {
     pub context_description: String,
     pub pane_count: usize,
     pub notification_count: usize,
-    /// Normalized [0,1]×[0,1] rects for each leaf pane in the child window layout.
-    pub minimap_rects: Vec<egui::Rect>,
-    /// Which minimap slot is currently focused in the child window.
-    pub focused_index: Option<usize>,
-    /// Type of each pane, parallel to `minimap_rects`.
-    pub pane_kinds: Vec<PaneKind>,
+    pub windows: Vec<MiniWindow>,
+    pub window_count: usize,
 }
 
 impl Default for PortalPreview {
@@ -65,9 +80,8 @@ impl Default for PortalPreview {
             context_description: String::new(),
             pane_count: 0,
             notification_count: 0,
-            minimap_rects: Vec::new(),
-            focused_index: None,
-            pane_kinds: Vec::new(),
+            windows: Vec::new(),
+            window_count: 0,
         }
     }
 }
@@ -207,8 +221,12 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 }
                 ui.horizontal(|ui| {
                     crate::widgets::status_chip(ui, osc_status, &self.colors);
-                    let count_label = if preview.notification_count > 0 {
-                        format!("{} panes · {} notifs", preview.pane_count, preview.notification_count)
+                    let count_label = if preview.window_count > 1 && preview.notification_count > 0 {
+                        format!("{} panes \u{b7} {} windows \u{b7} {} notifs", preview.pane_count, preview.window_count, preview.notification_count)
+                    } else if preview.window_count > 1 {
+                        format!("{} panes \u{b7} {} windows", preview.pane_count, preview.window_count)
+                    } else if preview.notification_count > 0 {
+                        format!("{} panes \u{b7} {} notifs", preview.pane_count, preview.notification_count)
                     } else {
                         format!("{} panes", preview.pane_count)
                     };
@@ -219,97 +237,23 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     );
                 });
                 ui.add_space(style::SPACE_SM);
-                if !preview.minimap_rects.is_empty() {
-                    let map_h = (inner.height() * 0.35).clamp(24.0, 80.0);
+                if !preview.windows.is_empty() {
+                    let header_used = ui.cursor().min.y - inner.min.y;
+                    let map_h = (inner.height() - header_used).max(24.0);
                     let (map_area, _) = ui.allocate_exact_size(
                         egui::vec2(inner.width(), map_h),
                         egui::Sense::hover(),
                     );
-                    let origin = map_area.min;
-                    let map_size = map_area.size();
                     let painter = ui.painter();
-                    let accent = self.colors.accent;
-                    let text_dim = self.colors.text_dim;
-                    let bg_active = self.colors.bg_active;
-                    for (i, norm) in preview.minimap_rects.iter().enumerate() {
-                        let scaled = egui::Rect::from_min_max(
-                            egui::pos2(origin.x + norm.min.x * map_size.x, origin.y + norm.min.y * map_size.y),
-                            egui::pos2(origin.x + norm.max.x * map_size.x, origin.y + norm.max.y * map_size.y),
-                        );
-                        let cell = scaled.shrink(1.0);
-                        let is_focused = preview.focused_index == Some(i);
-                        let kind = preview.pane_kinds.get(i).copied().unwrap_or(PaneKind::Terminal);
-
-                        // Background fill
-                        let fill = if is_focused {
-                            egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 38)
-                        } else {
-                            egui::Color32::from_rgba_unmultiplied(bg_active.r(), bg_active.g(), bg_active.b(), 102)
-                        };
-                        painter.rect_filled(cell, 2.0, fill);
-
-                        // Soft glow behind focused pane
-                        if is_focused {
-                            let glow_rect = cell.expand(2.0);
-                            painter.rect_stroke(
-                                glow_rect,
-                                3.0,
-                                egui::Stroke::new(2.0, egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 26)),
-                                egui::StrokeKind::Outside,
-                            );
-                        }
-
-                        // Border
-                        let border_stroke = if is_focused {
-                            egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 153))
-                        } else {
-                            egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(text_dim.r(), text_dim.g(), text_dim.b(), 51))
-                        };
-                        painter.rect_stroke(cell, 2.0, border_stroke, egui::StrokeKind::Middle);
-
-                        // Fake content lines simulating terminal scrollback
-                        let line_alpha: u8 = 25;
-                        let line_color = egui::Color32::from_rgba_unmultiplied(text_dim.r(), text_dim.g(), text_dim.b(), line_alpha);
-                        let line_widths: &[f32] = if kind == PaneKind::App {
-                            &[0.6, 0.4]
-                        } else {
-                            &[0.80, 0.60, 0.45, 0.70, 0.35]
-                        };
-                        let content_w = cell.width() - 4.0;
-                        let line_spacing = (cell.height() - 4.0) / (line_widths.len() as f32 + 1.0);
-                        for (li, &frac) in line_widths.iter().enumerate() {
-                            let y = cell.min.y + line_spacing * (li as f32 + 1.0);
-                            let x_start = if kind == PaneKind::App {
-                                cell.min.x + 2.0 + content_w * (1.0 - frac) * 0.5
-                            } else {
-                                cell.min.x + 2.0
-                            };
-                            let x_end = x_start + content_w * frac;
-                            painter.line_segment(
-                                [egui::pos2(x_start, y), egui::pos2(x_end, y)],
-                                egui::Stroke::new(1.0, line_color),
-                            );
-                        }
-
-                        // Pane type label — only when rect is wide enough
-                        if cell.width() > 40.0 {
-                            let label = if kind == PaneKind::App { "app" } else { "term" };
-                            painter.text(
-                                egui::pos2(cell.min.x + 3.0, cell.min.y + 2.0),
-                                egui::Align2::LEFT_TOP,
-                                label,
-                                egui::FontId::proportional(style::TEXT_HINT),
-                                egui::Color32::from_rgba_unmultiplied(text_dim.r(), text_dim.g(), text_dim.b(), 77),
-                            );
-                        }
-                    }
+                    let colors = self.colors.clone();
+                    paint_portal_minimap(painter, map_area, &preview.windows, &colors);
                 }
             });
-            // Shortcut hint pinned to bottom-right
+            // Shortcut hint pinned to bottom-right — Cmd+Enter (no Shift)
             ui.painter().text(
                 egui::pos2(pane_rect.right() - padding, pane_rect.bottom() - padding),
                 egui::Align2::RIGHT_BOTTOM,
-                "\u{2318}\u{21e7}\u{21b5} zoom in",
+                "\u{2318}\u{21b5} zoom in",
                 egui::FontId::proportional(style::TEXT_HINT),
                 self.colors.text_dim.linear_multiply(0.5),
             );
@@ -487,6 +431,189 @@ fn collect_tile_rects(
             }
         },
         None => {}
+    }
+}
+
+// ── Portal x-ray minimap ─────────────────────────────────────────────────────
+
+/// Render the x-ray minimap for a portal tile.
+///
+/// Windows are laid out in a grid matching their grid_x/grid_y positions.
+/// Each window gets a "monitor bezel" frame with a thin chrome bar, then
+/// its pane layout fills the body below.
+pub(crate) fn paint_portal_minimap(
+    painter: &egui::Painter,
+    area: egui::Rect,
+    windows: &[MiniWindow],
+    colors: &Colors,
+) {
+    if windows.is_empty() {
+        return;
+    }
+
+    // Determine grid extents so we know how many columns/rows to allocate.
+    let max_gx = windows.iter().map(|w| w.grid_x).max().unwrap_or(0);
+    let max_gy = windows.iter().map(|w| w.grid_y).max().unwrap_or(0);
+    let cols = (max_gx + 1) as usize;
+    let rows = (max_gy + 1) as usize;
+
+    // Gap between window frames in the minimap grid.
+    const WIN_GAP: f32 = 4.0;
+    // Chrome bar height simulating a window title bar.
+    const CHROME_H: f32 = 6.0;
+    // Corner radius for window frames.
+    const WIN_RADIUS: f32 = 4.0;
+
+    let cell_w = (area.width() - WIN_GAP * (cols as f32 - 1.0)) / cols as f32;
+    let cell_h = (area.height() - WIN_GAP * (rows as f32 - 1.0)) / rows as f32;
+
+    for win in windows {
+        let col = win.grid_x as usize;
+        let row = win.grid_y as usize;
+        let win_x = area.min.x + col as f32 * (cell_w + WIN_GAP);
+        let win_y = area.min.y + row as f32 * (cell_h + WIN_GAP);
+        let win_rect = egui::Rect::from_min_size(egui::pos2(win_x, win_y), egui::vec2(cell_w, cell_h));
+
+        // Window frame background
+        let frame_bg = egui::Color32::from_rgba_unmultiplied(
+            colors.terminal_bg.r(), colors.terminal_bg.g(), colors.terminal_bg.b(), 153,
+        );
+        painter.rect_filled(win_rect, WIN_RADIUS, frame_bg);
+
+        // Window frame border
+        let frame_border = egui::Color32::from_rgba_unmultiplied(
+            colors.border.r(), colors.border.g(), colors.border.b(), 77,
+        );
+        painter.rect_stroke(win_rect, WIN_RADIUS, egui::Stroke::new(1.0, frame_border), egui::StrokeKind::Outside);
+
+        // Chrome bar (simulated title bar strip)
+        let chrome_rect = egui::Rect::from_min_size(win_rect.min, egui::vec2(cell_w, CHROME_H));
+        let chrome_bg = egui::Color32::from_rgba_unmultiplied(
+            colors.bg_active.r(), colors.bg_active.g(), colors.bg_active.b(), 204,
+        );
+        painter.rect_filled(chrome_rect, egui::CornerRadius {
+            nw: WIN_RADIUS as u8,
+            ne: WIN_RADIUS as u8,
+            sw: 0,
+            se: 0,
+        }, chrome_bg);
+
+        // Body area below the chrome
+        let body_rect = egui::Rect::from_min_max(
+            egui::pos2(win_rect.min.x, win_rect.min.y + CHROME_H),
+            win_rect.max,
+        );
+
+        // Render panes inside the body
+        for (pane_idx, pane) in win.panes.iter().enumerate() {
+            let pane_rect = egui::Rect::from_min_max(
+                egui::pos2(
+                    body_rect.min.x + pane.norm_rect.min.x * body_rect.width(),
+                    body_rect.min.y + pane.norm_rect.min.y * body_rect.height(),
+                ),
+                egui::pos2(
+                    body_rect.min.x + pane.norm_rect.max.x * body_rect.width(),
+                    body_rect.min.y + pane.norm_rect.max.y * body_rect.height(),
+                ),
+            );
+            // Shrink to create 1px gap between panes
+            let cell = pane_rect.shrink(1.0);
+            if cell.width() < 2.0 || cell.height() < 2.0 {
+                continue;
+            }
+
+            // Pane background — solid screen color
+            painter.rect_filled(cell, 2.0, colors.bg_darkest);
+
+            // Focused pane: accent tint + glow edge
+            if pane.focused {
+                let tint = egui::Color32::from_rgba_unmultiplied(
+                    colors.accent.r(), colors.accent.g(), colors.accent.b(), 38,
+                );
+                painter.rect_filled(cell, 2.0, tint);
+
+                // Bottom-edge glow line
+                let glow_y = cell.max.y - 1.0;
+                let glow_color = egui::Color32::from_rgba_unmultiplied(
+                    colors.accent.r(), colors.accent.g(), colors.accent.b(), 102,
+                );
+                painter.line_segment(
+                    [egui::pos2(cell.min.x, glow_y), egui::pos2(cell.max.x, glow_y)],
+                    egui::Stroke::new(1.5, glow_color),
+                );
+
+                // Focused border
+                let accent_border = egui::Color32::from_rgba_unmultiplied(
+                    colors.accent.r(), colors.accent.g(), colors.accent.b(), 153,
+                );
+                painter.rect_stroke(cell, 2.0, egui::Stroke::new(1.5, accent_border), egui::StrokeKind::Middle);
+            } else {
+                let dim_border = egui::Color32::from_rgba_unmultiplied(
+                    colors.border.r(), colors.border.g(), colors.border.b(), 77,
+                );
+                painter.rect_stroke(cell, 2.0, egui::Stroke::new(1.0, dim_border), egui::StrokeKind::Middle);
+            }
+
+            // Content lines — only drawn when pane has actual content; empty panes stay blank.
+            if !pane.has_content {
+                continue;
+            }
+            let content_area = cell.shrink(2.0);
+            if content_area.width() < 4.0 || content_area.height() < 4.0 {
+                continue;
+            }
+
+            let line_alpha: u8 = if pane.focused { 51 } else { 25 };
+            let line_color = egui::Color32::from_rgba_unmultiplied(
+                colors.text_dim.r(), colors.text_dim.g(), colors.text_dim.b(), line_alpha,
+            );
+
+            // Deterministic pseudo-random widths based on pane index
+            let num_lines = if pane.kind == PaneKind::App { 4 } else {
+                ((content_area.height() / 3.5) as usize).clamp(3, 12)
+            };
+            let line_step = content_area.height() / (num_lines as f32 + 1.0);
+            let content_w = content_area.width();
+
+            for li in 0..num_lines {
+                // Deterministic width: vary by pane_idx and line index
+                let frac = if pane.kind == PaneKind::App {
+                    let widths = [0.55f32, 0.38, 0.62, 0.44];
+                    widths[li % widths.len()]
+                } else {
+                    let raw = (pane_idx * 7 + li * 13) % 100;
+                    0.25 + (raw as f32 / 100.0) * 0.65
+                };
+                let y = content_area.min.y + line_step * (li as f32 + 1.0);
+                let x_start = if pane.kind == PaneKind::App {
+                    content_area.min.x + content_w * (1.0 - frac) * 0.5
+                } else {
+                    content_area.min.x
+                };
+                let x_end = (x_start + content_w * frac).min(content_area.max.x);
+                painter.line_segment(
+                    [egui::pos2(x_start, y), egui::pos2(x_end, y)],
+                    egui::Stroke::new(1.5, line_color),
+                );
+            }
+
+            // Block cursor on focused pane — last line, end of text
+            if pane.focused && num_lines > 0 {
+                let cursor_line = num_lines - 1;
+                let raw = (pane_idx * 7 + cursor_line * 13) % 100;
+                let frac = 0.25 + (raw as f32 / 100.0) * 0.65;
+                let cy = content_area.min.y + line_step * (cursor_line as f32 + 1.0);
+                let cx = (content_area.min.x + content_w * frac + 1.0).min(content_area.max.x - 3.0);
+                let cursor_rect = egui::Rect::from_min_size(
+                    egui::pos2(cx, cy - 1.0),
+                    egui::vec2(6.0, 2.0),
+                );
+                let cursor_color = egui::Color32::from_rgba_unmultiplied(
+                    colors.accent.r(), colors.accent.g(), colors.accent.b(), 102,
+                );
+                painter.rect_filled(cursor_rect, 0.0, cursor_color);
+            }
+        }
     }
 }
 
