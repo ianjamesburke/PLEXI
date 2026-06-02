@@ -51,7 +51,7 @@ pub struct ContextItem {
     pub ctx_name: String,
     pub ctx_index: Option<usize>,
     pub badge_count: usize,
-    /// Root path shown inline in the name row (truncated). Does not add height.
+    /// Root path shown on its own line below the name row.
     pub subtitle: Option<String>,
     /// Dots rendered below the name row representing panes.
     pub pane_dots: Option<PaneDots>,
@@ -108,7 +108,6 @@ impl ContextItem {
                 let badge_w = if badge_count > 0 { 26.0 } else { 0.0 };
                 let text_max = (ui.available_width() - right_reserve - badge_w).max(0.0);
 
-                // Name + subtitle share truncation zone so neither wraps and adds height.
                 ui.scope(|ui| {
                     ui.set_max_width(text_max);
                     ui.add(
@@ -116,17 +115,6 @@ impl ContextItem {
                             .selectable(false)
                             .truncate(),
                     );
-                    if let Some(ref path) = subtitle {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(format!(" — {}", shorten_path(path)))
-                                    .size(10.0)
-                                    .color(with_alpha(text_dim, row_alpha * 0.7)),
-                            )
-                            .selectable(false)
-                            .truncate(),
-                        );
-                    }
                 });
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -143,7 +131,27 @@ impl ContextItem {
             });
             let name_row_h = ui.cursor().min.y - y_before;
 
-            // --- Dot row — one dot per pane, rendered below the name row ---
+            // --- Path row — subtitle on its own line below the name ---
+            if let Some(ref path) = subtitle {
+                ui.horizontal(|ui| {
+                    ui.add_space(indent);
+                    ui.scope(|ui| {
+                        let path_max = (ui.available_width() - 8.0).max(0.0);
+                        ui.set_max_width(path_max);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(shorten_path(path))
+                                    .size(10.0)
+                                    .color(with_alpha(text_dim, row_alpha * 0.7)),
+                            )
+                            .selectable(false)
+                            .truncate(),
+                        );
+                    });
+                });
+            }
+
+            // --- Dot row — one dot per pane, rendered below the path ---
             if let Some(ref dots) = pane_dots {
                 if dots.count > 0 {
                     ui.horizontal(|ui| {
