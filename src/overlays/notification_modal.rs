@@ -170,26 +170,6 @@ fn draw_notification_image(
     }
 }
 
-/// Build a `UiNode::Text` for the notification modal title.
-///
-/// The title is rendered large and bold, centered inside the modal frame.
-/// Extracted so construction is testable without a live egui context.
-pub(crate) fn build_notification_title_node(
-    title: &str,
-    colors: &crate::theme::Colors,
-) -> crate::app_protocol::UiNode {
-    let color_hex = |c: egui::Color32| {
-        format!("#{:02x}{:02x}{:02x}{:02x}", c.r(), c.g(), c.b(), c.a())
-    };
-    crate::app_protocol::UiNode::Text {
-        text: title.to_string(),
-        size: style::TEXT_TITLE_XL,
-        color: color_hex(colors.text_primary),
-        bold: true,
-        monospace: false,
-    }
-}
-
 impl PlexiApp {
     pub(crate) fn draw_notification_modal(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
         use crate::app_protocol::NotifyKind;
@@ -488,12 +468,13 @@ impl PlexiApp {
 
                         ui.add_space(style::SPACE_XL);
 
-                        // Title — centered, large. Node built via component tree.
-                        let title_node =
-                            build_notification_title_node(&notif.title, &self.colors);
+                        // Title — centered, large.
                         ui.vertical_centered(|ui| {
-                            crate::render_components::render_component_tree(
-                                ui, &title_node, &self.colors,
+                            ui.label(
+                                RichText::new(&notif.title)
+                                    .size(style::TEXT_TITLE_XL)
+                                    .color(self.colors.text_primary)
+                                    .strong(),
                             );
                         });
 
@@ -1033,47 +1014,5 @@ impl PlexiApp {
         }
 
         crate::app_trait::KeyDisposition::Consumed
-    }
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod notification_modal_component_tree_tests {
-    use super::*;
-    use crate::app_protocol::UiNode;
-    use crate::config::ThemeConfig;
-    use crate::theme::Colors;
-
-    fn test_colors() -> Colors {
-        Colors::from_config(&ThemeConfig::default())
-    }
-
-    /// Title node must be a `UiNode::Text` with the correct text, size, and bold flag.
-    #[test]
-    fn notification_title_node_structure() {
-        let colors = test_colors();
-        let node = build_notification_title_node("Hello world", &colors);
-        if let UiNode::Text { text, size, bold, monospace, color } = node {
-            assert_eq!(text, "Hello world");
-            assert_eq!(size, style::TEXT_TITLE_XL);
-            assert!(bold, "title must be bold");
-            assert!(!monospace);
-            assert!(!color.is_empty(), "color must be set");
-        } else {
-            panic!("expected UiNode::Text");
-        }
-    }
-
-    /// Empty title produces an empty-text node rather than erroring.
-    #[test]
-    fn notification_title_node_empty_title() {
-        let colors = test_colors();
-        let node = build_notification_title_node("", &colors);
-        if let UiNode::Text { text, .. } = node {
-            assert_eq!(text, "");
-        } else {
-            panic!("expected UiNode::Text");
-        }
     }
 }

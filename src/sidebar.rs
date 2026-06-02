@@ -1,8 +1,6 @@
-use crate::app_protocol::{StackDirection, UiNode, UiPadding};
 use crate::context::WindowMenuAction;
 use crate::sidebar_row::{SidebarAction, ContextItem, PaneRowItem};
-use crate::theme::Colors;
-use egui::{Align, Color32, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
+use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 use egui_tiles::Tile;
 
 use crate::app::PlexiApp;
@@ -49,7 +47,10 @@ impl PlexiApp {
                     .collect();
                 path_ids.push(self.router.active().context_id);
 
+                let dim = path_ids.len() >= 3;
                 let truncate = path_ids.len() >= 5;
+
+                // Indices into path_ids to display. usize::MAX is the ellipsis placeholder.
                 let display_indices: Vec<usize> = if truncate {
                     let last = path_ids.len() - 1;
                     vec![0, usize::MAX, last - 1, last]
@@ -57,21 +58,25 @@ impl PlexiApp {
                     (0..path_ids.len()).collect()
                 };
 
-                // Resolve segment names (usize::MAX → "…" ellipsis placeholder).
-                let segment_names: Vec<String> = display_indices.iter().map(|&idx| {
+                for (pos, &idx) in display_indices.iter().enumerate() {
                     if idx == usize::MAX {
-                        "…".to_string()
+                        ui.label(RichText::new("…").color(self.colors.text_dim));
                     } else {
-                        self.router.iter()
+                        let name = self.router.iter()
                             .find(|c| c.context_id == path_ids[idx])
-                            .map(|c| c.name.clone())
-                            .unwrap_or_else(|| "?".to_string())
+                            .map(|c| c.name.as_str())
+                            .unwrap_or("?");
+                        let text = if dim {
+                            RichText::new(name).color(self.colors.text_dim)
+                        } else {
+                            RichText::new(name)
+                        };
+                        let _ = ui.small_button(text);
                     }
-                }).collect();
-
-                let dim = path_ids.len() >= 3;
-                let crumb_node = build_breadcrumb_node(&segment_names, dim, &self.colors);
-                crate::render_components::render_component_tree(ui, &crumb_node, &self.colors);
+                    if pos < display_indices.len() - 1 {
+                        ui.label(RichText::new("\u{203A}").color(self.colors.text_dim));
+                    }
+                }
             });
             ui.separator();
         }
@@ -423,158 +428,6 @@ impl PlexiApp {
 
         if add_clicked {
             self.new_context();
-        }
-    }
-}
-
-// ── Free helpers — component-tree builders ────────────────────────────────────
-
-fn color_hex(c: Color32) -> String {
-    format!("#{:02x}{:02x}{:02x}{:02x}", c.r(), c.g(), c.b(), c.a())
-}
-
-/// Build a `UiNode` for the sidebar breadcrumb bar.
-///
-/// `segments` is the ordered list of context names to display (already
-/// resolved, including `"…"` for truncation placeholders).
-/// `dim` controls whether segment text uses `text_dim` (true) or inherits
-/// the default foreground (false).
-///
-/// Returns a horizontal `Stack` of alternating label nodes and `›` separator
-/// nodes.  Extracted so the node construction is testable without egui.
-pub(crate) fn build_breadcrumb_node(segments: &[String], dim: bool, colors: &Colors) -> UiNode {
-    let text_color = color_hex(colors.text_dim);
-    let sep_color = color_hex(colors.text_dim);
-
-    let mut children: Vec<UiNode> = Vec::new();
-    for (i, seg) in segments.iter().enumerate() {
-        children.push(UiNode::Text {
-            text: seg.clone(),
-            size: 10.0,
-            color: if dim { text_color.clone() } else { String::new() },
-            bold: false,
-            monospace: false,
-        });
-        if i < segments.len() - 1 {
-            children.push(UiNode::Text {
-                text: "\u{203A}".to_string(), // ›
-                size: 10.0,
-                color: sep_color.clone(),
-                bold: false,
-                monospace: false,
-            });
-        }
-    }
-
-    UiNode::Stack {
-        direction: StackDirection::Horizontal,
-        children,
-        gap: 3.0,
-        padding: UiPadding::default(),
-    }
-}
-
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-#[cfg(test)]
-mod sidebar_node_tests {
-    use super::*;
-    use crate::config::ThemeConfig;
-
-    fn test_colors() -> Colors {
-        Colors::from_config(&ThemeConfig::default())
-    }
-
-    /// Breadcrumb node for a two-segment path should contain 3 children
-    /// (label, separator, label).
-    #[test]
-    fn sidebar_header_node_structure() {
-        let colors = test_colors();
-        let segs = vec!["root".to_string(), "child".to_string()];
-        let node = build_breadcrumb_node(&segs, false, &colors);
-
-        match &node {
-            UiNode::Stack { direction, children, gap, .. } => {
-                assert!(matches!(direction, StackDirection::Horizontal));
-                // 2 labels + 1 separator = 3
-                assert_eq!(children.len(), 3, "expected 3 children (label + sep + label)");
-                assert!(*gap > 0.0);
-                // First child is "root"
-                if let UiNode::Text { text, .. } = &children[0] {
-                    assert_eq!(text, "root");
-                } else {
-                    panic!("expected Text at index 0");
-                }
-                // Second child is separator ›
-                if let UiNode::Text { text, .. } = &children[1] {
-                    assert_eq!(text, "\u{203A}");
-                } else {
-                    panic!("expected separator Text at index 1");
-                }
-                // Third child is "child"
-                if let UiNode::Text { text, .. } = &children[2] {
-                    assert_eq!(text, "child");
-                } else {
-                    panic!("expected Text at index 2");
-                }
-            }
-            _ => panic!("expected horizontal Stack"),
-        }
-    }
-
-    /// A single-segment breadcrumb has no separator.
-    #[test]
-    fn breadcrumb_single_segment_no_separator() {
-        let colors = test_colors();
-        let segs = vec!["only".to_string()];
-        let node = build_breadcrumb_node(&segs, false, &colors);
-        match &node {
-            UiNode::Stack { children, .. } => {
-                assert_eq!(children.len(), 1);
-                if let UiNode::Text { text, .. } = &children[0] {
-                    assert_eq!(text, "only");
-                } else {
-                    panic!("expected Text");
-                }
-            }
-            _ => panic!("expected Stack"),
-        }
-    }
-
-    /// When `dim` is true every segment text node has a non-empty color string.
-    #[test]
-    fn breadcrumb_dim_sets_color() {
-        let colors = test_colors();
-        let segs = vec!["a".to_string(), "b".to_string()];
-        let node = build_breadcrumb_node(&segs, true, &colors);
-        match &node {
-            UiNode::Stack { children, .. } => {
-                // Odd-indexed children are separators (always colored); even are segments.
-                for (i, child) in children.iter().enumerate() {
-                    if i % 2 == 0 {
-                        if let UiNode::Text { color, .. } = child {
-                            assert!(!color.is_empty(), "dim segment should have a color string");
-                        }
-                    }
-                }
-            }
-            _ => panic!("expected Stack"),
-        }
-    }
-
-    /// When `dim` is false segment nodes have an empty color (inherit default).
-    #[test]
-    fn breadcrumb_non_dim_empty_color() {
-        let colors = test_colors();
-        let segs = vec!["x".to_string()];
-        let node = build_breadcrumb_node(&segs, false, &colors);
-        match &node {
-            UiNode::Stack { children, .. } => {
-                if let UiNode::Text { color, .. } = &children[0] {
-                    assert!(color.is_empty(), "non-dim segment should have empty color");
-                }
-            }
-            _ => panic!("expected Stack"),
         }
     }
 }
