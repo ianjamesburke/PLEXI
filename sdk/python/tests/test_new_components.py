@@ -115,14 +115,6 @@ def test_toggle_on_click_is_true() -> None:
     assert node["on_click"] is True
 
 
-def test_toggle_has_l0_fallback() -> None:
-    node = Toggle("t", value=True, label="X").to_node()
-    assert "_l0" in node
-    l0 = node["_l0"]
-    assert l0["type"] == "interactive"
-    assert l0["node_id"] == "t"
-
-
 def test_toggle_type_is_interactive() -> None:
     node = Toggle("t", value=False).to_node()
     assert node["type"] == "interactive"

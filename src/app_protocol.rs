@@ -608,8 +608,7 @@ pub struct UiPadding {
 }
 
 /// Component tree node. L0 primitives compose into rich UI; L1 sugar variants
-/// carry a mandatory `_l0: Box<UiNode>` for forward compatibility — the host
-/// always has an L0 fallback to render if it doesn't recognise the L1 tag.
+/// are rendered natively by the host.
 ///
 /// `JsonSchema` is implemented manually to avoid schemars recursion issues
 /// (UiNode contains Box<UiNode>).
@@ -663,38 +662,34 @@ pub enum UiNode {
     Surface { id: String },
 
     // ── L1 sugar ─────────────────────────────────────────────────────────
-    /// Host-rendered button. `_l0` is the fallback L0 tree.
+    /// Host-rendered button.
     Button {
         node_id: String,
         label: String,
         #[serde(default)]
         disabled: bool,
-        _l0: Box<UiNode>,
     },
-    /// Host-rendered text input. `_l0` is the fallback L0 tree.
+    /// Host-rendered text input.
     Input {
         node_id: String,
         #[serde(default)]
         placeholder: String,
         value: String,
-        _l0: Box<UiNode>,
     },
-    /// Host-rendered pill badge. `_l0` is the fallback L0 tree.
+    /// Host-rendered pill badge.
     Badge {
         label: String,
         #[serde(default)]
         fill: String,
         #[serde(default)]
         fg: String,
-        _l0: Box<UiNode>,
     },
-    /// Coloured dot indicator. `_l0` is the fallback L0 tree.
+    /// Coloured dot indicator.
     Dot {
         color: String,
         /// 0.0 means default size.
         #[serde(default)]
         size: f32,
-        _l0: Box<UiNode>,
     },
 }
 
@@ -736,21 +731,21 @@ impl PartialEq for UiNode {
                     == serde_json::to_string(cmd2.as_ref()).ok()
             }
             (UiNode::Surface { id: i1 }, UiNode::Surface { id: i2 }) => i1 == i2,
-            (UiNode::Button { node_id: n1, label: l1, disabled: d1, _l0: lo1 },
-             UiNode::Button { node_id: n2, label: l2, disabled: d2, _l0: lo2 }) => {
-                n1 == n2 && l1 == l2 && d1 == d2 && lo1 == lo2
+            (UiNode::Button { node_id: n1, label: l1, disabled: d1 },
+             UiNode::Button { node_id: n2, label: l2, disabled: d2 }) => {
+                n1 == n2 && l1 == l2 && d1 == d2
             }
-            (UiNode::Input { node_id: n1, placeholder: ph1, value: v1, _l0: lo1 },
-             UiNode::Input { node_id: n2, placeholder: ph2, value: v2, _l0: lo2 }) => {
-                n1 == n2 && ph1 == ph2 && v1 == v2 && lo1 == lo2
+            (UiNode::Input { node_id: n1, placeholder: ph1, value: v1 },
+             UiNode::Input { node_id: n2, placeholder: ph2, value: v2 }) => {
+                n1 == n2 && ph1 == ph2 && v1 == v2
             }
-            (UiNode::Badge { label: l1, fill: f1, fg: fg1, _l0: lo1 },
-             UiNode::Badge { label: l2, fill: f2, fg: fg2, _l0: lo2 }) => {
-                l1 == l2 && f1 == f2 && fg1 == fg2 && lo1 == lo2
+            (UiNode::Badge { label: l1, fill: f1, fg: fg1 },
+             UiNode::Badge { label: l2, fill: f2, fg: fg2 }) => {
+                l1 == l2 && f1 == f2 && fg1 == fg2
             }
-            (UiNode::Dot { color: c1, size: s1, _l0: lo1 },
-             UiNode::Dot { color: c2, size: s2, _l0: lo2 }) => {
-                c1 == c2 && s1 == s2 && lo1 == lo2
+            (UiNode::Dot { color: c1, size: s1 },
+             UiNode::Dot { color: c2, size: s2 }) => {
+                c1 == c2 && s1 == s2
             }
             _ => false,
         }
@@ -3679,34 +3674,6 @@ mod ui_node_tests {
         assert!(json.contains(r#""type":"stack""#), "stack tag missing: {json}");
         assert!(json.contains(r#""type":"text""#), "text tag missing: {json}");
         assert!(json.contains(r#""text":"hello""#), "text content missing: {json}");
-    }
-
-    #[test]
-    fn button_with_l0_round_trips_serde() {
-        let node = UiNode::Button {
-            node_id: "btn1".into(),
-            label: "Click me".into(),
-            disabled: false,
-            _l0: Box::new(UiNode::Text {
-                text: "Click me".into(),
-                size: 0.0,
-                color: String::new(),
-                bold: false,
-                monospace: false,
-            }),
-        };
-        let json = serde_json::to_string(&node).expect("serialize");
-        assert!(json.contains(r#""type":"button""#), "button tag missing: {json}");
-        assert!(json.contains(r#""node_id":"btn1""#), "node_id missing: {json}");
-        assert!(json.contains(r#""_l0""#), "_l0 field key missing from serialized JSON: {json}");
-        let round_tripped: UiNode = serde_json::from_str(&json).expect("deserialize");
-        match round_tripped {
-            UiNode::Button { node_id, label, .. } => {
-                assert_eq!(node_id, "btn1");
-                assert_eq!(label, "Click me");
-            }
-            other => panic!("expected Button, got {other:?}"),
-        }
     }
 
     #[test]
