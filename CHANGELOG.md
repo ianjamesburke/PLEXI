@@ -1,6 +1,14 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.595] — 2026-06-03
+
+### Changes
+- fix(snake-race): request panes.spawn capability before spawning
+- fix(snake-race): replace bare color constants with ctx.theme.* lookups
+- Add keyboard shortcut tip for context_set_root, document CLI pane naming and tips patterns
+- fix: restore draw_triple_tap_overlay after inspector removal, clean up dead code
+- Remove context inspector modal, replace Cmd+I with SetContextRootFromCwd action
 ## [0.0.594] — 2026-06-03
 
 ### Changes
