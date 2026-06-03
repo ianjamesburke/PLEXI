@@ -70,95 +70,84 @@ impl PlexiApp {
             }
         });
 
-        // Scrim — visually reinforces modal capture and mirrors the command
-        // palette / notification modal chrome.
-        let screen_rect = ctx.screen_rect();
-        egui::Area::new(egui::Id::new("confirm_close_scrim"))
-            .fixed_pos(screen_rect.min)
-            .order(egui::Order::Middle)
-            .show(ctx, |ui| {
-                ui.painter().rect_filled(
-                    screen_rect,
-                    0.0,
-                    egui::Color32::from_black_alpha(120),
+        // Scrim + centered modal with consistent chrome.
+        // `scrim_cancelled`: set by modal_shell when user clicks outside the modal.
+        // `btn_cancelled`: set by the Cancel button inside the closure.
+        // `btn_confirmed`: set by the Close button inside the closure.
+        // All three are merged into `confirmed`/`cancelled` after the call.
+        let mut scrim_cancelled = false;
+        let (btn_confirmed, btn_cancelled) = modal_shell(
+            ctx,
+            "confirm_close_overlay",
+            &self.colors,
+            &mut scrim_cancelled,
+            |ui| {
+                let mut c = false;
+                let mut k = false;
+                ui.label(
+                    RichText::new("Close pane?")
+                        .size(13.0)
+                        .color(self.colors.text_primary)
+                        .strong(),
                 );
-                let scrim_response = ui.allocate_rect(screen_rect, egui::Sense::click());
-                if scrim_response.clicked() {
-                    cancelled = true;
-                }
-            });
-
-        egui::Area::new(egui::Id::new("confirm_close_overlay"))
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
-                    .stroke(egui::Stroke::new(1.0, self.colors.border))
-                    .corner_radius(crate::style::RADIUS_LG)
-                    .inner_margin(egui::Margin::symmetric(20, 16))
-                    .show(ui, |ui| {
-                        ui.set_width(MODAL_WIDTH);
-                        ui.label(
-                            RichText::new("Close pane?")
-                                .size(13.0)
-                                .color(self.colors.text_primary)
-                                .strong(),
-                        );
-                        ui.add_space(6.0);
-                        ui.label(
-                            RichText::new("The running process will be terminated.")
-                                .size(12.0)
-                                .color(self.colors.text_dim),
-                        );
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Close")
-                                            .size(12.0)
-                                            .color(self.colors.bg_darkest),
-                                    )
-                                    .fill(self.colors.danger),
-                                )
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
-                                confirmed = true;
-                            }
-                            ui.add_space(8.0);
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Cancel")
-                                            .size(12.0)
-                                            .color(self.colors.text_dim),
-                                    )
-                                    .fill(self.colors.bg_active),
-                                )
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
-                                cancelled = true;
-                            }
-                            ui.add_space(12.0);
-                            crate::widgets::key_chip(ui, "Enter", &self.colors);
-                            ui.label(
-                                RichText::new("confirm")
-                                    .size(style::TEXT_HINT)
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("The running process will be terminated.")
+                        .size(12.0)
+                        .color(self.colors.text_dim),
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Close")
+                                    .size(12.0)
+                                    .color(self.colors.bg_darkest),
+                            )
+                            .fill(self.colors.danger),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        c = true;
+                    }
+                    ui.add_space(8.0);
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Cancel")
+                                    .size(12.0)
                                     .color(self.colors.text_dim),
-                            );
-                            ui.add_space(style::SPACE_SM);
-                            crate::widgets::key_chip(ui, "Esc", &self.colors);
-                            ui.label(
-                                RichText::new("cancel")
-                                    .size(style::TEXT_HINT)
-                                    .color(self.colors.text_dim),
-                            );
-                        });
-                    });
-            });
+                            )
+                            .fill(self.colors.bg_active),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        k = true;
+                    }
+                    ui.add_space(12.0);
+                    crate::widgets::key_chip(ui, "Enter", &self.colors);
+                    ui.label(
+                        RichText::new("confirm")
+                            .size(style::TEXT_HINT)
+                            .color(self.colors.text_dim),
+                    );
+                    ui.add_space(style::SPACE_SM);
+                    crate::widgets::key_chip(ui, "Esc", &self.colors);
+                    ui.label(
+                        RichText::new("cancel")
+                            .size(style::TEXT_HINT)
+                            .color(self.colors.text_dim),
+                    );
+                });
+                (c, k)
+            },
+        )
+        .unwrap_or((false, false));
+        confirmed |= btn_confirmed;
+        cancelled |= scrim_cancelled | btn_cancelled;
 
         if confirmed {
             self.pending_close = false;
@@ -278,126 +267,118 @@ impl PlexiApp {
             }
         });
 
-        let screen_rect = ctx.screen_rect();
-        egui::Area::new(egui::Id::new("ctx_close_confirm_scrim"))
-            .fixed_pos(screen_rect.min)
-            .order(egui::Order::Middle)
-            .show(ctx, |ui| {
-                ui.painter().rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(120));
-                let scrim_resp = ui.allocate_rect(screen_rect, egui::Sense::click());
-                if scrim_resp.clicked() {
-                    cancelled = true;
-                }
-            });
-
         let colors = self.colors;
-        egui::Area::new(egui::Id::new("ctx_close_confirm_modal"))
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(colors.bg_sidebar)
-                    .stroke(egui::Stroke::new(1.0, colors.border))
-                    .corner_radius(crate::style::RADIUS_LG)
-                    .inner_margin(egui::Margin::symmetric(20, 16))
-                    .show(ui, |ui| {
-                        ui.set_width(MODAL_WIDTH);
+        // Scrim + centered modal with consistent chrome.
+        let mut scrim_cancelled = false;
+        let (btn_close_all, btn_dissolve, btn_cancelled) = modal_shell(
+            ctx,
+            "ctx_close_confirm_modal",
+            &colors,
+            &mut scrim_cancelled,
+            |ui| {
+                let mut ca = false;
+                let mut dv = false;
+                let mut ck = false;
+                let title = if state.context_name.is_empty() {
+                    "Close context?".to_string()
+                } else {
+                    format!("Close \"{}\"?", state.context_name)
+                };
+                ui.label(
+                    RichText::new(&title)
+                        .size(13.0)
+                        .color(colors.text_primary)
+                        .strong(),
+                );
+                ui.add_space(8.0);
 
-                        let title = if state.context_name.is_empty() {
-                            "Close context?".to_string()
-                        } else {
-                            format!("Close \"{}\"?", state.context_name)
-                        };
-                        ui.label(
-                            RichText::new(&title)
-                                .size(13.0)
-                                .color(colors.text_primary)
-                                .strong(),
-                        );
-                        ui.add_space(8.0);
+                for item in &state.items {
+                    let label = format!("{} — {}", item.kind, item.name);
+                    ui.label(
+                        RichText::new(&label)
+                            .size(style::TEXT_HINT)
+                            .color(colors.text_dim),
+                    );
+                }
 
-                        for item in &state.items {
-                            let label = format!("{} — {}", item.kind, item.name);
-                            ui.label(
-                                RichText::new(&label)
-                                    .size(style::TEXT_HINT)
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Close all")
+                                    .size(12.0)
+                                    .color(colors.bg_darkest),
+                            )
+                            .fill(colors.danger),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        ca = true;
+                    }
+                    ui.add_space(6.0);
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Dissolve")
+                                    .size(12.0)
                                     .color(colors.text_dim),
-                            );
-                        }
+                            )
+                            .fill(colors.bg_active),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        dv = true;
+                    }
+                    ui.add_space(6.0);
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("Cancel")
+                                    .size(12.0)
+                                    .color(colors.text_dim),
+                            )
+                            .fill(colors.bg_active),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        ck = true;
+                    }
+                });
 
-                        ui.add_space(12.0);
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Close all")
-                                            .size(12.0)
-                                            .color(colors.bg_darkest),
-                                    )
-                                    .fill(colors.danger),
-                                )
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
-                                close_all = true;
-                            }
-                            ui.add_space(6.0);
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Dissolve")
-                                            .size(12.0)
-                                            .color(colors.text_dim),
-                                    )
-                                    .fill(colors.bg_active),
-                                )
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
-                                dissolve = true;
-                            }
-                            ui.add_space(6.0);
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Cancel")
-                                            .size(12.0)
-                                            .color(colors.text_dim),
-                                    )
-                                    .fill(colors.bg_active),
-                                )
-                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                .clicked()
-                            {
-                                cancelled = true;
-                            }
-                        });
-
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            crate::widgets::key_chip(ui, "Enter", &colors);
-                            ui.label(
-                                RichText::new("close all")
-                                    .size(style::TEXT_HINT)
-                                    .color(colors.text_dim),
-                            );
-                            ui.add_space(style::SPACE_SM);
-                            crate::widgets::key_chip(ui, "D", &colors);
-                            ui.label(
-                                RichText::new("dissolve")
-                                    .size(style::TEXT_HINT)
-                                    .color(colors.text_dim),
-                            );
-                            ui.add_space(style::SPACE_SM);
-                            crate::widgets::key_chip(ui, "Esc", &colors);
-                            ui.label(
-                                RichText::new("cancel")
-                                    .size(style::TEXT_HINT)
-                                    .color(colors.text_dim),
-                            );
-                        });
-                    });
-            });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    crate::widgets::key_chip(ui, "Enter", &colors);
+                    ui.label(
+                        RichText::new("close all")
+                            .size(style::TEXT_HINT)
+                            .color(colors.text_dim),
+                    );
+                    ui.add_space(style::SPACE_SM);
+                    crate::widgets::key_chip(ui, "D", &colors);
+                    ui.label(
+                        RichText::new("dissolve")
+                            .size(style::TEXT_HINT)
+                            .color(colors.text_dim),
+                    );
+                    ui.add_space(style::SPACE_SM);
+                    crate::widgets::key_chip(ui, "Esc", &colors);
+                    ui.label(
+                        RichText::new("cancel")
+                            .size(style::TEXT_HINT)
+                            .color(colors.text_dim),
+                    );
+                });
+                (ca, dv, ck)
+            },
+        )
+        .unwrap_or((false, false, false));
+        close_all |= btn_close_all;
+        dissolve |= btn_dissolve;
+        cancelled |= scrim_cancelled | btn_cancelled;
 
         if close_all {
             let idx = self.router.iter().position(|c| c.context_id == state.context_id);

@@ -90,7 +90,7 @@ impl PlexiApp {
                 ui.painter().rect_filled(
                     screen_rect,
                     0.0,
-                    egui::Color32::from_black_alpha(230),
+                    egui::Color32::from_black_alpha(style::SCRIM_ALPHA),
                 );
             });
 
@@ -318,7 +318,7 @@ impl PlexiApp {
                 ui.painter().rect_filled(
                     screen_rect,
                     0.0,
-                    egui::Color32::from_black_alpha(230),
+                    egui::Color32::from_black_alpha(style::SCRIM_ALPHA),
                 );
             });
 
@@ -662,7 +662,7 @@ impl PlexiApp {
             .fixed_pos(screen_rect.min)
             .order(egui::Order::Middle)
             .show(ctx, |ui| {
-                ui.painter().rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(230));
+                ui.painter().rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(style::SCRIM_ALPHA));
             });
 
         let modal_w = (screen_rect.width() * 0.6).min(672.0).max(408.0);
