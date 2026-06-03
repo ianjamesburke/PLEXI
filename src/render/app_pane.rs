@@ -16,8 +16,52 @@ use egui::RichText;
 const NAV_BAR_HEIGHT: f32 = 32.0;
 /// Horizontal padding inside the nav bar.
 const NAV_BAR_PAD: f32 = style::SPACE_SM;
+/// Height of the overtake indicator bar shown when this app replaced another pane.
+const OVERTAKE_BAR_HEIGHT: f32 = 24.0;
 
 pub fn render(ui: &mut egui::Ui, app_pane: &mut AppPane, colors: &Colors, is_focused: bool) {
+    // Viewport overtake indicator — shows when this app has replaced another pane's content.
+    if app_pane.overlay_replaced.is_some() {
+        let bar_rect = egui::Rect::from_min_size(
+            ui.cursor().left_top(),
+            egui::vec2(ui.available_width(), OVERTAKE_BAR_HEIGHT),
+        );
+
+        ui.painter().rect_filled(bar_rect, 0.0, colors.bg_active);
+
+        ui.allocate_new_ui(egui::UiBuilder::new().max_rect(bar_rect), |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.add_space(NAV_BAR_PAD);
+
+                // Show the replaced pane's name/type.
+                let replaced_label = match app_pane.overlay_replaced.as_deref() {
+                    Some(crate::pane::Pane::Terminal(t)) => {
+                        t.name.as_deref().unwrap_or("Terminal").to_string()
+                    }
+                    Some(crate::pane::Pane::App(a)) => a.name.clone(),
+                    Some(crate::pane::Pane::Portal(_)) => "Portal".to_string(),
+                    None => unreachable!(),
+                };
+
+                ui.label(
+                    RichText::new(format!("← {replaced_label}"))
+                        .size(style::TEXT_HINT)
+                        .color(colors.text_dim),
+                );
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(NAV_BAR_PAD);
+                    crate::widgets::key_chip(ui, "Esc", colors);
+                    ui.label(
+                        RichText::new("return")
+                            .size(style::TEXT_HINT)
+                            .color(colors.text_dim),
+                    );
+                });
+            });
+        });
+    }
+
     // Check if we need a nav bar (non-empty stack).
     let nav_title: Option<String> = app_pane
         .runtime
