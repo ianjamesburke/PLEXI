@@ -12,7 +12,7 @@ import pathlib
 import time
 from typing import Any
 
-from plexi_sdk import App, RenderContext
+from plexi_sdk import App, CapabilityDeniedError, RenderContext
 
 TOTAL_TARGET = 50
 NUM_SNAKES = 4
@@ -29,7 +29,7 @@ SPAWN_PLAN = [
 
 
 class SnakeRaceApp(App):
-    def on_init(self, ctx: RenderContext) -> None:
+    async def on_init(self, ctx: RenderContext) -> None:
         self._scores: list[int] = [0] * NUM_SNAKES
         self._pane_ids: list[int | None] = [None] * NUM_SNAKES
         self._spawned = 0
@@ -37,6 +37,11 @@ class SnakeRaceApp(App):
         self._stop_time: float | None = None
         self._pb: float | None = self._load_pb()
         self.emit.info("snake-race: init")
+        try:
+            await self.emit.capability_request("panes.spawn")
+        except CapabilityDeniedError:
+            self.emit.error("snake-race: panes.spawn denied — cannot spawn snake panes")
+            return
         self._spawn_next()
 
     def _spawn_next(self) -> None:
