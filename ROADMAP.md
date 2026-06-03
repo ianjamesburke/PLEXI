@@ -40,8 +40,8 @@ Make what exists feel finished before adding new systems. These are the first th
 - [x] Text editor extraction (#1920, #1922) -- native text-editor builtin pane shipped as `src/text_editor_app.rs`
 - [ ] Terminal Cmd+F search overlay (#1914) -- match cycling, keyboard-navigable
 - [ ] Auto-set pane title to wrapped command (#1037)
-- [ ] Notification auto-dismiss when originating pane focused (#1635)
-- [ ] QuickNote modal blocked by other modals (#1626)
+- [x] Notification auto-dismiss when originating pane focused (#1635) (v0.0.603)
+- [x] QuickNote modal blocked by other modals (#1626) (v0.0.603)
 - [x] URL trailing punctuation fix (#1549) (v0.0.599)
 - [ ] Install modal success detection (#1643)
 - [ ] Core app theming audit (#1669) -- FooterKeys + ctx.colors across all shipped apps
@@ -58,10 +58,10 @@ The biggest and most important layer. PGAP becomes L1-only declarative UI. This 
 
 ### 3a: Protocol redesign
 
-Current state: `UiNode` enum exists with 10 variants (Stack, Scroll, Layer, Text, Image, Raw, Button, Input, Badge, Dot). Four L1 nodes (Button, Input, Badge, Dot) still carry `_l0: Box<UiNode>` fallback fields. `DrawCommand` is still the primary wire envelope. `ComponentEvent` routing is implemented in `render_components.rs`.
+Current state: `UiNode` enum exists with 10 variants (Stack, Scroll, Layer, Text, Image, Raw, Button, Input, Badge, Dot). `DrawCommand` is still the primary wire envelope. `ComponentEvent` routing is implemented in `render_components.rs`.
 
 - [ ] Design the full L1 UiNode set -- expand from current 10 variants to cover all SDK component types (AppBar, Footer, FooterKeys, List/SelectList, Card, Section, Divider, ScrollLog, Chat, etc.). The `Chat` node is critical: host renders message bubbles, streaming text, thinking indicator, input field. Any app can embed a full chat experience via one node.
-- [ ] Remove `_l0` fallback fields from L1 nodes (Button, Input, Badge, Dot) -- 20 references in `app_protocol.rs`, 1 in `render_components.rs`, plus round-trip test at line 3685
+- [x] Remove `_l0` fallback fields from L1 nodes (Button, Input, Badge, Dot) (v0.0.603)
 - [ ] Deprecate and remove L0 flat draw commands as the primary rendering path -- `Raw { command }` node stays as the escape hatch for custom rendering
 - [ ] Host-side L1 renderer -- the host layouts, themes, and renders every L1 node type with consistent spacing, colors, and focus management
 - [ ] Component event routing (#1904) -- host fires `ComponentEvent` for interactive L1 nodes (Button click, Input submit, List select). Infrastructure exists; SDK surface in validate.
@@ -97,7 +97,7 @@ Current app inventory: 18 shipped apps in `apps/`, 29 POC apps in `apps/dev/`.
 - [x] Move non-core apps to `apps/dev/` (v0.0.598) -- kanban, calendar, gh-projects, mind-map, typing-tutor, counter-tree moved; shipped set is 8 core + 3 games
 - [ ] Each core app becomes a reference implementation demonstrating specific L1 patterns
 - [ ] Backlog: integrate TextEdit node for inline editing
-- [ ] Logs: search/filter (#1649) + spacing (#1648)
+- [ ] Logs: search/filter (#1649) + ~~spacing (#1648)~~ (v0.0.603)
 - [x] Update `plexi app init` scaffold to produce a perfect 30-line L1 example (v0.0.599)
 - [ ] Archive or remove `apps/dev/` POCs that have served their purpose
 - [ ] `plexi app dev` hot-reload command (#1660)
