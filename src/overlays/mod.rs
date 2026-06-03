@@ -11,9 +11,6 @@ pub(crate) mod confirmations;
 pub(crate) mod notification_modal;
 pub(crate) mod setup;
 
-/// Timeout (ms) between presses in a multi-tap confirmation sequence.
-pub(crate) const CONFIRM_TIMEOUT_MS: u64 = 1500;
-
 /// Consume the first digit key (0–9) pressed this frame; return its value.
 pub(crate) fn consume_digit_key(ctx: &egui::Context) -> Option<u8> {
     ctx.input_mut(|i| {

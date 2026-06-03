@@ -225,58 +225,6 @@ pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::
     resp
 }
 
-// ── Overlay layout primitives ────────────────────────────────────────────
-//
-// Every overlay (inspector, sub-context UX, unified overlays) was hand-rolling
-// the same section label, pane-type badge, status chip, and truncating text
-// label. Each diverged in color logic and spacing. These four primitives
-// centralize that rendering so future overlays look identical with zero extra
-// work.
-//
-// Status color mapping lives here — not in individual overlays — so adding a
-// new status value is a one-line change that applies everywhere.
-
-/// Renders a section / group header label (context name, group title, etc.).
-/// `is_active` tints the label with `colors.accent` instead of `colors.text_dim`.
-pub(crate) fn section_header(ui: &mut egui::Ui, label: &str, is_active: bool, colors: &Colors) {
-    let color = if is_active { colors.accent } else { colors.text_dim };
-    ui.label(
-        egui::RichText::new(label)
-            .size(style::TEXT_CAPTION)
-            .color(color)
-            .strong(),
-    );
-}
-
-/// Renders the pane type as a short lowercase chip: `"term"` for Terminal,
-/// `"app"` for App, or the lowercased kind string for anything else.
-/// Uses `key_chip` so the visual weight matches keyboard shortcut chips.
-pub(crate) fn pane_type_badge(ui: &mut egui::Ui, kind: &str, colors: &Colors) {
-    let label = match kind {
-        "Terminal" => "term",
-        "App" => "app",
-        other => other,
-    };
-    key_chip(ui, label, colors);
-}
-
-/// Renders a status string with centralized color mapping:
-/// - `"busy"` / `"running"` → `colors.accent`
-/// - `"crashed"` / `"hung"` / `"error"` / `"exited"` → `colors.danger`
-/// - everything else (`"idle"`, `"booting"`, ...) → `colors.text_dim`
-pub(crate) fn status_chip(ui: &mut egui::Ui, status: &str, colors: &Colors) {
-    let color = match status {
-        "busy" | "running" => colors.accent,
-        "crashed" | "hung" | "error" | "exited" => colors.danger,
-        _ => colors.text_dim,
-    };
-    ui.label(
-        egui::RichText::new(status)
-            .size(style::TEXT_HINT)
-            .color(color),
-    );
-}
-
 /// Renders a single-line label that truncates with an ellipsis at the available
 /// width. `egui::Label::truncate` clips at `available_width()`, so without a
 /// constraint the label expands naturally and truncation never fires.

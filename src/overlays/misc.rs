@@ -236,6 +236,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "\u{21E7}", "S"], "Secrets manager"),
                                         (&["\u{2318}", "R"], "Rename pane"),
                                         (&["\u{2318}", "\u{21E7}", "R"], "Rename context"),
+                                        (&["\u{2318}", "\u{21E7}", "I"], "Set context root"),
                                         (&["\u{2318}", "/"], "This help"),
                                         (&["\u{2318}", "Q"], "Quit"),
                                     ];
