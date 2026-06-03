@@ -240,7 +240,14 @@ fn main() -> eframe::Result {
                         SecretCmd::Delete { friendly_name } => std::process::exit(cli::workspace_secret_delete(&friendly_name)),
                     },
                     Commands::App { cmd } => match cmd {
-                        AppCmd::Open { type_id, mcp, cli: cli_flag, layout, from_pane_id, extra_args } => {
+                        AppCmd::Open { type_id, mcp, cli: cli_flag, down, left, up, right, tab, window, from_pane_id, extra_args } => {
+                            let layout: Option<String> = if down { Some("split_v".into()) }
+                                else if left { Some("split_left".into()) }
+                                else if up { Some("split_above".into()) }
+                                else if right { Some("split_h".into()) }
+                                else if tab { Some("tab".into()) }
+                                else if window { Some("new_window".into()) }
+                                else { None }; // default: overlay
                             let mode_count = type_id.is_some() as u8
                                 + (!mcp.is_empty()) as u8
                                 + cli_flag.is_some() as u8;
@@ -486,7 +493,7 @@ fn main() -> eframe::Result {
                         PaneCmd::Self_ => std::process::exit(cli::pane_self_cli()),
                         PaneCmd::Info => std::process::exit(cli::pane_info_cli()),
                         PaneCmd::Capture { pane_id, lines, full_output, from_cursor } => std::process::exit(cli::pane_capture_cli(pane_id, lines, full_output, from_cursor)),
-                        PaneCmd::New { cmd, name, down, left, up, right, tab, window, overlay, from, app, mcp, cli_tool, ephemeral, no_focus, cwd, extra_args } => {
+                        PaneCmd::New { cmd, name, down, left, up, right, tab, window, overlay, from, ephemeral, no_focus, cwd } => {
                             let layout = if down { "split_v" }
                                 else if left { "split_left" }
                                 else if up { "split_above" }
@@ -497,7 +504,7 @@ fn main() -> eframe::Result {
                                 else { "split_h" };
                             std::process::exit(cli::pane_new_cli(
                                 cmd.as_deref(), name.as_deref(), layout, from, cwd.as_deref(),
-                                ephemeral, no_focus, app.as_deref(), &mcp, cli_tool.as_deref(), &extra_args,
+                                ephemeral, no_focus, None, &[], None, &[],
                             ));
                         }
                     },

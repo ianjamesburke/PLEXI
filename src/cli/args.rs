@@ -261,7 +261,7 @@ pub enum SecretCmd {
 
 #[derive(Subcommand)]
 pub enum AppCmd {
-    /// Open an app or tool in a new pane.
+    /// Open an app or tool in a new pane (defaults to overlay).
     ///
     /// Pass an app id (e.g. `plexi app open snake`) to open an installed app.
     /// Use `--mcp` to wrap an MCP server, or `--cli` to open any CLI tool with a Plexi UI.
@@ -279,9 +279,24 @@ pub enum AppCmd {
         /// Example: plexi app open --cli git
         #[arg(long, value_name = "BINARY", conflicts_with = "mcp")]
         cli: Option<String>,
-        /// Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, new_window, or overlay
-        #[arg(long, value_parser = ["split_h", "split_left", "split_right", "split_v", "split_below", "split_above", "tab", "new_window", "overlay"])]
-        layout: Option<String>,
+        /// Split below
+        #[arg(long, short = 'd', conflicts_with_all = ["left", "up", "right", "tab", "window"])]
+        down: bool,
+        /// Split left
+        #[arg(long, short = 'l', conflicts_with_all = ["down", "up", "right", "tab", "window"])]
+        left: bool,
+        /// Split up
+        #[arg(long, short = 'u', conflicts_with_all = ["down", "left", "right", "tab", "window"])]
+        up: bool,
+        /// Split right
+        #[arg(long, short = 'r', conflicts_with_all = ["down", "left", "up", "tab", "window"])]
+        right: bool,
+        /// New tab
+        #[arg(long, conflicts_with_all = ["down", "left", "up", "right", "window"])]
+        tab: bool,
+        /// New window
+        #[arg(long, conflicts_with_all = ["down", "left", "up", "right", "tab"])]
+        window: bool,
         /// Open the new pane relative to this pane ID instead of the focused pane
         #[arg(long)]
         from_pane_id: Option<u64>,
@@ -413,15 +428,16 @@ pub enum UpdateCmd {
 
 #[derive(Subcommand)]
 pub enum PaneCmd {
-    /// Open a new pane (terminal by default, or --app/--mcp/--cli for other types).
+    /// Open a new terminal pane.
     ///
     /// Examples:
     ///   plexi pane new                          # empty terminal, split right
     ///   plexi pane new "npm run dev" -n "dev"   # terminal with command, named
-    ///   plexi pane new --app snake -n "game"    # app pane
-    ///   plexi pane new --mcp npx @mcp/server-filesystem /tmp
+    ///   plexi pane new -d                       # split below
+    ///
+    /// For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
     New {
-        /// Shell command to run (terminal mode, ignored with --app/--mcp/--cli)
+        /// Shell command to run in the new terminal
         cmd: Option<String>,
         /// Name the pane
         #[arg(long, short = 'n')]
@@ -450,15 +466,6 @@ pub enum PaneCmd {
         /// Pane ID to split relative to (default: focused pane)
         #[arg(long)]
         from: Option<u64>,
-        /// Open an installed app instead of a terminal
-        #[arg(long, conflicts_with_all = ["mcp", "cli_tool"])]
-        app: Option<String>,
-        /// Wrap an MCP server
-        #[arg(long, num_args = 1.., value_name = "CMD", allow_hyphen_values = true, conflicts_with_all = ["app", "cli_tool"])]
-        mcp: Vec<String>,
-        /// Wrap a CLI tool with a visual UI
-        #[arg(long = "cli", value_name = "BINARY", conflicts_with_all = ["app", "mcp"])]
-        cli_tool: Option<String>,
         /// Close the pane when the command finishes
         #[arg(long, short = 'e')]
         ephemeral: bool,
@@ -468,9 +475,6 @@ pub enum PaneCmd {
         /// Working directory
         #[arg(long, value_hint = ValueHint::DirPath)]
         cwd: Option<String>,
-        /// Extra arguments passed through to the app
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        extra_args: Vec<String>,
     },
     /// Rename a pane.
     ///
