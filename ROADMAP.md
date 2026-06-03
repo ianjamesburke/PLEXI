@@ -44,7 +44,7 @@ Make what exists feel finished before adding new systems. These are the first th
 - [x] QuickNote modal blocked by other modals (#1626) (v0.0.603)
 - [x] URL trailing punctuation fix (#1549) (v0.0.599)
 - [ ] Install modal success detection (#1643)
-- [ ] Core app theming audit (#1669) -- FooterKeys + ctx.colors across all shipped apps
+- [x] Core app theming audit (#1669) -- ctx.theme tokens across 7 apps (v0.0.604)
 - [ ] QuickNote destination overhaul (#1622)
 - [x] Portal minimap real-time activity (#1918) -- shipped in `ca2c3e83` (v0.0.597), closed
 
