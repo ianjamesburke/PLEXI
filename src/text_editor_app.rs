@@ -24,22 +24,26 @@ impl TextEditorApp {
         Self { path, content, dirty: false, wants_close: false, load_error }
     }
 
-    fn save(&mut self) {
+    fn save(&mut self) -> bool {
         if !self.dirty {
-            return;
+            return true;
         }
         if let Some(parent) = self.path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 log::warn!("TextEditorApp: could not create parent dir {:?}: {e}", parent);
-                return;
+                return false;
             }
         }
         match std::fs::write(&self.path, &self.content) {
             Ok(()) => {
                 log::info!("TextEditorApp: saved {:?} ({} bytes)", self.path, self.content.len());
                 self.dirty = false;
+                true
             }
-            Err(e) => log::warn!("TextEditorApp: save failed for {:?}: {e}", self.path),
+            Err(e) => {
+                log::warn!("TextEditorApp: save failed for {:?}: {e}", self.path);
+                false
+            }
         }
     }
 }
@@ -85,13 +89,19 @@ impl App for TextEditorApp {
         ui.visuals_mut().extreme_bg_color = colors.bg_darkest;
         ui.visuals_mut().override_text_color = Some(colors.text_primary);
 
-        // Reserve space at the bottom for the "Cmd+S to save" hint when dirty.
-        let hint_height = style::TEXT_HINT + style::SPACE_SM * 2.0;
-        let mut available = ui.available_rect_before_wrap();
+        // Render hint first so egui reserves its space before TextEdit fills the rest.
         if self.dirty {
-            available.max.y -= hint_height;
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                ui.add_space(style::SPACE_SM);
+                ui.label(
+                    RichText::new("Cmd+S to save")
+                        .size(style::TEXT_HINT)
+                        .color(colors.text_dim),
+                );
+            });
         }
 
+        let available = ui.available_rect_before_wrap();
         let response = ui.add_sized(
             available.size(),
             egui::TextEdit::multiline(&mut self.content)
@@ -102,15 +112,6 @@ impl App for TextEditorApp {
 
         if response.changed() {
             self.dirty = true;
-        }
-
-        if self.dirty {
-            ui.add_space(style::SPACE_SM);
-            ui.label(
-                RichText::new("Cmd+S to save")
-                    .size(style::TEXT_HINT)
-                    .color(colors.text_dim),
-            );
         }
     }
 
@@ -131,16 +132,17 @@ impl App for TextEditorApp {
             let new_path = PathBuf::from(p);
             if new_path != self.path {
                 log::info!("TextEditorApp: switching from {:?} to {:?}", self.path, new_path);
-                self.save();
-                let (content, load_error) = match std::fs::read_to_string(&new_path) {
-                    Ok(s) => (s, None),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
-                    Err(e) => (String::new(), Some(e.to_string())),
-                };
-                self.path = new_path;
-                self.content = content;
-                self.load_error = load_error;
-                self.dirty = false;
+                if self.save() {
+                    let (content, load_error) = match std::fs::read_to_string(&new_path) {
+                        Ok(s) => (s, None),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
+                        Err(e) => (String::new(), Some(e.to_string())),
+                    };
+                    self.path = new_path;
+                    self.content = content;
+                    self.load_error = load_error;
+                    self.dirty = false;
+                }
             }
         }
     }
