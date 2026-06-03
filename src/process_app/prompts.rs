@@ -124,80 +124,204 @@ pub(crate) fn show_prompt_modal(
             }
         };
 
-    egui::Window::new("Plexi needs permission")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+    // Scrim
+    let screen_rect = ctx.screen_rect();
+    egui::Area::new(egui::Id::new("prompt_modal_scrim"))
+        .fixed_pos(screen_rect.min)
+        .order(egui::Order::Middle)
         .show(ctx, |ui| {
-            match prompt {
-                PendingPrompt::Capability { capability, .. } => {
-                    ui.label(format!("App \"{}\" is requesting access to:", type_id));
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new(capability).monospace().strong());
-                    ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(format!("Workspace: {}", workspace_root.display()))
-                            .small(),
-                    );
-                    ui.add_space(12.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Grant Once").clicked() {
-                            grant_once = true;
-                        }
-                        if ui.button("Grant Forever").clicked() {
-                            grant_forever = true;
-                        }
-                    });
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Deny Once").clicked() {
-                            deny_once = true;
-                        }
-                        if ui.button("Deny Forever").clicked() {
-                            deny_forever = true;
-                        }
-                    });
-                }
-                PendingPrompt::Secret { key } => {
-                    ui.label(format!("App \"{}\" needs a secret value for:", type_id));
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new(key).monospace().strong());
-                    ui.add_space(8.0);
-                    ui.label("Enter value:");
-                    ui.scope(|ui| {
-                        ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                        ui.visuals_mut().text_cursor.stroke.color = colors.accent;
-                        ui.visuals_mut().extreme_bg_color = colors.bg_active;
-                        ui.visuals_mut().widgets.active.bg_stroke =
-                            egui::Stroke::new(1.0, colors.accent);
-                        ui.visuals_mut().widgets.inactive.bg_stroke =
-                            egui::Stroke::new(1.0, colors.border);
-                        let response = ui.add(
-                            egui::TextEdit::singleline(secret_input_buf)
-                                .id(egui::Id::new("capability_secret_input"))
-                                .password(true)
-                                .margin(egui::Margin::symmetric(8, 5)),
-                        );
-                        if response.lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                        {
-                            grant_once = true;
-                        }
-                    });
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui.button("Submit").clicked() {
-                            grant_once = true;
-                        }
-                        if ui.button("Cancel").clicked() {
-                            deny_once = true;
-                        }
-                    });
-                    ui.add_space(4.0);
-                    crate::widgets::key_combo_list(ui, &[&["↵"]], Some("submit"), colors);
-                    crate::widgets::key_combo_list(ui, &[&["⎋"]], Some("cancel"), colors);
-                }
+            ui.painter()
+                .rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(120));
+            let scrim_resp = ui.allocate_rect(screen_rect, egui::Sense::click());
+            if scrim_resp.clicked() {
+                deny_once = true;
             }
+        });
+
+    egui::Area::new(egui::Id::new("prompt_modal_overlay"))
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(colors.bg_sidebar)
+                .stroke(egui::Stroke::new(1.0, colors.border))
+                .corner_radius(crate::style::RADIUS_LG)
+                .inner_margin(egui::Margin::symmetric(20, 16))
+                .show(ui, |ui| {
+                    ui.set_width(crate::overlays::MODAL_WIDTH);
+                    match prompt {
+                        PendingPrompt::Capability { capability, .. } => {
+                            ui.label(
+                                egui::RichText::new("Permission request")
+                                    .size(13.0)
+                                    .color(colors.text_primary)
+                                    .strong(),
+                            );
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(format!("\"{}\" is requesting access to:", type_id))
+                                    .size(12.0)
+                                    .color(colors.text_dim),
+                            );
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new(capability)
+                                    .size(12.0)
+                                    .color(colors.text_primary)
+                                    .monospace()
+                                    .strong(),
+                            );
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(format!("Workspace: {}", workspace_root.display()))
+                                    .size(11.0)
+                                    .color(colors.text_dim),
+                            );
+                            ui.add_space(12.0);
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new("Grant Once")
+                                                .size(12.0)
+                                                .color(colors.bg_darkest),
+                                        )
+                                        .fill(colors.accent),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    grant_once = true;
+                                }
+                                ui.add_space(4.0);
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new("Grant Forever")
+                                                .size(12.0)
+                                                .color(colors.bg_darkest),
+                                        )
+                                        .fill(colors.accent),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    grant_forever = true;
+                                }
+                            });
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new("Deny Once")
+                                                .size(12.0)
+                                                .color(colors.text_dim),
+                                        )
+                                        .fill(colors.bg_active),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    deny_once = true;
+                                }
+                                ui.add_space(4.0);
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new("Deny Forever")
+                                                .size(12.0)
+                                                .color(colors.bg_darkest),
+                                        )
+                                        .fill(colors.danger),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    deny_forever = true;
+                                }
+                            });
+                        }
+                        PendingPrompt::Secret { key } => {
+                            ui.label(
+                                egui::RichText::new("Secret required")
+                                    .size(13.0)
+                                    .color(colors.text_primary)
+                                    .strong(),
+                            );
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(format!("\"{}\" needs a secret value for:", type_id))
+                                    .size(12.0)
+                                    .color(colors.text_dim),
+                            );
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new(key)
+                                    .size(12.0)
+                                    .color(colors.text_primary)
+                                    .monospace()
+                                    .strong(),
+                            );
+                            ui.add_space(8.0);
+                            ui.scope(|ui| {
+                                ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                                ui.visuals_mut().text_cursor.stroke.color = colors.accent;
+                                ui.visuals_mut().extreme_bg_color = colors.bg_active;
+                                ui.visuals_mut().widgets.active.bg_stroke =
+                                    egui::Stroke::new(1.0, colors.accent);
+                                ui.visuals_mut().widgets.inactive.bg_stroke =
+                                    egui::Stroke::new(1.0, colors.border);
+                                let response = ui.add(
+                                    egui::TextEdit::singleline(secret_input_buf)
+                                        .id(egui::Id::new("capability_secret_input"))
+                                        .password(true)
+                                        .margin(egui::Margin::symmetric(8, 5)),
+                                );
+                                if response.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                                {
+                                    grant_once = true;
+                                }
+                            });
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new("Submit")
+                                                .size(12.0)
+                                                .color(colors.bg_darkest),
+                                        )
+                                        .fill(colors.accent),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    grant_once = true;
+                                }
+                                ui.add_space(4.0);
+                                if ui
+                                    .add(
+                                        egui::Button::new(
+                                            egui::RichText::new("Cancel")
+                                                .size(12.0)
+                                                .color(colors.text_dim),
+                                        )
+                                        .fill(colors.bg_active),
+                                    )
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                                {
+                                    deny_once = true;
+                                }
+                            });
+                            ui.add_space(4.0);
+                            crate::widgets::key_combo_list(ui, &[&["↵"]], Some("submit"), colors);
+                            crate::widgets::key_combo_list(ui, &[&["⎋"]], Some("cancel"), colors);
+                        }
+                    }
+                });
         });
 
     if grant_once || grant_forever || deny_once || deny_forever {
