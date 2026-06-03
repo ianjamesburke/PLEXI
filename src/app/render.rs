@@ -272,12 +272,12 @@ impl PlexiApp {
                                                     t.last_activity
                                                         .map(|inst| {
                                                             let secs = inst.elapsed().as_secs_f32();
-                                                            (1.0 - secs / 5.0).clamp(0.0, 1.0)
+                                                            (1.0 - secs / 8.0).clamp(0.0, 1.0)
                                                         })
                                                         .unwrap_or(0.0)
                                                 }
                                             }
-                                            None => 1.0, // App or Portal panes are always "active"
+                                            None => 0.0,
                                         },
                                         None => 0.0,
                                     };
