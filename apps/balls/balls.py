@@ -11,11 +11,9 @@ from __future__ import annotations
 
 import math
 import random
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
 
 from plexi_sdk import App, RenderContext, dim, Arg
+from plexi_sdk.ui import Column, AppBar, FooterKeys, Component
 
 GRAVITY = 300.0      # px/s²
 DAMPING = 0.78       # energy retained on wall bounce
@@ -55,49 +53,48 @@ def _new_ball(x: float, y: float, idx: int,
     )
 
 
-class BallsApp(App):
-    default_background = "#0d0d1a"
-    count: Arg[int] = Arg(positional=True, type=int, default=10)
+class _BallCanvas(Component):
+    """Physics canvas — grows to fill the space between AppBar and FooterKeys."""
 
-    def on_init(self, ctx: RenderContext) -> None:
-        count = max(1, min(self.count, MAX_BALLS))
-        self.balls: list[Ball] = []
-        w, h = ctx.w, ctx.h
-        for i in range(count):
-            ball = _new_ball(0, 0, i)
-            ball.x = random.uniform(ball.r, w - ball.r)
-            ball.y = random.uniform(ball.r, h * 0.6)
-            self.balls.append(ball)
-        ctx.emit.info(f"balls: init complete, spawned {count} balls")
+    def __init__(self, app: "BallsApp") -> None:
+        self._app = app
 
-    def on_render(self, ctx: RenderContext) -> None:
+    def is_grow(self) -> bool:
+        return True
+
+    def measure(self, _avail_w: float) -> float:
+        return 0.0
+
+    def render(self, ctx, x: float, y: float, w: float, _h: float) -> None:
+        h = _h
         dt = min(ctx.elapsed, MAX_DT)
-        w, h = ctx.w, ctx.h
+        balls = self._app.balls
 
         # ── Physics ───────────────────────────────────────────────────────────
-        for b in self.balls:
+        for b in balls:
             b.vy += GRAVITY * dt
             b.x += b.vx * dt
             b.y += b.vy * dt
 
-        # Wall collisions
-        for b in self.balls:
-            if b.x - b.r < 0:
-                b.x = b.r
+        # Wall collisions (canvas-relative)
+        right = x + w
+        bottom = y + h
+        for b in balls:
+            if b.x - b.r < x:
+                b.x = x + b.r
                 b.vx = abs(b.vx) * DAMPING
-            elif b.x + b.r > w:
-                b.x = w - b.r
+            elif b.x + b.r > right:
+                b.x = right - b.r
                 b.vx = -abs(b.vx) * DAMPING
-            if b.y - b.r < 0:
-                b.y = b.r
+            if b.y - b.r < y:
+                b.y = y + b.r
                 b.vy = abs(b.vy) * DAMPING
-            elif b.y + b.r > h:
-                b.y = h - b.r
+            elif b.y + b.r > bottom:
+                b.y = bottom - b.r
                 b.vy = -abs(b.vy) * DAMPING
                 b.vx *= FRICTION   # floor friction
 
         # Circle-circle elastic collisions (broad + narrow phase)
-        balls = self.balls
         n = len(balls)
         for i in range(n):
             for j in range(i + 1, n):
@@ -140,22 +137,42 @@ class BallsApp(App):
 
         # ── Render ────────────────────────────────────────────────────────────
         # Draw shadows first so they don't overlap other balls' bodies
-        for ball in self.balls:
+        for ball in balls:
             ctx.circle(ball.x + 3, ball.y + 4, ball.r, dim("#000000", 60))
 
-        for ball in self.balls:
+        for ball in balls:
             ctx.circle(ball.x, ball.y, ball.r, ball.color)
             hi_r = max(3.0, ball.r * 0.28)
             hi_x = ball.x - ball.r * 0.28
             hi_y = ball.y - ball.r * 0.28
             ctx.circle(hi_x, hi_y, hi_r, dim("#ffffff", 90))
 
-        # HUD
-        count = len(self.balls)
-        ctx.text(10, 10, f"{count} balls — click to add · click ball to remove",
-                 size=12, color="#45475a")
-
         ctx.emit.schedule_render(16)   # 60 fps
+
+
+class BallsApp(App):
+    default_background = "#0d0d1a"
+    count: Arg[int] = Arg(positional=True, type=int, default=10)
+
+    def on_init(self, ctx: RenderContext) -> None:
+        count = max(1, min(self.count, MAX_BALLS))
+        self.balls: list[Ball] = []
+        w, h = ctx.w, ctx.h
+        for i in range(count):
+            ball = _new_ball(0, 0, i)
+            ball.x = random.uniform(ball.r, w - ball.r)
+            ball.y = random.uniform(ball.r, h * 0.6)
+            self.balls.append(ball)
+        self._canvas = _BallCanvas(self)
+        ctx.emit.info(f"balls: init complete, spawned {count} balls")
+
+    def on_render(self, ctx: RenderContext) -> None:
+        count = len(self.balls)
+        ctx.render(Column([
+            AppBar(title="Balls", subtitle=f"{count} balls"),
+            self._canvas,
+            FooterKeys([("click", "add/remove")]),
+        ]))
 
     def on_click(self, ctx: RenderContext, x: float, y: float, _button: str) -> None:
         # Click on an existing ball → remove it (check largest/topmost first)

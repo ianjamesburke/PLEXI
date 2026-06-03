@@ -6,12 +6,9 @@ hard drop, level progression, and the ScheduleRender protocol extension.
 """
 
 import random
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
-
 import time
 from plexi_sdk import App, RenderContext
+from plexi_sdk.ui import Column, AppBar, FooterKeys, Component
 
 ROWS, COLS = 20, 10
 
@@ -115,8 +112,153 @@ class Piece:
         return PIECES[self.key]["color"]
 
 
+class _TetrisCanvas(Component):
+    """Escape-hatch canvas component: all raw draw calls live here."""
+
+    def __init__(self, app: "TetrisApp") -> None:
+        self._app = app
+
+    def is_grow(self) -> bool:
+        return True
+
+    def measure(self, _avail_w: float) -> float:
+        return 0.0
+
+    def render(self, ctx: RenderContext, x: float, y: float, w: float, h: float) -> None:
+        app = self._app
+        now = time.time()
+
+        # Tick line-clear animation
+        if app.clear_anim is not None:
+            rows, anim_start = app.clear_anim
+            if now - anim_start >= CLEAR_FLASH_DURATION:
+                app.clear_anim = None
+                app._finish_clear(rows)
+
+        if not app.game_over and not app.paused and app.clear_anim is None:
+            # Gravity
+            if now - app.last_drop >= _drop_interval(app.level):
+                moved = app.current.copy()
+                moved.row += 1
+                if app._valid(moved):
+                    app.current = moved
+                    app.last_drop = now
+                else:
+                    app._lock()
+
+        # Layout: board on left, info panel on right
+        cell = min(w * 0.58 / COLS, h * 0.92 / ROWS)
+        board_w = cell * COLS
+        board_h = cell * ROWS
+        margin = cell * 0.5
+        bx = x + margin
+        by = y + (h - board_h) / 2
+
+        # Board background
+        ctx.rect(bx - 1, by - 1, board_w + 2, board_h + 2, fill="#111122", radius=2.0)
+
+        # Subtle grid
+        for row in range(ROWS + 1):
+            ctx.line(bx, by + row * cell, bx + board_w, by + row * cell,
+                     color="#1a1a33", width=0.5)
+        for col in range(COLS + 1):
+            ctx.line(bx + col * cell, by, bx + col * cell, by + board_h,
+                     color="#1a1a33", width=0.5)
+
+        # Placed cells
+        clearing_rows: set[int] = set()
+        flash_on = False
+        if app.clear_anim is not None:
+            rows, anim_start = app.clear_anim
+            clearing_rows = set(rows)
+            t = (now - anim_start) / CLEAR_FLASH_DURATION
+            flash_on = (int(t * 8) % 2) == 0  # 4 white/dark cycles
+
+        for row in range(ROWS):
+            for col in range(COLS):
+                if row in clearing_rows:
+                    if flash_on:
+                        _draw_cell(ctx, bx + col * cell, by + row * cell, cell, "#ffffff")
+                elif color := app.board[row][col]:
+                    _draw_cell(ctx, bx + col * cell, by + row * cell, cell, color)
+
+        if not app.game_over and app.clear_anim is None:
+            # Ghost piece (dim outline)
+            ghost = app._ghost()
+            gc = app.current.color()
+            for r, c in ghost.cells():
+                if r >= 0:
+                    gx = bx + c * cell + 1
+                    gy = by + r * cell + 1
+                    s = cell - 2
+                    ctx.rect(gx, gy, s, s, fill=gc + "28", radius=2.0)
+
+            # Active piece
+            for r, c in app.current.cells():
+                if r >= 0:
+                    _draw_cell(ctx, bx + c * cell, by + r * cell, cell,
+                               app.current.color())
+
+        # ── Info panel ────────────────────────────────────────────────────────
+        px = bx + board_w + cell
+        py = by
+
+        ctx.text(px, py, "SCORE", size=10, color="#6c7086")
+        py += 16
+        ctx.text(px, py, f"{app.score:,}", size=20, color="#cdd6f4", bold=True)
+        py += 32
+
+        ctx.text(px, py, "LINES", size=10, color="#6c7086")
+        py += 16
+        ctx.text(px, py, str(app.lines), size=16, color="#cdd6f4")
+        py += 28
+
+        ctx.text(px, py, "LEVEL", size=10, color="#6c7086")
+        py += 16
+        ctx.text(px, py, str(app.level), size=16, color="#cdd6f4")
+        py += 36
+
+        ctx.text(px, py, "NEXT", size=10, color="#6c7086")
+        py += 16
+        nc = app.next.color()
+        ps = cell * 0.72
+        for r, c in PIECES[app.next.key]["shapes"][0]:
+            _draw_cell(ctx, px + c * ps, py + r * ps, ps, nc)
+
+        # Overlays
+        if app.game_over:
+            ow = board_w
+            oh = 80.0
+            ox = bx
+            oy = by + (board_h - oh) / 2
+            ctx.rect(ox, oy, ow, oh, fill="#000000cc", radius=4.0)
+            ctx.text(ox + ow / 2 - 52, oy + 16, "GAME OVER",
+                     size=22, color="#f38ba8", bold=True)
+            ctx.text(ox + ow / 2 - 42, oy + 46, "R to restart",
+                     size=13, color="#cdd6f4")
+
+        elif app.paused:
+            ow = board_w
+            oh = 50.0
+            ctx.rect(bx, by + (board_h - oh) / 2, ow, oh, fill="#000000cc", radius=4.0)
+            ctx.text(bx + ow / 2 - 28, by + (board_h - oh) / 2 + 14,
+                     "PAUSED", size=18, color="#f9e2af", bold=True)
+
+        # Drive the game loop — ~60 fps when active or animating, ~10 fps when paused/over.
+        active = not app.game_over and (not app.paused or app.clear_anim is not None)
+        ctx.emit.schedule_render(16 if active else 100)
+
+
+def _draw_cell(ctx: RenderContext, x: float, y: float, size: float, color: str) -> None:
+    s = size - 2
+    ctx.rect(x + 1, y + 1, s, s, fill=color, radius=2.0)
+    # Highlight strip for pseudo-3D look
+    ctx.rect(x + 2, y + 2, s - 2, 3, fill="#ffffff35", radius=0.0)
+
+
 class TetrisApp(App):
-    def on_init(self, ctx: RenderContext) -> None:
+    def on_init(self, _ctx: RenderContext) -> None:
+        self._canvas = _TetrisCanvas(self)
         self._new_game()
 
     def _new_game(self) -> None:
@@ -217,157 +359,30 @@ class TetrisApp(App):
     # ── Rendering ─────────────────────────────────────────────────────────────
 
     def on_render(self, ctx: RenderContext) -> None:
-        now = time.time()
+        subtitle = f"Score: {self.score:,}  Level: {self.level}"
 
-        # Tick line-clear animation
-        if self.clear_anim is not None:
-            rows, anim_start = self.clear_anim
-            if now - anim_start >= CLEAR_FLASH_DURATION:
-                self.clear_anim = None
-                self._finish_clear(rows)
-
-        if not self.game_over and not self.paused and self.clear_anim is None:
-            # Gravity
-            if now - self.last_drop >= _drop_interval(self.level):
-                moved = self.current.copy()
-                moved.row += 1
-                if self._valid(moved):
-                    self.current = moved
-                    self.last_drop = now
-                else:
-                    self._lock()
-
-        # Layout: board on left, info panel on right
-        cell = min(ctx.w * 0.58 / COLS, ctx.h * 0.92 / ROWS)
-        board_w = cell * COLS
-        board_h = cell * ROWS
-        margin = cell * 0.5
-        bx = margin
-        by = (ctx.h - board_h) / 2
-
-        # Background
-        ctx.rect(0, 0, ctx.w, ctx.h, fill="#0d0d1a")
-
-        # Board background
-        ctx.rect(bx - 1, by - 1, board_w + 2, board_h + 2, fill="#111122", radius=2.0)
-
-        # Subtle grid
-        for row in range(ROWS + 1):
-            ctx.line(bx, by + row * cell, bx + board_w, by + row * cell,
-                     color="#1a1a33", width=0.5)
-        for col in range(COLS + 1):
-            ctx.line(bx + col * cell, by, bx + col * cell, by + board_h,
-                     color="#1a1a33", width=0.5)
-
-        # Placed cells
-        clearing_rows: set[int] = set()
-        flash_on = False
-        if self.clear_anim is not None:
-            rows, anim_start = self.clear_anim
-            clearing_rows = set(rows)
-            t = (now - anim_start) / CLEAR_FLASH_DURATION
-            flash_on = (int(t * 8) % 2) == 0  # 4 white/dark cycles
-
-        for row in range(ROWS):
-            for col in range(COLS):
-                if row in clearing_rows:
-                    if flash_on:
-                        self._cell(ctx, bx + col * cell, by + row * cell, cell, "#ffffff")
-                    # else: leave dark (show grid background) for blink effect
-                elif color := self.board[row][col]:
-                    self._cell(ctx, bx + col * cell, by + row * cell, cell, color)
-
-        if not self.game_over and self.clear_anim is None:
-            # Ghost piece (dim outline)
-            ghost = self._ghost()
-            gc = self.current.color()
-            for r, c in ghost.cells():
-                if r >= 0:
-                    x = bx + c * cell + 1
-                    y = by + r * cell + 1
-                    s = cell - 2
-                    ctx.rect(x, y, s, s, fill=gc + "28", radius=2.0)
-
-            # Active piece
-            for r, c in self.current.cells():
-                if r >= 0:
-                    self._cell(ctx, bx + c * cell, by + r * cell, cell,
-                               self.current.color())
-
-        # ── Info panel ────────────────────────────────────────────────────────
-        px = bx + board_w + cell
-        py = by
-
-        ctx.text(px, py, "TETRIS", size=22, color="#89b4fa", bold=True)
-        py += 36
-
-        ctx.text(px, py, "SCORE", size=10, color="#6c7086")
-        py += 16
-        ctx.text(px, py, f"{self.score:,}", size=20, color="#cdd6f4", bold=True)
-        py += 32
-
-        ctx.text(px, py, "LINES", size=10, color="#6c7086")
-        py += 16
-        ctx.text(px, py, str(self.lines), size=16, color="#cdd6f4")
-        py += 28
-
-        ctx.text(px, py, "LEVEL", size=10, color="#6c7086")
-        py += 16
-        ctx.text(px, py, str(self.level), size=16, color="#cdd6f4")
-        py += 36
-
-        ctx.text(px, py, "NEXT", size=10, color="#6c7086")
-        py += 16
-        nc = self.next.color()
-        ps = cell * 0.72
-        for r, c in PIECES[self.next.key]["shapes"][0]:
-            self._cell(ctx, px + c * ps, py + r * ps, ps, nc)
-        py += ps * 4 + 24
-
-        # Controls
-        for line in ["← → / H L  move", "↑ / K  rotate", "↓ / J  soft drop",
-                     "SPC/↵ hard drop", "P     pause", "R     restart"]:
-            ctx.text(px, py, line, size=10, color="#45475a")
-            py += 14
-
-        # Overlays
         if self.game_over:
-            ow = board_w
-            oh = 80.0
-            ox = bx
-            oy = by + (board_h - oh) / 2
-            ctx.rect(ox, oy, ow, oh, fill="#000000cc", radius=4.0)
-            ctx.text(ox + ow / 2 - 52, oy + 16, "GAME OVER",
-                     size=22, color="#f38ba8", bold=True)
-            ctx.text(ox + ow / 2 - 42, oy + 46, "R to restart",
-                     size=13, color="#cdd6f4")
-
+            footer_keys = FooterKeys([("r", "restart")])
         elif self.paused:
-            ow = board_w
-            oh = 50.0
-            ctx.rect(bx, by + (board_h - oh) / 2, ow, oh, fill="#000000cc", radius=4.0)
-            ctx.text(bx + ow / 2 - 28, by + (board_h - oh) / 2 + 14,
-                     "PAUSED", size=18, color="#f9e2af", bold=True)
+            footer_keys = FooterKeys([("p", "resume")])
+        else:
+            footer_keys = FooterKeys([
+                ("← →", "move"),
+                ("↑", "rotate"),
+                ("↓", "soft"),
+                ("SPC", "hard"),
+                ("p", "pause"),
+            ])
 
-        # Controls hint below board
-        hint_y = by + board_h + 6
-        ctx.text(bx, hint_y, "← → / H L move  ↑ / K rotate  ↓ / J soft  SPC/↵ hard  P pause",
-                 size=10, color="#313244")
-
-        # Drive the game loop — ~60 fps when active or animating, ~10 fps when paused/over.
-        active = not self.game_over and (not self.paused or self.clear_anim is not None)
-        ctx.emit.schedule_render(16 if active else 100)
-
-    def _cell(self, ctx: RenderContext, x: float, y: float, size: float,
-               color: str) -> None:
-        s = size - 2
-        ctx.rect(x + 1, y + 1, s, s, fill=color, radius=2.0)
-        # Highlight strip for pseudo-3D look
-        ctx.rect(x + 2, y + 2, s - 2, 3, fill="#ffffff35", radius=0.0)
+        ctx.render(Column(
+            [AppBar(title="Tetris", subtitle=subtitle), self._canvas, footer_keys],
+            padding=0,
+            gap=0,
+        ))
 
     # ── Input ─────────────────────────────────────────────────────────────────
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         # TODO: add sound effects once AudioPlay is exposed in the Python SDK
         #   - line clear: short synth chord (pitch scales with number of lines cleared)
         #   - hard drop: thud / impact tone

@@ -3,20 +3,20 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
-
-from plexi_sdk import App, RenderContext, HINT, CAPTION, BODY, dim
+from plexi_sdk import App, RenderContext, dim
+from plexi_sdk.ui import (
+    Column, AppBar, FooterKeys, Component,
+    TEXT_HINT, TEXT_CAPTION, TEXT_BODY,
+)
 
 PALETTE = [
     "#f38ba8", "#a6e3a1", "#89b4fa", "#f9e2af",
     "#cba6f7", "#94e2d5", "#fab387", "#74c7ec",
 ]
 
-BREADCRUMB_H = 24.0
 STATS_BAR_H = 34.0
 TIMELINE_H = 50.0
 MIN_CELL_W = 60.0
@@ -222,6 +222,123 @@ def _squarify(items: list[tuple[TreeNode, float]], rect: tuple[float, float, flo
     return result
 
 
+class _StatsCanvas(Component):
+    """Canvas component that renders treemap, stats bar, and timeline strip."""
+
+    def __init__(self, app: "StatsApp") -> None:
+        self._app = app
+
+    def is_grow(self) -> bool:
+        return True
+
+    def measure(self, _avail_w: float) -> float:
+        return 0.0
+
+    def render(self, ctx: RenderContext, x: float, y: float, w: float, h: float) -> None:
+        app = self._app
+        # Store canvas y-offset so on_click can translate global coords
+        app._canvas_y = y
+
+        if not app.root or not app.view_root:
+            ctx.text(x + w / 2 - 80, y + h / 2, "No events found",
+                     size=TEXT_BODY, color=ctx.theme.muted)
+            if app.events_path:
+                ctx.text(x + w / 2 - 120, y + h / 2 + 24,
+                         f"Path: {app.events_path}", size=TEXT_HINT, color=ctx.theme.muted)
+            else:
+                ctx.text(x + w / 2 - 120, y + h / 2 + 24,
+                         "No events.jsonl found", size=TEXT_HINT, color=ctx.theme.muted)
+            return
+
+        vr = app.view_root
+
+        # treemap region (above stats bar and timeline)
+        treemap_h = h - STATS_BAR_H - TIMELINE_H
+        if treemap_h < 10:
+            treemap_h = 10
+
+        children = vr.children if vr.children else [vr]
+        items = [(c, c.total_duration) for c in children if c.total_duration > 0]
+        app.cells = _squarify(items, (x, y, w, treemap_h))
+
+        for node, cx, cy, cw, ch in app.cells:
+            color = PALETTE[node.color_index % len(PALETTE)]
+            is_highlighted = app.highlight_path and node.path == app.highlight_path
+            fill = color if not is_highlighted else "#ffffff"
+            ctx.rect(cx + 1, cy + 1, max(0, cw - 2), max(0, ch - 2),
+                     fill=dim(fill, 180 if not is_highlighted else 255), radius=3.0)
+
+            if cw >= MIN_CELL_W and ch >= MIN_CELL_H:
+                parent_label = _shorten(os.path.dirname(node.path))
+                if parent_label and parent_label != _shorten(vr.path):
+                    ctx.text(cx + 6, cy + ch - 14 - TEXT_BODY - TEXT_HINT - 2,
+                             parent_label, size=TEXT_HINT, color=dim(ctx.theme.fg, 100))
+
+                ctx.text(cx + 6, cy + ch - 14 - TEXT_BODY,
+                         node.label, size=TEXT_BODY, color=ctx.theme.fg, bold=True)
+                ctx.text(cx + 6, cy + ch - 14,
+                         _fmt_duration(node.total_duration), size=TEXT_CAPTION,
+                         color=dim(ctx.theme.fg, 180))
+
+                if node.visits > 0:
+                    ctx.text(cx + cw - 40, cy + 6,
+                             f"{node.visits}x", size=TEXT_HINT, color=dim(ctx.theme.fg, 100))
+
+        # stats bar
+        stats_y = y + treemap_h
+        ctx.rect(x, stats_y, w, STATS_BAR_H, fill="#181825")
+        ctx.line(x, stats_y, x + w, stats_y, color=dim(ctx.theme.muted, 60), width=1.0)
+        ctx.line(x, stats_y + STATS_BAR_H, x + w, stats_y + STATS_BAR_H,
+                 color=dim(ctx.theme.muted, 60), width=1.0)
+
+        stats_text_y = stats_y + (STATS_BAR_H - TEXT_CAPTION) / 2
+        third = w / 3
+        ctx.text(x + third * 0.5, stats_text_y,
+                 f"{_fmt_duration(app.total_time)} active",
+                 size=TEXT_CAPTION, color=ctx.theme.accent, bold=True, align="center")
+        ctx.text(x + third * 1.5, stats_text_y,
+                 f"{app.total_visits} visits",
+                 size=TEXT_CAPTION, color="#a6e3a1", bold=True, align="center")
+        ctx.text(x + third * 2.5, stats_text_y,
+                 f"{app.total_projects} projects",
+                 size=TEXT_CAPTION, color="#f9e2af", bold=True, align="center")
+
+        # timeline strip
+        tl_y = stats_y + STATS_BAR_H
+        ctx.rect(x, tl_y, w, TIMELINE_H, fill="#11111b")
+
+        bar_y = tl_y + 4
+        bar_h = TIMELINE_H - 20
+        for start_frac, end_frac, _, color_idx in app.timeline:
+            bx = x + start_frac * w
+            bw = max(2.0, (end_frac - start_frac) * w)
+            color = PALETTE[color_idx % len(PALETTE)]
+            ctx.rect(bx, bar_y, bw, bar_h, fill=dim(color, 200), radius=2.0)
+
+        # hour markers (dynamic, aligned to rolling 24h window)
+        marker_y = tl_y + TIMELINE_H - 14
+        now = datetime.now(timezone.utc)
+        start_time = now - timedelta(hours=24)
+        labels: list[tuple[float, str]] = []
+        for tick in range(7):
+            frac = tick / 6
+            t = start_time + timedelta(hours=24 * frac)
+            if tick == 6:
+                lbl = "now"
+            else:
+                hr = t.astimezone().hour
+                suffix = "a" if hr < 12 else "p"
+                h12 = hr % 12 or 12
+                lbl = f"{h12}{suffix}"
+            labels.append((frac, lbl))
+        for frac, lbl in labels:
+            mx = x + frac * w
+            ctx.text(mx, marker_y, lbl, size=TEXT_HINT,
+                     color=dim(ctx.theme.muted, 120), align="center")
+
+        app.highlight_path = None
+
+
 class StatsApp(App):
 
     async def on_init(self, ctx: RenderContext) -> None:
@@ -235,6 +352,8 @@ class StatsApp(App):
         self.total_projects = 0
         self.events_path: Path | None = None
         self.highlight_path: str | None = None
+        self._canvas_y: float = 0.0
+        self._canvas = _StatsCanvas(self)
         self._load(ctx)
         self.emit.info("stats: initialized")
 
@@ -286,99 +405,22 @@ class StatsApp(App):
         ctx.status_summary(f"{_fmt_duration(self.total_time)} active")
 
     def on_render(self, ctx: RenderContext) -> None:
-        ctx.clear("#11111b")
-        w, h = ctx.w, ctx.h
+        subtitle = (
+            f"{_fmt_duration(self.total_time)} active · "
+            f"{self.total_visits} visits · "
+            f"{self.total_projects} projects"
+        )
+        ctx.render(Column(
+            [
+                AppBar(title="Stats", subtitle=subtitle),
+                self._canvas,
+                FooterKeys([("r", "refresh"), ("esc", "back"), ("click", "drill down")]),
+            ],
+            padding=0,
+            gap=0,
+        ))
 
-        if not self.root or not self.view_root:
-            ctx.text(w / 2 - 80, h / 2, "No events found", size=BODY, color=ctx.theme.muted)
-            if self.events_path:
-                ctx.text(w / 2 - 120, h / 2 + 24, f"Path: {self.events_path}", size=HINT, color=ctx.theme.muted)
-            else:
-                ctx.text(w / 2 - 120, h / 2 + 24, "No events.jsonl found", size=HINT, color=ctx.theme.muted)
-            return
-
-        vr = self.view_root
-        breadcrumb_path = _shorten(vr.path) if vr.path != HOME else "~"
-
-        # breadcrumb bar
-        ctx.rect(0, 0, w, BREADCRUMB_H, fill="#181825")
-        ctx.text(8, 5, f"{breadcrumb_path} › 24h overview", size=HINT, color=ctx.theme.muted, bold=True)
-        ctx.text(w - 200, 5, "r refresh · click drill · esc back", size=HINT, color=dim(ctx.theme.muted, 120))
-
-        # treemap region
-        treemap_y = BREADCRUMB_H
-        treemap_h = h - BREADCRUMB_H - STATS_BAR_H - TIMELINE_H
-        if treemap_h < 10:
-            treemap_h = 10
-
-        children = vr.children if vr.children else [vr]
-        items = [(c, c.total_duration) for c in children if c.total_duration > 0]
-        self.cells = _squarify(items, (0, treemap_y, w, treemap_h))
-
-        for node, cx, cy, cw, ch in self.cells:
-            color = PALETTE[node.color_index % len(PALETTE)]
-            is_highlighted = self.highlight_path and node.path == self.highlight_path
-            fill = color if not is_highlighted else "#ffffff"
-            ctx.rect(cx + 1, cy + 1, max(0, cw - 2), max(0, ch - 2), fill=dim(fill, 180 if not is_highlighted else 255), radius=3.0)
-
-            if cw >= MIN_CELL_W and ch >= MIN_CELL_H:
-                parent_label = _shorten(os.path.dirname(node.path))
-                if parent_label and parent_label != _shorten(vr.path):
-                    ctx.text(cx + 6, cy + ch - 14 - BODY - HINT - 2, parent_label, size=HINT, color=dim(ctx.theme.fg, 100))
-
-                ctx.text(cx + 6, cy + ch - 14 - BODY, node.label, size=BODY, color=ctx.theme.fg, bold=True)
-                ctx.text(cx + 6, cy + ch - 14, _fmt_duration(node.total_duration), size=CAPTION, color=dim(ctx.theme.fg, 180))
-
-                if node.visits > 0:
-                    ctx.text(cx + cw - 40, cy + 6, f"{node.visits}x", size=HINT, color=dim(ctx.theme.fg, 100))
-
-        # stats bar
-        stats_y = treemap_y + treemap_h
-        ctx.rect(0, stats_y, w, STATS_BAR_H, fill="#181825")
-        ctx.line(0, stats_y, w, stats_y, color=dim(ctx.theme.muted, 60), width=1.0)
-        ctx.line(0, stats_y + STATS_BAR_H, w, stats_y + STATS_BAR_H, color=dim(ctx.theme.muted, 60), width=1.0)
-
-        stats_text_y = stats_y + (STATS_BAR_H - CAPTION) / 2
-        third = w / 3
-        ctx.text(third * 0.5, stats_text_y, f"{_fmt_duration(self.total_time)} active", size=CAPTION, color=ctx.theme.accent, bold=True, align="center")
-        ctx.text(third * 1.5, stats_text_y, f"{self.total_visits} visits", size=CAPTION, color="#a6e3a1", bold=True, align="center")
-        ctx.text(third * 2.5, stats_text_y, f"{self.total_projects} projects", size=CAPTION, color="#f9e2af", bold=True, align="center")
-
-        # timeline strip
-        tl_y = stats_y + STATS_BAR_H
-        ctx.rect(0, tl_y, w, TIMELINE_H, fill="#11111b")
-
-        bar_y = tl_y + 4
-        bar_h = TIMELINE_H - 20
-        for start_frac, end_frac, _, color_idx in self.timeline:
-            bx = start_frac * w
-            bw = max(2.0, (end_frac - start_frac) * w)
-            color = PALETTE[color_idx % len(PALETTE)]
-            ctx.rect(bx, bar_y, bw, bar_h, fill=dim(color, 200), radius=2.0)
-
-        # hour markers (dynamic, aligned to rolling 24h window)
-        marker_y = tl_y + TIMELINE_H - 14
-        now = datetime.now(timezone.utc)
-        start_time = now - timedelta(hours=24)
-        labels: list[tuple[float, str]] = []
-        for tick in range(7):
-            frac = tick / 6
-            t = start_time + timedelta(hours=24 * frac)
-            if tick == 6:
-                lbl = "now"
-            else:
-                h = t.astimezone().hour
-                suffix = "a" if h < 12 else "p"
-                h12 = h % 12 or 12
-                lbl = f"{h12}{suffix}"
-            labels.append((frac, lbl))
-        for frac, lbl in labels:
-            mx = frac * w
-            ctx.text(mx, marker_y, lbl, size=HINT, color=dim(ctx.theme.muted, 120), align="center")
-
-        self.highlight_path = None
-
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
         if key == "r":
             self._load(ctx)
             self.emit.info("stats: refreshed")
@@ -389,14 +431,20 @@ class StatsApp(App):
                 self.emit.info(f"stats: navigated up to {self.view_root.path}")
                 ctx.emit.schedule_render(0)
 
-    def on_click(self, ctx: RenderContext, x: float, y: float, button: str) -> None:
-        w, h = ctx.w, ctx.h
-        tl_y = h - TIMELINE_H
+    def on_click(self, ctx: RenderContext, x: float, y: float, _button: str) -> None:
+        w = ctx.w
+        # Translate global y to canvas-local y
+        local_y = y - self._canvas_y
 
-        if y >= tl_y:
-            bar_y = tl_y + 4
+        # Determine timeline bounds in canvas-local space
+        canvas_h = ctx.h - self._canvas_y
+        # canvas renders: treemap then stats bar then timeline at the bottom
+        tl_local_y = canvas_h - TIMELINE_H
+
+        if local_y >= tl_local_y:
+            bar_local_y = tl_local_y + 4
             bar_h = TIMELINE_H - 20
-            if bar_y <= y <= bar_y + bar_h:
+            if bar_local_y <= local_y <= bar_local_y + bar_h:
                 frac = x / w if w > 0 else 0
                 for start_frac, end_frac, cwd, _ in self.timeline:
                     if start_frac <= frac <= end_frac:
@@ -406,6 +454,7 @@ class StatsApp(App):
                         break
             return
 
+        # Treemap cells are stored with global coordinates from canvas render
         for node, cx, cy, cw, ch in self.cells:
             if cx <= x <= cx + cw and cy <= y <= cy + ch:
                 if node.children and self.view_root is not None:

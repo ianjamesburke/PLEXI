@@ -9,6 +9,7 @@ new cargo crate + cross-compile setup. This is the intentional choice.
 import threading
 import time
 from plexi_sdk import App, RenderContext, Arg, Pipe
+from plexi_sdk.ui import Column, AppBar, FooterKeys, Component
 
 CELL = 18.0          # cell size in logical px
 TICK = 0.15          # seconds per game tick
@@ -27,15 +28,55 @@ DIR_MAP = {
 }
 
 
+class _SnakeCanvas(Component):
+    """Grow-to-fill canvas that renders the grid, snake, food, and game-over overlay."""
+
+    def __init__(self, app: "SnakeApp") -> None:
+        self._app = app
+
+    def is_grow(self) -> bool:
+        return True
+
+    def measure(self, _avail_w: float) -> float:
+        return 0.0
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        app = self._app
+        ox = x + (w - COLS * CELL) / 2
+        oy = y + (h - ROWS * CELL) / 2
+        # Grid border
+        ctx.rect(ox - 2, oy - 2, COLS * CELL + 4, ROWS * CELL + 4,
+                 fill=ctx.theme.muted, radius=2.0)
+        ctx.rect(ox, oy, COLS * CELL, ROWS * CELL, fill="#11111b")
+        # Food
+        fx, fy = app._food
+        ctx.rect(ox + fx * CELL + 2, oy + fy * CELL + 2,
+                 CELL - 4, CELL - 4, fill=ctx.theme.danger, radius=4.0)
+        # Snake
+        for i, (sx, sy) in enumerate(app._snake):
+            color = ctx.theme.accent if i == 0 else ctx.theme.success
+            ctx.rect(ox + sx * CELL + 1, oy + sy * CELL + 1,
+                     CELL - 2, CELL - 2, fill=color, radius=2.0)
+        # Game over overlay
+        if app._dead:
+            msg = "GAME OVER — press R to restart"
+            ctx.rect(ox + COLS * CELL / 2 - 150, oy + ROWS * CELL / 2 - 18,
+                     300, 36, fill="#1e1e2e", radius=6.0)
+            ctx.text(ox + COLS * CELL / 2 - 140,
+                     oy + ROWS * CELL / 2 - 8,
+                     msg, size=13.0, color=ctx.theme.danger)
+
+
 class SnakeApp(App):
     pipe_id: Arg[str | None] = Arg("--pipe", default=None)
 
-    def on_init(self, ctx: RenderContext) -> None:
+    def on_init(self, _ctx: RenderContext) -> None:
         self._pipe: "Pipe | None" = None
         if self.pipe_id:
             self._pipe = self.emit.pipe_open(self.pipe_id, mode="json", direction="out")
             self.emit.info(f"snake: pipe open pipe_id={self.pipe_id}")
         self._reset()
+        self._canvas = _SnakeCanvas(self)
         self._timer_thread = threading.Thread(
             target=self._tick_loop, daemon=True
         )
@@ -85,7 +126,7 @@ class SnakeApp(App):
         else:
             self._snake.pop()
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._dead and key in ("r", "Enter", " "):
             self._reset()
             return
@@ -93,33 +134,17 @@ class SnakeApp(App):
             self._next_dir = DIR_MAP[key]
 
     def on_render(self, ctx: RenderContext) -> None:
-        ox = (ctx.w - COLS * CELL) / 2
-        oy = (ctx.h - ROWS * CELL) / 2
-        # Background
-        ctx.rect(0, 0, ctx.w, ctx.h, fill=ctx.theme.bg)
-        # Grid border
-        ctx.rect(ox - 2, oy - 2, COLS * CELL + 4, ROWS * CELL + 4,
-                 fill=ctx.theme.muted, radius=2.0)
-        ctx.rect(ox, oy, COLS * CELL, ROWS * CELL, fill="#11111b")
-        # Food
-        fx, fy = self._food
-        ctx.rect(ox + fx * CELL + 2, oy + fy * CELL + 2,
-                 CELL - 4, CELL - 4, fill=ctx.theme.danger, radius=4.0)
-        # Snake
-        for i, (sx, sy) in enumerate(self._snake):
-            color = ctx.theme.accent if i == 0 else ctx.theme.success
-            ctx.rect(ox + sx * CELL + 1, oy + sy * CELL + 1,
-                     CELL - 2, CELL - 2, fill=color, radius=2.0)
-        # Score
-        ctx.text(ox, oy - 28, f"Score: {self._score}", size=14.0, color=ctx.theme.fg)
-        # Game over
-        if self._dead:
-            msg = "GAME OVER — press R to restart"
-            ctx.rect(ox + COLS * CELL / 2 - 150, oy + ROWS * CELL / 2 - 18,
-                     300, 36, fill="#1e1e2e", radius=6.0)
-            ctx.text(ox + COLS * CELL / 2 - 140,
-                     oy + ROWS * CELL / 2 - 8,
-                     msg, size=13.0, color=ctx.theme.danger)
+        subtitle = "GAME OVER" if self._dead else f"Score: {self._score}"
+        shortcuts = (
+            [("h/j/k/l", "move"), ("r", "restart")]
+            if self._dead
+            else [("h/j/k/l", "move")]
+        )
+        ctx.render(Column([
+            AppBar(title="Snake", subtitle=subtitle),
+            self._canvas,
+            FooterKeys(shortcuts),
+        ]))
 
     def on_shutdown(self) -> None:
         self._running = False
