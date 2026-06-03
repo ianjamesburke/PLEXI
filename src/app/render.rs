@@ -50,6 +50,10 @@ impl PlexiApp {
         // include all open panes in the workspace context (#396).
         self.update_pane_context_snapshot();
 
+        // Auto-dismiss notifications from the focused pane before reconciling
+        // the focus stack so modal state is already correct this frame.
+        self.auto_dismiss_sender_focused_notifications();
+
         // Focus stack: reconcile layer state BEFORE any input routing so
         // `input_captured_by_overlay()` answers correctly this frame.
         self.sync_notification_modal_focus();

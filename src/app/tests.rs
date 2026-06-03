@@ -1343,3 +1343,152 @@ fn new_context_creates_top_level_empty_context() {
         "inline rename opened for new context"
     );
 }
+
+// ── #1635: auto-dismiss when originating pane is focused ─────────────────────
+
+/// #1635: non-required notification from a focused pane must be auto-dismissed.
+#[test]
+fn auto_dismiss_removes_non_required_notification_when_sender_focused() {
+    let mut h = HostHarness::new();
+    let pane_id = h.add_test_pane();
+
+    // Focus the pane.
+    h.app.pane_navigate(pane_id);
+
+    let ctx_id = h.app.router.active().context_id;
+    let win_id = h.app.windows[h.app.active_window].window_id;
+
+    // Push a non-required notification from the focused pane.
+    h.app.pending_notifications.push(PendingNotification {
+        notify_id: "n-auto-dismiss".into(),
+        sender_pane_id: pane_id,
+        source_context_id: ctx_id,
+        source_window_id: win_id,
+        level: "info".into(),
+        title: "Should go away".into(),
+        body: "body".into(),
+        kind: crate::app_protocol::NotifyKind::Message,
+        options: vec![],
+        input_prompt: None,
+        required: false,
+        priority: 100,
+        scope: crate::app_protocol::NotifyScope::Global,
+        image_inline: None,
+        image_pipe_id: None,
+        response_file: None,
+        timeout_secs: None,
+        on_dismiss: None,
+        enqueued_at: std::time::Instant::now(),
+        tombstoned: false,
+        deliver_after: None,
+    });
+    h.app.show_notification_modal = true;
+    h.app.current_notify_id = Some("n-auto-dismiss".into());
+
+    assert_eq!(h.app.pending_notifications.len(), 1, "notification queued");
+
+    h.app.auto_dismiss_sender_focused_notifications();
+
+    assert!(
+        h.app.pending_notifications.is_empty(),
+        "non-required notification from focused pane must be auto-dismissed"
+    );
+    assert!(
+        !h.app.show_notification_modal,
+        "modal must close when queue empties via auto-dismiss"
+    );
+    assert!(
+        h.app.current_notify_id.is_none(),
+        "current_notify_id must be cleared after dismissal"
+    );
+}
+
+/// #1635: required notifications must NOT be auto-dismissed even when sender is focused.
+#[test]
+fn auto_dismiss_spares_required_notifications() {
+    let mut h = HostHarness::new();
+    let pane_id = h.add_test_pane();
+
+    h.app.pane_navigate(pane_id);
+
+    let ctx_id = h.app.router.active().context_id;
+    let win_id = h.app.windows[h.app.active_window].window_id;
+
+    h.app.pending_notifications.push(PendingNotification {
+        notify_id: "n-required".into(),
+        sender_pane_id: pane_id,
+        source_context_id: ctx_id,
+        source_window_id: win_id,
+        level: "info".into(),
+        title: "Must stay".into(),
+        body: "body".into(),
+        kind: crate::app_protocol::NotifyKind::Message,
+        options: vec![],
+        input_prompt: None,
+        required: true,  // <-- required
+        priority: 100,
+        scope: crate::app_protocol::NotifyScope::Global,
+        image_inline: None,
+        image_pipe_id: None,
+        response_file: None,
+        timeout_secs: None,
+        on_dismiss: None,
+        enqueued_at: std::time::Instant::now(),
+        tombstoned: false,
+        deliver_after: None,
+    });
+
+    h.app.auto_dismiss_sender_focused_notifications();
+
+    assert_eq!(
+        h.app.pending_notifications.len(),
+        1,
+        "required notification must not be auto-dismissed"
+    );
+}
+
+/// #1635: notification from a DIFFERENT pane (not the focused one) must be left alone.
+#[test]
+fn auto_dismiss_does_not_touch_other_pane_notifications() {
+    let mut h = HostHarness::new();
+    let sender_id = h.add_test_pane();
+    let focused_id = h.add_test_pane();
+
+    // Focus the second pane, NOT the sender.
+    h.app.pane_navigate(focused_id);
+
+    let ctx_id = h.app.router.active().context_id;
+    let win_id = h.app.windows[h.app.active_window].window_id;
+
+    h.app.pending_notifications.push(PendingNotification {
+        notify_id: "n-other-pane".into(),
+        sender_pane_id: sender_id,  // different from focused_id
+        source_context_id: ctx_id,
+        source_window_id: win_id,
+        level: "info".into(),
+        title: "From other pane".into(),
+        body: "body".into(),
+        kind: crate::app_protocol::NotifyKind::Message,
+        options: vec![],
+        input_prompt: None,
+        required: false,
+        priority: 100,
+        scope: crate::app_protocol::NotifyScope::Global,
+        image_inline: None,
+        image_pipe_id: None,
+        response_file: None,
+        timeout_secs: None,
+        on_dismiss: None,
+        enqueued_at: std::time::Instant::now(),
+        tombstoned: false,
+        deliver_after: None,
+    });
+
+    h.app.auto_dismiss_sender_focused_notifications();
+
+    assert_eq!(
+        h.app.pending_notifications.len(),
+        1,
+        "notification from a non-focused pane must not be auto-dismissed"
+    );
+}
