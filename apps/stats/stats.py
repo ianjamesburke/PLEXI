@@ -286,7 +286,7 @@ class _StatsCanvas(Component):
 
         # stats bar
         stats_y = y + treemap_h
-        ctx.rect(x, stats_y, w, STATS_BAR_H, fill="#181825")
+        ctx.rect(x, stats_y, w, STATS_BAR_H, fill=ctx.theme.surface)
         ctx.line(x, stats_y, x + w, stats_y, color=dim(ctx.theme.muted, 60), width=1.0)
         ctx.line(x, stats_y + STATS_BAR_H, x + w, stats_y + STATS_BAR_H,
                  color=dim(ctx.theme.muted, 60), width=1.0)
@@ -298,14 +298,14 @@ class _StatsCanvas(Component):
                  size=TEXT_CAPTION, color=ctx.theme.accent, bold=True, align="center")
         ctx.text(x + third * 1.5, stats_text_y,
                  f"{app.total_visits} visits",
-                 size=TEXT_CAPTION, color="#a6e3a1", bold=True, align="center")
+                 size=TEXT_CAPTION, color=ctx.theme.success, bold=True, align="center")
         ctx.text(x + third * 2.5, stats_text_y,
                  f"{app.total_projects} projects",
-                 size=TEXT_CAPTION, color="#f9e2af", bold=True, align="center")
+                 size=TEXT_CAPTION, color=ctx.theme.warning, bold=True, align="center")
 
         # timeline strip
         tl_y = stats_y + STATS_BAR_H
-        ctx.rect(x, tl_y, w, TIMELINE_H, fill="#11111b")
+        ctx.rect(x, tl_y, w, TIMELINE_H, fill=ctx.theme.bg_darkest)
 
         bar_y = tl_y + 4
         bar_h = TIMELINE_H - 20

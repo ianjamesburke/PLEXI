@@ -47,7 +47,7 @@ class _SnakeCanvas(Component):
         # Grid border
         ctx.rect(ox - 2, oy - 2, COLS * CELL + 4, ROWS * CELL + 4,
                  fill=ctx.theme.muted, radius=2.0)
-        ctx.rect(ox, oy, COLS * CELL, ROWS * CELL, fill="#11111b")
+        ctx.rect(ox, oy, COLS * CELL, ROWS * CELL, fill=ctx.theme.bg_darkest)
         # Food
         fx, fy = app._food
         ctx.rect(ox + fx * CELL + 2, oy + fy * CELL + 2,
@@ -61,7 +61,7 @@ class _SnakeCanvas(Component):
         if app._dead:
             msg = "GAME OVER — press R to restart"
             ctx.rect(ox + COLS * CELL / 2 - 150, oy + ROWS * CELL / 2 - 18,
-                     300, 36, fill="#1e1e2e", radius=6.0)
+                     300, 36, fill=ctx.theme.bg, radius=6.0)
             ctx.text(ox + COLS * CELL / 2 - 140,
                      oy + ROWS * CELL / 2 - 8,
                      msg, size=13.0, color=ctx.theme.danger)

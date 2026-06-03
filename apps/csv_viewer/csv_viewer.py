@@ -14,8 +14,6 @@ from plexi_sdk.ui import (
 COL_W = 130.0
 CELL_PAD = 8.0
 ROW_H = 24.0
-STRIPE = "#0d0d0d"
-HEADER_BG = "#1a1a2e"
 
 
 class CsvViewer(App):
@@ -162,7 +160,7 @@ class CsvViewer(App):
         col_end = min(len(self._headers), col_start + visible_cols)
 
         # Header row
-        ctx.rect(0, y, w, ROW_H, fill=HEADER_BG, radius=0.0)
+        ctx.rect(0, y, w, ROW_H, fill=ctx.theme.surface, radius=0.0)
         for ci, col_idx in enumerate(range(col_start, col_end)):
             x = ci * COL_W + CELL_PAD
             label = self._headers[col_idx] if col_idx < len(self._headers) else ""
@@ -181,7 +179,7 @@ class CsvViewer(App):
         for ri, row_idx in enumerate(range(row_start, row_end)):
             row_y = y + ri * ROW_H
             if ri % 2 == 1:
-                ctx.rect(0, row_y, w, ROW_H, fill=STRIPE, radius=0.0)
+                ctx.rect(0, row_y, w, ROW_H, fill=ctx.theme.bg_darkest, radius=0.0)
             row = self._rows[row_idx]
             for ci, col_idx in enumerate(range(col_start, col_end)):
                 x = ci * COL_W + CELL_PAD

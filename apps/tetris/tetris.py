@@ -203,22 +203,22 @@ class _TetrisCanvas(Component):
         px = bx + board_w + cell
         py = by
 
-        ctx.text(px, py, "SCORE", size=10, color="#6c7086")
+        ctx.text(px, py, "SCORE", size=10, color=ctx.theme.muted)
         py += 16
-        ctx.text(px, py, f"{app.score:,}", size=20, color="#cdd6f4", bold=True)
+        ctx.text(px, py, f"{app.score:,}", size=20, color=ctx.theme.fg, bold=True)
         py += 32
 
-        ctx.text(px, py, "LINES", size=10, color="#6c7086")
+        ctx.text(px, py, "LINES", size=10, color=ctx.theme.muted)
         py += 16
-        ctx.text(px, py, str(app.lines), size=16, color="#cdd6f4")
+        ctx.text(px, py, str(app.lines), size=16, color=ctx.theme.fg)
         py += 28
 
-        ctx.text(px, py, "LEVEL", size=10, color="#6c7086")
+        ctx.text(px, py, "LEVEL", size=10, color=ctx.theme.muted)
         py += 16
-        ctx.text(px, py, str(app.level), size=16, color="#cdd6f4")
+        ctx.text(px, py, str(app.level), size=16, color=ctx.theme.fg)
         py += 36
 
-        ctx.text(px, py, "NEXT", size=10, color="#6c7086")
+        ctx.text(px, py, "NEXT", size=10, color=ctx.theme.muted)
         py += 16
         nc = app.next.color()
         ps = cell * 0.72
@@ -233,16 +233,16 @@ class _TetrisCanvas(Component):
             oy = by + (board_h - oh) / 2
             ctx.rect(ox, oy, ow, oh, fill="#000000cc", radius=4.0)
             ctx.text(ox + ow / 2 - 52, oy + 16, "GAME OVER",
-                     size=22, color="#f38ba8", bold=True)
+                     size=22, color=ctx.theme.danger, bold=True)
             ctx.text(ox + ow / 2 - 42, oy + 46, "R to restart",
-                     size=13, color="#cdd6f4")
+                     size=13, color=ctx.theme.fg)
 
         elif app.paused:
             ow = board_w
             oh = 50.0
             ctx.rect(bx, by + (board_h - oh) / 2, ow, oh, fill="#000000cc", radius=4.0)
             ctx.text(bx + ow / 2 - 28, by + (board_h - oh) / 2 + 14,
-                     "PAUSED", size=18, color="#f9e2af", bold=True)
+                     "PAUSED", size=18, color=ctx.theme.warning, bold=True)
 
         # Drive the game loop — ~60 fps when active or animating, ~10 fps when paused/over.
         active = not app.game_over and (not app.paused or app.clear_anim is not None)
