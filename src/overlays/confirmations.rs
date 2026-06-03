@@ -1,15 +1,6 @@
 use super::*;
 
 impl PlexiApp {
-    pub(crate) fn draw_inspector_delete_overlay(&self, ctx: &egui::Context) {
-        self.draw_triple_tap_overlay(
-            ctx,
-            "inspector_delete_overlay",
-            self.inspector_delete_press_count,
-            "⌫ pressed",
-        );
-    }
-
     pub(crate) fn draw_welcome_delete_overlay(&self, ctx: &egui::Context) {
         self.draw_triple_tap_overlay(
             ctx,

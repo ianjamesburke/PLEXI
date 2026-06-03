@@ -86,8 +86,6 @@ pub(crate) enum FocusLayer {
     /// First-launch CLI setup prompt. No text input — intercepts keys so they
     /// don't fall through to the active terminal while the modal is visible.
     CliSetupPrompt,
-    /// Context inspector modal — shows pane list, allows close/delete.
-    ContextInspector,
     /// Shared text-input overlay (context root, future: context rename).
     TextInput,
     /// Close-context confirmation dialog with pane inventory and dissolve option.
@@ -285,12 +283,6 @@ pub struct PlexiApp {
     pub(crate) quit_last_press: Option<std::time::Instant>,
     pub(crate) pending_close: bool,
     pub(crate) pending_context_close: Option<ContextCloseState>,
-    pub(crate) show_context_inspector: bool,
-    pub(crate) inspector_selected_pane: usize,
-    pub(crate) inspector_renaming: bool,
-    pub(crate) inspector_rename_focus_requested: bool,
-    pub(crate) inspector_delete_press_count: u8,
-    pub(crate) inspector_delete_last_press: Option<std::time::Instant>,
     pub(crate) welcome_delete_press_count: u8,
     pub(crate) welcome_delete_last_press: Option<std::time::Instant>,
     pub(crate) frame_tick: crate::logging::FrameTick,
@@ -919,12 +911,6 @@ impl PlexiApp {
                     quitting: false,
                     quit_press_count: 0,
                     quit_last_press: None,
-                    show_context_inspector: false,
-                    inspector_selected_pane: 0,
-                    inspector_renaming: false,
-                    inspector_rename_focus_requested: false,
-                    inspector_delete_press_count: 0,
-                    inspector_delete_last_press: None,
                     welcome_delete_press_count: 0,
                     welcome_delete_last_press: None,
                     config: config.clone(),
@@ -1096,12 +1082,6 @@ impl PlexiApp {
             quitting: false,
             quit_press_count: 0,
             quit_last_press: None,
-            show_context_inspector: false,
-            inspector_selected_pane: 0,
-            inspector_renaming: false,
-            inspector_rename_focus_requested: false,
-            inspector_delete_press_count: 0,
-            inspector_delete_last_press: None,
             welcome_delete_press_count: 0,
             welcome_delete_last_press: None,
             config,
@@ -1265,12 +1245,6 @@ impl PlexiApp {
             quitting: false,
             quit_press_count: 0,
             quit_last_press: None,
-            show_context_inspector: false,
-            inspector_selected_pane: 0,
-            inspector_renaming: false,
-            inspector_rename_focus_requested: false,
-            inspector_delete_press_count: 0,
-            inspector_delete_last_press: None,
             welcome_delete_press_count: 0,
             welcome_delete_last_press: None,
             config,
@@ -1500,7 +1474,6 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::QuickNoteDestination) => self.quick_note_destination_handle_key(ctx),
                 Some(FocusLayer::QuickNoteSubDestination(_)) => self.quick_note_sub_destination_handle_key(ctx),
                 Some(FocusLayer::CliSetupPrompt) => self.cli_setup_prompt_handle_key(ctx),
-                Some(FocusLayer::ContextInspector) => self.context_inspector_handle_key(ctx),
                 Some(FocusLayer::TextInput) => self.text_input_handle_key(ctx),
                 Some(FocusLayer::ContextCloseConfirm) => self.context_close_confirm_handle_key(ctx),
                 Some(FocusLayer::CapabilityModal) => self.capability_modal_handle_key(ctx),
@@ -1540,9 +1513,6 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::CliSetupPrompt) => {
                     self.draw_cli_setup_modal(ctx);
                 }
-                Some(FocusLayer::ContextInspector) => {
-                    self.draw_context_inspector(ctx);
-                }
                 Some(FocusLayer::TextInput) => {
                     self.draw_text_input_overlay(ctx);
                 }
@@ -1565,7 +1535,6 @@ impl eframe::App for PlexiApp {
             self.sync_rename_pane_focus();
             self.sync_context_rename_focus();
             self.sync_cli_setup_prompt_focus();
-            self.sync_context_inspector_focus();
             self.sync_text_input_focus();
             self.sync_capability_modal_focus();
             disposition
@@ -2708,28 +2677,15 @@ impl eframe::App for PlexiApp {
                 Action::PushPaneToSubcontext => {
                     self.push_pane_to_subcontext(None);
                 }
-                Action::ContextInspector => {
-                    self.show_context_inspector = !self.show_context_inspector;
-                    self.inspector_renaming = false;
-                    self.inspector_rename_focus_requested = false;
-                    if self.show_context_inspector {
-                        let focused_pane_id = self.windows[self.active_window]
-                            .focused_pane
-                            .and_then(|tile_id| match self.windows[self.active_window].tree.tiles.get(tile_id) {
-                                Some(Tile::Pane(pane_id)) => Some(*pane_id),
-                                _ => None,
-                            });
-                        let pane_order = self.inspector_pane_order();
-                        self.inspector_selected_pane = focused_pane_id
-                            .and_then(|fpid| pane_order.iter().position(|&pid| pid == fpid))
-                            .unwrap_or(0);
-                        log::info!(
-                            "ContextInspector: opened — pre-selected pane idx={} (focused={:?})",
-                            self.inspector_selected_pane,
-                            focused_pane_id
-                        );
-                    } else {
-                        log::info!("ContextInspector: closed via toggle");
+                Action::SetContextRootFromCwd => {
+                    let active = self.active_window;
+                    if let Some(tile_id) = self.windows[active].focused_pane {
+                        if let Some(cwd) = self.windows[active].get_focused_pane_cwd(tile_id) {
+                            log::info!("SetContextRootFromCwd: setting root to {}", cwd.display());
+                            self.set_active_context_root(cwd);
+                        } else {
+                            log::warn!("SetContextRootFromCwd: no CWD available for focused pane");
+                        }
                     }
                 }
                 Action::ToggleMinimap => {

@@ -26,7 +26,7 @@ use crate::config::KeybindingsConfig;
 // Cmd+Up / Cmd+Down           — scroll
 // Cmd+= / Cmd+-               — font size
 // Cmd+E                       — file browser
-// Cmd+I                       — context inspector
+// Cmd+Shift+I                 — set context root from focused pane CWD
 // Cmd+0                       — quick note
 // Cmd+1–9                     — switch context (sidebar)
 // Escape (app active)         — close app
@@ -104,8 +104,6 @@ pub enum Action {
     /// Create a new context (sidebar item) and immediately open the rename modal.
     /// Bound to Cmd+Shift+N.
     NewContext,
-    /// Toggle the context inspector modal. Bound to Cmd+I.
-    ContextInspector,
     /// Toggle the minimap overlay. Bound to Cmd+Shift+M.
     ToggleMinimap,
     /// Reload configuration from disk. Bound to Cmd+Shift+,.
@@ -126,6 +124,8 @@ pub enum Action {
     PushPaneToSubcontext,
     /// Zoom out of the current sub-context to the parent. Bound to Cmd+Escape.
     ContextZoomOut,
+    /// Set the active context root to the focused pane's CWD. Bound to Cmd+Shift+I.
+    SetContextRootFromCwd,
 }
 
 /// Resolved keybindings — one `(Modifiers, Key)` pair per named action.
@@ -173,10 +173,10 @@ pub struct KeyBindings {
     pub open_secrets_manager: (egui::Modifiers, egui::Key),
     pub force_reload_app: (egui::Modifiers, egui::Key),
     pub toggle_notification_modal: (egui::Modifiers, egui::Key),
-    pub context_inspector: (egui::Modifiers, egui::Key),
     pub open_scratchpad: (egui::Modifiers, egui::Key),
     pub context_zoom_out: (egui::Modifiers, egui::Key),
     pub push_to_subcontext: (egui::Modifiers, egui::Key),
+    pub set_context_root_from_cwd: (egui::Modifiers, egui::Key),
 }
 
 fn cmd() -> egui::Modifiers { egui::Modifiers::COMMAND }
@@ -233,10 +233,10 @@ impl Default for KeyBindings {
             open_secrets_manager:      (cmd_shift(), egui::Key::S),
             force_reload_app:          (cmd_alt(),   egui::Key::R),
             toggle_notification_modal: (cmd_shift(), egui::Key::A),
-            context_inspector:         (cmd(),       egui::Key::I),
             open_scratchpad:           (cmd_shift(), egui::Key::Space),
             context_zoom_out:          (cmd(),       egui::Key::Escape),
             push_to_subcontext:        (cmd_alt(),   egui::Key::N),
+            set_context_root_from_cwd: (cmd_shift(), egui::Key::I),
         }
     }
 }
@@ -384,9 +384,9 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(open_secrets_manager, "open_secrets_manager");
     apply_override!(force_reload_app, "force_reload_app");
     apply_override!(toggle_notification_modal, "toggle_notification_modal");
-    apply_override!(context_inspector, "context_inspector");
     apply_override!(open_scratchpad, "open_scratchpad");
     apply_override!(push_to_subcontext, "push_to_subcontext");
+    apply_override!(set_context_root_from_cwd, "set_context_root_from_cwd");
 
     // Conflict detection
     let named: &[(&str, (egui::Modifiers, egui::Key))] = &[
@@ -431,9 +431,9 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("open_secrets_manager",      bindings.open_secrets_manager),
         ("force_reload_app",          bindings.force_reload_app),
         ("toggle_notification_modal", bindings.toggle_notification_modal),
-        ("context_inspector",         bindings.context_inspector),
         ("open_scratchpad",           bindings.open_scratchpad),
         ("push_to_subcontext",        bindings.push_to_subcontext),
+        ("set_context_root_from_cwd", bindings.set_context_root_from_cwd),
     ];
 
     let mut seen: std::collections::HashMap<u64, &str> = std::collections::HashMap::new();
@@ -649,8 +649,8 @@ pub fn poll_actions(
         if input.consume_key(bindings.force_reload_app.0, bindings.force_reload_app.1) {
             actions.push(Action::ForceReloadApp);
         }
-        if input.consume_key(bindings.context_inspector.0, bindings.context_inspector.1) {
-            actions.push(Action::ContextInspector);
+        if input.consume_key(bindings.set_context_root_from_cwd.0, bindings.set_context_root_from_cwd.1) {
+            actions.push(Action::SetContextRootFromCwd);
         }
         if input.consume_key(bindings.open_scratchpad.0, bindings.open_scratchpad.1) {
             actions.push(Action::OpenScratchpad);

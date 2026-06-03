@@ -59,7 +59,6 @@ impl PlexiApp {
         self.sync_rename_pane_focus();
         self.sync_context_rename_focus();
         self.sync_cli_setup_prompt_focus();
-        self.sync_context_inspector_focus();
         self.sync_text_input_focus();
         self.sync_capability_modal_focus();
 
@@ -888,15 +887,6 @@ impl PlexiApp {
         // pane TextInput widgets rendered in CentralPanel can't steal it.
         if matches!(self.focus_stack.last(), Some(FocusLayer::QuickNote)) {
             ctx.memory_mut(|m| m.request_focus(egui::Id::new("quick_note_text")));
-        }
-
-        // Same pattern: inspector inline rename TextEdit needs re-focus every frame.
-        // The one-shot focus request in draw_context_inspector fires during early overlay
-        // dispatch, BEFORE CentralPanel runs — pane TextInput widgets then steal focus back.
-        // Re-requesting here (post-CentralPanel) ensures we always win the last-write-wins
-        // contest while rename mode is active.
-        if self.inspector_renaming {
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new("inspector_rename_input")));
         }
 
         // Same pattern for all remaining text-owning overlays. Each overlay's one-shot

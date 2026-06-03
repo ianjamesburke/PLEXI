@@ -7,7 +7,6 @@ use egui::{Align, Align2, Color32, CornerRadius, Layout, RichText, Stroke, Vec2}
 pub(crate) mod toolbar;
 pub(crate) mod misc;
 pub(crate) mod quick_note;
-pub(crate) mod inspector;
 pub(crate) mod confirmations;
 pub(crate) mod notification_modal;
 pub(crate) mod setup;

@@ -69,7 +69,6 @@ impl PlexiApp {
                 | Some(FocusLayer::QuickNoteDestination)
                 | Some(FocusLayer::QuickNoteSubDestination(_))
                 | Some(FocusLayer::CliSetupPrompt)
-                | Some(FocusLayer::ContextInspector)
                 | Some(FocusLayer::TextInput)
                 | Some(FocusLayer::ContextCloseConfirm)
                 | Some(FocusLayer::CapabilityModal)
@@ -533,20 +532,6 @@ impl PlexiApp {
             // Use retain rather than pop_focus_layer so stale entries are removed
             // even if another layer was pushed on top (e.g. via rapid state change).
             self.focus_stack.retain(|l| *l != FocusLayer::CliSetupPrompt);
-        }
-    }
-
-    pub(crate) fn sync_context_inspector_focus(&mut self) {
-        let should_own = self.show_context_inspector;
-        let has_layer = self
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::ContextInspector);
-        if should_own && !has_layer {
-            self.push_focus_layer(FocusLayer::ContextInspector);
-        } else if !should_own && has_layer {
-            self.focus_stack
-                .retain(|l| *l != FocusLayer::ContextInspector);
         }
     }
 
