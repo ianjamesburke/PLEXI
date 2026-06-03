@@ -413,6 +413,62 @@ pub enum UpdateCmd {
 
 #[derive(Subcommand)]
 pub enum PaneCmd {
+    /// Open a new pane (terminal by default, or --app/--mcp/--cli for other types).
+    ///
+    /// Examples:
+    ///   plexi pane new                          # empty terminal, split right
+    ///   plexi pane new "npm run dev" -n "dev"   # terminal with command, named
+    ///   plexi pane new --app snake -n "game"    # app pane
+    ///   plexi pane new --mcp npx @mcp/server-filesystem /tmp
+    New {
+        /// Shell command to run (terminal mode, ignored with --app/--mcp/--cli)
+        cmd: Option<String>,
+        /// Name the pane
+        #[arg(long, short = 'n')]
+        name: Option<String>,
+        /// Split below instead of right
+        #[arg(long, short = 'd', conflicts_with_all = ["left", "up", "tab", "window", "overlay"])]
+        down: bool,
+        /// Split left
+        #[arg(long, conflicts_with_all = ["down", "up", "tab", "window", "overlay"])]
+        left: bool,
+        /// Split up
+        #[arg(long, conflicts_with_all = ["down", "left", "tab", "window", "overlay"])]
+        up: bool,
+        /// New tab
+        #[arg(long, conflicts_with_all = ["down", "left", "up", "window", "overlay"])]
+        tab: bool,
+        /// New window
+        #[arg(long, conflicts_with_all = ["down", "left", "up", "tab", "overlay"])]
+        window: bool,
+        /// Overlay pane
+        #[arg(long, conflicts_with_all = ["down", "left", "up", "tab", "window"])]
+        overlay: bool,
+        /// Pane ID to split relative to (default: focused pane)
+        #[arg(long)]
+        from: Option<u64>,
+        /// Open an installed app instead of a terminal
+        #[arg(long, conflicts_with_all = ["mcp", "cli_tool"])]
+        app: Option<String>,
+        /// Wrap an MCP server
+        #[arg(long, num_args = 1.., value_name = "CMD", allow_hyphen_values = true, conflicts_with_all = ["app", "cli_tool"])]
+        mcp: Vec<String>,
+        /// Wrap a CLI tool with a visual UI
+        #[arg(long = "cli", value_name = "BINARY", conflicts_with_all = ["app", "mcp"])]
+        cli_tool: Option<String>,
+        /// Close the pane when the command finishes
+        #[arg(long, short = 'e')]
+        ephemeral: bool,
+        /// Keep focus on the current pane
+        #[arg(long)]
+        no_focus: bool,
+        /// Working directory
+        #[arg(long, value_hint = ValueHint::DirPath)]
+        cwd: Option<String>,
+        /// Extra arguments passed through to the app
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        extra_args: Vec<String>,
+    },
     /// Rename a pane.
     ///
     /// With one argument, renames the current pane: plexi pane name "My Project"

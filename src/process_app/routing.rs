@@ -775,6 +775,7 @@ impl ProcessApp {
                 path: _,
                 workspace_root: _,
                 target_context,
+                name: _,
             } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::PanesSpawn)

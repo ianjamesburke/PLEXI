@@ -1345,6 +1345,10 @@ pub enum AppRequest {
         /// a descendant of the requesting app's context (#1518).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target_context: Option<u64>,
+        /// Inline pane name — applied immediately after spawn so the pane
+        /// starts with a human-readable label instead of the default shell title.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`

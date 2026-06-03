@@ -486,6 +486,19 @@ fn main() -> eframe::Result {
                         PaneCmd::Self_ => std::process::exit(cli::pane_self_cli()),
                         PaneCmd::Info => std::process::exit(cli::pane_info_cli()),
                         PaneCmd::Capture { pane_id, lines, full_output, from_cursor } => std::process::exit(cli::pane_capture_cli(pane_id, lines, full_output, from_cursor)),
+                        PaneCmd::New { cmd, name, down, left, up, tab, window, overlay, from, app, mcp, cli_tool, ephemeral, no_focus, cwd, extra_args } => {
+                            let layout = if down { "split_v" }
+                                else if left { "split_left" }
+                                else if up { "split_above" }
+                                else if tab { "tab" }
+                                else if window { "new_window" }
+                                else if overlay { "overlay" }
+                                else { "split_h" };
+                            std::process::exit(cli::pane_new_cli(
+                                cmd.as_deref(), name.as_deref(), layout, from, cwd.as_deref(),
+                                ephemeral, no_focus, app.as_deref(), &mcp, cli_tool.as_deref(), &extra_args,
+                            ));
+                        }
                     },
                     Commands::Terminal { cmd, ephemeral, layout, from_pane_id, cwd, no_focus } => {
                         std::process::exit(cli::terminal_cli(cmd.as_deref(), ephemeral, layout.as_deref(), from_pane_id, cwd.as_deref(), no_focus));

@@ -168,7 +168,7 @@ impl PlexiApp {
                         log::warn!("pane_ipc: close_pane: pane_id={pane_id} not found");
                     }
                 }
-                crate::app_protocol::AppRequest::SpawnPane { type_id, layout, args, ephemeral, response_file, from_pane_id, cwd, no_focus, path, workspace_root, .. } => {
+                crate::app_protocol::AppRequest::SpawnPane { type_id, layout, args, ephemeral, response_file, from_pane_id, cwd, no_focus, path, workspace_root, name, .. } => {
                     log::info!("pane_ipc: kind=spawn_pane type_id={type_id} path={path:?} layout={layout:?} ephemeral={ephemeral} no_focus={no_focus} from_pane_id={from_pane_id:?} cwd={cwd:?} workspace_root={workspace_root:?} response_file={response_file:?}");
                     let new_pane_id = self.host.next_pane_id();
 
@@ -223,6 +223,11 @@ impl PlexiApp {
                                             log::info!("pane_ipc: spawn_pane terminal layout={layout_str} (empty context fallback)");
                                             self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral, new_pane_first, cwd_override);
                                             if *no_focus { self.active_window = active; }
+                                            if let Some(ref pane_name) = name {
+                                                if !pane_name.is_empty() {
+                                                    self.apply_inline_pane_name(new_pane_id, pane_name);
+                                                }
+                                            }
                                             if let Some(rf) = response_file {
                                                 let json = format!("{{\"pane_id\":{new_pane_id}}}");
                                                 if let Err(e) = std::fs::write(rf, &json) {
@@ -243,6 +248,11 @@ impl PlexiApp {
                                 self.split_focused(vertical, initial_cmd.as_deref(), *ephemeral, new_pane_first, cwd_override);
                                 if *no_focus {
                                     self.active_window = active;
+                                }
+                                if let Some(ref pane_name) = name {
+                                    if !pane_name.is_empty() {
+                                        self.apply_inline_pane_name(new_pane_id, pane_name);
+                                    }
                                 }
                                 // Skip rest of split path
                                 if let Some(rf) = response_file {
@@ -323,6 +333,14 @@ impl PlexiApp {
                         if *no_focus {
                             self.active_window = active;
                             self.restore_window_focused_pane(target_win, orig_focused_in_target);
+                        }
+                    }
+                    // Apply inline name if provided (only on success)
+                    if launch_result.is_ok() {
+                        if let Some(ref pane_name) = name {
+                            if !pane_name.is_empty() {
+                                self.apply_inline_pane_name(new_pane_id, pane_name);
+                            }
                         }
                     }
                     if let Some(rf) = response_file {
@@ -824,5 +842,21 @@ impl PlexiApp {
         for pane_id in panes_to_close {
             self.close_pane_by_id(pane_id);
         }
+    }
+
+    /// Apply an inline pane name immediately after spawn. Sets `name_locked` so
+    /// OSC title sequences don't overwrite the explicit label.
+    fn apply_inline_pane_name(&mut self, pane_id: u64, pane_name: &str) {
+        log::info!("pane_ipc: spawn_pane: applying inline name={pane_name:?} to pane_id={pane_id}");
+        for win in &mut self.windows {
+            if let Some(pane) = win.panes.get_mut(&pane_id) {
+                if let Some(t) = pane.as_terminal_mut() {
+                    t.name_locked = true;
+                    t.name = Some(pane_name.to_string());
+                    return;
+                }
+            }
+        }
+        log::warn!("pane_ipc: spawn_pane: could not apply name to pane_id={pane_id} (not found or not a terminal)");
     }
 }
