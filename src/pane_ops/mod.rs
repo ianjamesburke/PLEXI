@@ -11,7 +11,7 @@
 //! `PlexiApp` regardless of file, so call sites elsewhere in the crate are
 //! unchanged.
 
-mod create;
+pub(crate) mod create;
 mod layout;
 mod workspace;
 

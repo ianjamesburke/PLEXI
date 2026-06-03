@@ -984,47 +984,31 @@ impl PlexiApp {
         self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"), None);
     }
 
-    /// Open a terminal editor in the focused pane for scratchpad editing.
+    /// Open a terminal editor in a new terminal pane for scratchpad editing.
     ///
-    /// Injects `micro <path>` (or `nano` fallback) into the focused terminal's PTY.
+    /// Spawns a fresh horizontal-split terminal running `$EDITOR <scratchpad>` so the
+    /// command works from any focused pane type (terminal, app, file browser, etc.).
     /// The scratchpad file persists at `<config_dir>/scratchpad.md` across sessions.
     pub(crate) fn open_scratchpad(&mut self) {
-        let active = self.active_window;
-
-        let focused_tile = match self.windows[active].focused_pane {
-            Some(t) => t,
-            None => {
-                log::warn!("scratchpad: no focused pane — ignored");
-                return;
-            }
-        };
-        let pane_id = match self.windows[active].tree.tiles.get(focused_tile) {
-            Some(egui_tiles::Tile::Pane(id)) => *id,
-            _ => {
-                log::warn!("scratchpad: focused tile is not a pane — ignored");
-                return;
-            }
-        };
-        let Some(term) = self.windows[active].panes.get_mut(&pane_id).and_then(Pane::as_terminal_mut) else {
-            log::warn!("scratchpad: focused pane {pane_id} is not a terminal — ignored");
-            return;
-        };
-
         let path = scratchpad_file();
         if let Some(parent) = path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 log::warn!("scratchpad: could not create notes dir {:?}: {e}", parent);
-            } else {
-                log::info!("scratchpad: notes dir {:?} ready", parent);
+                return;
             }
         }
         let path_str = path.display().to_string();
-        let escaped = crate::shell::shell_quote(&path_str);
         let editor = preferred_editor();
-
-        let cmd = format!("{editor} {escaped}\r");
-        log::info!("scratchpad: injecting '{editor} {escaped}' into terminal pane {pane_id}");
-        term.backend.process_command(BackendCommand::Write(cmd.into_bytes()));
+        log::info!("scratchpad: spawning terminal pane with '{editor} {path_str}'");
+        let args = vec![editor.clone(), path_str];
+        if let Err(e) = self.launch_app_by_id_with_layout(
+            "terminal",
+            Some("split_h".to_string()),
+            &args,
+            None,
+        ) {
+            log::error!("scratchpad: failed to spawn terminal pane: {e}");
+        }
     }
 
     /// Open the quick note modal: capture context and push FocusLayer::QuickNote.
@@ -1987,12 +1971,24 @@ fn scratchpad_file() -> PathBuf {
     crate::config::config_dir().join("notes").join(format!("{timestamp}.md"))
 }
 
-/// Resolve the preferred terminal editor: `micro` if available, else `nano`, then `vim`.
-fn preferred_editor() -> &'static str {
-    for editor in ["micro", "nano", "vim"] {
-        if cli_binary_in_path(editor) {
-            return editor;
+/// Resolve the preferred terminal editor.
+///
+/// Checks `$VISUAL` then `$EDITOR` (standard Unix convention) first. Falls back to
+/// probing `micro`, `nano`, `vim` in PATH if neither env var is set or the named binary
+/// is not found.
+pub(crate) fn preferred_editor() -> String {
+    for var in ["VISUAL", "EDITOR"] {
+        if let Ok(val) = std::env::var(var) {
+            let bin = val.split_whitespace().next().unwrap_or("").to_string();
+            if !bin.is_empty() && cli_binary_in_path(&bin) {
+                return val;
+            }
         }
     }
-    "nano"
+    for editor in ["micro", "nano", "vim"] {
+        if cli_binary_in_path(editor) {
+            return editor.to_string();
+        }
+    }
+    "nano".to_string()
 }

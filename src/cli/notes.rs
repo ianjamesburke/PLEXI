@@ -1,6 +1,5 @@
 use super::pane::pane_send_cli;
-
-use super::{binary_in_path};
+use super::binary_in_path;
 
 pub fn notes_list_cli() -> i32 {
     let notes_dir = crate::config::config_dir().join("notes");
@@ -75,7 +74,7 @@ pub fn notes_open_cli() -> i32 {
         }
     };
 
-    let editor = if binary_in_path("micro") { "micro" } else if binary_in_path("nano") { "nano" } else { "vim" };
+    let editor = crate::pane_ops::create::preferred_editor();
     let cmd = format!(
         "selected=$(ls -t {notes_dir_str}/*.md 2>/dev/null | fzf --header='Select note'); [ -n \"$selected\" ] && {editor} \"$selected\"\r"
     );
