@@ -1,6 +1,25 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.599] — 2026-06-03
+
+### Changes
+- fix(terminal): strip trailing punctuation from clickable URLs (#1549)
+- feat(sdk): default Esc behavior in base App class (#1631)
+- refactor(cli): clean namespace split for pane new vs app open (#1928)
+- fix(cli): pane new direction flags produce wrong split orientation (#1927)
+- feat(scaffold): trim app init template to 30-line L1 example
+- feat(apps): migrate balls, snake, tetris, stats to L1 rendering
+- refactor: move 6 non-core apps to apps/dev/
+- docs(roadmap): check off L1 app migration (v0.0.597)
+- feat(apps): migrate 11 apps from L0 draw commands to L1 Component rendering
+- feat(cli): unify pane spawning under `pane new` (#1923) (#1926)
+- feat(scratchpad): native text-editor builtin pane, open from any pane type (#1920) (#1922)
+- fix(snake-race): request panes.spawn capability before spawning
+- fix(snake-race): replace bare color constants with ctx.theme.* lookups
+- Add keyboard shortcut tip for context_set_root, document CLI pane naming and tips patterns
+- fix: restore draw_triple_tap_overlay after inspector removal, clean up dead code
+- Remove context inspector modal, replace Cmd+I with SetContextRootFromCwd action
 ## [0.0.598] — 2026-06-03
 
 ### Changes
