@@ -461,13 +461,6 @@ mod render_component_tree_tests {
             node_id: "btn1".into(),
             label: "Click me".into(),
             disabled: false,
-            _l0: Box::new(UiNode::Text {
-                text: "Click me".into(),
-                size: 14.0,
-                color: String::new(),
-                bold: false,
-                monospace: false,
-            }),
         };
         if let UiNode::Button { node_id, label, disabled, .. } = &node {
             assert_eq!(node_id, "btn1");

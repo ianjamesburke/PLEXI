@@ -1562,7 +1562,7 @@ class ListRow:
 # defined in ``src/app_protocol.rs``.  ``to_node()`` returns a plain dict
 # with a ``"type"`` field; B3 (``ctx.render_tree``) will serialise the tree
 # to the host.  L0 types return their dict directly; L1 sugar types include
-# an additional ``"_l0"`` key with the L0 fallback tree.
+# L1 sugar types are rendered natively by the host.
 
 
 class Tabs:
@@ -1679,7 +1679,7 @@ class Grid:
 class Toggle:
     """On/off toggle switch (L1 sugar).
 
-    The ``_l0`` fallback is an Interactive wrapper around a text indicator.
+    Renders as an Interactive node with a horizontal stack indicator.
 
     Example::
 
@@ -1693,21 +1693,6 @@ class Toggle:
         self.label = label
 
     def to_node(self) -> dict:
-        indicator = "● " if self.value else "○ "
-        display_text = indicator + self.label if self.label else indicator.strip()
-
-        l0_child: dict = {
-            "type": "text",
-            "text": display_text,
-        }
-        l0: dict = {
-            "type": "interactive",
-            "node_id": self.node_id,
-            "child": l0_child,
-            "on_click": True,
-            "on_hover": False,
-        }
-
         return {
             "type": "interactive",
             "node_id": self.node_id,
@@ -1723,7 +1708,6 @@ class Toggle:
             },
             "on_click": True,
             "on_hover": False,
-            "_l0": l0,
         }
 
 
