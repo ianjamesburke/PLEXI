@@ -626,6 +626,13 @@
                 "null"
               ]
             },
+            "name": {
+              "description": "Inline pane name — applied immediately after spawn so the pane\nstarts with a human-readable label instead of the default shell title.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "no_focus": {
               "type": "boolean"
             },

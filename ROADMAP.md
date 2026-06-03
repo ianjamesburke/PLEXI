@@ -10,13 +10,13 @@ No dates. Order matters, dates don't. Pivot when necessary, but respect dependen
 
 The P0 refactors that make everything else cheaper to build. Every subsequent feature touches keybindings, modals, CLI commands, or focus. Building on unfixed infra means building twice.
 
-- [ ] Declarative keybinding table (#1916) -- eliminate subset-match footgun, order dependence, 4-site new-binding tax
-- [ ] Modal shell helper (#1915) -- extract scrim+Area+Frame into reusable `modal_shell`, kill copy-paste across 7 overlay files
+- [x] Declarative keybinding table (#1916) -- eliminate subset-match footgun, order dependence, 4-site new-binding tax (v0.0.601)
+- [x] Modal shell helper (#1915) -- extract scrim+Area+Frame into reusable `modal_shell`, kill copy-paste across 7 overlay files (v0.0.601)
 - [x] CLI pane spawning unification (#1923) -- `pane new` as single entry point for terminal spawning
 - [x] CLI namespace clean split (#1928) -- remove `--app`/`--mcp` overlap from `pane new`, separate `app open` fully (v0.0.599)
 - [x] CLI direction flag fix (#1927) -- `pane new` direction flags produce wrong split orientation (v0.0.599)
 - [ ] FocusLayer + PlexiInput unification (#1238, #1239) -- single-owner input dispatch, one FocusOwner stack
-- [ ] App viewport overtake (#1924) -- Escape-to-return pane navigation stack
+- [x] App viewport overtake (#1924) -- Escape-to-return pane navigation stack (v0.0.601)
 
 **Done when:** all P0s closed, `cargo test --bin plexi` green, no known input-routing regressions.
 

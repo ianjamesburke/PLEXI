@@ -110,6 +110,8 @@ Release flow:
 
 `just bump [minor|major]` without install is for explicit pre-promote version bumps when you need a minor or major release.
 
+**Always bump and install after committing to alpha.** Every commit to alpha must end with `just bump && just install` so the running alpha build reflects the latest code. If unrelated uncommitted changes block `just bump`, stash them first and pop after. Never leave a session without installing.
+
 **Never claim a task complete based on an install from a feature worktree.** Uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. The full done cycle is: commit → PR → squash-merge to alpha → `git pull` in the repo root → `just bump && just install` from the repo root.
 
 ## Logging
@@ -226,6 +228,30 @@ Contextual tips (e.g. keyboard shortcut hints) use `print_tip()` from `src/cli/m
 - **Simulate affordances, never lie about contracts.** Give apps familiar interfaces (filesystem-like, subprocess-like), but never obscure isolation, durability, security, or persistence boundaries. These must be explicit, never implied.
 - **Build primitives, not features.** Resist building what developers' agents can trivially implement atop the platform. Feature creep in the core is maintenance debt that compounds. When scope is unclear, omit.
 - **Design for agents, not humans browsing docs.** The SDK must be immediately legible to a coding agent. If it requires a README to be usable, the API is wrong.
+
+## Session Velocity
+
+High-throughput sessions share a pattern: strong initial analysis → user trust → fast feedback loops → features ship. These rules protect that flow.
+
+**Orient from the document, not the issues.** When the user says "complete the roadmap" or "finish layer 1," read the roadmap/spec file. It IS the plan. Do not fetch individual GitHub issues to "understand" work that's already described in the document the user referenced. Issue bodies are 50-80 lines each; reading 6 of them serially burns 300-480 lines of context before any code is read.
+
+**Never serialize issue reads.** If you genuinely need issue details, use `gh issue list --search "..." --json number,title,labels,state` with filters to get a summary in one call. Only `gh issue view` for the single issue you're about to implement. Reading issues "to orient" is almost always wrong.
+
+**Context is a budget.** Every tool call that dumps text has a cost. Before fetching anything, ask: "do I already have enough to start?" If the user described the work, you probably do.
+
+**Pipeline phases flow inline.** implement → open-pr → validate → merge. Never stop between phases to ask "should I proceed?" The user already said to ship. Invoke the next phase at the end of the current one.
+
+**Match user energy.** When the user says "do it," gives screenshots, or provides directional feedback, they're in build mode. Stop asking, start building. Present specs as conversation (a table, a code block), get one "do it," then execute.
+
+**Subagent for implementation, orchestrator for review.** Sonnet subagents handle multi-file coding (>3 files or multiple subsystems). The orchestrator always reviews diffs before committing, catches mistakes, owns the final commit. Never let a subagent commit directly.
+
+**Ideas become issues, not tangents.** When the user pitches something adjacent mid-stream, file it as an issue and move on in the same breath. Don't explore it, don't ask if they want to explore it.
+
+**Direct-to-alpha when user is watching.** The full pipeline (worktree, PR, validate, merge) is for dispatched/autonomous work. When the user is actively watching every build and giving screenshot feedback, direct commits to alpha are appropriate. The ceremony exists to catch mistakes when nobody's looking; when the user IS looking, ship fast.
+
+**Screenshot-feedback loops.** The best sessions iterate in <5 min cycles: edit → `cargo build` → `just install` → user screenshots → targeted fix → repeat. Keep changes small enough that each cycle is one visual diff.
+
+**Own the build.** If your change breaks something, fix it. If a previous commit broke something, fix that too. Never surface a build failure as a question to the user.
 
 ## General Rules
 

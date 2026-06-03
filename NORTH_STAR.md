@@ -60,35 +60,51 @@ The primitives are right when you can build a deployable agentic system and ship
 
 ### Phase 0 — Foundation *(shipped)*
 
-Tiling layout. Terminal, App. PGAP protocol + Python SDK. Typed pipes. Context/workspace scoping. Capability system with permissions.jsonl audit trail. Copy-mode. CLI.
+Tiling layout. Terminal panes, app panes. PGAP protocol v3 + Python SDK. Typed pipes. Context/workspace scoping. Capability system with permissions.jsonl audit trail. Copy-mode. CLI. File browser. QuickNote. Text editor pane.
 
-### Phase 1 — Intelligence & Wiring *(in progress)*
+### Phase 1 — Stabilize & Polish *(in progress)*
 
-Agent panes with OpenRouter backend. Per-turn cost ledger. Session transcripts on disk. Typed pipes Phase 1: manifest `[app.io]` wiring, auto-wire by linked group. Context-aware app dispatch. CLI as the universal agent interface.
+The foundation works. Now make it solid. Declarative keybinding table (eliminate the subset-match footgun). Unified modal system (kill copy-paste scrim patterns). CLI namespace finalization (`pane new`, `app open`). Focus system unification. Welcome screen redesign. Text editor upgrade (extract QuickNote's battle-tested input handling into a shared primitive). Notification polish. Core app theming consistency.
 
-### Phase 2 — Agent Infrastructure *(near term)*
+### Phase 2 — The Protocol *(next)*
 
-`[app.skill]` manifest — apps declare how agents invoke them. `[app.agent]` manifest — installable agent apps with system prompt + tool allowlist. Agent-invokable app registry. Trust tiers: peer, subordinate, orchestrator. Agents that can spawn panes, wire pipes, and hand off to other agents.
+PGAP becomes the product's defining abstraction. **L1-only declarative UI**: apps send a tree of semantic nodes (Stack, List, AppBar, Footer, Button, Input, etc.); the host handles all layout, spacing, theming, scrolling, focus, and hit testing. No pixel math in apps. The `Raw` node survives as the escape hatch for custom rendering (visualizations, games). L0 flat draw commands and `_l0` fallback fields are removed.
 
-### Phase 3 — The Platform *(medium term)*
+The goal: a non-technical person sits down with an AI assistant, says "give me a Plexi app that does X," and it works on the first try because the SDK is a tree builder with 10 concepts, not a rendering engine with 40. A functional, visually polished app in under 100 lines of Python.
 
-WASM app support with WASI capability mapping — portable apps that run anywhere. App store / marketplace: install, publish, sell. Revenue sharing for app authors.
+**Security model**: the capability system (consent + permissions.jsonl audit trail) is the v1 enforcement layer. Python process sandboxing is not attempted at the language level; the protocol brokers all I/O, and the marketplace review process catches abuse. True process isolation comes with the WASM runtime in Phase 4. This is an acknowledged gap, not an oversight.
 
-### Phase 4 — The Portable Identity *(long term)*
+The SDK's job after this phase: state management, tree building, event dispatch. That's it.
 
-Your Plexi environment is yours everywhere. SpacetimeDB as the sync layer — not just for collaboration but for identity portability. Every keybinding, every app, every permission, every configured workflow syncs across machines. Open any machine running Plexi, pull in your interface, and be at home in seconds.
+### Phase 3 — Intelligence *(near term)*
 
-A tarball builder for your complete environment: zsh config, dotfiles, shell history, terminal setup — packaged and versionable alongside your apps. Cloud-hosted configuration with a security model that matters: you can offload your config onto any local Plexi instance without bridging it to your core infrastructure. Workflows travel; your secrets don't have to.
+Agent apps, not agent panes. The agent experience is a PGAP app: same protocol, same SDK, same marketplace. "Characters" are different manifests with different system prompts and tool sets. Anyone can build an agent app the same way they build any other app. The infrastructure is already in the host: LLM broker with OpenRouter + Ollama backends, capability-gated `ai.query`, streaming token delivery, workspace-scoped tool dispatch, per-turn cost ledger.
 
-This is the higher-order OS layer. Not an app running on macOS. A meta-environment that sits above whatever operating system is underneath — so that high-impact individuals get the most out of their time in front of any computer, because their environment came with them.
+AI onboarding for non-technical users: hardware scanning, local model recommendation and setup (Ollama), guided API key entry for cloud providers, and eventually a Plexi-managed subscription backend so `ai.query` works out of the box with zero configuration.
 
-### Phase 5 — Ubiquity *(horizon)*
+Ephemeral pane manager: panes that are alive but not in the active tiling layout. They run in memory, processes stay alive, notifications still fire. Cmd+I summons the inventory overlay (searchable, keyboard-navigable). Pull a pane back into your layout or let it run in the background. The "backpack" that comes with you across contexts.
 
-Linux (it's a Rust binary; it should already work). Windows. Wearables and non-traditional form factors. The same configuration, the same keybindings, the same apps — on any device that can run a process and render a frame.
+### Phase 4 — The Platform *(medium term)*
+
+WASM app runtime with WASI capability mapping. Same UiNode tree protocol, different transport: shared memory IPC instead of JSON over pipes. True process sandboxing via WASM. `Surface { id }` node for direct GPU rendering (games, real-time visualizations). This is the performance tier: apps that need 60fps with hundreds of objects target WASM; apps that need simplicity target Python. Both ship to the same marketplace.
+
+App marketplace: `plexi app dev` (hot-reload local development), `plexi app publish` (package + upload), `plexi app install <name>` from registry. Submission review flow. Revenue sharing for app authors. The marketplace lists both Python and WASM apps; users don't need to know which runtime an app uses.
+
+### Phase 5 — The Portable Instance *(long term)*
+
+A Plexi instance runs as a server: on your local machine, on a cloud VM, on rented GPU hardware. A thin client connects from any Mac, Windows, or Linux machine and renders the UI. Detach from one machine, attach from another. Your config, apps, dotfiles, secrets index, agent transcripts all live on the server instance.
+
+SpacetimeDB as the persistence and sync layer. Not just syncing config across machines, but hosting the entire runtime. Rent a GPU box for video rendering, run agents on beefy hardware, then jump to your laptop at a coffee shop. Self-hosting and cloud-hosting use the same architecture; the only difference is where the server runs.
+
+The deployment model: your Plexi environment is a portable server. Cloud is an option, never a requirement. Local-first is preserved because you can always run the server on your own hardware.
+
+### Phase 6 — Ubiquity *(horizon)*
+
+Linux (it's a Rust binary; it should already work). Windows. Non-traditional form factors. The same configuration, the same keybindings, the same apps, on any device that can run a process and render a frame.
 
 ### Phase ∞ — The Inheritance Layer
 
-A Plexi environment is a complete record of how a person works. Every app, every permission, every agent transcript, every piece of state — on disk, portable, ownable. You hand someone your machine, you hand them your working life. You hand the next generation your accumulated workflows the way you hand them a library.
+A Plexi environment is a complete record of how a person works. Every app, every permission, every agent transcript, every piece of state, on disk, portable, ownable. You hand someone your machine, you hand them your working life. You hand the next generation your accumulated workflows the way you hand them a library.
 
 That has never been true of software before.
 
@@ -98,10 +114,11 @@ That has never been true of software before.
 
 - Cloud state or cloud-required features *(cloud sync is opt-in and portable; local-first is never compromised)*
 - Apps that duplicate what a terminal already does well
-- Capabilities that require trusting the app rather than the protocol
+- Capabilities that require trusting the app rather than the protocol *(the v1 Python SDK relies on consent + audit, not process isolation; true sandboxing arrives with the WASM runtime)*
 - Any system that creates two sources of truth for state or permissions
 - Complexity that serves the implementation rather than the capability
 - Universal UIs designed for everyone — Plexi grows to fit the individual
+- Pixel math in app code — the host handles layout, spacing, theming, and rendering; apps declare structure
 
 ---
 
@@ -112,3 +129,4 @@ That has never been true of software before.
 - Before adding a protocol primitive — does it serve both human and machine callers?
 - Before filing or triaging an issue — does this move toward the garden, or away from it?
 - When an architectural decision feels wrong — come back to "local-first is non-negotiable"
+- For the tactical execution plan, see [ROADMAP.md](ROADMAP.md)
