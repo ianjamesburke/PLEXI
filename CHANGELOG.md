@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.594] — 2026-06-03
+
+### Changes
+- fix: restore draw_triple_tap_overlay after inspector removal, clean up dead code
+- Remove context inspector modal, replace Cmd+I with SetContextRootFromCwd action
 ## [0.0.593] — 2026-06-03
 
 ### Changes
