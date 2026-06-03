@@ -92,13 +92,14 @@ The **Core 9** ship with the default install. Everything else moves to the marke
 
 Current app inventory: 18 shipped apps in `apps/`, 29 POC apps in `apps/dev/`.
 
-- [x] Migrate Core 9 + 4 non-core apps from L0 to L1 Component rendering (v0.0.597) -- backlog, calc, calendar, csv_viewer, gh-projects, kanban, logs, quick-note, todo, typing-tutor, wikipedia. Canvas/game apps (balls, mind-map, snake, tetris, stats) correctly remain L0.
+- [x] Migrate Core 9 + 4 non-core apps from L0 to L1 Component rendering (v0.0.597) -- backlog, calc, calendar, csv_viewer, gh-projects, kanban, logs, quick-note, todo, typing-tutor, wikipedia
+- [x] Migrate canvas/game apps to L1 escape hatch pattern (v0.0.598) -- balls, snake, tetris, stats wrapped in Column([AppBar, Canvas, FooterKeys])
+- [x] Move non-core apps to `apps/dev/` (v0.0.598) -- kanban, calendar, gh-projects, mind-map, typing-tutor, counter-tree moved; shipped set is 8 core + 3 games
 - [ ] Each core app becomes a reference implementation demonstrating specific L1 patterns
 - [ ] Backlog: integrate TextEdit node for inline editing
 - [ ] Logs: search/filter (#1649) + spacing (#1648)
 - [ ] Update `plexi app init` scaffold to produce a perfect 30-line L1 example (Stack + AppBar + List + FooterKeys)
-- [ ] Move non-core `apps/` entries to marketplace-ready `apps/marketplace/` staging area
-- [ ] Archive or remove `apps/dev/` POCs (29 apps) that have served their purpose
+- [ ] Archive or remove `apps/dev/` POCs that have served their purpose
 - [ ] `plexi app dev` hot-reload command (#1660)
 
 ### 3d: Documentation
