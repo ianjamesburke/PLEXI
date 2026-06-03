@@ -427,14 +427,17 @@ pub enum PaneCmd {
         #[arg(long, short = 'n')]
         name: Option<String>,
         /// Split below instead of right
-        #[arg(long, short = 'd', conflicts_with_all = ["left", "up", "tab", "window", "overlay"])]
+        #[arg(long, short = 'd', conflicts_with_all = ["left", "up", "right", "tab", "window", "overlay"])]
         down: bool,
         /// Split left
-        #[arg(long, conflicts_with_all = ["down", "up", "tab", "window", "overlay"])]
+        #[arg(long, short = 'l', conflicts_with_all = ["down", "up", "right", "tab", "window", "overlay"])]
         left: bool,
         /// Split up
-        #[arg(long, conflicts_with_all = ["down", "left", "tab", "window", "overlay"])]
+        #[arg(long, short = 'u', conflicts_with_all = ["down", "left", "right", "tab", "window", "overlay"])]
         up: bool,
+        /// Split right (explicit, same as default)
+        #[arg(long, short = 'r', conflicts_with_all = ["down", "left", "up", "tab", "window", "overlay"])]
+        right: bool,
         /// New tab
         #[arg(long, conflicts_with_all = ["down", "left", "up", "window", "overlay"])]
         tab: bool,

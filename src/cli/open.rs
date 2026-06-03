@@ -201,7 +201,7 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_
 
 /// Thin wrapper preserving the existing `plexi terminal` call site.
 pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>, from_pane_id: Option<u64>, cwd: Option<&str>, no_focus: bool) -> i32 {
-    let layout_str = layout.unwrap_or("split_v");
+    let layout_str = layout.unwrap_or("split_h");
     pane_new_cli(cmd, None, layout_str, from_pane_id, cwd, ephemeral, no_focus, None, &[], None, &[])
 }
 

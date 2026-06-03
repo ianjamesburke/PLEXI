@@ -717,7 +717,7 @@ impl PlexiApp {
         // Reached via SDK AppCommand::SpawnApp("terminal", ...) and legacy paths.
         // Socket IPC and spawn-queue handle terminal inline in app/mod.rs.
         if id == "terminal" {
-            let layout_str = layout.as_deref().unwrap_or("split_v");
+            let layout_str = layout.as_deref().unwrap_or("split_h");
             let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
             let new_pane_first = matches!(layout_str, "split_above" | "split_left");
             let initial_cmd = if args.is_empty() { None } else { Some(crate::shell::shell_join(args)) };

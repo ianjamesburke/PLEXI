@@ -176,7 +176,7 @@ impl PlexiApp {
                     let cwd_override: Option<std::path::PathBuf> = cwd.as_deref().map(std::path::PathBuf::from);
                     let mut launch_result: Result<(), String> = Ok(());
                     if type_id == "terminal" {
-                        let layout_str = layout.as_deref().unwrap_or("split_v");
+                        let layout_str = layout.as_deref().unwrap_or("split_h");
                         let initial_cmd = super::cmd_from_args(args);
                         if layout_str == "new_window" {
                             // Create a new spatial grid window to the right of the
@@ -202,7 +202,7 @@ impl PlexiApp {
                                 self.restore_window_focused_pane(active, original_focused);
                             }
                         } else {
-                            let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
+                            let vertical = matches!(layout_str, "split_h" | "split_right" | "split_left");
                             let new_pane_first = matches!(layout_str, "split_above" | "split_left");
                             // Resolve target window and tile: from_pane_id wins (cross-window),
                             // then fall back to the active window's focused pane.
@@ -734,8 +734,8 @@ impl PlexiApp {
             log::info!("spawn-queue: launching '{type_id}' path={path:?} layout={layout:?} ephemeral={ephemeral} no_focus={no_focus} cwd={cwd_override:?} workspace_root={ws_root_override:?}");
             let active = self.active_window;
             if type_id == "terminal" {
-                let layout_str = layout.as_deref().unwrap_or("split_v");
-                let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
+                let layout_str = layout.as_deref().unwrap_or("split_h");
+                let vertical = matches!(layout_str, "split_h" | "split_right" | "split_left");
                 let new_pane_first = matches!(layout_str, "split_above" | "split_left");
                 let initial_cmd = super::cmd_from_args(&args);
                 if no_focus {

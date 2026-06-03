@@ -1743,7 +1743,7 @@ impl eframe::App for PlexiApp {
                         // "terminal" is a builtin pane type, not in the app registry.
                         // Resolve target window+tile from from_pane_id (cross-window search)
                         // or fall back to the active window's focused pane.
-                        let vertical = matches!(layout.as_str(), "split_v" | "split_below" | "split_above");
+                        let vertical = matches!(layout.as_str(), "split_h" | "split_right" | "split_left");
                         let new_pane_first = matches!(layout.as_str(), "split_above" | "split_left");
                         let initial_cmd = cmd_from_args(&effective_args);
                         let close_on_exit = initial_cmd.is_some();
