@@ -12,7 +12,7 @@ import pathlib
 import time
 from typing import Any
 
-from plexi_sdk import App, RenderContext, BG, FG, MUTED, ACCENT, GREEN, SURFACE
+from plexi_sdk import App, RenderContext
 
 TOTAL_TARGET = 50
 NUM_SNAKES = 4
@@ -130,45 +130,46 @@ class SnakeRaceApp(App):
                 self.emit.error(f"snake-race: pb save failed: {e}")
 
     def on_render(self, ctx: RenderContext) -> None:
-        ctx.rect(0, 0, ctx.w, ctx.h, fill=BG)
+        t = ctx.theme
+        ctx.rect(0, 0, ctx.w, ctx.h, fill=t.bg)
         pad = 16.0
         y = pad
 
-        ctx.text(pad, y, "Snake Race", size=17.0, color=FG, bold=True)
-        ctx.text(pad, y + 22, f"First to {TOTAL_TARGET}", size=12.0, color=MUTED)
+        ctx.text(pad, y, "Snake Race", size=17.0, color=t.fg, bold=True)
+        ctx.text(pad, y + 22, f"First to {TOTAL_TARGET}", size=12.0, color=t.muted)
         y += 52.0
 
         # Per-snake scores
         for i in range(NUM_SNAKES):
             spawned = self._pane_ids[i] is not None
-            color = FG if spawned else MUTED
-            ctx.text(pad, y, f"S{i + 1}", size=13.0, color=MUTED)
+            color = t.fg if spawned else t.muted
+            ctx.text(pad, y, f"S{i + 1}", size=13.0, color=t.muted)
             ctx.text(pad + 28, y, str(self._scores[i]), size=13.0, color=color)
             y += 22.0
 
         y += 6.0
-        ctx.rect(pad, y, ctx.w - pad * 2, 1.0, fill=SURFACE, radius=0.0)
+        ctx.rect(pad, y, ctx.w - pad * 2, 1.0, fill=t.surface, radius=0.0)
         y += 10.0
 
         # Total
         total = sum(self._scores)
         bar_w = max(0.0, min(ctx.w - pad * 2, (ctx.w - pad * 2) * total / TOTAL_TARGET))
-        ctx.rect(pad, y, ctx.w - pad * 2, 8.0, fill=SURFACE, radius=4.0)
-        ctx.rect(pad, y, bar_w, 8.0, fill=ACCENT, radius=4.0)
+        ctx.rect(pad, y, ctx.w - pad * 2, 8.0, fill=t.surface, radius=4.0)
+        ctx.rect(pad, y, bar_w, 8.0, fill=t.accent, radius=4.0)
         y += 16.0
-        ctx.text(pad, y, f"{total} / {TOTAL_TARGET}", size=13.0, color=FG)
+        ctx.text(pad, y, f"{total} / {TOTAL_TARGET}", size=13.0, color=t.fg)
         y += 26.0
 
         # Timer
         if self._stop_time is not None:
             elapsed = self._stop_time - self._start_time  # type: ignore[operator]
-            time_color = GREEN
+            time_color = t.success
         elif self._start_time is not None:
             elapsed = time.monotonic() - self._start_time
-            time_color = ACCENT
+            time_color = t.accent
         else:
             elapsed = 0.0
-            time_color = MUTED
+            time_color = t.muted
 
         if self._start_time is not None or self._stop_time is not None:
             mins = int(elapsed // 60)
@@ -185,9 +186,9 @@ class SnakeRaceApp(App):
             mins = int(self._pb // 60)
             secs = self._pb % 60
             pb_str = f"{mins}:{secs:06.3f}" if mins > 0 else f"{secs:.3f}s"
-            ctx.text(pad, y, f"PB  {pb_str}", size=12.0, color=GREEN)
+            ctx.text(pad, y, f"PB  {pb_str}", size=12.0, color=t.success)
         else:
-            ctx.text(pad, y, "PB  —", size=12.0, color=MUTED)
+            ctx.text(pad, y, "PB  —", size=12.0, color=t.muted)
 
 
 if __name__ == "__main__":
