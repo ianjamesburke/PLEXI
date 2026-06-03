@@ -2844,15 +2844,6 @@ impl eframe::App for PlexiApp {
             }
         }
 
-        // Temporary diagnostic: check if Key::A is still in events before render_panels.
-        ctx.input(|i| {
-            for event in &i.events {
-                if let egui::Event::Key { key: egui::Key::A, pressed: true, modifiers: m, .. } = event {
-                    log::info!("[diag-pre-render] Key::A still alive before render_panels: cmd={} shift={}", m.command, m.shift);
-                }
-            }
-        });
-
         self.render_panels(ctx);
 
         // Detect genuine pane focus transitions and emit FocusChanged events.

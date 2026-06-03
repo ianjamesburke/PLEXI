@@ -179,6 +179,44 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             let mut app_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
             render::app_pane::render(&mut app_ui, app_pane, &self.colors, is_focused);
         } else if let Some(terminal) = pane.as_terminal_mut() {
+            // Cmd+A select-all: intercept here before the terminal widget renders.
+            // egui's internal widget allocation (allocate_painter) consumes the Key::A
+            // event before process_input can see it, so we must handle it one level up.
+            if is_focused {
+                let cmd_a = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A));
+                if cmd_a {
+                    let ppp = ui.ctx().pixels_per_point();
+                    let (is_alt, display_offset, cursor_line, cell_height) = {
+                        let c = terminal.backend.last_content();
+                        (
+                            c.terminal_mode.contains(egui_term::TerminalMode::ALT_SCREEN),
+                            c.grid.display_offset(),
+                            c.grid.cursor.point.line.0,
+                            c.terminal_size.cell_height as f32,
+                        )
+                    };
+                    if !is_alt {
+                        terminal.backend.process_command(BackendCommand::ScrollToBottom);
+                        let cursor_y = cursor_line as f32 * cell_height;
+                        terminal.backend.process_command(BackendCommand::SelectStart(
+                            egui_term::SelectionType::Lines, 0.0, cursor_y, ppp,
+                        ));
+                        terminal.backend.process_command(BackendCommand::ScrollToTop);
+                        terminal.backend.process_command(BackendCommand::SelectUpdate(0.0, 0.0, ppp));
+                        let _ = terminal.backend.sync();
+                        let text = terminal.backend.selectable_content();
+                        if !text.trim().is_empty() {
+                            log::info!("[cmd+a] copied {} chars to clipboard", text.len());
+                            ui.ctx().copy_text(text);
+                        }
+                        terminal.backend.process_command(BackendCommand::ClearSelection);
+                        terminal.backend.process_command(BackendCommand::ScrollToBottom);
+                        if display_offset > 0 {
+                            terminal.backend.process_command(BackendCommand::Scroll(display_offset as i32));
+                        }
+                    }
+                }
+            }
             ui.painter().rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
             let mut terminal_ui =
                 ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
