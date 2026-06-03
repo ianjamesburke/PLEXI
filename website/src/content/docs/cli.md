@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.555"
+verified_version: "0.0.593"
 order: 7
 ---
 
@@ -149,6 +149,7 @@ Manage the active context (the folder and project scope tied to the current pane
 | `describe` | Set the description for the active context |
 | `zoom` | Zoom into a sub-context by its numeric context_id |
 | `zoom-out` | Zoom out of the current sub-context to the parent |
+| `push` | Push the focused pane into a new sub-context |
 
 ### `plexi context new`
 
@@ -200,6 +201,14 @@ Zoom into a sub-context by its numeric context_id
 
 Zoom out of the current sub-context to the parent
 
+### `plexi context push`
+
+Push the focused pane into a new sub-context
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | no | Name for the new sub-context. Defaults to the pane name |
+
 ## `plexi app`
 
 Manage your Plexi apps — open, install, list, scaffold, and inspect
@@ -216,6 +225,8 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `run` | Run an app directly from a local directory without installing or linking |
 | `validate` | Check a Plexi app directory for errors before publishing or installing |
 | `freeze` | Export your currently installed apps as a single TOML snapshot for sharing or backup |
+| `publish` | Package the app in the current directory and print the registry submission payload |
+| `update` | Check installed apps for available updates |
 
 ### `plexi app open`
 
@@ -317,6 +328,28 @@ Like `pip freeze` — captures exactly what's installed so you can replay it lat
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<path>` | string | yes | Destination path for the TOML snapshot file |
+
+### `plexi app publish`
+
+Package the app in the current directory and print the registry submission payload.
+
+Validates all required fields, checks that the entry file exists, and prints the JSON payload that would be submitted to the Plexi app registry.
+
+The actual HTTP submission is future work — this command proves the manifest is correct and ready for publishing.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--dry-run` | flag | no | Print the payload without submitting (currently the only mode — actual registry upload is future work) |
+
+### `plexi app update`
+
+Check installed apps for available updates.
+
+Compares each app's recorded installed version against the version in its manifest. In v1 this is a local check only — no network calls are made. Use `plexi update apps` for git-checkout apps.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<id>` | string | no | App id to check (omit to check all installed apps) |
 
 ## `plexi registry`
 
