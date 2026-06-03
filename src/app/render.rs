@@ -95,6 +95,13 @@ impl PlexiApp {
 
         // Sidebar
         if self.sidebar_visible {
+            ctx.input(|i| {
+                for e in &i.events {
+                    if let egui::Event::Key { key: egui::Key::A, pressed: true, modifiers: m, .. } = e {
+                        log::info!("[diag-pre-sidebar] Key::A alive: cmd={}", m.command);
+                    }
+                }
+            });
             egui::SidePanel::left("sidebar")
                 .default_width(220.0)
                 .width_range(140.0..=400.0)
@@ -108,6 +115,13 @@ impl PlexiApp {
                 .show(ctx, |ui| {
                     self.draw_sidebar(ui);
                 });
+            ctx.input(|i| {
+                for e in &i.events {
+                    if let egui::Event::Key { key: egui::Key::A, pressed: true, modifiers: m, .. } = e {
+                        log::info!("[diag-post-sidebar] Key::A alive: cmd={}", m.command);
+                    }
+                }
+            });
         }
 
         // Central panel — terminal tiles (or welcome screen when context is empty)
@@ -241,7 +255,6 @@ impl PlexiApp {
                                     };
                                     let kind = match pane_ref {
                                         Some(p) if p.as_app().is_some() => crate::tiling::PaneKind::App,
-                                        Some(p) if p.as_portal().is_some() => crate::tiling::PaneKind::Portal,
                                         _ => crate::tiling::PaneKind::Terminal,
                                     };
                                     let title = pane_ref.and_then(|p| {
@@ -249,31 +262,13 @@ impl PlexiApp {
                                             .or_else(|| p.as_app().map(|a| a.name.clone()))
                                     });
                                     let focused = is_active_win && w.focused_pane == Some(*tile_id);
-                                    let activity = match pane_ref {
-                                        Some(p) => match p.as_terminal() {
-                                            Some(t) => {
-                                                if t.exited {
-                                                    0.0
-                                                } else {
-                                                    t.last_activity
-                                                        .map(|inst| {
-                                                            let secs = inst.elapsed().as_secs_f32();
-                                                            (1.0 - secs / 5.0).clamp(0.0, 1.0)
-                                                        })
-                                                        .unwrap_or(0.0)
-                                                }
-                                            }
-                                            None => 1.0, // App or Portal panes are always "active"
-                                        },
-                                        None => 0.0,
-                                    };
                                     crate::tiling::MiniPane {
                                         norm_rect: *norm_rect,
                                         kind,
                                         focused,
                                         has_content: true,
                                         title,
-                                        activity,
+                                        active: true,
                                     }
                                 }).collect();
                                 Some(crate::tiling::MiniWindow {

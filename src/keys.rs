@@ -469,6 +469,15 @@ pub fn poll_actions(
     let mut actions = Vec::new();
 
     ctx.input_mut(|input| {
+        // Temporary diagnostic: log every Key event so we can see if Cmd+A reaches egui.
+        for event in &input.events {
+            if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
+                if *key == egui::Key::A {
+                    log::info!("[diag] Key::A arrived in poll_actions: cmd={} shift={} alt={}", modifiers.command, modifiers.shift, modifiers.alt);
+                }
+            }
+        }
+
         if input.consume_key(bindings.quit.0, bindings.quit.1) {
             actions.push(Action::Quit);
         }

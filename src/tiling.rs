@@ -55,8 +55,8 @@ pub struct MiniPane {
     pub has_content: bool,
     /// OSC title or app name, if available.
     pub title: Option<String>,
-    /// Activity level: 0.0 = exited/dead, 0.0..1.0 = idle (decaying), 1.0 = actively producing output.
-    pub activity: f32,
+    /// False for terminal panes that have exited; dims the pane in the minimap.
+    pub active: bool,
 }
 
 /// One window in the child context, with its spatial grid position.
@@ -179,44 +179,6 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             let mut app_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
             render::app_pane::render(&mut app_ui, app_pane, &self.colors, is_focused);
         } else if let Some(terminal) = pane.as_terminal_mut() {
-            // Cmd+A select-all: intercept here before the terminal widget renders.
-            // egui's internal widget allocation (allocate_painter) consumes the Key::A
-            // event before process_input can see it, so we must handle it one level up.
-            if is_focused {
-                let cmd_a = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A));
-                if cmd_a {
-                    let ppp = ui.ctx().pixels_per_point();
-                    let (is_alt, display_offset, cursor_line, cell_height) = {
-                        let c = terminal.backend.last_content();
-                        (
-                            c.terminal_mode.contains(egui_term::TerminalMode::ALT_SCREEN),
-                            c.grid.display_offset(),
-                            c.grid.cursor.point.line.0,
-                            c.terminal_size.cell_height as f32,
-                        )
-                    };
-                    if !is_alt {
-                        terminal.backend.process_command(BackendCommand::ScrollToBottom);
-                        let cursor_y = cursor_line as f32 * cell_height;
-                        terminal.backend.process_command(BackendCommand::SelectStart(
-                            egui_term::SelectionType::Lines, 0.0, cursor_y, ppp,
-                        ));
-                        terminal.backend.process_command(BackendCommand::ScrollToTop);
-                        terminal.backend.process_command(BackendCommand::SelectUpdate(0.0, 0.0, ppp));
-                        let _ = terminal.backend.sync();
-                        let text = terminal.backend.selectable_content();
-                        if !text.trim().is_empty() {
-                            log::info!("[cmd+a] copied {} chars to clipboard", text.len());
-                            ui.ctx().copy_text(text);
-                        }
-                        terminal.backend.process_command(BackendCommand::ClearSelection);
-                        terminal.backend.process_command(BackendCommand::ScrollToBottom);
-                        if display_offset > 0 {
-                            terminal.backend.process_command(BackendCommand::Scroll(display_offset as i32));
-                        }
-                    }
-                }
-            }
             ui.painter().rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
             let mut terminal_ui =
                 ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
@@ -282,11 +244,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     );
                     let painter = ui.painter();
                     let colors = self.colors.clone();
-                    let time = ui.input(|i| i.time);
-                    paint_portal_minimap(painter, map_area, &preview.windows, &colors, time);
-                    if preview.windows.iter().any(|w| w.panes.iter().any(|p| p.activity > 0.0)) {
-                        ui.ctx().request_repaint();
-                    }
+                    paint_portal_minimap(painter, map_area, &preview.windows, &colors);
                 }
             });
             // Double-click on portal pane to zoom into the sub-context.
@@ -486,7 +444,6 @@ pub(crate) fn paint_portal_minimap(
     area: egui::Rect,
     windows: &[MiniWindow],
     colors: &Colors,
-    time: f64,
 ) {
     if windows.is_empty() {
         return;
@@ -546,10 +503,9 @@ pub(crate) fn paint_portal_minimap(
             // Pane background — solid screen color
             painter.rect_filled(cell, 2.0, colors.bg_darkest);
 
-            // Activity dim overlay: more opaque = less active
-            if pane.activity < 1.0 {
-                let dim_alpha = ((1.0 - pane.activity) * 80.0) as u8;
-                let dim_overlay = egui::Color32::from_rgba_unmultiplied(0, 0, 0, dim_alpha);
+            // Inactive (exited) panes get a dim overlay
+            if !pane.active {
+                let dim_overlay = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 60);
                 painter.rect_filled(cell, 2.0, dim_overlay);
             }
 
@@ -591,7 +547,7 @@ pub(crate) fn paint_portal_minimap(
             }
 
             let line_alpha: u8 = if pane.focused { 51 } else { 25 };
-            let line_alpha: u8 = (line_alpha as f32 * (0.3 + 0.7 * pane.activity)) as u8;
+            let line_alpha: u8 = if !pane.active { (line_alpha as f32 * 0.3) as u8 } else { line_alpha };
 
             // Title label (OSC title or app name) at top of pane
             let mut content_top = content_area.min.y;
@@ -696,35 +652,6 @@ pub(crate) fn paint_portal_minimap(
                         ">_",
                         egui::FontId::monospace(font_size),
                         prompt_color,
-                    );
-                }
-            }
-
-            // Animated activity dots below the pane icon
-            if pane.activity > 0.01 && cell.height() > 16.0 {
-                let dot_count = 3usize;
-                let dot_r = 1.5_f32;
-                let dot_gap = 4.0_f32;
-                let dots_width = dot_count as f32 * dot_r * 2.0 + (dot_count - 1) as f32 * dot_gap;
-                let dots_cx = cell.center().x;
-                let dots_y = cell.max.y - 4.0;
-
-                let cycle_duration = 0.8;
-                let phase = (time % cycle_duration) / cycle_duration;
-                let active_dot = (phase * dot_count as f64) as usize;
-
-                for i in 0..dot_count {
-                    let cx = dots_cx - dots_width / 2.0 + dot_r + i as f32 * (dot_r * 2.0 + dot_gap);
-                    let (r, g, b) = (colors.accent.r(), colors.accent.g(), colors.accent.b());
-                    let alpha = if i == active_dot {
-                        (pane.activity * 200.0) as u8
-                    } else {
-                        (pane.activity * 50.0) as u8
-                    };
-                    painter.circle_filled(
-                        egui::pos2(cx, dots_y),
-                        dot_r,
-                        egui::Color32::from_rgba_unmultiplied(r, g, b, alpha),
                     );
                 }
             }

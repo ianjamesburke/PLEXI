@@ -110,8 +110,6 @@ pub struct TerminalPane {
     pub(crate) outside_workspace_cached: bool,
     pub(crate) outside_workspace_checked_at: Option<std::time::Instant>,
     pub(crate) outside_workspace_root: Option<PathBuf>,
-    pub last_lines_written: u64,
-    pub last_activity: Option<std::time::Instant>,
 }
 
 impl TerminalPane {
@@ -141,8 +139,6 @@ impl TerminalPane {
             outside_workspace_cached: false,
             outside_workspace_checked_at: None,
             outside_workspace_root: None,
-            last_lines_written: 0,
-            last_activity: None,
         })
     }
 }
