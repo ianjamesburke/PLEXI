@@ -27,6 +27,7 @@ mod file_browser;
 mod host;
 mod keys;
 mod launch_failed;
+mod text_editor_app;
 mod logging;
 #[cfg(target_os = "macos")]
 mod finder_service;
