@@ -988,7 +988,7 @@ impl PlexiApp {
     ///
     /// Spawns a fresh horizontal-split terminal running `$EDITOR <scratchpad>` so the
     /// command works from any focused pane type (terminal, app, file browser, etc.).
-    /// The scratchpad file persists at `<config_dir>/scratchpad.md` across sessions.
+    /// The scratchpad file is a timestamped note under `<config_dir>/notes/`.
     pub(crate) fn open_scratchpad(&mut self) {
         let path = scratchpad_file();
         if let Some(parent) = path.parent() {
@@ -1000,7 +1000,10 @@ impl PlexiApp {
         let path_str = path.display().to_string();
         let editor = preferred_editor();
         log::info!("scratchpad: spawning terminal pane with '{editor} {path_str}'");
-        let args = vec![editor.clone(), path_str];
+        // Split editor command into tokens so multi-word values like "code --wait"
+        // are passed as separate args — shell_join quotes each element individually.
+        let mut args: Vec<String> = editor.split_whitespace().map(str::to_string).collect();
+        args.push(path_str);
         if let Err(e) = self.launch_app_by_id_with_layout(
             "terminal",
             Some("split_h".to_string()),
