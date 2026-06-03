@@ -92,7 +92,7 @@ The **Core 9** ship with the default install. Everything else moves to the marke
 
 Current app inventory: 18 shipped apps in `apps/`, 29 POC apps in `apps/dev/`.
 
-- [ ] Migrate Core 9 from L0/ui.py to L1 UiNode trees
+- [x] Migrate Core 9 + 4 non-core apps from L0 to L1 Component rendering (v0.0.597) -- backlog, calc, calendar, csv_viewer, gh-projects, kanban, logs, quick-note, todo, typing-tutor, wikipedia. Canvas/game apps (balls, mind-map, snake, tetris, stats) correctly remain L0.
 - [ ] Each core app becomes a reference implementation demonstrating specific L1 patterns
 - [ ] Backlog: integrate TextEdit node for inline editing
 - [ ] Logs: search/filter (#1649) + spacing (#1648)
