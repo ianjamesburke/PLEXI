@@ -55,8 +55,8 @@ pub struct MiniPane {
     pub has_content: bool,
     /// OSC title or app name, if available.
     pub title: Option<String>,
-    /// False for terminal panes that have exited; dims the pane in the minimap.
-    pub active: bool,
+    /// Activity level: 0.0 = exited/dead, 0.0..1.0 = idle (decaying), 1.0 = actively producing output.
+    pub activity: f32,
 }
 
 /// One window in the child context, with its spatial grid position.
@@ -244,7 +244,11 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     );
                     let painter = ui.painter();
                     let colors = self.colors.clone();
-                    paint_portal_minimap(painter, map_area, &preview.windows, &colors);
+                    let time = ui.input(|i| i.time);
+                    paint_portal_minimap(painter, map_area, &preview.windows, &colors, time);
+                    if preview.windows.iter().any(|w| w.panes.iter().any(|p| p.activity > 0.0)) {
+                        ui.ctx().request_repaint();
+                    }
                 }
             });
             // Double-click on portal pane to zoom into the sub-context.
@@ -444,6 +448,7 @@ pub(crate) fn paint_portal_minimap(
     area: egui::Rect,
     windows: &[MiniWindow],
     colors: &Colors,
+    time: f64,
 ) {
     if windows.is_empty() {
         return;
@@ -503,9 +508,10 @@ pub(crate) fn paint_portal_minimap(
             // Pane background — solid screen color
             painter.rect_filled(cell, 2.0, colors.bg_darkest);
 
-            // Inactive (exited) panes get a dim overlay
-            if !pane.active {
-                let dim_overlay = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 60);
+            // Activity dim overlay: more opaque = less active
+            if pane.activity < 1.0 {
+                let dim_alpha = ((1.0 - pane.activity) * 80.0) as u8;
+                let dim_overlay = egui::Color32::from_rgba_unmultiplied(0, 0, 0, dim_alpha);
                 painter.rect_filled(cell, 2.0, dim_overlay);
             }
 
@@ -547,7 +553,7 @@ pub(crate) fn paint_portal_minimap(
             }
 
             let line_alpha: u8 = if pane.focused { 51 } else { 25 };
-            let line_alpha: u8 = if !pane.active { (line_alpha as f32 * 0.3) as u8 } else { line_alpha };
+            let line_alpha: u8 = (line_alpha as f32 * (0.3 + 0.7 * pane.activity)) as u8;
 
             // Title label (OSC title or app name) at top of pane
             let mut content_top = content_area.min.y;
@@ -652,6 +658,35 @@ pub(crate) fn paint_portal_minimap(
                         ">_",
                         egui::FontId::monospace(font_size),
                         prompt_color,
+                    );
+                }
+            }
+
+            // Animated activity dots below the pane icon
+            if pane.activity > 0.01 && cell.height() > 16.0 {
+                let dot_count = 3usize;
+                let dot_r = 1.5_f32;
+                let dot_gap = 4.0_f32;
+                let dots_width = dot_count as f32 * dot_r * 2.0 + (dot_count - 1) as f32 * dot_gap;
+                let dots_cx = cell.center().x;
+                let dots_y = cell.max.y - 4.0;
+
+                let cycle_duration = 0.8;
+                let phase = (time % cycle_duration) / cycle_duration;
+                let active_dot = (phase * dot_count as f64) as usize;
+
+                for i in 0..dot_count {
+                    let cx = dots_cx - dots_width / 2.0 + dot_r + i as f32 * (dot_r * 2.0 + dot_gap);
+                    let (r, g, b) = (colors.accent.r(), colors.accent.g(), colors.accent.b());
+                    let alpha = if i == active_dot {
+                        (pane.activity * 200.0) as u8
+                    } else {
+                        (pane.activity * 50.0) as u8
+                    };
+                    painter.circle_filled(
+                        egui::pos2(cx, dots_y),
+                        dot_r,
+                        egui::Color32::from_rgba_unmultiplied(r, g, b, alpha),
                     );
                 }
             }

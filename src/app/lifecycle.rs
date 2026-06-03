@@ -821,6 +821,19 @@ impl PlexiApp {
             }
         }
 
+        // Snapshot lines_written for activity detection (runs every frame)
+        for win in &mut self.windows {
+            for pane in win.panes.values_mut() {
+                if let Some(t) = pane.as_terminal_mut() {
+                    let current = t.backend.lines_written.load(std::sync::atomic::Ordering::Relaxed);
+                    if current != t.last_lines_written {
+                        t.last_lines_written = current;
+                        t.last_activity = Some(std::time::Instant::now());
+                    }
+                }
+            }
+        }
+
         for pane_id in panes_to_close {
             self.close_pane_by_id(pane_id);
         }
