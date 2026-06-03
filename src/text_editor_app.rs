@@ -11,6 +11,8 @@ pub struct TextEditorApp {
     dirty: bool,
     wants_close: bool,
     load_error: Option<String>,
+    /// True once we have called request_focus() on the TextEdit after open.
+    focus_requested: bool,
 }
 
 impl TextEditorApp {
@@ -21,7 +23,7 @@ impl TextEditorApp {
             Err(e) => (String::new(), Some(e.to_string())),
         };
         log::info!("TextEditorApp: opened {:?} ({} bytes)", path, content.len());
-        Self { path, content, dirty: false, wants_close: false, load_error }
+        Self { path, content, dirty: false, wants_close: false, load_error, focus_requested: false }
     }
 
     fn save(&mut self) -> bool {
@@ -89,19 +91,13 @@ impl App for TextEditorApp {
         ui.visuals_mut().extreme_bg_color = colors.bg_darkest;
         ui.visuals_mut().override_text_color = Some(colors.text_primary);
 
-        // Render hint first so egui reserves its space before TextEdit fills the rest.
+        // Pre-shrink the available rect so the hint renders below without overlap.
+        let hint_height = style::TEXT_HINT + style::SPACE_SM * 2.0;
+        let mut available = ui.available_rect_before_wrap();
         if self.dirty {
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.add_space(style::SPACE_SM);
-                ui.label(
-                    RichText::new("Cmd+S to save")
-                        .size(style::TEXT_HINT)
-                        .color(colors.text_dim),
-                );
-            });
+            available.max.y -= hint_height;
         }
 
-        let available = ui.available_rect_before_wrap();
         let response = ui.add_sized(
             available.size(),
             egui::TextEdit::multiline(&mut self.content)
@@ -112,6 +108,21 @@ impl App for TextEditorApp {
 
         if response.changed() {
             self.dirty = true;
+        }
+
+        // Auto-focus on first render so the user can type immediately.
+        if !self.focus_requested {
+            response.request_focus();
+            self.focus_requested = true;
+        }
+
+        if self.dirty {
+            ui.add_space(style::SPACE_SM);
+            ui.label(
+                RichText::new("Cmd+S to save")
+                    .size(style::TEXT_HINT)
+                    .color(colors.text_dim),
+            );
         }
     }
 
@@ -142,6 +153,7 @@ impl App for TextEditorApp {
                     self.content = content;
                     self.load_error = load_error;
                     self.dirty = false;
+                    self.focus_requested = false;
                 }
             }
         }
