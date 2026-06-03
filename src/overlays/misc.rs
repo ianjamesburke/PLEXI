@@ -588,7 +588,7 @@ impl PlexiApp {
                 egui::Frame::new()
                     .fill(self.colors.bg_sidebar)
                     .stroke(Stroke::new(1.0, self.colors.border))
-                    .corner_radius(R6)
+                    .corner_radius(style::RADIUS_LG)
                     .inner_margin(egui::Margin::symmetric(16, 12))
                     .show(ui, |ui| {
                         ui.set_width(MODAL_WIDTH);
@@ -677,7 +677,7 @@ impl PlexiApp {
                 egui::Frame::new()
                     .fill(self.colors.bg_sidebar)
                     .stroke(Stroke::new(1.0, self.colors.border))
-                    .corner_radius(R6)
+                    .corner_radius(style::RADIUS_LG)
                     .inner_margin(egui::Margin::symmetric(16, 12))
                     .show(ui, |ui| {
                         ui.set_width(MODAL_WIDTH);
