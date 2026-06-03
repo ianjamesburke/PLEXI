@@ -15,7 +15,7 @@ The P0 refactors that make everything else cheaper to build. Every subsequent fe
 - [x] CLI pane spawning unification (#1923) -- `pane new` as single entry point for terminal spawning
 - [x] CLI namespace clean split (#1928) -- remove `--app`/`--mcp` overlap from `pane new`, separate `app open` fully (v0.0.599)
 - [x] CLI direction flag fix (#1927) -- `pane new` direction flags produce wrong split orientation (v0.0.599)
-- [ ] FocusLayer + PlexiInput unification (#1238, #1239) -- single-owner input dispatch, one FocusOwner stack
+- [ ] ~~FocusLayer + PlexiInput unification (#1238, #1239)~~ -- deferred to v2.0 (current FocusLayer stack works; unification is architectural ideal, not v1 blocker)
 - [x] App viewport overtake (#1924) -- Escape-to-return pane navigation stack (v0.0.601)
 
 **Done when:** all P0s closed, `cargo test --bin plexi` green, no known input-routing regressions.
@@ -46,7 +46,7 @@ Make what exists feel finished before adding new systems. These are the first th
 - [ ] Install modal success detection (#1643)
 - [ ] Core app theming audit (#1669) -- FooterKeys + ctx.colors across all shipped apps
 - [ ] QuickNote destination overhaul (#1622)
-- [x] Portal minimap real-time activity (#1918) -- shipped in `ca2c3e83`, issue needs closing
+- [x] Portal minimap real-time activity (#1918) -- shipped in `ca2c3e83` (v0.0.597), closed
 
 **Done when:** a new user can install, see a polished welcome screen, open apps that look consistent, use QuickNote without hitting modal bugs.
 
