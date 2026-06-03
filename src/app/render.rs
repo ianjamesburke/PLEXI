@@ -503,13 +503,6 @@ impl PlexiApp {
                     pane_title_font_size: self.config.pane_title_font_size.unwrap_or(11.0).clamp(6.0, 32.0),
                     portal_zoom_request: None,
                 };
-                ui.ctx().input(|i| {
-                    for e in &i.events {
-                        if let egui::Event::Key { key: egui::Key::A, pressed: true, modifiers: m, .. } = e {
-                            log::info!("[diag-pre-tiling] Key::A alive: cmd={}", m.command);
-                        }
-                    }
-                });
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ui.scope(|ui| {
                     // When a pane is zoomed, the resize handles inside egui_tiles' linear
