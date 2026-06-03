@@ -3177,6 +3177,31 @@ mod tests {
     }
 
     #[test]
+    fn spawn_pane_name_round_trips_serde() {
+        let json = r#"{"type":"spawn_pane","type_id":"terminal","name":"dev server"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Host(AppRequest::SpawnPane { name, .. }) => {
+                assert_eq!(name.as_deref(), Some("dev server"));
+            }
+            other => panic!("expected SpawnPane, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""name":"dev server""#), "name missing: {serialised}");
+
+        let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
+        let cmd_absent: DrawCommand = serde_json::from_str(json_absent).expect("deserialise absent");
+        match &cmd_absent {
+            DrawCommand::Host(AppRequest::SpawnPane { name, .. }) => {
+                assert!(name.is_none(), "absent name must deserialise to None");
+            }
+            other => panic!("expected SpawnPane, got {other:?}"),
+        }
+        let serialised_absent = serde_json::to_string(&cmd_absent).expect("serialise absent");
+        assert!(!serialised_absent.contains("name"), "name should be omitted when None: {serialised_absent}");
+    }
+
+    #[test]
     fn pane_spawned_with_request_id_round_trips_serde() {
         let json = r#"{"type":"pane_spawned","pane_id":99,"request_id":"req-abc"}"#;
         let event: PlexiEvent = serde_json::from_str(json).expect("deserialise");

@@ -335,8 +335,7 @@ impl PlexiApp {
                             self.restore_window_focused_pane(target_win, orig_focused_in_target);
                         }
                     }
-                    // Apply inline name if provided (only on success)
-                    if launch_result.is_ok() {
+                    if type_id == "terminal" && launch_result.is_ok() {
                         if let Some(ref pane_name) = name {
                             if !pane_name.is_empty() {
                                 self.apply_inline_pane_name(new_pane_id, pane_name);

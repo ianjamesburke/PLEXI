@@ -92,8 +92,14 @@ pub fn pane_new_cli(
         mcp.to_vec()
     } else if is_app {
         extra_args.to_vec()
+    } else if let Some(c) = cmd {
+        let command = std::iter::once(c)
+            .chain(extra_args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ");
+        vec![command]
     } else {
-        cmd.map(|c| vec![c.to_string()]).unwrap_or_default()
+        Vec::new()
     };
 
     let from_pane_id = from_pane_id.or_else(|| std::env::var("PLEXI_PANE_ID").ok()?.parse().ok());
