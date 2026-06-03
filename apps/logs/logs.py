@@ -8,6 +8,7 @@ from plexi_sdk import App, RenderContext
 from plexi_sdk.ui import (
     TEXT_HINT, TEXT_CAPTION,
     SPACE_SM,
+    AppBar, FooterKeys,
 )
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -16,8 +17,8 @@ POLL_MS  = 2_000
 TIMER_ID = "poll"
 
 ROW_H    = 20.0
-BAR_H    = 32.0
-FOOT_H   = 24.0
+BAR_H    = 34.0   # AppBar single-line band height
+FOOT_H   = 32.0   # FooterKeys band height (TOP_GAP + 1 + TOP_GAP + ROW_H + TOP_GAP)
 PAD      = SPACE_SM
 CHIP_W   = 54.0   # fixed-width filter buttons — consistent across all labels
 CHIP_GAP = 4.0
@@ -27,7 +28,6 @@ BADGE_ADV = 50.0
 
 FILTERS    = ["ALL", "ERROR", "WARN", "INFO", "DEBUG"]
 FILTER_KEY = {"a": 0, "e": 1, "w": 2, "i": 3, "d": 4}
-
 
 ROW_ALT        = "#1a1a2a"
 COPY_ROW_BG    = "#1e2d1e"   # subtle green tint for copy-mode selected rows
@@ -95,6 +95,10 @@ def _read_log(max_lines: int = 5_000) -> list[LogLine]:
 
 # ── App ────────────────────────────────────────────────────────────────────────
 
+# AppBar.BAND_H for single-line = 34.0; DIVIDER_H = 1.0 → total = 35.0
+_APPBAR_H = AppBar.BAND_H + AppBar.DIVIDER_H
+
+
 class LogsApp(App):
     def on_init(self, ctx: RenderContext) -> None:
         self._lines:       list[LogLine] = []
@@ -120,7 +124,7 @@ class LogsApp(App):
         self._lines = _read_log()
         ctx.set_timer(TIMER_ID, POLL_MS)
 
-    def on_text_submitted(self, _ctx: RenderContext, id: str, text: str) -> None:  # noqa: ARG002
+    def on_text_submitted(self, _ctx: RenderContext, id: str, text: str) -> None:
         if id == "search":
             self._search_q    = text.strip()
             self._search_mode = False
@@ -196,7 +200,7 @@ class LogsApp(App):
                 self._copy_row    = min(self._copy_row, len(filtered) - 1)
                 self._copy_anchor = None
 
-    def on_mouse_down(self, _ctx: RenderContext, _x: float, y: float, button: str, mods: dict = {}) -> None:  # noqa: ARG002
+    def on_mouse_down(self, _ctx: RenderContext, _x: float, y: float, button: str, mods: dict = {}) -> None:
         if button not in ("left", "primary"):
             return
         row = self._row_at_y(y)
@@ -205,7 +209,6 @@ class LogsApp(App):
         self._copy_mode   = True
         self._is_dragging = True
         if mods.get("shift") and self._copy_anchor is not None:
-            # Extend existing selection — anchor stays, only row moves.
             self._copy_row = row
             self.emit.info(f"logs: shift-click extend selection to row {row}")
         else:
@@ -213,7 +216,7 @@ class LogsApp(App):
             self._copy_row    = row
             self.emit.info(f"logs: mouse select started at row {row}")
 
-    def on_mouse_move(self, _ctx: RenderContext, _x: float, y: float, buttons: list, _mods: dict = {}) -> None:  # noqa: ARG002
+    def on_mouse_move(self, _ctx: RenderContext, _x: float, y: float, buttons: list, _mods: dict = {}) -> None:
         if not self._is_dragging or not any(b in buttons for b in ("left", "primary")):
             self._is_dragging = False
             return
@@ -222,12 +225,12 @@ class LogsApp(App):
             self._copy_row = row
             self._ensure_copy_row_visible()
 
-    def on_mouse_up(self, _ctx: RenderContext, _x: float, _y: float, button: str, _mods: dict = {}) -> None:  # noqa: ARG002
+    def on_mouse_up(self, _ctx: RenderContext, _x: float, _y: float, button: str, _mods: dict = {}) -> None:
         if button in ("left", "primary"):
             self._is_dragging = False
 
     def _row_at_y(self, y: float) -> "int | None":
-        list_y = BAR_H
+        list_y = _APPBAR_H
         if y < list_y or y > list_y + self._viewport_h:
             return None
         row = int((y - list_y + self._scroll) / ROW_H)
@@ -270,6 +273,36 @@ class LogsApp(App):
         q = self._search_q.lower()
         return [ll for ll in lines if q in ll.target.lower() or q in ll.message.lower()]
 
+    def _subtitle(self) -> str:
+        """Build AppBar subtitle showing active filter / search query."""
+        parts: list[str] = []
+        if self._filter_idx != 0:
+            parts.append(FILTERS[self._filter_idx])
+        if self._search_q:
+            parts.append(f"/{self._search_q}")
+        return "  ".join(parts) if parts else LOG_PATH
+
+    def _footer_shortcuts(self) -> list[tuple]:
+        if self._copy_mode:
+            return [
+                (["j", "k"], "move"),
+                (["⇧j", "⇧k"], "extend"),
+                (["y"], "copy"),
+                (["esc"], "exit"),
+            ]
+        if self._search_mode:
+            return [
+                (["enter"], "apply"),
+                (["esc"], "cancel"),
+            ]
+        return [
+            (["a", "e", "w", "i", "d"], "filter"),
+            (["j", "k"], "scroll"),
+            (["g", "G"], "top/btm"),
+            (["/"], "search"),
+            (["y"], "copy"),
+        ]
+
     def on_render(self, ctx: RenderContext) -> None:
         w, h = ctx.w, ctx.h
         filtered = self._filtered()
@@ -282,14 +315,19 @@ class LogsApp(App):
             "TRACE": ctx.theme.highlight,
         }
 
-        # ── background ──────────────────────────────────────────────────────
-        ctx.rect(0, 0, w, h, ctx.theme.bg)
+        # ── L1 header ───────────────────────────────────────────────────────
+        appbar = AppBar(
+            title="Logs",
+            subtitle=self._subtitle() if not self._search_mode else None,
+        )
+        appbar_h = appbar.render_into(ctx, 0.0, 0.0, w)
 
-        # ── top bar ─────────────────────────────────────────────────────────
-        ctx.rect(0, 0, w, BAR_H, ctx.theme.surface)
-
+        # ── Search input (replaces the bar when search mode is active) ──────
         if self._search_mode:
-            ctx.text(PAD, BAR_H / 2 - TEXT_CAPTION / 2, "/",
+            # Draw "/" prefix then the text input inline in the bar area.
+            bar_y = 0.0
+            ctx.rect(0, bar_y, w, _APPBAR_H, ctx.theme.surface)
+            ctx.text(PAD, _APPBAR_H / 2 - TEXT_CAPTION / 2, "/",
                      size=TEXT_CAPTION, color=ctx.theme.accent, bold=True)
             search_x = PAD + 14.0
             submitted = ctx.text_input(
@@ -297,8 +335,9 @@ class LogsApp(App):
                 x=search_x, y=4.0,
                 w=w - search_x - PAD,
                 placeholder="filter by target or message…",
-                h=BAR_H - 8.0,
+                h=_APPBAR_H - 8.0,
             )
+            ctx.rect(0, _APPBAR_H - 1.0, w, 1.0, ctx.theme.highlight)
             if submitted is not None:
                 self._search_q    = submitted.strip()
                 self._search_mode = False
@@ -306,14 +345,13 @@ class LogsApp(App):
                 self._copy_row    = 0
                 self._copy_anchor = None
         else:
-            ctx.text(PAD, BAR_H / 2 - TEXT_CAPTION / 2, "Logs",
-                     size=TEXT_CAPTION, color=ctx.theme.fg, bold=True)
-
-            chip_x = 50.0
+            # ── filter chip buttons (rendered below the AppBar divider) ─────
+            # They live inside the AppBar band — rendered on top after AppBar.
+            chip_x = 56.0   # leave room for "Logs" title
             for i, label in enumerate(FILTERS):
                 active = i == self._filter_idx
                 if ctx.button(
-                    f"filter_{i}", chip_x, 5.0, CHIP_W, BAR_H - 10.0, label,
+                    f"filter_{i}", chip_x, 5.0, CHIP_W, AppBar.BAND_H - 10.0, label,
                     fill=ctx.theme.accent if active else ctx.theme.highlight,
                     hover_fill="#a6c5f5" if active else "#45475a",
                     active_fill="#6ea8f5" if active else "#585b70",
@@ -328,54 +366,43 @@ class LogsApp(App):
                 chip_x += CHIP_W + CHIP_GAP
 
             if self._search_q:
-                ctx.text(w - PAD, BAR_H / 2 - TEXT_HINT / 2,
+                ctx.text(w - PAD, AppBar.BAND_H / 2 - TEXT_HINT / 2,
                          f"/{self._search_q}",
                          size=TEXT_HINT, color=ctx.theme.accent, align="right")
 
-        # ── footer ──────────────────────────────────────────────────────────
-        foot_y = h - FOOT_H
-        ctx.rect(0, foot_y, w, FOOT_H, ctx.theme.surface)
+        # ── L1 footer ───────────────────────────────────────────────────────
+        footer = FooterKeys(self._footer_shortcuts())
+        foot_h = footer.measure(w)
+        foot_y = h - foot_h
+        footer.render(ctx, 0.0, foot_y, w, foot_h)
 
+        # Copy-mode status label (right side of footer)
         if self._copy_mode:
             lo, hi = self._copy_range(len(filtered))
             n_sel = hi - lo + 1
-            ctx.shortcuts(PAD, foot_y + 5.0, w - PAD * 2, [
-                (["j", "k"], "move"),
-                (["⇧j", "⇧k"], "extend"),
-                (["y"], "copy"),
-                (["esc"], "exit"),
-            ], font_size=10.0)
             label = f"COPY — {n_sel} line{'s' if n_sel != 1 else ''}"
-            ctx.text(w - PAD, foot_y + FOOT_H / 2 - TEXT_HINT / 2,
-                     label, size=TEXT_HINT, color=COPY_ROW_FG,
-                     align="right")
+            ctx.text(w - PAD, foot_y + foot_h / 2 - TEXT_HINT / 2,
+                     label, size=TEXT_HINT, color=COPY_ROW_FG, align="right")
         elif self._search_mode:
-            ctx.shortcuts(PAD, foot_y + 5.0, w - PAD * 2, [
-                (["enter"], "apply"),
-                (["esc"], "cancel"),
-            ], font_size=10.0)
-            ctx.text(w - PAD, foot_y + FOOT_H / 2 - TEXT_HINT / 2,
-                     "SEARCH", size=TEXT_HINT, color=ctx.theme.accent,
-                     align="right")
+            ctx.text(w - PAD, foot_y + foot_h / 2 - TEXT_HINT / 2,
+                     "SEARCH", size=TEXT_HINT, color=ctx.theme.accent, align="right")
         else:
-            ctx.shortcuts(PAD, foot_y + 5.0, w - PAD * 2, [
-                (["a", "e", "w", "i", "d"], "filter"),
-                (["j", "k"], "scroll"),
-                (["g", "G"], "top/btm"),
-                (["/"], "search"),
-                (["y"], "copy"),
-            ], font_size=10.0)
-            ctx.text(w - PAD, foot_y + FOOT_H / 2 - TEXT_HINT / 2,
+            ctx.text(w - PAD, foot_y + foot_h / 2 - TEXT_HINT / 2,
                      f"{len(filtered)} lines", size=TEXT_HINT, color=ctx.theme.muted,
                      align="right")
 
         # ── log rows ────────────────────────────────────────────────────────
-        list_y = BAR_H
+        # Custom pixel-level rendering: timestamp column, colored level badges,
+        # target column, message column, copy-mode row highlighting.
+        # No L1 equivalent exists for this dense columnar layout with per-row
+        # background changes and inline badge rendering.
+        list_y = appbar_h
         list_h = foot_y - list_y
         self._viewport_h = list_h
 
         if not filtered:
-            ctx.text(PAD, list_y + 16, "no log entries", size=TEXT_CAPTION, color=ctx.theme.muted)
+            ctx.text(PAD, list_y + 16, "no log entries",
+                     size=TEXT_CAPTION, color=ctx.theme.muted)
             return
 
         ctx.push_clip(0, list_y, w, list_h)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wikipedia — net.http + text render example for PGAP v3."""
+"""Wikipedia — net.http + L1 component example for PGAP v3."""
 
 import json
 import threading
@@ -7,10 +7,10 @@ import urllib.parse
 
 from plexi_sdk import (
     App, RenderContext, CapabilityDeniedError,
-    BODY, CAPTION,
 )
 from plexi_sdk.ui import (
-    Column, AppBar, Spacer, Footer, FooterKeys, Component,
+    Column, AppBar, Spacer, Footer, FooterKeys,
+    Label, Section, Scrollable, SelectList, TextInput,
 )
 
 API = "https://en.wikipedia.org/w/api.php"
@@ -18,7 +18,7 @@ EXTRACT_API = "https://en.wikipedia.org/api/rest_v1/page/summary/"
 
 
 class WikiApp(App):
-    async def on_init(self, ctx: RenderContext) -> None:
+    async def on_init(self, _ctx: RenderContext) -> None:
         self._query = ""
         self._results: list[str] = []
         self._selected = 0
@@ -26,6 +26,17 @@ class WikiApp(App):
         self._loading = False
         self._error_msg = ""
         self._mode = "search"  # search | results | article
+
+        # Stateful widgets — created once here, reused across renders.
+        self._search_input = TextInput(
+            id="wiki_search",
+            placeholder="Enter search query…",
+        )
+        self._results_list = SelectList(items=[], selected_idx=0)
+        self._article_scroll = Scrollable(
+            child=Label("", tone="body", max_lines=500),
+        )
+
         self.emit.info("wikipedia: ready")
         try:
             await self.emit.capability_request("net.http")
@@ -33,7 +44,7 @@ class WikiApp(App):
             self._error_msg = "Network access denied. Search requires net.http."
             self.emit.warn("wikipedia: net.http capability denied")
 
-    def on_inject(self, ctx: RenderContext, payload: dict) -> None:
+    def on_inject(self, _ctx: RenderContext, payload: dict) -> None:
         """Layer-1 test seam — seed mode/query/results/extract without network."""
         if isinstance(payload, dict):
             if "mode" in payload:
@@ -43,36 +54,40 @@ class WikiApp(App):
             if "results" in payload:
                 self._results = list(payload["results"])
                 self._selected = 0
+                self._results_list.items = [{"name": r} for r in self._results]
+                self._results_list.selected_idx = 0
             if "extract" in payload:
                 self._extract = payload["extract"]
+                self._article_scroll.child = Label(
+                    self._extract, tone="body", max_lines=500,
+                )
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
-        if self._mode == "search":
-            if key == "return":
-                if self._query:
-                    self._fetch_search(self._query)
-            elif key == "backspace":
-                self._query = self._query[:-1]
-            elif len(key) == 1:
-                self._query += key
-        elif self._mode == "results":
-            if key == "up" or key == "k":
-                self._selected = max(0, self._selected - 1)
-            elif key == "down" or key == "j":
-                self._selected = min(len(self._results) - 1, self._selected + 1)
-            elif key == "return":
+    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
+        if self._mode == "results":
+            if self._results_list.handle_key(key):
+                self._selected = self._results_list.selected_idx
+                self.emit.schedule_render()
+                return
+            if key in ("return", "Enter"):
                 if self._results:
                     self._fetch_article(self._results[self._selected])
-            elif key == "escape":
+                return
+            if key == "escape":
                 self._mode = "search"
+                self.emit.schedule_render()
         elif self._mode == "article":
+            if self._article_scroll.handle_key(key):
+                self.emit.schedule_render()
+                return
             if key == "escape":
                 self._mode = "results"
+                self.emit.schedule_render()
 
     def _fetch_search(self, query: str) -> None:
         self._loading = True
         self._error_msg = ""
         self.emit.status_summary("Searching…")
+
         def run() -> None:
             try:
                 params = urllib.parse.urlencode({
@@ -83,6 +98,8 @@ class WikiApp(App):
                 data = json.loads(body)
                 self._results = data[1] if len(data) > 1 else []
                 self._selected = 0
+                self._results_list.items = [{"name": r} for r in self._results]
+                self._results_list.selected_idx = 0
                 self._mode = "results"
                 self.emit.info(f"wikipedia: search '{query}' -> {len(self._results)} results")
             except Exception as e:
@@ -98,12 +115,17 @@ class WikiApp(App):
         self._loading = True
         self._error_msg = ""
         self.emit.status_summary(f"Loading {title}…")
+
         def run() -> None:
             try:
                 url = EXTRACT_API + urllib.parse.quote(title)
                 body = self.emit.run_sync(self.emit.http_get(url))
                 data = json.loads(body)
                 self._extract = data.get("extract", "No extract available.")
+                self._article_scroll.child = Label(
+                    self._extract, tone="body", max_lines=500,
+                )
+                self._article_scroll.scroll_offset = 0.0
                 self._mode = "article"
                 self.emit.info(f"wikipedia: article '{title}' loaded")
             except Exception as e:
@@ -115,56 +137,27 @@ class WikiApp(App):
                 self.emit.status_summary("")
         threading.Thread(target=run, daemon=True).start()
 
-    # ── Mode body — functional surface, stays primitive ─────────────────────
-    class _Body(Component):
-        """Renders the search box, results list, or article text into whatever
-        vertical space the Column hands us."""
-        def __init__(self, app: "WikiApp") -> None:
-            self._app = app
+    def _body_children(self) -> list:
+        if self._mode == "search":
+            children: list = [self._search_input]
+            if self._error_msg:
+                children.append(Label(f"Error: {self._error_msg}", tone="hint", color="#ff4444"))
+            else:
+                children.append(Label("Type a query and press Enter", tone="hint"))
+            return children
 
-        def measure(self, avail_w: float) -> float:
-            return 0.0
+        if self._mode == "results":
+            return [
+                Section(f'Results for "{self._query}"'),
+                self._results_list,
+            ]
 
-        def is_grow(self) -> bool:
-            return True
-
-        def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-            app = self._app
-            if app._mode == "search":
-                ctx.text(x, y, "Search:", size=BODY, color=ctx.theme.fg)
-                ctx.rect(x, y + 24, w, 32, fill=ctx.theme.surface, radius=4.0)
-                ctx.text(x + 8, y + 32, app._query + "▌",
-                         size=BODY, color=ctx.theme.fg, monospace=True)
-                if app._error_msg:
-                    ctx.text(x, y + 72, f"Error: {app._error_msg}",
-                             size=12, color=ctx.theme.danger, max_width=w)
-                else:
-                    ctx.text(x, y + 72, "Type a query and press Enter",
-                             size=12, color=ctx.theme.muted)
-            elif app._mode == "results":
-                ctx.text(x, y, f'Results for "{app._query}":', size=BODY, color=ctx.theme.fg)
-                items = [{"label": r, "secondary": None} for r in app._results]
-                ctx.simple_list(items, selected=app._selected, item_height=40.0,
-                         x=x, y=y + 28, w=w, h=max(0.0, h - 28))
-            elif app._mode == "article":
-                title = app._results[app._selected] if app._results else ""
-                ctx.text(x, y, title, size=18.0, color=ctx.theme.accent, bold=True)
-                # Word-wrap extract into lines (rough 8px/char estimate).
-                words = app._extract.split()
-                line, lines = "", []
-                for word in words:
-                    candidate = (line + " " + word).strip()
-                    if len(candidate) * 8 > w:
-                        lines.append(line)
-                        line = word
-                    else:
-                        line = candidate
-                if line:
-                    lines.append(line)
-                ty = y + 30
-                for ln in lines[: int(max(0.0, (h - 30)) / 20)]:
-                    ctx.text(x, ty, ln, size=CAPTION, color=ctx.theme.fg)
-                    ty += 20
+        # article mode
+        title = self._results[self._selected] if self._results else ""
+        return [
+            Section(title),
+            self._article_scroll,
+        ]
 
     def _footer_component(self):
         if self._mode == "search":
@@ -175,12 +168,22 @@ class WikiApp(App):
                 ("↵", "open"),
                 ("esc", "back"),
             ])
-        return FooterKeys([("esc", "back to results")])
+        return FooterKeys([
+            (["j", "k"], "scroll"),
+            ("esc", "back to results"),
+        ])
 
     def on_render(self, ctx: RenderContext) -> None:
+        # Check for search submission from TextInput
+        if self._search_input.submitted is not None:
+            query = self._search_input.submitted.strip()
+            if query:
+                self._query = query
+                self._fetch_search(query)
+
         ctx.render(Column([
             AppBar(title="Wikipedia"),
-            self._Body(self),
+            *self._body_children(),
             Spacer(grow=False),
             self._footer_component(),
         ]))

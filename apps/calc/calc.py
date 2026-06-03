@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
-"""Calculator — reference implementation for ctx.button() (#255).
+"""Calculator — L1 component-based rendering.
 
-Demonstrates: ctx.button() hover + click detection, keyboard input handling.
+Demonstrates: ButtonRow click detection, AppBar, Heading, FooterKeys.
 """
 import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
 
-from plexi_sdk import App, RenderContext, PAD
+from plexi_sdk import App, RenderContext
+from plexi_sdk.ui import (
+    Column, Card, AppBar, Heading, FooterKeys, ButtonRow, Spacer, Component,
+    SPACE_SM, SPACE_MD,
+)
+from plexi_sdk.ui import theme
+
+# Grid geometry — fixed per-button size; gap matches Card inner gap default.
 BTN_W = 64.0
 BTN_H = 48.0
 BTN_GAP = 8.0
+COLS = 4
 
-# Button layout: (label, col, row)
+# Button layout: (label, col, row)  — same as original
 BUTTONS = [
     ("C",  0, 0), ("±",  1, 0), ("%",  2, 0), ("÷",  3, 0),
     ("7",  0, 1), ("8",  1, 1), ("9",  2, 1), ("×",  3, 1),
@@ -21,11 +29,41 @@ BUTTONS = [
     ("0",  0, 4), (".",  2, 4), ("=",  3, 4),
 ]
 
-def _btn_rect(col: int, row: int) -> tuple[float, float, float, float]:
-    x = PAD + col * (BTN_W + BTN_GAP)
-    y = 120.0 + row * (BTN_H + BTN_GAP)
-    w = BTN_W * 2 + BTN_GAP if col == 0 and row == 4 else BTN_W  # 0 spans 2 cols
-    return x, y, w, BTN_H
+ROWS = 5  # 0-indexed rows 0..4
+
+
+def _is_op(label: str) -> bool:
+    return label in ("÷", "×", "+", "−", "=")
+
+
+def _is_clear(label: str) -> bool:
+    return label == "C"
+
+
+class ButtonGrid(Component):
+    """Renders pre-created ButtonRow widgets in a fixed 4-column calculator grid.
+
+    Stateful ButtonRow instances are created once in on_init and passed in here.
+    Each render call positions them according to the BUTTONS layout and delegates
+    to ButtonRow.render() so click state is captured correctly.
+    """
+
+    def __init__(self, buttons: dict[str, ButtonRow]) -> None:
+        # buttons: label -> ButtonRow
+        self._buttons = buttons
+
+    def measure(self, _avail_w: float) -> float:
+        return ROWS * BTN_H + (ROWS - 1) * BTN_GAP
+
+    def render(self, ctx, x: float, y: float, _w: float, _h: float) -> None:
+        # "0" spans columns 0-1; everything else is single-column.
+        for label, col, row in BUTTONS:
+            spans = 2 if (label == "0") else 1
+            bx = x + col * (BTN_W + BTN_GAP)
+            by = y + row * (BTN_H + BTN_GAP)
+            bw = BTN_W * spans + BTN_GAP * (spans - 1)
+            btn = self._buttons[label]
+            btn.render(ctx, bx, by, bw, BTN_H)
 
 
 class CalcApp(App):
@@ -34,8 +72,39 @@ class CalcApp(App):
         self.pending_op: str | None = None
         self.pending_val: float | None = None
         self.fresh = True  # next digit starts a new number
+
         ctx.emit.set_mouse_tracking(True)
-        ctx.info("CalcApp ready")
+
+        # Create all ButtonRow widgets once; stable across renders.
+        self._btns: dict[str, ButtonRow] = {}
+        for label, _, _ in BUTTONS:
+            if label in self._btns:
+                continue  # "." only appears once, but guard for safety
+            if _is_op(label):
+                fill = theme.accent
+                hover_fill = "#b9d0f7"
+                text_color = theme.bg
+            elif _is_clear(label):
+                fill = theme.danger
+                hover_fill = "#f5a3b5"
+                text_color = theme.bg
+            else:
+                fill = theme.surface
+                hover_fill = "#45475a"
+                text_color = theme.fg
+
+            self._btns[label] = ButtonRow(
+                id=f"btn_{label}",
+                label=label,
+                fill=fill,
+                hover_fill=hover_fill,
+                text_color=text_color,
+                radius=6.0,
+                height=BTN_H,
+            )
+
+        self._grid = ButtonGrid(self._btns)
+        ctx.info("CalcApp ready (L1)")
 
     def _press(self, label: str) -> None:
         if label.isdigit():
@@ -80,35 +149,35 @@ class CalcApp(App):
                 else:
                     result = cur
                 # Trim unnecessary decimal
-                self.display = str(int(result)) if result == int(result) and abs(result) < 1e15 else str(result)
+                self.display = (
+                    str(int(result))
+                    if result == int(result) and abs(result) < 1e15
+                    else str(result)
+                )
                 self.pending_op = None
                 self.pending_val = None
                 self.fresh = True
 
     def on_render(self, ctx: RenderContext) -> None:
-        # Display
-        ctx.rect(PAD, PAD, ctx.w - PAD * 2, 80.0, fill=ctx.theme.surface, radius=8.0)
-        ctx.text(ctx.w - PAD - 8, PAD + 16, self.display,
-                 size=32.0, color=ctx.theme.fg, align="right")
-        if self.pending_op:
-            ctx.text(PAD + 8, PAD + 8, self.pending_op, size=12.0, color=ctx.theme.muted)
+        subtitle = f"op: {self.pending_op}" if self.pending_op else None
+        ctx.render(Column([
+            AppBar("Calculator", subtitle=subtitle),
+            Heading(self.display, level=1),
+            Card([self._grid], padding=SPACE_MD, gap=BTN_GAP),
+            Spacer(grow=True),
+            FooterKeys([
+                ("0-9", "digit"),
+                ("+ - * /", "operator"),
+                ("Enter", "equals"),
+                ("Backspace", "delete"),
+                ("Esc", "clear"),
+            ]),
+        ], padding=SPACE_MD, gap=SPACE_SM))
 
-        # Buttons
-        for label, col, row in BUTTONS:
-            x, y, w, h = _btn_rect(col, row)
-            is_op = label in ("÷", "×", "+", "−", "=")
-            is_clear = label == "C"
-            fill = ctx.theme.accent if is_op else (ctx.theme.danger if is_clear else ctx.theme.surface)
-            hover_fill = "#b9d0f7" if is_op else ("#f5a3b5" if is_clear else "#45475a")
-            text_color = ctx.theme.bg if is_op else (ctx.theme.bg if is_clear else ctx.theme.fg)
-            if ctx.button(label, x, y, w, h, label,
-                          fill=fill, hover_fill=hover_fill,
-                          text_color=text_color, radius=6.0):
+        # Check button clicks after render
+        for label, _, _ in BUTTONS:
+            if self._btns[label].clicked:
                 self._press(label)
-
-        # Keyboard hint
-        ctx.text(PAD, ctx.h - 24, "0-9  + - * /  Enter: equals  Backspace: delete  Esc: clear",
-                 size=10.0, color=ctx.theme.muted)
 
     def _backspace(self) -> None:
         if self.fresh or self.display == "0":

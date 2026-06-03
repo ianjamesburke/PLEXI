@@ -9,18 +9,99 @@ import calendar
 from datetime import date, timedelta
 from typing import Any
 
-from plexi_sdk import (
-    App, RenderContext,
-    BODY, CAPTION, HINT, HEADING, PAD,
-)
+from plexi_sdk import App, RenderContext, BODY, CAPTION, HINT, PAD
+from plexi_sdk.ui import AppBar, Column, Component, Footer, FooterKeys, theme
 
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 CELL_H = 52.0
 CELL_RADIUS = 6.0
 
+_VIEW_SHORTCUTS = [
+    (["j", "k"], "day"),
+    (["h", "l"], "week"),
+    (["H", "L"], "month"),
+    ("a", "add"),
+    ("e", "edit"),
+    ("d", "delete"),
+]
+
+
+class CalendarGridBody(Component):
+    """Pixel-based calendar grid + event list + modal overlays. Grows to fill
+    the space between AppBar and FooterKeys."""
+
+    def __init__(self, app: "CalendarApp") -> None:
+        self._app = app
+
+    def is_grow(self) -> bool:
+        return True
+
+    def measure(self, _avail_w: float) -> float:
+        return 0.0
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        app = self._app
+
+        # Day-of-week column headers
+        grid_left = x + PAD
+        grid_w = w - 2 * PAD
+        cell_w = grid_w / 7.0
+        dow_y = y + 8.0
+        for i, name in enumerate(DAY_NAMES):
+            ctx.text(grid_left + i * cell_w + 6.0, dow_y, name,
+                     size=CAPTION, color=theme.muted)
+
+        # Month grid
+        cells_top = dow_y + 20.0
+        first_wd = calendar.monthrange(app._year, app._month)[0]
+        days_count = calendar.monthrange(app._year, app._month)[1]
+        today = date.today()
+
+        row, col = 0, first_wd
+        for day_num in range(1, days_count + 1):
+            cx = grid_left + col * cell_w
+            cy = cells_top + row * CELL_H
+            d_str = f"{app._year:04d}-{app._month:02d}-{day_num:02d}"
+            is_today = (date(app._year, app._month, day_num) == today)
+            is_selected = (day_num == app._day)
+
+            if is_selected:
+                ctx.rect(cx + 2, cy + 2, cell_w - 4, CELL_H - 4,
+                         fill=theme.accent, radius=CELL_RADIUS)
+                text_col = theme.bg
+            elif is_today:
+                ctx.rect(cx + 2, cy + 2, cell_w - 4, CELL_H - 4,
+                         fill=theme.surface, radius=CELL_RADIUS)
+                text_col = theme.accent
+            else:
+                text_col = theme.fg
+
+            ctx.text(cx + 6.0, cy + 8.0, str(day_num), size=BODY, color=text_col)
+
+            if app._events_for(d_str):
+                dot_col = theme.bg if is_selected else theme.accent
+                ctx.circle(cx + cell_w / 2.0, cy + CELL_H - 10.0, 3.0, fill=dot_col)
+
+            col += 1
+            if col == 7:
+                col = 0
+                row += 1
+
+        # Event list for selected day
+        num_rows = (first_wd + days_count + 6) // 7
+        ev_top = cells_top + num_rows * CELL_H + 10.0
+        ev_h = (y + h) - ev_top
+        app._draw_event_list(ctx, grid_left, ev_top, grid_w, ev_h)
+
+        # Modal overlays
+        if app._mode in ("add", "edit"):
+            app._draw_input_modal(ctx, x, y, w, h)
+        elif app._mode == "confirm_delete":
+            app._draw_delete_modal(ctx, x, y, w, h)
+
 
 class CalendarApp(App):
-    def on_init(self, ctx: RenderContext) -> None:
+    def on_init(self, _ctx: RenderContext) -> None:
         today = date.today()
         self._year = today.year
         self._month = today.month
@@ -28,11 +109,12 @@ class CalendarApp(App):
         self._events: list[dict] = []
         self._next_id = 1
         self._mode = "view"       # view | add | edit | confirm_delete
-        self._add_stage = "title" # title | date | time
+        self._add_stage = "title"  # title | date | time
         self._input = ""
         self._editing_id: str | None = None
         self._status = ""
         self._staged: dict = {}
+        self._grid_body = CalendarGridBody(self)
         self.emit.info("calendar: ready")
 
     # ── Calendar math ─────────────────────────────────────────────────────────
@@ -87,7 +169,7 @@ class CalendarApp(App):
 
     # ── Pipe interface ────────────────────────────────────────────────────────
 
-    def on_pipe_message(self, ctx: RenderContext, pipe_id: str, payload: Any) -> None:
+    def on_pipe_message(self, _ctx: RenderContext, pipe_id: str, payload: Any) -> None:
         if not isinstance(payload, dict):
             self.emit.warn(f"calendar: non-dict pipe payload from pipe_id={pipe_id}")
             self.emit.pipe_send(pipe_id, {"ok": False, "error": "payload must be a JSON object"})
@@ -139,7 +221,7 @@ class CalendarApp(App):
 
     # ── Key input ─────────────────────────────────────────────────────────────
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._mode == "view":
             self._key_view(key)
         elif self._mode in ("add", "edit"):
@@ -237,88 +319,7 @@ class CalendarApp(App):
                 self._status = "Added"
             self._mode = "view"
 
-    # ── Render ────────────────────────────────────────────────────────────────
-
-    def on_render(self, ctx: RenderContext) -> None:
-        ctx.clear(ctx.theme.bg)
-
-        # Header bar
-        header_h = 48.0
-        ctx.rect(0, 0, ctx.w, header_h, fill=ctx.theme.surface)
-        month_name = date(self._year, self._month, 1).strftime("%B %Y")
-        ctx.text(PAD, 10.0, "Calendar", size=HEADING, color=ctx.theme.fg, bold=True)
-        ctx.text(PAD, 30.0, month_name, size=CAPTION, color=ctx.theme.muted)
-
-        # Day-of-week column headers
-        grid_left = PAD
-        grid_w = ctx.w - 2 * PAD
-        cell_w = grid_w / 7.0
-        dow_y = header_h + 8.0
-        for i, name in enumerate(DAY_NAMES):
-            ctx.text(grid_left + i * cell_w + 6.0, dow_y, name, size=CAPTION, color=ctx.theme.muted)
-
-        # Month grid
-        cells_top = dow_y + 20.0
-        first_wd = calendar.monthrange(self._year, self._month)[0]
-        days_count = calendar.monthrange(self._year, self._month)[1]
-        today = date.today()
-
-        row, col = 0, first_wd
-        for day_num in range(1, days_count + 1):
-            cx = grid_left + col * cell_w
-            cy = cells_top + row * CELL_H
-            d_str = f"{self._year:04d}-{self._month:02d}-{day_num:02d}"
-            is_today = (date(self._year, self._month, day_num) == today)
-            is_selected = (day_num == self._day)
-
-            if is_selected:
-                ctx.rect(cx + 2, cy + 2, cell_w - 4, CELL_H - 4, fill=ctx.theme.accent, radius=CELL_RADIUS)
-                text_col = ctx.theme.bg
-            elif is_today:
-                ctx.rect(cx + 2, cy + 2, cell_w - 4, CELL_H - 4, fill=ctx.theme.surface, radius=CELL_RADIUS)
-                text_col = ctx.theme.accent
-            else:
-                text_col = ctx.theme.fg
-
-            ctx.text(cx + 6.0, cy + 8.0, str(day_num), size=BODY, color=text_col)
-
-            if self._events_for(d_str):
-                dot_col = ctx.theme.bg if is_selected else ctx.theme.accent
-                ctx.circle(cx + cell_w / 2.0, cy + CELL_H - 10.0, 3.0, fill=dot_col)
-
-            col += 1
-            if col == 7:
-                col = 0
-                row += 1
-
-        # Event list for selected day
-        num_rows = (first_wd + days_count + 6) // 7
-        footer_h = 44.0
-        ev_top = cells_top + num_rows * CELL_H + 10.0
-        ev_h = ctx.h - ev_top - footer_h
-
-        self._draw_event_list(ctx, grid_left, ev_top, grid_w, ev_h)
-
-        # Modal overlays
-        if self._mode in ("add", "edit"):
-            self._draw_input_modal(ctx)
-        elif self._mode == "confirm_delete":
-            self._draw_delete_modal(ctx)
-
-        # Footer bar
-        fy = ctx.h - footer_h
-        ctx.rect(0, fy, ctx.w, footer_h, fill=ctx.theme.surface)
-        if self._status:
-            ctx.text(PAD, fy + 14.0, self._status, size=CAPTION, color=ctx.theme.success)
-        elif self._mode == "view":
-            ctx.shortcuts(PAD, fy + 14.0, ctx.w - 2 * PAD, [
-                (["j", "k"], "day"),
-                (["h", "l"], "week"),
-                (["H", "L"], "month"),
-                ("a", "add"),
-                ("e", "edit"),
-                ("d", "delete"),
-            ])
+    # ── Render helpers (called by CalendarGridBody) ───────────────────────────
 
     def _draw_event_list(self, ctx: RenderContext, x: float, y: float,
                          w: float, h: float) -> None:
@@ -327,25 +328,27 @@ class CalendarApp(App):
         date_str = self._selected_date_str()
         evs = self._events_for(date_str)
         d_label = date(self._year, self._month, self._day).strftime("%A, %B %-d")
-        ctx.text(x, y, d_label, size=CAPTION, color=ctx.theme.muted)
+        ctx.text(x, y, d_label, size=CAPTION, color=theme.muted)
         ey = y + 20.0
         if not evs:
-            ctx.text(x, ey, "No events", size=BODY, color=ctx.theme.muted)
+            ctx.text(x, ey, "No events", size=BODY, color=theme.muted)
             return
         for ev in evs:
             if ey + 24 > y + h:
                 break
             time_part = f"{ev['time']}  " if ev.get("time") else ""
-            ctx.rect(x, ey, w, 22.0, fill=ctx.theme.surface, radius=4.0)
-            ctx.text(x + 8.0, ey + 4.0, f"{time_part}{ev['title']}", size=CAPTION, color=ctx.theme.fg)
+            ctx.rect(x, ey, w, 22.0, fill=theme.surface, radius=4.0)
+            ctx.text(x + 8.0, ey + 4.0, f"{time_part}{ev['title']}",
+                     size=CAPTION, color=theme.fg)
             ey += 26.0
 
-    def _draw_input_modal(self, ctx: RenderContext) -> None:
-        mw = min(400.0, ctx.w - 2 * PAD)
+    def _draw_input_modal(self, ctx: RenderContext,
+                          _x: float, _y: float, w: float, h: float) -> None:
+        mw = min(400.0, w - 2 * PAD)
         mh = 120.0
-        mx = (ctx.w - mw) / 2.0
-        my = (ctx.h - mh) / 2.0
-        ctx.rect(mx, my, mw, mh, fill=ctx.theme.surface, radius=8.0)
+        mx = (w - mw) / 2.0
+        my = (h - mh) / 2.0
+        ctx.rect(mx, my, mw, mh, fill=theme.surface, radius=8.0)
 
         title_text = "Edit Event" if self._editing_id else "Add Event"
         stage_prompt = {
@@ -354,25 +357,48 @@ class CalendarApp(App):
             "time":  "Time (HH:MM, or Enter to skip):",
         }[self._add_stage]
 
-        ctx.text(mx + 16.0, my + 12.0, title_text, size=BODY, color=ctx.theme.fg, bold=True)
-        ctx.text(mx + 16.0, my + 36.0, stage_prompt, size=CAPTION, color=ctx.theme.muted)
-        ctx.rect(mx + 16.0, my + 56.0, mw - 32.0, 30.0, fill=ctx.theme.highlight, radius=4.0)
-        ctx.text(mx + 22.0, my + 64.0, self._input + "▌", size=BODY, color=ctx.theme.fg)
-        ctx.text(mx + 16.0, my + 98.0, "↵ confirm  esc cancel", size=HINT, color=ctx.theme.muted)
+        ctx.text(mx + 16.0, my + 12.0, title_text, size=BODY, color=theme.fg, bold=True)
+        ctx.text(mx + 16.0, my + 36.0, stage_prompt, size=CAPTION, color=theme.muted)
+        ctx.rect(mx + 16.0, my + 56.0, mw - 32.0, 30.0, fill=theme.highlight, radius=4.0)
+        ctx.text(mx + 22.0, my + 64.0, self._input + "▌", size=BODY, color=theme.fg)
+        ctx.text(mx + 16.0, my + 98.0, "↵ confirm  esc cancel", size=HINT, color=theme.muted)
 
-    def _draw_delete_modal(self, ctx: RenderContext) -> None:
+    def _draw_delete_modal(self, ctx: RenderContext,
+                           _x: float, _y: float, w: float, h: float) -> None:
         evs = self._events_for(self._selected_date_str())
         if not evs:
             self._mode = "view"
             return
-        mw = min(360.0, ctx.w - 2 * PAD)
+        mw = min(360.0, w - 2 * PAD)
         mh = 90.0
-        mx = (ctx.w - mw) / 2.0
-        my = (ctx.h - mh) / 2.0
-        ctx.rect(mx, my, mw, mh, fill=ctx.theme.surface, radius=8.0)
-        ctx.text(mx + 16.0, my + 12.0, "Delete event?", size=BODY, color=ctx.theme.fg, bold=True)
-        ctx.text(mx + 16.0, my + 34.0, evs[0]["title"], size=CAPTION, color=ctx.theme.muted)
-        ctx.text(mx + 16.0, my + 62.0, "y  confirm    n / esc  cancel", size=HINT, color=ctx.theme.muted)
+        mx = (w - mw) / 2.0
+        my = (h - mh) / 2.0
+        ctx.rect(mx, my, mw, mh, fill=theme.surface, radius=8.0)
+        ctx.text(mx + 16.0, my + 12.0, "Delete event?", size=BODY, color=theme.fg, bold=True)
+        ctx.text(mx + 16.0, my + 34.0, evs[0]["title"], size=CAPTION, color=theme.muted)
+        ctx.text(mx + 16.0, my + 62.0, "y  confirm    n / esc  cancel",
+                 size=HINT, color=theme.muted)
+
+    # ── Render ────────────────────────────────────────────────────────────────
+
+    def on_render(self, ctx: RenderContext) -> None:
+        month_name = date(self._year, self._month, 1).strftime("%B %Y")
+
+        if self._status:
+            footer: Component = Footer(self._status, color=theme.success)
+        else:
+            footer = FooterKeys(_VIEW_SHORTCUTS, divider=True)
+
+        ctx.render(Column(
+            [
+                AppBar("Calendar", subtitle=month_name),
+                self._grid_body,
+                footer,
+            ],
+            padding=0,
+            padding_top=0,
+            gap=0,
+        ))
 
 
 if __name__ == "__main__":

@@ -8,12 +8,16 @@ import sys
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
-from plexi_sdk import App, RenderContext, CAPTION, BODY, TITLE
+from plexi_sdk import App, RenderContext
+from plexi_sdk.ui import (
+    AppBar, Column, Component, FooterKeys, Label, SelectList, Spacer,
+    SPACE_SM,
+    TEXT_CAPTION, TEXT_BODY,
+)
 
 # ── Palette ───────────────────────────────────────────────────────────────────
-APP_BG     = "#0d0d12"
-COL_BG     = "#14141c"
 COL_ACTIVE = "#18182a"
+COL_BG     = "#14141c"
 DIVIDER    = "#252535"
 CARD_BG    = "#1c1c28"
 CARD_FOCUS = "#21213a"
@@ -22,10 +26,8 @@ TEXT       = "#dcdcf0"
 TEXT_MID   = "#8888a8"
 TEXT_DIM   = "#505068"
 ACCENT     = "#7b9ef0"
-TAG_BG     = "#22224a"
 SEL_BAR    = "#5068d8"
 ERROR_COL  = "#d04050"
-OK_COL     = "#50c080"
 
 LABEL_FILLS = ["#2e3060", "#1e3a70", "#1a4a36", "#3a2060", "#603020"]
 LABEL_TEXT  = "#aab0e0"
@@ -34,8 +36,6 @@ BADGE_FILLS = ["#2e3060", "#1e3a70", "#1a4a36"]
 BADGE_TEXT  = "#aab0e0"
 
 # ── Layout constants ──────────────────────────────────────────────────────────
-HEADER_H = 44
-STATUS_H = 30
 COL_GAP  = 8
 COL_PAD  = 10
 COL_R    = 10.0
@@ -58,7 +58,7 @@ class Item:
 
 
 @dataclass
-class Column:
+class KanbanColumn:
     name:  str
     items: list[Item] = field(default_factory=list)
 
@@ -141,7 +141,7 @@ query($owner: String!, $number: Int!, $cursor: String) {
 }"""
 
 
-def _fetch_board(project: Project) -> tuple[list[Column], str]:
+def _fetch_board(project: Project) -> tuple[list[KanbanColumn], str]:
     """
     Return (columns, error_msg). columns is empty on error.
     Uses raw GraphQL — gh project CLI subcommands are broken in gh ≥2.92.
@@ -194,9 +194,9 @@ def _fetch_board(project: Project) -> tuple[list[Column], str]:
             url = str(content.get("url") or "")
             labels: list[str] = []
             for lbl in cast(list[dict[str, object]], cast(dict[str, object], content.get("labels") or {}).get("nodes") or []):
-                name = str(lbl.get("name", ""))
-                if name:
-                    labels.append(name)
+                lname = str(lbl.get("name", ""))
+                if lname:
+                    labels.append(lname)
 
             item = Item(
                 item_id=str(node.get("id") or ""),
@@ -213,7 +213,7 @@ def _fetch_board(project: Project) -> tuple[list[Column], str]:
             break
         cursor = str(page_info.get("endCursor") or "")
 
-    columns = [Column(name=name, items=col_map.get(name, [])) for name in status_options]
+    columns = [KanbanColumn(name=name, items=col_map.get(name, [])) for name in status_options]
     return columns, ""
 
 
@@ -258,9 +258,125 @@ def _open_url(url: str) -> None:
         pass
 
 
+# ── Custom kanban body component ──────────────────────────────────────────────
+
+class KanbanBody(Component):
+    """Multi-column kanban board. Renders via raw draws; no SDK horizontal container exists."""
+
+    def __init__(self, columns: list[KanbanColumn], focused_col: int, focused_card: int) -> None:
+        self._columns = columns
+        self._focused_col = focused_col
+        self._focused_card = focused_card
+
+    def is_grow(self) -> bool:
+        return True
+
+    def measure(self, _avail_w: float) -> float:
+        return 0.0  # grow — allocated by parent
+
+    def _col_rect(self, w: float, h: float, i: int) -> tuple[float, float, float, float]:
+        n = max(1, len(self._columns))
+        cw = (w - COL_PAD * 2 - COL_GAP * (n - 1)) / n
+        cx = COL_PAD + i * (cw + COL_GAP)
+        return cx, 0.0, cw, h
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        for i, col in enumerate(self._columns):
+            cx, _, cw, ch = self._col_rect(w, h, i)
+            focused = (i == self._focused_col)
+            ax = x + cx
+            ay = y
+
+            ctx.rect(ax, ay, cw, ch, fill=COL_ACTIVE if focused else COL_BG, radius=COL_R)
+
+            # column header band
+            hdr_bg = "#1e1e38" if focused else "#161622"
+            ctx.rect(ax, ay, cw, 36, fill=hdr_bg, radius=COL_R)
+            ctx.rect(ax, ay + 28, cw, 8, fill=hdr_bg)
+            ctx.rect(ax, ay + 35, cw, 1, fill=DIVIDER)
+            ctx.text(ax + CARD_X, ay + 18, col.name,
+                     size=TEXT_BODY, color=ACCENT if focused else TEXT_MID,
+                     bold=True, align="left_center")
+
+            # count badge
+            bw, bh = 26, 16
+            bx = ax + cw - CARD_X - bw
+            ctx.rect(bx, ay + 10, bw, bh, fill=BADGE_FILLS[i % len(BADGE_FILLS)], radius=4.0)
+            ctx.text(bx + bw / 2, ay + 18, str(len(col.items)),
+                     size=TEXT_CAPTION, color=BADGE_TEXT, bold=True, align="center")
+
+            # cards
+            scroll_y = ay + CARD_Y
+            visible_h = ch - CARD_Y - 4
+            stride = CARD_H + CARD_GAP
+            scroll_offset = 0.0
+            if focused and col.items:
+                card_bottom = self._focused_card * stride + CARD_H
+                if card_bottom > visible_h:
+                    scroll_offset = card_bottom - visible_h
+
+            for idx, item in enumerate(col.items):
+                kx = ax + CARD_X
+                ky = scroll_y + idx * stride - scroll_offset
+                if ky + CARD_H < ay + CARD_Y or ky > ay + ch:
+                    continue
+                kw = cw - CARD_X * 2
+                is_sel = focused and idx == self._focused_card
+
+                bg = CARD_SEL if is_sel else (CARD_FOCUS if focused else CARD_BG)
+                ctx.rect(kx, ky, kw, CARD_H, fill=bg, radius=6.0)
+
+                if is_sel:
+                    ctx.rect(kx, ky + 4, 3, CARD_H - 8, fill=SEL_BAR, radius=2.0)
+
+                text_x = kx + (14 if is_sel else 10)
+                title_max = kw - (14 if is_sel else 10) - 6
+
+                num_str = f"#{item.number}" if item.number else item.itype[:2].upper()
+                ctx.text(text_x, ky + 12, num_str,
+                         size=TEXT_CAPTION, color=ACCENT if is_sel else TEXT_DIM)
+                num_w = len(num_str) * 6 + 4
+
+                ctx.text(text_x + num_w + 4, ky + 12, item.title,
+                         size=TEXT_CAPTION, color=TEXT_MID,
+                         max_width=title_max - num_w - 4)
+
+                ctx.text(text_x, ky + 30, item.title,
+                         size=TEXT_BODY, color=TEXT if is_sel else TEXT_MID,
+                         max_width=title_max)
+
+                lx = text_x
+                for li, lbl in enumerate(item.labels[:3]):
+                    lw = min(len(lbl) * 6 + 10, 80)
+                    if lx + lw > ax + cw - CARD_X:
+                        break
+                    ctx.rect(lx, ky + 50, lw, 14,
+                             fill=LABEL_FILLS[li % len(LABEL_FILLS)], radius=3.0)
+                    ctx.text(lx + lw / 2, ky + 57, lbl,
+                             size=TEXT_CAPTION, color=LABEL_TEXT, align="center",
+                             max_width=lw - 4)
+                    lx += lw + 4
+
+
 # ── App ───────────────────────────────────────────────────────────────────────
 
 State = Literal["loading", "error", "picking", "board"]
+
+_BOARD_SHORTCUTS = [
+    ("↑↓", "navigate"),
+    ("jk", "navigate"),
+    ("←→", "column"),
+    ("hl", "column"),
+    ("Return", "open"),
+    ("R", "refresh"),
+    ("q", "quit"),
+]
+
+_PICK_SHORTCUTS = [
+    ("↑↓", "select"),
+    ("Return", "open"),
+    ("q", "quit"),
+]
 
 
 class GhProjects(App):
@@ -269,12 +385,14 @@ class GhProjects(App):
         self._state: State = "loading"
         self._error: str = ""
         self._projects: list[Project] = []
-        self._pick_idx: int = 0
         self._project: Project | None = None
-        self._columns: list[Column] = []
+        self._columns: list[KanbanColumn] = []
         self._col: int = 0
         self._card: int = 0
         self._loading_msg: str = "Detecting repository…"
+
+        # SelectList for project picker — must be created in on_init
+        self._pick_list: SelectList = SelectList([], selected_idx=0)
 
         self.emit.info(f"gh-projects: init workspace_root={ctx.workspace_root!r}")
         ctx.status_summary("Loading…")
@@ -306,6 +424,10 @@ class GhProjects(App):
                 await self._load_board(projects[0])
             else:
                 self._projects = projects
+                self._pick_list = SelectList(
+                    [{"name": p.title, "description": f"#{p.number} · {p.owner}"} for p in projects],
+                    selected_idx=0,
+                )
                 self._state = "picking"
         except Exception as exc:
             self._error = f"Unexpected error: {exc}"
@@ -350,12 +472,6 @@ class GhProjects(App):
             return None
         return col.items[self._card]
 
-    def _col_rect(self, ctx: RenderContext, i: int) -> tuple[float, float, float, float]:
-        n = max(1, len(self._columns))
-        w = (ctx.w - COL_PAD * 2 - COL_GAP * (n - 1)) / n
-        x = COL_PAD + i * (w + COL_GAP)
-        return x, float(HEADER_H), w, ctx.h - HEADER_H - STATUS_H
-
     def _update_status(self, ctx: RenderContext) -> None:
         item = self._focused_item()
         if item:
@@ -367,8 +483,6 @@ class GhProjects(App):
     # ── render ────────────────────────────────────────────────────────────────
 
     def on_render(self, ctx: RenderContext) -> None:
-        ctx.clear(APP_BG)
-
         if self._state == "loading":
             self._render_loading(ctx)
         elif self._state == "error":
@@ -379,139 +493,42 @@ class GhProjects(App):
             self._render_board(ctx)
 
     def _render_loading(self, ctx: RenderContext) -> None:
-        ctx.text(ctx.w / 2, ctx.h / 2, self._loading_msg,
-                 size=BODY, color=TEXT_DIM, align="center")
+        ctx.render(Column([
+            AppBar("GitHub Projects"),
+            Spacer(grow=True),
+            Label(self._loading_msg, tone="hint", color=TEXT_DIM),
+            Spacer(grow=True),
+        ]))
 
     def _render_error(self, ctx: RenderContext) -> None:
-        ctx.text(ctx.w / 2, ctx.h / 2 - 12, "Error", size=BODY, color=ERROR_COL,
-                 bold=True, align="center")
-        ctx.text(ctx.w / 2, ctx.h / 2 + 10, self._error,
-                 size=CAPTION, color=TEXT_MID, align="center", max_width=ctx.w - 40)
-        ctx.text(ctx.w / 2, ctx.h / 2 + 32, "Press R to retry",
-                 size=CAPTION, color=TEXT_DIM, align="center")
+        ctx.render(Column([
+            AppBar("GitHub Projects"),
+            Spacer(grow=True),
+            Label("Error", tone="body", color=ERROR_COL, bold=True),
+            Label(self._error, tone="caption", color=TEXT_MID),
+            Label("Press R to retry", tone="hint", color=TEXT_DIM),
+            Spacer(grow=True),
+        ]))
 
     def _render_picker(self, ctx: RenderContext) -> None:
-        ctx.rect(0, 0, ctx.w, HEADER_H, fill=COL_BG)
-        ctx.rect(0, HEADER_H - 1, ctx.w, 1, fill=DIVIDER)
-        ctx.text(COL_PAD + 2, HEADER_H / 2, "GitHub Projects",
-                 size=TITLE, color=TEXT, bold=True, align="left_center")
-
-        for i, proj in enumerate(self._projects):
-            y = HEADER_H + 10 + i * 44
-            is_sel = (i == self._pick_idx)
-            bg = CARD_SEL if is_sel else CARD_BG
-            ctx.rect(COL_PAD, y, ctx.w - COL_PAD * 2, 38, fill=bg, radius=6.0)
-            if is_sel:
-                ctx.rect(COL_PAD, y + 4, 3, 30, fill=SEL_BAR, radius=2.0)
-            tx = COL_PAD + (18 if is_sel else 12)
-            ctx.text(tx, y + 10, proj.title,
-                     size=BODY, color=TEXT if is_sel else TEXT_MID)
-            ctx.text(tx, y + 26, f"#{proj.number} · {proj.owner}",
-                     size=CAPTION, color=ACCENT if is_sel else TEXT_DIM)
-
-        ctx.rect(0, ctx.h - STATUS_H, ctx.w, STATUS_H, fill=COL_BG)
-        ctx.rect(0, ctx.h - STATUS_H, ctx.w, 1, fill=DIVIDER)
-        ctx.text(ctx.w / 2, ctx.h - STATUS_H / 2,
-                 "↑↓  select   Return  open   q  quit",
-                 size=CAPTION, color=TEXT_DIM, align="center")
+        ctx.render(Column([
+            AppBar("GitHub Projects", subtitle="Select a project"),
+            self._pick_list,
+            FooterKeys(_PICK_SHORTCUTS),
+        ], padding=SPACE_SM, padding_top=0))
 
     def _render_board(self, ctx: RenderContext) -> None:
-        # header
         project_title = self._project.title if self._project else "GitHub Projects"
-        ctx.rect(0, 0, ctx.w, HEADER_H, fill=COL_BG)
-        ctx.rect(0, HEADER_H - 1, ctx.w, 1, fill=DIVIDER)
-        ctx.text(COL_PAD + 2, HEADER_H / 2, project_title,
-                 size=TITLE, color=TEXT, bold=True, align="left_center")
         total = sum(len(c.items) for c in self._columns)
-        ctx.text(ctx.w - COL_PAD, HEADER_H / 2, f"{total} items",
-                 size=CAPTION, color=TEXT_DIM, align="right_center")
-
-        for i, col in enumerate(self._columns):
-            cx, cy, cw, ch = self._col_rect(ctx, i)
-            focused = (i == self._col)
-
-            ctx.rect(cx, cy, cw, ch, fill=COL_ACTIVE if focused else COL_BG, radius=COL_R)
-
-            # column header
-            hdr_bg = "#1e1e38" if focused else "#161622"
-            ctx.rect(cx, cy, cw, 36, fill=hdr_bg, radius=COL_R)
-            ctx.rect(cx, cy + 28, cw, 8, fill=hdr_bg)
-            ctx.rect(cx, cy + 35, cw, 1, fill=DIVIDER)
-            ctx.text(cx + CARD_X, cy + 18, col.name,
-                     size=BODY, color=ACCENT if focused else TEXT_MID,
-                     bold=True, align="left_center")
-
-            # count badge
-            bw, bh = 26, 16
-            bx = cx + cw - CARD_X - bw
-            ctx.rect(bx, cy + 10, bw, bh, fill=BADGE_FILLS[i % len(BADGE_FILLS)], radius=4.0)
-            ctx.text(bx + bw / 2, cy + 18, str(len(col.items)),
-                     size=CAPTION, color=BADGE_TEXT, bold=True, align="center")
-
-            # cards
-            scroll_y = cy + CARD_Y
-            visible_h = ch - CARD_Y - 4
-            stride = CARD_H + CARD_GAP
-            scroll_offset = 0.0
-            if focused and col.items:
-                card_bottom = self._card * stride + CARD_H
-                if card_bottom > visible_h:
-                    scroll_offset = card_bottom - visible_h
-
-            for idx, item in enumerate(col.items):
-                kx = cx + CARD_X
-                ky = scroll_y + idx * stride - scroll_offset
-                if ky + CARD_H < cy + CARD_Y or ky > cy + ch:
-                    continue
-                kw = cw - CARD_X * 2
-                is_sel = focused and idx == self._card
-
-                bg = CARD_SEL if is_sel else (CARD_FOCUS if focused else CARD_BG)
-                ctx.rect(kx, ky, kw, CARD_H, fill=bg, radius=6.0)
-
-                if is_sel:
-                    ctx.rect(kx, ky + 4, 3, CARD_H - 8, fill=SEL_BAR, radius=2.0)
-
-                text_x = kx + (14 if is_sel else 10)
-                title_max = kw - (14 if is_sel else 10) - 6
-
-                # number chip
-                num_str = f"#{item.number}" if item.number else item.itype[:2].upper()
-                ctx.text(text_x, ky + 12, num_str,
-                         size=CAPTION, color=ACCENT if is_sel else TEXT_DIM)
-                num_w = len(num_str) * 6 + 4
-
-                ctx.text(text_x + num_w + 4, ky + 12, item.title,
-                         size=CAPTION, color=TEXT_MID,
-                         max_width=title_max - num_w - 4)
-
-                ctx.text(text_x, ky + 30, item.title,
-                         size=BODY, color=TEXT if is_sel else TEXT_MID,
-                         max_width=title_max)
-
-                # labels
-                lx = text_x
-                for li, lbl in enumerate(item.labels[:3]):
-                    lw = min(len(lbl) * 6 + 10, 80)
-                    if lx + lw > cx + cw - CARD_X:
-                        break
-                    ctx.rect(lx, ky + 50, lw, 14,
-                              fill=LABEL_FILLS[li % len(LABEL_FILLS)], radius=3.0)
-                    ctx.text(lx + lw / 2, ky + 57, lbl,
-                              size=CAPTION, color=LABEL_TEXT, align="center",
-                              max_width=lw - 4)
-                    lx += lw + 4
-
-        # status bar
-        ctx.rect(0, ctx.h - STATUS_H, ctx.w, STATUS_H, fill=COL_BG)
-        ctx.rect(0, ctx.h - STATUS_H, ctx.w, 1, fill=DIVIDER)
-        ctx.text(ctx.w / 2, ctx.h - STATUS_H / 2,
-                 "↑↓/jk  navigate   ←→/hl  column   Return  open in browser   R  refresh   q  quit",
-                 size=CAPTION, color=TEXT_DIM, align="center")
+        ctx.render(Column([
+            AppBar(project_title, subtitle=f"{total} items"),
+            KanbanBody(self._columns, self._col, self._card),
+            FooterKeys(_BOARD_SHORTCUTS),
+        ], padding=0, padding_top=0))
 
     # ── keyboard ──────────────────────────────────────────────────────────────
 
-    async def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    async def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
         if key == "q":
             sys.exit(0)
 
@@ -526,14 +543,13 @@ class GhProjects(App):
             return
 
         if self._state == "picking":
-            if key in ("up", "k"):
-                self._pick_idx = max(0, self._pick_idx - 1)
-            elif key in ("down", "j"):
-                self._pick_idx = min(len(self._projects) - 1, self._pick_idx + 1)
+            if key in ("up", "k", "down", "j"):
+                self._pick_list.handle_key(key)
             elif key == "return":
-                self.emit.info(f"gh-projects: user selected project #{self._projects[self._pick_idx].number}")
+                idx = self._pick_list.selected_idx
+                self.emit.info(f"gh-projects: user selected project #{self._projects[idx].number}")
                 asyncio.get_event_loop().create_task(
-                    self._load_board(self._projects[self._pick_idx])
+                    self._load_board(self._projects[idx])
                 )
             return
 

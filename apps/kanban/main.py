@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Kanban — keyboard-driven card board."""
-from plexi_sdk import App, RenderContext, CAPTION, BODY, TITLE
+from plexi_sdk import App, RenderContext
+from plexi_sdk.ui import (
+    AppBar, FooterKeys,
+    TEXT_CAPTION, TEXT_BODY,
+)
 
 # ── Palette ───────────────────────────────────────────────────────────────────
 APP_BG      = "#0d0d12"
@@ -21,8 +25,6 @@ BADGE_FILLS = ["#2e3060", "#1e3a70", "#1a4a36"]
 BADGE_TEXT  = "#aab0e0"
 
 # ── Sizes ─────────────────────────────────────────────────────────────────────
-HEADER_H = 44
-STATUS_H = 30
 COL_GAP  = 8
 COL_PAD  = 10
 COL_R    = 10.0
@@ -32,7 +34,7 @@ CARD_X   = 10
 CARD_Y   = 44
 
 
-class Card:
+class KanbanCard:
     def __init__(self, cid: int, title: str, tag: str = ""):
         self.id    = cid
         self.title = title
@@ -41,26 +43,37 @@ class Card:
 
 class Kanban(App):
     async def on_init(self, ctx: RenderContext) -> None:
-        self.columns: list[tuple[str, list[Card]]] = [
+        self.columns: list[tuple[str, list[KanbanCard]]] = [
             ("Todo", [
-                Card(1, "Write SDK docs",        "docs"),
-                Card(2, "Add dark mode support", "feat"),
-                Card(3, "Audit accessibility",   "a11y"),
-                Card(4, "Refactor render loop",  "perf"),
+                KanbanCard(1, "Write SDK docs",        "docs"),
+                KanbanCard(2, "Add dark mode support", "feat"),
+                KanbanCard(3, "Audit accessibility",   "a11y"),
+                KanbanCard(4, "Refactor render loop",  "perf"),
             ]),
             ("In Progress", [
-                Card(5, "Kanban drag & drop",    "feat"),
-                Card(6, "Bootstrap scaffold",    "infra"),
-                Card(7, "Notify API",            "feat"),
+                KanbanCard(5, "Kanban drag & drop",    "feat"),
+                KanbanCard(6, "Bootstrap scaffold",    "infra"),
+                KanbanCard(7, "Notify API",            "feat"),
             ]),
             ("Done", [
-                Card(8, "Design system tokens",  "design"),
-                Card(9, "Hot reload watcher",    "infra"),
+                KanbanCard(8, "Design system tokens",  "design"),
+                KanbanCard(9, "Hot reload watcher",    "infra"),
             ]),
         ]
         self._col  = 0
         self._card = 0
         self._clamp()
+
+        # L1 chrome components — created once in on_init as required for stateful widgets
+        total = sum(len(c[1]) for c in self.columns)
+        self._appbar = AppBar(title="Kanban", subtitle=f"{total} cards")
+        self._footer = FooterKeys([
+            ("↑↓",  "navigate"),
+            ("←→",  "column"),
+            ("⇧↑↓", "reorder"),
+            ("⇧←→", "move"),
+        ])
+
         self._update_status(ctx)
         self.emit.info("Kanban initialized")
 
@@ -75,25 +88,39 @@ class Kanban(App):
         n = len(self.columns)
         w = (ctx.w - COL_PAD * 2 - COL_GAP * (n - 1)) / n
         x = COL_PAD + i * (w + COL_GAP)
-        return x, float(HEADER_H), w, ctx.h - HEADER_H - STATUS_H
+        # top = AppBar height, bottom = FooterKeys height (approximated to 44px)
+        appbar_h = self._appbar.measure(ctx.w)
+        footer_h = self._footer.measure(ctx.w)
+        return x, appbar_h, w, ctx.h - appbar_h - footer_h
 
     def _update_status(self, ctx: RenderContext) -> None:
         col_name, cards = self.columns[self._col]
         title = cards[self._card].title if cards else ""
         ctx.status_summary(f"{col_name} · {title}" if title else col_name)
 
+    def _rebuild_chrome(self) -> None:
+        """Refresh AppBar subtitle after card moves change the total."""
+        total = sum(len(c[1]) for c in self.columns)
+        self._appbar = AppBar(title="Kanban", subtitle=f"{total} cards")
+
     # ── render ────────────────────────────────────────────────────────────────
 
     def on_render(self, ctx: RenderContext) -> None:
+        # Clear background
         ctx.clear(APP_BG)
 
-        # header
-        ctx.rect(0, 0, ctx.w, HEADER_H, fill=COL_BG)
-        ctx.rect(0, HEADER_H - 1, ctx.w, 1, fill=DIVIDER)
-        ctx.text(COL_PAD + 2, HEADER_H / 2, "Kanban", size=TITLE, color=TEXT, bold=True, align="left_center")
-        total = sum(len(c[1]) for c in self.columns)
-        ctx.text(ctx.w - COL_PAD, HEADER_H / 2, f"{total} cards", size=CAPTION, color=TEXT_DIM, align="right_center")
+        # Measure chrome heights so column layout is consistent
+        appbar_h = self._appbar.measure(ctx.w)
+        footer_h = self._footer.measure(ctx.w)
 
+        # Render AppBar via L1
+        self._appbar.render(ctx, 0.0, 0.0, ctx.w, appbar_h)
+
+        # Render FooterKeys via L1 at bottom
+        footer_y = ctx.h - footer_h
+        self._footer.render(ctx, 0.0, footer_y, ctx.w, footer_h)
+
+        # Kanban columns — pixel layout (no horizontal container in L1)
         for i, (col_name, cards) in enumerate(self.columns):
             cx, cy, cw, ch = self._col_rect(ctx, i)
             focused = (i == self._col)
@@ -105,15 +132,15 @@ class Kanban(App):
             ctx.rect(cx, cy, cw, 36, fill=hdr_bg, radius=COL_R)
             ctx.rect(cx, cy + 28, cw, 8, fill=hdr_bg)  # square off bottom corners
             ctx.rect(cx, cy + 35, cw, 1, fill=DIVIDER)
-            ctx.text(cx + CARD_X, cy + 18, col_name, size=BODY, color=ACCENT if focused else TEXT_MID,
+            ctx.text(cx + CARD_X, cy + 18, col_name, size=TEXT_BODY, color=ACCENT if focused else TEXT_MID,
                      bold=True, align="left_center")
 
-            # count badge — align="center" fixes the 3/4 centering issue
+            # count badge
             bw, bh = 22, 16
             bx = cx + cw - CARD_X - bw
             by = cy + 10
             ctx.rect(bx, by, bw, bh, fill=BADGE_FILLS[i % len(BADGE_FILLS)], radius=4.0)
-            ctx.text(bx + bw / 2, by + bh / 2, str(len(cards)), size=CAPTION, color=BADGE_TEXT, bold=True, align="center")
+            ctx.text(bx + bw / 2, by + bh / 2, str(len(cards)), size=TEXT_CAPTION, color=BADGE_TEXT, bold=True, align="center")
 
             # cards
             for idx, card in enumerate(cards):
@@ -130,22 +157,15 @@ class Kanban(App):
                     ctx.rect(kx, ky + 4, 3, kh - 8, fill=SEL_BAR, radius=2.0)
 
                 text_x = kx + (14 if is_sel else 10)
-                ctx.text(text_x, ky + 14, card.title, size=BODY, color=TEXT if is_sel else TEXT_MID,
+                ctx.text(text_x, ky + 14, card.title, size=TEXT_BODY, color=TEXT if is_sel else TEXT_MID,
                          max_width=kw - (14 if is_sel else 10) - 6)
 
                 if card.tag:
                     tw = len(card.tag) * 6 + 10
                     tx = kx + (14 if is_sel else 10)
                     ctx.rect(tx, ky + 44, tw, 14, fill=TAG_BG, radius=3.0)
-                    ctx.text(tx + tw / 2, ky + 51, card.tag, size=CAPTION,
+                    ctx.text(tx + tw / 2, ky + 51, card.tag, size=TEXT_CAPTION,
                              color=ACCENT if is_sel else TEXT_DIM, align="center")
-
-        # status bar
-        ctx.rect(0, ctx.h - STATUS_H, ctx.w, STATUS_H, fill=COL_BG)
-        ctx.rect(0, ctx.h - STATUS_H, ctx.w, 1, fill=DIVIDER)
-        ctx.text(ctx.w / 2, ctx.h - STATUS_H / 2,
-                 "↑↓  navigate   ←→  column   ⇧↑↓  reorder   ⇧←→  move",
-                 size=CAPTION, color=TEXT_DIM, align="center")
 
     # ── keyboard ──────────────────────────────────────────────────────────────
 
@@ -179,6 +199,7 @@ class Kanban(App):
                 dest = self.columns[self._col][1]
                 dest.append(card)
                 self._card = len(dest) - 1
+                self._rebuild_chrome()
             elif not moving:
                 self._col = max(0, self._col - 1)
                 self._clamp()
@@ -191,6 +212,7 @@ class Kanban(App):
                 dest = self.columns[self._col][1]
                 dest.append(card)
                 self._card = len(dest) - 1
+                self._rebuild_chrome()
             elif not moving:
                 self._col = min(len(self.columns) - 1, self._col + 1)
                 self._clamp()

@@ -5,16 +5,15 @@ import csv
 import sys
 from pathlib import Path
 
-from plexi_sdk import (  # type: ignore[attr-defined]
-    App, RenderContext,
-    BODY, CAPTION,
+from plexi_sdk import App, RenderContext  # type: ignore[attr-defined]
+from plexi_sdk.ui import (
+    AppBar, Column, FooterKeys, Label, Section,
+    SelectList, Spacer,
 )
-from plexi_sdk.ui import SelectList
 
-PAD = 16.0
-ROW_H = 24.0
 COL_W = 130.0
 CELL_PAD = 8.0
+ROW_H = 24.0
 STRIPE = "#0d0d0d"
 HEADER_BG = "#1a1a2e"
 
@@ -99,61 +98,80 @@ class CsvViewer(App):
             self._headers = [f"Error: {e}"]
 
     def on_render(self, ctx: RenderContext) -> None:
-        ctx.clear(ctx.theme.bg)
         if self._mode == "list":
             self._draw_list(ctx)
         else:
             self._draw_detail(ctx)
 
     def _draw_list(self, ctx: RenderContext) -> None:
-        w, h = ctx.w, ctx.h
-        y = PAD
-
-        ctx.text(PAD, y, str(self._dir), size=CAPTION, color=ctx.theme.muted, monospace=True)
-        y += 22.0
+        n = len(self._files)
+        label = f"{n} CSV file{'s' if n != 1 else ''}" if self._files else "No CSV files found."
+        subtitle = str(self._dir)
 
         if not self._files:
-            ctx.text(PAD, y, "No CSV files found.", size=BODY, color=ctx.theme.muted)
-            ctx.text(PAD, h - 20, "esc  exit", size=CAPTION, color=ctx.theme.muted)
+            ctx.render(Column([
+                AppBar("CSV Viewer", subtitle=subtitle),
+                Label(label, tone="hint"),
+                Spacer(grow=True),
+                FooterKeys([("esc", "exit")]),
+            ], padding=0.0, padding_top=0, gap=0))
             return
 
-        label = f"{len(self._files)} CSV file{'s' if len(self._files) != 1 else ''}"
-        ctx.text(PAD, y, label, size=BODY, color=ctx.theme.fg)
-        y += 28.0
-
         self._file_list.selected_idx = self._selected
-        self._file_list.render(ctx, 0, y, w, h - y - 30)
 
-        ctx.text(PAD, h - 20, "↑↓ / jk  navigate   ↵  open   esc  exit", size=CAPTION, color=ctx.theme.muted)
+        ctx.render(Column([
+            AppBar("CSV Viewer", subtitle=subtitle),
+            Section(label),
+            self._file_list,
+            FooterKeys([
+                (["↑", "k"], "up"),
+                (["↓", "j"], "down"),
+                ("↵", "open"),
+                ("esc", "exit"),
+            ]),
+        ], padding=0.0, padding_top=0, gap=0))
 
     def _draw_detail(self, ctx: RenderContext) -> None:
-        w, h = ctx.w, ctx.h
         if not self._files:
             return
         path = self._files[self._selected]
-        y = PAD
+        w, h = ctx.w, ctx.h
 
-        ctx.text(PAD, y, path.name, size=BODY, color=ctx.theme.fg, bold=True)
-        y += 22.0
-        ctx.text(PAD, y, f"{len(self._rows)} rows × {len(self._headers)} columns", size=CAPTION, color=ctx.theme.muted)
-        y += 22.0
+        appbar = AppBar(path.name, subtitle=f"{len(self._rows)} rows × {len(self._headers)} columns")
+        footer = FooterKeys([
+            (["↑", "k"], "up"),
+            (["↓", "j"], "down"),
+            (["←", "h"], "col left"),
+            (["→", "l"], "col right"),
+            ("esc", "back"),
+        ])
 
-        visible_cols = max(1, int((w - PAD) // COL_W))
+        appbar_h = appbar.measure(w)
+        footer_h = footer.measure(w)
+
+        ctx.clear(ctx.theme.bg)
+        appbar.render(ctx, 0.0, 0.0, w, appbar_h)
+        footer.render(ctx, 0.0, h - footer_h, w, footer_h)
+
+        # CSV grid occupies the space between bar and footer
+        y = appbar_h
+        grid_h = h - appbar_h - footer_h
+
+        visible_cols = max(1, int((w - 0) // COL_W))
         col_start = self._h_scroll
         col_end = min(len(self._headers), col_start + visible_cols)
 
         # Header row
-        ctx.rect(0, y - 2, w, ROW_H, fill=HEADER_BG, radius=0.0)
+        ctx.rect(0, y, w, ROW_H, fill=HEADER_BG, radius=0.0)
         for ci, col_idx in enumerate(range(col_start, col_end)):
-            x = PAD + ci * COL_W
+            x = ci * COL_W + CELL_PAD
             label = self._headers[col_idx] if col_idx < len(self._headers) else ""
-            ctx.text(x + CELL_PAD, y + 4, label, size=CAPTION, color=ctx.theme.accent, bold=True,
+            ctx.text(x, y + 4, label, size=12, color=ctx.theme.accent, bold=True,
                      max_width=COL_W - CELL_PAD * 2)
         y += ROW_H + 2
 
         # Data rows
-        footer_h = 28.0
-        visible_rows = max(1, int((h - y - footer_h) // ROW_H))
+        visible_rows = max(1, int((grid_h - ROW_H - 2) // ROW_H))
         max_v = max(0, len(self._rows) - visible_rows)
         if self._v_scroll > max_v:
             self._v_scroll = max_v
@@ -163,21 +181,13 @@ class CsvViewer(App):
         for ri, row_idx in enumerate(range(row_start, row_end)):
             row_y = y + ri * ROW_H
             if ri % 2 == 1:
-                ctx.rect(0, row_y - 2, w, ROW_H, fill=STRIPE, radius=0.0)
+                ctx.rect(0, row_y, w, ROW_H, fill=STRIPE, radius=0.0)
             row = self._rows[row_idx]
             for ci, col_idx in enumerate(range(col_start, col_end)):
-                x = PAD + ci * COL_W
+                x = ci * COL_W + CELL_PAD
                 cell = row[col_idx] if col_idx < len(row) else ""
-                ctx.text(x + CELL_PAD, row_y + 4, cell, size=CAPTION, color=ctx.theme.fg,
+                ctx.text(x, row_y + 4, cell, size=12, color=ctx.theme.fg,
                          max_width=COL_W - CELL_PAD * 2)
-
-        # Footer
-        if self._rows:
-            pct = min(100, int(100 * row_end / max(1, len(self._rows))))
-            info = f"row {row_start + 1}–{row_end} of {len(self._rows)}  ({pct}%)"
-        else:
-            info = "empty"
-        ctx.text(PAD, h - 20, f"{info}   ↑↓/jk scroll   ←→/hl columns   esc  back", size=CAPTION, color=ctx.theme.muted)
 
 
 if __name__ == "__main__":

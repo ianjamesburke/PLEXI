@@ -6,7 +6,7 @@ from enum import Enum
 
 from plexi_sdk import App, RenderContext, dim
 from plexi_sdk.ui import (
-    Column, AppBar, Card, Label, Spacer, FooterKeys, Component,
+    Column, AppBar, Card, Label, Spacer, FooterKeys, Component, InfoTable,
     SPACE_SM, SPACE_XS,
     TEXT_HINT, TEXT_CAPTION, TEXT_BODY,
     RADIUS_MD,
@@ -83,7 +83,7 @@ class _LevelGrid(Component):
     def __init__(self, app: "TypingTutorApp") -> None:
         self._app = app
 
-    def measure(self, avail_w: float) -> float:
+    def measure(self, _avail_w: float) -> float:
         return 0.0
 
     def is_grow(self) -> bool:
@@ -142,13 +142,13 @@ class _CharGrid(Component):
     def __init__(self, app: "TypingTutorApp") -> None:
         self._app = app
 
-    def measure(self, avail_w: float) -> float:
+    def measure(self, _avail_w: float) -> float:
         return 0.0
 
     def is_grow(self) -> bool:
         return True
 
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+    def render(self, ctx, x: float, y: float, w: float, _h: float) -> None:
         app = self._app
         text = LEVELS[app._play_level].text
         char_size = 16.0
@@ -185,10 +185,10 @@ class _TimerBar(Component):
     def __init__(self, app: "TypingTutorApp") -> None:
         self._app = app
 
-    def measure(self, avail_w: float) -> float:
+    def measure(self, _avail_w: float) -> float:
         return self.HEIGHT
 
-    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+    def render(self, ctx, x: float, y: float, w: float, _h: float) -> None:
         app = self._app
         level = LEVELS[app._play_level]
         elapsed = time.time() - app._start_time
@@ -308,7 +308,7 @@ class TypingTutorApp(App):
         text = level.text
 
         if key == "escape":
-            ctx.info(f"typing-tutor: aborted level={self._play_level + 1}")
+            self.emit.info(f"typing-tutor: aborted level={self._play_level + 1}")
             self._screen = Screen.LEVEL_SELECT
             return
 
@@ -391,6 +391,7 @@ class TypingTutorApp(App):
         ]))
 
     def _render_result(self, ctx: RenderContext) -> None:
+        from plexi_sdk.ui import theme
         level = LEVELS[self._play_level]
         stars = self._result_stars
         accuracy = self._result_accuracy
@@ -399,22 +400,24 @@ class TypingTutorApp(App):
         timed_out = elapsed >= level.time_sec
         if stars == 0:
             msg = "Time's up!" if timed_out else "Keep practicing — error rate too high"
-            msg_color = ctx.theme.danger
+            msg_color = theme.danger
         elif stars == 5:
             msg = "Perfect run!"
-            msg_color = ctx.theme.success
+            msg_color = theme.success
         else:
             msg = "Nice work!"
-            msg_color = ctx.theme.accent
+            msg_color = theme.accent
 
         ctx.render(Column([
             AppBar(title=f"Level {level.id} — {level.name}"),
             Spacer(grow=True),
             Card([
                 Label("★" * stars + "☆" * (5 - stars),
-                      color=ctx.theme.accent if stars > 0 else ctx.theme.muted, bold=True),
-                Label(f"Accuracy:  {accuracy:.1f}%"),
-                Label(f"Time:      {elapsed:.1f}s / {level.time_sec}s"),
+                      color=theme.accent if stars > 0 else theme.muted, bold=True),
+                InfoTable([
+                    ("Accuracy", f"{accuracy:.1f}%"),
+                    ("Time", f"{elapsed:.1f}s / {level.time_sec}s"),
+                ]),
                 Label(msg, color=msg_color),
             ]),
             Spacer(grow=True),

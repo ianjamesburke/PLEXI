@@ -19,7 +19,13 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
 from plexi_sdk import App, RenderContext, Arg
-from plexi_sdk.ui import SelectList
+from plexi_sdk.ui import (
+    AppBar, Column, Component, Footer, FooterKeys,
+    SelectList, TextInput,
+    SPACE_MD, TEXT_HINT, TEXT_BODY, TEXT_CAPTION,
+)
+from plexi_sdk.ui import theme
+
 
 def _detect_channel_backlog_dir() -> "Path | None":
     """Return the channel-level backlog dir, or None if none exists."""
@@ -42,11 +48,74 @@ def _detect_channel_backlog_dir() -> "Path | None":
 
 
 LIST_FRAC = 0.38   # fraction of width for the item list
-# Chrome — where the list/preview body starts and ends vertically. These
-# replace the fixed header/footer bars from v1 chrome. They're tuned so the
-# list sits below Plexi's own pane chrome and above the key-hint footer.
-TOP       = 32.0
-BOTTOM_BAR_H = 26.0
+
+
+class _TwoPaneBody(Component):
+    """Raw-draw component for the split list+preview body.
+
+    The SDK has no HSplit container, so the two-pane layout is implemented
+    here as a Component that uses ctx primitives directly. This lets the
+    Column lay it out correctly (grow=True fills the slack between AppBar
+    and FooterKeys) while keeping all draw logic encapsulated.
+    """
+
+    def __init__(self, app: "BacklogApp") -> None:
+        self._app = app
+
+    def is_grow(self) -> bool:
+        return True
+
+    def measure(self, _avail_w: float) -> float:
+        return 0.0  # grows to fill
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        app = self._app
+        list_w = w * LIST_FRAC
+
+        if app.global_only:
+            has_any_dir = app.channel_dir is not None and app.channel_dir.is_dir()
+        else:
+            has_any_dir = app.backlog_dir.is_dir() or (
+                app.channel_dir is not None and app.channel_dir.is_dir()
+            )
+
+        if not has_any_dir:
+            app.emit.info("backlog: no dirs found — showing empty-state guide")
+            ctx.text(x + 12, y + 12, "No notes yet.", size=TEXT_BODY, color=theme.fg)
+            if app.global_only:
+                ctx.text(x + 12, y + 34,
+                         "No channel-level backlog found. Press ⌘0 to create a Quick Note.",
+                         size=TEXT_HINT, color=theme.muted, max_width=w - 24)
+            else:
+                ctx.text(x + 12, y + 34,
+                         "Press ⌘0 to open Quick Note, then press Enter twice to send to your backlog.",
+                         size=TEXT_HINT, color=theme.muted, max_width=w - 24)
+            return
+
+        # Vertical divider between list and preview
+        ctx.rect(x + list_w, y, 1.0, h, theme.highlight)
+
+        # ── Item list ────────────────────────────────────────────────────────────
+        if not app.filtered:
+            msg = "No results" if app.search_query else "Backlog is empty"
+            ctx.text(x + 12, y + 12, msg, size=TEXT_CAPTION, color=theme.muted)
+        else:
+            app._item_list.render(ctx, x, y, list_w, h)
+
+        # ── Preview ──────────────────────────────────────────────────────────────
+        px = x + list_w + 14
+        pw = w - (list_w + 14) - 10
+        if app.preview_path and app.preview_text is not None:
+            ctx.text(px, y - SPACE_MD, app.preview_path.name,
+                     size=TEXT_HINT, color=theme.accent, bold=True, max_width=pw)
+            lines = app.preview_text.splitlines()
+            for li, line in enumerate(lines):
+                ly = y + li * 15.0
+                if ly > y + h - 4:
+                    break
+                color = theme.fg if not line.startswith("#") else theme.accent
+                ctx.text(px, ly, line, size=TEXT_HINT, color=color, monospace=True,
+                         max_width=pw)
 
 
 class BacklogApp(App):
@@ -55,8 +124,8 @@ class BacklogApp(App):
     def on_init(self, ctx: RenderContext) -> None:
         self.backlog_dir = Path(ctx.workspace_root) / ".plexi" / "backlog"
         self.channel_dir = _detect_channel_backlog_dir()
-        self.items: list = []         # list[Path]
-        self._source: dict = {}       # Path -> "ws" | "channel"
+        self.items: list = []
+        self._source: dict = {}
         self.filtered: list = []
         self.selected = 0
         self.search_query = ""
@@ -64,9 +133,15 @@ class BacklogApp(App):
         self.preview_text = ""
         self.preview_path = None
         self.confirm_delete = False
-        self.in_add = False        # showcase: host-owned TextInput entry mode
+        self.in_add = False
         self.status = ""
+
+        # Stateful widgets — created once here, stable across renders
         self._item_list = SelectList([])
+        self._add_input = TextInput("backlog-new",
+                                    placeholder="Title (Enter to create, Esc to cancel)")
+        self._body = _TwoPaneBody(self)
+
         self._load()
         self.emit.info(
             f"BacklogApp ready — workspace: {self.backlog_dir}, channel: {self.channel_dir}, global_only={self.global_only}"
@@ -151,18 +226,11 @@ class BacklogApp(App):
         self._load()
 
     def _create_item(self, title: str) -> None:
-        """Create a new backlog item from a TextInput submission.
-
-        `title` becomes the filename stem (sanitised); the file body is
-        a single-line markdown header so the item shows up in the
-        preview panel immediately.
-        """
+        """Create a new backlog item from a TextInput submission."""
         title = title.strip()
         if not title:
             self.in_add = False
             return
-        # Conservative filename sanitisation — mirror the convention
-        # users follow when creating backlog notes by hand.
         safe = "".join(c if c.isalnum() or c in " -_" else "-" for c in title)
         safe = safe.strip().replace(" ", "-").lower() or "untitled"
         if self.global_only:
@@ -175,7 +243,6 @@ class BacklogApp(App):
             target_dir = self.backlog_dir
         target_dir.mkdir(parents=True, exist_ok=True)
         path = target_dir / f"{safe}.md"
-        # If the slug collides, append a numeric suffix until free.
         n = 2
         while path.exists():
             path = self.backlog_dir / f"{safe}-{n}.md"
@@ -202,116 +269,63 @@ class BacklogApp(App):
         self._load()
 
     # ── Render ───────────────────────────────────────────────────────────────────
-    #
-    # SDK v2 is a vertical stack; the two-pane list+preview layout doesn't map
-    # onto it without building a HSplit container. Keep the body as primitive
-    # draws; only the bottom status/key-hint bar is migrated chrome.
 
     def on_render(self, ctx: RenderContext) -> None:
         w, h = ctx.w, ctx.h
-        ctx.clear(ctx.theme.bg)
-
-        list_w = w * LIST_FRAC
-        list_h = h - TOP - BOTTOM_BAR_H
-
-        # Header
         title = "backlog (global)" if self.global_only else "backlog"
-        ctx.text(12, 10, title, size=12, color=ctx.theme.accent, bold=True,
-                 max_width=list_w - 100)
         item_count = len(self.filtered)
-        count_label = f"{item_count} item{'s' if item_count != 1 else ''}"
-        ctx.text(list_w - 80, 10, count_label, size=11, color=ctx.theme.muted,
-                 max_width=80)
+        count_str = f"{item_count} item{'s' if item_count != 1 else ''}"
 
-        if self.global_only:
-            has_any_dir = self.channel_dir is not None and self.channel_dir.is_dir()
-        else:
-            has_any_dir = self.backlog_dir.is_dir() or (
-                self.channel_dir is not None and self.channel_dir.is_dir()
-            )
-        if not has_any_dir:
-            self.emit.info("backlog: no dirs found — showing empty-state guide")
-            ctx.text(12, TOP + 12, "No notes yet.", size=13, color=ctx.theme.fg)
-            if self.global_only:
-                ctx.text(12, TOP + 34,
-                         "No channel-level backlog found. Press ⌘0 to create a Quick Note.",
-                         size=11, color=ctx.theme.muted, max_width=w - 24)
-            else:
-                ctx.text(12, TOP + 34,
-                         "Press ⌘0 to open Quick Note, then press Enter twice to send to your backlog.",
-                         size=11, color=ctx.theme.muted, max_width=w - 24)
-            return
-
-        # Divider
-        ctx.line(list_w, TOP - 4, list_w, h - BOTTOM_BAR_H, color=ctx.theme.highlight, width=1.0)
-
-        # ── Item list ────────────────────────────────────────────────────────────
-        if not self.filtered:
-            msg = "No results" if self.search_query else "Backlog is empty"
-            ctx.text(12, TOP + 12, msg, size=12, color=ctx.theme.muted)
-        else:
-            self._item_list.render(ctx, 0, TOP, list_w, list_h)
-
-        # ── Preview ──────────────────────────────────────────────────────────────
-        px = list_w + 14
-        pw = w - px - 10
-        if self.preview_path and self.preview_text is not None:
-            ctx.text(px, TOP - 18, self.preview_path.name,
-                     size=11, color=ctx.theme.accent, bold=True, max_width=pw)
-            lines = self.preview_text.splitlines()
-            for li, line in enumerate(lines):
-                ly = TOP + li * 15.0
-                if ly > h - BOTTOM_BAR_H - 4:
-                    break
-                # Dim markdown headings differently
-                color = ctx.theme.fg if not line.startswith("#") else ctx.theme.accent
-                ctx.text(px, ly, line, size=11, color=color, monospace=True,
-                         max_width=pw)
-
-        # ── Bottom bar ───────────────────────────────────────────────────────────
-        bar_y = h - BOTTOM_BAR_H
-        ctx.rect(0, bar_y, w, BOTTOM_BAR_H, ctx.theme.surface)
-
+        # Footer content depends on mode
         if self.in_search:
-            ctx.text(12, bar_y + 7,
-                     f"/ {self.search_query}▌",   # block cursor
-                     size=12, color=ctx.theme.accent, monospace=True)
-        elif self.status:
-            ctx.text(12, bar_y + 7, self.status, size=11, color=ctx.theme.success)
-        else:
-            ctx.text(12, bar_y + 7,
-                     "j/k navigate  e open  n new  a archive  d delete  / search  r refresh",
-                     size=10, color=ctx.theme.muted)
-
-        # ── Add-item overlay (host-owned TextInput) ─────────────────────────────
-        # Issue #283 showcase migration: a real callsite for the new
-        # single-line submit-only primitive. The host owns the buffer
-        # entirely — `text_input` returns the value once on submit, then
-        # `None` on subsequent frames.
-        if self.in_add:
-            ox, oy, ow, oh = w / 2 - 200, h / 2 - 36, 400, 86
-            ctx.rect(ox, oy, ow, oh, ctx.theme.surface, radius=6.0)
-            ctx.rect(ox, oy, ow, 1, ctx.theme.highlight)
-            ctx.text(ox + 16, oy + 12, "New backlog item",
-                     size=12, color=ctx.theme.accent, bold=True)
-            submitted = ctx.text_input(
-                "backlog-new",
-                x=ox + 16, y=oy + 36, w=ow - 32,
-                placeholder="Title (Enter to create, Esc to cancel)",
+            footer_widget: Component = Footer(
+                f"/ {self.search_query}▌",  # block cursor
+                color=theme.accent,
             )
+        elif self.status:
+            footer_widget = Footer(self.status, color=theme.success)
+        else:
+            footer_widget = FooterKeys([
+                ("j/k", "navigate"),
+                ("e", "open"),
+                ("n", "new"),
+                ("a", "archive"),
+                ("d", "delete"),
+                ("/", "search"),
+                ("r", "refresh"),
+            ])
+
+        ctx.render(Column([
+            AppBar(title, subtitle=count_str),
+            self._body,
+            footer_widget,
+        ], padding=0.0, padding_top=0, gap=0.0))
+
+        # Check TextInput submission (only active when in_add is True)
+        if self.in_add:
+            submitted = self._add_input.submitted
             if submitted is not None:
                 self._create_item(submitted)
 
-        # ── Delete confirm overlay ────────────────────────────────────────────────
+        # ── Add-item overlay ─────────────────────────────────────────────────────
+        if self.in_add:
+            ox, oy, ow, oh = w / 2 - 200, h / 2 - 36, 400, 86
+            ctx.rect(ox, oy, ow, oh, theme.surface, radius=6.0)
+            ctx.rect(ox, oy, ow, 1, theme.highlight)
+            ctx.text(ox + 16, oy + 12, "New backlog item",
+                     size=TEXT_CAPTION, color=theme.accent, bold=True)
+            self._add_input.render(ctx, ox + 16, oy + 36, ow - 32, self._add_input.height)
+
+        # ── Delete confirm overlay ───────────────────────────────────────────────
         if self.confirm_delete and self.filtered:
             name = self.filtered[self.selected].name
             ox, oy, ow, oh = w / 2 - 170, h / 2 - 36, 340, 72
-            ctx.rect(ox, oy, ow, oh, ctx.theme.surface, radius=6.0)
-            ctx.rect(ox, oy, ow, 1, ctx.theme.highlight)
-            ctx.text(ox + 16, oy + 14, f"Delete  '{name}'?",
-                     size=13, color=ctx.theme.danger, bold=True)
+            ctx.rect(ox, oy, ow, oh, theme.surface, radius=6.0)
+            ctx.rect(ox, oy, ow, 1, theme.highlight)
+            ctx.text(ox + 16, oy + 14, f"Delete '{name}'?",
+                     size=TEXT_BODY, color=theme.danger, bold=True)
             ctx.text(ox + 16, oy + 36, "Enter → confirm    Esc → cancel",
-                     size=11, color=ctx.theme.muted)
+                     size=TEXT_HINT, color=theme.muted)
 
     # ── Keys ─────────────────────────────────────────────────────────────────────
 
@@ -319,9 +333,6 @@ class BacklogApp(App):
         self.status = ""   # clear on any key
 
         # ── Add-item mode (host owns the buffer) ─────────────────────────────────
-        # The TextInput widget eats characters; the app only handles the
-        # exit shortcut. Submission is delivered via PlexiEvent::TextSubmitted
-        # and consumed in `on_render`'s `ctx.text_input(...)` call.
         if self.in_add:
             if key == "escape":
                 self.in_add = False
@@ -346,7 +357,7 @@ class BacklogApp(App):
                 self._refilter()
             elif key == "return":
                 self.in_search = False
-            elif len(key) == 1:   # single char from Text event; ignores "Slash" etc.
+            elif len(key) == 1:
                 self.search_query += key
                 self._refilter()
             return
@@ -363,12 +374,11 @@ class BacklogApp(App):
         elif key == "d" and self.filtered:
             self.confirm_delete = True
         elif key == "n":
-            # Showcase: open the host TextInput overlay for a new item.
             self.in_add = True
         elif key == "r":
             self._load()
             self.status = "Refreshed"
-        elif key == "/":             # Text event sends "/" for the slash key
+        elif key == "/":
             self.in_search = True
             self.search_query = ""
             self._refilter()

@@ -4,29 +4,26 @@
 import json
 import pathlib
 
-from plexi_sdk import (
-    App, RenderContext,
-    FG, MUTED, SURFACE, BODY,
-)
+from plexi_sdk import App, RenderContext
 from plexi_sdk.ui import (
-    Column, AppBar, Section, Label, Spacer, FooterKeys, Component,
+    Column, AppBar, Section, Spacer, FooterKeys,
+    SelectList, TextInput, Label,
 )
 
 TODO_FILE = ".plexi/todos.json"
 
 
 class TodoApp(App):
-    def on_init(self, ctx: RenderContext) -> None:
+    def on_init(self, _ctx: RenderContext) -> None:
         self._items: list[dict] = []
         self._selected = 0
         self._adding = False
-        self._input = ""
-        # The pane group "cwd" lets the todo list follow the linked terminal.
-        # Starts at workspace_root; PathChanged updates it when the terminal cds.
         self._cwd = pathlib.Path(self.workspace_root)
+        self._list = SelectList([], selected_idx=0)
+        self._input = TextInput("todo-add", placeholder="New item…", height=48.0)
         self._load()
 
-    def on_path_changed(self, ctx: RenderContext, cwd: str) -> None:
+    def on_path_changed(self, _ctx: RenderContext, cwd: str) -> None:
         if not cwd:
             return
         new_cwd = pathlib.Path(cwd)
@@ -48,6 +45,7 @@ class TodoApp(App):
                 self._items = json.loads(p.read_text())
         except Exception as e:
             self.emit.error(f"todo load failed: {e}")
+        self._sync_list()
 
     def _save(self) -> None:
         try:
@@ -57,89 +55,81 @@ class TodoApp(App):
         except Exception as e:
             self.emit.error(f"todo save failed: {e}")
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    def _sync_list(self) -> None:
+        """Rebuild SelectList items from self._items and keep selection in bounds."""
+        self._list.items = [
+            {"name": f"{'✓' if it['done'] else '○'}  {it['text']}"}
+            for it in self._items
+        ]
+        if self._items:
+            self._selected = max(0, min(self._selected, len(self._items) - 1))
+        else:
+            self._selected = 0
+        self._list.selected_idx = self._selected
+
+    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._adding:
-            if key == "Enter":
-                if self._input.strip():
-                    self._items.append({"text": self._input.strip(), "done": False})
-                    self._save()
-                self._input = ""
+            # TextInput captures character input natively; only intercept Escape.
+            if key == "Escape":
                 self._adding = False
-            elif key == "Escape":
-                self._input = ""
-                self._adding = False
-            elif key == "Backspace":
-                self._input = self._input[:-1]
-            elif len(key) == 1:
-                self._input += key
             return
-        if key in ("up", "k"):
-            self._selected = max(0, self._selected - 1)
-        elif key in ("down", "j"):
-            self._selected = min(len(self._items) - 1, self._selected + 1)
+
+        if key in ("up", "k", "ArrowUp"):
+            self._list.handle_key("k")
+            self._selected = self._list.selected_idx
+        elif key in ("down", "j", "ArrowDown"):
+            self._list.handle_key("j")
+            self._selected = self._list.selected_idx
         elif key == " " and self._items:
             self._items[self._selected]["done"] ^= True
             self._save()
+            self._sync_list()
         elif key == "a":
             self._adding = True
         elif key == "d" and self._items:
             self._items.pop(self._selected)
-            self._selected = min(self._selected, len(self._items) - 1)
+            self._selected = min(self._selected, max(0, len(self._items) - 1))
             self._save()
-
-    # ── Item list body — functional surface, primitive draws ───────────────
-    class _Body(Component):
-        """Renders the todo list (or the add-item input bar) into whatever
-        vertical space the Column hands us."""
-        def __init__(self, app: "TodoApp") -> None:
-            self._app = app
-
-        def measure(self, avail_w: float) -> float:
-            return 0.0
-
-        def is_grow(self) -> bool:
-            return True
-
-        def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-            app = self._app
-            items = [
-                {"label": f"{'✓' if it['done'] else '○'} {it['text']}",
-                 "secondary": None}
-                for it in app._items
-            ]
-            if app._adding:
-                # Add-item input bar occupies the bottom ~56 px of the body.
-                bar_h = 56.0
-                list_h = max(0.0, h - bar_h - 8.0)
-                if items:
-                    ctx.simple_list(items, selected=app._selected, item_height=40.0,
-                             x=x, y=y, w=w, h=list_h)
-                bar_y = y + h - bar_h
-                ctx.rect(x, bar_y, w, bar_h, fill=SURFACE, radius=4.0)
-                ctx.text(x + 12, bar_y + 8, "New item:", size=13, color=MUTED)
-                ctx.text(x + 12, bar_y + 28, app._input + "▌",
-                         size=BODY, color=FG, monospace=True)
-                return
-            if items:
-                ctx.simple_list(items, selected=app._selected, item_height=40.0,
-                         x=x, y=y, w=w, h=h)
-            else:
-                ctx.text(x, y + 12, "No items. Press 'a' to add.",
-                         size=BODY, color=MUTED)
+            self._sync_list()
 
     def on_render(self, ctx: RenderContext) -> None:
-        ctx.render(Column([
-            AppBar(title="Todo"),
-            Section("Current list"),
-            self._Body(self),
-            Spacer(grow=False),
-            FooterKeys([
-                (["↑", "↓"], "select"),
-                ("space", "toggle"),
-                ("a", "add"),
-                ("d", "delete"),
-            ]),
-        ]))
+        if self._adding:
+            body = Column([
+                AppBar(title="Todo"),
+                Section("Add item"),
+                self._input,
+                Spacer(grow=True),
+                FooterKeys([
+                    ("Enter", "save"),
+                    ("Esc", "cancel"),
+                ]),
+            ])
+            ctx.render(body)
+            submitted = self._input.submitted
+            if submitted is not None:
+                text = submitted.strip()
+                if text:
+                    self._items.append({"text": text, "done": False})
+                    self._save()
+                    self._sync_list()
+                self._adding = False
+        else:
+            if self._items:
+                list_area = self._list
+            else:
+                list_area = Label("No items. Press 'a' to add.", tone="hint")  # type: ignore[assignment]
+            ctx.render(Column([
+                AppBar(title="Todo"),
+                Section("Current list"),
+                list_area,
+                Spacer(grow=False),
+                FooterKeys([
+                    (["↑", "↓"], "select"),
+                    ("space", "toggle"),
+                    ("a", "add"),
+                    ("d", "delete"),
+                ]),
+            ]))
 
 
 if __name__ == "__main__":
