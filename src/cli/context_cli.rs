@@ -1,4 +1,4 @@
-use super::{send_to_socket};
+use super::{print_tip, send_to_socket};
 use super::validate::resolve_path;
 
 pub fn context_new_cli(name: Option<&str>, path: Option<&str>, parent: Option<&str>) -> i32 {
@@ -78,10 +78,14 @@ pub fn context_set_root_cli(path: Option<&str>) -> i32 {
         Ok(p) => p,
         Err(e) => { eprintln!("{e}"); return 1; }
     };
-    send_to_socket(serde_json::json!({
+    let rc = send_to_socket(serde_json::json!({
         "type": "set_context_root",
         "root": root,
-    }))
+    }));
+    if rc == 0 {
+        print_tip("you can also press \u{21E7}\u{2318}I to set the context root from the focused pane");
+    }
+    rc
 }
 
 /// `plexi context describe "text"`

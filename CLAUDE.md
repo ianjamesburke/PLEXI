@@ -212,6 +212,14 @@ Every CLI command and feature must work identically on alpha, beta, main, and PR
 
 Before adding any new CLI command, verify it belongs in the right namespace — place it where the noun already lives, not at the top level. When in doubt, ask before implementing.
 
+## CLI Pane Naming
+
+Always name panes after spawning them. Every `plexi terminal`, `plexi app open`, split, or new window should be followed by `plexi pane name <id> "descriptive name"`. Named panes make the UI scannable, help the project-manager read state from `plexi pane list`, and make dispatch lanes identifiable at a glance.
+
+## CLI Tips
+
+Contextual tips (e.g. keyboard shortcut hints) use `print_tip()` from `src/cli/mod.rs`. Never raw `eprintln!` a tip. `print_tip` checks `config.cli.tips` (default `true`, user can set `false` in `config.toml` under `[cli]`), respects `NO_COLOR`, and logs via `log::info!`.
+
 ## App & SDK Design Philosophy
 
 - **Obvious over clever.** Fight for the solution agents would naturally assume. If a design requires explanation, that's a signal to rethink it. "Simple" and "obvious" aren't always aligned — sometimes the obvious solution is more complex, and that's correct.
