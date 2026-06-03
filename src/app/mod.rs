@@ -1466,6 +1466,22 @@ impl eframe::App for PlexiApp {
         // even when an overlay holds focus (see early-return guard in `keys::poll_actions`).
         let mut early_modal_cmds: Vec<crate::app_trait::AppCommand> = Vec::new();
         let overlay_key_disposition = if self.input_captured_by_overlay() {
+            // Step 0: QuickNote preemption (#1626).
+            // Cmd+0 is a high-priority action that must fire even when a non-critical
+            // modal is open. Consume the key here — before the overlay draw phase can
+            // absorb it via a focused TextEdit widget — then dismiss the non-critical
+            // modal and open QuickNote. Critical modals (ConfirmClose, CapabilityModal,
+            // ContextCloseConfirm) are not preemptable and fall through to handle_key.
+            let qn_binding = self.key_bindings.open_quick_note;
+            let qn_pressed = ctx.input_mut(|i| i.consume_key(qn_binding.0, qn_binding.1));
+            if qn_pressed && self.is_quick_note_preemptable() {
+                self.dismiss_preemptable_modal();
+                self.open_quick_note_modal();
+                self.sync_notification_modal_focus();
+                self.sync_command_palette_focus();
+                log::info!("quick_note: opened by preempting non-critical modal");
+                crate::app_trait::KeyDisposition::Consumed
+            } else {
             // Step 1: run the overlay's handle_key (consumes its owned key events).
             let disposition = match self.focus_stack.last() {
                 Some(FocusLayer::NotificationModal) => self.notification_modal_handle_key(ctx),
@@ -1542,6 +1558,7 @@ impl eframe::App for PlexiApp {
             self.sync_text_input_focus();
             self.sync_capability_modal_focus();
             disposition
+            } // end else (non-preempted path)
         } else {
             crate::app_trait::KeyDisposition::Passthrough
         };

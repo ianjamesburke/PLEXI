@@ -1344,6 +1344,7 @@ fn new_context_creates_top_level_empty_context() {
     );
 }
 
+
 // ── #1635: auto-dismiss when originating pane is focused ─────────────────────
 
 /// #1635: non-required notification from a focused pane must be auto-dismissed.
@@ -1490,5 +1491,98 @@ fn auto_dismiss_does_not_touch_other_pane_notifications() {
         h.app.pending_notifications.len(),
         1,
         "notification from a non-focused pane must not be auto-dismissed"
+    );
+}
+
+// ── QuickNote preemption tests (#1626) ────────────────────────────────────
+
+/// #1626: Cmd+0 with a NotificationModal on the focus stack must dismiss the
+/// modal and push FocusLayer::QuickNote to the top.
+#[test]
+fn quicknote_preempts_notification_modal() {
+    let mut h = HostHarness::new();
+    h.add_test_pane();
+
+    // Simulate a NotificationModal being open.
+    h.app.push_focus_layer(FocusLayer::NotificationModal);
+    assert_eq!(
+        h.app.focus_stack.last(),
+        Some(&FocusLayer::NotificationModal),
+        "NotificationModal must be on top before preemption"
+    );
+    assert!(
+        h.app.is_quick_note_preemptable(),
+        "NotificationModal must be preemptable"
+    );
+
+    h.app.dismiss_preemptable_modal();
+    h.app.open_quick_note_modal();
+
+    assert_eq!(
+        h.app.focus_stack.last(),
+        Some(&FocusLayer::QuickNote),
+        "QuickNote must be on top after preemption"
+    );
+}
+
+/// #1626: Cmd+0 with CommandPalette on the focus stack must dismiss the
+/// palette and push FocusLayer::QuickNote to the top.
+#[test]
+fn quicknote_preempts_command_palette() {
+    let mut h = HostHarness::new();
+    h.add_test_pane();
+
+    h.app.push_focus_layer(FocusLayer::CommandPalette);
+    assert!(
+        h.app.is_quick_note_preemptable(),
+        "CommandPalette must be preemptable"
+    );
+
+    h.app.dismiss_preemptable_modal();
+    h.app.open_quick_note_modal();
+
+    assert_eq!(
+        h.app.focus_stack.last(),
+        Some(&FocusLayer::QuickNote),
+        "QuickNote must be on top after preempting CommandPalette"
+    );
+}
+
+/// #1626: ConfirmClose is critical and must NOT be preemptable by QuickNote.
+#[test]
+fn quicknote_does_not_preempt_confirm_close() {
+    let mut h = HostHarness::new();
+    h.add_test_pane();
+
+    h.app.push_focus_layer(FocusLayer::ConfirmClose);
+    assert!(
+        !h.app.is_quick_note_preemptable(),
+        "ConfirmClose must NOT be preemptable"
+    );
+}
+
+/// #1626: CapabilityModal is critical and must NOT be preemptable by QuickNote.
+#[test]
+fn quicknote_does_not_preempt_capability_modal() {
+    let mut h = HostHarness::new();
+    h.add_test_pane();
+
+    h.app.push_focus_layer(FocusLayer::CapabilityModal);
+    assert!(
+        !h.app.is_quick_note_preemptable(),
+        "CapabilityModal must NOT be preemptable"
+    );
+}
+
+/// #1626: ContextCloseConfirm is critical and must NOT be preemptable.
+#[test]
+fn quicknote_does_not_preempt_context_close_confirm() {
+    let mut h = HostHarness::new();
+    h.add_test_pane();
+
+    h.app.push_focus_layer(FocusLayer::ContextCloseConfirm);
+    assert!(
+        !h.app.is_quick_note_preemptable(),
+        "ContextCloseConfirm must NOT be preemptable"
     );
 }
