@@ -473,6 +473,16 @@ fn modifier_count(m: &egui::Modifiers) -> u32 {
     m.command as u32 + m.shift as u32 + m.ctrl as u32 + m.alt as u32
 }
 
+// egui::Modifiers::COMMAND sets mac_cmd=false, but macOS runtime input always
+// sets mac_cmd=true when Cmd is held. Raw == comparison fails on macOS.
+// Compare only the four logical fields to avoid this platform mismatch.
+fn modifiers_match_exact(actual: &egui::Modifiers, pattern: &egui::Modifiers) -> bool {
+    actual.command == pattern.command
+        && actual.ctrl == pattern.ctrl
+        && actual.shift == pattern.shift
+        && actual.alt == pattern.alt
+}
+
 /// Build a sorted binding table from resolved `KeyBindings`.
 ///
 /// Sorting guarantees: exact matches before subset matches; within each group,
@@ -594,7 +604,7 @@ pub fn poll_actions(
                 }
             }
 
-            if entry.exact && input.modifiers != entry.modifiers {
+            if entry.exact && !modifiers_match_exact(&input.modifiers, &entry.modifiers) {
                 continue;
             }
 
