@@ -95,6 +95,13 @@ impl PlexiApp {
 
         // Sidebar
         if self.sidebar_visible {
+            ctx.input(|i| {
+                for e in &i.events {
+                    if let egui::Event::Key { key: egui::Key::A, pressed: true, modifiers: m, .. } = e {
+                        log::info!("[diag-pre-sidebar] Key::A alive: cmd={}", m.command);
+                    }
+                }
+            });
             egui::SidePanel::left("sidebar")
                 .default_width(220.0)
                 .width_range(140.0..=400.0)
@@ -108,6 +115,13 @@ impl PlexiApp {
                 .show(ctx, |ui| {
                     self.draw_sidebar(ui);
                 });
+            ctx.input(|i| {
+                for e in &i.events {
+                    if let egui::Event::Key { key: egui::Key::A, pressed: true, modifiers: m, .. } = e {
+                        log::info!("[diag-post-sidebar] Key::A alive: cmd={}", m.command);
+                    }
+                }
+            });
         }
 
         // Central panel — terminal tiles (or welcome screen when context is empty)

@@ -191,6 +191,12 @@ impl<'a> TerminalView<'a> {
 
         let modifiers = layout.ctx.input(|i| i.modifiers);
         let events = layout.ctx.input(|i| i.events.clone());
+        // Temporary diagnostic
+        for event in &events {
+            if let egui::Event::Key { key: egui::Key::A, pressed: true, modifiers: m, .. } = event {
+                log::info!("[diag-term] Key::A in terminal events: cmd={} shift={} has_focus={}", m.command, m.shift, has_focus);
+            }
+        }
         for event in events {
             let mut input_actions = vec![];
 

@@ -41,6 +41,7 @@ pub(crate) fn paint_tab_dots(
 pub enum PaneKind {
     Terminal,
     App,
+    Portal,
 }
 
 /// A single pane slot within one window's minimap.
@@ -54,6 +55,8 @@ pub struct MiniPane {
     pub has_content: bool,
     /// OSC title or app name, if available.
     pub title: Option<String>,
+    /// False for terminal panes that have exited; dims the pane in the minimap.
+    pub active: bool,
 }
 
 /// One window in the child context, with its spatial grid position.
@@ -500,6 +503,12 @@ pub(crate) fn paint_portal_minimap(
             // Pane background — solid screen color
             painter.rect_filled(cell, 2.0, colors.bg_darkest);
 
+            // Inactive (exited) panes get a dim overlay
+            if !pane.active {
+                let dim_overlay = egui::Color32::from_rgba_unmultiplied(0, 0, 0, 60);
+                painter.rect_filled(cell, 2.0, dim_overlay);
+            }
+
             // Focused pane: accent tint + glow edge
             if pane.focused {
                 let tint = egui::Color32::from_rgba_unmultiplied(
@@ -538,6 +547,7 @@ pub(crate) fn paint_portal_minimap(
             }
 
             let line_alpha: u8 = if pane.focused { 51 } else { 25 };
+            let line_alpha: u8 = if !pane.active { (line_alpha as f32 * 0.3) as u8 } else { line_alpha };
 
             // Title label (OSC title or app name) at top of pane
             let mut content_top = content_area.min.y;
@@ -566,51 +576,84 @@ pub(crate) fn paint_portal_minimap(
                 continue;
             }
 
-            if pane.kind == PaneKind::App {
-                let block_color = egui::Color32::from_rgba_unmultiplied(
-                    colors.text_dim.r(), colors.text_dim.g(), colors.text_dim.b(), line_alpha / 2,
-                );
-                let accent_dim = egui::Color32::from_rgba_unmultiplied(
-                    colors.accent.r(), colors.accent.g(), colors.accent.b(), line_alpha,
-                );
+            match pane.kind {
+                PaneKind::App => {
+                    let block_color = egui::Color32::from_rgba_unmultiplied(
+                        colors.text_dim.r(), colors.text_dim.g(), colors.text_dim.b(), line_alpha / 2,
+                    );
+                    let accent_dim = egui::Color32::from_rgba_unmultiplied(
+                        colors.accent.r(), colors.accent.g(), colors.accent.b(), line_alpha,
+                    );
 
-                // Centered grid of small squares (widget-like feel)
-                let grid_size = (draw_area.width().min(draw_area.height()) * 0.6).clamp(8.0, 40.0);
-                let cols = ((grid_size / 6.0) as usize).clamp(2, 4);
-                let rows = cols;
-                let sq = (grid_size / cols as f32).floor();
-                let gap = (sq * 0.25).clamp(1.0, 2.0);
-                let total_w = cols as f32 * sq + (cols - 1) as f32 * gap;
-                let total_h = rows as f32 * sq + (rows - 1) as f32 * gap;
-                let ox = draw_area.center().x - total_w * 0.5;
-                let oy = draw_area.center().y - total_h * 0.5;
+                    // Centered grid of small squares (widget-like feel)
+                    let grid_size = (draw_area.width().min(draw_area.height()) * 0.75).clamp(8.0, 48.0);
+                    let cols = ((grid_size / 6.0) as usize).clamp(2, 4);
+                    let rows = cols;
+                    let sq = (grid_size / cols as f32).floor();
+                    let gap = (sq * 0.25).clamp(1.0, 2.0);
+                    let total_w = cols as f32 * sq + (cols - 1) as f32 * gap;
+                    let total_h = rows as f32 * sq + (rows - 1) as f32 * gap;
+                    let ox = draw_area.center().x - total_w * 0.5;
+                    let oy = draw_area.center().y - total_h * 0.5;
 
-                for r in 0..rows {
-                    for c in 0..cols {
-                        let x = ox + c as f32 * (sq + gap);
-                        let y = oy + r as f32 * (sq + gap);
-                        let fill = if (r + c) % 3 == 0 { accent_dim } else { block_color };
-                        painter.rect_filled(
-                            egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(sq, sq)),
-                            1.0,
-                            fill,
-                        );
+                    for r in 0..rows {
+                        for c in 0..cols {
+                            let x = ox + c as f32 * (sq + gap);
+                            let y = oy + r as f32 * (sq + gap);
+                            let fill = if (r + c) % 3 == 0 { accent_dim } else { block_color };
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(sq, sq)),
+                                1.0,
+                                fill,
+                            );
+                        }
                     }
                 }
-            } else {
-                // Terminal: centered ">_" prompt symbol
-                let font_size = (draw_area.width().min(draw_area.height()) * 0.45).clamp(8.0, 24.0);
-                let prompt_alpha = if pane.focused { line_alpha * 2 } else { line_alpha };
-                let prompt_color = egui::Color32::from_rgba_unmultiplied(
-                    colors.text_dim.r(), colors.text_dim.g(), colors.text_dim.b(), prompt_alpha,
-                );
-                painter.text(
-                    draw_area.center(),
-                    egui::Align2::CENTER_CENTER,
-                    ">_",
-                    egui::FontId::monospace(font_size),
-                    prompt_color,
-                );
+                PaneKind::Portal => {
+                    // 2x2 window grid, outlines only, bottom-right filled with accent (Plexi logo feel)
+                    let grid_size = (draw_area.width().min(draw_area.height()) * 0.7).clamp(10.0, 48.0);
+                    let mini_gap = (grid_size * 0.1).clamp(1.5, 3.0);
+                    let mini_w = (grid_size - mini_gap) / 2.0;
+                    let mini_h = (grid_size - mini_gap) / 2.0;
+                    let ox = draw_area.center().x - grid_size * 0.5;
+                    let oy = draw_area.center().y - grid_size * 0.5;
+
+                    let outline_color = egui::Color32::from_rgba_unmultiplied(
+                        colors.text_dim.r(), colors.text_dim.g(), colors.text_dim.b(), line_alpha * 2,
+                    );
+                    let accent_fill = egui::Color32::from_rgba_unmultiplied(
+                        colors.accent.r(), colors.accent.g(), colors.accent.b(),
+                        if pane.focused { 80 } else { 50 },
+                    );
+
+                    for r in 0..2u32 {
+                        for c in 0..2u32 {
+                            let x = ox + c as f32 * (mini_w + mini_gap);
+                            let y = oy + r as f32 * (mini_h + mini_gap);
+                            let rect = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(mini_w, mini_h));
+                            if r == 1 && c == 1 {
+                                painter.rect_filled(rect, 2.0, accent_fill);
+                            } else {
+                                painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0, outline_color), egui::StrokeKind::Inside);
+                            }
+                        }
+                    }
+                }
+                PaneKind::Terminal => {
+                    // Centered ">_" prompt symbol
+                    let font_size = (draw_area.width().min(draw_area.height()) * 0.45).clamp(8.0, 24.0);
+                    let prompt_alpha = if pane.focused { line_alpha * 2 } else { line_alpha };
+                    let prompt_color = egui::Color32::from_rgba_unmultiplied(
+                        colors.text_dim.r(), colors.text_dim.g(), colors.text_dim.b(), prompt_alpha,
+                    );
+                    painter.text(
+                        draw_area.center(),
+                        egui::Align2::CENTER_CENTER,
+                        ">_",
+                        egui::FontId::monospace(font_size),
+                        prompt_color,
+                    );
+                }
             }
         }
     }
