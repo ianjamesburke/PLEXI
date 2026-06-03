@@ -9,4 +9,3 @@ description = "Pie chart of macOS app usage from the last 7 days."
 entry = "screen_time.py"
 
 [launch]
-layout_hint = { side = "right", split = 0.5 }

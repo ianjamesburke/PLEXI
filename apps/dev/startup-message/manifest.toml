@@ -9,5 +9,4 @@ description = "Demo app for issue #185 — shows startup_message in the companio
 entry = "app.py"
 
 [launch]
-layout_hint = { side = "right", split = 0.4 }
 startup_message = "Starting Startup Message Demo…"

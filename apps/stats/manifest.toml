@@ -12,4 +12,3 @@ entry = "stats.py"
 capabilities = []
 
 [launch]
-layout_hint = { side = "right", split = 0.4 }

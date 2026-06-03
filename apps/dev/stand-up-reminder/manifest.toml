@@ -14,4 +14,3 @@ capabilities = ["timer"]
 [launch]
 notification_scope = "global"
 background = true
-layout_hint = { side = "right", split = 0.4 }

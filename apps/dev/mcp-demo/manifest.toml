@@ -12,7 +12,6 @@ entry = "mcp_demo.py"
 capabilities = []
 
 [launch]
-layout_hint = { side = "right", split = 0.5 }
 notification_scope = "context"
 
 [app.mcp]

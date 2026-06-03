@@ -12,4 +12,3 @@ entry = "snake.py"
 capabilities = ["pipe.open"]
 
 [launch]
-layout_hint = { side = "right", split = 0.5 }

@@ -13,4 +13,3 @@ capabilities = []
 
 [launch]
 keyboard_capture = true
-layout_hint = { side = "right", split = 0.6 }

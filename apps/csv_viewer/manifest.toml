@@ -12,4 +12,3 @@ entry = "csv_viewer.py"
 capabilities = []
 
 [launch]
-layout_hint = { side = "right", split = 0.55 }

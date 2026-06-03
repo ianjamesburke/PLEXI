@@ -13,4 +13,3 @@ mouse_tracking = true
 capabilities = ["fs.read", "timer"]
 
 [launch]
-layout_hint = { side = "right", split = 0.5 }

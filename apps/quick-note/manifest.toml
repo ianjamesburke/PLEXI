@@ -13,4 +13,3 @@ capabilities = ["fs.read", "fs.write"]
 
 [launch]
 notification_scope = "context"
-layout_hint = { side = "right", split = 0.3 }

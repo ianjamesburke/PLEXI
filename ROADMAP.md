@@ -13,8 +13,8 @@ The P0 refactors that make everything else cheaper to build. Every subsequent fe
 - [ ] Declarative keybinding table (#1916) -- eliminate subset-match footgun, order dependence, 4-site new-binding tax
 - [ ] Modal shell helper (#1915) -- extract scrim+Area+Frame into reusable `modal_shell`, kill copy-paste across 7 overlay files
 - [x] CLI pane spawning unification (#1923) -- `pane new` as single entry point for terminal spawning
-- [ ] CLI namespace clean split (#1928) -- remove `--app`/`--mcp` overlap from `pane new`, separate `app open` fully
-- [ ] CLI direction flag fix (#1927) -- `pane new` direction flags produce wrong split orientation
+- [x] CLI namespace clean split (#1928) -- remove `--app`/`--mcp` overlap from `pane new`, separate `app open` fully (v0.0.599)
+- [x] CLI direction flag fix (#1927) -- `pane new` direction flags produce wrong split orientation (v0.0.599)
 - [ ] FocusLayer + PlexiInput unification (#1238, #1239) -- single-owner input dispatch, one FocusOwner stack
 - [ ] App viewport overtake (#1924) -- Escape-to-return pane navigation stack
 
@@ -42,7 +42,7 @@ Make what exists feel finished before adding new systems. These are the first th
 - [ ] Auto-set pane title to wrapped command (#1037)
 - [ ] Notification auto-dismiss when originating pane focused (#1635)
 - [ ] QuickNote modal blocked by other modals (#1626)
-- [ ] URL trailing punctuation fix (#1549)
+- [x] URL trailing punctuation fix (#1549) (v0.0.599)
 - [ ] Install modal success detection (#1643)
 - [ ] Core app theming audit (#1669) -- FooterKeys + ctx.colors across all shipped apps
 - [ ] QuickNote destination overhaul (#1622)
@@ -72,7 +72,7 @@ Current state: `UiNode` enum exists with 10 variants (Stack, Scroll, Layer, Text
 - [ ] SDK becomes a tree builder: `ctx.ui([AppBar(...), List(...), Footer(...)])`
 - [ ] SDK actionable error messages (#1203) -- audit for cryptic AttributeError/TypeError crashes, add actionable diagnostics
 - [ ] Layout fundamentals (#1527) -- headline alignment, character padding handled by host, not SDK
-- [ ] Default Esc behavior in base App class (#1631)
+- [x] Default Esc behavior in base App class (#1631) (v0.0.599)
 - [ ] Text selection in PGAP apps (#1645) -- host handles selection for L1 Text nodes
 - [ ] PGAP TextEdit node -- host-rendered text editor primitive, apps can embed it for editable content
 
@@ -98,7 +98,7 @@ Current app inventory: 18 shipped apps in `apps/`, 29 POC apps in `apps/dev/`.
 - [ ] Each core app becomes a reference implementation demonstrating specific L1 patterns
 - [ ] Backlog: integrate TextEdit node for inline editing
 - [ ] Logs: search/filter (#1649) + spacing (#1648)
-- [ ] Update `plexi app init` scaffold to produce a perfect 30-line L1 example (Stack + AppBar + List + FooterKeys)
+- [x] Update `plexi app init` scaffold to produce a perfect 30-line L1 example (v0.0.599)
 - [ ] Archive or remove `apps/dev/` POCs that have served their purpose
 - [ ] `plexi app dev` hot-reload command (#1660)
 

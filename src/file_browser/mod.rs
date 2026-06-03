@@ -266,7 +266,7 @@ impl FileBrowserApp {
             );
             self.pending_cmds.push(AppCommand::SpawnApp {
                 type_id: app_id.to_string(),
-                layout: None, // respect the player's manifest layout_hint
+                layout: None,
                 args: vec![path.to_string_lossy().to_string()],
             });
             return;

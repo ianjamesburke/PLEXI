@@ -13,4 +13,3 @@ watch = true
 capabilities = ["net.http"]
 
 [launch]
-layout_hint = { side = "right", split = 0.5 }

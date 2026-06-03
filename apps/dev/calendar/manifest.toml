@@ -13,4 +13,3 @@ capabilities = []
 
 [launch]
 notification_scope = "context"
-layout_hint = { side = "right", split = 0.4 }

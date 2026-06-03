@@ -184,7 +184,7 @@ impl PlexiApp {
 
         // Record which terminal we're splitting from before focus moves.
         let linked_pane_id = self.focused_terminal_id(active);
-        let share = Self::share_ratio_from_fraction(app_id, self.registry.share_for(app_id));
+        let share = Self::share_ratio_from_fraction(app_id, None);
         let (new_id, share, vertical, new_pane_first) =
             self.open_pane_layout(app_id, group.clone(), hint, share);
         process.set_pane_id(new_id);
@@ -244,7 +244,7 @@ impl PlexiApp {
         workspace_root: std::path::PathBuf,
     ) {
         let active = self.active_window;
-        let share = Self::share_ratio_from_fraction(app_id, self.registry.share_for(app_id));
+        let share = Self::share_ratio_from_fraction(app_id, None);
         let (new_id, share, vertical, new_pane_first) =
             self.open_pane_layout(app_id, None, hint, share);
         self.windows[active].panes.insert(
@@ -526,7 +526,7 @@ impl PlexiApp {
         let linked_pane_id = self.focused_terminal_id(active);
         let share = Self::share_ratio_from_fraction(
             &app_type_id,
-            share.or_else(|| self.registry.share_for(&app_type_id)),
+            share,
         );
         let (new_id, share, vertical, new_pane_first) =
             self.open_pane_layout(&app_type_id, group.clone(), hint, share);
@@ -696,13 +696,11 @@ impl PlexiApp {
     }
 
     /// Launch an installed app by id in the focused pane.
-    /// Respects the `layout_hint` from the app's manifest.toml.
     pub(crate) fn launch_app_by_id(&mut self, id: &str) {
         let _ = self.launch_app_by_id_with_layout(id, None, &[], None);
     }
 
     /// Launch an installed app with an explicit layout and args override.
-    /// `layout` overrides the manifest's `layout_hint` when `Some`.
     ///   "overlay" (default) — full pane takeover; Esc restores the original pane
     ///   "split_h"           — horizontal split, new pane to the right
     ///   "split_v"           — vertical split, new pane below
@@ -740,9 +738,7 @@ impl PlexiApp {
         if let Some(app) = builtin_factory(id, args) {
             log::info!("launch_app_by_id_with_layout: '{id}' resolved as builtin");
             let group = self.registry.group_for(id);
-            let hint = layout
-                .or_else(|| self.registry.layout_hint_for(id))
-                .unwrap_or_else(|| "overlay".to_string());
+            let hint = layout.unwrap_or_else(|| "overlay".to_string());
             let perms = crate::app_permissions::AppPermissions::builtin();
             self.open_builtin_app_pane(app, perms, cwd, group, Some(&hint), None);
             return Ok(());
@@ -753,13 +749,8 @@ impl PlexiApp {
             log::info!("re-attaching background app '{id}'");
             parked.send_event(&crate::app_protocol::PlexiEvent::Resume);
             let group = self.registry.group_for(id);
-            let hint = layout
-                .or_else(|| self.registry.layout_hint_for(id))
-                .or_else(|| {
-                    log::info!("app::{id}: no layout_hint — defaulting to overlay");
-                    Some("overlay".to_string())
-                });
-            self.open_process_app_pane(id, *parked, cwd, group, hint.as_deref());
+            let hint = layout.unwrap_or_else(|| "overlay".to_string());
+            self.open_process_app_pane(id, *parked, cwd, group, Some(&hint));
             return Ok(());
         }
 
@@ -774,10 +765,7 @@ impl PlexiApp {
         let missing = self.registry.check_config_capabilities(id, &self.config);
         if !missing.is_empty() {
             log::warn!("pre-flight: '{id}' cannot launch — missing: {missing:?}");
-            let fail_hint = layout
-                .clone()
-                .or_else(|| self.registry.layout_hint_for(id))
-                .or_else(|| Some("overlay".to_string()));
+            let fail_hint = layout.clone().or_else(|| Some("overlay".to_string()));
             self.open_launch_failed_pane(id, fail_hint.as_deref(), missing, cwd);
             return Ok(());
         }
@@ -787,12 +775,7 @@ impl PlexiApp {
         // Query group/hint after any registry reload so metadata reflects the
         // actual registry that found the app.
         let group = self.registry.group_for(id);
-        let hint = layout
-            .or_else(|| self.registry.layout_hint_for(id))
-            .or_else(|| {
-                log::info!("app::{id}: no layout_hint — defaulting to overlay");
-                Some("overlay".to_string())
-            });
+        let hint = layout.or_else(|| Some("overlay".to_string()));
         if let Some(process) = registry_process {
             if cli_binary_in_path(id) {
                 log::warn!(
@@ -840,17 +823,7 @@ impl PlexiApp {
         let keyboard_capture = installed.launch.keyboard_capture;
         let app_id = installed.manifest.id.clone();
 
-        let layout_hint = layout.or_else(|| {
-            installed.launch.layout_hint.as_ref().map(|h| match h.side.as_str() {
-                "below" => "split_v".to_string(),
-                "above" => "split_above".to_string(),
-                "overlay" => "overlay".to_string(),
-                _ => "split_h".to_string(),
-            })
-        }).or_else(|| {
-            log::info!("launch_app_by_path_with_layout: no layout_hint — defaulting to overlay");
-            Some("overlay".to_string())
-        });
+        let layout_hint = layout.or_else(|| Some("overlay".to_string()));
 
         let cwd = self
             .resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)

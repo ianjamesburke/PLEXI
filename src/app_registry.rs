@@ -205,9 +205,6 @@ pub struct LaunchSection {
     /// Convention: "cwd" for generic directory-synced apps.
     #[serde(default)]
     pub join_group: Option<String>,
-    /// Preferred pane layout. When absent, the host defaults to `overlay` (full pane takeover).
-    #[serde(default)]
-    pub layout_hint: Option<LayoutHint>,
     /// If true, this app captures all keyboard input when focused. Host
     /// shortcuts (Cmd+HJKL, Cmd+Enter, etc.) are suppressed; only Cmd+Q and
     /// Cmd+W remain.
@@ -245,19 +242,6 @@ pub struct LaunchSection {
     pub startup_message: Option<String>,
 }
 
-/// Structured layout hint. `side` ∈ {`"right"`, `"below"`, `"overlay"`}.
-/// `split` is the fraction of the parent container given to the new pane
-/// on open — must be in (0.0, 1.0). Default: 0.5.
-#[derive(Deserialize, Debug, Clone)]
-pub struct LayoutHint {
-    pub side: String,
-    #[serde(default = "default_split")]
-    pub split: f32,
-}
-
-fn default_split() -> f32 {
-    0.5
-}
 
 impl AppCapabilities {
     /// Convert manifest-declared capabilities to runtime permissions.
@@ -463,25 +447,6 @@ impl AppRegistry {
             ));
         }
 
-        // STEP-8: validate layout_hint.side now so bad manifests fail at
-        // install rather than at first pane open.
-        if let Some(hint) = &manifest.launch.layout_hint {
-            match hint.side.as_str() {
-                "right" | "below" | "above" | "overlay" => {}
-                other => {
-                    return Err(format!(
-                        "layout_hint.side must be 'right', 'below', 'above', or 'overlay'; got '{other}'"
-                    ));
-                }
-            }
-            if !(0.0 < hint.split && hint.split < 1.0) {
-                return Err(format!(
-                    "layout_hint.split must be in (0.0, 1.0); got {}",
-                    hint.split
-                ));
-            }
-        }
-
         let bin_path = resolve_entry(app_dir, &manifest.app.entry)?;
 
         for (name, decl) in &manifest.secrets {
@@ -522,19 +487,6 @@ impl AppRegistry {
         self.apps.get(app_id).and_then(|a| a.launch.join_group.clone())
     }
 
-    /// Get the launch-time layout side hint: "right" | "below" | "above" | "overlay".
-    /// Internally mapped to the `split_h` / `split_v` / `split_above` strings pane_ops uses.
-    pub fn layout_hint_for(&self, app_id: &str) -> Option<String> {
-        self.apps
-            .get(app_id)
-            .and_then(|a| a.launch.layout_hint.as_ref())
-            .map(|h| match h.side.as_str() {
-                "below" => "split_v".to_string(),
-                "above" => "split_above".to_string(),
-                "overlay" => "overlay".to_string(),
-                _ => "split_h".to_string(),
-            })
-    }
 
     /// Returns true when the app's manifest sets `[app] watch = true`.
     /// The file watcher only needs the resolved app directory — discovery
@@ -554,13 +506,6 @@ impl AppRegistry {
             .and_then(|a| a.bin_path.parent().map(Path::to_path_buf))
     }
 
-    /// Get the manifest-declared layout_hint.split fraction (None if unset).
-    pub fn share_for(&self, app_id: &str) -> Option<f32> {
-        self.apps
-            .get(app_id)
-            .and_then(|a| a.launch.layout_hint.as_ref())
-            .map(|h| h.split)
-    }
 
     /// Return the manifest-declared notification scope for an app.
     /// Defaults to `Window` when the manifest omits `[launch] notification_scope`.

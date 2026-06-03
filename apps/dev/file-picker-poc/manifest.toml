@@ -12,4 +12,3 @@ entry = "file_picker_poc.py"
 capabilities = ["fs.pick"]
 
 [launch]
-layout_hint = { side = "right", split = 0.4 }

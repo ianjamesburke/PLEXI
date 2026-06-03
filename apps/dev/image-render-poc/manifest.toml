@@ -13,4 +13,3 @@ watch = true
 capabilities = ["fs.read"]
 
 [launch]
-layout_hint = { side = "right", split = 0.5 }
