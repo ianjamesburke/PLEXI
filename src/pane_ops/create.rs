@@ -1983,7 +1983,12 @@ pub(crate) fn preferred_editor() -> String {
     for var in ["VISUAL", "EDITOR"] {
         if let Ok(val) = std::env::var(var) {
             let bin = val.split_whitespace().next().unwrap_or("").to_string();
-            if !bin.is_empty() && cli_binary_in_path(&bin) {
+            let exists = if bin.contains('/') {
+                std::path::Path::new(&bin).is_file()
+            } else {
+                cli_binary_in_path(&bin)
+            };
+            if !bin.is_empty() && exists {
                 return val;
             }
         }
