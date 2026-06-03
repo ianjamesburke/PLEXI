@@ -61,7 +61,7 @@ impl App for TextEditorApp {
     }
 
     fn keyboard_capture(&self) -> bool {
-        true
+        false
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> KeyDisposition {
