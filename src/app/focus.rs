@@ -53,6 +53,44 @@ impl PlexiApp {
         });
     }
 
+    /// Returns `true` when the current top focus layer is a non-critical modal
+    /// that QuickNote (Cmd+0) is allowed to dismiss and replace.
+    ///
+    /// Critical modals (`ConfirmClose`, `CapabilityModal`, `ContextCloseConfirm`)
+    /// require explicit user acknowledgement and must NOT be preempted.
+    /// Non-critical modals (`NotificationModal`, `CommandPalette`) can be safely
+    /// dismissed so QuickNote can open on top.
+    pub(crate) fn is_quick_note_preemptable(&self) -> bool {
+        matches!(
+            self.focus_stack.last(),
+            Some(FocusLayer::NotificationModal) | Some(FocusLayer::CommandPalette)
+        )
+    }
+
+    /// Dismiss the current non-critical modal so QuickNote can open on top.
+    /// Only call after `is_quick_note_preemptable()` returns `true`.
+    pub(crate) fn dismiss_preemptable_modal(&mut self) {
+        match self.focus_stack.last().cloned() {
+            Some(FocusLayer::NotificationModal) => {
+                log::info!("quick_note: dismissing NotificationModal to open QuickNote");
+                self.show_notification_modal = false;
+                self.focus_stack.retain(|l| *l != FocusLayer::NotificationModal);
+            }
+            Some(FocusLayer::CommandPalette) => {
+                log::info!("quick_note: dismissing CommandPalette to open QuickNote");
+                self.show_command_palette = false;
+                self.focus_stack.retain(|l| *l != FocusLayer::CommandPalette);
+                self.ctx.memory_mut(|m| {
+                    let palette_id = egui::Id::new("palette_search");
+                    if m.focused() == Some(palette_id) {
+                        m.surrender_focus(palette_id);
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
+
     /// True when a modal overlay owns keyboard input. Used by `update()` to
     /// drain remaining key events after the overlay has rendered so panes see
     /// an empty input buffer this frame.
