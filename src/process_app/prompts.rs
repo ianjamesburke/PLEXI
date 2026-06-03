@@ -131,7 +131,7 @@ pub(crate) fn show_prompt_modal(
         .order(egui::Order::Middle)
         .show(ctx, |ui| {
             ui.painter()
-                .rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(120));
+                .rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(crate::style::SCRIM_ALPHA));
             let scrim_resp = ui.allocate_rect(screen_rect, egui::Sense::click());
             if scrim_resp.clicked() {
                 deny_once = true;
@@ -160,13 +160,13 @@ pub(crate) fn show_prompt_modal(
                             ui.add_space(4.0);
                             ui.label(
                                 egui::RichText::new(format!("\"{}\" is requesting access to:", type_id))
-                                    .size(12.0)
+                                    .size(crate::style::TEXT_CAPTION)
                                     .color(colors.text_dim),
                             );
                             ui.add_space(6.0);
                             ui.label(
                                 egui::RichText::new(capability)
-                                    .size(12.0)
+                                    .size(crate::style::TEXT_CAPTION)
                                     .color(colors.text_primary)
                                     .monospace()
                                     .strong(),
@@ -174,16 +174,16 @@ pub(crate) fn show_prompt_modal(
                             ui.add_space(4.0);
                             ui.label(
                                 egui::RichText::new(format!("Workspace: {}", workspace_root.display()))
-                                    .size(11.0)
+                                    .size(crate::style::TEXT_HINT)
                                     .color(colors.text_dim),
                             );
-                            ui.add_space(12.0);
+                            ui.add_space(crate::style::SPACE_MD);
                             ui.horizontal(|ui| {
                                 if ui
                                     .add(
                                         egui::Button::new(
                                             egui::RichText::new("Grant Once")
-                                                .size(12.0)
+                                                .size(crate::style::TEXT_CAPTION)
                                                 .color(colors.bg_darkest),
                                         )
                                         .fill(colors.accent),
@@ -198,7 +198,7 @@ pub(crate) fn show_prompt_modal(
                                     .add(
                                         egui::Button::new(
                                             egui::RichText::new("Grant Forever")
-                                                .size(12.0)
+                                                .size(crate::style::TEXT_CAPTION)
                                                 .color(colors.bg_darkest),
                                         )
                                         .fill(colors.accent),
@@ -215,7 +215,7 @@ pub(crate) fn show_prompt_modal(
                                     .add(
                                         egui::Button::new(
                                             egui::RichText::new("Deny Once")
-                                                .size(12.0)
+                                                .size(crate::style::TEXT_CAPTION)
                                                 .color(colors.text_dim),
                                         )
                                         .fill(colors.bg_active),
@@ -230,7 +230,7 @@ pub(crate) fn show_prompt_modal(
                                     .add(
                                         egui::Button::new(
                                             egui::RichText::new("Deny Forever")
-                                                .size(12.0)
+                                                .size(crate::style::TEXT_CAPTION)
                                                 .color(colors.bg_darkest),
                                         )
                                         .fill(colors.danger),
@@ -252,18 +252,18 @@ pub(crate) fn show_prompt_modal(
                             ui.add_space(4.0);
                             ui.label(
                                 egui::RichText::new(format!("\"{}\" needs a secret value for:", type_id))
-                                    .size(12.0)
+                                    .size(crate::style::TEXT_CAPTION)
                                     .color(colors.text_dim),
                             );
                             ui.add_space(6.0);
                             ui.label(
                                 egui::RichText::new(key)
-                                    .size(12.0)
+                                    .size(crate::style::TEXT_CAPTION)
                                     .color(colors.text_primary)
                                     .monospace()
                                     .strong(),
                             );
-                            ui.add_space(8.0);
+                            ui.add_space(crate::style::SPACE_SM);
                             ui.scope(|ui| {
                                 ui.visuals_mut().text_cursor.stroke.width = 1.5;
                                 ui.visuals_mut().text_cursor.stroke.color = colors.accent;
@@ -284,13 +284,13 @@ pub(crate) fn show_prompt_modal(
                                     grant_once = true;
                                 }
                             });
-                            ui.add_space(8.0);
+                            ui.add_space(crate::style::SPACE_SM);
                             ui.horizontal(|ui| {
                                 if ui
                                     .add(
                                         egui::Button::new(
                                             egui::RichText::new("Submit")
-                                                .size(12.0)
+                                                .size(crate::style::TEXT_CAPTION)
                                                 .color(colors.bg_darkest),
                                         )
                                         .fill(colors.accent),
@@ -305,7 +305,7 @@ pub(crate) fn show_prompt_modal(
                                     .add(
                                         egui::Button::new(
                                             egui::RichText::new("Cancel")
-                                                .size(12.0)
+                                                .size(crate::style::TEXT_CAPTION)
                                                 .color(colors.text_dim),
                                         )
                                         .fill(colors.bg_active),
