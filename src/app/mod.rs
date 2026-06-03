@@ -290,6 +290,7 @@ pub struct PlexiApp {
     /// tunnel rather than duplicated as individual bool fields.
     pub(crate) config: crate::config::PlexiConfig,
     pub(crate) key_bindings: crate::keys::KeyBindings,
+    pub(crate) binding_table: Vec<crate::keys::BindingEntry>,
     pub(crate) renaming_window: Option<usize>,
     pub(crate) rename_buffer: String,
     pub(crate) editing_description: Option<usize>,
@@ -915,6 +916,7 @@ impl PlexiApp {
                     welcome_delete_last_press: None,
                     config: config.clone(),
                     key_bindings: key_bindings.clone(),
+                    binding_table: crate::keys::build_binding_table(&key_bindings),
                     pending_close: false,
                     pending_context_close: None,
                     frame_tick: frame_tick.clone(),
@@ -1085,6 +1087,7 @@ impl PlexiApp {
             welcome_delete_press_count: 0,
             welcome_delete_last_press: None,
             config,
+            binding_table: crate::keys::build_binding_table(&key_bindings),
             key_bindings,
             pending_close: false,
             pending_context_close: None,
@@ -1248,6 +1251,7 @@ impl PlexiApp {
             welcome_delete_press_count: 0,
             welcome_delete_last_press: None,
             config,
+            binding_table: crate::keys::build_binding_table(&key_bindings),
             key_bindings,
             pending_close: false,
             pending_context_close: None,
@@ -2332,7 +2336,7 @@ impl eframe::App for PlexiApp {
         // fire; all other shortcuts are suppressed when an overlay holds focus via
         // the early-return guard in `keys::poll_actions`.
         let modal_open = self.input_captured_by_overlay();
-        for action in keys::poll_actions(ctx, &self.key_bindings, app_active, keyboard_capture_active, modal_open, self.show_shortcuts) {
+        for action in keys::poll_actions(ctx, &self.binding_table, app_active, keyboard_capture_active, modal_open, self.show_shortcuts) {
             match action {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].zoomed_pane = None;

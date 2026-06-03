@@ -35,11 +35,6 @@ use crate::config::KeybindingsConfig;
 // Apps should use Cmd+S, Cmd+Shift+<key>, Ctrl+<key>, or unmodified keys.
 // Always guard with `!input.modifiers.command` before consuming Enter, H, J,
 // K, L, Backspace, or other keys that Plexi uses with Cmd modifier.
-//
-// GOTCHA: consume_key(Modifiers::NONE, Key) does NOT mean "key with no
-// modifiers" — it matches the key regardless of modifiers. To distinguish
-// plain Enter from Shift+Enter, check `input.modifiers.shift` BEFORE
-// calling consume_key.
 // ───────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -50,6 +45,7 @@ pub enum Direction {
     Down,
 }
 
+#[derive(Clone)]
 pub enum Action {
     SplitHorizontal,
     SplitVertical,
@@ -449,18 +445,125 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     bindings
 }
 
-/// Poll global keyboard actions.
+/// Context under which a binding is active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindingContext {
+    /// Always active — even when overlays/keyboard capture is on.
+    /// Use for Quit, ClosePane, CommandPalette, QuickNote, ToggleNotificationModal.
+    Global,
+    /// Active only when no overlay holds focus and no app has keyboard capture.
+    Normal,
+    /// Active only when an app surface is focused AND no overlay/capture is active.
+    AppActive,
+}
+
+/// A single entry in the declarative binding table.
+pub struct BindingEntry {
+    pub modifiers: egui::Modifiers,
+    pub key: egui::Key,
+    /// When `true`, `input.modifiers` must equal `modifiers` exactly (not just be a subset).
+    /// Use this when a less-specific binding (e.g. Cmd+D) could be triggered by a
+    /// more-specific chord (e.g. Cmd+Shift+D) because egui's `consume_key` uses subset matching.
+    pub exact: bool,
+    pub context: BindingContext,
+    pub action: Action,
+}
+
+fn modifier_count(m: &egui::Modifiers) -> u32 {
+    m.command as u32 + m.shift as u32 + m.ctrl as u32 + m.alt as u32
+}
+
+/// Build a sorted binding table from resolved `KeyBindings`.
+///
+/// Sorting guarantees: exact matches before subset matches; within each group,
+/// higher modifier count before lower. This means more-specific bindings always
+/// win without requiring careful manual ordering in the if-chain.
+pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
+    let mut entries: Vec<BindingEntry> = vec![
+        // ── Global bindings (always active) ──────────────────────────────────
+        BindingEntry { modifiers: b.quit.0,                     key: b.quit.1,                     exact: false, context: BindingContext::Global, action: Action::Quit },
+        BindingEntry { modifiers: b.close_pane.0,               key: b.close_pane.1,               exact: false, context: BindingContext::Global, action: Action::ClosePane },
+        BindingEntry { modifiers: b.toggle_command_palette.0,   key: b.toggle_command_palette.1,   exact: false, context: BindingContext::Global, action: Action::ToggleCommandPalette },
+        BindingEntry { modifiers: b.open_quick_note.0,          key: b.open_quick_note.1,          exact: false, context: BindingContext::Global, action: Action::OpenQuickNote },
+        // toggle_notification_modal is Cmd+Shift+A; exact=true so plain Cmd+A (select-all)
+        // is not consumed by the subset match.
+        BindingEntry { modifiers: b.toggle_notification_modal.0, key: b.toggle_notification_modal.1, exact: true, context: BindingContext::Global, action: Action::ToggleNotificationModal },
+
+        // ── Normal bindings (suppressed when overlay/capture active) ─────────
+        BindingEntry { modifiers: b.split_vertical.0,           key: b.split_vertical.1,           exact: false, context: BindingContext::Normal, action: Action::SplitVertical },
+        BindingEntry { modifiers: b.split_horizontal.0,         key: b.split_horizontal.1,         exact: true,  context: BindingContext::Normal, action: Action::SplitHorizontal },
+        BindingEntry { modifiers: b.swap_pane_left.0,           key: b.swap_pane_left.1,           exact: false, context: BindingContext::Normal, action: Action::SwapPane(Direction::Left) },
+        BindingEntry { modifiers: b.swap_pane_down.0,           key: b.swap_pane_down.1,           exact: false, context: BindingContext::Normal, action: Action::SwapPane(Direction::Down) },
+        BindingEntry { modifiers: b.swap_pane_up.0,             key: b.swap_pane_up.1,             exact: false, context: BindingContext::Normal, action: Action::SwapPane(Direction::Up) },
+        BindingEntry { modifiers: b.swap_pane_right.0,          key: b.swap_pane_right.1,          exact: false, context: BindingContext::Normal, action: Action::SwapPane(Direction::Right) },
+        BindingEntry { modifiers: b.new_tab.0,                  key: b.new_tab.1,                  exact: false, context: BindingContext::Normal, action: Action::NewTab },
+        BindingEntry { modifiers: b.next_tab.0,                 key: b.next_tab.1,                 exact: false, context: BindingContext::Normal, action: Action::NextTab },
+        BindingEntry { modifiers: b.prev_tab.0,                 key: b.prev_tab.1,                 exact: false, context: BindingContext::Normal, action: Action::PrevTab },
+        BindingEntry { modifiers: b.first_tab.0,                key: b.first_tab.1,                exact: false, context: BindingContext::Normal, action: Action::FirstTab },
+        BindingEntry { modifiers: b.last_tab.0,                 key: b.last_tab.1,                 exact: false, context: BindingContext::Normal, action: Action::LastTab },
+        BindingEntry { modifiers: b.navigate_left.0,            key: b.navigate_left.1,            exact: true,  context: BindingContext::Normal, action: Action::Navigate(Direction::Left) },
+        BindingEntry { modifiers: b.navigate_down.0,            key: b.navigate_down.1,            exact: true,  context: BindingContext::Normal, action: Action::Navigate(Direction::Down) },
+        BindingEntry { modifiers: b.navigate_up.0,              key: b.navigate_up.1,              exact: true,  context: BindingContext::Normal, action: Action::Navigate(Direction::Up) },
+        BindingEntry { modifiers: b.navigate_right.0,           key: b.navigate_right.1,           exact: true,  context: BindingContext::Normal, action: Action::Navigate(Direction::Right) },
+        BindingEntry { modifiers: b.nav_back.0,                 key: b.nav_back.1,                 exact: false, context: BindingContext::Normal, action: Action::NavBackApp },
+        BindingEntry { modifiers: b.focus_history_forward.0,    key: b.focus_history_forward.1,    exact: false, context: BindingContext::Normal, action: Action::FocusHistoryForward },
+        BindingEntry { modifiers: b.toggle_sidebar.0,           key: b.toggle_sidebar.1,           exact: false, context: BindingContext::Normal, action: Action::ToggleSidebar },
+        BindingEntry { modifiers: b.toggle_zoom.0,              key: b.toggle_zoom.1,              exact: false, context: BindingContext::Normal, action: Action::ToggleZoom },
+        BindingEntry { modifiers: b.toggle_shortcuts.0,         key: b.toggle_shortcuts.1,         exact: false, context: BindingContext::Normal, action: Action::ToggleShortcuts },
+        BindingEntry { modifiers: b.rename_context.0,           key: b.rename_context.1,           exact: false, context: BindingContext::Normal, action: Action::RenameContext },
+        BindingEntry { modifiers: b.rename_pane.0,              key: b.rename_pane.1,              exact: true,  context: BindingContext::Normal, action: Action::RenamePane },
+        BindingEntry { modifiers: b.split_down.0,               key: b.split_down.1,               exact: false, context: BindingContext::Normal, action: Action::SplitDown },
+        BindingEntry { modifiers: b.split_right.0,              key: b.split_right.1,              exact: true,  context: BindingContext::Normal, action: Action::SplitRight },
+        BindingEntry { modifiers: b.push_to_subcontext.0,       key: b.push_to_subcontext.1,       exact: false, context: BindingContext::Normal, action: Action::PushPaneToSubcontext },
+        BindingEntry { modifiers: b.new_context.0,              key: b.new_context.1,              exact: false, context: BindingContext::Normal, action: Action::NewContext },
+        BindingEntry { modifiers: b.new_page_right.0,           key: b.new_page_right.1,           exact: true,  context: BindingContext::Normal, action: Action::NewPageRight },
+        BindingEntry { modifiers: b.toggle_minimap.0,           key: b.toggle_minimap.1,           exact: false, context: BindingContext::Normal, action: Action::ToggleMinimap },
+        BindingEntry { modifiers: b.scroll_up.0,                key: b.scroll_up.1,                exact: false, context: BindingContext::Normal, action: Action::ScrollUp },
+        BindingEntry { modifiers: b.scroll_down.0,              key: b.scroll_down.1,              exact: false, context: BindingContext::Normal, action: Action::ScrollDown },
+        BindingEntry { modifiers: b.increase_font_size.0,       key: b.increase_font_size.1,       exact: false, context: BindingContext::Normal, action: Action::IncreasePaneFontSize },
+        BindingEntry { modifiers: b.decrease_font_size.0,       key: b.decrease_font_size.1,       exact: false, context: BindingContext::Normal, action: Action::DecreasePaneFontSize },
+        BindingEntry { modifiers: b.open_file_browser.0,        key: b.open_file_browser.1,        exact: false, context: BindingContext::Normal, action: Action::OpenFileBrowser },
+        BindingEntry { modifiers: b.open_config.0,              key: b.open_config.1,              exact: false, context: BindingContext::Normal, action: Action::OpenConfig },
+        BindingEntry { modifiers: b.reload_config.0,            key: b.reload_config.1,            exact: false, context: BindingContext::Normal, action: Action::ReloadConfig },
+        BindingEntry { modifiers: b.open_secrets_manager.0,     key: b.open_secrets_manager.1,     exact: false, context: BindingContext::Normal, action: Action::OpenSecretsManager },
+        BindingEntry { modifiers: b.force_reload_app.0,         key: b.force_reload_app.1,         exact: false, context: BindingContext::Normal, action: Action::ForceReloadApp },
+        BindingEntry { modifiers: b.set_context_root_from_cwd.0, key: b.set_context_root_from_cwd.1, exact: false, context: BindingContext::Normal, action: Action::SetContextRootFromCwd },
+        BindingEntry { modifiers: b.open_scratchpad.0,          key: b.open_scratchpad.1,          exact: false, context: BindingContext::Normal, action: Action::OpenScratchpad },
+        // context_zoom_out is Cmd+Escape — not exact because plain Escape is AppActive only,
+        // so there is no subset conflict on this key.
+        BindingEntry { modifiers: b.context_zoom_out.0,         key: b.context_zoom_out.1,         exact: false, context: BindingContext::Normal, action: Action::ContextZoomOut },
+
+        // ── AppActive bindings (only when app surface focused) ───────────────
+        // CloseApp (Escape) — also suppressed when shortcuts overlay is open.
+        BindingEntry { modifiers: egui::Modifiers::NONE, key: egui::Key::Escape, exact: false, context: BindingContext::AppActive, action: Action::CloseApp },
+        BindingEntry { modifiers: egui::Modifiers::NONE, key: egui::Key::Tab,    exact: false, context: BindingContext::AppActive, action: Action::ToggleAppFocus },
+    ];
+
+    // Sort: exact before non-exact; within each group, higher modifier count first.
+    // This eliminates ordering bugs — the table author never needs to worry about
+    // more-specific vs. less-specific placement.
+    entries.sort_by(|a, b| {
+        // exact=true sorts before exact=false
+        b.exact.cmp(&a.exact)
+            .then_with(|| modifier_count(&b.modifiers).cmp(&modifier_count(&a.modifiers)))
+    });
+
+    entries
+}
+
+/// Poll global keyboard actions using the pre-built binding table.
 ///
 /// `app_active` — focused pane has an active app surface (affects Escape/Tab).
 /// `keyboard_capture_active` — focused app declared `keyboard_capture = true` in its manifest.
-///   When true, all host shortcuts are suppressed *except* Cmd+Q (quit), Cmd+W (close pane),
-///   and Cmd+P (command palette) — structural safety operations that must always work.
-/// `overlay_open` — an overlay owns keyboard focus. Same suppression as keyboard_capture_active:
-///   only the three global always-on shortcuts fire. Each overlay's `*_handle_key` method owns
-///   its own key contract and runs before this function is called.
+///   When true, all host shortcuts are suppressed *except* Global-context bindings
+///   (Quit, ClosePane, CommandPalette, QuickNote, ToggleNotificationModal).
+/// `overlay_open` — an overlay owns keyboard focus. Same suppression as `keyboard_capture_active`.
+///   Each overlay's `*_handle_key` method owns its own key contract and runs before this function.
+/// `shortcuts_overlay_open` — the shortcuts overlay is open; suppresses CloseApp (Escape)
+///   so the overlay can own Escape for dismissal.
 pub fn poll_actions(
     ctx: &egui::Context,
-    bindings: &KeyBindings,
+    table: &[BindingEntry],
     app_active: bool,
     keyboard_capture_active: bool,
     overlay_open: bool,
@@ -469,205 +572,48 @@ pub fn poll_actions(
     let mut actions = Vec::new();
 
     ctx.input_mut(|input| {
-        // Temporary diagnostic: log every Key event so we can see if Cmd+A reaches egui.
-        for event in &input.events {
-            if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
-                if *key == egui::Key::A {
-                    log::info!("[diag] Key::A arrived in poll_actions: cmd={} shift={} alt={}", modifiers.command, modifiers.shift, modifiers.alt);
+        for entry in table {
+            match entry.context {
+                BindingContext::Global => {
+                    // Always checked — no suppression.
+                }
+                BindingContext::Normal => {
+                    if keyboard_capture_active || overlay_open {
+                        continue;
+                    }
+                }
+                BindingContext::AppActive => {
+                    if !app_active || keyboard_capture_active || overlay_open {
+                        continue;
+                    }
+                    // Escape is suppressed when the shortcuts overlay is open so the overlay
+                    // can own it for dismissal.
+                    if matches!(entry.action, Action::CloseApp) && shortcuts_overlay_open {
+                        continue;
+                    }
                 }
             }
-        }
 
-        if input.consume_key(bindings.quit.0, bindings.quit.1) {
-            actions.push(Action::Quit);
-        }
-        if input.consume_key(bindings.close_pane.0, bindings.close_pane.1) {
-            actions.push(Action::ClosePane);
-        }
-        if input.consume_key(bindings.toggle_command_palette.0, bindings.toggle_command_palette.1) {
-            actions.push(Action::ToggleCommandPalette);
-        }
-        // Cmd+0 opens QuickNote on top of any overlay; the QuickNote handle_key methods consume
-        // it when the modal is already open to prevent a mid-session reset.
-        if input.consume_key(bindings.open_quick_note.0, bindings.open_quick_note.1) {
-            actions.push(Action::OpenQuickNote);
-        }
-        // Cmd+Shift+A dismisses the notification modal when it is already open.
-        // Guard with shift so plain Cmd+A reaches the terminal widget (select-all).
-        if input.modifiers.shift && input.consume_key(bindings.toggle_notification_modal.0, bindings.toggle_notification_modal.1) {
-            actions.push(Action::ToggleNotificationModal);
-        }
-
-        // All remaining shortcuts are suppressed when an app has declared keyboard capture
-        // or when an overlay holds focus. Each overlay's *_handle_key method owns its keys.
-        if keyboard_capture_active || overlay_open {
-            return;
-        }
-
-        // Check split_vertical (Cmd+Shift+D) before split_horizontal (Cmd+D) — more specific first.
-        if input.consume_key(bindings.split_vertical.0, bindings.split_vertical.1) {
-            actions.push(Action::SplitVertical);
-        } else if input.consume_key(bindings.split_horizontal.0, bindings.split_horizontal.1) {
-            actions.push(Action::SplitHorizontal);
-        }
-
-        // Pane swap — check before plain pane navigation.
-        if input.consume_key(bindings.swap_pane_left.0, bindings.swap_pane_left.1) {
-            actions.push(Action::SwapPane(Direction::Left));
-        }
-        if input.consume_key(bindings.swap_pane_down.0, bindings.swap_pane_down.1) {
-            actions.push(Action::SwapPane(Direction::Down));
-        }
-        if input.consume_key(bindings.swap_pane_up.0, bindings.swap_pane_up.1) {
-            actions.push(Action::SwapPane(Direction::Up));
-        }
-        if input.consume_key(bindings.swap_pane_right.0, bindings.swap_pane_right.1) {
-            actions.push(Action::SwapPane(Direction::Right));
-        }
-
-        // Tab navigation — checked before plain Cmd+H/J/K/L pane navigation because
-        // egui's consume_key uses subset modifier matching: Cmd+H matches Cmd+Shift+H,
-        // so more-specific (Cmd+Shift) variants must be consumed first.
-        if input.consume_key(bindings.new_tab.0, bindings.new_tab.1) {
-            actions.push(Action::NewTab);
-        }
-        if input.consume_key(bindings.next_tab.0, bindings.next_tab.1) {
-            actions.push(Action::NextTab);
-        }
-        if input.consume_key(bindings.prev_tab.0, bindings.prev_tab.1) {
-            actions.push(Action::PrevTab);
-        }
-        if input.consume_key(bindings.first_tab.0, bindings.first_tab.1) {
-            actions.push(Action::FirstTab);
-        }
-        if input.consume_key(bindings.last_tab.0, bindings.last_tab.1) {
-            actions.push(Action::LastTab);
-        }
-
-        // Focus navigation — checked after Cmd+Shift tab variants above.
-        if input.consume_key(bindings.navigate_left.0, bindings.navigate_left.1) {
-            actions.push(Action::Navigate(Direction::Left));
-        }
-        if input.consume_key(bindings.navigate_down.0, bindings.navigate_down.1) {
-            actions.push(Action::Navigate(Direction::Down));
-        }
-        if input.consume_key(bindings.navigate_up.0, bindings.navigate_up.1) {
-            actions.push(Action::Navigate(Direction::Up));
-        }
-        if input.consume_key(bindings.navigate_right.0, bindings.navigate_right.1) {
-            actions.push(Action::Navigate(Direction::Right));
-        }
-
-        if input.consume_key(bindings.nav_back.0, bindings.nav_back.1) {
-            actions.push(Action::NavBackApp);
-        }
-        if input.consume_key(bindings.focus_history_forward.0, bindings.focus_history_forward.1) {
-            actions.push(Action::FocusHistoryForward);
-        }
-
-        if input.consume_key(bindings.toggle_sidebar.0, bindings.toggle_sidebar.1) {
-            actions.push(Action::ToggleSidebar);
-        }
-        if input.consume_key(bindings.toggle_zoom.0, bindings.toggle_zoom.1) {
-            actions.push(Action::ToggleZoom);
-        }
-        if input.consume_key(bindings.toggle_shortcuts.0, bindings.toggle_shortcuts.1) {
-            actions.push(Action::ToggleShortcuts);
-        }
-
-        // Rename context before rename pane — check shifted variant first.
-        if input.consume_key(bindings.rename_context.0, bindings.rename_context.1) {
-            actions.push(Action::RenameContext);
-        } else if !input.modifiers.alt && input.consume_key(bindings.rename_pane.0, bindings.rename_pane.1) {
-            actions.push(Action::RenamePane);
-        }
-
-        // Split down before split right — check shifted variant first.
-        if input.consume_key(bindings.split_down.0, bindings.split_down.1) {
-            actions.push(Action::SplitDown);
-        } else if input.consume_key(bindings.split_right.0, bindings.split_right.1) {
-            actions.push(Action::SplitRight);
-        }
-
-        if input.consume_key(bindings.push_to_subcontext.0, bindings.push_to_subcontext.1) {
-            actions.push(Action::PushPaneToSubcontext);
-        }
-
-        // New context before new page right — check shifted variant first.
-        if input.consume_key(bindings.new_context.0, bindings.new_context.1) {
-            actions.push(Action::NewContext);
-        } else if input.consume_key(bindings.new_page_right.0, bindings.new_page_right.1) {
-            actions.push(Action::NewPageRight);
-        }
-
-        if input.consume_key(bindings.toggle_minimap.0, bindings.toggle_minimap.1) {
-            actions.push(Action::ToggleMinimap);
-        }
-
-        if input.consume_key(bindings.scroll_up.0, bindings.scroll_up.1) {
-            actions.push(Action::ScrollUp);
-        }
-        if input.consume_key(bindings.scroll_down.0, bindings.scroll_down.1) {
-            actions.push(Action::ScrollDown);
-        }
-
-        if input.consume_key(bindings.increase_font_size.0, bindings.increase_font_size.1) {
-            actions.push(Action::IncreasePaneFontSize);
-        }
-        if input.consume_key(bindings.decrease_font_size.0, bindings.decrease_font_size.1) {
-            actions.push(Action::DecreasePaneFontSize);
-        }
-
-        // App surface: Escape closes app, Tab toggles terminal split.
-        // Only intercepted when an app is active so Escape/Tab work normally in plain terminals.
-        // Escape is suppressed when the shortcuts overlay is open — the overlay owns it.
-        if app_active {
-            if !shortcuts_overlay_open
-                && input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)
-            {
-                actions.push(Action::CloseApp);
+            if entry.exact && input.modifiers != entry.modifiers {
+                continue;
             }
-            if input.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
-                actions.push(Action::ToggleAppFocus);
+
+            if input.consume_key(entry.modifiers, entry.key) {
+                actions.push(entry.action.clone());
             }
         }
 
-        if input.consume_key(bindings.open_file_browser.0, bindings.open_file_browser.1) {
-            actions.push(Action::OpenFileBrowser);
-        }
-        if input.consume_key(bindings.open_config.0, bindings.open_config.1) {
-            actions.push(Action::OpenConfig);
-        }
-        if input.consume_key(bindings.reload_config.0, bindings.reload_config.1) {
-            actions.push(Action::ReloadConfig);
-        }
-        if input.consume_key(bindings.open_secrets_manager.0, bindings.open_secrets_manager.1) {
-            actions.push(Action::OpenSecretsManager);
-        }
-        // Force-reload focused app. The rename_pane branch above guards with
-        // `!input.modifiers.alt` so Cmd+Alt+R still reaches this branch.
-        if input.consume_key(bindings.force_reload_app.0, bindings.force_reload_app.1) {
-            actions.push(Action::ForceReloadApp);
-        }
-        if input.consume_key(bindings.set_context_root_from_cwd.0, bindings.set_context_root_from_cwd.1) {
-            actions.push(Action::SetContextRootFromCwd);
-        }
-        if input.consume_key(bindings.open_scratchpad.0, bindings.open_scratchpad.1) {
-            actions.push(Action::OpenScratchpad);
-        }
-        if input.consume_key(bindings.context_zoom_out.0, bindings.context_zoom_out.1) {
-            actions.push(Action::ContextZoomOut);
-        }
-
-        // Switch context (Cmd+1 through Cmd+9) — these remain hardcoded for now.
-        let num_keys = [
-            egui::Key::Num1, egui::Key::Num2, egui::Key::Num3,
-            egui::Key::Num4, egui::Key::Num5, egui::Key::Num6,
-            egui::Key::Num7, egui::Key::Num8, egui::Key::Num9,
-        ];
-        for (i, key) in num_keys.into_iter().enumerate() {
-            if input.consume_key(egui::Modifiers::COMMAND, key) {
-                actions.push(Action::SwitchContext(i));
+        // Switch context (Cmd+1 through Cmd+9) — hardcoded loop; not individual table entries.
+        if !(keyboard_capture_active || overlay_open) {
+            let num_keys = [
+                egui::Key::Num1, egui::Key::Num2, egui::Key::Num3,
+                egui::Key::Num4, egui::Key::Num5, egui::Key::Num6,
+                egui::Key::Num7, egui::Key::Num8, egui::Key::Num9,
+            ];
+            for (i, key) in num_keys.into_iter().enumerate() {
+                if input.consume_key(egui::Modifiers::COMMAND, key) {
+                    actions.push(Action::SwitchContext(i));
+                }
             }
         }
     });
