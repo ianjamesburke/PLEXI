@@ -2604,6 +2604,13 @@ impl eframe::App for PlexiApp {
                 }
                 Action::SwitchContext(n) => {
                     if n < self.router.len() {
+                        let target_parent = self.router.get(n).parent_id;
+                        let current_ctx_id = self.router.active().context_id;
+                        if target_parent == Some(current_ctx_id) {
+                            let current_win_id = self.windows[self.active_window].window_id;
+                            let focused_tile = self.windows[self.active_window].focused_pane;
+                            self.router.push_depth(current_ctx_id, current_win_id, focused_tile);
+                        }
                         self.switch_workspace(n);
                     }
                 }

@@ -55,6 +55,8 @@ pub struct ContextItem {
     pub subtitle: Option<String>,
     /// Dots rendered below the name row representing panes.
     pub pane_dots: Option<PaneDots>,
+    /// Nesting depth for subcontexts (0 = top-level).
+    pub indent: u32,
 }
 
 impl ContextItem {
@@ -64,7 +66,7 @@ impl ContextItem {
         // Reserve background shape slot before rendering content.
         let bg_idx = ui.painter().add(egui::Shape::Noop);
 
-        let indent = 20.0;
+        let indent = 20.0 + 16.0 * self.indent as f32;
 
         let is_active = self.is_active;
         let is_dragging = self.is_dragging;

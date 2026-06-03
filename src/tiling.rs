@@ -117,6 +117,8 @@ pub struct PlexiBehavior<'a> {
     pub modal_open: bool,
     /// True when the Control modifier is held — triggers the pane ID ghost overlay.
     pub ctrl_held: bool,
+    /// Set by double-click on a Portal pane — the target context_id to zoom into.
+    pub portal_zoom_request: Option<u64>,
     /// Resolved inter-pane gap width (from config, default 4.0).
     pub pane_gap: f32,
     /// Resolved pane title bar font size (from config, default 11.0).
@@ -259,6 +261,15 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 egui::FontId::proportional(style::TEXT_HINT),
                 self.colors.text_dim.linear_multiply(0.5),
             );
+
+            // Double-click on portal pane to zoom into the sub-context.
+            if let Some(target_ctx_id) = self.panes.get(pane_id).and_then(|p| p.portal_target()) {
+                if ui.rect_contains_pointer(pane_rect)
+                    && ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary))
+                {
+                    self.portal_zoom_request = Some(target_ctx_id);
+                }
+            }
         }
 
         if self.ctrl_held {
@@ -530,14 +541,14 @@ pub(crate) fn paint_portal_minimap(
             // Focused pane: accent tint + glow edge
             if pane.focused {
                 let tint = egui::Color32::from_rgba_unmultiplied(
-                    colors.accent.r(), colors.accent.g(), colors.accent.b(), 38,
+                    colors.accent.r(), colors.accent.g(), colors.accent.b(), 20,
                 );
                 painter.rect_filled(cell, 2.0, tint);
 
                 // Bottom-edge glow line
                 let glow_y = cell.max.y - 1.0;
                 let glow_color = egui::Color32::from_rgba_unmultiplied(
-                    colors.accent.r(), colors.accent.g(), colors.accent.b(), 102,
+                    colors.accent.r(), colors.accent.g(), colors.accent.b(), 50,
                 );
                 painter.line_segment(
                     [egui::pos2(cell.min.x, glow_y), egui::pos2(cell.max.x, glow_y)],
@@ -546,9 +557,9 @@ pub(crate) fn paint_portal_minimap(
 
                 // Focused border
                 let accent_border = egui::Color32::from_rgba_unmultiplied(
-                    colors.accent.r(), colors.accent.g(), colors.accent.b(), 153,
+                    colors.accent.r(), colors.accent.g(), colors.accent.b(), 70,
                 );
-                painter.rect_stroke(cell, 2.0, egui::Stroke::new(1.5, accent_border), egui::StrokeKind::Middle);
+                painter.rect_stroke(cell, 2.0, egui::Stroke::new(1.0, accent_border), egui::StrokeKind::Middle);
             } else {
                 let dim_border = egui::Color32::from_rgba_unmultiplied(
                     colors.border.r(), colors.border.g(), colors.border.b(), 77,
@@ -573,12 +584,12 @@ pub(crate) fn paint_portal_minimap(
             // Title label (OSC title or app name) at top of pane
             let mut content_top = content_area.min.y;
             if let Some(ref title) = pane.title {
-                if cell.width() > 30.0 && cell.height() > 16.0 {
+                if cell.width() > 25.0 && cell.height() > 14.0 {
                     let title_alpha: u8 = if pane.focused { 102 } else { 51 };
                     let title_color = egui::Color32::from_rgba_unmultiplied(
                         colors.text_dim.r(), colors.text_dim.g(), colors.text_dim.b(), title_alpha,
                     );
-                    let font_size = if cell.width() > 80.0 { 9.0 } else { 7.0 };
+                    let font_size = if cell.width() > 80.0 { 11.0 } else { 9.0 };
                     painter.text(
                         egui::pos2(content_area.min.x + 1.0, content_area.min.y),
                         egui::Align2::LEFT_TOP,

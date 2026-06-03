@@ -220,9 +220,18 @@ impl PlexiApp {
                             .filter(|p| !matches!(p, crate::pane::Pane::Portal(_)))
                             .count();
                         let notif_count = self.context_notification_count_recursive(child_ctx_id);
+                        let active_win_for_child = self.context_active_window.get(&child_ctx_id).copied();
+                        let first_win_id_for_child = self.windows.iter()
+                            .find(|ww| ww.context_id == child_ctx_id)
+                            .map(|ww| ww.window_id);
                         let child_windows: Vec<crate::tiling::MiniWindow> = self.windows.iter()
                             .filter(|w| w.context_id == child_ctx_id)
                             .filter_map(|w| {
+                                let is_active_win = active_win_for_child
+                                    .map(|win_id| w.window_id == win_id)
+                                    .unwrap_or_else(|| {
+                                        first_win_id_for_child.map(|fid| fid == w.window_id).unwrap_or(false)
+                                    });
                                 let root = w.tree.root?;
                                 let leaves = crate::tiling::compute_minimap_rects(&w.tree.tiles, root);
                                 let panes = leaves.iter().map(|(norm_rect, tile_id)| {
@@ -238,7 +247,7 @@ impl PlexiApp {
                                         p.as_terminal().and_then(|t| t.name.clone())
                                             .or_else(|| p.as_app().map(|a| a.name.clone()))
                                     });
-                                    let focused = w.focused_pane == Some(*tile_id);
+                                    let focused = is_active_win && w.focused_pane == Some(*tile_id);
                                     crate::tiling::MiniPane {
                                         norm_rect: *norm_rect,
                                         kind,
@@ -458,6 +467,7 @@ impl PlexiApp {
                     ctrl_held,
                     pane_gap: self.config.pane_gap.unwrap_or(4.0).clamp(0.0, 20.0),
                     pane_title_font_size: self.config.pane_title_font_size.unwrap_or(11.0).clamp(6.0, 32.0),
+                    portal_zoom_request: None,
                 };
                 log::debug!("[DRAG] tiling: start (zoomed={}, hovered_files={hovered_files})", zoomed_pane.is_some());
                 ui.scope(|ui| {
@@ -530,6 +540,7 @@ impl PlexiApp {
                 }
 
                 let should_close_exited = behavior.close_exited.is_some();
+                let portal_zoom = behavior.portal_zoom_request.take();
 
                 // Draw zoom overlay if a pane is zoomed
                 if let Some(zoomed_tile) = zoomed_pane {
@@ -786,6 +797,18 @@ impl PlexiApp {
 
                 if should_close_exited {
                     self.close_focused();
+                }
+
+                // Portal double-click zoom — same logic as ToggleZoom on a Portal pane.
+                if let Some(child_ctx_id) = portal_zoom {
+                    if let Some(ctx_idx) = self.router.position(|c| c.context_id == child_ctx_id) {
+                        log::info!("portal double-click: zooming into context_id={child_ctx_id}");
+                        let current_ctx_id = self.router.active().context_id;
+                        let current_win_id = self.windows[self.active_window].window_id;
+                        let focused_tile = self.windows[self.active_window].focused_pane;
+                        self.router.push_depth(current_ctx_id, current_win_id, focused_tile);
+                        self.switch_workspace(ctx_idx);
+                    }
                 }
 
                 // Record canvas click focus change in pane history (ctx borrow released above).

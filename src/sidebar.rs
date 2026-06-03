@@ -49,7 +49,27 @@ impl PlexiApp {
             .and_then(|w| w.focused_pane.map(|tile| (w, tile)))
             .and_then(|(w, tile)| w.get_focused_pane_cwd(tile));
 
+        // Build display order: top-level contexts first, each followed by children.
+        let mut display_order: Vec<usize> = Vec::with_capacity(num_contexts);
         for i in 0..num_contexts {
+            if self.router.get(i).parent_id.is_none() {
+                display_order.push(i);
+                let ctx_id = self.router.get(i).context_id;
+                for j in 0..num_contexts {
+                    if self.router.get(j).parent_id == Some(ctx_id) {
+                        display_order.push(j);
+                    }
+                }
+            }
+        }
+        // Catch orphans whose parent was deleted.
+        for i in 0..num_contexts {
+            if !display_order.contains(&i) {
+                display_order.push(i);
+            }
+        }
+
+        for &i in &display_order {
             let is_active = i == self.router.active_idx();
             let is_renaming = self.renaming_window == Some(i);
             let is_dragging = self.drag_context == Some(i);
@@ -161,6 +181,7 @@ impl PlexiApp {
             let subtitle = self.router.get(i).root.as_ref()
                 .map(|p| p.display().to_string());
 
+            let indent = self.router.get(i).depth;
             let (action, response) = ContextItem {
                 is_active,
                 is_dragging,
@@ -171,6 +192,7 @@ impl PlexiApp {
                 badge_count,
                 subtitle,
                 pane_dots,
+                indent,
             }.draw(ui, egui::Id::new(("ctx", i)), &self.colors);
 
             row_rects.push(response.rect);
@@ -339,6 +361,13 @@ impl PlexiApp {
         } else if let Some(i) = delete_context {
             self.delete_context(i);
         } else if let Some(i) = clicked_workspace {
+            let target_parent = self.router.get(i).parent_id;
+            let current_ctx_id = self.router.active().context_id;
+            if target_parent == Some(current_ctx_id) {
+                let current_win_id = self.windows[self.active_window].window_id;
+                let focused_tile = self.windows[self.active_window].focused_pane;
+                self.router.push_depth(current_ctx_id, current_win_id, focused_tile);
+            }
             self.switch_workspace(i);
         }
 

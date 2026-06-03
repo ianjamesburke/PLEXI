@@ -121,6 +121,9 @@ pub enum Action {
     SwapPane(Direction),
     /// Open the scratchpad overlay. Bound to Cmd+Shift+Space.
     OpenScratchpad,
+    /// Push the focused pane into a new sub-context. The pane becomes a portal
+    /// and its content moves into the child. Bound to Cmd+Option+N.
+    PushPaneToSubcontext,
     /// Zoom out of the current sub-context to the parent. Bound to Cmd+Escape.
     ContextZoomOut,
 }
@@ -173,6 +176,7 @@ pub struct KeyBindings {
     pub context_inspector: (egui::Modifiers, egui::Key),
     pub open_scratchpad: (egui::Modifiers, egui::Key),
     pub context_zoom_out: (egui::Modifiers, egui::Key),
+    pub push_to_subcontext: (egui::Modifiers, egui::Key),
 }
 
 fn cmd() -> egui::Modifiers { egui::Modifiers::COMMAND }
@@ -232,6 +236,7 @@ impl Default for KeyBindings {
             context_inspector:         (cmd(),       egui::Key::I),
             open_scratchpad:           (cmd_shift(), egui::Key::Space),
             context_zoom_out:          (cmd(),       egui::Key::Escape),
+            push_to_subcontext:        (cmd_alt(),   egui::Key::N),
         }
     }
 }
@@ -381,6 +386,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(toggle_notification_modal, "toggle_notification_modal");
     apply_override!(context_inspector, "context_inspector");
     apply_override!(open_scratchpad, "open_scratchpad");
+    apply_override!(push_to_subcontext, "push_to_subcontext");
 
     // Conflict detection
     let named: &[(&str, (egui::Modifiers, egui::Key))] = &[
@@ -427,6 +433,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("toggle_notification_modal", bindings.toggle_notification_modal),
         ("context_inspector",         bindings.context_inspector),
         ("open_scratchpad",           bindings.open_scratchpad),
+        ("push_to_subcontext",        bindings.push_to_subcontext),
     ];
 
     let mut seen: std::collections::HashMap<u64, &str> = std::collections::HashMap::new();
@@ -477,7 +484,8 @@ pub fn poll_actions(
             actions.push(Action::OpenQuickNote);
         }
         // Cmd+Shift+A dismisses the notification modal when it is already open.
-        if input.consume_key(bindings.toggle_notification_modal.0, bindings.toggle_notification_modal.1) {
+        // Guard with shift so plain Cmd+A reaches the terminal widget (select-all).
+        if input.modifiers.shift && input.consume_key(bindings.toggle_notification_modal.0, bindings.toggle_notification_modal.1) {
             actions.push(Action::ToggleNotificationModal);
         }
 
@@ -570,6 +578,10 @@ pub fn poll_actions(
             actions.push(Action::SplitDown);
         } else if input.consume_key(bindings.split_right.0, bindings.split_right.1) {
             actions.push(Action::SplitRight);
+        }
+
+        if input.consume_key(bindings.push_to_subcontext.0, bindings.push_to_subcontext.1) {
+            actions.push(Action::PushPaneToSubcontext);
         }
 
         // New context before new page right — check shifted variant first.
