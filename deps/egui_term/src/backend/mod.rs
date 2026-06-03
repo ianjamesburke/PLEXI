@@ -557,6 +557,7 @@ impl TerminalBackend {
                 }
             }
 
+            let url = url.trim_end_matches(|c| matches!(c, '.' | ',' | ')' | ';' | ':' | '!' | '?')).to_string();
             if let Err(e) = open::that(&url) {
                 log::warn!("egui_term: failed to open link {:?}: {}", url, e);
             }
