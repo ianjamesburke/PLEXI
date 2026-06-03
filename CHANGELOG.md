@@ -1,6 +1,40 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.605] — 2026-06-03
+
+### Changes
+- fix(apps): restore escape-to-close in snake, tetris, todo, quick-note
+- docs(roadmap): check off core app theming audit (v0.0.604)
+- chore(apps): core app theming audit -- ctx.theme across 7 apps (#1669)
+- docs(roadmap): check off v0.0.603 items -- _l0 removal, notification auto-dismiss, QuickNote preemption, logs spacing
+- refactor(protocol): remove _l0 fallback fields from L1 UiNode variants
+- fix(overlays): allow QuickNote to open over non-critical modals (#1626)
+- fix(host/notifications): auto-dismiss notification when originating pane is focused (#1635)
+- fix(apps/logs): uniform badge sizes, consistent table padding (#1648)
+- docs(roadmap): mark Layer 1 core complete, defer FocusLayer unification to v2.0
+- chore: restructure product phases, document session practices, add pane naming support
+- fix(host/keys): exact modifier check broken on macOS
+- feat(host/pane-ops): viewport overtake indicator bar (#1931)
+- refactor(ui/overlays): extract modal_shell helper (#1930)
+- refactor(host/keys): declarative binding table (#1929)
+- refactor(cli): remove layout_hint from manifests and registry (#1928)
+- fix(terminal): strip trailing punctuation from clickable URLs (#1549)
+- feat(sdk): default Esc behavior in base App class (#1631)
+- refactor(cli): clean namespace split for pane new vs app open (#1928)
+- fix(cli): pane new direction flags produce wrong split orientation (#1927)
+- feat(scaffold): trim app init template to 30-line L1 example
+- feat(apps): migrate balls, snake, tetris, stats to L1 rendering
+- refactor: move 6 non-core apps to apps/dev/
+- docs(roadmap): check off L1 app migration (v0.0.597)
+- feat(apps): migrate 11 apps from L0 draw commands to L1 Component rendering
+- feat(cli): unify pane spawning under `pane new` (#1923) (#1926)
+- feat(scratchpad): native text-editor builtin pane, open from any pane type (#1920) (#1922)
+- fix(snake-race): request panes.spawn capability before spawning
+- fix(snake-race): replace bare color constants with ctx.theme.* lookups
+- Add keyboard shortcut tip for context_set_root, document CLI pane naming and tips patterns
+- fix: restore draw_triple_tap_overlay after inspector removal, clean up dead code
+- Remove context inspector modal, replace Cmd+I with SetContextRootFromCwd action
 ## [0.0.604] — 2026-06-03
 
 ### Changes
