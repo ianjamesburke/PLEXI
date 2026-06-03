@@ -1,6 +1,17 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.597] — 2026-06-03
+
+### Changes
+- feat(apps): migrate 11 apps from L0 draw commands to L1 Component rendering
+- feat(cli): unify pane spawning under `pane new` (#1923) (#1926)
+- feat(scratchpad): native text-editor builtin pane, open from any pane type (#1920) (#1922)
+- fix(snake-race): request panes.spawn capability before spawning
+- fix(snake-race): replace bare color constants with ctx.theme.* lookups
+- Add keyboard shortcut tip for context_set_root, document CLI pane naming and tips patterns
+- fix: restore draw_triple_tap_overlay after inspector removal, clean up dead code
+- Remove context inspector modal, replace Cmd+I with SetContextRootFromCwd action
 ## [0.0.596] — 2026-06-03
 
 ### Changes
