@@ -1962,11 +1962,9 @@ mod quick_note_tests {
     }
 }
 
-/// Timestamped scratchpad file path: `<config_dir>/notes/YYYY-MM-DD_HHMMSS.md`.
+/// Static scratchpad file path: `<config_dir>/notes/scratch.md`.
 fn scratchpad_file() -> PathBuf {
-    use chrono::Local;
-    let timestamp = Local::now().format("%Y-%m-%d_%H%M%S").to_string();
-    crate::config::config_dir().join("notes").join(format!("{timestamp}.md"))
+    crate::config::config_dir().join("notes").join("scratch.md")
 }
 
 

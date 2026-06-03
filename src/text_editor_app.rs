@@ -85,7 +85,13 @@ impl App for TextEditorApp {
         ui.visuals_mut().extreme_bg_color = colors.bg_darkest;
         ui.visuals_mut().override_text_color = Some(colors.text_primary);
 
-        let available = ui.available_rect_before_wrap();
+        // Reserve space at the bottom for the "Cmd+S to save" hint when dirty.
+        let hint_height = style::TEXT_HINT + style::SPACE_SM * 2.0;
+        let mut available = ui.available_rect_before_wrap();
+        if self.dirty {
+            available.max.y -= hint_height;
+        }
+
         let response = ui.add_sized(
             available.size(),
             egui::TextEdit::multiline(&mut self.content)
@@ -98,16 +104,13 @@ impl App for TextEditorApp {
             self.dirty = true;
         }
 
-        // Save hint at bottom
         if self.dirty {
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.add_space(style::SPACE_SM);
-                ui.label(
-                    RichText::new("Cmd+S to save")
-                        .size(style::TEXT_HINT)
-                        .color(colors.text_dim),
-                );
-            });
+            ui.add_space(style::SPACE_SM);
+            ui.label(
+                RichText::new("Cmd+S to save")
+                    .size(style::TEXT_HINT)
+                    .color(colors.text_dim),
+            );
         }
     }
 
@@ -127,6 +130,7 @@ impl App for TextEditorApp {
         if let Some(p) = state.get("path").and_then(|v| v.as_str()) {
             let new_path = PathBuf::from(p);
             if new_path != self.path {
+                log::info!("TextEditorApp: switching from {:?} to {:?}", self.path, new_path);
                 self.save();
                 let (content, load_error) = match std::fs::read_to_string(&new_path) {
                     Ok(s) => (s, None),
