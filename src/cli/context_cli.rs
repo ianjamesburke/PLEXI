@@ -94,6 +94,18 @@ pub fn context_describe_cli(text: &str) -> i32 {
     }))
 }
 
+/// `plexi context push [name]`
+///
+/// Push the focused pane into a new sub-context. The pane becomes a portal
+/// and its content moves into the child context.
+pub fn context_push_cli(name: Option<&str>) -> i32 {
+    let mut payload = serde_json::json!({ "type": "push_pane_to_subcontext" });
+    if let Some(n) = name {
+        payload["name"] = serde_json::Value::String(n.to_string());
+    }
+    send_to_socket(payload)
+}
+
 /// `plexi context current`
 ///
 /// Prints the context ID and name for the current pane as JSON.

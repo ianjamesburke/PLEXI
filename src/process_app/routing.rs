@@ -1703,6 +1703,12 @@ impl ProcessApp {
                     self.type_id
                 );
             }
+            AppRequest::PushPaneToSubcontext { .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: received PushPaneToSubcontext over PGAP — ignored (use PLEXI_SOCKET instead)",
+                    self.type_id
+                );
+            }
             AppRequest::ListPanes { .. } => {
                 log::warn!(
                     "ProcessApp[{}]: received ListPanes over PGAP — ignored (use PLEXI_SOCKET instead)",

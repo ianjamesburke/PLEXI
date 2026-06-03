@@ -213,6 +213,7 @@ pub struct KeybindingsConfig {
     pub toggle_notification_modal: Option<String>,
     pub context_inspector: Option<String>,
     pub open_scratchpad: Option<String>,
+    pub push_to_subcontext: Option<String>,
 }
 
 impl KeybindingsConfig {
@@ -267,6 +268,7 @@ impl KeybindingsConfig {
         overlay_field!(toggle_notification_modal);
         overlay_field!(context_inspector);
         overlay_field!(open_scratchpad);
+        overlay_field!(push_to_subcontext);
     }
 }
 

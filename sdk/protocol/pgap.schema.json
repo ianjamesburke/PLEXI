@@ -1010,6 +1010,25 @@
           "type": "object"
         },
         {
+          "description": "Push the focused pane into a new sub-context. Sent by `plexi context push`.",
+          "properties": {
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "push_pane_to_subcontext",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Query the rolled-up `ContextState` for a context (#1518).\nThe requesting app must be in an ancestor (or the same) context.\nHost responds with `PlexiEvent::ContextStateResponse`.",
           "properties": {
             "context_id": {
@@ -2341,6 +2360,9 @@
             "button": {
               "$ref": "#/$defs/MouseButton"
             },
+            "modifiers": {
+              "$ref": "#/$defs/Modifiers"
+            },
             "type": {
               "const": "mouse_down",
               "type": "string"
@@ -2358,7 +2380,8 @@
             "type",
             "x",
             "y",
-            "button"
+            "button",
+            "modifiers"
           ],
           "type": "object"
         },
@@ -2367,6 +2390,9 @@
           "properties": {
             "button": {
               "$ref": "#/$defs/MouseButton"
+            },
+            "modifiers": {
+              "$ref": "#/$defs/Modifiers"
             },
             "type": {
               "const": "mouse_up",
@@ -2385,7 +2411,8 @@
             "type",
             "x",
             "y",
-            "button"
+            "button",
+            "modifiers"
           ],
           "type": "object"
         },
@@ -2397,6 +2424,9 @@
                 "$ref": "#/$defs/MouseButton"
               },
               "type": "array"
+            },
+            "modifiers": {
+              "$ref": "#/$defs/Modifiers"
             },
             "type": {
               "const": "mouse_move",
@@ -2415,7 +2445,8 @@
             "type",
             "x",
             "y",
-            "buttons"
+            "buttons",
+            "modifiers"
           ],
           "type": "object"
         },
@@ -2576,6 +2607,27 @@
           },
           "required": [
             "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Host theme changed (config hot-reload or macOS system appearance toggle).\nApp should update its color state; the next render will pick up the new colors.",
+          "properties": {
+            "colors": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Updated role → #rrggbb map. Same roles as the Init `theme` field.",
+              "type": "object"
+            },
+            "type": {
+              "const": "theme",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "colors"
           ],
           "type": "object"
         },
@@ -2973,6 +3025,33 @@
             "request_id",
             "tokens_in",
             "tokens_out"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Incremental token chunk from a streaming ai_query response.\nSent before the final `AiResponse` so apps can display tokens as they arrive.\nThe final `AiResponse` is still sent with complete content + token counts.",
+          "properties": {
+            "delta": {
+              "description": "Incremental text delta (may be empty for the final chunk before AiResponse)",
+              "type": "string"
+            },
+            "done": {
+              "default": false,
+              "description": "True on the last chunk before AiResponse fires",
+              "type": "boolean"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "ai_stream_chunk",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "delta"
           ],
           "type": "object"
         },
@@ -3537,6 +3616,32 @@
             "index"
           ],
           "type": "object"
+        },
+        {
+          "description": "Fired when a user interacts with a node that has `Interactive` wrapping or\nwhen a Button/Input node is activated.",
+          "properties": {
+            "event_type": {
+              "description": "One of: \"click\", \"hover_enter\", \"hover_exit\", \"submit\", \"change\"",
+              "type": "string"
+            },
+            "node_id": {
+              "description": "Matches the `node_id` on the Interactive/Button/Input node.",
+              "type": "string"
+            },
+            "payload": {
+              "description": "Optional payload (e.g. current text value for \"change\" events on Input)"
+            },
+            "type": {
+              "const": "component_event",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "node_id",
+            "event_type"
+          ],
+          "type": "object"
         }
       ],
       "title": "PlexiEvent"
@@ -3857,7 +3962,8 @@
             "monospace"
           ],
           "type": "object"
-        }
+        },
+        "UiNode": {}
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "Render primitives — go to `pending_frame` → drawn to screen.",
@@ -4790,6 +4896,23 @@
             "x",
             "y",
             "tiers"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Component tree — host renders via render_component_tree(). Added in PGAP v3.5.\nHost logs a warning and drops if it doesn't know this variant.",
+          "properties": {
+            "root": {
+              "$ref": "#/$defs/UiNode"
+            },
+            "type": {
+              "const": "component_tree",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "root"
           ],
           "type": "object"
         }

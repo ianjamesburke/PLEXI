@@ -600,6 +600,10 @@ impl PlexiApp {
                         }
                     }
                 }
+                crate::app_protocol::AppRequest::PushPaneToSubcontext { name } => {
+                    log::info!("pane_ipc: kind=push_pane_to_subcontext name={:?}", name);
+                    self.push_pane_to_subcontext(name.clone());
+                }
                 _ => {
                     log::warn!("pane_ipc: unsupported command kind, dropping");
                 }

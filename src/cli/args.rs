@@ -569,6 +569,11 @@ pub enum ContextCmd {
     },
     /// Zoom out of the current sub-context to the parent.
     ZoomOut,
+    /// Push the focused pane into a new sub-context.
+    Push {
+        /// Name for the new sub-context. Defaults to the pane name.
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

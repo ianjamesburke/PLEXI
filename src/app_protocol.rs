@@ -1443,6 +1443,11 @@ pub enum AppRequest {
     },
     /// Zoom out of a sub-context. Pops depth stack. Sent by `plexi context zoom-out`.
     ZoomOutOfContext,
+    /// Push the focused pane into a new sub-context. Sent by `plexi context push`.
+    PushPaneToSubcontext {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+    },
 
     /// Query the rolled-up `ContextState` for a context (#1518).
     /// The requesting app must be in an ancestor (or the same) context.

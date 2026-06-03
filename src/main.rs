@@ -516,6 +516,7 @@ fn main() -> eframe::Result {
                         ContextCmd::Describe { text } => std::process::exit(cli::context_describe_cli(&text)),
                         ContextCmd::Zoom { context_id } => std::process::exit(cli::context_zoom_cli(context_id)),
                         ContextCmd::ZoomOut => std::process::exit(cli::context_zoom_out_cli()),
+                        ContextCmd::Push { name } => std::process::exit(cli::context_push_cli(name.as_deref())),
                     },
                     Commands::Completions { shell } => {
                         let s = shell.as_deref().unwrap_or("zsh");

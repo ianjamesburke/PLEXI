@@ -169,7 +169,7 @@ pub use completions::completions_cli;
 pub use config_cli::{config_check, config_edit, config_get, config_reset};
 pub use context_cli::{
     context_new_cli, context_zoom_cli, context_zoom_out_cli, context_open_cli,
-    context_set_root_cli, context_current_cli, context_describe_cli,
+    context_set_root_cli, context_current_cli, context_describe_cli, context_push_cli,
 };
 pub use demo::demo_cli;
 pub use install::{install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli, update_cli, self_update_cli};

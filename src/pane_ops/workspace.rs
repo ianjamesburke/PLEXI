@@ -115,6 +115,118 @@ impl PlexiApp {
         Ok(())
     }
 
+    pub(crate) fn push_pane_to_subcontext(&mut self, name: Option<String>) {
+        let parent_win_idx = self.active_window;
+        let parent_ctx_id = self.windows[parent_win_idx].context_id;
+        let parent_depth = self.router.iter()
+            .find(|c| c.context_id == parent_ctx_id)
+            .map(|c| c.depth)
+            .unwrap_or(0);
+
+        let Some(focused_tile) = self.windows[parent_win_idx].focused_pane else {
+            log::warn!("push_pane_to_subcontext: no focused pane");
+            return;
+        };
+
+        let pane_id = match self.windows[parent_win_idx].tree.tiles.get(focused_tile) {
+            Some(egui_tiles::Tile::Pane(pid)) => *pid,
+            _ => {
+                log::warn!("push_pane_to_subcontext: focused tile is not a pane");
+                return;
+            }
+        };
+
+        if self.windows[parent_win_idx].panes.get(&pane_id)
+            .map(|p| p.as_portal().is_some())
+            .unwrap_or(false)
+        {
+            log::warn!("push_pane_to_subcontext: cannot push a portal pane");
+            return;
+        }
+
+        let pane_name = self.windows[parent_win_idx].panes.get(&pane_id).and_then(|p| {
+            p.as_terminal().and_then(|t| t.name.clone())
+                .or_else(|| p.as_app().map(|a| a.name.clone()))
+        });
+        let ctx_name = name
+            .or(pane_name)
+            .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1));
+
+        let parent_path = self.router.iter()
+            .find(|c| c.context_id == parent_ctx_id)
+            .map(|c| c.path.clone())
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+
+        let ctx_id = self.next_window_id;
+        self.next_window_id += 1;
+        let win_id = self.next_window_id;
+        self.next_window_id += 1;
+        let child_depth = parent_depth + 1;
+
+        log::info!(
+            "push_pane_to_subcontext: pane_id={pane_id} ctx_name={ctx_name} \
+             parent_ctx_id={parent_ctx_id} child_depth={child_depth}"
+        );
+
+        let pane = match self.windows[parent_win_idx].panes.remove(&pane_id) {
+            Some(p) => p,
+            None => {
+                log::error!("push_pane_to_subcontext: pane not found in parent window");
+                return;
+            }
+        };
+
+        let portal_pane_id = self.host.alloc_pane_id();
+        if let Some(egui_tiles::Tile::Pane(slot)) = self.windows[parent_win_idx].tree.tiles.get_mut(focused_tile) {
+            *slot = portal_pane_id;
+        }
+        self.windows[parent_win_idx].panes.insert(
+            portal_pane_id,
+            crate::pane::Pane::Portal(Box::new(crate::pane::PortalPane {
+                pane_id: portal_pane_id,
+                target_context_id: ctx_id,
+                context_state: None,
+            })),
+        );
+
+        let mut child_tiles = egui_tiles::Tiles::default();
+        let child_tile_id = child_tiles.insert_pane(pane_id);
+        let child_tree = egui_tiles::Tree::new("child_tree", child_tile_id, child_tiles);
+        let child_root_tile = child_tree.root.unwrap();
+        let mut child_panes = std::collections::HashMap::new();
+        child_panes.insert(pane_id, pane);
+
+        self.router.push(crate::context::Context {
+            name: ctx_name,
+            path: parent_path.clone(),
+            root: Some(parent_path.clone()),
+            description: None,
+            context_id: ctx_id,
+            parent_id: Some(parent_ctx_id),
+            depth: child_depth,
+        });
+        self.windows.push(Window {
+            name: String::new(),
+            path: parent_path,
+            tree: child_tree,
+            panes: child_panes,
+            focused_pane: Some(child_root_tile),
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 0,
+            window_id: win_id,
+            context_id: ctx_id,
+        });
+        self.context_active_window.insert(ctx_id, win_id);
+
+        let current_win_id = self.windows[parent_win_idx].window_id;
+        self.router.push_depth(parent_ctx_id, current_win_id, Some(focused_tile));
+        let new_ctx_idx = self.router.len() - 1;
+        self.switch_workspace(new_ctx_idx);
+
+        self.save_workspace();
+    }
+
     pub(crate) fn new_context(&mut self) {
         log::info!("new_context: creating new top-level context");
         self.new_context_empty();

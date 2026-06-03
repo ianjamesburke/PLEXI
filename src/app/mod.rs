@@ -2705,6 +2705,9 @@ impl eframe::App for PlexiApp {
                     self.new_context();
                     self.save_workspace();
                 }
+                Action::PushPaneToSubcontext => {
+                    self.push_pane_to_subcontext(None);
+                }
                 Action::ContextInspector => {
                     self.show_context_inspector = !self.show_context_inspector;
                     self.inspector_renaming = false;
