@@ -255,6 +255,7 @@ impl PlexiApp {
                                     };
                                     let kind = match pane_ref {
                                         Some(p) if p.as_app().is_some() => crate::tiling::PaneKind::App,
+                                        Some(p) if p.as_portal().is_some() => crate::tiling::PaneKind::Portal,
                                         _ => crate::tiling::PaneKind::Terminal,
                                     };
                                     let title = pane_ref.and_then(|p| {
