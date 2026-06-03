@@ -20,11 +20,17 @@ ROW_H    = 20.0
 BAR_H    = 34.0   # AppBar single-line band height
 FOOT_H   = 32.0   # FooterKeys band height (TOP_GAP + 1 + TOP_GAP + ROW_H + TOP_GAP)
 PAD      = SPACE_SM
-CHIP_W   = 54.0   # fixed-width filter buttons — consistent across all labels
-CHIP_GAP = 4.0
-# Badge advance: widest label "WARN"/"INFO"/"ERRO" at 10pt ~30 px glyph width
-# + 8 px pad each side = ~46 px. Use 50 for a consistent gutter.
-BADGE_ADV = 50.0
+CHIP_W    = 54.0   # fixed-width filter buttons — consistent across all labels
+CHIP_GAP  = 4.0
+COL_GAP   = SPACE_SM  # uniform inter-column gap for all table columns
+# Level badge: fixed pixel width so all badges (ERROR/WARN/INFO/DEBUG) render
+# in a uniform column. We draw a rect + centred text rather than ctx.badge()
+# which auto-sizes to label width and would produce ragged column edges.
+BADGE_W   = 46.0   # fixed badge width (px)
+BADGE_H   = 14.0   # fixed badge height (px); fits comfortably inside ROW_H=20
+BADGE_R   = 3.0    # corner radius
+# Total column advance: badge + gap before next column
+BADGE_ADV = BADGE_W + COL_GAP
 
 FILTERS    = ["ALL", "ERROR", "WARN", "INFO", "DEBUG"]
 FILTER_KEY = {"a": 0, "e": 1, "w": 2, "i": 3, "d": 4}
@@ -436,21 +442,24 @@ class LogsApp(App):
             # timestamp
             ctx.text(x, text_y, ll.time,
                      size=TEXT_HINT, color=dim_fg, monospace=True)
-            x += time_w
+            x += time_w + COL_GAP
 
-            # level badge — solid fill, host-measured, readable at any size
+            # level badge — fixed-width rect + centred text so all level labels
+            # (ERROR/WARN/INFO/DEBUG) occupy an identical column width.
             badge_fill = level_badge_fill.get(ll.level, ctx.theme.highlight)
             badge_fg   = ctx.theme.bg if ll.level in ("ERROR", "WARN", "INFO") else ctx.theme.fg
-            ctx.badge(x, row_y + ROW_H / 2, ll.level[:4],
-                      fill=badge_fill, fg=badge_fg,
-                      font_size=10.0, radius=4.0)
+            badge_y    = row_y + (ROW_H - BADGE_H) / 2
+            ctx.rect(x, badge_y, BADGE_W, BADGE_H, badge_fill, radius=BADGE_R)
+            ctx.text(x + BADGE_W / 2, badge_y + BADGE_H / 2,
+                     ll.level[:4], size=10.0, color=badge_fg,
+                     bold=True, monospace=True, align="center")
             x += BADGE_ADV
 
             # target
             ctx.text(x, text_y, ll.target,
                      size=TEXT_HINT, color=dim_fg,
                      max_width=target_w, elide=True)
-            x += target_w + PAD
+            x += target_w + COL_GAP
 
             # message
             ctx.text(x, text_y, ll.message,
