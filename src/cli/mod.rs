@@ -176,7 +176,7 @@ pub use install::{install_cli, install_pack_cli, install_workspace_pack_cli, ple
 pub use list::{freeze_cli, parse_notify_choice};
 pub use notes::{notes_list_cli, notes_open_cli};
 pub use notify::notify_cli;
-pub use open::{open_cli, terminal_cli};
+pub use open::{open_cli, terminal_cli, pane_new_cli};
 pub use pane::{
     pane_set_title_cli, pane_list_cli, pane_self_cli, pane_info_cli,
     pane_focus_cli, pane_close_cli, pane_send_cli, pane_key_cli, pane_capture_cli,

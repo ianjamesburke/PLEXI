@@ -1345,6 +1345,10 @@ pub enum AppRequest {
         /// a descendant of the requesting app's context (#1518).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         target_context: Option<u64>,
+        /// Inline pane name — applied immediately after spawn so the pane
+        /// starts with a human-readable label instead of the default shell title.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
 
     /// Set the title displayed on a terminal pane's tab. Sent by `plexi pane set-title`
@@ -3170,6 +3174,31 @@ mod tests {
             !serialised_absent.contains("workspace_root"),
             "workspace_root should be omitted when None: {serialised_absent}"
         );
+    }
+
+    #[test]
+    fn spawn_pane_name_round_trips_serde() {
+        let json = r#"{"type":"spawn_pane","type_id":"terminal","name":"dev server"}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Host(AppRequest::SpawnPane { name, .. }) => {
+                assert_eq!(name.as_deref(), Some("dev server"));
+            }
+            other => panic!("expected SpawnPane, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(serialised.contains(r#""name":"dev server""#), "name missing: {serialised}");
+
+        let json_absent = r#"{"type":"spawn_pane","type_id":"terminal"}"#;
+        let cmd_absent: DrawCommand = serde_json::from_str(json_absent).expect("deserialise absent");
+        match &cmd_absent {
+            DrawCommand::Host(AppRequest::SpawnPane { name, .. }) => {
+                assert!(name.is_none(), "absent name must deserialise to None");
+            }
+            other => panic!("expected SpawnPane, got {other:?}"),
+        }
+        let serialised_absent = serde_json::to_string(&cmd_absent).expect("serialise absent");
+        assert!(!serialised_absent.contains("name"), "name should be omitted when None: {serialised_absent}");
     }
 
     #[test]

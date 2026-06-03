@@ -1320,6 +1320,7 @@ mod tests {
             path: None,
             workspace_root: None,
             target_context: None,
+            name: None,
         });
         h.run_frames(2);
 
@@ -1360,6 +1361,7 @@ mod tests {
             path: None,
             workspace_root: None,
             target_context: None,
+            name: None,
         });
         h.run_frames(2);
 
@@ -1403,6 +1405,7 @@ mod tests {
             path: None,
             workspace_root: None,
             target_context: None,
+            name: None,
         });
         h.run_frames(2);
 
@@ -1445,6 +1448,7 @@ mod tests {
             path: None,
             workspace_root: None,
             target_context: None,
+            name: None,
         });
         h.run_frames(2);
 
@@ -1497,6 +1501,7 @@ mod tests {
             path: None,
             workspace_root: None,
             target_context: None,
+            name: None,
         });
         h.run_frames(2);
 
@@ -1547,6 +1552,7 @@ mod tests {
                 path: None,
                 workspace_root: None,
                 target_context: None,
+                name: None,
             });
             h.run_frames(2);
         }
@@ -1882,6 +1888,7 @@ mod quick_note_tests {
                 path: None,
                 workspace_root: None,
                 target_context: Some(999),
+                name: None,
             },
         ));
         h.run_frames(1);
@@ -1919,6 +1926,7 @@ mod quick_note_tests {
             path: None,
             workspace_root: None,
             target_context: None,
+            name: None,
         });
         h.run_frames(2);
 
@@ -1939,6 +1947,7 @@ mod quick_note_tests {
             path: None,
             workspace_root: None,
             target_context: None,
+            name: None,
         });
         h.run_frames(2);
 
