@@ -243,4 +243,57 @@ impl PlexiApp {
             .filter(|n| self.notification_is_visible(n))
             .count()
     }
+
+    /// Auto-dismiss non-required notifications whose `sender_pane_id` matches
+    /// the currently focused pane. Called once per frame from `update_preamble`.
+    ///
+    /// Required notifications (interactive prompts that need an explicit
+    /// response) are exempt and must always be dismissed manually.
+    pub(crate) fn auto_dismiss_sender_focused_notifications(&mut self) {
+        let win = &self.windows[self.active_window];
+        let focused_pane_id = win
+            .focused_pane
+            .and_then(|tile_id| Self::find_pane_in_tile(&win.tree, tile_id));
+
+        let Some(focused_id) = focused_pane_id else {
+            return;
+        };
+
+        let auto_dismiss_ids: Vec<String> = self
+            .pending_notifications
+            .iter()
+            .filter(|n| !n.required && n.sender_pane_id == focused_id)
+            .map(|n| n.notify_id.clone())
+            .collect();
+
+        if auto_dismiss_ids.is_empty() {
+            return;
+        }
+
+        for id in &auto_dismiss_ids {
+            let Some(pos) = self
+                .pending_notifications
+                .iter()
+                .position(|n| &n.notify_id == id)
+            else {
+                continue;
+            };
+            let n = self.pending_notifications.remove(pos);
+            log::info!(
+                "notify:auto_dismiss: pane_id={focused_id} focused — dismissing notify_id={} title={:?}",
+                n.notify_id,
+                n.title
+            );
+            if self.current_notify_id.as_deref() == Some(&n.notify_id) {
+                self.current_notify_id = None;
+            }
+        }
+
+        if self.show_notification_modal && self.sorted_notification_ids().is_empty() {
+            self.show_notification_modal = false;
+            log::info!("notify:auto_dismiss: modal closed — no visible notifications remain");
+        }
+
+        self.save_notifications();
+    }
 }
