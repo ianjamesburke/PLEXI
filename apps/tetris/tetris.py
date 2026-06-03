@@ -383,10 +383,9 @@ class TetrisApp(App):
     # ── Input ─────────────────────────────────────────────────────────────────
 
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
-        # TODO: add sound effects once AudioPlay is exposed in the Python SDK
-        #   - line clear: short synth chord (pitch scales with number of lines cleared)
-        #   - hard drop: thud / impact tone
-        #   - game over: descending tone
+        if key == "escape":
+            self.emit.close_self()
+            return
 
         if self.game_over:
             if key == "r":

@@ -127,6 +127,9 @@ class SnakeApp(App):
             self._snake.pop()
 
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
+        if key == "escape":
+            self.emit.close_self()
+            return
         if self._dead and key in ("r", "Enter", " "):
             self._reset()
             return

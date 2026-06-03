@@ -69,11 +69,13 @@ class TodoApp(App):
 
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._adding:
-            # TextInput captures character input natively; only intercept Escape.
-            if key == "Escape":
+            if key == "escape":
                 self._adding = False
             return
 
+        if key == "escape":
+            self.emit.close_self()
+            return
         if key in ("up", "k", "ArrowUp"):
             self._list.handle_key("k")
             self._selected = self._list.selected_idx
