@@ -1,6 +1,58 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.593] — 2026-06-03
+
+### Changes
+- revert(host/terminal): remove broken Cmd+A select-all fix
+- Revert "fix(portal): stop showing activity dots on app/portal panes, extend decay to 8s"
+- fix(host/terminal): Cmd+A select-all now works
+- fix(portal): stop showing activity dots on app/portal panes, extend decay to 8s
+- chore: remove diagnostic Key::A logging from render.rs
+- feat(portal): real-time pane activity detection with animated dots (#1918)
+- chore: restore session edits carried through merge
+- feat(ui/overlays): Style O visual pass — confirmation modals (close pane, context close, quit) (#1903) (#1917)
+- feat(context): push focused pane into sub-context with `plexi context push`, add schema updates for mouse modifiers, theme events, streaming AI chunks, and component interactions
+- fix(host/keys): guard Cmd+Shift+A with shift check so Cmd+A reaches terminal
+- feat: app mock-UI in portal minimap, pane titles, fix subcontext workspace_root fallback
+- feat: portal x-ray view with multi-window support, content lines, focus highlight, fixed shortcut
+- feat: enrich portal preview with filled rects, focus highlight, content lines, pane type labels
+- fix(ui/sidebar): flatten sidebar to dots-only design, fix content gap (#1912) (#1913)
+- fix(host): revert Lane E host UI migration — restore direct egui rendering (#1911)
+- fix: cwd_for_welcome_tab falls back to window.path, not home dir
+- feat(host): Style O visual pass — styled L1 component widgets (Button, Input, Badge) (#1899) (#1900)
+- docs: add CLI modularization plan; enhance hand-off skill with automatic ready labeling
+- feat(epic): Agent App Platform — UI protocol, SDK v2, LLM broker, distribution (#1897) (#1898)
+- fix(host): defer overlay-unsafe app commands while modals own input (#1599) (#1896)
+- feat(cli): plexi demo extended — close, open app, notify, create app (#1754) (#1892)
+- fix(config): alpha config stays default, beta as staging, add TOML migration on update (#1587) (#1893)
+- feat(sdk/pgap): add modifier state to mouse events (#1680) (#1891)
+- Configurable pane_gap, pane_title_font_size, and click flash (#724, #803, #1141) (#1890)
+- feat(host/context): context new wraps focused pane into new child context (#1858) (#1887)
+- fix(host): auto-trigger ai.query consent modal on first AiQuery (#1594) (#1889)
+- fix(overlays): keep every text-owning overlay focused after CentralPanel renders (#1601) (#1888)
+- fix(apps/screen-time): replace removed SDK color constants with ctx.theme (#1885) (#1886)
+- fix(sdk/template): fix escape key casing and add ctx.theme pattern (#1881) (#1883)
+- fix(apps/tetris): use SDK-normalized key names for hard drop (#1884)
+- fix(apps): migrate removed SDK color constants to ctx.theme in 6 core apps (#1879) (#1880)
+- feat(host/navigation): unify Cmd+Enter zoom — Portal focus enters sub-context, else pane fullscreen (#1830) (#1878)
+- refactor(cli): split src/cli.rs (5,322 lines) into focused submodules (#1870) (#1875)
+- feat(contexts): new context defaults to home dir instead of inheriting pane cwd (#1693) (#1876)
+- chore(config): move [beta] to bottom, add heavy separator (#1684) (#1877)
+- refactor(app): split src/app/mod.rs (5,534 lines) into focused submodules (#1865) (#1874)
+- fix(host/list_view): remove row gap and wire click events (#1871) (#1872)
+- feat(host/context): portal view redesign — mini-map, OSC state, description, direct egui render (#1859) (#1873)
+- refactor(sdk/pgap): component-owned input routing (#1802) (#1869)
+- fix(host/pane-ops): split from Portal tile falls back to home dir (#1853) (#1867)
+- feat(cli): improve plexi demo terminal UI with section headers and dividers (#1755) (#1868)
+- docs(file-explorer): add website docs page and welcome screen tip (#1736) (#1866)
+- refactor(skills): flip AI review order in validate-pr — Codex first, Gemini fallback
+- fix(cli): notes open errors, demo step 2 bypass, routine docs (#1855, #1856, #1849, #1850) (#1864)
+- fix(host/context): reset stale focused_pane after context portal deletion (#1854) (#1862)
+- fix(apps): replace removed SDK color constants with ctx.theme.* (#1851) (#1863)
+- fix(ui/chrome): switch pane ID overlay trigger from ⌘-hold to ⌃-hold (#1852) (#1861)
+- chore(skills): increase PM watch interval from 4m to 5m
+- refactor(skills): simplify implement-issue Phase 1, require ready label as hard gate
 ## [0.0.592] — 2026-06-03
 
 ### Changes
