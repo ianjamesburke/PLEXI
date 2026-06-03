@@ -24,8 +24,15 @@ use std::path::PathBuf;
 /// `launch_app_by_id_with_layout` requires no further changes.
 ///
 /// `"terminal"` is intentionally absent — it is a PTY pane, not an `App`.
-fn builtin_factory(_id: &str, _args: &[String]) -> Option<Box<dyn App>> {
-    match _id {
+fn builtin_factory(id: &str, args: &[String]) -> Option<Box<dyn App>> {
+    match id {
+        "text-editor" => {
+            let path = args
+                .first()
+                .map(|s| std::path::PathBuf::from(s))
+                .unwrap_or_else(|| crate::config::config_dir().join("notes").join("scratch.md"));
+            Some(Box::new(crate::text_editor_app::TextEditorApp::new(path)))
+        }
         _ => None,
     }
 }
@@ -984,47 +991,22 @@ impl PlexiApp {
         self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"), None);
     }
 
-    /// Open a terminal editor in the focused pane for scratchpad editing.
+    /// Open a native text-editor pane for scratchpad editing.
     ///
-    /// Injects `micro <path>` (or `nano` fallback) into the focused terminal's PTY.
-    /// The scratchpad file persists at `<config_dir>/scratchpad.md` across sessions.
+    /// Launches the built-in `text-editor` app pane with the scratchpad file path.
+    /// Works from any focused pane type (terminal, app, file browser).
     pub(crate) fn open_scratchpad(&mut self) {
-        let active = self.active_window;
-
-        let focused_tile = match self.windows[active].focused_pane {
-            Some(t) => t,
-            None => {
-                log::warn!("scratchpad: no focused pane — ignored");
-                return;
-            }
-        };
-        let pane_id = match self.windows[active].tree.tiles.get(focused_tile) {
-            Some(egui_tiles::Tile::Pane(id)) => *id,
-            _ => {
-                log::warn!("scratchpad: focused tile is not a pane — ignored");
-                return;
-            }
-        };
-        let Some(term) = self.windows[active].panes.get_mut(&pane_id).and_then(Pane::as_terminal_mut) else {
-            log::warn!("scratchpad: focused pane {pane_id} is not a terminal — ignored");
-            return;
-        };
-
         let path = scratchpad_file();
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                log::warn!("scratchpad: could not create notes dir {:?}: {e}", parent);
-            } else {
-                log::info!("scratchpad: notes dir {:?} ready", parent);
-            }
-        }
         let path_str = path.display().to_string();
-        let escaped = crate::shell::shell_quote(&path_str);
-        let editor = preferred_editor();
-
-        let cmd = format!("{editor} {escaped}\r");
-        log::info!("scratchpad: injecting '{editor} {escaped}' into terminal pane {pane_id}");
-        term.backend.process_command(BackendCommand::Write(cmd.into_bytes()));
+        log::info!("scratchpad: opening text-editor pane for {:?}", path);
+        if let Err(e) = self.launch_app_by_id_with_layout(
+            "text-editor",
+            Some("split_h".to_string()),
+            &[path_str],
+            None,
+        ) {
+            log::warn!("scratchpad: failed to launch text-editor pane: {e}");
+        }
     }
 
     /// Open the quick note modal: capture context and push FocusLayer::QuickNote.
@@ -1980,19 +1962,9 @@ mod quick_note_tests {
     }
 }
 
-/// Timestamped scratchpad file path: `<config_dir>/notes/YYYY-MM-DD_HHMMSS.md`.
+/// Static scratchpad file path: `<config_dir>/notes/scratch.md`.
 fn scratchpad_file() -> PathBuf {
-    use chrono::Local;
-    let timestamp = Local::now().format("%Y-%m-%d_%H%M%S").to_string();
-    crate::config::config_dir().join("notes").join(format!("{timestamp}.md"))
+    crate::config::config_dir().join("notes").join("scratch.md")
 }
 
-/// Resolve the preferred terminal editor: `micro` if available, else `nano`, then `vim`.
-fn preferred_editor() -> &'static str {
-    for editor in ["micro", "nano", "vim"] {
-        if cli_binary_in_path(editor) {
-            return editor;
-        }
-    }
-    "nano"
-}
+
