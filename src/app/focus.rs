@@ -347,6 +347,7 @@ impl PlexiApp {
         // Replace the cached config
         self.config = fresh;
         self.key_bindings = crate::keys::build_key_bindings(self.config.keybindings.as_ref());
+        self.binding_table = crate::keys::build_binding_table(&self.key_bindings);
         log::info!("keybindings: rebuilt after config reload");
 
         // AI broker config — broadcast fresh snapshot to all living panes and background apps
