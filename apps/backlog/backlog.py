@@ -24,7 +24,6 @@ from plexi_sdk.ui import (
     SelectList, TextInput,
     SPACE_MD, TEXT_HINT, TEXT_BODY, TEXT_CAPTION,
 )
-from plexi_sdk.ui import theme
 
 
 def _detect_channel_backlog_dir() -> "Path | None":
@@ -81,24 +80,24 @@ class _TwoPaneBody(Component):
 
         if not has_any_dir:
             app.emit.info("backlog: no dirs found — showing empty-state guide")
-            ctx.text(x + 12, y + 12, "No notes yet.", size=TEXT_BODY, color=theme.fg)
+            ctx.text(x + 12, y + 12, "No notes yet.", size=TEXT_BODY, color=ctx.theme.fg)
             if app.global_only:
                 ctx.text(x + 12, y + 34,
                          "No channel-level backlog found. Press ⌘0 to create a Quick Note.",
-                         size=TEXT_HINT, color=theme.muted, max_width=w - 24)
+                         size=TEXT_HINT, color=ctx.theme.muted, max_width=w - 24)
             else:
                 ctx.text(x + 12, y + 34,
                          "Press ⌘0 to open Quick Note, then press Enter twice to send to your backlog.",
-                         size=TEXT_HINT, color=theme.muted, max_width=w - 24)
+                         size=TEXT_HINT, color=ctx.theme.muted, max_width=w - 24)
             return
 
         # Vertical divider between list and preview
-        ctx.rect(x + list_w, y, 1.0, h, theme.highlight)
+        ctx.rect(x + list_w, y, 1.0, h, ctx.theme.highlight)
 
         # ── Item list ────────────────────────────────────────────────────────────
         if not app.filtered:
             msg = "No results" if app.search_query else "Backlog is empty"
-            ctx.text(x + 12, y + 12, msg, size=TEXT_CAPTION, color=theme.muted)
+            ctx.text(x + 12, y + 12, msg, size=TEXT_CAPTION, color=ctx.theme.muted)
         else:
             app._item_list.render(ctx, x, y, list_w, h)
 
@@ -107,13 +106,13 @@ class _TwoPaneBody(Component):
         pw = w - (list_w + 14) - 10
         if app.preview_path and app.preview_text is not None:
             ctx.text(px, y - SPACE_MD, app.preview_path.name,
-                     size=TEXT_HINT, color=theme.accent, bold=True, max_width=pw)
+                     size=TEXT_HINT, color=ctx.theme.accent, bold=True, max_width=pw)
             lines = app.preview_text.splitlines()
             for li, line in enumerate(lines):
                 ly = y + li * 15.0
                 if ly > y + h - 4:
                     break
-                color = theme.fg if not line.startswith("#") else theme.accent
+                color = ctx.theme.fg if not line.startswith("#") else ctx.theme.accent
                 ctx.text(px, ly, line, size=TEXT_HINT, color=color, monospace=True,
                          max_width=pw)
 
@@ -280,10 +279,10 @@ class BacklogApp(App):
         if self.in_search:
             footer_widget: Component = Footer(
                 f"/ {self.search_query}▌",  # block cursor
-                color=theme.accent,
+                color=ctx.theme.accent,
             )
         elif self.status:
-            footer_widget = Footer(self.status, color=theme.success)
+            footer_widget = Footer(self.status, color=ctx.theme.success)
         else:
             footer_widget = FooterKeys([
                 ("j/k", "navigate"),
@@ -310,22 +309,22 @@ class BacklogApp(App):
         # ── Add-item overlay ─────────────────────────────────────────────────────
         if self.in_add:
             ox, oy, ow, oh = w / 2 - 200, h / 2 - 36, 400, 86
-            ctx.rect(ox, oy, ow, oh, theme.surface, radius=6.0)
-            ctx.rect(ox, oy, ow, 1, theme.highlight)
+            ctx.rect(ox, oy, ow, oh, ctx.theme.surface, radius=6.0)
+            ctx.rect(ox, oy, ow, 1, ctx.theme.highlight)
             ctx.text(ox + 16, oy + 12, "New backlog item",
-                     size=TEXT_CAPTION, color=theme.accent, bold=True)
+                     size=TEXT_CAPTION, color=ctx.theme.accent, bold=True)
             self._add_input.render(ctx, ox + 16, oy + 36, ow - 32, self._add_input.height)
 
         # ── Delete confirm overlay ───────────────────────────────────────────────
         if self.confirm_delete and self.filtered:
             name = self.filtered[self.selected].name
             ox, oy, ow, oh = w / 2 - 170, h / 2 - 36, 340, 72
-            ctx.rect(ox, oy, ow, oh, theme.surface, radius=6.0)
-            ctx.rect(ox, oy, ow, 1, theme.highlight)
+            ctx.rect(ox, oy, ow, oh, ctx.theme.surface, radius=6.0)
+            ctx.rect(ox, oy, ow, 1, ctx.theme.highlight)
             ctx.text(ox + 16, oy + 14, f"Delete '{name}'?",
-                     size=TEXT_BODY, color=theme.danger, bold=True)
+                     size=TEXT_BODY, color=ctx.theme.danger, bold=True)
             ctx.text(ox + 16, oy + 36, "Enter → confirm    Esc → cancel",
-                     size=TEXT_HINT, color=theme.muted)
+                     size=TEXT_HINT, color=ctx.theme.muted)
 
     # ── Keys ─────────────────────────────────────────────────────────────────────
 

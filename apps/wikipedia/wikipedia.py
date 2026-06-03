@@ -10,7 +10,7 @@ from plexi_sdk import (
 )
 from plexi_sdk.ui import (
     Column, AppBar, Spacer, Footer, FooterKeys,
-    Label, Section, Scrollable, SelectList, TextInput,
+    Label, Section, Scrollable, SelectList, TextInput, theme,
 )
 
 API = "https://en.wikipedia.org/w/api.php"
@@ -141,7 +141,7 @@ class WikiApp(App):
         if self._mode == "search":
             children: list = [self._search_input]
             if self._error_msg:
-                children.append(Label(f"Error: {self._error_msg}", tone="hint", color="#ff4444"))
+                children.append(Label(f"Error: {self._error_msg}", tone="hint", color=theme.danger))
             else:
                 children.append(Label("Type a query and press Enter", tone="hint"))
             return children

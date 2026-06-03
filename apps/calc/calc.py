@@ -12,7 +12,6 @@ from plexi_sdk.ui import (
     Column, Card, AppBar, Heading, FooterKeys, ButtonRow, Spacer, Component,
     SPACE_SM, SPACE_MD,
 )
-from plexi_sdk.ui import theme
 
 # Grid geometry — fixed per-button size; gap matches Card inner gap default.
 BTN_W = 64.0
@@ -81,17 +80,17 @@ class CalcApp(App):
             if label in self._btns:
                 continue  # "." only appears once, but guard for safety
             if _is_op(label):
-                fill = theme.accent
-                hover_fill = "#b9d0f7"
-                text_color = theme.bg
+                fill = ctx.theme.accent
+                hover_fill = ctx.theme.highlight
+                text_color = ctx.theme.bg
             elif _is_clear(label):
-                fill = theme.danger
-                hover_fill = "#f5a3b5"
-                text_color = theme.bg
+                fill = ctx.theme.danger
+                hover_fill = ctx.theme.surface
+                text_color = ctx.theme.bg
             else:
-                fill = theme.surface
-                hover_fill = "#45475a"
-                text_color = theme.fg
+                fill = ctx.theme.surface
+                hover_fill = ctx.theme.highlight
+                text_color = ctx.theme.fg
 
             self._btns[label] = ButtonRow(
                 id=f"btn_{label}",
