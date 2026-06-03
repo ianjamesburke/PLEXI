@@ -266,7 +266,10 @@ class App:
     # Coroutine) overrides without reportIncompatibleMethodOverride.
     def on_init(self, _ctx: RenderContext) -> "Coroutine[Any, Any, None] | None": return None
     def on_render(self, _ctx: RenderContext) -> None: pass
-    def on_key(self, _ctx: RenderContext, _key: str, _mods: dict) -> "Coroutine[Any, Any, None] | None": return None
+    def on_key(self, _ctx: RenderContext, _key: str, _mods: dict) -> "Coroutine[Any, Any, None] | None":
+        if _key == "escape":
+            self.emit.close_self()
+        return None
     def on_click(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> "Coroutine[Any, Any, None] | None": return None
     def on_mouse_down(self, _ctx: RenderContext, _x: float, _y: float, _button: str, _mods: dict = {}) -> "Coroutine[Any, Any, None] | None": return None
     def on_mouse_up(self, _ctx: RenderContext, _x: float, _y: float, _button: str, _mods: dict = {}) -> "Coroutine[Any, Any, None] | None": return None
