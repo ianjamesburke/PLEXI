@@ -3,8 +3,8 @@ use crate::theme::Colors;
 
 pub const ACTION_ZONE_WIDTH: f32 = 30.0;
 
-const PANE_DOT_RADIUS: f32 = 2.5;
-const PANE_DOT_SPACING: f32 = 8.0;
+const PANE_DOT_RADIUS: f32 = 4.0;
+const PANE_DOT_SPACING: f32 = 11.0;
 const PANE_DOT_MAX: usize = 8;
 
 pub(crate) fn with_alpha(c: Color32, alpha: f32) -> Color32 {
