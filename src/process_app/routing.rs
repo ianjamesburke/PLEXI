@@ -1785,6 +1785,12 @@ impl ProcessApp {
                     self.type_id
                 );
             }
+            AppRequest::GetPaneState { pane_id, .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: GetPaneState pane_id={pane_id} received in app routing — ignored (host-only command)",
+                    self.type_id
+                );
+            }
 
             // ── Query context state (#1518) ───────────────────────────────
             AppRequest::QueryContextState { context_id } => {

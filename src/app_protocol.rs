@@ -1549,6 +1549,15 @@ pub enum AppRequest {
         from_cursor: Option<u64>,
     },
 
+    /// Query the last-rendered UI state of a pane. Sent by `plexi pane state`.
+    /// For app panes: host writes a JSON object with a `frame` array of RenderCommands.
+    /// For terminal panes: host writes a simple status object.
+    /// Host writes `{"error":"..."}` if the pane is not found.
+    GetPaneState {
+        pane_id: u64,
+        response_file: String,
+    },
+
     /// Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.
     CreateContext {
         #[serde(default, skip_serializing_if = "Option::is_none")]

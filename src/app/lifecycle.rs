@@ -488,6 +488,42 @@ impl PlexiApp {
                         );
                     }
                 }
+                crate::app_protocol::AppRequest::GetPaneState { pane_id, response_file } => {
+                    log::info!("pane_ipc: kind=get_pane_state pane_id={pane_id} response_file={response_file:?}");
+                    let json_str = match self.windows.iter().find_map(|win| win.panes.get(pane_id)) {
+                        None => {
+                            log::warn!("pane_ipc: get_pane_state: pane_id={pane_id} not found");
+                            serde_json::json!({"error": format!("pane {pane_id} not found")}).to_string()
+                        }
+                        Some(pane) => {
+                            if let Some(app_pane) = pane.as_app() {
+                                let frame = app_pane.runtime.frame_json().unwrap_or(serde_json::Value::Array(vec![]));
+                                serde_json::json!({
+                                    "pane_id": pane_id,
+                                    "type": "app",
+                                    "title": app_pane.name,
+                                    "manifest_id": app_pane.manifest_id,
+                                    "frame": frame,
+                                }).to_string()
+                            } else if let Some(term) = pane.as_terminal() {
+                                let title = term.name.clone().unwrap_or_else(|| "terminal".to_string());
+                                serde_json::json!({
+                                    "pane_id": pane_id,
+                                    "type": "terminal",
+                                    "title": title,
+                                }).to_string()
+                            } else {
+                                serde_json::json!({
+                                    "pane_id": pane_id,
+                                    "type": "unknown",
+                                }).to_string()
+                            }
+                        }
+                    };
+                    if let Err(e) = std::fs::write(response_file, &json_str) {
+                        log::error!("pane_ipc: get_pane_state: could not write response file {response_file:?}: {e}");
+                    }
+                }
                 crate::app_protocol::AppRequest::Notify {
                     level, title, body, kind, options, input_prompt,
                     required, priority, image_inline, image_pipe_id,
