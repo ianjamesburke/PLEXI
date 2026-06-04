@@ -105,6 +105,7 @@ pub mod config_cli;
 pub mod context_cli;
 pub mod demo;
 pub mod descriptor;
+pub mod doctor;
 pub mod install;
 pub mod list;
 pub mod notes;
@@ -172,6 +173,7 @@ pub use context_cli::{
     context_set_root_cli, context_current_cli, context_describe_cli, context_push_cli,
 };
 pub use demo::demo_cli;
+pub use doctor::doctor_cli;
 pub use install::{install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli, update_cli, self_update_cli};
 pub use list::{freeze_cli, parse_notify_choice};
 pub use notes::{notes_list_cli, notes_open_cli};

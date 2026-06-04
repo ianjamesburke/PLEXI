@@ -167,6 +167,15 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: Option<NotesCmd>,
     },
+    /// Audit all installed apps for capability and config gaps.
+    ///
+    /// Checks every installed app's declared capabilities against your current config.toml
+    /// and reports what's working and what needs to be configured. Use --json for scripting.
+    Doctor {
+        /// Output results as JSON (for scripting or agent use)
+        #[arg(long)]
+        json: bool,
+    },
     /// Interactive keybinding tutorial — learn split and navigate in real time.
     ///
     /// Walk through two fundamental Plexi interactions inside a live pane:
