@@ -49,6 +49,8 @@ pub struct SavedPane {
     pub app_id: Option<String>,
     #[serde(default)]
     pub app_state: Option<serde_json::Value>,
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq, Eq, Debug)]
@@ -135,6 +137,7 @@ mod tests {
                 app_id: matches!(kind, SavedPaneKind::App)
                     .then(|| "snake".to_string()),
                 app_state: None,
+                hidden: false,
             };
             let json = serde_json::to_string(&pane).expect("serialize");
             let restored: SavedPane = serde_json::from_str(&json).expect("deserialize");
@@ -150,6 +153,7 @@ mod tests {
             name: None,
             app_id: None,
             app_state: None,
+            hidden: false,
         };
         let json = serde_json::to_string(&portal_pane).expect("serialize portal");
         let restored: SavedPane = serde_json::from_str(&json).expect("deserialize portal");

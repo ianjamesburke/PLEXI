@@ -98,11 +98,22 @@ impl PlexiApp {
                 None
             };
 
-            // Build pane dots for this context row.
+            // Build pane dots for this context row — track which are hidden.
             let pane_dots = if pane_count > 0 {
+                let mut hidden_set = std::collections::HashSet::new();
+                for (dot_idx, &pid) in pane_ids.iter().enumerate() {
+                    let is_hidden = self.windows.iter()
+                        .filter(|w| w.context_id == ctx_id)
+                        .find_map(|w| w.panes.get(&pid))
+                        .map_or(false, |p| p.is_hidden());
+                    if is_hidden {
+                        hidden_set.insert(dot_idx);
+                    }
+                }
                 Some(PaneDots {
                     count: pane_count,
                     focused_idx: focused_pane_idx,
+                    hidden_set,
                 })
             } else {
                 None

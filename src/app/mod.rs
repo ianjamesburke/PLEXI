@@ -774,6 +774,7 @@ impl PlexiApp {
                                     pane_group: Some("cwd".to_string()),
                                     linked_pane_id: None,
                                     overlay_replaced: None,
+                                    hidden: false,
                                 })));
                             }
                             "secrets_manager" => {
@@ -792,6 +793,7 @@ impl PlexiApp {
                                     pane_group: None,
                                     linked_pane_id: None,
                                     overlay_replaced: None,
+                                    hidden: false,
                                 })));
                             }
                             other => {
@@ -809,6 +811,7 @@ impl PlexiApp {
                                         pane_group: registry.group_for(other),
                                         linked_pane_id: None,
                                         overlay_replaced: None,
+                                        hidden: false,
                                     })));
                                 }
                             }
@@ -822,6 +825,7 @@ impl PlexiApp {
                                 pane_id: saved_pane.id,
                                 target_context_id: *context_id,
                                 context_state: None,
+                                hidden: false,
                             })));
                         }
                     }
@@ -842,7 +846,10 @@ impl PlexiApp {
                         }
                     }
 
-                    if let Some(pane) = pane_entry {
+                    if let Some(mut pane) = pane_entry {
+                        if saved_pane.hidden {
+                            pane.set_hidden(true);
+                        }
                         panes.insert(saved_pane.id, pane);
                     }
                 }
@@ -1353,6 +1360,7 @@ impl PlexiApp {
             pane_group: None,
             linked_pane_id: None,
             overlay_replaced: None,
+            hidden: false,
         };
 
         let win = &mut self.windows[0];
@@ -2589,6 +2597,25 @@ impl eframe::App for PlexiApp {
                             // has not been pushed yet.
                             self.sync_rename_pane_focus();
                             log::info!("rename_pane: opened for pane {pane_id:?}");
+                        }
+                    }
+                }
+                Action::HidePane => {
+                    let win = &mut self.windows[self.active_window];
+                    if let Some(focused_tile) = win.focused_pane {
+                        if let Some(Tile::Pane(pane_id)) = win.tree.tiles.get(focused_tile) {
+                            let pane_id = *pane_id;
+                            if let Some(pane) = win.panes.get_mut(&pane_id) {
+                                let new_val = !pane.is_hidden();
+                                pane.set_hidden(new_val);
+                                let name = match pane {
+                                    Pane::Terminal(t) => t.name.clone().unwrap_or_default(),
+                                    Pane::App(a) => a.name.clone(),
+                                    Pane::Portal(_) => String::new(),
+                                };
+                                log::info!("pane_hide: pane={pane_id} name={name:?} hidden={new_val}");
+                                self.save_workspace();
+                            }
                         }
                     }
                 }

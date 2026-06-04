@@ -1632,6 +1632,7 @@ mod move_to_adjacent_window_tests {
             pane_group: None,
             linked_pane_id: None,
             overlay_replaced: None,
+            hidden: false,
         }))
     }
 
@@ -1745,6 +1746,7 @@ mod pop_pane_to_new_window_tests {
             pane_group: None,
             linked_pane_id: None,
             overlay_replaced: None,
+            hidden: false,
         }))
     }
 
@@ -1889,6 +1891,7 @@ mod move_to_row_boundary_tests {
             pane_group: None,
             linked_pane_id: None,
             overlay_replaced: None,
+            hidden: false,
         }))
     }
 
@@ -2075,6 +2078,7 @@ mod context_root_cwd_tests {
             pane_group: None,
             linked_pane_id: None,
             overlay_replaced: None,
+            hidden: false,
         };
         let tile = app.windows[0].tree.tiles.insert_pane(pane_id);
         app.windows[0].tree.root = Some(tile);
@@ -2101,7 +2105,7 @@ mod context_root_cwd_tests {
         let mut app = test_app();
         assert!(app.router.active().root.is_none());
         let pane_id: u64 = 99;
-        let portal = PortalPane { pane_id, target_context_id: 1, context_state: None };
+        let portal = PortalPane { pane_id, target_context_id: 1, context_state: None, hidden: false };
         let tile = app.windows[0].tree.tiles.insert_pane(pane_id);
         app.windows[0].tree.root = Some(tile);
         app.windows[0].focused_pane = Some(tile);
@@ -2165,6 +2169,7 @@ mod navigate_boundary_tests {
             pane_group: None,
             linked_pane_id: None,
             overlay_replaced: None,
+            hidden: false,
         }))
     }
 

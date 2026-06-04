@@ -26,6 +26,7 @@ use crate::config::KeybindingsConfig;
 // Cmd+Up / Cmd+Down           — scroll
 // Cmd+= / Cmd+-               — font size
 // Cmd+F                       — terminal search (handled inside egui_term, not host)
+// Cmd+U                       — toggle pane hidden state
 // Cmd+E                       — file browser
 // Cmd+Shift+I                 — set context root from focused pane CWD
 // Cmd+Option+N                — extract focused pane into a new sub-context (portal)
@@ -128,6 +129,8 @@ pub enum Action {
     ContextZoomOut,
     /// Set the active context root to the focused pane's CWD. Bound to Cmd+Shift+I.
     SetContextRootFromCwd,
+    /// Toggle hidden state on the focused pane. Bound to Cmd+U.
+    HidePane,
 }
 
 /// Resolved keybindings — one `(Modifiers, Key)` pair per named action.
@@ -180,6 +183,7 @@ pub struct KeyBindings {
     pub push_to_subcontext: (egui::Modifiers, egui::Key),
     pub new_child_context: (egui::Modifiers, egui::Key),
     pub set_context_root_from_cwd: (egui::Modifiers, egui::Key),
+    pub hide_pane: (egui::Modifiers, egui::Key),
 }
 
 fn cmd() -> egui::Modifiers { egui::Modifiers::COMMAND }
@@ -244,6 +248,7 @@ impl Default for KeyBindings {
             push_to_subcontext:        (cmd_alt(),       egui::Key::N),
             new_child_context:         (cmd_shift_alt(), egui::Key::N),
             set_context_root_from_cwd: (cmd_shift(),     egui::Key::I),
+            hide_pane:                 (cmd(),           egui::Key::U),
         }
     }
 }
@@ -395,6 +400,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(push_to_subcontext, "push_to_subcontext");
     apply_override!(new_child_context, "new_child_context");
     apply_override!(set_context_root_from_cwd, "set_context_root_from_cwd");
+    apply_override!(hide_pane, "hide_pane");
 
     // Conflict detection
     let named: &[(&str, (egui::Modifiers, egui::Key))] = &[
@@ -443,6 +449,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("push_to_subcontext",        bindings.push_to_subcontext),
         ("new_child_context",         bindings.new_child_context),
         ("set_context_root_from_cwd", bindings.set_context_root_from_cwd),
+        ("hide_pane",                 bindings.hide_pane),
     ];
 
     let mut seen: std::collections::HashMap<u64, &str> = std::collections::HashMap::new();
@@ -552,6 +559,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
         BindingEntry { modifiers: b.open_secrets_manager.0,     key: b.open_secrets_manager.1,     exact: false, context: BindingContext::Normal, action: Action::OpenSecretsManager },
         BindingEntry { modifiers: b.force_reload_app.0,         key: b.force_reload_app.1,         exact: false, context: BindingContext::Normal, action: Action::ForceReloadApp },
         BindingEntry { modifiers: b.set_context_root_from_cwd.0, key: b.set_context_root_from_cwd.1, exact: false, context: BindingContext::Normal, action: Action::SetContextRootFromCwd },
+        BindingEntry { modifiers: b.hide_pane.0,                key: b.hide_pane.1,                exact: false, context: BindingContext::Normal, action: Action::HidePane },
         BindingEntry { modifiers: b.open_scratchpad.0,          key: b.open_scratchpad.1,          exact: false, context: BindingContext::Normal, action: Action::OpenScratchpad },
         // context_zoom_out is Cmd+Escape — not exact because plain Escape is AppActive only,
         // so there is no subset conflict on this key.

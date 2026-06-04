@@ -151,6 +151,7 @@ impl PlexiApp {
                 pane_group: group,
                 linked_pane_id,
                 overlay_replaced,
+                hidden: false,
             }))
         };
 
@@ -268,6 +269,7 @@ impl PlexiApp {
                 pane_group: None,
                 linked_pane_id: None,
                 overlay_replaced: None,
+                hidden: false,
             })),
         );
         if self.windows[active].focused_pane.is_none() {
@@ -502,6 +504,7 @@ impl PlexiApp {
                 pane_group: group,
                 linked_pane_id,
                 overlay_replaced,
+                hidden: false,
             }))
         };
 
