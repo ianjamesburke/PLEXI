@@ -9,9 +9,25 @@ use std::path::PathBuf;
 
 /// Auto-initialize a project workspace at `root` if one does not already exist.
 ///
-/// Idempotent: does nothing when `.plexi/workspace.toml` is already present.
-/// Non-fatal: logs a warning on failure but never prevents the root from being set.
+/// Mirrors `plexi workspace init`: creates `.plexi/workspace.toml`, `.plexi/secrets.toml`,
+/// stub `.plexi/apps.toml`, stub `.plexi/commands.toml`, and the channel-specific dir
+/// (e.g. `.plexi-alpha/`). Idempotent — skips if the channel dir already exists.
+/// Non-fatal — logs warn on failure but never prevents the root from being set.
 fn auto_init_workspace(root: &std::path::Path) {
+    // Guard: never init at home dir, filesystem root, or inside a Plexi profile dir.
+    let home = dirs::home_dir();
+    let root_str = root.to_string_lossy();
+    let is_home_or_root = root == std::path::Path::new("/")
+        || home.as_ref().map(|h| root == *h).unwrap_or(false);
+    let is_inside_profile = home.as_ref().map(|h| {
+        let prefix = format!("{}/.plexi", h.to_string_lossy());
+        root_str.starts_with(&prefix)
+    }).unwrap_or(false);
+    if is_home_or_root || is_inside_profile {
+        log::info!("auto_init_workspace: skipping home/root/profile path {}", root.display());
+        return;
+    }
+
     let channel_dir_name = crate::config::config_dir()
         .file_name()
         .and_then(|n| n.to_str())
@@ -19,19 +35,56 @@ fn auto_init_workspace(root: &std::path::Path) {
         .to_string();
     let channel_path = root.join(&channel_dir_name);
     if channel_path.exists() {
-        log::info!("auto_init_workspace: channel dir already exists at {}", channel_path.display());
+        log::info!("auto_init_workspace: already initialized at {}", root.display());
         return;
     }
-    match std::fs::create_dir_all(&channel_path) {
-        Ok(()) => log::info!(
-            "auto_init_workspace: created channel dir {} at {}",
-            channel_dir_name,
-            root.display()
+
+    // Core workspace files (.plexi/workspace.toml + .plexi/secrets.toml).
+    match crate::workspace::secrets::init_workspace(root) {
+        Ok(cfg) => log::info!(
+            "auto_init_workspace: initialized workspace_id={} at {}",
+            cfg.id, root.display()
         ),
-        Err(e) => log::warn!(
-            "auto_init_workspace: could not create channel dir {}: {e}",
-            channel_path.display()
-        ),
+        Err(e) => {
+            log::warn!("auto_init_workspace: init_workspace failed at {}: {e}", root.display());
+            return;
+        }
+    }
+
+    // Channel-specific dir (e.g. .plexi-alpha/, .plexi-pr-N/).
+    if let Err(e) = std::fs::create_dir_all(&channel_path) {
+        log::warn!("auto_init_workspace: could not create {}: {e}", channel_path.display());
+    } else {
+        log::info!("auto_init_workspace: created channel dir {}/", channel_dir_name);
+    }
+
+    // Stub .plexi/apps.toml.
+    let apps_toml = root.join(".plexi").join("apps.toml");
+    if !apps_toml.exists() {
+        let stub = concat!(
+            "schema_version = 1\n\n",
+            "# Declare workspace app dependencies here.\n",
+            "# Run `plexi app install` in this directory to install them.\n",
+        );
+        if let Err(e) = std::fs::write(&apps_toml, stub) {
+            log::warn!("auto_init_workspace: could not write apps.toml: {e}");
+        }
+    }
+
+    // Stub .plexi/commands.toml.
+    let commands_toml = root.join(".plexi").join("commands.toml");
+    if !commands_toml.exists() {
+        let stub = concat!(
+            "# Workspace commands — run with: plexi run <name>\n",
+            "#\n",
+            "# Simple form:   build = \"cargo build\"\n",
+            "# With metadata: dev = { run = \"npm run dev\", description = \"Start dev server\" }\n",
+            "\n",
+            "[commands]\n",
+        );
+        if let Err(e) = std::fs::write(&commands_toml, stub) {
+            log::warn!("auto_init_workspace: could not write commands.toml: {e}");
+        }
     }
 }
 
