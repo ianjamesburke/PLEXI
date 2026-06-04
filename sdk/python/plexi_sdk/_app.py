@@ -636,6 +636,16 @@ class App:
                 app = MyApp()
                 app.run()
         """
+        if not getattr(self, "_sdk_initialized", False):
+            raise RuntimeError(
+                f"{type(self).__name__}.run() called but SDK was not initialized. "
+                "Your __init__ must call super().__init__() first, or omit __init__ entirely. "
+                "Example:\n"
+                "    class MyApp(App):\n"
+                "        def __init__(self):\n"
+                "            super().__init__()\n"
+                "            self.my_state = {}"
+            )
         if "--plexi-introspect" in sys.argv:
             self._run_introspect()
             return

@@ -127,6 +127,11 @@ class RenderContext:
             fill: Fill color as hex string (e.g., "#ff0000" or "#ff0000aa" with alpha)
             radius: Corner radius in pixels (0.0 = sharp corners, default)
         """
+        if not isinstance(fill, str):
+            raise TypeError(
+                f"ctx.rect() fill must be a hex color string (e.g. \"#ff0000\"), "
+                f"got {type(fill).__name__}: {fill!r}"
+            )
         self._queue({"type": "rect", "x": x, "y": y, "w": w, "h": h,
                      "fill": fill, "radius": radius})
 
@@ -179,6 +184,22 @@ class RenderContext:
         so the host always has required fields (no serde defaults). The SDK
         fills in None / True / False when the caller omits them.
         """
+        if not isinstance(text, str):
+            raise TypeError(
+                f"ctx.text() text must be a string, got {type(text).__name__}: {text!r}. "
+                f"Convert with str(): ctx.text(x, y, str(value), ...)"
+            )
+        if not isinstance(color, str):
+            raise TypeError(
+                f"ctx.text() color must be a hex color string (e.g. \"#cdd6f4\"), "
+                f"got {type(color).__name__}: {color!r}"
+            )
+        if not isinstance(size, (int, float)):
+            raise TypeError(
+                f"ctx.text() size must be a number (e.g. 14.0), "
+                f"got {type(size).__name__}: {size!r}. "
+                f"Use a font constant: from plexi_sdk import BODY, CAPTION, HINT"
+            )
         d: dict = {"type": "text", "x": x, "y": y, "text": text, "size": size,
                    "color": color, "monospace": monospace, "bold": bold,
                    "align": align, "max_width": max_width, "elide": elide,
@@ -496,6 +517,21 @@ class RenderContext:
                 Footer("status line"),
             ]))
         """
+        if tree is None:
+            raise TypeError(
+                "ctx.render() received None. Pass a Component tree, e.g. "
+                "ctx.render(Column([Label(text='hello')]))"
+            )
+        if isinstance(tree, str):
+            raise TypeError(
+                f"ctx.render() received a string {tree!r}. Pass a Component tree, not raw text. "
+                "To display text, use: ctx.render(Column([Label(text='hello')]))"
+            )
+        if isinstance(tree, (list, tuple)):
+            raise TypeError(
+                f"ctx.render() received a {type(tree).__name__}. Wrap children in a container: "
+                "ctx.render(Column([child1, child2, ...])) instead of ctx.render([child1, child2])"
+            )
         # Local import avoids a circular dependency at module load time
         # (ui.py references RenderContext only through duck-typed `ctx`).
         from plexi_sdk.ui import render_tree
@@ -868,13 +904,21 @@ class RenderContext:
 
         Emitted as: {"type": "component_tree", "root": <UiNode dict>}
         """
+        if node is None:
+            raise TypeError(
+                "ctx.render_tree() received None. Pass a UiNode dict or an object "
+                "with a to_node() method (e.g. Tabs, Grid, Toggle, Clickable)."
+            )
         if isinstance(node, dict):
             root = node
         elif hasattr(node, "to_node"):
             root = node.to_node()
         else:
             raise TypeError(
-                f"render_tree: expected HasToNode or dict, got {type(node).__name__}"
+                f"ctx.render_tree() expected a dict or object with to_node(), "
+                f"got {type(node).__name__}. "
+                f"For L0 components (Column, Card, etc.), use ctx.render(tree) instead. "
+                f"For L1 node trees (Tabs, Grid, Toggle), pass the object directly."
             )
         self._queue({"type": "component_tree", "root": root})
 
