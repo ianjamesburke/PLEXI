@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.593"
+verified_version: "0.0.615"
 order: 7
 ---
 
@@ -136,6 +136,60 @@ Manually trigger a named routine from .plexi/routines.toml
 |---|---|---|---|
 | `<name>` | string | yes | Name of the routine to run |
 
+## `plexi agent`
+
+Manage workspace agent definitions.
+
+Install agent definitions from the global registry (`~/.plexi/agents/`) into the current workspace's `.plexi/agents/` directory, each with scoped memory and logs.
+
+| Subcommand | Description |
+|---|---|
+| `init` | Scaffold a new agent app with ai.query capability and a chat UI |
+| `add` | Install an agent definition from the global registry into the current workspace |
+| `update` | Re-install an agent definition from the global registry, preserving memory and logs |
+| `list` | List agents installed in the current workspace |
+
+### `plexi agent init`
+
+Scaffold a new agent app with ai.query capability and a chat UI.
+
+Creates the app directory, manifest.toml (with ai.query pre-configured), and main.py from the agent template. Equivalent to the former `plexi app init --agent <name>`.
+
+Example: plexi agent init my-agent
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | App name (used as the directory name and app ID) |
+| `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane. Defaults to PLEXI_PANE_ID if set in the environment |
+
+### `plexi agent add`
+
+Install an agent definition from the global registry into the current workspace.
+
+Copies `~/.plexi/agents/<name>/AGENT.md` into `.plexi/agents/<name>/AGENT.md` and creates `memory/` and `logs/` subdirectories for scoped agent state.
+
+Example: plexi agent add project-manager
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Agent name (must exist in ~/.plexi/agents/<name>/AGENT.md) |
+
+### `plexi agent update`
+
+Re-install an agent definition from the global registry, preserving memory and logs.
+
+Overwrites `.plexi/agents/<name>/AGENT.md` with the latest version from the global registry while leaving the `memory/` and `logs/` directories untouched.
+
+Example: plexi agent update project-manager
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Agent name to update |
+
+### `plexi agent list`
+
+List agents installed in the current workspace
+
 ## `plexi context`
 
 Manage the active context (the folder and project scope tied to the current pane)
@@ -215,7 +269,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 
 | Subcommand | Description |
 |---|---|
-| `open` | Open an app or tool in a new pane |
+| `open` | Open an app or tool in a new pane (defaults to overlay) |
 | `install` | Install an app from a local path, a remote source, or a pack file |
 | `uninstall` | Remove an installed app by id |
 | `list` | Show all installed apps with their versions |
@@ -225,12 +279,13 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `run` | Run an app directly from a local directory without installing or linking |
 | `validate` | Check a Plexi app directory for errors before publishing or installing |
 | `freeze` | Export your currently installed apps as a single TOML snapshot for sharing or backup |
-| `publish` | Package the app in the current directory and print the registry submission payload |
+| `dev` | Scaffold a new app directly into the global registry and open it in a pane |
+| `publish` | Publish an app to the Plexi marketplace |
 | `update` | Check installed apps for available updates |
 
 ### `plexi app open`
 
-Open an app or tool in a new pane.
+Open an app or tool in a new pane (defaults to overlay).
 
 Pass an app id (e.g. `plexi app open snake`) to open an installed app. Use `--mcp` to wrap an MCP server, or `--cli` to open any CLI tool with a Plexi UI.
 
@@ -239,7 +294,12 @@ Pass an app id (e.g. `plexi app open snake`) to open an installed app. Use `--mc
 | `<type_id>` | string | no | App id to open (mutually exclusive with --mcp and --cli) |
 | `--mcp` | string (repeatable) | no | Wrap a stdio MCP server in a Plexi pane.  Example: plexi app open --mcp npx @modelcontextprotocol/server-filesystem /tmp |
 | `--cli` | string | no | Wrap a CLI tool in a Plexi pane with a visual UI.  Example: plexi app open --cli git |
-| `--layout` | string | no | Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, new_window, or overlay |
+| `--down` / `-d` | flag | no | Split below |
+| `--left` / `-l` | flag | no | Split left |
+| `--up` / `-u` | flag | no | Split up |
+| `--right` / `-r` | flag | no | Split right |
+| `--tab` | flag | no | New tab |
+| `--window` | flag | no | New window |
 | `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane |
 | `<extra_args>` | string (repeatable) | no | Extra arguments passed through to the app (only valid with an app id) |
 
@@ -329,17 +389,25 @@ Like `pip freeze` — captures exactly what's installed so you can replay it lat
 |---|---|---|---|
 | `<path>` | string | yes | Destination path for the TOML snapshot file |
 
-### `plexi app publish`
+### `plexi app dev`
 
-Package the app in the current directory and print the registry submission payload.
+Scaffold a new app directly into the global registry and open it in a pane.
 
-Validates all required fields, checks that the entry file exists, and prints the JSON payload that would be submitted to the Plexi app registry.
+This is the fastest path from zero to running app: one command scaffolds the template into `~/.plexi-<channel>/apps/<name>/` and opens it immediately. Hot reload is automatic (`watch = true` in the generated manifest).
 
-The actual HTTP submission is future work — this command proves the manifest is correct and ready for publishing.
+Example: plexi app dev my-widget
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--dry-run` | flag | no | Print the payload without submitting (currently the only mode — actual registry upload is future work) |
+| `<name>` | string | yes | Name for the new app (used as directory name and app id) |
+| `--lang` | string | no | Language template: python (default) or rust Default: `python`. |
+| `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane |
+
+### `plexi app publish`
+
+Publish an app to the Plexi marketplace.
+
+The Plexi app marketplace is under development. This command will be available in a future release.
 
 ### `plexi app update`
 
@@ -373,6 +441,7 @@ Control panes — list, focus, send input, capture output, and more
 
 | Subcommand | Description |
 |---|---|
+| `new` | Open a new terminal pane |
 | `name` | Rename a pane |
 | `list` | List all open panes as a JSON array |
 | `focus` | Move the visible focus to a specific pane |
@@ -382,6 +451,32 @@ Control panes — list, focus, send input, capture output, and more
 | `info` | Print details about the current pane as JSON |
 | `capture` | Capture the last N lines of a pane's output as a JSON array |
 | `key` | Send a key press to a pane |
+| `command` | Send a shell command to a terminal pane as if typed from the keyboard |
+| `state` | Return the current UI state of a pane as JSON |
+
+### `plexi pane new`
+
+Open a new terminal pane.
+
+Examples: plexi pane new                          # empty terminal, split right plexi pane new "npm run dev" -n "dev"   # terminal with command, named plexi pane new -d                       # split below
+
+For apps use `plexi app open`. For MCP servers use `plexi app open --mcp`.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<cmd>` | string | no | Shell command to run in the new terminal |
+| `--name` / `-n` | string | no | Name the pane |
+| `--down` / `-d` | flag | no | Split below instead of right |
+| `--left` / `-l` | flag | no | Split left |
+| `--up` / `-u` | flag | no | Split up |
+| `--right` / `-r` | flag | no | Split right (explicit, same as default) |
+| `--tab` | flag | no | New tab |
+| `--window` | flag | no | New window |
+| `--overlay` | flag | no | Overlay pane |
+| `--from` | string | no | Pane ID to split relative to (default: focused pane) |
+| `--ephemeral` / `-e` | flag | no | Close the pane when the command finishes |
+| `--no-focus` | flag | no | Keep focus on the current pane |
+| `--cwd` | string | no | Working directory |
 
 ### `plexi pane name`
 
@@ -475,6 +570,34 @@ Example: plexi pane key 42 enter
 | `<pane_id>` | string | yes | Pane id to send the key to (from `plexi pane list`) |
 | `<key>` | string | yes | Key to press |
 
+### `plexi pane command`
+
+Send a shell command to a terminal pane as if typed from the keyboard.
+
+Use `--enter` to append a newline so the command is submitted immediately.
+
+Example: plexi pane command 42 "git status" --enter
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | yes | Pane id to send the command to (from `plexi pane list`) |
+| `<text>` | string | yes | Text to send to the pane |
+| `--enter` / `-e` | flag | no | Append a newline after the text, submitting it as a command |
+
+### `plexi pane state`
+
+Return the current UI state of a pane as JSON.
+
+For app panes: returns a JSON object with a `frame` array of RenderCommands representing the last-rendered L1 UiNode tree. Agents can use this to inspect what an app is currently displaying.
+
+For terminal panes: returns a simple status object (type, title, pane_id).
+
+Example: plexi pane state 42
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | yes | Pane id to query (from `plexi pane list`) |
+
 ## `plexi terminal`
 
 Open a plain terminal pane
@@ -567,6 +690,16 @@ Print paths of all scratchpad notes, newest first
 Open a note picker with fzf in the focused terminal pane.
 
 Requires fzf to be installed. Falls back to printing the notes directory when fzf is not available or PLEXI_SOCKET is not set.
+
+## `plexi doctor`
+
+Audit all installed apps for capability and config gaps.
+
+Checks every installed app's declared capabilities against your current config.toml and reports what's working and what needs to be configured. Use --json for scripting.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Output results as JSON (for scripting or agent use) |
 
 ## `plexi demo`
 
