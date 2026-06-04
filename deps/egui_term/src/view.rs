@@ -1,6 +1,7 @@
 use alacritty_terminal::index::Point as TerminalGridPoint;
 use alacritty_terminal::selection::SelectionRange;
 use alacritty_terminal::term::cell;
+use alacritty_terminal::term::search::{Match, RegexSearch};
 use alacritty_terminal::term::TermMode;
 use alacritty_terminal::vte::ansi::{Color, CursorShape, NamedColor};
 use egui::emath::GuiRounding;
@@ -46,6 +47,32 @@ struct CopyModeState {
 }
 
 #[derive(Clone)]
+struct SearchModeState {
+    /// The raw query string typed by the user.
+    query: String,
+    /// Compiled regex from query; None if query is empty or invalid.
+    compiled: Option<RegexSearch>,
+    /// All matches in the full scrollback, recomputed on query change.
+    matches: Vec<Match>,
+    /// Index into `matches` for the current highlighted match (wraps).
+    current: usize,
+    /// Stashed query to detect changes and avoid recompilation every frame.
+    last_compiled_query: String,
+}
+
+impl SearchModeState {
+    fn new() -> Self {
+        Self {
+            query: String::new(),
+            compiled: None,
+            matches: Vec::new(),
+            current: 0,
+            last_compiled_query: String::new(),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct TerminalViewState {
     is_dragged: bool,
     scroll_pixels: f32,
@@ -53,6 +80,7 @@ pub struct TerminalViewState {
     last_cursor_toggle: Instant,
     cursor_visible: bool,
     copy_mode: Option<CopyModeState>,
+    search_mode: Option<SearchModeState>,
     /// Selection captured when this pane lost focus. Used to keep the selection
     /// highlight visible in unfocused panes even if the alacritty backend clears
     /// the live selection due to new terminal output.
@@ -68,6 +96,7 @@ impl Default for TerminalViewState {
             last_cursor_toggle: Instant::now(),
             cursor_visible: true,
             copy_mode: None,
+            search_mode: None,
             frozen_selection_range: None,
         }
     }
@@ -211,13 +240,42 @@ impl<'a> TerminalView<'a> {
                     state.cursor_visible = true;
                     state.last_cursor_toggle = Instant::now();
 
-                    if state.copy_mode.is_some() {
+                    if state.search_mode.is_some() {
+                        input_actions.extend(process_search_mode_event(
+                            &event,
+                            state,
+                            self.backend,
+                        ));
+                    } else if state.copy_mode.is_some() {
                         input_actions.extend(process_copy_mode_event(
                             &event,
                             state,
                             self.backend,
                             &layout,
                         ));
+                    } else if let egui::Event::Key {
+                        key: Key::F,
+                        pressed: true,
+                        modifiers: key_mods,
+                        ..
+                    } = &event
+                    {
+                        // Cmd+F: enter search mode. Skip in alt-screen (TUIs).
+                        if key_mods.command && !key_mods.shift && !key_mods.alt && !key_mods.ctrl {
+                            let content = self.backend.last_content();
+                            if !content.terminal_mode.contains(TermMode::ALT_SCREEN) {
+                                log::info!("[search-mode] entered via Cmd+F");
+                                state.search_mode = Some(SearchModeState::new());
+                            }
+                            input_actions.push(InputAction::Ignore);
+                        } else {
+                            input_actions.push(process_keyboard_event(
+                                event,
+                                self.backend,
+                                &self.bindings_layout,
+                                modifiers,
+                            ));
+                        }
                     } else if let egui::Event::Key {
                         key: Key::Y,
                         pressed: true,
@@ -704,6 +762,158 @@ impl<'a> TerminalView<'a> {
             );
         }
 
+        // Search-mode: match highlights and overlay
+        if let Some(ref sm) = state.search_mode {
+            let display_offset = content.grid.display_offset() as i32;
+            let screen_lines = content.terminal_size.screen_lines() as i32;
+            let num_cols = content.terminal_size.columns();
+            // Viewport line range in grid coordinates
+            let viewport_top = -display_offset;
+            let viewport_bottom = viewport_top + screen_lines - 1;
+
+            for (idx, m) in sm.matches.iter().enumerate() {
+                let start = *m.start();
+                let end = *m.end();
+                let is_current = idx == sm.current;
+
+                // Paint highlight for each line the match spans
+                let match_start_line = start.line.0;
+                let match_end_line = end.line.0;
+
+                for line in match_start_line..=match_end_line {
+                    // Skip lines outside the visible viewport
+                    if line < viewport_top || line > viewport_bottom {
+                        continue;
+                    }
+
+                    let viewport_row = (line - viewport_top) as f32;
+                    let col_start = if line == match_start_line { start.column.0 } else { 0 };
+                    let col_end = if line == match_end_line { end.column.0 } else { num_cols - 1 };
+
+                    let x0 = layout_min.x + col_start as f32 * cell_width;
+                    let y0 = layout_min.y + viewport_row * cell_height;
+                    let x1 = layout_min.x + (col_end + 1) as f32 * cell_width;
+                    let y1 = y0 + cell_height;
+
+                    let highlight_rect = Rect::from_min_max(
+                        Pos2::new(x0.max(layout_min.x), y0.max(layout_min.y)),
+                        Pos2::new(x1.min(layout_max.x), y1.min(layout_max.y)),
+                    );
+
+                    let color = if is_current {
+                        // Current match: orange accent
+                        Color32::from_rgba_unmultiplied(255, 165, 0, 120)
+                    } else {
+                        // Other matches: dimmer orange
+                        Color32::from_rgba_unmultiplied(255, 165, 0, 45)
+                    };
+
+                    painter.rect_filled(highlight_rect, CornerRadius::ZERO, color);
+                }
+            }
+
+            // Search overlay pill (top-right corner)
+            let overlay_font = egui::FontId::monospace(12.0);
+            let counter_font = egui::FontId::monospace(11.0);
+            let pill_pad_h = 8.0;
+            let pill_pad_v = 5.0;
+            let pill_gap = 6.0;
+
+            // Query display
+            let query_display = if sm.query.is_empty() {
+                "Search...".to_string()
+            } else {
+                sm.query.clone()
+            };
+            let query_color = if sm.query.is_empty() {
+                Color32::from_rgba_unmultiplied(180, 180, 180, 160)
+            } else {
+                Color32::from_rgba_unmultiplied(240, 240, 240, 230)
+            };
+            let query_galley = painter.layout_no_wrap(
+                query_display,
+                overlay_font.clone(),
+                query_color,
+            );
+
+            // Counter display
+            let counter_text = if sm.matches.is_empty() {
+                if sm.query.is_empty() {
+                    String::new()
+                } else {
+                    "No results".to_string()
+                }
+            } else {
+                format!("{}/{}", sm.current + 1, sm.matches.len())
+            };
+            let counter_galley = painter.layout_no_wrap(
+                counter_text.clone(),
+                counter_font.clone(),
+                Color32::from_rgba_unmultiplied(180, 180, 180, 200),
+            );
+
+            let counter_width = if counter_text.is_empty() { 0.0 } else { counter_galley.size().x + pill_gap };
+            let pill_width = query_galley.size().x + counter_width + pill_pad_h * 2.0;
+            let pill_width = pill_width.max(140.0).min(280.0);
+            let pill_height = query_galley.size().y + pill_pad_v * 2.0;
+
+            let pill_rect = Rect::from_min_size(
+                Pos2::new(layout_max.x - pill_width - 8.0, layout_min.y + 6.0),
+                Vec2::new(pill_width, pill_height),
+            );
+
+            // Background
+            painter.rect_filled(
+                pill_rect,
+                CornerRadius::same(6),
+                Color32::from_rgba_unmultiplied(30, 30, 30, 230),
+            );
+            // Border
+            painter.rect_stroke(
+                pill_rect,
+                CornerRadius::same(6),
+                Stroke::new(1.0, Color32::from_rgba_unmultiplied(100, 100, 100, 120)),
+                egui::StrokeKind::Inside,
+            );
+
+            // Query text (left-aligned within pill)
+            let query_pos = Pos2::new(
+                pill_rect.min.x + pill_pad_h,
+                pill_rect.center().y - query_galley.size().y / 2.0,
+            );
+            painter.galley(query_pos, query_galley, Color32::TRANSPARENT);
+
+            // Counter (right-aligned within pill)
+            if !counter_text.is_empty() {
+                let counter_pos = Pos2::new(
+                    pill_rect.max.x - pill_pad_h - counter_galley.size().x,
+                    pill_rect.center().y - counter_galley.size().y / 2.0,
+                );
+                painter.galley(counter_pos, counter_galley, Color32::TRANSPARENT);
+            }
+
+            // Blinking cursor in the query field using wall-clock time
+            let blink_on = (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() / 530) % 2 == 0;
+            if blink_on {
+                let cursor_x = query_pos.x + painter.layout_no_wrap(
+                    sm.query.clone(),
+                    overlay_font,
+                    Color32::TRANSPARENT,
+                ).size().x;
+                painter.line_segment(
+                    [
+                        Pos2::new(cursor_x + 1.0, pill_rect.min.y + pill_pad_v),
+                        Pos2::new(cursor_x + 1.0, pill_rect.max.y - pill_pad_v),
+                    ],
+                    Stroke::new(1.5, Color32::from_rgba_unmultiplied(200, 200, 200, 200)),
+                );
+            }
+            painter.ctx().request_repaint_after(Duration::from_millis(530));
+        }
+
         let offset = content.grid.display_offset();
         if offset > 0 {
             painter.text(
@@ -1028,6 +1238,113 @@ fn process_copy_mode_event(
     }
 
     actions
+}
+
+fn process_search_mode_event(
+    event: &egui::Event,
+    state: &mut TerminalViewState,
+    backend: &mut TerminalBackend,
+) -> Vec<InputAction> {
+    let mut actions: Vec<InputAction> = vec![];
+
+    match event {
+        // Escape or second Cmd+F: dismiss search
+        egui::Event::Key { key: Key::Escape, pressed: true, .. } => {
+            log::info!("[search-mode] dismissed via Escape");
+            state.search_mode = None;
+        }
+        egui::Event::Key { key: Key::F, pressed: true, modifiers: m, .. }
+            if m.command && !m.shift && !m.alt && !m.ctrl =>
+        {
+            log::info!("[search-mode] dismissed via Cmd+F toggle");
+            state.search_mode = None;
+        }
+        // Enter: next match
+        egui::Event::Key { key: Key::Enter, pressed: true, modifiers: m, .. } if !m.shift => {
+            let sm = state.search_mode.as_mut().unwrap();
+            if !sm.matches.is_empty() {
+                sm.current = (sm.current + 1) % sm.matches.len();
+                let target_line = *sm.matches[sm.current].start();
+                backend.scroll_to_line(target_line.line);
+                log::info!("[search-mode] next match: {}/{}", sm.current + 1, sm.matches.len());
+            }
+        }
+        // Shift+Enter: previous match
+        egui::Event::Key { key: Key::Enter, pressed: true, modifiers: m, .. } if m.shift => {
+            let sm = state.search_mode.as_mut().unwrap();
+            if !sm.matches.is_empty() {
+                sm.current = if sm.current == 0 { sm.matches.len() - 1 } else { sm.current - 1 };
+                let target_line = *sm.matches[sm.current].start();
+                backend.scroll_to_line(target_line.line);
+                log::info!("[search-mode] prev match: {}/{}", sm.current + 1, sm.matches.len());
+            }
+        }
+        // Backspace: remove last char
+        egui::Event::Key { key: Key::Backspace, pressed: true, .. } => {
+            let sm = state.search_mode.as_mut().unwrap();
+            sm.query.pop();
+            recompile_search(sm, backend);
+        }
+        // Text input: append to query
+        egui::Event::Text(text) => {
+            let sm = state.search_mode.as_mut().unwrap();
+            sm.query.push_str(text);
+            recompile_search(sm, backend);
+        }
+        // Absorb all other key events to prevent them reaching the PTY
+        egui::Event::Key { .. } | egui::Event::Copy | egui::Event::Paste(_) => {}
+        _ => {}
+    }
+
+    actions.push(InputAction::Ignore);
+    actions
+}
+
+/// Escape special regex characters so the query is treated as a literal string.
+fn escape_regex(s: &str) -> String {
+    let mut escaped = String::with_capacity(s.len() * 2);
+    for c in s.chars() {
+        if matches!(c, '\\' | '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$') {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
+}
+
+/// Recompile the search regex and collect matches when the query changes.
+fn recompile_search(sm: &mut SearchModeState, backend: &mut TerminalBackend) {
+    if sm.query == sm.last_compiled_query {
+        return;
+    }
+    sm.last_compiled_query = sm.query.clone();
+    sm.matches.clear();
+    sm.current = 0;
+    sm.compiled = None;
+
+    if sm.query.is_empty() {
+        return;
+    }
+
+    // Build a case-insensitive regex by prefixing (?i) and escaping the query
+    let escaped = escape_regex(&sm.query);
+    let pattern = format!("(?i){escaped}");
+    match RegexSearch::new(&pattern) {
+        Ok(mut regex) => {
+            sm.matches = backend.search_scrollback(&mut regex);
+            sm.compiled = Some(regex);
+            if !sm.matches.is_empty() {
+                // Start at the last match (closest to bottom / most recent)
+                sm.current = sm.matches.len() - 1;
+                let target_line = *sm.matches[sm.current].start();
+                backend.scroll_to_line(target_line.line);
+            }
+            log::info!("[search-mode] query='{}' found {} matches", sm.query, sm.matches.len());
+        }
+        Err(e) => {
+            log::warn!("[search-mode] regex compile failed for '{}': {}", sm.query, e);
+        }
+    }
 }
 
 fn process_mouse_wheel(
