@@ -25,9 +25,10 @@ ignored by the host. Missing required fields fail deserialization loudly.
    - [L1 Sugar](#l1-sugar)
    - [L1 Layout Components](#l1-layout-components)
 5. [Capabilities](#capabilities)
-6. [Supporting Types](#supporting-types)
-7. [Python SDK Components](#python-sdk-components)
-8. [Common Patterns](#common-patterns)
+6. [Security Model](#security-model)
+7. [Supporting Types](#supporting-types)
+8. [Python SDK Components](#python-sdk-components)
+9. [Common Patterns](#common-patterns)
 
 ---
 
@@ -1380,6 +1381,27 @@ AppRequest commands to be accepted by the host.
 No capability required: ListAudioDevices, ListMidiDevices, CopyToClipboard,
 MeasureText, MeasureTextWrapped, StatusSummary, SaveAppState, Log,
 ScheduleRender, SetMinSize, CloseSelf, PushNav, PopNav, SetMouseTracking.
+
+---
+
+## Security Model
+
+> **Plexi v1 apps are native Python processes. The capability system is consent +
+> audit, not process isolation. Install only apps you trust.**
+
+The full security model is documented in [`docs/SECURITY_MODEL.md`](SECURITY_MODEL.md).
+Key points:
+
+- **What capabilities gate:** protocol commands on the PGAP wire. A host refuses
+  any `AppRequest` that requires a capability not declared in `manifest.toml`.
+- **What capabilities do NOT gate:** direct Python stdlib calls. An app can bypass
+  the protocol layer entirely using `open()`, `socket`, `subprocess`, etc.
+- **Not sandboxed in v1:** filesystem, network, subprocess spawning, env vars.
+- **Future:** WASM-based isolation maps capabilities to WASI grants, enforcing
+  the boundary at the syscall level rather than the protocol layer.
+
+Treat Plexi apps like shell scripts, not browser tabs. Review the manifest and
+source before installing any app you did not write yourself.
 
 ---
 
