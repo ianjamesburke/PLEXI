@@ -103,7 +103,8 @@
       "name": "Pane Lifecycle",
       "status": "remaining",
       "issues": {
-        "ephemeral_hiding": {"status": "remaining", "title": "Ephemeral pane hiding", "load": "M", "area": "host/panes", "no_issue": true},
+        "1948": {"status": "remaining", "title": "Pane-level hiding: Cmd+H outline dots, dimmed tabs, eye icon flash", "load": "M", "area": "host/pane-ops"},
+        "1949": {"status": "remaining", "title": "Context-level parking: Cmd+Shift+H collapsed Parked(N) sidebar section", "load": "M", "area": "ui/sidebar"},
         "inventory_overlay": {"status": "remaining", "title": "Inventory overlay (Cmd+I)", "load": "M", "area": "host/overlays", "no_issue": true},
         "hidden_notifications": {"status": "remaining", "title": "Notifications from hidden panes", "load": "S", "area": "host/notifications", "no_issue": true},
         "restore_to_layout": {"status": "remaining", "title": "Restore-to-layout: pull hidden pane back", "load": "M", "area": "host/panes", "no_issue": true},

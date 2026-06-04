@@ -165,8 +165,9 @@ Any coding agent (Claude Code, Codex, PI, etc.) can drive Plexi and its apps via
 
 The backpack, the inventory, and pane management beyond the tiling grid.
 
-- [ ] Ephemeral pane hiding -- panes exist in state but not in the tile tree, processes keep running
-- [ ] Inventory overlay (Cmd+I) -- searchable, keyboard-navigable list of all hidden panes
+- [ ] Pane-level hiding (#1948) -- Cmd+H toggles hidden state: outline dots, dimmed tabs, eye icon flash
+- [ ] Context-level parking (#1949) -- Cmd+Shift+H parks context into collapsed "Parked (N)" sidebar section
+- [ ] Inventory overlay (Cmd+I) -- searchable, keyboard-navigable list of all hidden/parked panes
 - [ ] Notifications from hidden panes -- background panes can still fire notifications that surface in the active layout
 - [ ] Restore-to-layout -- pull a hidden pane back into the tiling grid (split into focused pane or new window)
 - [ ] Context operations -- move pane between contexts (#1634), new-child-context shortcut (#1833)
