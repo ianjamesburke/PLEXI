@@ -749,6 +749,12 @@ impl PlexiApp {
             let ctx_desc_map: std::collections::HashMap<u64, String> = ws.contexts.iter()
                 .filter_map(|c| c.description.as_ref().map(|d| (c.context_id, d.clone())))
                 .collect();
+            let ctx_root_map: std::collections::HashMap<u64, PathBuf> = ws.contexts.iter()
+                .filter_map(|c| c.root.as_ref().map(|r| (c.context_id, r.clone())))
+                .collect();
+            let ctx_depth_map: std::collections::HashMap<u64, u32> = ws.contexts.iter()
+                .map(|c| (c.context_id, c.depth))
+                .collect();
             for saved_win in ws.windows {
                 let mut panes = HashMap::new();
                 for saved_pane in &saved_win.panes {
@@ -843,7 +849,9 @@ impl PlexiApp {
                     if pane_entry.is_none() {
                         let ctx_name = ctx_name_map.get(&saved_win.context_id).cloned().unwrap_or_default();
                         let ctx_desc = ctx_desc_map.get(&saved_win.context_id).cloned().unwrap_or_default();
-                        let settings = Self::make_backend_settings(saved_pane.id, cwd, &colors, saved_win.context_id, &ctx_name, &ctx_desc);
+                        let ctx_root = ctx_root_map.get(&saved_win.context_id);
+                        let ctx_depth = ctx_depth_map.get(&saved_win.context_id).copied().unwrap_or(0);
+                        let settings = Self::make_backend_settings(saved_pane.id, cwd, &colors, saved_win.context_id, &ctx_name, &ctx_desc, ctx_root, ctx_depth);
                         if let Some(mut pane) = TerminalPane::new(
                             saved_pane.id,
                             cc.egui_ctx.clone(),
@@ -1406,8 +1414,13 @@ impl PlexiApp {
         context_id: u64,
         context_name: &str,
         context_description: &str,
+        context_root: Option<&PathBuf>,
+        context_depth: u32,
     ) -> BackendSettings {
-        log::info!("make_backend_settings: pane_id={pane_id} context_id={context_id} context_name={context_name:?}");
+        log::info!(
+            "make_backend_settings: pane_id={pane_id} context_id={context_id} \
+             context_name={context_name:?} context_root={context_root:?} context_depth={context_depth}"
+        );
         let mut env = shell::build_env();
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
         let socket = crate::config::config_dir()
@@ -1418,6 +1431,10 @@ impl PlexiApp {
         env.insert("PLEXI_CONTEXT_ID".into(), context_id.to_string());
         env.insert("PLEXI_CONTEXT_NAME".into(), context_name.to_string());
         env.insert("PLEXI_CONTEXT_DESCRIPTION".into(), context_description.to_string());
+        if let Some(root) = context_root {
+            env.insert("PLEXI_CONTEXT_ROOT".into(), root.to_string_lossy().into_owned());
+        }
+        env.insert("PLEXI_CONTEXT_DEPTH".into(), context_depth.to_string());
         BackendSettings {
             shell: shell::detect_shell(),
             args: vec!["-l".to_string()],
@@ -1439,6 +1456,19 @@ impl PlexiApp {
             .find(|c| c.context_id == context_id)
             .and_then(|c| c.description.clone())
             .unwrap_or_default()
+    }
+
+    pub(crate) fn context_root_for(&self, context_id: u64) -> Option<PathBuf> {
+        self.router.iter()
+            .find(|c| c.context_id == context_id)
+            .and_then(|c| c.root.clone())
+    }
+
+    pub(crate) fn context_depth_for(&self, context_id: u64) -> u32 {
+        self.router.iter()
+            .find(|c| c.context_id == context_id)
+            .map(|c| c.depth)
+            .unwrap_or(0)
     }
 }
 
