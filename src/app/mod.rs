@@ -2492,6 +2492,42 @@ impl eframe::App for PlexiApp {
                         crate::pane_ops::SwapResult::NoFocus => {}
                     }
                 }
+                Action::SendPane(dir) => {
+                    match self.send_pane(dir) {
+                        crate::pane_ops::SwapResult::Swapped {
+                            rect_a, rect_b, ..
+                        } => {
+                            let now = std::time::Instant::now();
+                            self.pane_anims = vec![
+                                PaneSwapAnim { from: rect_a, to: rect_b, started_at: now },
+                                PaneSwapAnim { from: rect_b, to: rect_a, started_at: now },
+                            ];
+                            self.ctx.request_repaint();
+                        }
+                        crate::pane_ops::SwapResult::AtBoundary => {
+                            // For U/D at boundary: edge-pulse only (no row-boundary move).
+                            // For L/R at boundary: try cross-window send (focus stays on source).
+                            let moved = match dir {
+                                crate::host::keys::Direction::Down
+                                | crate::host::keys::Direction::Up => false,
+                                _ => self.send_pane_to_adjacent_window(dir),
+                            };
+                            if moved {
+                                self.ctx.request_repaint();
+                            } else if let Some(focused) =
+                                self.windows[self.active_window].focused_pane
+                            {
+                                self.edge_pulse = Some(EdgePulse {
+                                    tile: focused,
+                                    dir,
+                                    started_at: std::time::Instant::now(),
+                                });
+                                self.ctx.request_repaint();
+                            }
+                        }
+                        crate::pane_ops::SwapResult::NoFocus => {}
+                    }
+                }
                 Action::ClosePane => {
                     // If the focused app pane has a non-empty nav stack
                     // (via PushNav), Escape routes NavBack to the app

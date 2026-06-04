@@ -886,6 +886,113 @@ impl PlexiApp {
         SwapResult::Swapped { rect_a, rect_b }
     }
 
+    /// Send the focused pane in `dir` without following focus.
+    ///
+    /// Within-window: swaps tile contents like `swap_pane` but keeps focus on
+    /// the **original tile** — the neighbor's pane ends up under the cursor.
+    ///
+    /// At boundary (no neighbor within this window):
+    /// - L/R: delegates to `send_pane_to_adjacent_window` — pane moves to the
+    ///   adjacent grid window; focus stays on whatever pane remains in the source
+    ///   window. If the source becomes empty, returns `AtBoundary` (edge-pulse).
+    /// - U/D: always returns `AtBoundary` (edge-pulse only; no row-boundary move).
+    pub(crate) fn send_pane(&mut self, dir: Direction) -> SwapResult {
+        use egui_tiles::Tile;
+        let active = self.active_window;
+        let ctx = &mut self.windows[active];
+
+        let Some(focused) = ctx.focused_pane else {
+            return SwapResult::NoFocus;
+        };
+
+        let Some(neighbor) = ctx.find_pane_in_direction_from(focused, dir) else {
+            log::info!("send_pane({:?}): at boundary within window", dir);
+            // For L/R, try cross-window send. For U/D, edge-pulse.
+            return SwapResult::AtBoundary;
+        };
+
+        let rect_a = ctx.tree.tiles.rect(focused).unwrap_or(egui::Rect::ZERO);
+        let rect_b = ctx.tree.tiles.rect(neighbor).unwrap_or(egui::Rect::ZERO);
+
+        let pane_a = match ctx.tree.tiles.get(focused) {
+            Some(Tile::Pane(id)) => *id,
+            _ => return SwapResult::NoFocus,
+        };
+        let pane_b = match ctx.tree.tiles.get(neighbor) {
+            Some(Tile::Pane(id)) => *id,
+            _ => return SwapResult::NoFocus,
+        };
+
+        if let Some(Tile::Pane(id)) = ctx.tree.tiles.get_mut(focused) {
+            *id = pane_b;
+        }
+        if let Some(Tile::Pane(id)) = ctx.tree.tiles.get_mut(neighbor) {
+            *id = pane_a;
+        }
+
+        // Focus stays on the original tile (now containing pane_b).
+        // focused_pane is unchanged — it already points at `focused`.
+
+        log::info!(
+            "send_pane({:?}): pane {} ↔ pane {} (tiles {:?} ↔ {:?}), focus stays at {:?}",
+            dir, pane_a, pane_b, focused, neighbor, focused
+        );
+
+        SwapResult::Swapped { rect_a, rect_b }
+    }
+
+    /// Move the focused pane to an adjacent grid window without following focus.
+    ///
+    /// Unlike `move_focused_pane_to_adjacent_window`, the active window stays
+    /// on the source and focus stays on whatever pane fills the vacated slot.
+    ///
+    /// Returns `true` if the pane was moved (source still has panes remaining),
+    /// `false` if there is no adjacent window or the source would become empty
+    /// (caller shows the edge pulse for both cases).
+    pub(crate) fn send_pane_to_adjacent_window(&mut self, dir: Direction) -> bool {
+        let src_idx = self.active_window;
+
+        // Peek: does the source window have more than one pane?
+        // If it has only one pane, moving it out empties the source — no pane
+        // to stay focused on, so we edge-pulse instead.
+        if self.windows[src_idx].panes.len() <= 1 {
+            log::info!(
+                "send_pane_to_adjacent_window({:?}): source would become empty — edge pulse",
+                dir
+            );
+            return false;
+        }
+
+        // Determine next_src_focus before calling move_focused_pane_to_adjacent_window
+        // (the function sets it internally, but we need active_window to remain src_idx).
+        let focused_tile = match self.windows[src_idx].focused_pane {
+            Some(t) => t,
+            None => return false,
+        };
+        let next_src_focus = self.windows[src_idx].find_next_focus(focused_tile);
+
+        // Delegate the actual move (this sets active_window = adj_idx).
+        let moved = self.move_focused_pane_to_adjacent_window(dir);
+        if !moved {
+            return false;
+        }
+
+        // Restore active window to source (which survived since it had >1 pane).
+        // find the source by its previously known index — it may have shifted if adj
+        // was deleted, but since source had >1 pane it was never deleted.
+        self.active_window = src_idx;
+
+        // Restore focus to the pane that filled the vacated slot in the source.
+        self.windows[src_idx].focused_pane = next_src_focus;
+
+        log::info!(
+            "send_pane_to_adjacent_window({:?}): pane sent, focus stays at source window",
+            dir
+        );
+
+        true
+    }
+
     /// Move the focused pane to the first (`end=false`, Cmd+Ctrl+K) or last
     /// (`end=true`, Cmd+Ctrl+J) column position in the current context row by
     /// creating a new window at that boundary. Returns `true` if the move
@@ -1610,6 +1717,33 @@ mod swap_tests {
         // No neighbors (rects unset = Rect::ZERO, geometric search returns None)
         assert!(matches!(app.swap_pane(Direction::Right), SwapResult::AtBoundary));
     }
+}
+
+#[cfg(test)]
+mod send_pane_tests {
+    use super::*;
+
+    fn test_app() -> PlexiApp {
+        let ctx = egui::Context::default();
+        let ft = crate::platform::logging::new_frame_tick();
+        PlexiApp::new_for_test(ctx, ft).0
+    }
+
+    #[test]
+    fn send_pane_no_focus_returns_no_focus() {
+        let mut app = test_app();
+        assert!(matches!(app.send_pane(Direction::Right), SwapResult::NoFocus));
+    }
+
+    #[test]
+    fn send_pane_at_boundary_with_single_pane() {
+        let mut app = test_app();
+        let tile = app.windows[0].tree.tiles.insert_pane(1u64);
+        app.windows[0].focused_pane = Some(tile);
+        // No neighbors (rects unset = Rect::ZERO, geometric search returns None)
+        assert!(matches!(app.send_pane(Direction::Right), SwapResult::AtBoundary));
+    }
+
 }
 
 #[cfg(test)]

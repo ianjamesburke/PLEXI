@@ -9,7 +9,8 @@ use crate::config::KeybindingsConfig;
 // Cmd+Shift+N                 — new context (sidebar item)
 // Cmd+W                       — close pane
 // Cmd+H/J/K/L                 — navigate panes (falls through to adjacent window at boundary)
-// Cmd+Ctrl+H/J/K/L            — swap focused pane with neighbor in direction
+// Cmd+Ctrl+H/J/K/L            — swap focused pane with neighbor in direction (focus follows)
+// Cmd+Ctrl+Opt+H/J/K/L        — send focused pane in direction (focus stays)
 // Cmd+Shift+M                 — toggle minimap overlay
 // Cmd+T                       — new tab
 // Cmd+Shift+L/H               — next/prev tab
@@ -118,6 +119,10 @@ pub enum Action {
     /// Swap the focused pane with its neighbor in the given direction.
     /// Bound to Cmd+Ctrl+H/J/K/L.
     SwapPane(Direction),
+    /// Send the focused pane in a direction without following focus.
+    /// Focus stays at the vacated tile (on whatever pane fills that slot).
+    /// Bound to Cmd+Ctrl+Opt+H/J/K/L.
+    SendPane(Direction),
     /// Open the scratchpad overlay. Bound to Cmd+Shift+Space.
     OpenScratchpad,
     /// Push the focused pane into a new sub-context. The pane becomes a portal
@@ -151,6 +156,10 @@ pub struct KeyBindings {
     pub swap_pane_down: (egui::Modifiers, egui::Key),
     pub swap_pane_up: (egui::Modifiers, egui::Key),
     pub swap_pane_right: (egui::Modifiers, egui::Key),
+    pub send_pane_left: (egui::Modifiers, egui::Key),
+    pub send_pane_down: (egui::Modifiers, egui::Key),
+    pub send_pane_up: (egui::Modifiers, egui::Key),
+    pub send_pane_right: (egui::Modifiers, egui::Key),
     pub navigate_left: (egui::Modifiers, egui::Key),
     pub navigate_down: (egui::Modifiers, egui::Key),
     pub navigate_up: (egui::Modifiers, egui::Key),
@@ -203,6 +212,9 @@ fn cmd_alt() -> egui::Modifiers {
 fn cmd_shift_alt() -> egui::Modifiers {
     egui::Modifiers { shift: true, alt: true, ..egui::Modifiers::COMMAND }
 }
+fn cmd_ctrl_alt() -> egui::Modifiers {
+    egui::Modifiers { ctrl: true, alt: true, ..egui::Modifiers::COMMAND }
+}
 impl Default for KeyBindings {
     fn default() -> Self {
         Self {
@@ -213,10 +225,14 @@ impl Default for KeyBindings {
             split_vertical:            (cmd_shift(), egui::Key::D),
             split_right:               (cmd(),       egui::Key::Backslash),
             split_down:                (cmd_shift(), egui::Key::Backslash),
-            swap_pane_left:            (cmd_ctrl(),  egui::Key::H),
-            swap_pane_down:            (cmd_ctrl(),  egui::Key::J),
-            swap_pane_up:              (cmd_ctrl(),  egui::Key::K),
-            swap_pane_right:           (cmd_ctrl(),  egui::Key::L),
+            swap_pane_left:            (cmd_ctrl(),     egui::Key::H),
+            swap_pane_down:            (cmd_ctrl(),     egui::Key::J),
+            swap_pane_up:              (cmd_ctrl(),     egui::Key::K),
+            swap_pane_right:           (cmd_ctrl(),     egui::Key::L),
+            send_pane_left:            (cmd_ctrl_alt(), egui::Key::H),
+            send_pane_down:            (cmd_ctrl_alt(), egui::Key::J),
+            send_pane_up:              (cmd_ctrl_alt(), egui::Key::K),
+            send_pane_right:           (cmd_ctrl_alt(), egui::Key::L),
             navigate_left:             (cmd(),       egui::Key::H),
             navigate_down:             (cmd(),       egui::Key::J),
             navigate_up:               (cmd(),       egui::Key::K),
@@ -371,6 +387,10 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(swap_pane_down, "swap_pane_down");
     apply_override!(swap_pane_up, "swap_pane_up");
     apply_override!(swap_pane_right, "swap_pane_right");
+    apply_override!(send_pane_left, "send_pane_left");
+    apply_override!(send_pane_down, "send_pane_down");
+    apply_override!(send_pane_up, "send_pane_up");
+    apply_override!(send_pane_right, "send_pane_right");
     apply_override!(navigate_left, "navigate_left");
     apply_override!(navigate_down, "navigate_down");
     apply_override!(navigate_up, "navigate_up");
@@ -421,6 +441,10 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("swap_pane_down",            bindings.swap_pane_down),
         ("swap_pane_up",              bindings.swap_pane_up),
         ("swap_pane_right",           bindings.swap_pane_right),
+        ("send_pane_left",            bindings.send_pane_left),
+        ("send_pane_down",            bindings.send_pane_down),
+        ("send_pane_up",              bindings.send_pane_up),
+        ("send_pane_right",           bindings.send_pane_right),
         ("navigate_left",             bindings.navigate_left),
         ("navigate_down",             bindings.navigate_down),
         ("navigate_up",               bindings.navigate_up),
@@ -529,10 +553,14 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
         // ── Normal bindings (suppressed when overlay/capture active) ─────────
         BindingEntry { modifiers: b.split_vertical.0,           key: b.split_vertical.1,           exact: false, context: BindingContext::Normal, action: Action::SplitVertical },
         BindingEntry { modifiers: b.split_horizontal.0,         key: b.split_horizontal.1,         exact: true,  context: BindingContext::Normal, action: Action::SplitHorizontal },
-        BindingEntry { modifiers: b.swap_pane_left.0,           key: b.swap_pane_left.1,           exact: false, context: BindingContext::Normal, action: Action::SwapPane(Direction::Left) },
-        BindingEntry { modifiers: b.swap_pane_down.0,           key: b.swap_pane_down.1,           exact: false, context: BindingContext::Normal, action: Action::SwapPane(Direction::Down) },
-        BindingEntry { modifiers: b.swap_pane_up.0,             key: b.swap_pane_up.1,             exact: false, context: BindingContext::Normal, action: Action::SwapPane(Direction::Up) },
-        BindingEntry { modifiers: b.swap_pane_right.0,          key: b.swap_pane_right.1,          exact: false, context: BindingContext::Normal, action: Action::SwapPane(Direction::Right) },
+        BindingEntry { modifiers: b.swap_pane_left.0,           key: b.swap_pane_left.1,           exact: true,  context: BindingContext::Normal, action: Action::SwapPane(Direction::Left) },
+        BindingEntry { modifiers: b.swap_pane_down.0,           key: b.swap_pane_down.1,           exact: true,  context: BindingContext::Normal, action: Action::SwapPane(Direction::Down) },
+        BindingEntry { modifiers: b.swap_pane_up.0,             key: b.swap_pane_up.1,             exact: true,  context: BindingContext::Normal, action: Action::SwapPane(Direction::Up) },
+        BindingEntry { modifiers: b.swap_pane_right.0,          key: b.swap_pane_right.1,          exact: true,  context: BindingContext::Normal, action: Action::SwapPane(Direction::Right) },
+        BindingEntry { modifiers: b.send_pane_left.0,           key: b.send_pane_left.1,           exact: false, context: BindingContext::Normal, action: Action::SendPane(Direction::Left) },
+        BindingEntry { modifiers: b.send_pane_down.0,           key: b.send_pane_down.1,           exact: false, context: BindingContext::Normal, action: Action::SendPane(Direction::Down) },
+        BindingEntry { modifiers: b.send_pane_up.0,             key: b.send_pane_up.1,             exact: false, context: BindingContext::Normal, action: Action::SendPane(Direction::Up) },
+        BindingEntry { modifiers: b.send_pane_right.0,          key: b.send_pane_right.1,          exact: false, context: BindingContext::Normal, action: Action::SendPane(Direction::Right) },
         BindingEntry { modifiers: b.new_tab.0,                  key: b.new_tab.1,                  exact: false, context: BindingContext::Normal, action: Action::NewTab },
         BindingEntry { modifiers: b.next_tab.0,                 key: b.next_tab.1,                 exact: false, context: BindingContext::Normal, action: Action::NextTab },
         BindingEntry { modifiers: b.prev_tab.0,                 key: b.prev_tab.1,                 exact: false, context: BindingContext::Normal, action: Action::PrevTab },

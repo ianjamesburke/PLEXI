@@ -60,7 +60,9 @@ const KNOWN_AI_OLLAMA: &[&str] = &["host", "model_low", "model_medium", "model_h
 const KNOWN_KEYBINDINGS: &[&str] = &[
     "quit", "close_pane", "toggle_command_palette", "split_horizontal",
     "split_vertical", "split_right", "split_down", "swap_pane_left",
-    "swap_pane_down", "swap_pane_up", "swap_pane_right", "navigate_left",
+    "swap_pane_down", "swap_pane_up", "swap_pane_right",
+    "send_pane_left", "send_pane_down", "send_pane_up", "send_pane_right",
+    "navigate_left",
     "navigate_down", "navigate_up", "navigate_right", "new_tab", "next_tab",
     "prev_tab", "first_tab", "last_tab", "nav_back", "focus_history_forward",
     "toggle_sidebar", "toggle_zoom", "toggle_shortcuts", "rename_context",
@@ -184,6 +186,10 @@ pub struct KeybindingsConfig {
     pub swap_pane_down: Option<String>,
     pub swap_pane_up: Option<String>,
     pub swap_pane_right: Option<String>,
+    pub send_pane_left: Option<String>,
+    pub send_pane_down: Option<String>,
+    pub send_pane_up: Option<String>,
+    pub send_pane_right: Option<String>,
     pub navigate_left: Option<String>,
     pub navigate_down: Option<String>,
     pub navigate_up: Option<String>,
@@ -242,6 +248,10 @@ impl KeybindingsConfig {
         overlay_field!(swap_pane_down);
         overlay_field!(swap_pane_up);
         overlay_field!(swap_pane_right);
+        overlay_field!(send_pane_left);
+        overlay_field!(send_pane_down);
+        overlay_field!(send_pane_up);
+        overlay_field!(send_pane_right);
         overlay_field!(navigate_left);
         overlay_field!(navigate_down);
         overlay_field!(navigate_up);
