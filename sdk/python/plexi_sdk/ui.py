@@ -1148,6 +1148,46 @@ class TextInput(Component):
         return self._submitted
 
 
+class TextEdit:
+    """Host-rendered text editor node for component trees (PGAP v3.5+).
+
+    Produces a ``UiNode::TextEdit`` wire dict. The host maintains a persistent
+    buffer keyed on ``node_id``. Typing fires ``ComponentEvent`` with
+    ``event_type="change"`` and ``payload={"value": "..."}``; Enter (single-line)
+    or Cmd+Enter (multiline) fires ``event_type="submit"``.
+
+    Use this in ``ctx.render_tree()`` calls, not inside ``ctx.render(Column([...]))``.
+
+    Example::
+
+        ctx.render_tree(TextEdit("notes", placeholder="Type here...", multiline=True).to_node())
+    """
+
+    def __init__(
+        self,
+        node_id: str,
+        placeholder: str = "",
+        value: str = "",
+        multiline: bool = False,
+        max_length: int = 0,
+    ) -> None:
+        self.node_id = node_id
+        self.placeholder = placeholder
+        self.value = value
+        self.multiline = multiline
+        self.max_length = max_length
+
+    def to_node(self) -> dict:
+        return {
+            "type": "text_edit",
+            "node_id": self.node_id,
+            "placeholder": self.placeholder,
+            "value": self.value,
+            "multiline": self.multiline,
+            "max_length": self.max_length,
+        }
+
+
 @dataclass
 class ChatBubble(Component):
     """A chat message bubble with left/right alignment and colored background.
@@ -2013,7 +2053,7 @@ __all__ = [
     "Component", "Column", "Card",
     "AppBar", "Section", "KeyRow", "Heading", "Label",
     "Spacer", "Divider", "ScrollLog", "Scrollable", "Footer", "FooterKeys",
-    "ListItem", "Row", "TextInput", "ChatBubble",
+    "ListItem", "Row", "TextInput", "TextEdit", "ChatBubble",
     "SelectList", "FormField",
     "InfoTable", "ButtonRow",
     # badge primitive

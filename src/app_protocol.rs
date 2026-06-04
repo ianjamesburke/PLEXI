@@ -699,6 +699,26 @@ pub enum UiNode {
         placeholder: String,
         value: String,
     },
+    /// Host-rendered text editor with multiline and max_length support.
+    ///
+    /// The host maintains a persistent buffer keyed on `node_id`. On each
+    /// frame the app sends its last-known `value`; the host seeds the buffer
+    /// from it only when a new `node_id` appears. Typing fires
+    /// `ComponentEvent { event_type: "change", payload: { value } }` and
+    /// Enter (single-line) or Cmd+Enter (multiline) fires
+    /// `ComponentEvent { event_type: "submit", payload: { value } }`.
+    TextEdit {
+        node_id: String,
+        #[serde(default)]
+        placeholder: String,
+        #[serde(default)]
+        value: String,
+        #[serde(default)]
+        multiline: bool,
+        /// 0 means no limit.
+        #[serde(default)]
+        max_length: usize,
+    },
     /// Host-rendered pill badge.
     Badge {
         label: String,
@@ -825,6 +845,10 @@ impl PartialEq for UiNode {
             (UiNode::Input { node_id: n1, placeholder: ph1, value: v1 },
              UiNode::Input { node_id: n2, placeholder: ph2, value: v2 }) => {
                 n1 == n2 && ph1 == ph2 && v1 == v2
+            }
+            (UiNode::TextEdit { node_id: n1, placeholder: ph1, value: v1, multiline: m1, max_length: ml1 },
+             UiNode::TextEdit { node_id: n2, placeholder: ph2, value: v2, multiline: m2, max_length: ml2 }) => {
+                n1 == n2 && ph1 == ph2 && v1 == v2 && m1 == m2 && ml1 == ml2
             }
             (UiNode::Badge { label: l1, fill: f1, fg: fg1 },
              UiNode::Badge { label: l2, fill: f2, fg: fg2 }) => {
