@@ -63,7 +63,6 @@ const DEFAULT_RING_CAPACITY: usize = 32;
 // ---------------------------------------------------------------------------
 
 struct BinaryPipeEntry {
-    #[allow(dead_code)]
     direction: PipeDirection,
     socket_path: String,
     shutdown: Arc<AtomicBool>,
@@ -80,7 +79,6 @@ struct BinaryPipeEntry {
 }
 
 struct JsonPipeEntry {
-    #[allow(dead_code)]
     direction: PipeDirection,
 }
 
