@@ -266,8 +266,25 @@ fn main() -> eframe::Result {
                                 std::process::exit(2);
                             }
                             if let Some(tid) = type_id {
-                                log::info!("app_open:cli: opening app type_id={tid}");
-                                std::process::exit(cli::open_cli(&tid, &extra_args, layout.as_deref(), from_pane_id, None));
+                                // Prefix routing: cli:, mcp:, app:, or bare name
+                                match cli::parse_prefix(&tid) {
+                                    cli::OpenPrefix::Cli(name) => {
+                                        log::info!("app_open:cli: prefix-routed cli:{name}");
+                                        std::process::exit(cli::open_cli_by_name(&name, layout.as_deref(), from_pane_id, None));
+                                    }
+                                    cli::OpenPrefix::Mcp(name) => {
+                                        log::info!("app_open:cli: prefix-routed mcp:{name}");
+                                        std::process::exit(cli::open_mcp_by_name(&name, layout.as_deref(), from_pane_id, None));
+                                    }
+                                    cli::OpenPrefix::App(name) => {
+                                        log::info!("app_open:cli: prefix-routed app:{name}");
+                                        std::process::exit(cli::open_cli(&name, &extra_args, layout.as_deref(), from_pane_id, None));
+                                    }
+                                    cli::OpenPrefix::Bare(name) => {
+                                        log::info!("app_open:cli: opening app type_id={name}");
+                                        std::process::exit(cli::open_cli(&name, &extra_args, layout.as_deref(), from_pane_id, None));
+                                    }
+                                }
                             } else if !mcp.is_empty() {
                                 let title = cli::mcp_pane_title(&mcp);
                                 log::info!("app_open:cli: launching mcp-renderer with command {:?}, auto-title={title:?}", mcp);
@@ -551,6 +568,9 @@ fn main() -> eframe::Result {
                     Commands::Terminal { cmd, ephemeral, layout, from_pane_id, cwd, no_focus } => {
                         std::process::exit(cli::terminal_cli(cmd.as_deref(), ephemeral, layout.as_deref(), from_pane_id, cwd.as_deref(), no_focus));
                     }
+                    Commands::CompleteOpen { prefix } => {
+                        std::process::exit(cli::complete_open_cli(&prefix));
+                    },
                     Commands::Descriptor { cmd } => match cmd {
                         DescriptorCmd::Probe { command, no_registry, no_crawl, json, extra_args } => {
                             if json {
