@@ -114,3 +114,7 @@ Sessions always start inside `worktrees/alpha/`. Running `git -C worktrees/alpha
 
 ## 2026-05-05 — [ship] Worktree CWD gone after wtp remove
 After merging and running `wtp remove`, the feature worktree directory no longer exists. Any shell commands that reference it will fail. Always finish all file edits and cd away before cleanup steps.
+
+## Skill file edits don't need bump + install
+
+When the only change is to `.claude/skills/*.md` or similar non-Rust config, just commit directly to alpha. `just bump && just install` is only needed when there's a code change that should be reflected in the running build. Bumping for a skill file edit creates an unnecessary version tag.
