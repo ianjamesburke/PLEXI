@@ -88,7 +88,7 @@ pub(super) fn app_init_config_dir() -> String {
 ///
 /// The app is immediately discoverable by the registry without any additional
 /// install step, and hot reload watches the actual source.
-pub fn app_init(name: &str, lang: &str, from_pane_id: Option<u64>) -> i32 {
+pub fn app_init(name: &str, lang: &str, agent: bool, from_pane_id: Option<u64>) -> i32 {
     if name.is_empty() {
         eprintln!("Usage: plexi app init [--lang python|rust] <name>");
         return 1;
@@ -173,6 +173,7 @@ pub fn app_init(name: &str, lang: &str, from_pane_id: Option<u64>) -> i32 {
 
     let result = match lang {
         "rust" => scaffold_rust_app(&app_dir, name),
+        _ if agent => scaffold_agent_python_app(&app_dir, name),
         _ => scaffold_python_app(&app_dir, name),
     };
 
@@ -189,7 +190,7 @@ pub fn app_init(name: &str, lang: &str, from_pane_id: Option<u64>) -> i32 {
                 // Auto-open the app if PLEXI_SOCKET is set (running inside a pane).
                 if std::env::var("PLEXI_SOCKET").is_ok() {
                     let path_str = app_dir.to_string_lossy().to_string();
-                    log::info!("app_init: auto-opening '{name}' via app_run from_path={path_str} from_pane_id={from_pane_id:?}");
+                    log::info!("app_init: auto-opening '{name}' via app_run from_path={path_str} from_pane_id={from_pane_id:?} agent={agent}");
                     let exit_code = app_run(&path_str, from_pane_id);
                     if exit_code != 0 {
                         eprintln!("warning: app created but could not auto-open (exit {exit_code}) — run: plexi app run {}", app_dir.display());
@@ -233,6 +234,31 @@ fn scaffold_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> 
     perms.set_mode(perms.mode() | 0o111);
     std::fs::set_permissions(&main_path, perms)?;
 
+    Ok(())
+}
+
+fn scaffold_agent_python_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    // manifest.toml — ai.query capability pre-configured.
+    std::fs::write(app_dir.join("manifest.toml"), format!(
+        "schema_version = 1\n\n[app]\nid = \"{name}\"\ntype = \"app\"\nname = \"{display}\"\nentry = \"main.py\"\nversion = \"0.1.0\"\ndescription = \"An agent app\"\nwatch = true\n\n[app.capabilities]\ncapabilities = [\"ai.query\"]\n\n[launch]\n",
+        name = name,
+        display = to_title_case(name),
+    ))?;
+
+    let template = include_str!("../../sdk/python/plexi_sdk/templates/agent_init.py");
+    let main_py = template
+        .replace("__CLASS_NAME__", &to_struct_name(name))
+        .replace("__DISPLAY_NAME__", &to_title_case(name));
+    let main_path = app_dir.join("main.py");
+    std::fs::write(&main_path, main_py)?;
+
+    let mut perms = std::fs::metadata(&main_path)?.permissions();
+    perms.set_mode(perms.mode() | 0o111);
+    std::fs::set_permissions(&main_path, perms)?;
+
+    log::info!("scaffold_agent_python_app: created agent scaffold at {}", app_dir.display());
     Ok(())
 }
 
