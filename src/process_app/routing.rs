@@ -6,7 +6,7 @@
 use crate::app::permissions::{check, is_blocked, Capability, PermissionCheck};
 use crate::app_protocol::{AudioDeviceWire, AppRequest, MidiPortWire, PlexiEvent, StreamChannel};
 use crate::app::app_trait::AppCommand;
-use crate::audio::AudioCaptureRequest;
+use crate::media::audio::AudioCaptureRequest;
 use crate::host::event_log::{self, HostEvent};
 use crate::plexi_ai::broker::AiBrokerRequest;
 use crate::host::typed_pipes::PipeDirection;
@@ -1156,11 +1156,11 @@ impl ProcessApp {
                                     self.type_id
                                 );
                             } else {
-                            let req = crate::audio::PlaybackRequest {
+                            let req = crate::media::audio::PlaybackRequest {
                                 source: src.to_owned(),
                                 volume,
                             };
-                            match crate::audio::start_playback(req) {
+                            match crate::media::audio::start_playback(req) {
                                 Ok(session) => {
                                     log::info!(
                                         "ProcessApp[{}]: AudioPlay started: source={src}",
@@ -1899,7 +1899,7 @@ impl ProcessApp {
         // without touching the ProcessApp mutex.
         let peaks_for_meter = std::sync::Arc::clone(&self.audio_peak_meters);
         let pipe_id_for_meter = pipe_id.clone();
-        let sink: crate::audio::FrameSink = std::sync::Arc::new(move |frames: &[f32]| {
+        let sink: crate::media::audio::FrameSink = std::sync::Arc::new(move |frames: &[f32]| {
             let mut buf = Vec::with_capacity(frames.len() * 4);
             for &s in frames {
                 buf.extend_from_slice(&s.to_le_bytes());
@@ -2034,7 +2034,7 @@ impl ProcessApp {
         // thread; we copy each MIDI 1.0 byte stream into a fresh `Vec<u8>`
         // and push it into the ring. A full ring drops the frame.
         let ring_for_cb = std::sync::Arc::clone(&ring);
-        let sink: crate::midi::MidiPacketSink =
+        let sink: crate::media::midi::MidiPacketSink =
             std::sync::Arc::new(move |bytes: &[u8]| {
                 // Each MIDI message is its own pipe frame so the consumer
                 // sees message boundaries — no ambiguity decoding back-to-back

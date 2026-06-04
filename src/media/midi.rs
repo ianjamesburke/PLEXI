@@ -5,7 +5,7 @@
 //!   1. [`MidiDevice`] — host-facing trait. Methods return owned data
 //!      ([`MidiPortInfo`]) so the caller never holds a `coremidi::Source`
 //!      reference. The trait lives behind `Arc<dyn MidiDevice>` on each
-//!      `ProcessApp` instance, the same shape as [`crate::audio::AudioDevice`].
+//!      `ProcessApp` instance, the same shape as [`crate::media::audio::AudioDevice`].
 //!
 //!   2. [`CoreMidiDevice`] — production impl (macOS only). Wraps `coremidi`
 //!      crate 0.9. CoreMIDI does not gate behind a privacy prompt today

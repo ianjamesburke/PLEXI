@@ -306,7 +306,7 @@ impl PlexiApp {
                         .filter_map(|(pid, p)| p.portal_target().map(|cid| (*pid, cid)))
                         .collect();
                     for (pid, child_ctx_id) in portal_pane_ids {
-                        let state = crate::context_state::ContextState::compute(
+                        let state = crate::host::context_state::ContextState::compute(
                             child_ctx_id,
                             &contexts,
                             &self.windows,

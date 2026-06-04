@@ -25,9 +25,9 @@ use render_session::RenderSession;
 use crate::app::permissions::{AppPermissions, Capability};
 use crate::app_protocol::{AiMessage, AiTool, ControlCommand, DrawCommand, Modifiers, ModelTier, PlexiEvent, RenderCommand};
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
-use crate::audio::{AudioDevice, CaptureSession};
-use crate::midi::{MidiDevice, MidiInputSession, MidiOutputHandle};
-use crate::video::{VideoDecoder, VideoHandle};
+use crate::media::audio::{AudioDevice, CaptureSession};
+use crate::media::midi::{MidiDevice, MidiInputSession, MidiOutputHandle};
+use crate::media::video::{VideoDecoder, VideoHandle};
 use crate::host::event_log::{self, HostEvent};
 use crate::host::services::{NetService, UreqNetService};
 use crate::plexi_ai::broker::{AiBroker, LiveAiBroker};
@@ -210,7 +210,7 @@ pub struct ProcessApp {
     /// Live playback sessions (#341), keyed on the file path (source string).
     /// Dropping an entry stops playback. State transitions (pause/resume/stop)
     /// mutate the session in-place via `PlaybackSession::pause` etc.
-    pub(crate) audio_playback_sessions: HashMap<String, crate::audio::PlaybackSession>,
+    pub(crate) audio_playback_sessions: HashMap<String, crate::media::audio::PlaybackSession>,
     /// Per-pipe peak amplitude tracking for AudioMeter rendering (#341).
     /// Written by the cpal callback thread via the Arc<Mutex> clone stored in
     /// the frame sink; read by the UI thread in `ui()` before calling
@@ -720,7 +720,7 @@ impl ProcessApp {
             midi_device: default_midi_device(),
             midi_input_sessions: HashMap::new(),
             midi_output_handles: HashMap::new(),
-            video_device: crate::video::default_video_device(),
+            video_device: crate::media::video::default_video_device(),
             video_handles: HashMap::new(),
             video_pipe_ids: HashMap::new(),
             pending_timers: HashMap::new(),
@@ -787,9 +787,9 @@ impl ProcessApp {
     /// path executes without a real Python app.
     #[cfg(test)]
     pub fn new_for_test(pane_id: u64, permissions: crate::app::permissions::AppPermissions) -> (Self, Sender<DrawCommand>) {
-        use crate::audio::MockAudioDevice;
-        use crate::midi::MockMidiDevice;
-        use crate::video::{MockVideoDecoder, MockVideoDecoderConfig};
+        use crate::media::audio::MockAudioDevice;
+        use crate::media::midi::MockMidiDevice;
+        use crate::media::video::{MockVideoDecoder, MockVideoDecoderConfig};
         use crate::plexi_ai::broker::{AiBrokerRequest, AiBrokerResponse};
 
         struct NoopBroker;
@@ -2015,12 +2015,12 @@ fn default_live_broker() -> LiveAiBroker {
 /// `ProcessApp::audio_device`.
 #[cfg(not(test))]
 fn default_audio_device() -> Arc<dyn AudioDevice> {
-    Arc::new(crate::audio::CoreAudioDevice::new())
+    Arc::new(crate::media::audio::CoreAudioDevice::new())
 }
 
 #[cfg(test)]
 fn default_audio_device() -> Arc<dyn AudioDevice> {
-    Arc::new(crate::audio::MockAudioDevice::new())
+    Arc::new(crate::media::audio::MockAudioDevice::new())
 }
 
 /// Build the production MIDI device. CoreMIDI on non-test mac builds; an
@@ -2031,12 +2031,12 @@ fn default_audio_device() -> Arc<dyn AudioDevice> {
 /// `Arc::new(MockMidiDevice::new())` directly into `ProcessApp::midi_device`.
 #[cfg(not(test))]
 fn default_midi_device() -> Arc<dyn MidiDevice> {
-    Arc::new(crate::midi::CoreMidiDevice::new())
+    Arc::new(crate::media::midi::CoreMidiDevice::new())
 }
 
 #[cfg(test)]
 fn default_midi_device() -> Arc<dyn MidiDevice> {
-    Arc::new(crate::midi::MockMidiDevice::new())
+    Arc::new(crate::media::midi::MockMidiDevice::new())
 }
 
 /// Migrate a single `app_state/` directory to `app_states/` if the old path exists and the new

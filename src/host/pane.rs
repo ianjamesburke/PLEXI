@@ -23,7 +23,7 @@ pub enum Pane {
 pub struct PortalPane {
     pub pane_id: PaneId,
     pub target_context_id: u64,
-    pub context_state: Option<crate::context_state::ContextState>,
+    pub context_state: Option<crate::host::context_state::ContextState>,
     /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
     pub hidden: bool,
 }

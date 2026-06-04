@@ -10,14 +10,11 @@ mod app_protocol;
 mod cli;
 
 mod config;
-mod context_state;
 mod features;
 mod file_browser;
 mod host;
+mod media;
 mod platform;
-#[path = "media/audio.rs"] mod audio;
-#[path = "media/midi.rs"] mod midi;
-#[path = "media/video.rs"] mod video;
 mod overlays;
 mod pane_ops;
 mod plexi_ai;

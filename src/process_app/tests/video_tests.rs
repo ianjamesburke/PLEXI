@@ -7,7 +7,7 @@
 //!      the routing layer queues `VideoOpenAck` and pumps frames.
 use super::super::*;
 use crate::app_protocol::{AppRequest, PlexiEvent};
-use crate::video::{MockVideoDecoder, MockVideoDecoderConfig};
+use crate::media::video::{MockVideoDecoder, MockVideoDecoderConfig};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,7 +43,7 @@ fn denied_app_gets_capability_denied_response() {
     };
 
     let mock = Arc::new(MockVideoDecoder::new(MockVideoDecoderConfig::default()));
-    app.video_device = Arc::clone(&mock) as Arc<dyn crate::video::VideoDecoder>;
+    app.video_device = Arc::clone(&mock) as Arc<dyn crate::media::video::VideoDecoder>;
 
     app.route_command(AppRequest::OpenVideo {
         request_id: "req-denied".to_owned(),
@@ -104,7 +104,7 @@ fn granted_app_dispatches_open_to_decoder() {
         fps: 30.0,
         duration_ms: 5_000,
     }));
-    app.video_device = Arc::clone(&mock) as Arc<dyn crate::video::VideoDecoder>;
+    app.video_device = Arc::clone(&mock) as Arc<dyn crate::media::video::VideoDecoder>;
 
     app.route_command(AppRequest::OpenVideo {
         request_id: "req-1".to_owned(),
@@ -157,15 +157,15 @@ fn granted_app_dispatches_open_to_decoder() {
     // event should arrive.
     app.route_command(AppRequest::SetVideoState {
         handle_id: ack_handle_id,
-        state: crate::video::VideoState::Pause,
+        state: crate::media::video::VideoState::Pause,
     });
     app.route_command(AppRequest::SetVideoState {
         handle_id: ack_handle_id,
-        state: crate::video::VideoState::Play,
+        state: crate::media::video::VideoState::Play,
     });
     app.route_command(AppRequest::SetVideoState {
         handle_id: ack_handle_id,
-        state: crate::video::VideoState::Seek { position_ms: 1_000 },
+        state: crate::media::video::VideoState::Seek { position_ms: 1_000 },
     });
     // No additional VideoOpenError must have been queued.
     let errors = app

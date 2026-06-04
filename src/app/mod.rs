@@ -2228,7 +2228,7 @@ impl eframe::App for PlexiApp {
                         continue;
                     }
 
-                    let state = crate::context_state::ContextState::compute(
+                    let state = crate::host::context_state::ContextState::compute(
                         context_id,
                         self.router.as_slice(),
                         &self.windows,
