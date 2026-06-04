@@ -183,7 +183,7 @@ pub use open::{open_cli, terminal_cli, pane_new_cli, mcp_pane_title};
 pub use pane::{
     pane_set_title_cli, pane_list_cli, pane_self_cli, pane_info_cli,
     pane_focus_cli, pane_close_cli, pane_send_cli, pane_key_cli, pane_capture_cli,
-    pane_state_cli,
+    pane_state_cli, pane_move_cli,
 };
 pub use routine::{routine_list, routine_run};
 pub use run::{run_list_commands, run_command};

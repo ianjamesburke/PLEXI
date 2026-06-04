@@ -897,6 +897,178 @@ impl PlexiApp {
         self.windows[self.active_window].focused_pane = new_focus;
     }
 
+    /// Open the move-pane-to-context picker overlay. Populates the target list
+    /// with all contexts except the one that owns the currently focused pane.
+    pub(crate) fn open_move_pane_picker(&mut self) {
+        let win = &self.windows[self.active_window];
+        let Some(focused_tile) = win.focused_pane else {
+            log::warn!("open_move_pane_picker: no focused pane");
+            return;
+        };
+        if !matches!(win.tree.tiles.get(focused_tile), Some(egui_tiles::Tile::Pane(_))) {
+            log::warn!("open_move_pane_picker: focused tile is not a pane");
+            return;
+        }
+        let current_ctx_id = win.context_id;
+        let targets: Vec<(u64, String)> = self.router.iter()
+            .filter(|c| c.context_id != current_ctx_id)
+            .map(|c| (c.context_id, c.name.clone()))
+            .collect();
+        if targets.is_empty() {
+            log::info!("open_move_pane_picker: only one context exists, nothing to move to");
+            return;
+        }
+        log::info!(
+            "open_move_pane_picker: {} target context(s) available",
+            targets.len()
+        );
+        self.move_pane_picker = Some(crate::app::MovePanePickerState {
+            targets,
+            selected: 0,
+        });
+    }
+
+    /// Move the focused pane from its current context/window into the target
+    /// context identified by `target_context_id`. If the target has no windows,
+    /// one is created. The pane is inserted at the root of the target's active
+    /// window. Focus switches to the target context.
+    pub(crate) fn move_focused_pane_to_context(&mut self, target_context_id: u64) {
+        use egui_tiles::{Container, SimplificationOptions, Tile};
+
+        let src_idx = self.active_window;
+        let Some(focused_tile) = self.windows[src_idx].focused_pane else {
+            log::warn!("move_focused_pane_to_context: no focused pane");
+            return;
+        };
+        let src_pane_id = match self.windows[src_idx].tree.tiles.get(focused_tile) {
+            Some(Tile::Pane(id)) => *id,
+            _ => {
+                log::warn!("move_focused_pane_to_context: focused tile is not a pane");
+                return;
+            }
+        };
+
+        // Don't allow moving portal panes.
+        if self.windows[src_idx].panes.get(&src_pane_id)
+            .map(|p| p.as_portal().is_some())
+            .unwrap_or(false)
+        {
+            log::warn!("move_focused_pane_to_context: cannot move a portal pane");
+            return;
+        }
+
+        // Validate target context exists.
+        let target_ctx_idx = match self.router.position(|c| c.context_id == target_context_id) {
+            Some(idx) => idx,
+            None => {
+                log::warn!("move_focused_pane_to_context: target context {target_context_id} not found");
+                return;
+            }
+        };
+
+        // Determine next focus in the source window before extraction.
+        let next_src_focus = self.windows[src_idx].find_next_focus(focused_tile);
+
+        // Extract pane from source window.
+        let extracted_pane = {
+            let win = &mut self.windows[src_idx];
+            if let Some(parent_id) = win.tree.tiles.parent_of(focused_tile) {
+                if let Some(Tile::Container(parent)) = win.tree.tiles.get_mut(parent_id) {
+                    parent.remove_child(focused_tile);
+                }
+            }
+            win.tree.tiles.remove(focused_tile);
+            let pane = win.panes.remove(&src_pane_id);
+            win.tree.simplify(&SimplificationOptions {
+                all_panes_must_have_tabs: true,
+                ..SimplificationOptions::default()
+            });
+            win.focused_pane = next_src_focus;
+            pane
+        };
+
+        let Some(pane) = extracted_pane else {
+            log::error!("move_focused_pane_to_context: pane {src_pane_id} not found in source window");
+            return;
+        };
+
+        // If source window is now empty, delete it.
+        if self.windows[src_idx].panes.is_empty() {
+            self.delete_window(src_idx);
+        }
+
+        // Find (or create) the target context's active window.
+        let dst_win_idx = {
+            let preferred = self.context_active_window.get(&target_context_id).copied();
+            if let Some(win_id) = preferred {
+                self.windows.iter().position(|w| w.window_id == win_id && w.context_id == target_context_id)
+            } else {
+                self.windows.iter().position(|w| w.context_id == target_context_id)
+            }
+        };
+
+        let dst_win_idx = match dst_win_idx {
+            Some(idx) => idx,
+            None => {
+                // Target context has no windows: create one.
+                let win_id = self.next_window_id;
+                self.next_window_id += 1;
+                let target_path = self.router.get(target_ctx_idx).path.clone();
+                self.windows.push(Window {
+                    name: String::new(),
+                    path: target_path,
+                    tree: egui_tiles::Tree::empty("move_target"),
+                    panes: std::collections::HashMap::new(),
+                    focused_pane: None,
+                    zoomed_pane: None,
+                    grid_x: 0,
+                    grid_y: 0,
+                    window_id: win_id,
+                    context_id: target_context_id,
+                });
+                self.context_active_window.insert(target_context_id, win_id);
+                self.windows.len() - 1
+            }
+        };
+
+        // Insert pane into target window.
+        let win = &mut self.windows[dst_win_idx];
+        let new_tile = win.tree.tiles.insert_pane(src_pane_id);
+        win.panes.insert(src_pane_id, pane);
+
+        if win.tree.root.is_none() {
+            win.tree.root = Some(new_tile);
+        } else if let Some(root) = win.tree.root {
+            // Wrap existing root + new tile in a horizontal split.
+            let inserted_inline = if let Some(Tile::Container(Container::Linear(linear))) =
+                win.tree.tiles.get_mut(root)
+            {
+                if linear.dir == egui_tiles::LinearDir::Horizontal {
+                    linear.children.push(new_tile);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if !inserted_inline {
+                let container_tile = win.tree.tiles.insert_horizontal_tile(vec![root, new_tile]);
+                win.tree.root = Some(container_tile);
+            }
+        }
+        win.focused_pane = Some(new_tile);
+
+        log::info!(
+            "move_focused_pane_to_context: pane {} moved to context {} (window idx {})",
+            src_pane_id, target_context_id, dst_win_idx
+        );
+
+        // Switch to the target context.
+        self.switch_workspace(target_ctx_idx);
+        self.save_workspace();
+    }
+
     pub(crate) fn save_workspace(&self) {
         let mut saved_contexts = Vec::new();
         let mut saved_windows = Vec::new();

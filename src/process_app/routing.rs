@@ -1740,6 +1740,12 @@ impl ProcessApp {
                     self.type_id
                 );
             }
+            AppRequest::MovePaneToContext { .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: received MovePaneToContext over PGAP — ignored (use PLEXI_SOCKET instead)",
+                    self.type_id
+                );
+            }
 
             // ── App state save ─────────────────────────────────────────────
             AppRequest::SaveAppState { payload } => {

@@ -624,6 +624,16 @@ pub enum PaneCmd {
         /// Pane id to query (from `plexi pane list`)
         pane_id: u64,
     },
+    /// Move a pane to a different context.
+    ///
+    /// Example: plexi pane move 42 --context "My Project"
+    Move {
+        /// Pane id to move (from `plexi pane list`)
+        pane_id: u64,
+        /// Target context name or numeric context id
+        #[arg(long)]
+        context: String,
+    },
 }
 
 #[derive(Subcommand)]

@@ -850,4 +850,178 @@ impl PlexiApp {
     ) -> crate::app_trait::KeyDisposition {
         crate::app_trait::KeyDisposition::Consumed
     }
+
+    pub(crate) fn move_pane_picker_handle_key(
+        &mut self,
+        ctx: &egui::Context,
+    ) -> crate::app_trait::KeyDisposition {
+        let target_count = self
+            .move_pane_picker
+            .as_ref()
+            .map(|p| p.targets.len())
+            .unwrap_or(0);
+        if target_count == 0 {
+            self.move_pane_picker = None;
+            return crate::app_trait::KeyDisposition::Consumed;
+        }
+
+        ctx.input_mut(|input| {
+            // Escape = cancel.
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+                log::info!("move_pane_picker: cancelled by Escape");
+                self.move_pane_picker = None;
+                return;
+            }
+
+            // J / ArrowDown = next item.
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::J)
+                || input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+            {
+                if let Some(ref mut picker) = self.move_pane_picker {
+                    picker.selected = (picker.selected + 1) % picker.targets.len();
+                }
+            }
+
+            // K / ArrowUp = previous item.
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::K)
+                || input.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp)
+            {
+                if let Some(ref mut picker) = self.move_pane_picker {
+                    picker.selected =
+                        (picker.selected + picker.targets.len() - 1) % picker.targets.len();
+                }
+            }
+
+            // Enter = confirm selection.
+            if input.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+                let target_id = self
+                    .move_pane_picker
+                    .as_ref()
+                    .and_then(|p| p.targets.get(p.selected).map(|(id, _)| *id));
+                self.move_pane_picker = None;
+                if let Some(id) = target_id {
+                    log::info!("move_pane_picker: confirmed target context_id={id}");
+                    self.move_focused_pane_to_context(id);
+                }
+                return;
+            }
+
+            // Digit keys = instant select (1-9 maps to index 0-8).
+            let digit_keys = [
+                (egui::Key::Num1, 0usize),
+                (egui::Key::Num2, 1),
+                (egui::Key::Num3, 2),
+                (egui::Key::Num4, 3),
+                (egui::Key::Num5, 4),
+                (egui::Key::Num6, 5),
+                (egui::Key::Num7, 6),
+                (egui::Key::Num8, 7),
+                (egui::Key::Num9, 8),
+            ];
+            for (key, idx) in digit_keys {
+                if input.consume_key(egui::Modifiers::NONE, key) {
+                    let target_id = self
+                        .move_pane_picker
+                        .as_ref()
+                        .and_then(|p| p.targets.get(idx).map(|(id, _)| *id));
+                    self.move_pane_picker = None;
+                    if let Some(id) = target_id {
+                        log::info!("move_pane_picker: instant-select via digit, target context_id={id}");
+                        self.move_focused_pane_to_context(id);
+                    }
+                    return;
+                }
+            }
+        });
+
+        crate::app_trait::KeyDisposition::Consumed
+    }
+
+    pub(crate) fn draw_move_pane_picker(&mut self, ctx: &egui::Context) {
+        let Some(ref picker) = self.move_pane_picker else {
+            return;
+        };
+        let targets = picker.targets.clone();
+        let selected = picker.selected;
+        let colors = self.colors.clone();
+
+        let mut cancelled = false;
+        super::modal_shell(ctx, "move_pane_picker", &colors, &mut cancelled, |ui| {
+            ui.label(
+                egui::RichText::new("Move pane to context")
+                    .size(crate::style::TEXT_BODY)
+                    .color(colors.text_primary),
+            );
+            ui.add_space(crate::style::SPACE_SM);
+
+            for (i, (_ctx_id, name)) in targets.iter().enumerate() {
+                let is_selected = i == selected;
+                let bg = if is_selected {
+                    colors.bg_active
+                } else {
+                    egui::Color32::TRANSPARENT
+                };
+                let text_color = if is_selected {
+                    colors.text_primary
+                } else {
+                    colors.text_dim
+                };
+
+                let frame = egui::Frame::new()
+                    .fill(bg)
+                    .corner_radius(crate::style::RADIUS_MD)
+                    .inner_margin(egui::Margin::symmetric(8, 4));
+                frame.show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        // Digit shortcut badge.
+                        if i < 9 {
+                            crate::widgets::key_chip(
+                                ui,
+                                &format!("{}", i + 1),
+                                &colors,
+                            );
+                            ui.add_space(crate::style::SPACE_SM);
+                        }
+                        ui.label(
+                            egui::RichText::new(name)
+                                .size(crate::style::TEXT_BODY)
+                                .color(text_color),
+                        );
+                    });
+                });
+            }
+
+            ui.add_space(crate::style::SPACE_SM);
+            ui.horizontal(|ui| {
+                crate::widgets::key_combo(ui, &["J", "K"], &colors);
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("navigate")
+                        .size(crate::style::TEXT_HINT)
+                        .color(colors.text_dim),
+                );
+                ui.add_space(crate::style::SPACE_SM);
+                crate::widgets::key_chip(ui, "Enter", &colors);
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("confirm")
+                        .size(crate::style::TEXT_HINT)
+                        .color(colors.text_dim),
+                );
+                ui.add_space(crate::style::SPACE_SM);
+                crate::widgets::key_chip(ui, "Esc", &colors);
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("cancel")
+                        .size(crate::style::TEXT_HINT)
+                        .color(colors.text_dim),
+                );
+            });
+        });
+
+        if cancelled {
+            log::info!("move_pane_picker: cancelled by scrim click");
+            self.move_pane_picker = None;
+        }
+    }
 }

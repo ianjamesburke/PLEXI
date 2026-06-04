@@ -216,6 +216,7 @@ pub struct KeybindingsConfig {
     pub push_to_subcontext: Option<String>,
     pub new_child_context: Option<String>,
     pub set_context_root_from_cwd: Option<String>,
+    pub move_pane_to_context: Option<String>,
 }
 
 impl KeybindingsConfig {
@@ -272,6 +273,7 @@ impl KeybindingsConfig {
         overlay_field!(push_to_subcontext);
         overlay_field!(new_child_context);
         overlay_field!(set_context_root_from_cwd);
+        overlay_field!(move_pane_to_context);
     }
 }
 

@@ -549,6 +549,70 @@ pub fn pane_state_cli(pane_id: u64) -> i32 {
     }
 }
 
+/// `plexi pane move <pane_id> --context <name|id>`
+///
+/// Sends a `move_pane_to_context` command to PLEXI_SOCKET. Polls a response
+/// file for success/error. Returns 0 on success, 1 on error.
+pub fn pane_move_cli(pane_id: u64, context: &str) -> i32 {
+    let id = uuid::Uuid::new_v4();
+    let response_file = crate::config::config_dir()
+        .join(format!("pane-move-response-{id}.txt"))
+        .to_string_lossy()
+        .into_owned();
+
+    log::info!("pane_move:cli: pane_id={pane_id} context={context:?} response_file={response_file:?}");
+
+    // If context parses as a u64, send as target_context_id; otherwise as name.
+    let payload = if let Ok(ctx_id) = context.parse::<u64>() {
+        serde_json::json!({
+            "type": "move_pane_to_context",
+            "pane_id": pane_id,
+            "target_context_id": ctx_id,
+            "response_file": response_file,
+        })
+    } else {
+        serde_json::json!({
+            "type": "move_pane_to_context",
+            "pane_id": pane_id,
+            "target_context_name": context,
+            "response_file": response_file,
+        })
+    };
+
+    let code = send_to_socket(payload);
+    if code != 0 {
+        return code;
+    }
+
+    let response_path = std::path::PathBuf::from(&response_file);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if response_path.exists() {
+            match std::fs::read_to_string(&response_path) {
+                Ok(content) => {
+                    let _ = std::fs::remove_file(&response_path);
+                    let trimmed = content.trim();
+                    if trimmed == "ok" {
+                        return 0;
+                    }
+                    eprintln!("{trimmed}");
+                    return 1;
+                }
+                Err(e) => {
+                    log::warn!("pane_move:cli: could not read response file: {e}");
+                    eprintln!("error: could not read response file: {e}");
+                    return 1;
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!("error: timed out waiting for pane move response");
+            return 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// `plexi open <type_id> [args...] [--layout=X]`
 ///
 /// When called from inside a Plexi pane (PLEXI_SOCKET is set), sends a

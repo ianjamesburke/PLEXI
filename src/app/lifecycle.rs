@@ -657,6 +657,55 @@ impl PlexiApp {
                     log::info!("pane_ipc: kind=push_pane_to_subcontext name={:?}", name);
                     self.push_pane_to_subcontext(name.clone());
                 }
+                crate::app_protocol::AppRequest::MovePaneToContext { pane_id, target_context_id, target_context_name, response_file } => {
+                    log::info!("pane_ipc: kind=move_pane_to_context pane_id={pane_id} target_id={target_context_id:?} target_name={target_context_name:?}");
+                    let pane_id = *pane_id;
+                    let response_file = response_file.clone();
+
+                    // Resolve target context_id from name or direct id.
+                    let resolved_id = if let Some(id) = target_context_id {
+                        Some(*id)
+                    } else if let Some(name) = target_context_name {
+                        // Try parsing as u64 first, then match by name.
+                        if let Ok(id) = name.parse::<u64>() {
+                            Some(id)
+                        } else {
+                            self.router.iter()
+                                .find(|c| c.name.eq_ignore_ascii_case(name))
+                                .map(|c| c.context_id)
+                        }
+                    } else {
+                        None
+                    };
+
+                    let result = match resolved_id {
+                        None => {
+                            log::warn!("pane_ipc: move_pane_to_context: no target context resolved");
+                            "error: target context not found"
+                        }
+                        Some(target_id) => {
+                            // Find the window containing this pane and focus it first.
+                            let found = self.windows.iter().enumerate().find_map(|(win_idx, win)| {
+                                win.tree.tiles.find_pane(&pane_id).map(|tile_id| (win_idx, tile_id))
+                            });
+                            if let Some((win_idx, tile_id)) = found {
+                                self.active_window = win_idx;
+                                self.windows[win_idx].focused_pane = Some(tile_id);
+                                self.move_focused_pane_to_context(target_id);
+                                "ok"
+                            } else {
+                                log::warn!("pane_ipc: move_pane_to_context: pane_id={pane_id} not found");
+                                "error: pane not found"
+                            }
+                        }
+                    };
+
+                    if let Some(path) = response_file {
+                        if let Err(e) = std::fs::write(&path, format!("{result}\n")) {
+                            log::warn!("move_pane_to_context: failed to write response to {path}: {e}");
+                        }
+                    }
+                }
                 _ => {
                     log::warn!("pane_ipc: unsupported command kind, dropping");
                 }

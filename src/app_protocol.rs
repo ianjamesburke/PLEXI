@@ -1916,6 +1916,21 @@ pub enum AppRequest {
         filter: Vec<String>,
         multiple: bool,
     },
+
+    // ── Pane move (#1634) ────────────────────────────────────────────────────
+    /// Move a pane to a different existing context.
+    /// CLI: `plexi pane move <pane_id> --context <name|id>`.
+    /// Exactly one of `target_context_id` or `target_context_name` must be set.
+    /// `response_file` receives "ok\n" on success or "error: ...\n" on failure.
+    MovePaneToContext {
+        pane_id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_context_id: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_context_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
+    },
 }
 
 /// Inline-handled commands (processed directly in `ui()` or `background_tick()`).

@@ -110,6 +110,7 @@ impl PlexiApp {
                 | Some(FocusLayer::TextInput)
                 | Some(FocusLayer::ContextCloseConfirm)
                 | Some(FocusLayer::CapabilityModal)
+                | Some(FocusLayer::MovePanePicker)
         )
     }
 
@@ -700,6 +701,21 @@ impl PlexiApp {
         } else if !should_own && has_layer {
             log::info!("capability_modal: focus released — prompt queue drained");
             self.focus_stack.retain(|l| *l != FocusLayer::CapabilityModal);
+        }
+    }
+
+    /// Reconcile the move-pane picker focus layer with `move_pane_picker`.
+    pub(crate) fn sync_move_pane_picker_focus(&mut self) {
+        let should_own = self.move_pane_picker.is_some();
+        let has_layer = self
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::MovePanePicker);
+        if should_own && !has_layer {
+            self.push_focus_layer(FocusLayer::MovePanePicker);
+        } else if !should_own && has_layer {
+            log::info!("focus: MovePanePicker layer removed by sync (retain)");
+            self.focus_stack.retain(|l| *l != FocusLayer::MovePanePicker);
         }
     }
 

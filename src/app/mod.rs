@@ -95,6 +95,8 @@ pub(crate) enum FocusLayer {
     /// so the modal renders in step 2 of `update()` with exclusive keyboard
     /// ownership — before `dispatch_app_key_events` can steal Escape.
     CapabilityModal,
+    /// Move-pane-to-context picker overlay.
+    MovePanePicker,
 }
 
 /// What a `TextInputOverlay` commit should do.
@@ -257,6 +259,13 @@ pub(crate) struct ClickFlash {
     pub(crate) window_id: u64,
     pub(crate) tile: egui_tiles::TileId,
     pub(crate) started_at: std::time::Instant,
+}
+
+pub(crate) struct MovePanePickerState {
+    /// (context_id, context_name) of each eligible target context.
+    pub(crate) targets: Vec<(u64, String)>,
+    /// Cursor index into `targets`.
+    pub(crate) selected: usize,
 }
 
 pub struct PlexiApp {
@@ -447,6 +456,10 @@ pub struct PlexiApp {
     /// Receiver for AppRequests sent over the PLEXI_SOCKET Unix socket listener.
     /// Drained each frame in `drain_pane_cmd_channel`.
     pane_ipc_rx: std::sync::mpsc::Receiver<crate::app_protocol::AppRequest>,
+    /// Move-pane-to-context picker. When Some, the picker overlay is visible.
+    /// Contains (context_id, context_name) pairs for available targets and a
+    /// selected-index cursor.
+    pub(crate) move_pane_picker: Option<MovePanePickerState>,
     /// Last (window_id, tile_id) pair that was logged as a FocusChanged event.
     /// Uses stable window_id (u64) not a vector index so removals don't corrupt it.
     /// Compared at end of each frame to detect genuine focus transitions.
@@ -982,6 +995,7 @@ impl PlexiApp {
                     click_flash: None,
                     update_rx: Some(update_rx),
                     update_available: None,
+                    move_pane_picker: None,
                     pane_ipc_rx,
                     last_logged_focus: None,
                     focus_started_at: None,
@@ -1154,6 +1168,7 @@ impl PlexiApp {
             click_flash: None,
             update_rx: Some(update_rx),
             update_available: None,
+            move_pane_picker: None,
             pane_ipc_rx,
             last_logged_focus: None,
             focus_started_at: None,
@@ -1322,6 +1337,7 @@ impl PlexiApp {
             show_completions_banner: false,
             update_rx: None,
             update_available: None,
+            move_pane_picker: None,
             pane_ipc_rx,
             last_logged_focus: None,
             focus_started_at: None,
@@ -1497,6 +1513,7 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::TextInput) => self.text_input_handle_key(ctx),
                 Some(FocusLayer::ContextCloseConfirm) => self.context_close_confirm_handle_key(ctx),
                 Some(FocusLayer::CapabilityModal) => self.capability_modal_handle_key(ctx),
+                Some(FocusLayer::MovePanePicker) => self.move_pane_picker_handle_key(ctx),
                 None => crate::app_trait::KeyDisposition::Passthrough,
             };
             // Step 2: render the overlay (visual only — key reads already done above).
@@ -1542,6 +1559,9 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::CapabilityModal) => {
                     self.draw_capability_modal(ctx);
                 }
+                Some(FocusLayer::MovePanePicker) => {
+                    self.draw_move_pane_picker(ctx);
+                }
                 None => {}
             }
             // The overlay may have self-closed (notification queue drained,
@@ -1557,6 +1577,7 @@ impl eframe::App for PlexiApp {
             self.sync_cli_setup_prompt_focus();
             self.sync_text_input_focus();
             self.sync_capability_modal_focus();
+            self.sync_move_pane_picker_focus();
             disposition
             } // end else (non-preempted path)
         } else {
@@ -2711,6 +2732,9 @@ impl eframe::App for PlexiApp {
                             log::warn!("SetContextRootFromCwd: no CWD available for focused pane");
                         }
                     }
+                }
+                Action::MovePaneToContext => {
+                    self.open_move_pane_picker();
                 }
                 Action::ToggleMinimap => {
                     self.minimap.toggle();
