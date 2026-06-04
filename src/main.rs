@@ -346,7 +346,7 @@ fn main() -> eframe::Result {
                                 }
                             }
                         }
-                        AppCmd::Init { name, lang, from_pane_id } => std::process::exit(cli::app_init(&name, &lang, from_pane_id)),
+                        AppCmd::Init { name, lang, agent, from_pane_id } => std::process::exit(cli::app_init(&name, &lang, agent, from_pane_id)),
                         AppCmd::Uninstall { id, yes } => std::process::exit(cli::app_uninstall(&id, yes)),
                         AppCmd::List => std::process::exit(cli::app_list()),
                         AppCmd::Render { id, size, state, output } => {

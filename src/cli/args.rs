@@ -378,6 +378,9 @@ pub enum AppCmd {
         name: String,
         #[arg(long, default_value = "python")]
         lang: String,
+        /// Scaffold an agent app template with ai.query capability and chat UI.
+        #[arg(long)]
+        agent: bool,
         /// Open the new pane relative to this pane ID instead of the focused pane.
         /// Defaults to PLEXI_PANE_ID if set in the environment.
         #[arg(long)]
