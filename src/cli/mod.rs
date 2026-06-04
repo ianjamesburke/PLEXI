@@ -189,4 +189,4 @@ pub use routine::{routine_list, routine_run};
 pub use run::{run_list_commands, run_command};
 pub use validate::validate_cli;
 pub use workspace::{workspace_init, workspace_secret_set, workspace_secret_get, workspace_secret_list, workspace_secret_delete};
-pub use agent::{agent_add, agent_update, agent_list};
+pub use agent::{agent_init, agent_add, agent_update, agent_list};

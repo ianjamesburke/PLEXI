@@ -1,5 +1,11 @@
 use std::path::Path;
 
+/// `plexi agent init <name>` — scaffold an agent app with ai.query capability.
+pub fn agent_init(name: &str, from_pane_id: Option<u64>) -> i32 {
+    log::info!("agent_init:cli: name={name}");
+    crate::cli::app::app_init(name, "python_agent", from_pane_id)
+}
+
 /// `plexi agent add <name>` — copy AGENT.md from global registry into workspace.
 pub fn agent_add(name: &str) -> i32 {
     log::info!("agent_add:cli: name={name}");

@@ -384,9 +384,6 @@ pub enum AppCmd {
         name: String,
         #[arg(long, default_value = "python")]
         lang: String,
-        /// Scaffold an agent app template with ai.query capability and chat UI.
-        #[arg(long)]
-        agent: bool,
         /// Open the new pane relative to this pane ID instead of the focused pane.
         /// Defaults to PLEXI_PANE_ID if set in the environment.
         #[arg(long)]
@@ -747,6 +744,21 @@ pub enum NotesCmd {
 
 #[derive(Subcommand)]
 pub enum AgentCmd {
+    /// Scaffold a new agent app with ai.query capability and a chat UI.
+    ///
+    /// Creates the app directory, manifest.toml (with ai.query pre-configured),
+    /// and main.py from the agent template. Equivalent to the former
+    /// `plexi app init --agent <name>`.
+    ///
+    /// Example: plexi agent init my-agent
+    Init {
+        /// App name (used as the directory name and app ID)
+        name: String,
+        /// Open the new pane relative to this pane ID instead of the focused pane.
+        /// Defaults to PLEXI_PANE_ID if set in the environment.
+        #[arg(long)]
+        from_pane_id: Option<u64>,
+    },
     /// Install an agent definition from the global registry into the current workspace.
     ///
     /// Copies `~/.plexi/agents/<name>/AGENT.md` into `.plexi/agents/<name>/AGENT.md`

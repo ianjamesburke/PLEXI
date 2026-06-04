@@ -235,6 +235,7 @@ fn main() -> eframe::Result {
                         RoutineCmd::Run { name } => std::process::exit(cli::routine_run(&name)),
                     },
                     Commands::Agent { cmd } => match cmd {
+                        AgentCmd::Init { name, from_pane_id } => std::process::exit(cli::agent_init(&name, from_pane_id)),
                         AgentCmd::Add { name } => std::process::exit(cli::agent_add(&name)),
                         AgentCmd::Update { name } => std::process::exit(cli::agent_update(&name)),
                         AgentCmd::List => std::process::exit(cli::agent_list()),
@@ -363,7 +364,7 @@ fn main() -> eframe::Result {
                                 }
                             }
                         }
-                        AppCmd::Init { name, lang, agent, from_pane_id } => std::process::exit(cli::app_init(&name, &lang, agent, from_pane_id)),
+                        AppCmd::Init { name, lang, from_pane_id } => std::process::exit(cli::app_init(&name, &lang, from_pane_id)),
                         AppCmd::Uninstall { id, yes } => std::process::exit(cli::app_uninstall(&id, yes)),
                         AppCmd::List => std::process::exit(cli::app_list()),
                         AppCmd::Render { id, size, state, output } => {
