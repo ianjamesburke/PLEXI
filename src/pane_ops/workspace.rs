@@ -115,6 +115,37 @@ impl PlexiApp {
         Ok(())
     }
 
+    /// Create a new empty child context under the current context and auto-zoom
+    /// into it. Bound to Cmd+Shift+Option+N. Uses the current context's path as
+    /// the child's working directory and names the child "Sub-context N".
+    pub(crate) fn new_child_context_from_keyboard(&mut self) {
+        let parent_ctx_id = self.router.active().context_id;
+        let parent_name = self.router.active().name.clone();
+        let parent_path = self.router.active().path.clone();
+        let current_win_id = self.windows[self.active_window].window_id;
+        let current_focused = self.windows[self.active_window].focused_pane;
+
+        log::info!(
+            "new_child_context_from_keyboard: parent_ctx_id={parent_ctx_id} parent_name={parent_name} path={}",
+            parent_path.display()
+        );
+
+        match self.new_child_context(&parent_name, parent_path) {
+            Ok(()) => {
+                let new_ctx_idx = self.router.len() - 1;
+                self.router.push_depth(parent_ctx_id, current_win_id, current_focused);
+                self.switch_workspace(new_ctx_idx);
+                log::info!(
+                    "new_child_context_from_keyboard: zoomed into child ctx_id={}",
+                    self.router.active().context_id
+                );
+            }
+            Err(e) => {
+                log::warn!("new_child_context_from_keyboard: failed to create child context: {e}");
+            }
+        }
+    }
+
     pub(crate) fn push_pane_to_subcontext(&mut self, name: Option<String>) {
         let parent_win_idx = self.active_window;
         let parent_ctx_id = self.windows[parent_win_idx].context_id;

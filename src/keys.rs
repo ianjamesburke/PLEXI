@@ -28,6 +28,8 @@ use crate::config::KeybindingsConfig;
 // Cmd+F                       — terminal search (handled inside egui_term, not host)
 // Cmd+E                       — file browser
 // Cmd+Shift+I                 — set context root from focused pane CWD
+// Cmd+Option+N                — extract focused pane into a new sub-context (portal)
+// Cmd+Shift+Option+N          — new child context under current context (empty, auto-zoom)
 // Cmd+0                       — quick note
 // Cmd+1–9                     — switch context (sidebar)
 // Escape (app active)         — close app
@@ -119,6 +121,9 @@ pub enum Action {
     /// Push the focused pane into a new sub-context. The pane becomes a portal
     /// and its content moves into the child. Bound to Cmd+Option+N.
     PushPaneToSubcontext,
+    /// Create a new empty child context under the current context and auto-zoom
+    /// into it. Bound to Cmd+Shift+Option+N.
+    NewChildContext,
     /// Zoom out of the current sub-context to the parent. Bound to Cmd+Escape.
     ContextZoomOut,
     /// Set the active context root to the focused pane's CWD. Bound to Cmd+Shift+I.
@@ -173,6 +178,7 @@ pub struct KeyBindings {
     pub open_scratchpad: (egui::Modifiers, egui::Key),
     pub context_zoom_out: (egui::Modifiers, egui::Key),
     pub push_to_subcontext: (egui::Modifiers, egui::Key),
+    pub new_child_context: (egui::Modifiers, egui::Key),
     pub set_context_root_from_cwd: (egui::Modifiers, egui::Key),
 }
 
@@ -185,6 +191,9 @@ fn cmd_ctrl() -> egui::Modifiers {
 }
 fn cmd_alt() -> egui::Modifiers {
     egui::Modifiers { alt: true, ..egui::Modifiers::COMMAND }
+}
+fn cmd_shift_alt() -> egui::Modifiers {
+    egui::Modifiers { shift: true, alt: true, ..egui::Modifiers::COMMAND }
 }
 impl Default for KeyBindings {
     fn default() -> Self {
@@ -232,8 +241,9 @@ impl Default for KeyBindings {
             toggle_notification_modal: (cmd_shift(), egui::Key::A),
             open_scratchpad:           (cmd_shift(), egui::Key::Space),
             context_zoom_out:          (cmd(),       egui::Key::Escape),
-            push_to_subcontext:        (cmd_alt(),   egui::Key::N),
-            set_context_root_from_cwd: (cmd_shift(), egui::Key::I),
+            push_to_subcontext:        (cmd_alt(),       egui::Key::N),
+            new_child_context:         (cmd_shift_alt(), egui::Key::N),
+            set_context_root_from_cwd: (cmd_shift(),     egui::Key::I),
         }
     }
 }
@@ -383,6 +393,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(toggle_notification_modal, "toggle_notification_modal");
     apply_override!(open_scratchpad, "open_scratchpad");
     apply_override!(push_to_subcontext, "push_to_subcontext");
+    apply_override!(new_child_context, "new_child_context");
     apply_override!(set_context_root_from_cwd, "set_context_root_from_cwd");
 
     // Conflict detection
@@ -430,6 +441,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("toggle_notification_modal", bindings.toggle_notification_modal),
         ("open_scratchpad",           bindings.open_scratchpad),
         ("push_to_subcontext",        bindings.push_to_subcontext),
+        ("new_child_context",         bindings.new_child_context),
         ("set_context_root_from_cwd", bindings.set_context_root_from_cwd),
     ];
 
@@ -526,6 +538,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
         BindingEntry { modifiers: b.split_down.0,               key: b.split_down.1,               exact: false, context: BindingContext::Normal, action: Action::SplitDown },
         BindingEntry { modifiers: b.split_right.0,              key: b.split_right.1,              exact: true,  context: BindingContext::Normal, action: Action::SplitRight },
         BindingEntry { modifiers: b.push_to_subcontext.0,       key: b.push_to_subcontext.1,       exact: false, context: BindingContext::Normal, action: Action::PushPaneToSubcontext },
+        BindingEntry { modifiers: b.new_child_context.0,        key: b.new_child_context.1,        exact: false, context: BindingContext::Normal, action: Action::NewChildContext },
         BindingEntry { modifiers: b.new_context.0,              key: b.new_context.1,              exact: false, context: BindingContext::Normal, action: Action::NewContext },
         BindingEntry { modifiers: b.new_page_right.0,           key: b.new_page_right.1,           exact: true,  context: BindingContext::Normal, action: Action::NewPageRight },
         BindingEntry { modifiers: b.toggle_minimap.0,           key: b.toggle_minimap.1,           exact: false, context: BindingContext::Normal, action: Action::ToggleMinimap },
