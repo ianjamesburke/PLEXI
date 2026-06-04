@@ -118,3 +118,22 @@ After merging and running `wtp remove`, the feature worktree directory no longer
 ## Skill file edits don't need bump + install
 
 When the only change is to `.claude/skills/*.md` or similar non-Rust config, just commit directly to alpha. `just bump && just install` is only needed when there's a code change that should be reflected in the running build. Bumping for a skill file edit creates an unnecessary version tag.
+
+## [cli] Path-based app commands must not call resolve_workspace_root
+
+`app validate <path>`, `app install <path>`, and `app run <path>` operate on an
+explicit filesystem path — they must never call `resolve_workspace_root` (or
+`require_workspace`) for their primary path argument. Workspace resolution silently
+returns `None` when no `.plexi/` ancestor exists, but any code that treats `None` as
+an error will break agents working inside a cloned repo with no workspace.
+
+**Correct pattern:** use the path argument directly (canonicalize via `std::fs::canonicalize`
+or `std::path::Path::new(path)`). No workspace lookup needed.
+
+**Wrong pattern:** walking up from the path arg with `resolve_workspace_root` to derive
+the app dir. That inverts the semantics — the user is *providing* the app dir, not a
+workspace that should contain it.
+
+`resolve_workspace_root` is legitimate inside `AppRegistry::load` (to surface
+workspace-local apps) and in `app init` (to decide where to scaffold). In those cases
+`None` gracefully degrades (falls back to global) rather than hard-failing.

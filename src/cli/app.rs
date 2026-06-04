@@ -978,6 +978,63 @@ pub fn app_update_cli(id: Option<&str>) -> i32 {
 }
 
 #[cfg(test)]
+mod app_install_workspace_tests {
+    use tempfile::TempDir;
+
+    fn write_valid_manifest(dir: &std::path::Path, id: &str) {
+        std::fs::write(
+            dir.join("manifest.toml"),
+            format!(
+                "schema_version = 1\n\n\
+                 [app]\n\
+                 id = \"{id}\"\n\
+                 type = \"app\"\n\
+                 name = \"Test\"\n\
+                 entry = \"main.py\"\n\
+                 version = \"0.1.0\"\n\
+                 description = \"Test\"\n\
+                 \n\
+                 [app.capabilities]\n\
+                 capabilities = []\n\
+                 \n\
+                 [launch]\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("main.py"), "# stub\n").unwrap();
+    }
+
+    /// `plexi app install <path>` must succeed from a bare directory with no
+    /// `.plexi/` workspace. Install goes to the global channel apps dir — workspace
+    /// resolution is never consulted for path-based installs.
+    #[test]
+    fn install_from_path_succeeds_without_workspace() {
+        let src = TempDir::new().unwrap();
+        let app_id = "plexi-test-install-no-workspace";
+        write_valid_manifest(src.path(), app_id);
+        let path = src.path().to_string_lossy().to_string();
+
+        // No workspace present in src or any ancestor (temp dir) — must return 0.
+        let code = super::app_install_with_pin(&path, None);
+
+        // Clean up installed app to avoid polluting the apps dir between runs.
+        let dest = crate::app::registry::apps_dir().join(app_id);
+        let _ = std::fs::remove_dir_all(&dest);
+
+        assert_eq!(code, 0, "install from path must succeed without a workspace");
+    }
+
+    #[test]
+    fn install_fails_on_missing_manifest_not_workspace_error() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let code = super::app_install_with_pin(&path, None);
+        // Must fail with exit code 1 (manifest missing), not a workspace error.
+        assert_eq!(code, 1, "missing manifest must return 1");
+    }
+}
+
+#[cfg(test)]
 mod app_run_tests {
     use tempfile::TempDir;
 
