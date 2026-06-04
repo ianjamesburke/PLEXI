@@ -263,11 +263,25 @@ fn main() -> eframe::Result {
                                 log::info!("app_open:cli: opening app type_id={tid}");
                                 std::process::exit(cli::open_cli(&tid, &extra_args, layout.as_deref(), from_pane_id, None));
                             } else if !mcp.is_empty() {
-                                log::info!("app_open:cli: launching mcp-renderer with command {:?}", mcp);
-                                std::process::exit(cli::open_cli("mcp-renderer", &mcp, layout.as_deref(), from_pane_id, None));
+                                let title = cli::mcp_pane_title(&mcp);
+                                log::info!("app_open:cli: launching mcp-renderer with command {:?}, auto-title={title:?}", mcp);
+                                let layout_str = layout.as_deref().unwrap_or("split_h");
+                                std::process::exit(cli::pane_new_cli(
+                                    None,
+                                    Some(title.as_str()),
+                                    layout_str,
+                                    from_pane_id,
+                                    None,
+                                    false,
+                                    false,
+                                    Some("mcp-renderer"),
+                                    &mcp,
+                                    None,
+                                    &[],
+                                ));
                             } else {
                                 let binary = cli_flag.unwrap();
-                                log::info!("app_open:cli: running --help parser for `{binary}`");
+                                log::info!("app_open:cli: running --help parser for `{binary}`, auto-title={binary:?}");
                                 match crate::cli::help_parser::parse_help_to_descriptor(&binary) {
                                     Ok(json) => {
                                         let id = uuid::Uuid::new_v4();
@@ -278,13 +292,20 @@ fn main() -> eframe::Result {
                                             std::process::exit(1);
                                         }
                                         let path = tmp.to_string_lossy().into_owned();
+                                        let layout_str = layout.as_deref().unwrap_or("split_h");
                                         log::info!("app_open:cli: launching descriptor-renderer with descriptor at {path}");
-                                        std::process::exit(cli::open_cli(
-                                            "descriptor-renderer",
-                                            &[path],
-                                            layout.as_deref(),
+                                        std::process::exit(cli::pane_new_cli(
+                                            None,
+                                            Some(binary.as_str()),
+                                            layout_str,
                                             from_pane_id,
                                             None,
+                                            false,
+                                            false,
+                                            Some("descriptor-renderer"),
+                                            &[],
+                                            None,
+                                            &[path],
                                         ));
                                     }
                                     Err(e) => {

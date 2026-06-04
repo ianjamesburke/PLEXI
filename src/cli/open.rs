@@ -183,6 +183,43 @@ pub fn pane_new_cli(
     0
 }
 
+/// Derive a short display name for an MCP pane from the server command args.
+///
+/// Rules (matching the issue spec):
+/// - Skip leading runner tokens (`npx`, `node`, `uvx`, `python`, `python3`, `bunx`)
+/// - Take the first remaining arg as the package/server name
+/// - Strip a leading `@scope/` prefix
+/// - Strip a leading `server-` prefix from the remainder
+/// - Prefix the result with `"mcp: "`
+///
+/// Examples:
+///   `["npx", "@modelcontextprotocol/server-filesystem", "/tmp"]` → `"mcp: filesystem"`
+///   `["uvx", "mcp-server-fetch"]`                               → `"mcp: fetch"`
+///   `["npx", "@scope/server-git"]`                              → `"mcp: git"`
+pub fn mcp_pane_title(args: &[String]) -> String {
+    const RUNNERS: &[&str] = &["npx", "node", "uvx", "bunx", "python", "python3", "deno", "bun"];
+    let name = args
+        .iter()
+        .find(|a| !RUNNERS.contains(&a.as_str()) && !a.starts_with('-'))
+        .map(String::as_str)
+        .unwrap_or("mcp");
+
+    // Strip leading `@scope/` if present
+    let after_scope = if let Some(pos) = name.find('/') {
+        &name[pos + 1..]
+    } else {
+        name
+    };
+
+    // Strip leading `server-` or `mcp-server-` prefix
+    let short = after_scope
+        .strip_prefix("mcp-server-")
+        .or_else(|| after_scope.strip_prefix("server-"))
+        .unwrap_or(after_scope);
+
+    format!("mcp: {short}")
+}
+
 /// Thin wrapper preserving the existing `plexi app open` call site.
 pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_id: Option<u64>, cwd: Option<&str>) -> i32 {
     // Intercept github: prefix for ephemeral open-without-install.
@@ -227,4 +264,50 @@ fn read_line_plain() -> io::Result<String> {
         .trim_end_matches('\n')
         .trim_end_matches('\r')
         .to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mcp_pane_title;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn mcp_title_npx_scoped_server() {
+        assert_eq!(
+            mcp_pane_title(&args(&["npx", "@modelcontextprotocol/server-filesystem", "/tmp"])),
+            "mcp: filesystem"
+        );
+    }
+
+    #[test]
+    fn mcp_title_uvx_mcp_server_prefix() {
+        assert_eq!(
+            mcp_pane_title(&args(&["uvx", "mcp-server-fetch"])),
+            "mcp: fetch"
+        );
+    }
+
+    #[test]
+    fn mcp_title_scoped_server_git() {
+        assert_eq!(
+            mcp_pane_title(&args(&["npx", "@scope/server-git"])),
+            "mcp: git"
+        );
+    }
+
+    #[test]
+    fn mcp_title_bare_binary() {
+        assert_eq!(
+            mcp_pane_title(&args(&["my-mcp-tool"])),
+            "mcp: my-mcp-tool"
+        );
+    }
+
+    #[test]
+    fn mcp_title_empty_args() {
+        assert_eq!(mcp_pane_title(&[]), "mcp: mcp");
+    }
 }
