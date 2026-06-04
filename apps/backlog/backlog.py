@@ -9,6 +9,20 @@ Shows items from two sources merged by mtime:
 Items from the channel backlog are prefixed with [ch] in the list.
 
 Pass -g/--global to show only channel-level items: plexi open backlog -g
+
+L1 Reference Implementation
+============================
+Patterns demonstrated:
+  - Column layout with AppBar + growable body + FooterKeys
+  - SelectList for navigable item lists
+  - TextInput for inline item creation (overlay)
+  - Two-pane split via custom Component (escape hatch for HSplit)
+  - Filesystem persistence (read/write/delete backlog .md files)
+  - CLI argument parsing via Arg descriptor
+  - Multi-source data merging (workspace + channel backlog dirs)
+  - Search/filter mode with live refiltering
+  - Confirm-delete overlay pattern
+  - ctx.theme colors throughout (no hardcoded colors)
 """
 
 import os

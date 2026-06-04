@@ -1,5 +1,18 @@
 #!/usr/bin/env python3
-"""Wikipedia — net.http + L1 component example for PGAP v3."""
+"""Wikipedia — search and read Wikipedia articles via the MediaWiki API.
+
+L1 Reference Implementation
+============================
+Patterns demonstrated:
+  - Fully L1: Column + AppBar + Section + SelectList + Scrollable + Label + FooterKeys
+  - TextInput for search queries
+  - net.http capability request (async, with CapabilityDeniedError handling)
+  - Async networking via threading + emit.run_sync(emit.http_get(...))
+  - Multi-view navigation: search -> results -> article (Esc to go back)
+  - on_inject for test seam (seed mode/query/results/extract without network)
+  - Scrollable wrapping Label for long article text
+  - Loading state management with status_summary
+"""
 
 import json
 import threading
