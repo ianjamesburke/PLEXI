@@ -843,17 +843,17 @@ pub fn examples_pack_ids() -> std::collections::HashSet<String> {
         .unwrap_or_default()
 }
 
-/// Read `<workspace_root>/.plexi/apps.toml` and install declared apps into the
+/// Read `<workspace_root>/<channel_dir>/apps.toml` and install declared apps into the
 /// workspace-scoped apps dir (`<workspace_root>/<channel_dir>/apps/`).
 pub fn apply_workspace_pack(
     workspace_root: &Path,
     cloner: &dyn Cloner,
 ) -> Result<Vec<InstallOutcome>, String> {
-    let apps_toml = workspace_root.join(".plexi").join("apps.toml");
+    let channel_dir = crate::config::workspace_channel_dir();
+    let apps_toml = workspace_root.join(&channel_dir).join("apps.toml");
     if !apps_toml.exists() {
         return Err(
-            "no .plexi/apps.toml found — run 'plexi workspace init' to initialize a workspace with a stub apps.toml"
-                .to_string(),
+            format!("no {channel_dir}/apps.toml found — run 'plexi workspace init' to initialize a workspace with a stub apps.toml"),
         );
     }
     let pack = Pack::from_path(&apps_toml)?;
@@ -869,10 +869,11 @@ pub fn apply_workspace_pack(
     Ok(apply_pack(cloner, &pack, &workspace_apps))
 }
 
-/// Return the set of app IDs declared in `<workspace_root>/.plexi/apps.toml`.
+/// Return the set of app IDs declared in `<workspace_root>/<channel_dir>/apps.toml`.
 /// Returns an empty set if the file is absent or unparseable.
 pub fn workspace_manifest_ids(workspace_root: &Path) -> std::collections::HashSet<String> {
-    let path = workspace_root.join(".plexi").join("apps.toml");
+    let channel_dir = crate::config::workspace_channel_dir();
+    let path = workspace_root.join(&channel_dir).join("apps.toml");
     match Pack::from_path(&path) {
         Ok(p) => p.apps.into_iter().map(|a| a.id).collect(),
         Err(e) => {

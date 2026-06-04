@@ -2,7 +2,9 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 pub(super) const APP_ID: &str = "plexi-run";
-pub(super) const COMMANDS_FILE: &str = ".plexi/commands.toml";
+pub(super) fn commands_file() -> String {
+    format!("{}/commands.toml", crate::config::workspace_channel_dir())
+}
 
 
 /// Parsed .plexi/commands.toml

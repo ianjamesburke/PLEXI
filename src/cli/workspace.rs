@@ -1,5 +1,4 @@
 use super::{print_tip};
-use super::app::app_init_config_dir;
 use super::open::read_secret_from_stdin;
 use std::io::{self, Write};
 
@@ -30,74 +29,17 @@ pub fn workspace_init() -> i32 {
             return 1;
         }
     }
-    match crate::workspace::secrets::init_workspace(&cwd) {
+    let channel_dir = crate::config::workspace_channel_dir();
+    match crate::workspace::secrets::init_workspace(&cwd, &channel_dir) {
         Ok(cfg) => {
-            log::info!("workspace_init:cli: initialized workspace_id={} at {}", cfg.id, cwd.display());
-            let channel_dir = app_init_config_dir();
-            let channel_path = cwd.join(&channel_dir);
-            let channel_created = if let Err(e) = std::fs::create_dir_all(&channel_path) {
-                log::warn!("workspace_init:cli: could not create channel dir {}: {e}", channel_path.display());
-                false
-            } else {
-                log::info!("workspace_init:cli: created channel dir {}", channel_path.display());
-                true
-            };
+            log::info!("workspace_init:cli: initialized workspace_id={} at {} channel_dir={}", cfg.id, cwd.display(), channel_dir);
             println!("Initialized workspace at {}", cwd.display());
             println!("  workspace id: {}", cfg.id);
-            println!("  router:       .plexi/secrets.toml (fallback = true)");
-            if channel_created {
-                println!("  channel dir:  {channel_dir}/");
-            }
-            // Write stub apps.toml if not already present.
-            let apps_toml = cwd.join(".plexi").join("apps.toml");
-            if !apps_toml.exists() {
-                let stub = concat!(
-                    "schema_version = 1\n\n",
-                    "# Declare workspace app dependencies here.\n",
-                    "# Run `plexi app install` in this directory to install them.\n",
-                    "#\n",
-                    "# Example:\n",
-                    "#\n",
-                    "# [[app]]\n",
-                    "# id      = \"gh-issues\"\n",
-                    "# source  = \"local:gh-issues\"\n",
-                    "# version = \"bundled\"\n",
-                    "#\n",
-                    "# [[app]]\n",
-                    "# id      = \"my-tool\"\n",
-                    "# source  = \"github:org/my-tool\"\n",
-                    "# version = \"v1.0.0\"\n",
-                );
-                if let Err(e) = std::fs::write(&apps_toml, stub) {
-                    log::warn!("workspace_init:cli: could not write apps.toml: {e}");
-                    eprintln!("warning: could not create .plexi/apps.toml: {e}");
-                } else {
-                    println!("  apps:         .plexi/apps.toml (declare app dependencies here)");
-                    log::info!("workspace_init:cli: wrote stub .plexi/apps.toml");
-                }
-            }
-            // Write stub commands.toml if not already present.
-            let commands_toml = cwd.join(".plexi").join("commands.toml");
-            if !commands_toml.exists() {
-                let stub = concat!(
-                    "# Workspace commands — run with: plexi run <name>\n",
-                    "#\n",
-                    "# Simple form:   build = \"cargo build\"\n",
-                    "# With metadata: dev = { run = \"npm run dev\", description = \"Start dev server\" }\n",
-                    "# With secrets:  deploy = { run = \"./deploy.sh\", secrets = [\"API_KEY\"] }\n",
-                    "\n",
-                    "[commands]\n",
-                    "guess = \"$PLEXI_CONFIG_DIR/scripts/guess\"\n",
-                );
-                if let Err(e) = std::fs::write(&commands_toml, stub) {
-                    log::warn!("workspace_init:cli: could not write commands.toml: {e}");
-                    eprintln!("warning: could not create .plexi/commands.toml: {e}");
-                } else {
-                    println!("  commands:     .plexi/commands.toml (run commands with: plexi run)");
-                    log::info!("workspace_init:cli: wrote stub .plexi/commands.toml");
-                }
-            }
-            print_tip("declare app dependencies in .plexi/apps.toml, then run `plexi app install`.");
+            println!("  channel dir:  {channel_dir}/");
+            println!("  router:       {channel_dir}/secrets.toml (fallback = true)");
+            println!("  apps:         {channel_dir}/apps.toml (declare app dependencies here)");
+            println!("  commands:     {channel_dir}/commands.toml (run commands with: plexi run)");
+            print_tip(&format!("declare app dependencies in {channel_dir}/apps.toml, then run `plexi app install`."));
             0
         }
         Err(e) => {
@@ -115,23 +57,24 @@ pub fn workspace_init() -> i32 {
 fn require_workspace(
 ) -> Result<(std::path::PathBuf, crate::workspace::secrets::WorkspaceConfig), String> {
     let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
+    let channel_dir = crate::config::workspace_channel_dir();
     let root = match crate::app::registry::resolve_workspace_root(&cwd) {
         Some(r) => r,
         None => {
             return Err(format!(
-                "no .plexi/ workspace found at or above {}.\n\
+                "no {channel_dir}/ workspace found at or above {}.\n\
                  Run `plexi workspace init` first.",
                 cwd.display()
             ));
         }
     };
     let cfg = match crate::workspace::secrets::WorkspaceConfig::load(&root)
-        .map_err(|e| format!("read workspace.toml: {e}"))?
+        .map_err(|e| format!("read {channel_dir}/workspace.toml: {e}"))?
     {
         Some(c) => c,
         None => {
             return Err(format!(
-                ".plexi/ exists at {} but workspace.toml is missing.\n\
+                "{channel_dir}/ exists at {} but workspace.toml is missing.\n\
                  Run `plexi workspace init` to create it.",
                 root.display()
             ));
@@ -524,49 +467,47 @@ mod workspace_init_tests {
     /// Calls the internal init_workspace logic and then the channel-dir creation
     /// on a temp dir, asserting both `.plexi/` and the channel dir are present.
     #[test]
-    fn workspace_init_creates_channel_dir_alongside_plexi_dir() {
+    fn workspace_init_creates_channel_dir_with_all_files() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().to_path_buf();
 
-        // Run init_workspace (creates .plexi/)
-        crate::workspace::secrets::init_workspace(&cwd)
+        let channel_dir = crate::config::workspace_channel_dir();
+        // Run init_workspace (creates channel dir with workspace.toml + secrets.toml)
+        crate::workspace::secrets::init_workspace(&cwd, &channel_dir)
             .expect("init_workspace should succeed in a temp dir");
 
-        // Replicate the channel dir creation from workspace_init()
-        let channel_dir = super::app_init_config_dir();
-        let channel_path = cwd.join(&channel_dir);
-        fs::create_dir_all(&channel_path).expect("create_dir_all should succeed");
-
         assert!(
-            cwd.join(".plexi").is_dir(),
-            ".plexi/ dir must exist after workspace init"
+            cwd.join(&channel_dir).is_dir(),
+            "{channel_dir}/ dir must exist after workspace init"
         );
         assert!(
-            channel_path.is_dir(),
-            "{channel_dir}/ dir must exist after workspace init"
+            cwd.join(&channel_dir).join("workspace.toml").is_file(),
+            "{channel_dir}/workspace.toml must exist after init"
+        );
+        assert!(
+            cwd.join(&channel_dir).join("secrets.toml").is_file(),
+            "{channel_dir}/secrets.toml must exist after init"
         );
     }
 
-    /// After init, resolve_workspace_root must still find the workspace and the channel dir must exist.
+    /// After init, resolve_workspace_root must still find the workspace.
     #[test]
-    fn workspace_remains_resolvable_after_channel_dir_creation() {
+    fn workspace_remains_resolvable_after_init() {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().to_path_buf();
 
-        crate::workspace::secrets::init_workspace(&cwd)
+        let channel_dir = crate::config::workspace_channel_dir();
+        crate::workspace::secrets::init_workspace(&cwd, &channel_dir)
             .expect("init_workspace should succeed");
-
-        let channel_dir = super::app_init_config_dir();
-        std::fs::create_dir_all(cwd.join(&channel_dir)).unwrap();
 
         let found = crate::app::registry::resolve_workspace_root(&cwd);
         assert!(
             found.is_some(),
-            "resolve_workspace_root should still find the workspace (via .plexi/) after channel dir creation"
+            "resolve_workspace_root should find the workspace after init"
         );
         assert!(
             cwd.join(&channel_dir).is_dir(),
-            "channel directory should exist alongside .plexi/"
+            "channel directory should exist after init"
         );
     }
 }

@@ -145,7 +145,7 @@ pub fn app_init(name: &str, lang: &str, from_pane_id: Option<u64>) -> i32 {
             if current == std::path::Path::new("/") {
                 break;
             }
-            if current.join(".plexi").is_dir() {
+            if current.join(&channel_dir).is_dir() {
                 found = Some(current);
                 break;
             }

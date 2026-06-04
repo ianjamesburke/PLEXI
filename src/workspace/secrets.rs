@@ -343,10 +343,10 @@ pub struct WorkspaceContextConfig {
 }
 
 impl WorkspaceConfig {
-    /// Read `<root>/.plexi/workspace.toml`. Returns `None` if the file does
+    /// Read `<root>/<channel_dir>/workspace.toml`. Returns `None` if the file does
     /// not exist; returns `Err` only on a present-but-invalid file.
     pub fn load(workspace_root: &Path) -> Result<Option<Self>, String> {
-        let path = workspace_root.join(".plexi").join("workspace.toml");
+        let path = workspace_root.join(crate::config::workspace_channel_dir()).join("workspace.toml");
         let raw = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -359,22 +359,6 @@ impl WorkspaceConfig {
             .map_err(|e| format!("parse {}: {e}", path.display()))
     }
 
-    /// Read or create — if the file does not exist, generate a fresh UUID and
-    /// write a minimal `id = "<uuid>"` file. The rest of `workspace.toml` is
-    /// owned by #308 Phase 1; we only touch the `id` line.
-    pub fn load_or_init(workspace_root: &Path) -> Result<Self, String> {
-        if let Some(cfg) = Self::load(workspace_root)? {
-            return Ok(cfg);
-        }
-        let id = uuid::Uuid::new_v4().to_string();
-        let dir = workspace_root.join(".plexi");
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("create {}: {e}", dir.display()))?;
-        let path = dir.join("workspace.toml");
-        std::fs::write(&path, format!("id = \"{id}\"\n"))
-            .map_err(|e| format!("write {}: {e}", path.display()))?;
-        Ok(Self { id, context: None })
-    }
 }
 
 // ── secrets.toml (router) ────────────────────────────────────────────────────
@@ -396,11 +380,11 @@ impl WorkspaceSecrets {
         toml::from_str::<Self>(raw).map_err(|e| format!("parse secrets.toml: {e}"))
     }
 
-    /// Read `<root>/.plexi/secrets.toml`. Returns `None` if the file does
+    /// Read `<root>/<channel_dir>/secrets.toml`. Returns `None` if the file does
     /// not exist; returns `Err` if it exists but is malformed (incl. missing
     /// `fallback`).
     pub fn load(workspace_root: &Path) -> Result<Option<Self>, String> {
-        let path = workspace_root.join(".plexi").join("secrets.toml");
+        let path = workspace_root.join(crate::config::workspace_channel_dir()).join("secrets.toml");
         let raw = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -478,19 +462,37 @@ pub fn resolve(
 
 // ── Workspace init helpers ───────────────────────────────────────────────────
 
-/// `plexi workspace init` scaffolds:
-///   - `<root>/.plexi/workspace.toml` with a fresh UUID (idempotent — keeps
-///     existing id if present)
-///   - `<root>/.plexi/secrets.toml` with `fallback = true` (chosen as the
-///     ergonomic default; users opt into stricter `false` later)
-///   - `<root>/.plexi/.gitignore` so the secrets file and host caches never
-///     end up in git. **Existing `.gitignore` files are preserved verbatim**
-///     so user edits survive subsequent `init` runs.
+/// `plexi workspace init` scaffolds all workspace files under `channel_dir`
+/// (e.g. `.plexi-alpha/` or `.plexi/` for main):
+///   - `<root>/<channel_dir>/workspace.toml` with a fresh UUID (idempotent)
+///   - `<root>/<channel_dir>/secrets.toml` with `fallback = true`
+///   - `<root>/<channel_dir>/.gitignore` so secrets never end up in git
+///
+/// `channel_dir` is the dot-prefixed workspace channel directory name
+/// (e.g. `.plexi-alpha`, `.plexi`, `.plexi-pr-N`).
 ///
 /// Returns the resolved `WorkspaceConfig` so the caller can echo the UUID.
-pub fn init_workspace(workspace_root: &Path) -> Result<WorkspaceConfig, String> {
-    let cfg = WorkspaceConfig::load_or_init(workspace_root)?;
-    let secrets_path = workspace_root.join(".plexi").join("secrets.toml");
+pub fn init_workspace(workspace_root: &Path, channel_dir: &str) -> Result<WorkspaceConfig, String> {
+    // Write workspace.toml under the channel dir
+    let ws_path = workspace_root.join(channel_dir).join("workspace.toml");
+    let cfg = if ws_path.exists() {
+        let raw = std::fs::read_to_string(&ws_path)
+            .map_err(|e| format!("read {}: {e}", ws_path.display()))?;
+        toml::from_str::<WorkspaceConfig>(&raw)
+            .map_err(|e| format!("parse {}: {e}", ws_path.display()))?
+    } else {
+        // Create the channel dir and write a fresh workspace.toml
+        let dir = workspace_root.join(channel_dir);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("create {}: {e}", dir.display()))?;
+        let id = uuid::Uuid::new_v4().to_string();
+        std::fs::write(&ws_path, format!("id = \"{id}\"\n"))
+            .map_err(|e| format!("write {}: {e}", ws_path.display()))?;
+        WorkspaceConfig { id, context: None }
+    };
+
+    // secrets.toml under the channel dir
+    let secrets_path = workspace_root.join(channel_dir).join("secrets.toml");
     if !secrets_path.exists() {
         let template = "# Workspace secret routing — see issue #322.\n\
                         # fallback: when no [apps.<id>] / [default] route matches a canonical\n\
@@ -505,6 +507,46 @@ pub fn init_workspace(workspace_root: &Path) -> Result<WorkspaceConfig, String> 
         std::fs::write(&secrets_path, template)
             .map_err(|e| format!("write {}: {e}", secrets_path.display()))?;
     }
+
+    // stub apps.toml under the channel dir
+    let apps_toml = workspace_root.join(channel_dir).join("apps.toml");
+    if !apps_toml.exists() {
+        let stub = concat!(
+            "schema_version = 1\n\n",
+            "# Declare workspace app dependencies here.\n",
+            "# Run `plexi app install` in this directory to install them.\n",
+            "#\n",
+            "# Example:\n",
+            "#\n",
+            "# [[app]]\n",
+            "# id      = \"gh-issues\"\n",
+            "# source  = \"local:gh-issues\"\n",
+            "# version = \"bundled\"\n",
+            "#\n",
+            "# [[app]]\n",
+            "# id      = \"my-tool\"\n",
+            "# source  = \"github:org/my-tool\"\n",
+            "# version = \"v1.0.0\"\n",
+        );
+        let _ = std::fs::write(&apps_toml, stub);
+    }
+
+    // stub commands.toml under the channel dir
+    let commands_toml = workspace_root.join(channel_dir).join("commands.toml");
+    if !commands_toml.exists() {
+        let stub = concat!(
+            "# Workspace commands — run with: plexi run <name>\n",
+            "#\n",
+            "# Simple form:   build = \"cargo build\"\n",
+            "# With metadata: dev = { run = \"npm run dev\", description = \"Start dev server\" }\n",
+            "# With secrets:  deploy = { run = \"./deploy.sh\", secrets = [\"API_KEY\"] }\n",
+            "\n",
+            "[commands]\n",
+            "guess = \"$PLEXI_CONFIG_DIR/scripts/guess\"\n",
+        );
+        let _ = std::fs::write(&commands_toml, stub);
+    }
+
     write_gitignore_if_absent(workspace_root)?;
     Ok(cfg)
 }
@@ -521,7 +563,7 @@ const GITIGNORE_TEMPLATE: &str = "# Auto-generated by plexi workspace init.\n\
 /// Write `<root>/.plexi/.gitignore` only when the file does not already exist.
 /// User edits to an existing file are preserved verbatim.
 fn write_gitignore_if_absent(workspace_root: &Path) -> Result<(), String> {
-    let dir = workspace_root.join(".plexi");
+    let dir = workspace_root.join(crate::config::workspace_channel_dir());
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let path = dir.join(".gitignore");
     if path.exists() {
@@ -546,10 +588,10 @@ pub fn write_default_route(
     canonical: &str,
     friendly: &str,
 ) -> Result<(), String> {
-    let secrets_path = workspace_root.join(".plexi").join("secrets.toml");
+    let secrets_path = workspace_root.join(crate::config::workspace_channel_dir()).join("secrets.toml");
 
     if !secrets_path.exists() {
-        let dir = workspace_root.join(".plexi");
+        let dir = workspace_root.join(crate::config::workspace_channel_dir());
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("create {}: {e}", dir.display()))?;
         let content = format!("fallback = true\n\n[default]\n{canonical} = \"{friendly}\"\n");
@@ -786,20 +828,22 @@ mod tests {
     #[test]
     fn workspace_config_load_or_init_writes_uuid_when_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        let cfg = WorkspaceConfig::load_or_init(tmp.path()).expect("load_or_init");
+        let channel_dir = crate::config::workspace_channel_dir();
+        let cfg = init_workspace(tmp.path(), &channel_dir).expect("load_or_init");
         assert!(uuid::Uuid::parse_str(&cfg.id).is_ok());
         // Idempotent — second call returns the same id.
-        let cfg2 = WorkspaceConfig::load_or_init(tmp.path()).expect("second load");
+        let cfg2 = init_workspace(tmp.path(), &channel_dir).expect("second load");
         assert_eq!(cfg.id, cfg2.id);
     }
 
     #[test]
     fn init_workspace_creates_workspace_and_secrets_files() {
         let tmp = tempfile::tempdir().unwrap();
-        init_workspace(tmp.path()).expect("init_workspace");
-        assert!(tmp.path().join(".plexi").join("workspace.toml").is_file());
+        let channel_dir = crate::config::workspace_channel_dir();
+        init_workspace(tmp.path(), &channel_dir).expect("init_workspace");
+        assert!(tmp.path().join(&channel_dir).join("workspace.toml").is_file());
         let secrets_raw =
-            std::fs::read_to_string(tmp.path().join(".plexi").join("secrets.toml")).unwrap();
+            std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
         // Generated secrets.toml must parse cleanly with the required field.
         let parsed = WorkspaceSecrets::parse(&secrets_raw).expect("template parses");
         assert!(parsed.fallback);
@@ -808,14 +852,15 @@ mod tests {
     #[test]
     fn init_writes_gitignore_when_absent() {
         let tmp = tempfile::tempdir().unwrap();
-        let gitignore = tmp.path().join(".plexi").join(".gitignore");
+        let channel_dir = crate::config::workspace_channel_dir();
+        let gitignore = tmp.path().join(&channel_dir).join(".gitignore");
         assert!(!gitignore.exists());
 
-        init_workspace(tmp.path()).expect("init_workspace");
+        init_workspace(tmp.path(), &channel_dir).expect("init_workspace");
 
         assert!(
             gitignore.is_file(),
-            "init must create .plexi/.gitignore"
+            "init must create {channel_dir}/.gitignore"
         );
         let raw = std::fs::read_to_string(&gitignore).unwrap();
         assert!(raw.contains("secrets.toml"), "got: {raw}");
@@ -825,13 +870,14 @@ mod tests {
     #[test]
     fn init_preserves_existing_gitignore() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join(".plexi");
+        let channel_dir = crate::config::workspace_channel_dir();
+        let dir = tmp.path().join(&channel_dir);
         std::fs::create_dir_all(&dir).unwrap();
         let gitignore = dir.join(".gitignore");
         let custom = "# my own rules\nfoo\nbar\n";
         std::fs::write(&gitignore, custom).unwrap();
 
-        init_workspace(tmp.path()).expect("init_workspace");
+        init_workspace(tmp.path(), &channel_dir).expect("init_workspace");
 
         let raw = std::fs::read_to_string(&gitignore).unwrap();
         assert_eq!(

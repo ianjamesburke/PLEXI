@@ -1,4 +1,4 @@
-use super::{PlexiCommands, COMMANDS_FILE, APP_ID, list_global_scripts, is_executable, print_tip};
+use super::{PlexiCommands, APP_ID, list_global_scripts, is_executable, print_tip};
 use std::process::Command;
 
 
@@ -15,11 +15,12 @@ pub fn run_list_commands() -> i32 {
         }
     };
 
-    let config_path = cwd.join(COMMANDS_FILE);
+    let commands_file = super::commands_file();
+    let config_path = cwd.join(&commands_file);
     let contents = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            log::info!("cli: no workspace commands.toml, falling back to global scripts");
+            log::info!("cli: no workspace {commands_file}, falling back to global scripts");
             let scripts_dir = crate::config::config_dir().join("scripts");
             let global_scripts = list_global_scripts(&scripts_dir);
             if !global_scripts.is_empty() {
@@ -46,13 +47,13 @@ pub fn run_list_commands() -> i32 {
     let config: PlexiCommands = match toml::from_str(&contents) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("error: failed to parse {COMMANDS_FILE}: {e}");
+            eprintln!("error: failed to parse {commands_file}: {e}");
             return 1;
         }
     };
 
     if config.commands.is_empty() {
-        println!("No commands defined in {COMMANDS_FILE}.");
+        println!("No commands defined in {commands_file}.");
         println!();
         println!("Add a command:");
         println!("  [commands]");
@@ -86,7 +87,8 @@ pub fn run_command(command_name: &str) -> i32 {
         }
     };
 
-    let config_path = cwd.join(COMMANDS_FILE);
+    let commands_file = super::commands_file();
+    let config_path = cwd.join(&commands_file);
     let contents = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -104,8 +106,8 @@ pub fn run_command(command_name: &str) -> i32 {
                     }
                 };
             }
-            eprintln!("error: no {COMMANDS_FILE} found in {}", cwd.display());
-            eprintln!("Create a .plexi/commands.toml to define runnable commands.");
+            eprintln!("error: no {commands_file} found in {}", cwd.display());
+            eprintln!("Create a {commands_file} to define runnable commands.");
             return 1;
         }
         Err(e) => {
@@ -117,7 +119,7 @@ pub fn run_command(command_name: &str) -> i32 {
     let config: PlexiCommands = match toml::from_str(&contents) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("error: failed to parse {COMMANDS_FILE}: {e}");
+            eprintln!("error: failed to parse {commands_file}: {e}");
             return 1;
         }
     };
@@ -127,7 +129,7 @@ pub fn run_command(command_name: &str) -> i32 {
         None => {
             eprintln!("error: unknown command '{command_name}'");
             if config.commands.is_empty() {
-                eprintln!("No commands defined in {COMMANDS_FILE}.");
+                eprintln!("No commands defined in {commands_file}.");
             } else {
                 let mut names: Vec<&str> = config.commands.keys().map(|s| s.as_str()).collect();
                 names.sort();

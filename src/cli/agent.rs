@@ -28,7 +28,8 @@ pub fn agent_add(name: &str) -> i32 {
         Err(code) => return code,
     };
 
-    let ws_agent_dir = workspace_root.join(".plexi").join("agents").join(name);
+    let channel_dir = crate::config::workspace_channel_dir();
+    let ws_agent_dir = workspace_root.join(&channel_dir).join("agents").join(name);
     let ws_agent_md = ws_agent_dir.join("AGENT.md");
 
     if ws_agent_md.exists() {
@@ -77,7 +78,8 @@ pub fn agent_update(name: &str) -> i32 {
         Err(code) => return code,
     };
 
-    let ws_agent_dir = workspace_root.join(".plexi").join("agents").join(name);
+    let channel_dir = crate::config::workspace_channel_dir();
+    let ws_agent_dir = workspace_root.join(&channel_dir).join("agents").join(name);
     let ws_agent_md = ws_agent_dir.join("AGENT.md");
 
     if !ws_agent_md.exists() {
@@ -131,7 +133,8 @@ pub fn agent_list() -> i32 {
         Err(code) => return code,
     };
 
-    let agents_dir = workspace_root.join(".plexi").join("agents");
+    let channel_dir = crate::config::workspace_channel_dir();
+    let agents_dir = workspace_root.join(&channel_dir).join("agents");
     if !agents_dir.is_dir() {
         println!("No agents installed in this workspace.");
         return 0;

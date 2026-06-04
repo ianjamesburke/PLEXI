@@ -9,11 +9,10 @@ use std::path::PathBuf;
 
 /// Auto-initialize a project workspace at `root` if one does not already exist.
 ///
-/// Creates only the channel-specific dir (e.g. `.plexi-alpha/`, `.plexi-pr-N/`).
-/// This is what `resolve_workspace_root` uses for discovery — no channel-agnostic
-/// `.plexi/` is created here. Full channel-aware workspace init is tracked in #1997.
+/// Calls the shared `init_workspace` function which creates all workspace files
+/// (workspace.toml, secrets.toml, apps.toml, commands.toml) under the channel dir.
 ///
-/// Idempotent — skips if the channel dir already exists.
+/// Idempotent — skips if the channel dir already has workspace.toml.
 /// Non-fatal — logs warn on failure but never prevents the root from being set.
 fn auto_init_workspace(root: &std::path::Path) {
     // Guard: never init at home dir, filesystem root, or inside a Plexi profile dir.
@@ -30,24 +29,20 @@ fn auto_init_workspace(root: &std::path::Path) {
         return;
     }
 
-    let channel_dir_name = crate::config::config_dir()
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(".plexi")
-        .to_string();
-    let channel_path = root.join(&channel_dir_name);
+    let channel_dir = crate::config::workspace_channel_dir();
+    let channel_path = root.join(&channel_dir);
     if channel_path.exists() {
         log::info!("auto_init_workspace: already initialized at {}", root.display());
         return;
     }
-    match std::fs::create_dir_all(&channel_path) {
-        Ok(()) => log::info!(
-            "auto_init_workspace: created {}/{} ",
-            root.display(), channel_dir_name
+    match crate::workspace::secrets::init_workspace(root, &channel_dir) {
+        Ok(cfg) => log::info!(
+            "auto_init_workspace: created {}/{channel_dir} workspace_id={}",
+            root.display(), cfg.id
         ),
         Err(e) => log::warn!(
-            "auto_init_workspace: could not create {}: {e}",
-            channel_path.display()
+            "auto_init_workspace: could not create {}/{channel_dir}: {e}",
+            root.display()
         ),
     }
 }
