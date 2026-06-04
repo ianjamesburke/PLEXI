@@ -1,8 +1,6 @@
-"""Counter app demonstrating the component tree API (epic #1897 B3).
+"""Counter app demonstrating L1 ComponentEvent routing.
 
-Button/Input nodes are included for visual Style O verification only.
-ComponentEvent routing to Python apps is not yet in the SDK — button
-clicks and input changes have no effect until that is wired up.
+Button clicks and input changes fire on_component_event with matching node_id.
 """
 from plexi_sdk import App, State
 
@@ -10,6 +8,17 @@ from plexi_sdk import App, State
 class CounterTree(App):
     count = State(0)
     label = State("")
+
+    def on_component_event(self, ctx, node_id, event_type, payload):
+        if event_type == "click":
+            if node_id == "increment":
+                self.count += 1
+                ctx.info(f"increment -> {self.count}")
+            elif node_id == "decrement":
+                self.count -= 1
+                ctx.info(f"decrement -> {self.count}")
+        elif event_type == "change" and node_id == "label_input":
+            self.label = (payload or {}).get("value", "")
 
     def on_key(self, ctx, key, mods):
         if key in ("up", "="):
@@ -37,7 +46,7 @@ class CounterTree(App):
                         {
                             "type": "button",
                             "node_id": "decrement",
-                            "label": "\u2212",
+                            "label": "−",
                         },
                         {
                             "type": "badge",
@@ -54,11 +63,11 @@ class CounterTree(App):
                     "type": "input",
                     "node_id": "label_input",
                     "value": self.label,
-                    "placeholder": "Enter a label\u2026",
+                    "placeholder": "Enter a label…",
                 },
                 {
                     "type": "text",
-                    "text": "up/down or +/- to change",
+                    "text": self.label or "up/down or click buttons",
                     "size": 12.0,
                     "color": "#6c7086",
                 },

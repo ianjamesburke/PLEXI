@@ -113,6 +113,8 @@ class App:
         on_mouse_move(ctx, x, y, buttons, mods={})  — on MouseMove event
         on_command(ctx, text)                        — on Command event
         on_paste(ctx, text)                          — on Paste event
+        on_component_event(ctx, node_id, event_type, payload)
+                                                    — on L1 ComponentEvent (button click, input change)
         on_text_submitted(ctx, id, text)             — on TextInput Enter press
         on_pipe_message(ctx, pipe_id, payload)       — on PipeMessage
         on_path_changed(ctx, cwd)                    — on PathChanged
@@ -316,6 +318,7 @@ class App:
     def on_list_activate(self, _ctx: "RenderContext", _id: str, _index: int) -> "Coroutine[Any, Any, None] | None":
         """Called when Enter is pressed on a selected list_view item."""
         return None
+    def on_component_event(self, _ctx: RenderContext, _node_id: str, _event_type: str, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
     def on_text_submitted(self, _ctx: RenderContext, _id: str, _text: str) -> "Coroutine[Any, Any, None] | None": return None
     def on_file_picked(self, _ctx: RenderContext, _request_id: str, _paths: "list[str]") -> "Coroutine[Any, Any, None] | None":
         """Called when the user selected one or more files in the picker.
@@ -1224,6 +1227,15 @@ class App:
                     request_id = str(ev.get("request_id", ""))
                     ctx = self._make_ctx()
                     await self._dispatch_hook(self.on_file_pick_cancelled, ctx, request_id)
+
+                elif t == "component_event":
+                    ctx = self._make_ctx()
+                    self._dispatch_hook_task(
+                        self.on_component_event, ctx,
+                        ev.get("node_id", ""),
+                        ev.get("event_type", ""),
+                        ev.get("payload"),
+                    )
 
                 elif t == "tool_call":
                     # v3.7 tool protocol (#399). Host asks this pane to execute
