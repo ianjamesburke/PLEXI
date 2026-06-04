@@ -357,9 +357,12 @@ fn main() -> eframe::Result {
                             log::info!("app_freeze:cli: path={path}");
                             std::process::exit(cli::freeze_cli(&path));
                         }
-                        AppCmd::Publish { dry_run } => {
-                            log::info!("app_publish:cli: dry_run={dry_run}");
-                            std::process::exit(cli::app_publish(dry_run));
+                        AppCmd::Dev { name, lang, from_pane_id } => {
+                            log::info!("app_dev:cli: name={name} lang={lang}");
+                            std::process::exit(cli::app_dev(&name, &lang, from_pane_id));
+                        }
+                        AppCmd::Publish => {
+                            std::process::exit(cli::app_publish());
                         }
                         AppCmd::Update { id } => {
                             log::info!("app_update:cli: id={id:?}");
