@@ -293,7 +293,7 @@ fn main() -> eframe::Result {
                                         }
                                         let path = tmp.to_string_lossy().into_owned();
                                         let layout_str = layout.as_deref().unwrap_or("split_h");
-                                        log::info!("app_open:cli: launching descriptor-renderer with descriptor at {path}");
+                                        log::info!("app_open:cli: launching cli-renderer with descriptor at {path}");
                                         std::process::exit(cli::pane_new_cli(
                                             None,
                                             Some(binary.as_str()),
@@ -302,7 +302,7 @@ fn main() -> eframe::Result {
                                             None,
                                             false,
                                             false,
-                                            Some("descriptor-renderer"),
+                                            Some("cli-renderer"),
                                             &[],
                                             None,
                                             &[path],

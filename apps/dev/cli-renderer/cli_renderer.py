@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""descriptor-renderer — auto-UI renderer for --plexi CLI descriptors (issue #361).
+"""cli-renderer — auto-UI renderer for --plexi CLI descriptors (issue #361).
 
 Accepts a descriptor path as the first argv or --descriptor <path>.
 Requests a linked terminal at startup, then renders the CLI's command
@@ -97,9 +97,9 @@ class DescriptorRendererApp(App):
         sample = Path(__file__).parent / "sample.json"
         path = self.descriptor or self.descriptor_pos or (str(sample) if sample.exists() else None)
         if not path:
-            self._error = "No descriptor path. Usage: descriptor-renderer --descriptor <path.json>"
+            self._error = "No descriptor path. Usage: cli-renderer --descriptor <path.json>"
             self._view = "error"
-            ctx.status_summary("descriptor-renderer: no path")
+            ctx.status_summary("cli-renderer: no path")
             return
 
         try:
@@ -107,24 +107,24 @@ class DescriptorRendererApp(App):
         except FileNotFoundError:
             self._error = f"File not found: {path}"
             self._view = "error"
-            ctx.status_summary("descriptor-renderer: file not found")
+            ctx.status_summary("cli-renderer: file not found")
             return
         except json.JSONDecodeError as e:
             self._error = f"Invalid JSON in {path}: {e}"
             self._view = "error"
-            ctx.status_summary("descriptor-renderer: bad JSON")
+            ctx.status_summary("cli-renderer: bad JSON")
             return
         except Exception as e:
             self._error = str(e)
             self._view = "error"
-            ctx.status_summary(f"descriptor-renderer: {e}")
+            ctx.status_summary(f"cli-renderer: {e}")
             return
 
         cli = self._descriptor.get("name", "?")
         ver = self._descriptor.get("version", "")
         ctx.status_summary(f"{cli} {ver}  ·  connecting terminal…")
         self._view = "list"
-        self.emit.info(f"descriptor-renderer: loaded {path!r}  cli={cli!r}  ver={ver!r}")
+        self.emit.info(f"cli-renderer: loaded {path!r}  cli={cli!r}  ver={ver!r}")
 
         # request_linked_terminal blocks on the event-loop queue — must run
         # on a background thread so the loop stays free to read the response.
@@ -137,9 +137,9 @@ class DescriptorRendererApp(App):
                 self.emit.request_linked_terminal(cwd=None, label=f"{cli} terminal")
             )
             self._terminal_pane_id = pane_id
-            self.emit.info(f"descriptor-renderer: linked terminal #{pane_id}")
+            self.emit.info(f"cli-renderer: linked terminal #{pane_id}")
         except CapabilityDeniedError as e:
-            self.emit.warn(f"descriptor-renderer: terminal.bindings denied: {e}")
+            self.emit.warn(f"cli-renderer: terminal.bindings denied: {e}")
         self.emit.schedule_render(after_ms=16)
 
     # ── Render ────────────────────────────────────────────────────────────────
@@ -363,13 +363,13 @@ class DescriptorRendererApp(App):
     def _run(self) -> None:
         assert self._descriptor is not None
         if self._terminal_pane_id == 0:
-            self.emit.warn("descriptor-renderer: no linked terminal")
+            self.emit.warn("cli-renderer: no linked terminal")
             return
         cli = self._descriptor.get("name", "")
         cmd_str = _build_command(cli, self._cmd_path, self._field_values, self._fields)
         self._last_run = cmd_str
         self.emit.run_in_linked_terminal(self._terminal_pane_id, cmd_str, echo=True)
-        self.emit.info(f"descriptor-renderer: ran {cmd_str!r}")
+        self.emit.info(f"cli-renderer: ran {cmd_str!r}")
 
     def on_escape(self, _ctx):
         if self._view == "form":

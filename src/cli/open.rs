@@ -53,7 +53,7 @@ pub fn pane_new_cli(
     cli_tool: Option<&str>,
     extra_args: &[String],
 ) -> i32 {
-    // --cli mode: run help parser, then open as descriptor-renderer app
+    // --cli mode: run help parser, then open as cli-renderer app
     if let Some(binary) = cli_tool {
         log::info!("pane_new:cli: running --help parser for `{binary}`");
         match crate::cli::help_parser::parse_help_to_descriptor(binary) {
@@ -65,10 +65,10 @@ pub fn pane_new_cli(
                     return 1;
                 }
                 let path = tmp.to_string_lossy().to_string();
-                // Recurse as an app open with descriptor-renderer
+                // Recurse as an app open with cli-renderer
                 return pane_new_cli(
                     None, name, layout, from_pane_id, cwd,
-                    ephemeral, no_focus, Some("descriptor-renderer"), &[], None, &[path],
+                    ephemeral, no_focus, Some("cli-renderer"), &[], None, &[path],
                 );
             }
             Err(e) => {

@@ -1,12 +1,12 @@
 schema_version = 1
 
 [app]
-id = "descriptor-renderer"
+id = "cli-renderer"
 type = "app"
-name = "Descriptor Renderer"
+name = "CLI Renderer"
 version = "0.1.0"
-description = "Auto-UI renderer for --plexi CLI descriptors (#361)"
-entry = "descriptor_renderer.py"
+description = "Auto-UI renderer for CLI tools opened with --cli"
+entry = "cli_renderer.py"
 
 [app.capabilities]
 capabilities = ["terminal.bindings"]

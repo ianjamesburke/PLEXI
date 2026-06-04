@@ -1,5 +1,5 @@
 //! Standalone `--help` parser that converts any CLI's help output into a
-//! descriptor JSON string compatible with `descriptor-renderer`.
+//! descriptor JSON string compatible with `cli-renderer`.
 //!
 //! Unlike `cli_crawl`, this module never caches — it always re-runs the
 //! subprocess. Use it when you need a one-shot, fresh parse (e.g. `plexi open
@@ -28,7 +28,7 @@ pub enum CliParseError {
 const TIMEOUT_SECS: u64 = 5;
 
 /// Run `<binary> --help`, parse the output, and return a descriptor JSON string
-/// matching the schema expected by `descriptor-renderer`. Never caches.
+/// matching the schema expected by `cli-renderer`. Never caches.
 pub fn parse_help_to_descriptor(binary: &str) -> Result<String, CliParseError> {
     log::info!("cli_help_parser: running `{binary} --help`");
 
