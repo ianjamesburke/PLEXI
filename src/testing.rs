@@ -223,6 +223,31 @@ impl HostHarness {
         HostSnapshot::from_app(&self.app)
     }
 
+    /// Number of panes in the active window.
+    pub fn pane_count(&self) -> usize {
+        self.app.windows[self.app.active_window].panes.len()
+    }
+
+    /// Number of windows in the active window list.
+    pub fn window_count(&self) -> usize {
+        self.app.windows.len()
+    }
+
+    /// Focus a pane by PaneId, looking up its TileId in the active window's
+    /// tile tree. No-op if the pane has no corresponding tile.
+    pub fn focus_pane(&mut self, pane_id: PaneId) -> &mut Self {
+        let win = &mut self.app.windows[self.app.active_window];
+        let tile_id = win.tree.tiles.iter().find_map(|(tid, tile)| {
+            if let egui_tiles::Tile::Pane(pid) = tile {
+                if *pid == pane_id { Some(tid) } else { None }
+            } else {
+                None
+            }
+        });
+        win.focused_pane = tile_id.copied();
+        self
+    }
+
     // ── Protocol injection ───────────────────────────────────────────────────
 
     /// Inject a `DrawCommand` into the given pane's channel. The command will
@@ -950,4 +975,48 @@ mod tests {
         );
     }
 
+}
+
+// ─── UI Flow Tests ───────────────────────────────────────────────────────────
+//
+// These tests exercise user-visible layout flows through the same code paths
+// triggered by keyboard shortcuts. They require a real PTY-capable environment
+// (macOS with a shell) because `split_focused` and `new_context` both spawn a
+// terminal pane. Run with `cargo test ui_flow`.
+
+#[cfg(test)]
+mod ui_flow_tests {
+    use super::*;
+
+    #[test]
+    fn split_vertical_adds_pane() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_test_pane();
+        h.focus_pane(pane_id);
+        h.run_frames(1);
+
+        assert_eq!(h.pane_count(), 1);
+        h.app.split_focused(true, None, false, false, None);
+        assert_eq!(h.pane_count(), 2, "SplitVertical should add a terminal pane");
+    }
+
+    #[test]
+    fn split_horizontal_adds_pane() {
+        let mut h = HostHarness::new();
+        let pane_id = h.add_test_pane();
+        h.focus_pane(pane_id);
+        h.run_frames(1);
+
+        assert_eq!(h.pane_count(), 1);
+        h.app.split_focused(false, None, false, false, None);
+        assert_eq!(h.pane_count(), 2, "SplitHorizontal should add a terminal pane");
+    }
+
+    #[test]
+    fn new_context_adds_window() {
+        let mut h = HostHarness::new();
+        assert_eq!(h.window_count(), 1);
+        h.app.new_context();
+        assert_eq!(h.window_count(), 2, "new_context should add a second window");
+    }
 }

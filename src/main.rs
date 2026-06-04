@@ -69,6 +69,8 @@ mod widgets;
 mod workspace;
 #[cfg(test)]
 mod testing;
+#[cfg(test)]
+mod ui_tests;
 
 fn main() -> eframe::Result {
     if std::env::args().nth(1).as_deref() == Some("--render") {
