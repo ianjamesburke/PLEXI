@@ -239,6 +239,18 @@ class Heading(Component):
 
     DESCENDER_PAD = 3.0
 
+    def __post_init__(self):
+        if not isinstance(self.text, str):
+            raise TypeError(
+                f"Heading text must be a string, got {type(self.text).__name__}: {self.text!r}. "
+                f"Convert with str(): Heading(text=str(value))"
+            )
+        if self.level not in (1, 2, 3):
+            raise ValueError(
+                f"Heading level must be 1, 2, or 3, got {self.level!r}. "
+                "1 = TEXT_TITLE_XL (28pt), 2 = TEXT_TITLE (20pt), 3 = TEXT_HEADING (16pt)."
+            )
+
     def _font_size(self) -> float:
         return {
             1: TEXT_TITLE_XL,
@@ -277,6 +289,18 @@ class Label(Component):
     # Extra space below the last line's baseline to avoid clipping
     # descenders (g, y, p, q). Roughly 20% of body font size.
     DESCENDER_PAD = 3.0
+
+    def __post_init__(self):
+        if not isinstance(self.text, str):
+            raise TypeError(
+                f"Label text must be a string, got {type(self.text).__name__}: {self.text!r}. "
+                f"Convert with str(): Label(text=str(value))"
+            )
+        if self.tone not in ("body", "caption", "hint"):
+            raise ValueError(
+                f"Label tone must be 'body', 'caption', or 'hint', got {self.tone!r}. "
+                "Use color= for custom colors instead of an arbitrary tone string."
+            )
 
     def _font_size(self) -> float:
         return {
@@ -748,6 +772,15 @@ class FooterKeys(Component):
     # two rules stack with dead space between them.
     divider: bool = True
 
+    def __post_init__(self):
+        for i, item in enumerate(self.shortcuts):
+            if not isinstance(item, (tuple, list)) or len(item) != 2:
+                raise TypeError(
+                    f"FooterKeys shortcuts[{i}] must be a (key_or_keys, description) tuple, "
+                    f"got {type(item).__name__}: {item!r}. "
+                    f"Example: FooterKeys([(\"j\", \"down\"), ([\"g\", \"G\"], \"ends\")])"
+                )
+
     # TOP_GAP reduced from SPACE_MD (12px) to SPACE_SM (8px) — trimmer chrome.
     TOP_GAP = SPACE_SM
     CHIP_H = TEXT_HINT + 2.0 * 1.0   # TEXT_HINT + 2*CHIP_PAD_V
@@ -1125,6 +1158,14 @@ class ChatBubble(Component):
     max_lines: int = 50
 
     LINE_LEADING = 5.0
+
+    def __post_init__(self):
+        if self.role not in ("user", "assistant", "error"):
+            raise ValueError(
+                f"ChatBubble role must be 'user', 'assistant', or 'error', got {self.role!r}. "
+                "'user' = right-aligned accent, 'assistant' = left-aligned surface, "
+                "'error' = left-aligned danger."
+            )
     DESCENDER_PAD = 5.0
     BUBBLE_PAD = SPACE_MD
     BUBBLE_MAX_FRAC = 0.78
@@ -1202,6 +1243,24 @@ class SelectList(Component):
     """
 
     def __init__(self, items: List[dict], selected_idx: int = 0) -> None:
+        if not isinstance(items, list):
+            raise TypeError(
+                f"SelectList items must be a list of dicts, got {type(items).__name__}. "
+                "Each dict needs at least a 'name' key: [{\"name\": \"Item 1\"}, ...]"
+            )
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise TypeError(
+                    f"SelectList items[{i}] must be a dict with a 'name' key, "
+                    f"got {type(item).__name__}: {item!r}. "
+                    "Example: [{\"name\": \"Item 1\", \"description\": \"optional\"}]"
+                )
+            if "name" not in item:
+                raise ValueError(
+                    f"SelectList items[{i}] is missing required 'name' key. "
+                    f"Got keys: {list(item.keys())}. "
+                    "Each item dict must have at least: {\"name\": \"...\"}"
+                )
         self.items = items
         self.selected_idx = selected_idx
         self._scroll_px: float = 0.0
@@ -1457,6 +1516,11 @@ def render_tree(ctx, root: Component, fill: Optional[str] = None) -> None:
     is emitted as a single ``ComponentTree`` command and the host renders it
     natively with consistent theming. Otherwise falls back to L0 draw commands.
     """
+    if not isinstance(root, Component):
+        raise TypeError(
+            f"ctx.render() expected a Component (e.g. Column, Card), got {type(root).__name__}. "
+            "Wrap your UI elements in Column([...]) or another container that subclasses Component."
+        )
     ctx.clear(fill or theme.bg)
     node = root.to_node()
     if node is not None:
@@ -1487,6 +1551,15 @@ class InfoTable(Component):
 
     ROW_H = 30.0
     PAD_H = SPACE_MD
+
+    def __post_init__(self):
+        for i, row in enumerate(self.rows):
+            if not isinstance(row, (tuple, list)) or len(row) != 2:
+                raise TypeError(
+                    f"InfoTable rows[{i}] must be a (key, value) tuple, "
+                    f"got {type(row).__name__}: {row!r}. "
+                    f"Example: InfoTable([(\"app_id\", \"my-app\"), (\"version\", \"1.0\")])"
+                )
 
     def measure(self, avail_w: float) -> float:
         if not self.rows:
@@ -1645,6 +1718,22 @@ class ListRow:
     chips: "list[RowChip]" = field(default_factory=list)
     trailing: "str | None" = None
 
+    def __post_init__(self):
+        if self.leading is not None and not isinstance(
+            self.leading, (LeadingBadge, LeadingAvatar, LeadingIcon)
+        ):
+            raise TypeError(
+                f"ListRow leading must be LeadingBadge, LeadingAvatar, LeadingIcon, or None, "
+                f"got {type(self.leading).__name__}. "
+                f"Example: ListRow(id='x', primary='text', leading=LeadingBadge('label'))"
+            )
+        for i, chip in enumerate(self.chips):
+            if not isinstance(chip, RowChip):
+                raise TypeError(
+                    f"ListRow chips[{i}] must be a RowChip, got {type(chip).__name__}. "
+                    f"Example: chips=[RowChip('tag', 'accent')]"
+                )
+
     def to_dict(self) -> dict:
         return {
             "type": "row",
@@ -1687,6 +1776,19 @@ class Tabs:
         tabs: "list[tuple[str, HasToNode]]",
         active: int = 0,
     ) -> None:
+        for i, item in enumerate(tabs):
+            if not isinstance(item, (tuple, list)) or len(item) != 2:
+                raise TypeError(
+                    f"Tabs entries[{i}] must be a (label, content) tuple, "
+                    f"got {type(item).__name__}: {item!r}. "
+                    f"Example: Tabs([(\"Tab1\", my_node), (\"Tab2\", other_node)])"
+                )
+            label, content = item
+            if not isinstance(label, str):
+                raise TypeError(
+                    f"Tabs entries[{i}] label must be a str, got {type(label).__name__}. "
+                    f"Example: Tabs([(\"Tab1\", my_node)])"
+                )
         self.tabs = tabs
         self.active = active
 
@@ -1751,6 +1853,18 @@ class Grid:
     ) -> None:
         if columns < 1:
             raise ValueError(f"Grid columns must be >= 1, got {columns}")
+        if not isinstance(columns, int):
+            raise TypeError(
+                f"Grid columns must be an int, got {type(columns).__name__}. "
+                f"Example: Grid(2, [child1, child2])"
+            )
+        for i, child in enumerate(children):
+            if not isinstance(child, (dict, HasToNode)):
+                raise TypeError(
+                    f"Grid children[{i}] must implement to_node() (HasToNode) or be a dict, "
+                    f"got {type(child).__name__}. "
+                    "Grid children need a to_node() method for host-side rendering."
+                )
         self.columns = columns
         self.children = children
         self.gap = gap

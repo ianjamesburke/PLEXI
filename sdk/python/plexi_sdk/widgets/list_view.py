@@ -108,7 +108,16 @@ class ListView:
 
         Call inside Column([...]) on every frame — the returned object is
         lightweight and safe to recreate each render.
+
+        Each item should have a render(ctx, x, y, w, h) method (e.g. ListItem).
         """
+        for i, item in enumerate(items):
+            if not callable(getattr(item, "render", None)):
+                raise TypeError(
+                    f"ListView items[{i}] must have a render(ctx, x, y, w, h) method, "
+                    f"got {type(item).__name__} with no render() method. "
+                    "Use ListItem or another Component subclass."
+                )
         return _ListViewRenderer(self, items)
 
     # -- Internal -------------------------------------------------------------
