@@ -153,6 +153,32 @@ impl PlexiApp {
                                             .color(colors.text_dim),
                                     );
                                     ui.end_row();
+
+                                    crate::ui::widgets::key_combo_list(
+                                        ui,
+                                        &[&["\u{2318}", "\u{2303}", "H", "J", "K", "L"]],
+                                        None,
+                                        colors,
+                                    );
+                                    ui.label(
+                                        RichText::new("Swap pane (focus follows)")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.end_row();
+
+                                    crate::ui::widgets::key_combo_list(
+                                        ui,
+                                        &[&["\u{2318}", "\u{2303}", "\u{2325}", "H", "J", "K", "L"]],
+                                        None,
+                                        colors,
+                                    );
+                                    ui.label(
+                                        RichText::new("Send pane (focus stays)")
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
+                                    );
+                                    ui.end_row();
                                 });
                         });
 
