@@ -167,7 +167,7 @@ pub(super) fn binary_in_path(name: &str) -> bool {
 
 // ── Public re-exports (preserve crate::cli::fn_name() call sites in main.rs) ──
 pub use app::{app_init, app_uninstall, app_install_with_pin, app_run, app_info, app_list, app_render, app_dev, app_publish, app_update_cli};
-pub use completions::completions_cli;
+pub use completions::{completions_cli, complete_open_cli};
 pub use config_cli::{config_check, config_edit, config_get, config_reset};
 pub use context_cli::{
     context_new_cli, context_zoom_cli, context_zoom_out_cli, context_open_cli,
@@ -179,7 +179,7 @@ pub use install::{install_cli, install_pack_cli, install_workspace_pack_cli, ple
 pub use list::{freeze_cli, parse_notify_choice};
 pub use notes::{notes_list_cli, notes_open_cli};
 pub use notify::notify_cli;
-pub use open::{open_cli, terminal_cli, pane_new_cli, mcp_pane_title};
+pub use open::{open_cli, terminal_cli, pane_new_cli, mcp_pane_title, parse_prefix, open_cli_by_name, open_mcp_by_name, OpenPrefix};
 pub use pane::{
     pane_set_title_cli, pane_list_cli, pane_self_cli, pane_info_cli,
     pane_focus_cli, pane_close_cli, pane_send_cli, pane_key_cli, pane_capture_cli,

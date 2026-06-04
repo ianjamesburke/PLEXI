@@ -221,6 +221,12 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: DescriptorCmd,
     },
+    /// List completions for prefix-based open (hidden, used by shell completions)
+    #[command(hide = true, name = "_complete-open")]
+    CompleteOpen {
+        /// Prefix to complete: "cli:", "mcp:", "app:", or empty for all
+        prefix: String,
+    },
 }
 
 #[derive(Subcommand)]

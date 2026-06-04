@@ -220,6 +220,147 @@ pub fn mcp_pane_title(args: &[String]) -> String {
     format!("mcp: {short}")
 }
 
+/// Parsed prefix from a `type_id` string like `app:snake`, `cli:git`, `mcp:filesystem`.
+pub enum OpenPrefix {
+    /// `app:<name>` -- explicit app registry lookup
+    App(String),
+    /// `cli:<name>` -- CLI registry/crawl lookup
+    Cli(String),
+    /// `mcp:<name>` -- MCP registry lookup
+    Mcp(String),
+    /// No prefix -- backwards compat (try app registry, then CLI registry)
+    Bare(String),
+}
+
+/// Parse a `type_id` argument into an `OpenPrefix`.
+pub fn parse_prefix(type_id: &str) -> OpenPrefix {
+    if let Some(name) = type_id.strip_prefix("app:") {
+        OpenPrefix::App(name.to_string())
+    } else if let Some(name) = type_id.strip_prefix("cli:") {
+        OpenPrefix::Cli(name.to_string())
+    } else if let Some(name) = type_id.strip_prefix("mcp:") {
+        OpenPrefix::Mcp(name.to_string())
+    } else {
+        OpenPrefix::Bare(type_id.to_string())
+    }
+}
+
+/// Open a named CLI tool via the Tier 1/2/3 resolution chain (registry then crawl).
+///
+/// Writes a descriptor to a temp file and opens it with `cli-renderer`.
+pub fn open_cli_by_name(
+    name: &str,
+    layout: Option<&str>,
+    from_pane_id: Option<u64>,
+    cwd: Option<&str>,
+) -> i32 {
+    log::info!("open:prefix: resolving cli:{name}");
+
+    // Tier 2: registry lookup
+    match crate::cli::registry::lookup(name, None) {
+        Ok(descriptor) => {
+            log::info!("open:prefix: cli:{name} resolved from registry");
+            let json = match serde_json::to_string_pretty(&descriptor) {
+                Ok(j) => j,
+                Err(e) => {
+                    eprintln!("error: could not serialize descriptor for `{name}`: {e}");
+                    return 1;
+                }
+            };
+            let id = uuid::Uuid::new_v4();
+            let tmp = std::env::temp_dir().join(format!("plexi-descriptor-{id}.json"));
+            if let Err(e) = std::fs::write(&tmp, &json) {
+                eprintln!("error: could not write descriptor temp file: {e}");
+                return 1;
+            }
+            let path = tmp.to_string_lossy().to_string();
+            let layout_str = layout.unwrap_or("split_h");
+            return pane_new_cli(
+                None, Some(name), layout_str, from_pane_id, cwd,
+                false, false, Some("cli-renderer"), &[], None, &[path],
+            );
+        }
+        Err(crate::cli::registry::RegistryError::NotFound { .. }) => {
+            // Fall through to Tier 3
+        }
+        Err(e) => {
+            eprintln!("error: registry lookup for `{name}` failed: {e}");
+            return 1;
+        }
+    }
+
+    // Tier 3: crawl --help and cache
+    log::info!("open:prefix: cli:{name} not in registry, falling back to crawl");
+    match crate::cli::crawl::crawl(name) {
+        Ok(result) => {
+            let tag = if result.from_cache { "cached" } else { "fresh crawl" };
+            log::info!("open:prefix: cli:{name} resolved via {tag}");
+            let json = match serde_json::to_string_pretty(&result.descriptor) {
+                Ok(j) => j,
+                Err(e) => {
+                    eprintln!("error: could not serialize descriptor for `{name}`: {e}");
+                    return 1;
+                }
+            };
+            let id = uuid::Uuid::new_v4();
+            let tmp = std::env::temp_dir().join(format!("plexi-descriptor-{id}.json"));
+            if let Err(e) = std::fs::write(&tmp, &json) {
+                eprintln!("error: could not write descriptor temp file: {e}");
+                return 1;
+            }
+            let path = tmp.to_string_lossy().to_string();
+            let layout_str = layout.unwrap_or("split_h");
+            pane_new_cli(
+                None, Some(name), layout_str, from_pane_id, cwd,
+                false, false, Some("cli-renderer"), &[], None, &[path],
+            )
+        }
+        Err(e) => {
+            eprintln!("error: could not resolve CLI `{name}`: {e}");
+            1
+        }
+    }
+}
+
+/// Open a named MCP server from the registry.
+///
+/// Looks up the `command` array from `registry/mcp/<name>.json` and opens it
+/// with `mcp-renderer`.
+pub fn open_mcp_by_name(
+    name: &str,
+    layout: Option<&str>,
+    from_pane_id: Option<u64>,
+    cwd: Option<&str>,
+) -> i32 {
+    log::info!("open:prefix: resolving mcp:{name}");
+
+    match crate::cli::registry::lookup_mcp(name) {
+        Some(entry) => {
+            log::info!("open:prefix: mcp:{} ({}) resolved, command={:?}", entry.name, entry.description, entry.command);
+            let title = mcp_pane_title(&entry.command);
+            let layout_str = layout.unwrap_or("split_h");
+            pane_new_cli(
+                None,
+                Some(&title),
+                layout_str,
+                from_pane_id,
+                cwd,
+                false,
+                false,
+                Some("mcp-renderer"),
+                &entry.command,
+                None,
+                &[],
+            )
+        }
+        None => {
+            eprintln!("error: MCP server `{name}` not found in registry");
+            eprintln!("hint: use `plexi app open --mcp <command>...` for unnamed MCP servers");
+            1
+        }
+    }
+}
+
 /// Thin wrapper preserving the existing `plexi app open` call site.
 pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_id: Option<u64>, cwd: Option<&str>) -> i32 {
     // Intercept github: prefix for ephemeral open-without-install.
@@ -268,10 +409,51 @@ fn read_line_plain() -> io::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::mcp_pane_title;
+    use super::{mcp_pane_title, parse_prefix, OpenPrefix};
 
     fn args(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn prefix_app() {
+        match parse_prefix("app:snake") {
+            OpenPrefix::App(name) => assert_eq!(name, "snake"),
+            _ => panic!("expected App prefix"),
+        }
+    }
+
+    #[test]
+    fn prefix_cli() {
+        match parse_prefix("cli:git") {
+            OpenPrefix::Cli(name) => assert_eq!(name, "git"),
+            _ => panic!("expected Cli prefix"),
+        }
+    }
+
+    #[test]
+    fn prefix_mcp() {
+        match parse_prefix("mcp:filesystem") {
+            OpenPrefix::Mcp(name) => assert_eq!(name, "filesystem"),
+            _ => panic!("expected Mcp prefix"),
+        }
+    }
+
+    #[test]
+    fn prefix_bare() {
+        match parse_prefix("snake") {
+            OpenPrefix::Bare(name) => assert_eq!(name, "snake"),
+            _ => panic!("expected Bare prefix"),
+        }
+    }
+
+    #[test]
+    fn prefix_github_stays_bare() {
+        // github: is handled by open_cli, not the prefix router
+        match parse_prefix("github:owner/repo") {
+            OpenPrefix::Bare(name) => assert_eq!(name, "github:owner/repo"),
+            _ => panic!("expected Bare for github: prefix"),
+        }
     }
 
     #[test]
