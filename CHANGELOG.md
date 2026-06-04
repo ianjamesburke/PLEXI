@@ -1,6 +1,57 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.612] — 2026-06-04
+
+### Changes
+- refactor(apps): rename descriptor-renderer to cli-renderer
+- fix(skills): add dev app skip rule to blitz sub-agent prompt
+- fix(apps): restore descriptor-renderer, mcp-renderer, node-canvas
+- feat(skills): add /blitz roadmap executor with continuous dispatch
+- docs(roadmap): check off 6 items from Layer 2 + Layer 3 (v0.0.610)
+- feat(sdk): actionable error messages audit (#1203) (#1946)
+- chore(apps): archive 31 dev POCs, keep 3 reference apps (#1942) (#1945)
+- chore(apps): remove Quick Note app — redundant with Cmd+0 host feature (#1943) (#1944)
+- feat(host/terminal): Cmd+F search overlay with match cycling (#1914) (#1941)
+- feat(open): auto-set pane title for --mcp and --cli (#1037) (#1940)
+- feat(host/overlays): dismiss QuickNote modal on click-away (#1938) (#1939)
+- docs(roadmap): check off 3a component event routing (v0.0.609)
+- docs: add app priority rule — Core 9 only, skip dev apps
+- feat(sdk): route ComponentEvent to on_component_event callback (#1904) (#1937)
+- feat(sdk): on_escape hook replaces per-app Escape handling
+- fix(apps): Esc closes calc and logs apps
+- feat(protocol): L1 UiNode expansion + host renderers + SDK tree emission
+- fix(apps): restore escape-to-close in snake, tetris, todo, quick-note
+- docs(roadmap): check off core app theming audit (v0.0.604)
+- chore(apps): core app theming audit -- ctx.theme across 7 apps (#1669)
+- docs(roadmap): check off v0.0.603 items -- _l0 removal, notification auto-dismiss, QuickNote preemption, logs spacing
+- refactor(protocol): remove _l0 fallback fields from L1 UiNode variants
+- fix(overlays): allow QuickNote to open over non-critical modals (#1626)
+- fix(host/notifications): auto-dismiss notification when originating pane is focused (#1635)
+- fix(apps/logs): uniform badge sizes, consistent table padding (#1648)
+- docs(roadmap): mark Layer 1 core complete, defer FocusLayer unification to v2.0
+- chore: restructure product phases, document session practices, add pane naming support
+- fix(host/keys): exact modifier check broken on macOS
+- feat(host/pane-ops): viewport overtake indicator bar (#1931)
+- refactor(ui/overlays): extract modal_shell helper (#1930)
+- refactor(host/keys): declarative binding table (#1929)
+- refactor(cli): remove layout_hint from manifests and registry (#1928)
+- fix(terminal): strip trailing punctuation from clickable URLs (#1549)
+- feat(sdk): default Esc behavior in base App class (#1631)
+- refactor(cli): clean namespace split for pane new vs app open (#1928)
+- fix(cli): pane new direction flags produce wrong split orientation (#1927)
+- feat(scaffold): trim app init template to 30-line L1 example
+- feat(apps): migrate balls, snake, tetris, stats to L1 rendering
+- refactor: move 6 non-core apps to apps/dev/
+- docs(roadmap): check off L1 app migration (v0.0.597)
+- feat(apps): migrate 11 apps from L0 draw commands to L1 Component rendering
+- feat(cli): unify pane spawning under `pane new` (#1923) (#1926)
+- feat(scratchpad): native text-editor builtin pane, open from any pane type (#1920) (#1922)
+- fix(snake-race): request panes.spawn capability before spawning
+- fix(snake-race): replace bare color constants with ctx.theme.* lookups
+- Add keyboard shortcut tip for context_set_root, document CLI pane naming and tips patterns
+- fix: restore draw_triple_tap_overlay after inspector removal, clean up dead code
+- Remove context inspector modal, replace Cmd+I with SetContextRootFromCwd action
 ## [0.0.611] — 2026-06-04
 
 ### Changes
