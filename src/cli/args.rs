@@ -285,8 +285,14 @@ pub enum SecretCmd {
     /// Show all secrets stored for this project.
     List,
     /// Delete a stored secret.
+    ///
+    /// Use --global to delete a globally-stored secret (one stored with `secret set --global`).
+    /// Without --global, deletes the workspace-scoped entry for the current project.
     Delete {
         friendly_name: String,
+        /// Delete from the global store instead of the project-scoped store
+        #[arg(long)]
+        global: bool,
     },
 }
 
