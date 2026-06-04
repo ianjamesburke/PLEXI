@@ -1,6 +1,6 @@
 use super::super::*;
-use crate::app_trait::AppCommand;
-use crate::context::Window;
+use crate::app::app_trait::AppCommand;
+use crate::host::context::Window;
 use crate::testing::HostHarness;
 
 fn same_workspace_window_below(window_id: u64, pane_id: u64) -> Window {
@@ -174,7 +174,7 @@ fn persist_ttl_drops_old_notifications() {
 fn dispatch_notify_action_pane_focus_navigates() {
     let mut h = HostHarness::new();
     let sender_id = h.add_test_pane();
-    h.app.windows.push(crate::context::Window {
+    h.app.windows.push(crate::host::context::Window {
         name: "Context B".into(),
         path: std::env::temp_dir(),
         tree: {
@@ -191,7 +191,7 @@ fn dispatch_notify_action_pane_focus_navigates() {
         window_id: 2,
         context_id: 2,
     });
-    h.app.router.push(crate::context::Context {
+    h.app.router.push(crate::host::context::Context {
         name: "Context B".into(),
         path: std::env::temp_dir(),
         root: None,

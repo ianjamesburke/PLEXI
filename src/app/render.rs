@@ -1,7 +1,7 @@
 //! Rendering helpers extracted from the main `eframe::App::update()` loop.
 
 use super::{ClickFlash, FocusLayer, PlexiApp};
-use crate::tiling::{PaneId, PlexiBehavior};
+use crate::spatial::tiling::{PaneId, PlexiBehavior};
 use egui::{Color32, CornerRadius, Stroke, StrokeKind, Vec2};
 use egui_tiles::Tile;
 use std::collections::HashMap;
@@ -22,7 +22,7 @@ impl PlexiApp {
         }
         #[cfg(target_os = "macos")]
         {
-            let finder_paths = crate::finder_service::drain();
+            let finder_paths = crate::platform::finder_service::drain();
             if !finder_paths.is_empty() {
                 for path in finder_paths {
                     log::info!("finder_service: opening context for {}", path.display());
@@ -215,10 +215,10 @@ impl PlexiApp {
                 let canvas_old_window_id = self.windows[self.active_window].window_id;
 
                 // Build portal preview data before taking the mutable ctx borrow.
-                let portal_info: std::collections::HashMap<crate::tiling::PaneId, crate::tiling::PortalPreview> = {
+                let portal_info: std::collections::HashMap<crate::spatial::tiling::PaneId, crate::spatial::tiling::PortalPreview> = {
                     let active_win = self.active_window;
                     let mut map = std::collections::HashMap::new();
-                    let portal_panes: Vec<(crate::tiling::PaneId, u64)> = self.windows[active_win]
+                    let portal_panes: Vec<(crate::spatial::tiling::PaneId, u64)> = self.windows[active_win]
                         .panes
                         .iter()
                         .filter_map(|(pid, p)| p.portal_target().map(|cid| (*pid, cid)))
@@ -234,14 +234,14 @@ impl PlexiApp {
                         let pane_count = self.windows.iter()
                             .filter(|w| w.context_id == child_ctx_id)
                             .flat_map(|w| w.panes.values())
-                            .filter(|p| !matches!(p, crate::pane::Pane::Portal(_)))
+                            .filter(|p| !matches!(p, crate::host::pane::Pane::Portal(_)))
                             .count();
                         let notif_count = self.context_notification_count_recursive(child_ctx_id);
                         let active_win_for_child = self.context_active_window.get(&child_ctx_id).copied();
                         let first_win_id_for_child = self.windows.iter()
                             .find(|ww| ww.context_id == child_ctx_id)
                             .map(|ww| ww.window_id);
-                        let child_windows: Vec<crate::tiling::MiniWindow> = self.windows.iter()
+                        let child_windows: Vec<crate::spatial::tiling::MiniWindow> = self.windows.iter()
                             .filter(|w| w.context_id == child_ctx_id)
                             .filter_map(|w| {
                                 let is_active_win = active_win_for_child
@@ -250,23 +250,23 @@ impl PlexiApp {
                                         first_win_id_for_child.map(|fid| fid == w.window_id).unwrap_or(false)
                                     });
                                 let root = w.tree.root?;
-                                let leaves = crate::tiling::compute_minimap_rects(&w.tree.tiles, root);
+                                let leaves = crate::spatial::tiling::compute_minimap_rects(&w.tree.tiles, root);
                                 let panes = leaves.iter().map(|(norm_rect, tile_id)| {
                                     let pane_ref = match w.tree.tiles.get(*tile_id) {
                                         Some(egui_tiles::Tile::Pane(pid)) => w.panes.get(pid),
                                         _ => None,
                                     };
                                     let kind = match pane_ref {
-                                        Some(p) if p.as_app().is_some() => crate::tiling::PaneKind::App,
-                                        Some(p) if p.as_portal().is_some() => crate::tiling::PaneKind::Portal,
-                                        _ => crate::tiling::PaneKind::Terminal,
+                                        Some(p) if p.as_app().is_some() => crate::spatial::tiling::PaneKind::App,
+                                        Some(p) if p.as_portal().is_some() => crate::spatial::tiling::PaneKind::Portal,
+                                        _ => crate::spatial::tiling::PaneKind::Terminal,
                                     };
                                     let title = pane_ref.and_then(|p| {
                                         p.as_terminal().and_then(|t| t.name.clone())
                                             .or_else(|| p.as_app().map(|a| a.name.clone()))
                                     });
                                     let focused = is_active_win && w.focused_pane == Some(*tile_id);
-                                    crate::tiling::MiniPane {
+                                    crate::spatial::tiling::MiniPane {
                                         norm_rect: *norm_rect,
                                         kind,
                                         focused,
@@ -275,7 +275,7 @@ impl PlexiApp {
                                         active: true,
                                     }
                                 }).collect();
-                                Some(crate::tiling::MiniWindow {
+                                Some(crate::spatial::tiling::MiniWindow {
                                     grid_x: w.grid_x,
                                     grid_y: w.grid_y,
                                     panes,
@@ -283,7 +283,7 @@ impl PlexiApp {
                             })
                             .collect();
                         let window_count = child_windows.len();
-                        map.insert(pane_id, crate::tiling::PortalPreview {
+                        map.insert(pane_id, crate::spatial::tiling::PortalPreview {
                             context_name: ctx_name,
                             context_description: ctx_description,
                             pane_count,
@@ -298,15 +298,15 @@ impl PlexiApp {
                 // Update cached ContextState on portal panes (recomputed each frame for now;
                 // future: throttle to change events only).
                 {
-                    let contexts: Vec<crate::context::Context> = self.router.iter().cloned().collect();
+                    let contexts: Vec<crate::host::context::Context> = self.router.iter().cloned().collect();
                     let active_win = self.active_window;
-                    let portal_pane_ids: Vec<(crate::tiling::PaneId, u64)> = self.windows[active_win]
+                    let portal_pane_ids: Vec<(crate::spatial::tiling::PaneId, u64)> = self.windows[active_win]
                         .panes
                         .iter()
                         .filter_map(|(pid, p)| p.portal_target().map(|cid| (*pid, cid)))
                         .collect();
                     for (pid, child_ctx_id) in portal_pane_ids {
-                        let state = crate::context_state::ContextState::compute(
+                        let state = crate::host::context_state::ContextState::compute(
                             child_ctx_id,
                             &contexts,
                             &self.windows,
@@ -624,7 +624,7 @@ impl PlexiApp {
                             );
                             child_ui.painter().rect_filled(bar_rect, 0.0, self.colors.terminal_bg);
                             if let Some((active_idx, count)) = zoomed_tab_info {
-                                crate::tiling::paint_tab_dots(
+                                crate::spatial::tiling::paint_tab_dots(
                                     child_ui.painter(),
                                     bar_rect.left(),
                                     bar_rect.center().y,
@@ -660,7 +660,7 @@ impl PlexiApp {
                                 if let Some(pane) = ctx.panes.get_mut(&pane_id) {
                                     if let Some(t) = pane.as_terminal_mut() {
                                         if dropped_to_zoom {
-                                            crate::tiling::write_dropped_paths_to_terminal(ui, t);
+                                            crate::spatial::tiling::write_dropped_paths_to_terminal(ui, t);
                                         }
                                         if t.exited {
                                             let rect = ui.max_rect();
@@ -706,13 +706,13 @@ impl PlexiApp {
                                             // Reserve space for tab dots when no name bar
                                             if !has_name && zoomed_tab_info.is_some() {
                                                 ui.add_space(
-                                                    crate::tiling::TAB_DOT_RESERVED_HEIGHT,
+                                                    crate::spatial::tiling::TAB_DOT_RESERVED_HEIGHT,
                                                 );
                                             }
                                             let font_size = t.font_size;
                                             log::debug!("[DRAG] zoom overlay: TerminalView render start");
                                             use egui_term::TerminalView;
-                                            use crate::theme;
+                                            use crate::ui::theme;
                                             let terminal = TerminalView::new(ui, &mut t.backend)
                                                 .set_focus(true)
                                                 .set_theme(self.theme.clone())
@@ -725,7 +725,7 @@ impl PlexiApp {
                                             log::debug!("[DRAG] zoom overlay: TerminalView render done");
                                         }
                                     } else if let Some(a) = pane.as_app_mut() {
-                                        let app_ctx = crate::app_trait::AppRenderContext {
+                                        let app_ctx = crate::app::app_trait::AppRenderContext {
                                             colors: &self.colors,
                                             is_focused: true, // zoomed pane is always focused
                                         };
@@ -737,7 +737,7 @@ impl PlexiApp {
                                 if !has_name {
                                     if let Some((active_idx, count)) = zoomed_tab_info {
                                         let rect = ui.max_rect();
-                                        crate::tiling::paint_tab_dots(
+                                        crate::spatial::tiling::paint_tab_dots(
                                             ui.painter(),
                                             rect.left(),
                                             rect.top() + 2.0 + 4.0, // 4.0 = dot radius
@@ -791,19 +791,19 @@ impl PlexiApp {
                             let alpha = (1.0 - elapsed / edge_dur.as_secs_f32()).max(0.0);
                             let edge_color = self.colors.accent.gamma_multiply(alpha);
                             let (p1, p2) = match pulse.dir {
-                                crate::keys::Direction::Left => (
+                                crate::host::keys::Direction::Left => (
                                     egui::pos2(pane_rect.left(), pane_rect.top()),
                                     egui::pos2(pane_rect.left(), pane_rect.bottom()),
                                 ),
-                                crate::keys::Direction::Right => (
+                                crate::host::keys::Direction::Right => (
                                     egui::pos2(pane_rect.right(), pane_rect.top()),
                                     egui::pos2(pane_rect.right(), pane_rect.bottom()),
                                 ),
-                                crate::keys::Direction::Up => (
+                                crate::host::keys::Direction::Up => (
                                     egui::pos2(pane_rect.left(), pane_rect.top()),
                                     egui::pos2(pane_rect.right(), pane_rect.top()),
                                 ),
-                                crate::keys::Direction::Down => (
+                                crate::host::keys::Direction::Down => (
                                     egui::pos2(pane_rect.left(), pane_rect.bottom()),
                                     egui::pos2(pane_rect.right(), pane_rect.bottom()),
                                 ),
@@ -920,7 +920,7 @@ impl PlexiApp {
                     .and_then(|pane_id| win.panes.get(&pane_id))
                     .and_then(|pane| pane.as_app())
                     .map(|app| {
-                        if let crate::pane::AppRuntime::Process(ref proc) = app.runtime {
+                        if let crate::host::pane::AppRuntime::Process(ref proc) = app.runtime {
                             matches!(
                                 proc.pending_prompts.front(),
                                 Some(crate::process_app::PendingPrompt::Secret { .. })

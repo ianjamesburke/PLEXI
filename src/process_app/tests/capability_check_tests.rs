@@ -20,7 +20,7 @@ if "--plexi-introspect" in sys.argv:
     .expect("write script");
 
     let py_exe = std::ffi::OsString::from("python3");
-    let declared: HashSet<crate::app_permissions::Capability> = HashSet::new();
+    let declared: HashSet<crate::app::permissions::Capability> = HashSet::new();
 
     let result = static_capability_check(
         "test_app",
@@ -49,7 +49,7 @@ if "--plexi-introspect" in sys.argv:
     .expect("write script");
 
     let py_exe = std::ffi::OsString::from("python3");
-    let declared: HashSet<crate::app_permissions::Capability> = HashSet::new();
+    let declared: HashSet<crate::app::permissions::Capability> = HashSet::new();
 
     let result = static_capability_check(
         "test_app",
@@ -83,7 +83,7 @@ if "--plexi-introspect" in sys.argv:
     .expect("write script");
 
     let py_exe = std::ffi::OsString::from("python3");
-    let declared: HashSet<crate::app_permissions::Capability> = HashSet::new();
+    let declared: HashSet<crate::app::permissions::Capability> = HashSet::new();
 
     let result = static_capability_check(
         "test_app",

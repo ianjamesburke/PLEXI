@@ -6,10 +6,10 @@
 //! arrow (‹). Clicking the back arrow emits `PlexiEvent::NavBack` to the app.
 
 use crate::app_protocol::PlexiEvent;
-use crate::app_trait::AppRenderContext;
-use crate::pane::AppPane;
-use crate::style;
-use crate::theme::Colors;
+use crate::app::app_trait::AppRenderContext;
+use crate::host::pane::AppPane;
+use crate::ui::style;
+use crate::ui::theme::Colors;
 use egui::RichText;
 
 /// Height of the nav bar shown when the app has pushed at least one view.
@@ -35,11 +35,11 @@ pub fn render(ui: &mut egui::Ui, app_pane: &mut AppPane, colors: &Colors, is_foc
 
                 // Show the replaced pane's name/type.
                 let replaced_label = match app_pane.overlay_replaced.as_deref() {
-                    Some(crate::pane::Pane::Terminal(t)) => {
+                    Some(crate::host::pane::Pane::Terminal(t)) => {
                         t.name.as_deref().unwrap_or("Terminal").to_string()
                     }
-                    Some(crate::pane::Pane::App(a)) => a.name.clone(),
-                    Some(crate::pane::Pane::Portal(_)) => "Portal".to_string(),
+                    Some(crate::host::pane::Pane::App(a)) => a.name.clone(),
+                    Some(crate::host::pane::Pane::Portal(_)) => "Portal".to_string(),
                     None => unreachable!(),
                 };
 
@@ -51,7 +51,7 @@ pub fn render(ui: &mut egui::Ui, app_pane: &mut AppPane, colors: &Colors, is_foc
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(NAV_BAR_PAD);
-                    crate::widgets::key_chip(ui, "Esc", colors);
+                    crate::ui::widgets::key_chip(ui, "Esc", colors);
                     ui.label(
                         RichText::new("return")
                             .size(style::TEXT_HINT)

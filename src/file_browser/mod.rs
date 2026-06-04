@@ -1,8 +1,8 @@
 mod helpers;
 mod icons;
 
-use crate::app_trait::{App, AppCommand, AppRenderContext};
-use crate::theme::Colors;
+use crate::app::app_trait::{App, AppCommand, AppRenderContext};
+use crate::ui::theme::Colors;
 use egui::{Color32, CornerRadius, Stroke, StrokeKind};
 use image::imageops::FilterType;
 use std::fs;
@@ -826,8 +826,8 @@ impl App for FileBrowserApp {
             });
     }
 
-    fn handle_key(&mut self, input: &egui::InputState) -> crate::app_trait::KeyDisposition {
-        use crate::app_trait::KeyDisposition;
+    fn handle_key(&mut self, input: &egui::InputState) -> crate::app::app_trait::KeyDisposition {
+        use crate::app::app_trait::KeyDisposition;
         let mode = if self.in_search {
             Mode::Search
         } else if self.entries.is_empty() {
@@ -1010,7 +1010,7 @@ mod tests {
     }
 
     fn run_handle_key(app: &mut FileBrowserApp, events: Vec<Event>) -> bool {
-        use crate::app_trait::KeyDisposition;
+        use crate::app::app_trait::KeyDisposition;
         let ctx = egui::Context::default();
         let raw = RawInput { events, ..Default::default() };
         let mut consumed = false;

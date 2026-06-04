@@ -22,17 +22,17 @@ mod routing;
 pub(crate) use lifecycle::{LifecycleState, LifecycleTracker};
 use render_session::RenderSession;
 
-use crate::app_permissions::{AppPermissions, Capability};
+use crate::app::permissions::{AppPermissions, Capability};
 use crate::app_protocol::{AiMessage, AiTool, ControlCommand, DrawCommand, Modifiers, ModelTier, PlexiEvent, RenderCommand};
-use crate::app_trait::{App, AppCommand, AppRenderContext};
-use crate::audio::{AudioDevice, CaptureSession};
-use crate::midi::{MidiDevice, MidiInputSession, MidiOutputHandle};
-use crate::video::{VideoDecoder, VideoHandle};
-use crate::event_log::{self, HostEvent};
+use crate::app::app_trait::{App, AppCommand, AppRenderContext};
+use crate::media::audio::{AudioDevice, CaptureSession};
+use crate::media::midi::{MidiDevice, MidiInputSession, MidiOutputHandle};
+use crate::media::video::{VideoDecoder, VideoHandle};
+use crate::host::event_log::{self, HostEvent};
 use crate::host::services::{NetService, UreqNetService};
 use crate::plexi_ai::broker::{AiBroker, LiveAiBroker};
-use crate::runs::RunRegistry;
-use crate::typed_pipes::TypedPipeRegistry;
+use crate::host::runs::RunRegistry;
+use crate::host::typed_pipes::TypedPipeRegistry;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -158,7 +158,7 @@ pub struct ProcessApp {
     /// Granted capabilities for this app instance.
     pub(crate) permissions: AppPermissions,
     /// Persisted three-state permission store. Updated on grant/deny decisions.
-    pub(crate) permission_store: crate::app_permissions::PermissionStore,
+    pub(crate) permission_store: crate::app::permissions::PermissionStore,
     /// Typed pipe registry.
     pub(crate) pipe_registry: Arc<Mutex<TypedPipeRegistry>>,
     pub(crate) run_registry: RunRegistry,
@@ -210,7 +210,7 @@ pub struct ProcessApp {
     /// Live playback sessions (#341), keyed on the file path (source string).
     /// Dropping an entry stops playback. State transitions (pause/resume/stop)
     /// mutate the session in-place via `PlaybackSession::pause` etc.
-    pub(crate) audio_playback_sessions: HashMap<String, crate::audio::PlaybackSession>,
+    pub(crate) audio_playback_sessions: HashMap<String, crate::media::audio::PlaybackSession>,
     /// Per-pipe peak amplitude tracking for AudioMeter rendering (#341).
     /// Written by the cpal callback thread via the Arc<Mutex> clone stored in
     /// the frame sink; read by the UI thread in `ui()` before calling
@@ -326,7 +326,7 @@ impl ProcessApp {
         workspace_root: PathBuf,
         capabilities: std::collections::HashSet<Capability>,
         keyboard_capture: bool,
-        mcp: Option<&crate::app_registry::McpSection>,
+        mcp: Option<&crate::app::registry::McpSection>,
     ) -> Result<Self, std::io::Error> {
         let type_id: String = type_id.into();
         let display_name: String = display_name.into();
@@ -651,7 +651,7 @@ impl ProcessApp {
             .expect("failed to spawn app-reaper thread");
 
         let config_dir = crate::config::config_dir();
-        let store = crate::app_permissions::PermissionStore::load_or_default(&config_dir);
+        let store = crate::app::permissions::PermissionStore::load_or_default(&config_dir);
         let (granted_caps, blocked_caps) = store.build_permission_sets(
             &type_id,
             &workspace_root,
@@ -720,7 +720,7 @@ impl ProcessApp {
             midi_device: default_midi_device(),
             midi_input_sessions: HashMap::new(),
             midi_output_handles: HashMap::new(),
-            video_device: crate::video::default_video_device(),
+            video_device: crate::media::video::default_video_device(),
             video_handles: HashMap::new(),
             video_pipe_ids: HashMap::new(),
             pending_timers: HashMap::new(),
@@ -786,10 +786,10 @@ impl ProcessApp {
     /// calls directly into `drain_draw_commands()` so the full `route_command`
     /// path executes without a real Python app.
     #[cfg(test)]
-    pub fn new_for_test(pane_id: u64, permissions: crate::app_permissions::AppPermissions) -> (Self, Sender<DrawCommand>) {
-        use crate::audio::MockAudioDevice;
-        use crate::midi::MockMidiDevice;
-        use crate::video::{MockVideoDecoder, MockVideoDecoderConfig};
+    pub fn new_for_test(pane_id: u64, permissions: crate::app::permissions::AppPermissions) -> (Self, Sender<DrawCommand>) {
+        use crate::media::audio::MockAudioDevice;
+        use crate::media::midi::MockMidiDevice;
+        use crate::media::video::{MockVideoDecoder, MockVideoDecoderConfig};
         use crate::plexi_ai::broker::{AiBrokerRequest, AiBrokerResponse};
 
         struct NoopBroker;
@@ -841,7 +841,7 @@ impl ProcessApp {
             workspace_root: std::env::temp_dir(),
             app_dir: std::env::temp_dir(),
             permissions,
-            permission_store: crate::app_permissions::PermissionStore::default(),
+            permission_store: crate::app::permissions::PermissionStore::default(),
             pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new(
                 std::env::temp_dir().join(format!("plexi-pipes-{}", uuid::Uuid::new_v4())),
             ))),
@@ -927,7 +927,7 @@ impl ProcessApp {
     fn render_too_small_placeholder(&self, ui: &mut egui::Ui, pane_rect: egui::Rect, ctx: &AppRenderContext<'_>) {
         let painter = ui.painter();
         let cx = pane_rect.center();
-        let name_font = egui::FontId::proportional(crate::style::TEXT_CAPTION);
+        let name_font = egui::FontId::proportional(crate::ui::style::TEXT_CAPTION);
         let (eff_w, eff_h) = self.effective_min_size();
         painter.text(
             cx - egui::vec2(0.0, 10.0),
@@ -936,7 +936,7 @@ impl ProcessApp {
             name_font,
             ctx.colors.text_dim,
         );
-        let hint_font = egui::FontId::proportional(crate::style::TEXT_HINT);
+        let hint_font = egui::FontId::proportional(crate::ui::style::TEXT_HINT);
         painter.text(
             cx + egui::vec2(0.0, 10.0),
             egui::Align2::CENTER_CENTER,
@@ -1072,14 +1072,14 @@ impl ProcessApp {
         // position the pill's *left edge* such that its right edge lands
         // at `pane_rect.max.x - inset`.
         let font_size = 11.0;
-        let radius = crate::style::RADIUS_BADGE;
+        let radius = crate::ui::style::RADIUS_BADGE;
         let inset = 8.0;
         let font_id = egui::FontId::proportional(font_size);
         let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, egui::Color32::BLACK));
         let text_w = galley.size().x;
         let text_h = galley.size().y;
-        let pill_w = (text_w + crate::style::BADGE_PAD_H * 2.0).max(crate::style::BADGE_MIN_W);
-        let pill_h = text_h + crate::style::BADGE_PAD_V * 2.0;
+        let pill_w = (text_w + crate::ui::style::BADGE_PAD_H * 2.0).max(crate::ui::style::BADGE_MIN_W);
+        let pill_h = text_h + crate::ui::style::BADGE_PAD_V * 2.0;
         let pill_x_abs = pane_rect.max.x - inset - pill_w;
         let pill_y_center_abs = pane_rect.min.y + inset + pill_h / 2.0;
 
@@ -1123,19 +1123,19 @@ impl ProcessApp {
         ui: &mut egui::Ui,
         pane_rect: egui::Rect,
         count: usize,
-        colors: &crate::theme::Colors,
+        colors: &crate::ui::theme::Colors,
     ) {
         let label = if count > 9 { "9+".to_string() } else { count.to_string() };
         let font_size = 11.0;
-        let radius = crate::style::RADIUS_BADGE;
+        let radius = crate::ui::style::RADIUS_BADGE;
         let inset = 8.0;
         let font_id = egui::FontId::proportional(font_size);
         let fg_color = egui::Color32::from_rgb(0x1e, 0x1e, 0x2e);
         let galley = ui.fonts(|f| f.layout_no_wrap(label.clone(), font_id, fg_color));
         let text_w = galley.size().x;
         let text_h = galley.size().y;
-        let pill_w = (text_w + crate::style::BADGE_PAD_H * 2.0).max(crate::style::BADGE_MIN_W);
-        let pill_h = text_h + crate::style::BADGE_PAD_V * 2.0;
+        let pill_w = (text_w + crate::ui::style::BADGE_PAD_H * 2.0).max(crate::ui::style::BADGE_MIN_W);
+        let pill_h = text_h + crate::ui::style::BADGE_PAD_V * 2.0;
         let pill_rect = egui::Rect::from_min_size(
             egui::pos2(pane_rect.min.x + inset, pane_rect.min.y + inset),
             egui::vec2(pill_w, pill_h),
@@ -1822,8 +1822,8 @@ impl App for ProcessApp {
         }
     }
 
-    fn handle_key(&mut self, input: &egui::InputState) -> crate::app_trait::KeyDisposition {
-        use crate::app_trait::KeyDisposition;
+    fn handle_key(&mut self, input: &egui::InputState) -> crate::app::app_trait::KeyDisposition {
+        use crate::app::app_trait::KeyDisposition;
         // When a TextInput widget has focus, egui owns the keyboard — all
         // text and key events are consumed by the TextEdit widget. Don't
         // forward them to the app's on_key handler (typing "h" in the chat
@@ -2015,12 +2015,12 @@ fn default_live_broker() -> LiveAiBroker {
 /// `ProcessApp::audio_device`.
 #[cfg(not(test))]
 fn default_audio_device() -> Arc<dyn AudioDevice> {
-    Arc::new(crate::audio::CoreAudioDevice::new())
+    Arc::new(crate::media::audio::CoreAudioDevice::new())
 }
 
 #[cfg(test)]
 fn default_audio_device() -> Arc<dyn AudioDevice> {
-    Arc::new(crate::audio::MockAudioDevice::new())
+    Arc::new(crate::media::audio::MockAudioDevice::new())
 }
 
 /// Build the production MIDI device. CoreMIDI on non-test mac builds; an
@@ -2031,12 +2031,12 @@ fn default_audio_device() -> Arc<dyn AudioDevice> {
 /// `Arc::new(MockMidiDevice::new())` directly into `ProcessApp::midi_device`.
 #[cfg(not(test))]
 fn default_midi_device() -> Arc<dyn MidiDevice> {
-    Arc::new(crate::midi::CoreMidiDevice::new())
+    Arc::new(crate::media::midi::CoreMidiDevice::new())
 }
 
 #[cfg(test)]
 fn default_midi_device() -> Arc<dyn MidiDevice> {
-    Arc::new(crate::midi::MockMidiDevice::new())
+    Arc::new(crate::media::midi::MockMidiDevice::new())
 }
 
 /// Migrate a single `app_state/` directory to `app_states/` if the old path exists and the new
@@ -2176,7 +2176,7 @@ pub(crate) fn static_capability_check(
     py_exe: &std::ffi::OsStr,
     pythonpath: &str,
     path_env: &str,
-    declared: &std::collections::HashSet<crate::app_permissions::Capability>,
+    declared: &std::collections::HashSet<crate::app::permissions::Capability>,
 ) -> Result<(), std::io::Error> {
     use std::sync::mpsc;
     use std::time::Duration;

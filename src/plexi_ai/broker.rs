@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::app_protocol::{AiMessage, AiTool, ModelTier};
 use crate::config::{AiConfig, OllamaBackendConfig, OpenRouterBackendConfig};
-use crate::event_log::{self, HostEvent};
+use crate::host::event_log::{self, HostEvent};
 use crate::plexi_ai::backend::ollama::OllamaBackend;
 use crate::plexi_ai::backend::openrouter::OpenRouterBackend;
 use crate::plexi_ai::backend::{AiBackend, AiBackendRequest, BillingModel};
@@ -273,7 +273,7 @@ fn build_context_prefix(
     let events_path = workspace_root
         .join(".plexi")
         .join("events.jsonl");
-    let recent = crate::event_log::read_recent(&events_path, 20);
+    let recent = crate::host::event_log::read_recent(&events_path, 20);
     if !recent.is_empty() {
         out.push_str("recent events:\n");
         for ev in &recent {

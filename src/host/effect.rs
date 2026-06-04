@@ -1,5 +1,5 @@
 use crate::host::command::{Placement, PaneRuntimeKind, ShareRatio};
-use crate::tiling::PaneId;
+use crate::spatial::tiling::PaneId;
 use serde::Serialize;
 
 /// A minimal host event for the event bus. Grows as the bus is wired up.

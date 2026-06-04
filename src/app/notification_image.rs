@@ -160,9 +160,9 @@ fn drain_pipe_frame(
             continue;
         };
         let registry = match pane {
-            crate::pane::Pane::App(p) => match &p.runtime {
-                crate::pane::AppRuntime::Process(pa) => Some(pa.pipe_registry.clone()),
-                crate::pane::AppRuntime::Builtin(_) => None,
+            crate::host::pane::Pane::App(p) => match &p.runtime {
+                crate::host::pane::AppRuntime::Process(pa) => Some(pa.pipe_registry.clone()),
+                crate::host::pane::AppRuntime::Builtin(_) => None,
             },
             _ => None,
         };

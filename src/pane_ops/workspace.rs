@@ -2,8 +2,8 @@
 //! and on-disk workspace save.
 
 use crate::app::PlexiApp;
-use crate::context::Window;
-use crate::shell;
+use crate::host::context::Window;
+use crate::host::shell;
 use crate::workspace::WorkspaceFile;
 use std::path::PathBuf;
 
@@ -24,7 +24,7 @@ impl PlexiApp {
         self.next_window_id += 1;
 
         // Check for anchor defaults from .plexi/workspace.toml [context] section.
-        let anchor = crate::anchor::Anchor::detect(&path);
+        let anchor = crate::host::anchor::Anchor::detect(&path);
         let (ctx_name, ctx_description) = match anchor.as_ref().and_then(|a| a.context_defaults.as_ref()) {
             Some(defaults) => {
                 let name = defaults.name.clone().unwrap_or_else(|| {
@@ -77,7 +77,7 @@ impl PlexiApp {
             );
             self.windows[parent_win_idx].panes.insert(
                 sub_ctx_pane_id,
-                crate::pane::Pane::Portal(Box::new(crate::pane::PortalPane {
+                crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
                     pane_id: sub_ctx_pane_id,
                     target_context_id: ctx_id,
                     context_state: None,
@@ -89,7 +89,7 @@ impl PlexiApp {
         }
 
         // 3. Register the child context + window.
-        self.router.push(crate::context::Context {
+        self.router.push(crate::host::context::Context {
             name: ctx_name,
             path: path.clone(),
             root: Some(path.clone()),
@@ -99,7 +99,7 @@ impl PlexiApp {
             depth: child_depth,
             parked: false,
         });
-        self.windows.push(crate::context::Window {
+        self.windows.push(crate::host::context::Window {
             name: String::new(),
             path: path.clone(),
             tree: child_tree,
@@ -215,7 +215,7 @@ impl PlexiApp {
         }
         self.windows[parent_win_idx].panes.insert(
             portal_pane_id,
-            crate::pane::Pane::Portal(Box::new(crate::pane::PortalPane {
+            crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
                 pane_id: portal_pane_id,
                 target_context_id: ctx_id,
                 context_state: None,
@@ -230,7 +230,7 @@ impl PlexiApp {
         let mut child_panes = std::collections::HashMap::new();
         child_panes.insert(pane_id, pane);
 
-        self.router.push(crate::context::Context {
+        self.router.push(crate::host::context::Context {
             name: ctx_name,
             path: parent_path.clone(),
             root: Some(parent_path.clone()),
@@ -284,7 +284,7 @@ impl PlexiApp {
         self.next_window_id += 1;
 
         let ctx_name = format!("Context {}", self.router.len() + 1);
-        self.router.push(crate::context::Context {
+        self.router.push(crate::host::context::Context {
             name: ctx_name,
             path: cwd.clone(),
             root: Some(cwd.clone()),
@@ -320,10 +320,10 @@ impl PlexiApp {
             "new_context_empty: emitting ContextCreated context_id={ctx_id} name={}",
             self.rename_buffer
         );
-        crate::event_log::emit(crate::event_log::HostEvent::ContextCreated {
+        crate::host::event_log::emit(crate::host::event_log::HostEvent::ContextCreated {
             context_id: ctx_id,
             name: self.rename_buffer.clone(),
-            timestamp: crate::event_log::now_timestamp(),
+            timestamp: crate::host::event_log::now_timestamp(),
         });
     }
 
@@ -345,7 +345,7 @@ impl PlexiApp {
         self.next_window_id += 1;
 
         // Check for anchor defaults from .plexi/workspace.toml [context] section.
-        let anchor = crate::anchor::Anchor::detect(&path);
+        let anchor = crate::host::anchor::Anchor::detect(&path);
         let (ctx_name, ctx_description) = match anchor.as_ref().and_then(|a| a.context_defaults.as_ref()) {
             Some(defaults) => {
                 let name = defaults.name.clone().unwrap_or_else(|| {
@@ -368,7 +368,7 @@ impl PlexiApp {
             }
         };
 
-        self.router.push(crate::context::Context {
+        self.router.push(crate::host::context::Context {
             name: ctx_name,
             path: path.clone(),
             root: Some(path.clone()),
@@ -493,7 +493,7 @@ impl PlexiApp {
 
         // 4. Remove Portal tiles in surviving windows that point to any deleted ctx.
         for win in &mut self.windows {
-            let portal_pane_ids: Vec<crate::tiling::PaneId> = win.panes.iter()
+            let portal_pane_ids: Vec<crate::spatial::tiling::PaneId> = win.panes.iter()
                 .filter(|(_, p)| p.portal_target().map(|cid| deleted.contains(&cid)).unwrap_or(false))
                 .map(|(id, _)| *id)
                 .collect();
@@ -809,9 +809,9 @@ impl PlexiApp {
             self.router.active().context_id,
             root.display()
         );
-        self.registry = crate::app_registry::AppRegistry::load(&root);
-        let watch_dirs = crate::app_registry::registry_watch_dirs(&root);
-        match crate::app_registry_watcher::start(watch_dirs) {
+        self.registry = crate::app::registry::AppRegistry::load(&root);
+        let watch_dirs = crate::app::registry::registry_watch_dirs(&root);
+        match crate::app::registry_watcher::start(watch_dirs) {
             Some((watcher, rx)) => {
                 self._registry_watcher = Some(watcher);
                 self.registry_reload_rx = Some(rx);
@@ -864,9 +864,9 @@ impl PlexiApp {
             .collect();
 
         // Drain panes from child windows into a staging list (sorted by ID for deterministic order).
-        let mut adopted: Vec<(crate::tiling::PaneId, crate::pane::Pane)> = Vec::new();
+        let mut adopted: Vec<(crate::spatial::tiling::PaneId, crate::host::pane::Pane)> = Vec::new();
         for &win_idx in &child_win_indices {
-            let mut pane_ids: Vec<crate::tiling::PaneId> = self.windows[win_idx].panes.keys().copied().collect();
+            let mut pane_ids: Vec<crate::spatial::tiling::PaneId> = self.windows[win_idx].panes.keys().copied().collect();
             pane_ids.sort();
             for pane_id in pane_ids {
                 if let Some(pane) = self.windows[win_idx].panes.remove(&pane_id) {

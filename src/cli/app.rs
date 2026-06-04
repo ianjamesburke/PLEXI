@@ -290,13 +290,13 @@ fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
 
 /// `plexi app uninstall <id> [--yes]` — remove a globally installed app with optional confirmation.
 pub fn app_uninstall(id: &str, assume_yes: bool) -> i32 {
-    let target_root = crate::app_registry::apps_dir();
+    let target_root = crate::app::registry::apps_dir();
     let app_dir = target_root.join(id);
     if !app_dir.exists() {
         eprintln!("error: app '{id}' not found");
         return 1;
     }
-    let core_ids = crate::install::core_pack_ids();
+    let core_ids = crate::cli::install_host::core_pack_ids();
     if core_ids.contains(id) {
         eprintln!("note: '{id}' is a core app — it will be re-installed on the next Plexi launch");
     }
@@ -313,7 +313,7 @@ pub fn app_uninstall(id: &str, assume_yes: bool) -> i32 {
             return 1;
         }
     }
-    match crate::install::uninstall_one(id, &target_root) {
+    match crate::cli::install_host::uninstall_one(id, &target_root) {
         Ok(()) => { println!("Uninstalled '{id}'."); 0 }
         Err(e) => { eprintln!("error: {e}"); 1 }
     }
@@ -368,10 +368,10 @@ pub fn app_install_with_pin(path: &str, pin: Option<&str>) -> i32 {
     };
 
     let schema_version = manifest.get("schema_version").and_then(|v| v.as_integer()).unwrap_or(0);
-    if schema_version > crate::app_registry::MANIFEST_SCHEMA_VERSION as i64 {
+    if schema_version > crate::app::registry::MANIFEST_SCHEMA_VERSION as i64 {
         eprintln!(
             "error: manifest.toml schema_version {schema_version} is newer than supported (max {})",
-            crate::app_registry::MANIFEST_SCHEMA_VERSION
+            crate::app::registry::MANIFEST_SCHEMA_VERSION
         );
         return 1;
     }
@@ -392,7 +392,7 @@ pub fn app_install_with_pin(path: &str, pin: Option<&str>) -> i32 {
     };
     let app_version = app_section.get("version").and_then(|v| v.as_str()).unwrap_or("?");
 
-    let dest = crate::app_registry::apps_dir().join(&app_id);
+    let dest = crate::app::registry::apps_dir().join(&app_id);
 
     // Remove existing install (idempotent overwrite).
     if dest.exists() {
@@ -565,7 +565,7 @@ pub fn app_run(path: &str, from_pane_id: Option<u64>) -> i32 {
 /// `plexi app info <id>` — show manifest info for an installed app, including MCP URL if applicable.
 pub fn app_info(id: &str) -> i32 {
     let registry =
-        crate::app_registry::AppRegistry::load(&std::env::current_dir().unwrap_or_default());
+        crate::app::registry::AppRegistry::load(&std::env::current_dir().unwrap_or_default());
     let Some(installed) = registry.get(id) else {
         eprintln!("error: app '{id}' not found — run `plexi app list` to see installed apps");
         return 1;
@@ -654,7 +654,7 @@ pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str
 
     // Resolve the app binary
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let registry = crate::app_registry::AppRegistry::load(&cwd);
+    let registry = crate::app::registry::AppRegistry::load(&cwd);
     let app_bin = match registry.list().into_iter().find(|a| a.manifest.id == id) {
         Some(a) => a.bin_path.clone(),
         None => {
@@ -663,7 +663,7 @@ pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str
         }
     };
 
-    let png_bytes = match crate::app_render::render_app_to_png(id, &app_bin, width, height, seed_state) {
+    let png_bytes = match crate::render::app_render::render_app_to_png(id, &app_bin, width, height, seed_state) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("error: render failed: {e}");
@@ -822,7 +822,7 @@ pub fn app_dev(name: &str, lang: &str, from_pane_id: Option<u64>) -> i32 {
         return 1;
     }
 
-    let app_dir = crate::app_registry::apps_dir().join(name);
+    let app_dir = crate::app::registry::apps_dir().join(name);
     log::info!("app_dev: name={name} lang={lang} path={}", app_dir.display());
 
     if app_dir.exists() {
@@ -882,7 +882,7 @@ pub fn app_publish() -> i32 {
 /// version field. If `pinned_version.txt` exists, reports the pin.
 /// No network calls — registry check is future work.
 pub fn app_update_cli(id: Option<&str>) -> i32 {
-    let apps_dir = crate::app_registry::apps_dir();
+    let apps_dir = crate::app::registry::apps_dir();
 
     // Collect app dirs to check.
     let dirs: Vec<std::path::PathBuf> = match id {

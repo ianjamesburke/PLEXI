@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use crate::app_protocol::{LayoutChild, LayoutDirection, RenderCommand, ResponsiveTier};
-use crate::style;
-use crate::theme::Colors;
+use crate::ui::style;
+use crate::ui::theme::Colors;
 use egui::Color32;
 use taffy::prelude::*;
 
@@ -46,7 +46,7 @@ pub(crate) fn render_draw_commands(
     list_view_last_aligned_sel: &mut HashMap<String, usize>,
     outbound_events: &mut Vec<crate::app_protocol::PlexiEvent>,
     text_edit_buffers: &mut HashMap<String, String>,
-    text_edit_focus_ctx: &mut crate::render_components::TextEditFocusCtx,
+    text_edit_focus_ctx: &mut crate::render::components::TextEditFocusCtx,
 ) {
     let origin = pane_rect.min;
 
@@ -870,7 +870,7 @@ pub(crate) fn render_draw_commands(
                         }
                         _ => "⏳ loading…",
                     };
-                    let font = egui::FontId::proportional(crate::style::TEXT_HINT);
+                    let font = egui::FontId::proportional(crate::ui::style::TEXT_HINT);
                     let wrap_width = (target_rect.width() - 12.0).max(0.0);
                     let galley = ui.fonts(|f| {
                         f.layout(state_text.to_string(), font, colors.text_dim, wrap_width)
@@ -1012,7 +1012,7 @@ pub(crate) fn render_draw_commands(
                     pane_rect.min
                 );
                 let component_events =
-                    crate::render_components::render_component_tree(ui, root, colors, text_edit_buffers, text_edit_focus_ctx);
+                    crate::render::components::render_component_tree(ui, root, colors, text_edit_buffers, text_edit_focus_ctx);
                 for evt in component_events {
                     log::info!(
                         "render: ComponentEvent node_id={} event_type={}",
@@ -1196,7 +1196,7 @@ pub(crate) fn render_shortcuts(
     font_size: f32,
     colors: &Colors,
 ) {
-    use crate::style;
+    use crate::ui::style;
 
     // Pre-measure every chip + description so we can decide wrapping
     // before rendering. Storing the laid-out widths means we render in
@@ -1369,9 +1369,9 @@ fn measure_leaf_size(ui: &egui::Ui, cmd: &RenderCommand) -> (f32, f32) {
             let galley = ui.fonts(|f| {
                 f.layout_no_wrap(label.clone(), font_id, egui::Color32::WHITE)
             });
-            let w = (galley.size().x + crate::style::BADGE_PAD_H * 2.0)
-                .max(crate::style::BADGE_MIN_W);
-            let h = galley.size().y + crate::style::BADGE_PAD_V * 2.0;
+            let w = (galley.size().x + crate::ui::style::BADGE_PAD_H * 2.0)
+                .max(crate::ui::style::BADGE_MIN_W);
+            let h = galley.size().y + crate::ui::style::BADGE_PAD_V * 2.0;
             (w, h)
         }
         RenderCommand::Text { text, size, monospace, .. } => {
@@ -1390,9 +1390,9 @@ fn measure_leaf_size(ui: &egui::Ui, cmd: &RenderCommand) -> (f32, f32) {
             let galley = ui.fonts(|f| {
                 f.layout_no_wrap(label.clone(), font_id, egui::Color32::WHITE)
             });
-            let w = (galley.size().x + crate::style::KEYCHIP_PAD_H * 2.0)
-                .max(crate::style::KEYCHIP_MIN_W);
-            let h = galley.size().y + crate::style::KEYCHIP_PAD_V * 2.0;
+            let w = (galley.size().x + crate::ui::style::KEYCHIP_PAD_H * 2.0)
+                .max(crate::ui::style::KEYCHIP_MIN_W);
+            let h = galley.size().y + crate::ui::style::KEYCHIP_PAD_V * 2.0;
             (w, h)
         }
         _ => (0.0, 0.0),

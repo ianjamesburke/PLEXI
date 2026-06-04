@@ -9,3 +9,8 @@
 
 pub mod app_pane;
 pub mod terminal_pane;
+pub mod app_render;
+pub mod headless_renderer;
+pub mod components;
+pub mod cli_renderer_app;
+pub mod minimap;

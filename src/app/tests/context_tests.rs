@@ -1,6 +1,6 @@
 use super::super::*;
-use crate::app_trait::AppCommand;
-use crate::context::Window;
+use crate::app::app_trait::AppCommand;
+use crate::host::context::Window;
 use crate::testing::HostHarness;
 
 /// Issue #1392: creating a child context must NOT remove or replace the parent's
@@ -238,7 +238,7 @@ fn delete_context_portal_resets_stale_focused_pane() {
     // Create a child context.
     let child_id = 9901u64;
     let child_win_id = 9902u64;
-    app.router.push(crate::context::Context {
+    app.router.push(crate::host::context::Context {
         name: "Child".to_string(),
         path: std::path::PathBuf::from("/tmp/child_1854"),
         root: None,
@@ -252,7 +252,7 @@ fn delete_context_portal_resets_stale_focused_pane() {
     {
         let mut tiles = egui_tiles::Tiles::default();
         let r = tiles.insert_pane(99991u64);
-        app.windows.push(crate::context::Window {
+        app.windows.push(crate::host::context::Window {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/child_1854"),
             tree: egui_tiles::Tree::new("child_1854", r, tiles),
@@ -274,7 +274,7 @@ fn delete_context_portal_resets_stale_focused_pane() {
         portal_tile = root_win.tree.tiles.insert_pane(portal_pane_id);
         root_win.panes.insert(
             portal_pane_id,
-            crate::pane::Pane::Portal(Box::new(crate::pane::PortalPane {
+            crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
                 pane_id: portal_pane_id,
                 target_context_id: child_id,
                 context_state: None,
@@ -324,7 +324,7 @@ fn delete_context_cascades_and_cleans_depth_stack() {
     let a_win_id = 9003u64;
     let b_win_id = 9004u64;
 
-    app.router.push(crate::context::Context {
+    app.router.push(crate::host::context::Context {
         name: "A".to_string(),
         path: std::path::PathBuf::from("/tmp/a"),
         root: None,
@@ -334,7 +334,7 @@ fn delete_context_cascades_and_cleans_depth_stack() {
         depth: 1,
         parked: false,
     });
-    app.router.push(crate::context::Context {
+    app.router.push(crate::host::context::Context {
         name: "B".to_string(),
         path: std::path::PathBuf::from("/tmp/b"),
         root: None,
@@ -351,7 +351,7 @@ fn delete_context_cascades_and_cleans_depth_stack() {
     {
         let mut tiles_a = egui_tiles::Tiles::default();
         let r_a = tiles_a.insert_pane(88881);
-        app.windows.push(crate::context::Window {
+        app.windows.push(crate::host::context::Window {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/a"),
             tree: egui_tiles::Tree::new("plexi_a", r_a, tiles_a),
@@ -367,7 +367,7 @@ fn delete_context_cascades_and_cleans_depth_stack() {
     {
         let mut tiles_b = egui_tiles::Tiles::default();
         let r_b = tiles_b.insert_pane(88882);
-        app.windows.push(crate::context::Window {
+        app.windows.push(crate::host::context::Window {
             name: String::new(),
             path: std::path::PathBuf::from("/tmp/b"),
             tree: egui_tiles::Tree::new("plexi_b", r_b, tiles_b),
@@ -448,12 +448,12 @@ fn context_transition_rescans_registry() {
         "type = \"app\"\n",
     );
 
-    let apps_a = crate::app_registry::workspace_apps_dir(&dir_a);
+    let apps_a = crate::app::registry::workspace_apps_dir(&dir_a);
     std::fs::create_dir_all(apps_a.join("test-1801-app-a")).unwrap();
     std::fs::write(apps_a.join("test-1801-app-a").join("manifest.toml"), manifest_a).unwrap();
     std::fs::write(apps_a.join("test-1801-app-a").join("app.py"), b"").unwrap();
 
-    let apps_b = crate::app_registry::workspace_apps_dir(&dir_b);
+    let apps_b = crate::app::registry::workspace_apps_dir(&dir_b);
     std::fs::create_dir_all(apps_b.join("test-1801-app-b")).unwrap();
     std::fs::write(apps_b.join("test-1801-app-b").join("manifest.toml"), manifest_b).unwrap();
     std::fs::write(apps_b.join("test-1801-app-b").join("app.py"), b"").unwrap();
@@ -474,7 +474,7 @@ fn context_transition_rescans_registry() {
     app.next_window_id += 1;
     let win_b_id = app.next_window_id;
     app.next_window_id += 1;
-    app.router.push(crate::context::Context {
+    app.router.push(crate::host::context::Context {
         name: "Context B".into(),
         path: dir_b.clone(),
         root: Some(dir_b.clone()),

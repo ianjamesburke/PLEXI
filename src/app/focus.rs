@@ -22,17 +22,17 @@ impl PlexiApp {
         let context_description = self.context_description_for(win.context_id);
 
         let (cwd, pty_title, pane_name, app_type_id) = match pane {
-            crate::pane::Pane::Terminal(t) => {
-                let cwd = crate::shell::get_pid_cwd(t.backend.child_pid())
+            crate::host::pane::Pane::Terminal(t) => {
+                let cwd = crate::host::shell::get_pid_cwd(t.backend.child_pid())
                     .map(|p| p.to_string_lossy().into_owned());
                 (cwd, t.pty_title.clone(), t.name.clone(), None)
             }
-            crate::pane::Pane::App(a) => {
+            crate::host::pane::Pane::App(a) => {
                 let cwd = Some(a.workspace_root.to_string_lossy().into_owned());
                 let type_id = Some(a.manifest_id.clone());
                 (cwd, None, None, type_id)
             }
-            crate::pane::Pane::Portal(_) => {
+            crate::host::pane::Pane::Portal(_) => {
                 (None, None, None, None)
             }
         };
@@ -40,7 +40,7 @@ impl PlexiApp {
         log::info!(
             "focus_changed: pane_id={pane_id} context={context_name:?} duration_secs={duration_secs} pty_title={pty_title:?} pane_name={pane_name:?} app_type_id={app_type_id:?}"
         );
-        crate::event_log::emit(crate::event_log::HostEvent::FocusChanged {
+        crate::host::event_log::emit(crate::host::event_log::HostEvent::FocusChanged {
             pane_id,
             context_name,
             context_description,
@@ -49,7 +49,7 @@ impl PlexiApp {
             pane_name,
             app_type_id,
             duration_secs,
-            timestamp: crate::event_log::now_timestamp(),
+            timestamp: crate::host::event_log::now_timestamp(),
         });
     }
 
@@ -339,11 +339,11 @@ impl PlexiApp {
 
         // Theme
         let theme_cfg = Self::resolve_theme_config(&fresh);
-        let new_colors = crate::theme::Colors::from_config(&theme_cfg);
+        let new_colors = crate::ui::theme::Colors::from_config(&theme_cfg);
         if self.colors != new_colors {
             self.colors = new_colors.clone();
-            let dark_mode = !crate::theme::is_light_preset(fresh.theme_preset.as_deref().unwrap_or(""));
-            crate::theme::setup_style(&self.ctx, &new_colors, dark_mode);
+            let dark_mode = !crate::ui::theme::is_light_preset(fresh.theme_preset.as_deref().unwrap_or(""));
+            crate::ui::theme::setup_style(&self.ctx, &new_colors, dark_mode);
             let window_theme = if dark_mode { egui::SystemTheme::Dark } else { egui::SystemTheme::Light };
             self.ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(window_theme));
             log::info!("theme: set_window_theme dark_mode={dark_mode} (config reload)");
@@ -351,7 +351,7 @@ impl PlexiApp {
         }
 
         // Terminal theme
-        self.theme = crate::theme::terminal_theme(&theme_cfg);
+        self.theme = crate::ui::theme::terminal_theme(&theme_cfg);
 
         // Font size
         if let Some(size) = fresh.font_size {
@@ -384,8 +384,8 @@ impl PlexiApp {
 
         // Replace the cached config
         self.config = fresh;
-        self.key_bindings = crate::keys::build_key_bindings(self.config.keybindings.as_ref());
-        self.binding_table = crate::keys::build_binding_table(&self.key_bindings);
+        self.key_bindings = crate::host::keys::build_key_bindings(self.config.keybindings.as_ref());
+        self.binding_table = crate::host::keys::build_binding_table(&self.key_bindings);
         log::info!("keybindings: rebuilt after config reload");
 
         // AI broker config — broadcast fresh snapshot to all living panes and background apps
@@ -393,7 +393,7 @@ impl PlexiApp {
         for win in &mut self.windows {
             for pane in win.panes.values_mut() {
                 if let Some(app) = pane.as_app_mut() {
-                    if let crate::pane::AppRuntime::Process(proc) = &mut app.runtime {
+                    if let crate::host::pane::AppRuntime::Process(proc) = &mut app.runtime {
                         proc.update_ai_config(fresh_ai.clone());
                     }
                 }
@@ -415,21 +415,21 @@ impl PlexiApp {
     /// No-ops if the configured preset has no paired variant (e.g. nord, dracula).
     pub(super) fn apply_auto_theme(&mut self, system_theme: egui::Theme) {
         let current_preset = self.config.theme_preset.as_deref().unwrap_or("");
-        let Some(new_preset) = crate::theme::paired_preset(current_preset, system_theme) else {
+        let Some(new_preset) = crate::ui::theme::paired_preset(current_preset, system_theme) else {
             return;
         };
         log::info!("theme: auto-switch to {new_preset} (system_theme={system_theme:?})");
-        if let Some(preset) = crate::theme::preset_colors(new_preset) {
+        if let Some(preset) = crate::ui::theme::preset_colors(new_preset) {
             let user_theme = self.config.theme.clone().unwrap_or_default();
-            let theme_cfg = crate::theme::apply_preset(&preset, &user_theme);
-            let new_colors = crate::theme::Colors::from_config(&theme_cfg);
+            let theme_cfg = crate::ui::theme::apply_preset(&preset, &user_theme);
+            let new_colors = crate::ui::theme::Colors::from_config(&theme_cfg);
             if self.colors != new_colors {
                 self.colors = new_colors.clone();
-                let dark_mode = !crate::theme::is_light_preset(new_preset);
-                crate::theme::setup_style(&self.ctx, &new_colors, dark_mode);
+                let dark_mode = !crate::ui::theme::is_light_preset(new_preset);
+                crate::ui::theme::setup_style(&self.ctx, &new_colors, dark_mode);
                 let window_theme = if dark_mode { egui::SystemTheme::Dark } else { egui::SystemTheme::Light };
                 self.ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(window_theme));
-                self.theme = crate::theme::terminal_theme(&theme_cfg);
+                self.theme = crate::ui::theme::terminal_theme(&theme_cfg);
                 self.broadcast_theme_event();
             }
         }
@@ -445,7 +445,7 @@ impl PlexiApp {
         for win in &mut self.windows {
             for pane in win.panes.values_mut() {
                 if let Some(app) = pane.as_app_mut() {
-                    if let crate::pane::AppRuntime::Process(proc) = &mut app.runtime {
+                    if let crate::host::pane::AppRuntime::Process(proc) = &mut app.runtime {
                         proc.send_event(&event);
                     }
                 }
@@ -518,16 +518,16 @@ impl PlexiApp {
             pane_entries.sort_by_key(|(id, _)| *id);
             for (_, pane) in pane_entries {
                 match pane {
-                    crate::pane::Pane::Terminal(t) => {
+                    crate::host::pane::Pane::Terminal(t) => {
                         let name = t.name.clone()
                             .or_else(|| t.pty_title.clone())
                             .unwrap_or_else(|| "Terminal".to_string());
                         items.push(ContextCloseItem { kind: "Terminal", name });
                     }
-                    crate::pane::Pane::App(a) => {
+                    crate::host::pane::Pane::App(a) => {
                         items.push(ContextCloseItem { kind: "App", name: a.name.clone() });
                     }
-                    crate::pane::Pane::Portal(p) => {
+                    crate::host::pane::Pane::Portal(p) => {
                         let name = self
                             .router
                             .iter()
@@ -720,10 +720,10 @@ impl PlexiApp {
             None => return false,
         };
         match win.panes.get(&pane_id) {
-            Some(crate::pane::Pane::App(app_pane)) => {
+            Some(crate::host::pane::Pane::App(app_pane)) => {
                 match &app_pane.runtime {
-                    crate::pane::AppRuntime::Process(proc) => !proc.pending_prompts.is_empty(),
-                    crate::pane::AppRuntime::Builtin(_) => false,
+                    crate::host::pane::AppRuntime::Process(proc) => !proc.pending_prompts.is_empty(),
+                    crate::host::pane::AppRuntime::Builtin(_) => false,
                 }
             }
             _ => false,
@@ -734,9 +734,9 @@ impl PlexiApp {
     /// Handles the case where `tile_id` is a Container wrapping the actual pane
     /// (egui_tiles normalises bare-pane roots into containers on first render).
     pub(crate) fn find_pane_in_tile(
-        tree: &egui_tiles::Tree<crate::tiling::PaneId>,
+        tree: &egui_tiles::Tree<crate::spatial::tiling::PaneId>,
         tile_id: egui_tiles::TileId,
-    ) -> Option<crate::tiling::PaneId> {
+    ) -> Option<crate::spatial::tiling::PaneId> {
         match tree.tiles.get(tile_id)? {
             egui_tiles::Tile::Pane(id) => Some(*id),
             egui_tiles::Tile::Container(c) => c
@@ -749,8 +749,8 @@ impl PlexiApp {
     /// Route `DeliverNotifyAction` commands back to the originating app pane as
     /// `NotifyAction` events. Shared by the modal and the sidebar panel so both
     /// surfaces dispatch identically.
-    pub(crate) fn dispatch_notify_action_cmds(&mut self, cmds: Vec<crate::app_trait::AppCommand>) {
-        use crate::app_trait::AppCommand;
+    pub(crate) fn dispatch_notify_action_cmds(&mut self, cmds: Vec<crate::app::app_trait::AppCommand>) {
+        use crate::app::app_trait::AppCommand;
         for cmd in cmds {
             if let AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value, response_file, host_action } = cmd {
                 log::info!(

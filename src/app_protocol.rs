@@ -149,7 +149,7 @@ pub enum PlexiEvent {
     },
     /// Response to `AppRequest::QueryContextState` (#1518).
     ContextStateResponse {
-        state: crate::context_state::ContextState,
+        state: crate::host::context_state::ContextState,
     },
     /// Binary pipe opened — app connects to `socket_path` as a unix socket client.
     PipeOpened {
@@ -452,8 +452,8 @@ pub struct MidiPortWire {
     pub default: bool,
 }
 
-impl From<crate::midi::MidiPortInfo> for MidiPortWire {
-    fn from(info: crate::midi::MidiPortInfo) -> Self {
+impl From<crate::media::midi::MidiPortInfo> for MidiPortWire {
+    fn from(info: crate::media::midi::MidiPortInfo) -> Self {
         Self {
             id: info.id,
             name: info.name,
@@ -472,8 +472,8 @@ pub struct AudioDeviceWire {
     pub default: bool,
 }
 
-impl From<crate::audio::AudioDeviceInfo> for AudioDeviceWire {
-    fn from(info: crate::audio::AudioDeviceInfo) -> Self {
+impl From<crate::media::audio::AudioDeviceInfo> for AudioDeviceWire {
+    fn from(info: crate::media::audio::AudioDeviceInfo) -> Self {
         Self {
             id: info.id,
             name: info.name,
@@ -1735,7 +1735,7 @@ pub enum AppRequest {
     /// `play`, `pause`, or `seek` to an absolute position in milliseconds.
     SetVideoState {
         handle_id: u64,
-        state: crate::video::VideoState,
+        state: crate::media::video::VideoState,
     },
     /// Close a previously-opened video handle (#345). Tears down the
     /// decoder thread and the associated binary pipe drains. No response
@@ -2644,7 +2644,7 @@ mod tests {
         match &cmd {
             DrawCommand::Host(AppRequest::SetVideoState { handle_id, state }) => {
                 assert_eq!(*handle_id, 7);
-                assert_eq!(*state, crate::video::VideoState::Play);
+                assert_eq!(*state, crate::media::video::VideoState::Play);
             }
             other => panic!("expected SetVideoState, got {other:?}"),
         }
@@ -2657,7 +2657,7 @@ mod tests {
         let pause_json = r#"{"type":"set_video_state","handle_id":7,"state":{"kind":"pause"}}"#;
         let cmd: DrawCommand = serde_json::from_str(pause_json).expect("deserialise pause");
         if let DrawCommand::Host(AppRequest::SetVideoState { state, .. }) = &cmd {
-            assert_eq!(*state, crate::video::VideoState::Pause);
+            assert_eq!(*state, crate::media::video::VideoState::Pause);
         } else {
             panic!("expected SetVideoState pause, got {cmd:?}");
         }
@@ -2668,7 +2668,7 @@ mod tests {
         if let DrawCommand::Host(AppRequest::SetVideoState { state, .. }) = &cmd {
             assert_eq!(
                 *state,
-                crate::video::VideoState::Seek { position_ms: 1500 }
+                crate::media::video::VideoState::Seek { position_ms: 1500 }
             );
         } else {
             panic!("expected SetVideoState seek, got {cmd:?}");

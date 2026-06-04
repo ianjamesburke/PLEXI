@@ -7,7 +7,7 @@
 //!      the routing layer queues `MidiInputOpened` on success.
 use super::super::*;
 use crate::app_protocol::{AppRequest, PlexiEvent};
-use crate::midi::MockMidiDevice;
+use crate::media::midi::MockMidiDevice;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -43,7 +43,7 @@ fn denied_app_gets_capability_denied_response() {
     };
 
     let mock = Arc::new(MockMidiDevice::new());
-    app.midi_device = Arc::clone(&mock) as Arc<dyn crate::midi::MidiDevice>;
+    app.midi_device = Arc::clone(&mock) as Arc<dyn crate::media::midi::MidiDevice>;
 
     app.route_command(AppRequest::OpenMidiInput {
         port_id: "mock-input-1".to_owned(),
@@ -121,7 +121,7 @@ fn granted_app_dispatches_open_input_to_device() {
     };
 
     let mock = Arc::new(MockMidiDevice::new());
-    app.midi_device = Arc::clone(&mock) as Arc<dyn crate::midi::MidiDevice>;
+    app.midi_device = Arc::clone(&mock) as Arc<dyn crate::media::midi::MidiDevice>;
 
     app.route_command(AppRequest::OpenMidiInput {
         port_id: "mock-input-1".to_owned(),

@@ -56,7 +56,7 @@ fn paste_event_forwarded_as_plexi_event() {
     let disposition = app.handle_key(&input);
     assert_eq!(
         disposition,
-        crate::app_trait::KeyDisposition::Consumed,
+        crate::app::app_trait::KeyDisposition::Consumed,
         "handle_key must consume Paste events"
     );
 
@@ -117,7 +117,7 @@ fn copy_to_clipboard_drawcommand_calls_egui_copy() {
 #[test]
 fn crash_overlay_c_key_copies_report() {
     use crate::testing::HostHarness;
-    use crate::pane::{AppRuntime, Pane};
+    use crate::host::pane::{AppRuntime, Pane};
 
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();

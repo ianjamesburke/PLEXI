@@ -1,7 +1,7 @@
-use crate::app_trait::AppCommand;
-use crate::style;
-use crate::theme::Colors;
-use crate::tiling::PaneId;
+use crate::app::app_trait::AppCommand;
+use crate::ui::style;
+use crate::ui::theme::Colors;
+use crate::spatial::tiling::PaneId;
 use egui::{Align, Align2, Color32, CornerRadius, Layout, RichText, Stroke, Vec2};
 
 pub(crate) mod toolbar;
@@ -10,6 +10,7 @@ pub(crate) mod quick_note;
 pub(crate) mod confirmations;
 pub(crate) mod notification_modal;
 pub(crate) mod setup;
+pub(crate) mod command_palette;
 
 /// Consume the first digit key (0–9) pressed this frame; return its value.
 pub(crate) fn consume_digit_key(ctx: &egui::Context) -> Option<u8> {
@@ -46,7 +47,7 @@ pub(crate) const R6: CornerRadius = CornerRadius::same(6);
 pub(crate) fn modal_shell<R>(
     ctx: &egui::Context,
     id: &str,
-    colors: &crate::theme::Colors,
+    colors: &crate::ui::theme::Colors,
     cancelled: &mut bool,
     content: impl FnOnce(&mut egui::Ui) -> R,
 ) -> Option<R> {
@@ -163,7 +164,7 @@ pub(crate) fn draw_contact_footer(ui: &mut egui::Ui, colors: &Colors) {
                         .color(colors.text_dim),
                     mailto,
                 );
-                crate::widgets::copy_button(
+                crate::ui::widgets::copy_button(
                     ui,
                     egui::Id::new("shortcuts_email_copy"),
                     "ADHDisntreal@gmail.com",

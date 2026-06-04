@@ -18,7 +18,7 @@ impl PlexiApp {
         // doesn't overlap the sidebar. Previously anchored at content_rect.min
         // (0,0), which made layer_id_at return Foreground for the top sidebar
         // rows, suppressing their hover state entirely (#852).
-        let Some(panel_rect) = crate::minimap::minimap_panel_rect(
+        let Some(panel_rect) = crate::render::minimap::minimap_panel_rect(
             ctx,
             content_rect,
             &self.windows,
@@ -34,7 +34,7 @@ impl PlexiApp {
             .fixed_pos(panel_rect.min)
             .interactable(true)
             .show(ctx, |ui| {
-                if let Some(clicked_idx) = crate::minimap::render_minimap(
+                if let Some(clicked_idx) = crate::render::minimap::render_minimap(
                     ui,
                     content_rect,
                     &self.windows,
@@ -153,7 +153,7 @@ impl PlexiApp {
 
                     for (keys, desc) in shortcuts {
                         ui.horizontal(|ui| {
-                            crate::widgets::key_combo(ui, keys, &colors);
+                            crate::ui::widgets::key_combo(ui, keys, &colors);
                             ui.add_space(style::SPACE_SM);
                             ui.label(
                                 RichText::new(*desc)
@@ -273,7 +273,7 @@ impl PlexiApp {
                                                 .monospace(),
                                         );
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            crate::widgets::copy_button(
+                                            crate::ui::widgets::copy_button(
                                                 ui,
                                                 egui::Id::new("cli_setup_copy"),
                                                 cmd,
@@ -379,7 +379,7 @@ impl PlexiApp {
                                                 .monospace(),
                                         );
                                         ui.add_space(4.0);
-                                        crate::widgets::copy_button(
+                                        crate::ui::widgets::copy_button(
                                             ui,
                                             egui::Id::new("completions_banner_copy"),
                                             cmd,
@@ -427,7 +427,7 @@ impl PlexiApp {
     pub(crate) fn cli_setup_prompt_handle_key(
         &mut self,
         _ctx: &egui::Context,
-    ) -> crate::app_trait::KeyDisposition {
-        crate::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::app_trait::KeyDisposition {
+        crate::app::app_trait::KeyDisposition::Consumed
     }
 }

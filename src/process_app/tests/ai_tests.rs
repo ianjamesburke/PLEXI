@@ -10,7 +10,7 @@
 //! path also confirms that the routing layer forwarded the right
 //! `model_tier`, `system`, and `messages` payload to the broker.
 use super::super::*;
-use crate::app_permissions::AppPermissions;
+use crate::app::permissions::AppPermissions;
 use crate::app_protocol::{AiMessage, AppRequest, ModelTier, PlexiEvent};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, AiBrokerResponse};
 use std::collections::{HashSet, VecDeque};

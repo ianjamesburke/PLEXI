@@ -19,7 +19,7 @@ impl PlexiApp {
                 egui::Frame::new()
                     .fill(self.colors.bg_sidebar)
                     .stroke(Stroke::new(1.0, self.colors.border))
-                    .corner_radius(crate::style::RADIUS_LG)
+                    .corner_radius(crate::ui::style::RADIUS_LG)
                     .inner_margin(egui::Margin::symmetric(16, 10))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
@@ -128,14 +128,14 @@ impl PlexiApp {
                         k = true;
                     }
                     ui.add_space(12.0);
-                    crate::widgets::key_chip(ui, "Enter", &self.colors);
+                    crate::ui::widgets::key_chip(ui, "Enter", &self.colors);
                     ui.label(
                         RichText::new("confirm")
                             .size(style::TEXT_HINT)
                             .color(self.colors.text_dim),
                     );
                     ui.add_space(style::SPACE_SM);
-                    crate::widgets::key_chip(ui, "Esc", &self.colors);
+                    crate::ui::widgets::key_chip(ui, "Esc", &self.colors);
                     ui.label(
                         RichText::new("cancel")
                             .size(style::TEXT_HINT)
@@ -189,10 +189,10 @@ impl PlexiApp {
              mut secret_input_buf, mut permission_store, mut deferred_ai_queries,
              type_id, workspace_root, ai_broker, http_tx, proc_pane_id) = {
             let pane = match self.windows[active].panes.get_mut(&pane_id) {
-                Some(crate::pane::Pane::App(a)) => a,
+                Some(crate::host::pane::Pane::App(a)) => a,
                 _ => return,
             };
-            let crate::pane::AppRuntime::Process(ref mut proc) = pane.runtime else { return };
+            let crate::host::pane::AppRuntime::Process(ref mut proc) = pane.runtime else { return };
             if proc.pending_prompts.is_empty() {
                 return;
             }
@@ -231,10 +231,10 @@ impl PlexiApp {
 
         // Put the data back.
         let pane = match self.windows[active].panes.get_mut(&pane_id) {
-            Some(crate::pane::Pane::App(a)) => a,
+            Some(crate::host::pane::Pane::App(a)) => a,
             _ => return,
         };
-        let crate::pane::AppRuntime::Process(ref mut proc) = pane.runtime else { return };
+        let crate::host::pane::AppRuntime::Process(ref mut proc) = pane.runtime else { return };
         proc.pending_prompts = pending_prompts;
         proc.outbound_events = outbound_events;
         proc.permissions = permissions;
@@ -351,21 +351,21 @@ impl PlexiApp {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    crate::widgets::key_chip(ui, "Enter", &colors);
+                    crate::ui::widgets::key_chip(ui, "Enter", &colors);
                     ui.label(
                         RichText::new("close all")
                             .size(style::TEXT_HINT)
                             .color(colors.text_dim),
                     );
                     ui.add_space(style::SPACE_SM);
-                    crate::widgets::key_chip(ui, "D", &colors);
+                    crate::ui::widgets::key_chip(ui, "D", &colors);
                     ui.label(
                         RichText::new("dissolve")
                             .size(style::TEXT_HINT)
                             .color(colors.text_dim),
                     );
                     ui.add_space(style::SPACE_SM);
-                    crate::widgets::key_chip(ui, "Esc", &colors);
+                    crate::ui::widgets::key_chip(ui, "Esc", &colors);
                     ui.label(
                         RichText::new("cancel")
                             .size(style::TEXT_HINT)
@@ -430,22 +430,22 @@ impl PlexiApp {
     pub(crate) fn confirm_close_handle_key(
         &mut self,
         _ctx: &egui::Context,
-    ) -> crate::app_trait::KeyDisposition {
-        crate::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::app_trait::KeyDisposition {
+        crate::app::app_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn context_close_confirm_handle_key(
         &mut self,
         _ctx: &egui::Context,
-    ) -> crate::app_trait::KeyDisposition {
-        crate::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::app_trait::KeyDisposition {
+        crate::app::app_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn capability_modal_handle_key(
         &mut self,
         _ctx: &egui::Context,
-    ) -> crate::app_trait::KeyDisposition {
-        crate::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::app_trait::KeyDisposition {
+        crate::app::app_trait::KeyDisposition::Consumed
     }
 
     fn draw_triple_tap_overlay(&self, ctx: &egui::Context, id: &str, count: u8, label: &str) {

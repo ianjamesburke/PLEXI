@@ -177,7 +177,7 @@ fn resolve_workspace_cwd() -> Result<std::path::PathBuf, i32> {
             return Err(1);
         }
     };
-    match crate::app_registry::resolve_workspace_root(&cwd) {
+    match crate::app::registry::resolve_workspace_root(&cwd) {
         Some(root) => Ok(root),
         None => {
             eprintln!(

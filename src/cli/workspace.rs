@@ -30,7 +30,7 @@ pub fn workspace_init() -> i32 {
             return 1;
         }
     }
-    match crate::workspace_secrets::init_workspace(&cwd) {
+    match crate::workspace::secrets::init_workspace(&cwd) {
         Ok(cfg) => {
             log::info!("workspace_init:cli: initialized workspace_id={} at {}", cfg.id, cwd.display());
             let channel_dir = app_init_config_dir();
@@ -113,9 +113,9 @@ pub fn workspace_init() -> i32 {
 /// Resolve the current workspace and config. Errors out with a helpful
 /// message if the user has not run `plexi workspace init`.
 fn require_workspace(
-) -> Result<(std::path::PathBuf, crate::workspace_secrets::WorkspaceConfig), String> {
+) -> Result<(std::path::PathBuf, crate::workspace::secrets::WorkspaceConfig), String> {
     let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
-    let root = match crate::app_registry::resolve_workspace_root(&cwd) {
+    let root = match crate::app::registry::resolve_workspace_root(&cwd) {
         Some(r) => r,
         None => {
             return Err(format!(
@@ -125,7 +125,7 @@ fn require_workspace(
             ));
         }
     };
-    let cfg = match crate::workspace_secrets::WorkspaceConfig::load(&root)
+    let cfg = match crate::workspace::secrets::WorkspaceConfig::load(&root)
         .map_err(|e| format!("read workspace.toml: {e}"))?
     {
         Some(c) => c,
@@ -193,7 +193,7 @@ pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool, alias:
 
     #[cfg(target_os = "macos")]
     {
-        use crate::workspace_secrets::{
+        use crate::workspace::secrets::{
             keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore,
         };
         let store = MacKeychain::new();
@@ -242,7 +242,7 @@ pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool, alias:
                     cfg.id
                 );
                 // Auto-write the canonical→friendly route to secrets.toml.
-                match crate::workspace_secrets::write_default_route(&root, friendly, effective_friendly) {
+                match crate::workspace::secrets::write_default_route(&root, friendly, effective_friendly) {
                     Ok(()) => {
                         log::info!(
                             "secret_set:cli: wrote default route {friendly} → {effective_friendly} in secrets.toml"
@@ -288,7 +288,7 @@ pub fn workspace_secret_list() -> i32 {
     };
     #[cfg(target_os = "macos")]
     {
-        use crate::workspace_secrets::{
+        use crate::workspace::secrets::{
             keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore,
         };
         let store = MacKeychain::new();
@@ -341,7 +341,7 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
 
     #[cfg(target_os = "macos")]
     {
-        use crate::workspace_secrets::{keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore};
+        use crate::workspace::secrets::{keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore};
         let store = MacKeychain::new();
 
         if global {
@@ -409,7 +409,7 @@ pub fn workspace_secret_delete(friendly: &str) -> i32 {
     };
     #[cfg(target_os = "macos")]
     {
-        use crate::workspace_secrets::{keychain_workspace_name, MacKeychain, SecretStore};
+        use crate::workspace::secrets::{keychain_workspace_name, MacKeychain, SecretStore};
         let account = keychain_workspace_name(&cfg.id, friendly);
         let store = MacKeychain::new();
         match store.delete(&account) {
@@ -490,7 +490,7 @@ mod secret_set_tests {
         let deep = workspace.path().join("a").join("b").join("c");
         fs::create_dir_all(&deep).unwrap();
 
-        let found = crate::app_registry::resolve_workspace_root(&deep);
+        let found = crate::app::registry::resolve_workspace_root(&deep);
         assert!(found.is_some(), "should find .plexi ancestor");
         let found = found.unwrap().canonicalize().unwrap();
         let expected = workspace.path().canonicalize().unwrap();
@@ -502,7 +502,7 @@ mod secret_set_tests {
         let bare: TempDir = tempfile::tempdir().unwrap();
         let inner = bare.path().join("x").join("y");
         fs::create_dir_all(&inner).unwrap();
-        assert!(crate::app_registry::resolve_workspace_root(&inner).is_none());
+        assert!(crate::app::registry::resolve_workspace_root(&inner).is_none());
     }
 
     #[test]
@@ -514,7 +514,7 @@ mod secret_set_tests {
         // We cannot safely create dirs above HOME, so we assert indirectly:
         // a bare temp dir with no .plexi returns None, proving the walk stops.
         let bare: TempDir = tempfile::tempdir().unwrap();
-        assert!(crate::app_registry::resolve_workspace_root(bare.path()).is_none());
+        assert!(crate::app::registry::resolve_workspace_root(bare.path()).is_none());
     }
 }
 #[cfg(test)]
@@ -529,7 +529,7 @@ mod workspace_init_tests {
         let cwd = dir.path().to_path_buf();
 
         // Run init_workspace (creates .plexi/)
-        crate::workspace_secrets::init_workspace(&cwd)
+        crate::workspace::secrets::init_workspace(&cwd)
             .expect("init_workspace should succeed in a temp dir");
 
         // Replicate the channel dir creation from workspace_init()
@@ -553,13 +553,13 @@ mod workspace_init_tests {
         let dir = tempfile::tempdir().unwrap();
         let cwd = dir.path().to_path_buf();
 
-        crate::workspace_secrets::init_workspace(&cwd)
+        crate::workspace::secrets::init_workspace(&cwd)
             .expect("init_workspace should succeed");
 
         let channel_dir = super::app_init_config_dir();
         std::fs::create_dir_all(cwd.join(&channel_dir)).unwrap();
 
-        let found = crate::app_registry::resolve_workspace_root(&cwd);
+        let found = crate::app::registry::resolve_workspace_root(&cwd);
         assert!(
             found.is_some(),
             "resolve_workspace_root should still find the workspace (via .plexi/) after channel dir creation"

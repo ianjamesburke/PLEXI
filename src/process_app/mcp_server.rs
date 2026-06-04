@@ -17,7 +17,7 @@
 //! injected as `PLEXI_MCP_TOKEN` into the app environment at launch. Requests
 //! without a matching token are rejected with HTTP 401 before any body is read.
 
-use crate::app_registry::McpTool;
+use crate::app::registry::McpTool;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;

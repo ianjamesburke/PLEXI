@@ -9,9 +9,9 @@
 //! background — only the exit-message rect, which gets its own fill to cover
 //! any stale terminal glyphs underneath.
 
-use crate::pane::TerminalPane;
-use crate::theme::{self, Colors};
-use crate::tiling::{paint_tab_dots, PaneId, DOT_RADIUS, TAB_DOT_RESERVED_HEIGHT};
+use crate::host::pane::TerminalPane;
+use crate::ui::theme::{self, Colors};
+use crate::spatial::tiling::{paint_tab_dots, PaneId, DOT_RADIUS, TAB_DOT_RESERVED_HEIGHT};
 use egui::Vec2;
 use egui_term::{TerminalTheme, TerminalView};
 use egui_tiles::TileId;
@@ -206,7 +206,7 @@ fn is_terminal_outside_workspace(
     }
 
     let pid = terminal.backend.child_pid();
-    let outside_workspace = if let Some(cwd) = crate::shell::get_pid_cwd(pid) {
+    let outside_workspace = if let Some(cwd) = crate::host::shell::get_pid_cwd(pid) {
         // Canonicalize both sides so /var → /private/var on macOS doesn't
         // produce a false-positive "outside" badge.
         let cwd_canon = cwd.canonicalize().unwrap_or(cwd);

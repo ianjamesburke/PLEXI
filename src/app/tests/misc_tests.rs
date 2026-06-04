@@ -1,12 +1,12 @@
 use super::super::*;
-use crate::app_trait::AppCommand;
-use crate::context::Window;
+use crate::app::app_trait::AppCommand;
+use crate::host::context::Window;
 use crate::testing::HostHarness;
 
 #[test]
 fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
     let ctx = egui::Context::default();
-    let ft = crate::logging::new_frame_tick();
+    let ft = crate::platform::logging::new_frame_tick();
     let (mut app, _tx) = PlexiApp::new_for_test(ctx, ft);
 
     // Window 0 is created by new_for_test. Add a pane to it.
@@ -15,7 +15,7 @@ fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
 
     // Add a second window and focus it.
     let ctx_id = app.router.active().context_id;
-    app.windows.push(crate::context::Window {
+    app.windows.push(crate::host::context::Window {
         name: "Window 1".into(),
         path: std::env::temp_dir(),
         tree: egui_tiles::Tree::empty("w1"),
