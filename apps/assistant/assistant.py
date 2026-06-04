@@ -32,7 +32,7 @@ class AssistantApp(App):
         self._scroll = Scrollable(child=Spacer())  # replaced each render
         ctx.info("AssistantApp ready")
 
-    def on_ai_stream_chunk(self, request_id: str, delta: str, done: bool) -> None:
+    def on_ai_stream_chunk(self, _request_id: str, delta: str, _done: bool) -> None:
         self._streaming_text += delta
         self.emit.schedule_render()
 
@@ -109,7 +109,7 @@ class AssistantApp(App):
         if submitted is not None:
             self._submit(submitted)
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._scroll.handle_key(key):
             self.emit.schedule_render()
 
