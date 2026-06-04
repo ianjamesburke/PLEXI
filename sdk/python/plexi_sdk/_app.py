@@ -160,6 +160,7 @@ class App:
         self.workspace_root: str = ""
         self.capabilities: list[str] = []
         self.feature_flags: list[str] = []
+        self.launch_args: list[str] = []
         self._rect: dict = {"x": 0.0, "y": 0.0, "w": 800.0, "h": 600.0}
         self._compact_threshold: float = 280.0
         self._regular_threshold: float = 480.0
@@ -969,6 +970,7 @@ class App:
                     self.workspace_root = ev.get("workspace_root", "")
                     self.capabilities = ev.get("capabilities", [])
                     self.feature_flags = ev.get("feature_flags", [])
+                    self.launch_args = ev.get("args", [])
                     self._compact_threshold = ev.get("compact_threshold", 280.0)
                     self._regular_threshold = ev.get("regular_threshold", 480.0)
                     # Apply host theme (light/dark + user overrides) so app-drawn

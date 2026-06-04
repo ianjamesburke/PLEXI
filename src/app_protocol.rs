@@ -70,6 +70,11 @@ pub enum PlexiEvent {
         /// Empty map ⇒ app falls back to its built-in dark constants.
         #[serde(default)]
         theme: std::collections::HashMap<String, String>,
+        /// Launch arguments passed via `plexi app open <id> -- <args>` or
+        /// programmatic SpawnPane. Also forwarded as subprocess argv for
+        /// backward compatibility. Empty when no args were provided.
+        #[serde(default)]
+        args: Vec<String>,
     },
     /// Request a new frame. App replies with DrawCommands terminated by FrameDone.
     Render {
