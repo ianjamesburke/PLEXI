@@ -97,6 +97,7 @@ impl PlexiApp {
             context_id: ctx_id,
             parent_id: Some(parent_id),
             depth: child_depth,
+            parked: false,
         });
         self.windows.push(crate::context::Window {
             name: String::new(),
@@ -237,6 +238,7 @@ impl PlexiApp {
             context_id: ctx_id,
             parent_id: Some(parent_ctx_id),
             depth: child_depth,
+            parked: false,
         });
         self.windows.push(Window {
             name: String::new(),
@@ -290,6 +292,7 @@ impl PlexiApp {
             context_id: ctx_id,
             parent_id: None,
             depth: 0,
+            parked: false,
         });
         self.windows.push(Window {
             name: String::new(),
@@ -373,6 +376,7 @@ impl PlexiApp {
             context_id: ctx_id,
             parent_id: None,
             depth: 0,
+            parked: false,
         });
         self.windows.push(Window {
             name: String::new(),
@@ -726,6 +730,49 @@ impl PlexiApp {
             self.context_active_window.insert(ctx_id, wid);
             self.record_context_visit(wid);
         }
+    }
+
+    /// Toggle parked state on the active context. When parking, focus moves
+    /// to the nearest unparked neighbor. When unparking (called from sidebar
+    /// click), the context is restored and focused.
+    pub(crate) fn toggle_park_active_context(&mut self) {
+        let idx = self.router.active_idx();
+        let is_parked = self.router.get(idx).parked;
+
+        if is_parked {
+            // Unpark
+            self.router.get_mut(idx).parked = false;
+            log::info!("context: unparked '{}' (idx={idx})", self.router.get(idx).name);
+            self.save_workspace();
+            return;
+        }
+
+        // Park the active context
+        let name = self.router.get(idx).name.clone();
+        self.router.get_mut(idx).parked = true;
+        log::info!("context: parked '{name}' (idx={idx})");
+
+        // Find the nearest unparked context to switch focus to.
+        // Search forward first, then backward.
+        let len = self.router.len();
+        let next_unparked = (1..len)
+            .map(|offset| (idx + offset) % len)
+            .find(|&i| !self.router.get(i).parked);
+
+        if let Some(new_idx) = next_unparked {
+            self.switch_workspace(new_idx);
+        }
+        // If all contexts are parked, stay on the current one (degenerate case).
+
+        self.save_workspace();
+    }
+
+    /// Unpark a specific context by index and switch focus to it.
+    pub(crate) fn unpark_context(&mut self, idx: usize) {
+        self.router.get_mut(idx).parked = false;
+        log::info!("context: unparked '{}' (idx={idx})", self.router.get(idx).name);
+        self.switch_workspace(idx);
+        self.save_workspace();
     }
 
     /// Set the `root` of the active context.

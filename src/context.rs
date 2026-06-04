@@ -49,6 +49,10 @@ pub struct Context {
     /// from `parent_id` chain at runtime.
     #[serde(default)]
     pub depth: u32,
+    /// When true, this context is parked: hidden from the active sidebar list,
+    /// collapsed into a "Parked (N)" divider at the bottom. All panes stay alive.
+    #[serde(default)]
+    pub parked: bool,
 }
 
 /// A window is a single spatial grid page — a pane layout with focus and zoom state.

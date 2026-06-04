@@ -217,6 +217,7 @@ pub struct KeybindingsConfig {
     pub new_child_context: Option<String>,
     pub set_context_root_from_cwd: Option<String>,
     pub hide_pane: Option<String>,
+    pub park_context: Option<String>,
 }
 
 impl KeybindingsConfig {
@@ -274,6 +275,7 @@ impl KeybindingsConfig {
         overlay_field!(new_child_context);
         overlay_field!(set_context_root_from_cwd);
         overlay_field!(hide_pane);
+        overlay_field!(park_context);
     }
 }
 

@@ -169,6 +169,7 @@ mod tests {
             context_id: id,
             parent_id: parent,
             depth: if parent.is_some() { 1 } else { 0 },
+            parked: false,
         }
     }
 

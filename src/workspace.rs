@@ -222,6 +222,7 @@ mod tests {
             context_id: 42,
             parent_id: Some(1),
             depth: 1,
+            parked: false,
         };
         let json = serde_json::to_string(&ctx).expect("serialize");
         let restored: Context = serde_json::from_str(&json).expect("deserialize");
