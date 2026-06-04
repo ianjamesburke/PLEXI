@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 /// major 0, on the assumption that v1 is a breaking format change.
 pub const PLEXI_DESCRIPTOR_MAJOR: u32 = 0;
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PlexiDescriptor {
     /// Semver of the descriptor format itself (NOT the CLI version).
@@ -62,7 +62,7 @@ pub enum UiHint {
     List,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Command {
     pub name: String,
@@ -101,7 +101,7 @@ pub enum ArgType {
     Enum,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ArgSpec {
     pub name: String,
@@ -126,7 +126,7 @@ pub struct ArgSpec {
     pub max: Option<f64>,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct LiveState {
     pub source: LiveStateSource,

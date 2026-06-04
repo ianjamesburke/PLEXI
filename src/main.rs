@@ -27,6 +27,7 @@ mod file_browser;
 mod host;
 mod keys;
 mod launch_failed;
+mod cli_renderer_app;
 mod text_editor_app;
 mod logging;
 #[cfg(target_os = "macos")]

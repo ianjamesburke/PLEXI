@@ -217,6 +217,14 @@ Marketplace and distribution. Only after the garden is curated (Layer 6).
 
 ---
 
+## Post-v1: Infrastructure Cleanup
+
+- [ ] Native Rust CLI renderer (#1947) -- replace Python cli-renderer with egui builtin, add help caching, subcommand crawl, Plexi descriptor flag detection
+- [ ] Native Rust MCP renderer -- same treatment for mcp-renderer, eliminate Python app dependency for `--mcp` flow
+- [ ] Remove `apps/dev/cli-renderer/` and `apps/dev/mcp-renderer/` once builtins ship
+
+---
+
 ## Future: Cloud-Hosted Instances (Phase 5 in North Star)
 
 Detailed here for context, not part of the v1 execution plan.

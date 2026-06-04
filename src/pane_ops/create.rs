@@ -33,6 +33,10 @@ fn builtin_factory(id: &str, args: &[String]) -> Option<Box<dyn App>> {
                 .unwrap_or_else(|| crate::config::config_dir().join("notes").join("scratch.md"));
             Some(Box::new(crate::text_editor_app::TextEditorApp::new(path)))
         }
+        "cli-renderer" => {
+            let path = args.first().cloned().unwrap_or_default();
+            Some(Box::new(crate::cli_renderer_app::CliRendererApp::new(path)))
+        }
         _ => None,
     }
 }

@@ -299,16 +299,28 @@ impl PlexiApp {
                     | AppCommand::DeliverPipeMessage { .. }
                     | AppCommand::OpenDirectedPipe { .. }
                     | AppCommand::DeliverRunUpdate { .. }
-                    // Canvas Terminal Binding Primitives (#78) — sender_pane_id
-                    // is already populated by `route_command` (the originating
-                    // app knows its own pane_id). The dispatch site below
-                    // mutates the pane tree, so they defer like SpawnApp.
-                    | AppCommand::RequestLinkedTerminal { .. }
-                    | AppCommand::RunInLinkedTerminal { .. }
                     | AppCommand::InsertPathToken { .. }
                     | AppCommand::RequestCommandPreview { .. }
                     | AppCommand::OpenArtifact { .. }
                     | AppCommand::QueryContextState { .. } => deferred.push(cmd),
+                    // Builtin apps emit sender_pane_id=0; rewrite to
+                    // the real pane_id so the host can route the response.
+                    AppCommand::RequestLinkedTerminal { request_id, cwd, label, .. } => {
+                        deferred.push(AppCommand::RequestLinkedTerminal {
+                            sender_pane_id: pane_id,
+                            request_id,
+                            cwd,
+                            label,
+                        });
+                    }
+                    AppCommand::RunInLinkedTerminal { terminal_pane_id, command, echo, .. } => {
+                        deferred.push(AppCommand::RunInLinkedTerminal {
+                            sender_pane_id: pane_id,
+                            terminal_pane_id,
+                            command,
+                            echo,
+                        });
+                    }
                     AppCommand::CdRequest { cwd, .. } => {
                         deferred.push(AppCommand::CdRequest { cwd, sender_pane_id: pane_id });
                     }
