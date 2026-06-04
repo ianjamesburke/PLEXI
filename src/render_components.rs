@@ -28,10 +28,15 @@ pub(crate) struct ComponentEventPayload {
 ///
 /// `colors` is the active host theme — passed through so L1 sugar nodes and
 /// `Raw` escape-hatch nodes have consistent theming.
+///
+/// `text_edit_buffers` provides persistent per-node_id text buffers for
+/// `UiNode::TextEdit` nodes. The buffer is seeded from the app's `value`
+/// field when a new node_id first appears.
 pub(crate) fn render_component_tree(
     ui: &mut Ui,
     node: &UiNode,
     colors: &Colors,
+    text_edit_buffers: &mut std::collections::HashMap<String, String>,
 ) -> Vec<ComponentEventPayload> {
     let mut events: Vec<ComponentEventPayload> = Vec::new();
 
@@ -45,10 +50,10 @@ pub(crate) fn render_component_tree(
                 }
                 if padding.left > 0.0 {
                     ui.indent("stack_left_pad", |ui| {
-                        events.extend(render_stack(ui, direction, children, *gap, colors));
+                        events.extend(render_stack(ui, direction, children, *gap, colors, text_edit_buffers));
                     });
                 } else {
-                    events.extend(render_stack(ui, direction, children, *gap, colors));
+                    events.extend(render_stack(ui, direction, children, *gap, colors, text_edit_buffers));
                 }
                 if padding.bottom > 0.0 {
                     ui.add_space(padding.bottom);
@@ -63,14 +68,14 @@ pub(crate) fn render_component_tree(
                 egui::ScrollArea::vertical()
             };
             scroll.show(ui, |ui| {
-                events.extend(render_component_tree(ui, child, colors));
+                events.extend(render_component_tree(ui, child, colors, text_edit_buffers));
             });
         }
 
         UiNode::Layer { children } => {
             // V1: sequential rendering (true Z-stacking is a future improvement).
             for child in children {
-                events.extend(render_component_tree(ui, child, colors));
+                events.extend(render_component_tree(ui, child, colors, text_edit_buffers));
             }
         }
 
@@ -97,7 +102,7 @@ pub(crate) fn render_component_tree(
             // Render the child inside an interact-sense scope so we get a
             // Response covering the child's bounding rect.
             let child_response = ui.scope(|ui| {
-                let child_evts = render_component_tree(ui, child, colors);
+                let child_evts = render_component_tree(ui, child, colors, text_edit_buffers);
                 // Bubble child events up.
                 (child_evts, ui.min_rect())
             });
@@ -149,6 +154,7 @@ pub(crate) fn render_component_tree(
                 &mut std::collections::HashMap::new(),
                 &mut std::collections::HashMap::new(),
                 &mut raw_events,
+                text_edit_buffers,
             );
             // Convert any ComponentEvent payloads back from PlexiEvent (unlikely
             // from a Raw draw command, but keep the pipeline consistent).
@@ -252,6 +258,88 @@ pub(crate) fn render_component_tree(
                     node_id: node_id.clone(),
                     event_type: "submit".into(),
                     payload: Some(serde_json::json!({ "value": val_buf })),
+                });
+            }
+        }
+
+        UiNode::TextEdit { node_id, placeholder, value, multiline, max_length, .. } => {
+            // Seed the buffer from the app's value when this node_id first appears.
+            let buffer = text_edit_buffers
+                .entry(node_id.clone())
+                .or_insert_with(|| value.clone());
+
+            // Enforce max_length by truncating the buffer if it exceeds the limit.
+            if *max_length > 0 && buffer.len() > *max_length {
+                buffer.truncate(*max_length);
+            }
+
+            let prev_value = buffer.clone();
+            let widget_id = egui::Id::new(("text_edit_node", node_id.as_str()));
+
+            let response = ui.scope(|ui| {
+                ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                ui.visuals_mut().text_cursor.stroke.color = colors.accent;
+                ui.visuals_mut().extreme_bg_color = colors.bg_active;
+                ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
+                ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+
+                if *multiline {
+                    let mut edit = egui::TextEdit::multiline(buffer)
+                        .id(widget_id)
+                        .desired_width(f32::INFINITY)
+                        .hint_text(placeholder.as_str())
+                        .font(egui::TextStyle::Body);
+                    if *max_length > 0 {
+                        edit = edit.char_limit(*max_length);
+                    }
+                    ui.add(edit)
+                } else {
+                    let mut edit = egui::TextEdit::singleline(buffer)
+                        .id(widget_id)
+                        .desired_width(f32::INFINITY)
+                        .hint_text(placeholder.as_str())
+                        .font(egui::TextStyle::Body)
+                        .margin(egui::Margin::symmetric(8, 5));
+                    if *max_length > 0 {
+                        edit = edit.char_limit(*max_length);
+                    }
+                    ui.add(edit)
+                }
+            }).inner;
+
+            // Emit "change" event when value differs from previous frame.
+            if *buffer != prev_value {
+                log::debug!(
+                    "render_components: TextEdit change node_id={node_id} value={:?}",
+                    buffer
+                );
+                events.push(ComponentEventPayload {
+                    node_id: node_id.clone(),
+                    event_type: "change".into(),
+                    payload: Some(serde_json::json!({ "value": *buffer })),
+                });
+            }
+
+            // Submit: Enter for single-line, Cmd+Enter for multiline.
+            let should_submit = if *multiline {
+                response.has_focus()
+                    && ui.input(|i| {
+                        i.key_pressed(egui::Key::Enter) && i.modifiers.command
+                    })
+            } else {
+                response.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+            };
+
+            if should_submit {
+                log::info!(
+                    "render_components: TextEdit submit node_id={node_id} value={:?}",
+                    buffer
+                );
+                events.push(ComponentEventPayload {
+                    node_id: node_id.clone(),
+                    event_type: "submit".into(),
+                    payload: Some(serde_json::json!({ "value": *buffer })),
                 });
             }
         }
@@ -523,7 +611,7 @@ pub(crate) fn render_component_tree(
                 .inner_margin(egui::Margin::same(pad as i8))
                 .show(ui, |ui| {
                     for child in children {
-                        events.extend(render_component_tree(ui, child, colors));
+                        events.extend(render_component_tree(ui, child, colors, text_edit_buffers));
                     }
                 });
         }
@@ -607,6 +695,7 @@ fn render_stack(
     children: &[UiNode],
     gap: f32,
     colors: &Colors,
+    text_edit_buffers: &mut std::collections::HashMap<String, String>,
 ) -> Vec<ComponentEventPayload> {
     let mut events = Vec::new();
     match direction {
@@ -616,7 +705,7 @@ fn render_stack(
                     if i > 0 && gap > 0.0 {
                         ui.add_space(gap);
                     }
-                    events.extend(render_component_tree(ui, child, colors));
+                    events.extend(render_component_tree(ui, child, colors, text_edit_buffers));
                 }
             });
         }
@@ -626,7 +715,7 @@ fn render_stack(
                     if i > 0 && gap > 0.0 {
                         ui.add_space(gap);
                     }
-                    events.extend(render_component_tree(ui, child, colors));
+                    events.extend(render_component_tree(ui, child, colors, text_edit_buffers));
                 }
             });
         }
@@ -820,5 +909,55 @@ mod render_component_tree_tests {
         };
         assert_eq!(evt.event_type, "click");
         assert_eq!(evt.node_id, "wrap1");
+    }
+
+    /// `UiNode::TextEdit` node can be constructed with all fields.
+    #[test]
+    fn text_edit_node_constructable() {
+        let node = UiNode::TextEdit {
+            node_id: "editor1".into(),
+            placeholder: "Type here...".into(),
+            value: "hello".into(),
+            multiline: true,
+            max_length: 100,
+        };
+        if let UiNode::TextEdit { node_id, placeholder, value, multiline, max_length, .. } = &node {
+            assert_eq!(node_id, "editor1");
+            assert_eq!(placeholder, "Type here...");
+            assert_eq!(value, "hello");
+            assert!(*multiline);
+            assert_eq!(*max_length, 100);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    /// `UiNode::TextEdit` PartialEq works.
+    #[test]
+    fn text_edit_partial_eq() {
+        let a = UiNode::TextEdit {
+            node_id: "e".into(),
+            placeholder: "p".into(),
+            value: "v".into(),
+            multiline: false,
+            max_length: 0,
+        };
+        let b = a.clone();
+        assert_eq!(a, b);
+    }
+
+    /// Serde round-trip for `UiNode::TextEdit`.
+    #[test]
+    fn text_edit_serde_roundtrip() {
+        let node = UiNode::TextEdit {
+            node_id: "te1".into(),
+            placeholder: "hint".into(),
+            value: "val".into(),
+            multiline: true,
+            max_length: 50,
+        };
+        let json = serde_json::to_string(&node).unwrap();
+        let parsed: UiNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(node, parsed);
     }
 }

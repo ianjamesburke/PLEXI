@@ -495,6 +495,7 @@ from .ui import (
     Toggle as Toggle,
     Clickable as Clickable,
     ProgressBar as ProgressBar,
+    TextEdit as TextEdit,
 )
 # Live host theme (light/dark + user overrides), populated from Init. Also on
 # ctx.theme. Read colors via theme.<role>: theme.bg, theme.accent, theme.danger…

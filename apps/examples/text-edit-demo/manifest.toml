@@ -1,0 +1,12 @@
+schema_version = 1
+
+[app]
+id = "text-edit-demo"
+type = "app"
+name = "TextEdit Demo"
+version = "0.1.0"
+description = "Demonstrates the TextEdit node: single-line and multiline text input."
+entry = "text_edit_demo.py"
+
+[app.capabilities]
+capabilities = []

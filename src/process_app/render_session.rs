@@ -10,6 +10,10 @@ pub(crate) struct RenderSession {
     /// Per-input text buffers, keyed on the `id` field of `DrawCommand::TextInput`.
     /// Persists between frames and survives submit (cleared on submit via `submit_text_input`).
     pub(crate) text_input_buffers: HashMap<String, String>,
+    /// Per-TextEdit node buffers for `UiNode::TextEdit` in the component tree.
+    /// Keyed on `node_id`. Seeded from the app's `value` field when a new
+    /// node_id appears; persists across frames so the host owns the live text.
+    pub(crate) text_edit_buffers: HashMap<String, String>,
     /// IDs of `TextInput` widgets visible in the most recently rendered frame.
     /// Used to detect newly-visible inputs for auto-focus.
     text_input_visible_prev: HashSet<String>,
@@ -40,6 +44,7 @@ impl RenderSession {
     pub(crate) fn new() -> Self {
         Self {
             text_input_buffers: HashMap::new(),
+            text_edit_buffers: HashMap::new(),
             text_input_visible_prev: HashSet::new(),
             text_input_has_focus: false,
             scroll_offsets: HashMap::new(),
@@ -89,6 +94,7 @@ impl RenderSession {
             &mut self.list_view_scroll_offsets,
             &mut self.list_view_last_aligned_sel,
             &mut self.outbound_events,
+            &mut self.text_edit_buffers,
         );
 
         // ── Pass 2: TextInput widgets ────────────────────────────────────────
