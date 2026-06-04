@@ -25,6 +25,7 @@ use crate::config::KeybindingsConfig;
 // Cmd+]                       — focus history forward
 // Cmd+Up / Cmd+Down           — scroll
 // Cmd+= / Cmd+-               — font size
+// Cmd+F                       — terminal search (handled inside egui_term, not host)
 // Cmd+E                       — file browser
 // Cmd+Shift+I                 — set context root from focused pane CWD
 // Cmd+0                       — quick note

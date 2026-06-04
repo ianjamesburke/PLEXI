@@ -758,6 +758,38 @@ impl TerminalBackend {
         }
     }
 
+    /// Search the full scrollback + screen for all matches of the given regex.
+    /// Returns a Vec of Match ranges ordered top-to-bottom.
+    pub fn search_scrollback(&self, regex: &mut RegexSearch) -> Vec<Match> {
+        let term = self.term.lock();
+        let history_size = term.grid().history_size() as i32;
+        let screen_lines = term.grid().screen_lines() as i32;
+        let start_line = Line(-(history_size));
+        let end_line = Line(screen_lines - 1);
+        let start = Point::new(start_line, Column(0));
+        let end = Point::new(end_line, term.last_column());
+        RegexIter::new(start, end, Direction::Right, &term, regex).collect()
+    }
+
+    /// Scroll the display so that the given line (in absolute grid coordinates)
+    /// is visible in the viewport. Returns the new display_offset.
+    pub fn scroll_to_line(&mut self, target_line: Line) -> usize {
+        let term = self.term.clone();
+        let mut term = term.lock();
+        let history_size = term.grid().history_size() as i32;
+        // target_line is in grid coords: negative = scrollback, 0..screen_lines = screen
+        // display_offset is how many lines above bottom we are scrolled
+        // line 0 is at display_offset=0, line -(history_size) is at display_offset=history_size
+        let desired_offset = (-target_line.0).max(0) as usize;
+        let desired_offset = desired_offset.min(history_size as usize);
+        // Scroll to bottom first, then up by desired_offset
+        term.grid_mut().scroll_display(Scroll::Bottom);
+        if desired_offset > 0 {
+            term.grid_mut().scroll_display(Scroll::Delta(desired_offset as i32));
+        }
+        term.grid().display_offset()
+    }
+
     /// Based on alacritty/src/display/hint.rs > regex_match_at
     /// Retrieve the match, if the specified point is inside the content matching the regex.
     ///
