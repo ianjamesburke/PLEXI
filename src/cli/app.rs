@@ -288,14 +288,23 @@ fn scaffold_rust_app(app_dir: &std::path::Path, name: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// `plexi app uninstall <id> [--yes]` — remove a globally installed app with optional confirmation.
+/// `plexi app uninstall <id> [--yes]` — remove an installed app (global or workspace-local).
 pub fn app_uninstall(id: &str, assume_yes: bool) -> i32 {
-    let target_root = crate::app::registry::apps_dir();
-    let app_dir = target_root.join(id);
-    if !app_dir.exists() {
-        eprintln!("error: app '{id}' not found");
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let registry = crate::app::registry::AppRegistry::load(&cwd);
+    let Some(installed) = registry.get(id) else {
+        eprintln!("error: app '{id}' not found — run `plexi app list` to see installed apps");
         return 1;
-    }
+    };
+    let app_dir = installed.app_dir.clone();
+    let target_root = match app_dir.parent() {
+        Some(p) => p.to_path_buf(),
+        None => {
+            eprintln!("error: could not determine parent directory for '{id}'");
+            return 1;
+        }
+    };
+    log::info!("app_uninstall: resolving '{id}' via registry → {:?}", app_dir);
     let core_ids = crate::cli::install_host::core_pack_ids();
     if core_ids.contains(id) {
         eprintln!("note: '{id}' is a core app — it will be re-installed on the next Plexi launch");

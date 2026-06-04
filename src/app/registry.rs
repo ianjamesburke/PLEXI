@@ -284,6 +284,9 @@ pub struct InstalledApp {
     /// surface the missing-secret prompt at first launch.
     pub secrets: HashMap<String, SecretDecl>,
     pub bin_path: PathBuf,
+    /// Root directory of this app's installation (the directory containing
+    /// `manifest.toml`). Set by `load_app`; used by uninstall and hot-reload.
+    pub app_dir: PathBuf,
     /// Which discovery layer this entry came from. Set by `scan_dir`; the
     /// value returned by `load_app` is a placeholder and is overwritten at
     /// insert time.
@@ -463,6 +466,7 @@ impl AppRegistry {
             launch: manifest.launch,
             secrets: manifest.secrets,
             bin_path,
+            app_dir: app_dir.clone(),
             // Placeholders — `scan_dir` overwrites both with real values.
             source: RegistrySource::Global,
             workspace_root: None,
@@ -498,12 +502,12 @@ impl AppRegistry {
             .unwrap_or(false)
     }
 
-    /// Path to the app's installation directory (parent of `bin_path`).
+    /// Path to the app's installation directory (contains `manifest.toml`).
     /// Used by the file watcher; returns `None` when the app id is unknown.
     pub fn app_dir_for(&self, app_id: &str) -> Option<PathBuf> {
         self.apps
             .get(app_id)
-            .and_then(|a| a.bin_path.parent().map(Path::to_path_buf))
+            .map(|a| a.app_dir.clone())
     }
 
 
