@@ -399,16 +399,35 @@ pub fn self_update_cli() -> i32 {
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
     let binary_name = binary.as_deref().unwrap_or("plexi");
 
+    // Derive channel-specific values from the binary name.
+    // Mirrors the channel detection in plexi_uninstall_cli() and install.sh.
+    let suffix = if binary_name == "plexi" {
+        String::new() // main channel
+    } else {
+        binary_name.strip_prefix("plexi").unwrap_or("-").to_string()
+    };
+    let channel = if suffix.is_empty() {
+        "main".to_string()
+    } else {
+        suffix.strip_prefix('-').unwrap_or("unknown").to_string()
+    };
+    let cap = if let Some(n) = suffix.strip_prefix("-pr-") {
+        format!(" PR{n}")
+    } else {
+        match suffix.as_str() {
+            "-alpha" => " Alpha".to_string(),
+            "-beta"  => " Beta".to_string(),
+            _         => String::new(),
+        }
+    };
+    let display = format!("Plexi{cap}");
+    let bundle_id = format!("com.ianjamesburke.plexi{suffix}");
+    log::info!("cli: self-update channel={channel} suffix={suffix} display={display}");
+
     if binary_name.contains("alpha") || binary_name.contains("pr-") {
         eprintln!("Self-update is not available for dev builds.");
         eprintln!("Update from source: git pull && just install");
         return 1;
-    }
-    if binary_name.contains("beta") {
-        log::info!("cli: self-update skipped — beta build");
-        println!("Self-update for beta builds is not yet supported.");
-        println!("Download the latest beta from: https://github.com/ianjamesburke/PLEXI/releases");
-        return 0;
     }
 
     let current_version = env!("CARGO_PKG_VERSION");
@@ -602,25 +621,62 @@ pub fn self_update_cli() -> i32 {
         }
     }
 
+    // For non-main channels, patch the bundle's Info.plist and rename the binary
+    // inside it. This mirrors the per-channel patching in scripts/install.sh.
+    if !suffix.is_empty() {
+        log::info!("cli: self-update patching bundle for channel={channel}");
+        let plist = staging.join("Contents/Info.plist");
+        if plist.exists() {
+            let plist_str = plist.to_string_lossy();
+            for (key, val) in [
+                ("CFBundleName", display.as_str()),
+                ("CFBundleDisplayName", display.as_str()),
+                ("CFBundleIdentifier", bundle_id.as_str()),
+                ("CFBundleExecutable", binary_name),
+            ] {
+                let plutil_out = std::process::Command::new("/usr/bin/plutil")
+                    .args(["-replace", key, "-string", val, &plist_str])
+                    .output();
+                match plutil_out {
+                    Ok(out) if out.status.success() => {}
+                    Ok(out) => {
+                        log::warn!("cli: self-update plutil -replace {key} failed: {}",
+                            String::from_utf8_lossy(&out.stderr));
+                    }
+                    Err(e) => {
+                        log::warn!("cli: self-update failed to run plutil: {e}");
+                    }
+                }
+            }
+            // Rename the binary inside the bundle from plexi → plexi-<channel>.
+            let macos_dir = staging.join("Contents/MacOS");
+            let old_bin = macos_dir.join("plexi");
+            let new_bin = macos_dir.join(binary_name);
+            if old_bin.exists() && old_bin != new_bin {
+                if let Err(e) = std::fs::rename(&old_bin, &new_bin) {
+                    log::warn!("cli: self-update failed to rename binary: {e}");
+                }
+            }
+        } else {
+            log::warn!("cli: self-update plist not found at {}", plist.display());
+        }
+    }
+
     // When running inside Plexi the bundle can't be replaced while the app is live.
     // Write a relaunch script, launch it detached, trigger app quit, and exit.
     if std::env::var("PLEXI_RUNNING").as_deref() == Ok("1") {
-        let bin_name = current_exe
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("plexi");
         let app_display_name = app_bundle
             .file_stem()
             .and_then(|n| n.to_str())
             .unwrap_or("Plexi");
         let script = format!(
             "#!/bin/bash\n\
-             while pgrep -x '{bin_name}' > /dev/null 2>&1; do sleep 0.3; done\n\
+             while pgrep -x '{binary_name}' > /dev/null 2>&1; do sleep 0.3; done\n\
              rm -rf '{bundle}'\n\
              mv '{staging_path}' '{bundle}'\n\
-             ln -sf '{bundle}/Contents/MacOS/{bin_name}' /usr/local/bin/{bin_name} 2>/dev/null || true\n\
+             ln -sf '{bundle}/Contents/MacOS/{binary_name}' /usr/local/bin/{binary_name} 2>/dev/null || true\n\
              open '{bundle}'\n",
-            bin_name = bin_name,
+            binary_name = binary_name,
             staging_path = staging.display(),
             bundle = app_bundle.display(),
         );
@@ -680,14 +736,22 @@ pub fn self_update_cli() -> i32 {
         return 1;
     }
 
-    // Re-symlink the CLI binary at /usr/local/bin/plexi (non-fatal if missing).
-    if let Some(bin_name) = current_exe.file_name().and_then(|n| n.to_str()) {
-        let new_binary = app_bundle.join("Contents/MacOS").join(bin_name);
-        let bin_link = std::path::Path::new("/usr/local/bin").join(bin_name);
-        if bin_link.is_symlink() || bin_link.exists() {
-            let _ = std::fs::remove_file(&bin_link);
-            if let Err(e) = std::os::unix::fs::symlink(&new_binary, &bin_link) {
-                eprintln!("warning: could not update CLI symlink: {e}");
+    // Re-symlink the CLI binary at /usr/local/bin/plexi{suffix} (non-fatal if missing).
+    let new_binary = app_bundle.join("Contents/MacOS").join(binary_name);
+    let bin_link = std::path::Path::new("/usr/local/bin").join(binary_name);
+    if bin_link.is_symlink() || bin_link.exists() {
+        let _ = std::fs::remove_file(&bin_link);
+        if let Err(e) = std::os::unix::fs::symlink(&new_binary, &bin_link) {
+            eprintln!("warning: could not update CLI symlink: {e}");
+        }
+    }
+    // Main channel also owns the bare `plexi` symlink.
+    if suffix.is_empty() {
+        let bare_link = std::path::Path::new("/usr/local/bin/plexi");
+        if bare_link.is_symlink() || bare_link.exists() {
+            let _ = std::fs::remove_file(bare_link);
+            if let Err(e) = std::os::unix::fs::symlink(&new_binary, bare_link) {
+                eprintln!("warning: could not update bare plexi symlink: {e}");
             }
         }
     }
