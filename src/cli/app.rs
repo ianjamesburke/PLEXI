@@ -88,7 +88,7 @@ pub(super) fn app_init_config_dir() -> String {
 ///
 /// The app is immediately discoverable by the registry without any additional
 /// install step, and hot reload watches the actual source.
-pub fn app_init(name: &str, lang: &str, agent: bool, from_pane_id: Option<u64>) -> i32 {
+pub fn app_init(name: &str, lang: &str, from_pane_id: Option<u64>) -> i32 {
     if name.is_empty() {
         eprintln!("Usage: plexi app init [--lang python|rust] <name>");
         return 1;
@@ -173,7 +173,7 @@ pub fn app_init(name: &str, lang: &str, agent: bool, from_pane_id: Option<u64>) 
 
     let result = match lang {
         "rust" => scaffold_rust_app(&app_dir, name),
-        _ if agent => scaffold_agent_python_app(&app_dir, name),
+        "python_agent" => scaffold_agent_python_app(&app_dir, name),
         _ => scaffold_python_app(&app_dir, name),
     };
 
@@ -190,7 +190,7 @@ pub fn app_init(name: &str, lang: &str, agent: bool, from_pane_id: Option<u64>) 
                 // Auto-open the app if PLEXI_SOCKET is set (running inside a pane).
                 if std::env::var("PLEXI_SOCKET").is_ok() {
                     let path_str = app_dir.to_string_lossy().to_string();
-                    log::info!("app_init: auto-opening '{name}' via app_run from_path={path_str} from_pane_id={from_pane_id:?} agent={agent}");
+                    log::info!("app_init: auto-opening '{name}' via app_run from_path={path_str} from_pane_id={from_pane_id:?}");
                     let exit_code = app_run(&path_str, from_pane_id);
                     if exit_code != 0 {
                         eprintln!("warning: app created but could not auto-open (exit {exit_code}) — run: plexi app run {}", app_dir.display());
