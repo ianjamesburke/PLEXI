@@ -263,6 +263,15 @@ impl AppRuntime {
             app.pending_notification_count = count;
         }
     }
+
+    /// Serialize the last-rendered frame (Vec<RenderCommand>) as a JSON array.
+    /// Returns `None` for builtin apps (no accessible frame).
+    pub(crate) fn frame_json(&self) -> Option<serde_json::Value> {
+        match self {
+            AppRuntime::Process(app) => serde_json::to_value(&app.frame).ok(),
+            AppRuntime::Builtin(_) => None,
+        }
+    }
 }
 
 #[allow(dead_code)]

@@ -532,6 +532,7 @@ fn main() -> eframe::Result {
                         PaneCmd::Self_ => std::process::exit(cli::pane_self_cli()),
                         PaneCmd::Info => std::process::exit(cli::pane_info_cli()),
                         PaneCmd::Capture { pane_id, lines, full_output, from_cursor } => std::process::exit(cli::pane_capture_cli(pane_id, lines, full_output, from_cursor)),
+                        PaneCmd::State { pane_id } => std::process::exit(cli::pane_state_cli(pane_id)),
                         PaneCmd::New { cmd, name, down, left, up, right, tab, window, overlay, from, ephemeral, no_focus, cwd } => {
                             let layout = if down { "split_v" }
                                 else if left { "split_left" }

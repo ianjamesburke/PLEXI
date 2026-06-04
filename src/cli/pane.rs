@@ -496,6 +496,59 @@ pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize, full_output: bool, f
     }
 }
 
+/// `plexi pane state <id>`
+///
+/// Sends a `get_pane_state` command to PLEXI_SOCKET. For app panes, the host
+/// writes a JSON object containing the last-rendered frame (RenderCommand array).
+/// For terminal panes, returns a simple status object. Returns 0 on success, 1 on error.
+pub fn pane_state_cli(pane_id: u64) -> i32 {
+    let id = uuid::Uuid::new_v4();
+    let response_file = crate::config::config_dir()
+        .join(format!("pane-state-response-{id}.json"))
+        .to_string_lossy()
+        .into_owned();
+
+    log::info!("pane_state:cli: pane_id={pane_id} response_file={response_file:?}");
+
+    let code = send_to_socket(serde_json::json!({
+        "type": "get_pane_state",
+        "pane_id": pane_id,
+        "response_file": response_file,
+    }));
+    if code != 0 {
+        return code;
+    }
+
+    let response_path = std::path::PathBuf::from(&response_file);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if response_path.exists() {
+            match std::fs::read_to_string(&response_path) {
+                Ok(content) => {
+                    let _ = std::fs::remove_file(&response_path);
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+                            eprintln!("error: {err}");
+                            return 1;
+                        }
+                    }
+                    return print_json_output(&content);
+                }
+                Err(e) => {
+                    log::warn!("pane_state:cli: could not read response file: {e}");
+                    eprintln!("error: could not read response file: {e}");
+                    return 1;
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!("error: timed out waiting for pane state response");
+            return 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 /// `plexi open <type_id> [args...] [--layout=X]`
 ///
 /// When called from inside a Plexi pane (PLEXI_SOCKET is set), sends a
