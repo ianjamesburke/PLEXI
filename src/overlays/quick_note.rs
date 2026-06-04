@@ -82,8 +82,10 @@ impl PlexiApp {
 
         let screen_rect = ctx.screen_rect();
 
-        // Scrim
-        egui::Area::new(egui::Id::new("quick_note_scrim"))
+        // Scrim — click-away dismisses the modal (click on modal area is consumed by
+        // Order::Foreground before reaching this allocate_rect, so clicked() only fires
+        // when the pointer lands outside the modal).
+        let scrim_clicked = egui::Area::new(egui::Id::new("quick_note_scrim"))
             .fixed_pos(screen_rect.min)
             .order(egui::Order::Middle)
             .show(ctx, |ui| {
@@ -92,7 +94,15 @@ impl PlexiApp {
                     0.0,
                     egui::Color32::from_black_alpha(style::SCRIM_ALPHA),
                 );
-            });
+                ui.allocate_rect(screen_rect, egui::Sense::click()).clicked()
+            })
+            .inner;
+        if scrim_clicked {
+            self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+            self.quick_note_text.clear();
+            log::info!("QuickNote: modal dismissed via click-away");
+            return;
+        }
 
         // Modal — grows from ~25% to ~80% of screen height as the user types.
         let modal_w = (screen_rect.width() * 0.72).min(864.0).max(480.0);
