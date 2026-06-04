@@ -2695,6 +2695,9 @@ impl eframe::App for PlexiApp {
                     self.new_context();
                     self.save_workspace();
                 }
+                Action::NewChildContext => {
+                    self.new_child_context_from_keyboard();
+                }
                 Action::PushPaneToSubcontext => {
                     self.push_pane_to_subcontext(None);
                 }

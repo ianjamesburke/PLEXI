@@ -803,6 +803,41 @@ fn create_child_context_auto_zooms() {
     assert_eq!(app.router.current_depth(), 1);
 }
 
+/// Issue #1833: new_child_context_from_keyboard creates a child of the active context
+/// and auto-zooms into it (push_depth + switch_workspace). In PTY-less test environments
+/// the terminal creation fails — verify the depth stack is unchanged and the active context
+/// is unmodified in that case.
+#[test]
+fn new_child_context_from_keyboard_zooms_into_child() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let parent_ctx_id = app.router.active().context_id;
+    let initial_depth = app.router.current_depth();
+    let initial_ctx_count = app.router.len();
+
+    app.new_child_context_from_keyboard();
+
+    if app.router.len() == initial_ctx_count {
+        // PTY unavailable — no child created, state unchanged.
+        assert_eq!(app.router.current_depth(), initial_depth,
+            "depth stack must be unchanged when child creation fails");
+        assert_eq!(app.router.active().context_id, parent_ctx_id,
+            "active context must not change when child creation fails");
+    } else {
+        // Child was created and we zoomed in.
+        assert_eq!(app.router.len(), initial_ctx_count + 1,
+            "exactly one new context added");
+        assert_ne!(app.router.active().context_id, parent_ctx_id,
+            "active context must switch to the new child");
+        assert_eq!(app.router.active().parent_id, Some(parent_ctx_id),
+            "child's parent_id must be the original context");
+        assert_eq!(app.router.current_depth(), initial_depth + 1,
+            "depth stack must grow by one after auto-zoom");
+    }
+}
+
 /// Issue #1392: unlimited nesting after killing the depth cap and adoption branch.
 /// Build a 4-level chain (root → A → B → C → D) and verify that each parent's
 /// window contains a Portal tile pointing at the corresponding child.

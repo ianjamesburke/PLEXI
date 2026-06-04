@@ -67,6 +67,7 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "open_file_browser", "open_quick_note", "open_config", "reload_config",
     "open_secrets_manager", "force_reload_app", "toggle_notification_modal",
     "open_scratchpad", "set_context_root_from_cwd",
+    "push_to_subcontext", "new_child_context",
 ];
 
 pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
@@ -213,6 +214,7 @@ pub struct KeybindingsConfig {
     pub toggle_notification_modal: Option<String>,
     pub open_scratchpad: Option<String>,
     pub push_to_subcontext: Option<String>,
+    pub new_child_context: Option<String>,
     pub set_context_root_from_cwd: Option<String>,
 }
 
@@ -268,6 +270,7 @@ impl KeybindingsConfig {
         overlay_field!(toggle_notification_modal);
         overlay_field!(open_scratchpad);
         overlay_field!(push_to_subcontext);
+        overlay_field!(new_child_context);
         overlay_field!(set_context_root_from_cwd);
     }
 }
