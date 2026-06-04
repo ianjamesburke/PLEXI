@@ -383,10 +383,6 @@ class TetrisApp(App):
     # ── Input ─────────────────────────────────────────────────────────────────
 
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
-        if key == "escape":
-            self.emit.close_self()
-            return
-
         if self.game_over:
             if key == "r":
                 self._new_game()

@@ -390,21 +390,30 @@ class BlueskyApp(App):
 
     # ── input ─────────────────────────────────────────────────────────────────
 
+    def on_escape(self, _ctx):
+        if self._loading:
+            return True  # consume but do nothing while loading
+        if self._show_input:
+            self._show_input = False
+            self.emit.schedule_render()
+            return True
+        if self._view == self.VIEW_THREAD:
+            self._view   = self.VIEW_FEED
+            self._thread = []
+            self.emit.info("bluesky: back to feed")
+            self.emit.schedule_render()
+            return True
+        return False
+
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._loading:
             return
 
         if self._show_input:
-            if key == "escape":
-                self._show_input = False
-                self.emit.schedule_render()
             return
 
         if self._view == self.VIEW_FEED:
-            if key == "escape":
-                self.emit.info("bluesky: close via Escape")
-                self.emit.close_self()
-            elif key == "p":
+            if key == "p":
                 self._show_input = True
                 self.emit.schedule_render()
             elif key == "r":
@@ -418,12 +427,7 @@ class BlueskyApp(App):
                 self._prev_page()
 
         elif self._view == self.VIEW_THREAD:
-            if key == "escape":
-                self._view   = self.VIEW_FEED
-                self._thread = []
-                self.emit.info("bluesky: back to feed")
-                self.emit.schedule_render()
-            elif key == "o":
+            if key == "o":
                 self._open_browser(from_thread=True)
 
     def on_text_submitted(self, _ctx: RenderContext, id: str, text: str) -> None:

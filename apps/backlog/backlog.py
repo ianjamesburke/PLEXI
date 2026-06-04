@@ -328,30 +328,39 @@ class BacklogApp(App):
 
     # ── Keys ─────────────────────────────────────────────────────────────────────
 
+    def on_escape(self, _ctx):
+        self.status = ""
+        if self.in_add:
+            self.in_add = False
+            return True
+        if self.confirm_delete:
+            self.confirm_delete = False
+            return True
+        if self.in_search:
+            self.in_search = False
+            self.search_query = ""
+            self._refilter()
+            return True
+        return False
+
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         self.status = ""   # clear on any key
 
         # ── Add-item mode (host owns the buffer) ─────────────────────────────────
         if self.in_add:
-            if key == "escape":
-                self.in_add = False
             return
 
         # ── Confirm-delete mode ──────────────────────────────────────────────────
         if self.confirm_delete:
             if key == "return":
                 self._delete()
-            elif key in ("escape", "d"):
+            elif key == "d":
                 self.confirm_delete = False
             return
 
         # ── Search mode ──────────────────────────────────────────────────────────
         if self.in_search:
-            if key == "escape":
-                self.in_search = False
-                self.search_query = ""
-                self._refilter()
-            elif key == "backspace":
+            if key == "backspace":
                 self.search_query = self.search_query[:-1]
                 self._refilter()
             elif key == "return":

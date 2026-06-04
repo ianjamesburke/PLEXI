@@ -269,6 +269,15 @@ class GhIssues(App):
 
     # ── input ─────────────────────────────────────────────────────────────────
 
+    def on_escape(self, ctx):
+        if self._view == self.VIEW_DETAIL:
+            self._view   = self.VIEW_LIST
+            self._detail = None
+            self.emit.info("gh-issues: back to list")
+            ctx.status_summary("Issues")
+            return True
+        return False
+
     def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._loading:
             return
@@ -283,12 +292,7 @@ class GhIssues(App):
                 self._new_issue()
 
         elif self._view == self.VIEW_DETAIL:
-            if key == "escape":
-                self._view   = self.VIEW_LIST
-                self._detail = None
-                self.emit.info("gh-issues: back to list")
-                ctx.status_summary("Issues")
-            elif key == "o":
+            if key == "o":
                 if self._detail:
                     num = self._detail["number"]
                     rc, _, _ = _gh("issue", "view", str(num), "--web",

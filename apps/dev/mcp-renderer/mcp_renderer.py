@@ -416,6 +416,13 @@ class McpRendererApp(App):
         self._result_scrollable.scroll_offset = 0.0
         self.emit.schedule_render(after_ms=16)
 
+    async def on_escape(self, _ctx):
+        if self._view in ("form", "result"):
+            await self._handle("back")
+            self.emit.schedule_render(after_ms=16)
+            return True
+        return False
+
     async def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._view == "list":
             if self._list.handle_key(key):
@@ -426,17 +433,11 @@ class McpRendererApp(App):
                 self.emit.schedule_render(after_ms=16)
 
         elif self._view == "form":
-            if key == "escape":
-                await self._handle("back")
-                self.emit.schedule_render(after_ms=16)
-            elif key == "return":
+            if key == "return":
                 await self._handle("run")
 
         elif self._view == "result":
             if self._result_scrollable.handle_key(key):
-                self.emit.schedule_render(after_ms=16)
-            elif key == "escape":
-                await self._handle("back")
                 self.emit.schedule_render(after_ms=16)
 
 

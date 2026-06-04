@@ -267,9 +267,12 @@ class App:
     def on_init(self, _ctx: RenderContext) -> "Coroutine[Any, Any, None] | None": return None
     def on_render(self, _ctx: RenderContext) -> None: pass
     def on_key(self, _ctx: RenderContext, _key: str, _mods: dict) -> "Coroutine[Any, Any, None] | None":
-        if _key == "escape":
-            self.emit.close_self()
         return None
+    def on_escape(self, _ctx: RenderContext) -> bool:
+        """Called when Escape is pressed. Return True if you handled it (e.g.
+        dismissed a modal, exited a sub-page). Return False to let the
+        framework close the app. Default: False (close)."""
+        return False
     def on_click(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> "Coroutine[Any, Any, None] | None": return None
     def on_mouse_down(self, _ctx: RenderContext, _x: float, _y: float, _button: str, _mods: dict = {}) -> "Coroutine[Any, Any, None] | None": return None
     def on_mouse_up(self, _ctx: RenderContext, _x: float, _y: float, _button: str, _mods: dict = {}) -> "Coroutine[Any, Any, None] | None": return None
@@ -1002,7 +1005,17 @@ class App:
 
                 elif t == "key":
                     ctx = self._make_ctx()
-                    self._dispatch_hook_task(self.on_key, ctx, _normalize_key(ev.get("key", "")), ev.get("modifiers", {}))
+                    key = _normalize_key(ev.get("key", ""))
+                    if key == "escape":
+                        result = self.on_escape(ctx)
+                        if inspect.isawaitable(result):
+                            handled = await result
+                        else:
+                            handled = result
+                        if not handled:
+                            self.emit.close_self()
+                    else:
+                        self._dispatch_hook_task(self.on_key, ctx, key, ev.get("modifiers", {}))
 
                 elif t == "click":
                     self._click_buf.append((ev.get("x", 0.0), ev.get("y", 0.0)))

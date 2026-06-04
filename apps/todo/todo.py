@@ -67,15 +67,16 @@ class TodoApp(App):
             self._selected = 0
         self._list.selected_idx = self._selected
 
+    def on_escape(self, _ctx):
+        if self._adding:
+            self._adding = False
+            return True
+        return False
+
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._adding:
-            if key == "escape":
-                self._adding = False
             return
 
-        if key == "escape":
-            self.emit.close_self()
-            return
         if key in ("up", "k", "ArrowUp"):
             self._list.handle_key("k")
             self._selected = self._list.selected_idx

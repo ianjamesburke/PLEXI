@@ -157,6 +157,12 @@ class CalcApp(App):
                 self.pending_val = None
                 self.fresh = True
 
+    def on_escape(self, _ctx):
+        if self.display != "0" or self.pending_op is not None:
+            self._press("C")
+            return True
+        return False
+
     def on_render(self, ctx: RenderContext) -> None:
         subtitle = f"op: {self.pending_op}" if self.pending_op else None
         ctx.render(Column([
@@ -198,9 +204,6 @@ class CalcApp(App):
             self._press("÷")
         elif key in ("=", "return", "enter"):
             self._press("=")
-        elif key == "escape":
-            self.emit.close_self()
-            return
         elif key == "backspace":
             self._backspace()
         else:

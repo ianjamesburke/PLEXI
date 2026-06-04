@@ -303,14 +303,16 @@ class TypingTutorApp(App):
             if _is_unlocked(self._selected, self._level_stars):
                 self._start_level(self._selected)
 
+    def on_escape(self, _ctx):
+        if self._screen == Screen.PLAYING:
+            self.emit.info(f"typing-tutor: aborted level={self._play_level + 1}")
+            self._screen = Screen.LEVEL_SELECT
+            return True
+        return False
+
     def _key_play(self, ctx: RenderContext, key: str, shift: bool) -> None:
         level = LEVELS[self._play_level]
         text = level.text
-
-        if key == "escape":
-            self.emit.info(f"typing-tutor: aborted level={self._play_level + 1}")
-            self._screen = Screen.LEVEL_SELECT
-            return
 
         if key == "backspace":
             if self._typed > 0:

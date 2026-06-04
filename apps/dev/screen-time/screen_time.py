@@ -331,10 +331,14 @@ class ScreenTimeApp(App):
                 self._view_date += datetime.timedelta(days=1)
                 self._load_day_only()
 
-    def _settings_key(self, key: str) -> None:
-        if key == "escape":
+    def on_escape(self, _ctx):
+        if self._mode == MODE_SETTINGS:
             self._mode = MODE_CLOCK
-        elif key == "return":
+            return True
+        return False
+
+    def _settings_key(self, key: str) -> None:
+        if key == "return":
             self._log_dir = os.path.expanduser(self._settings_buf.strip())
             self._mode = MODE_CLOCK
             self._load_all()

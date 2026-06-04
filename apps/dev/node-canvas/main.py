@@ -382,11 +382,13 @@ class NodeCanvas(App):
                 self.emit.info(f"node-canvas: node removed id={nid}")
                 self.emit.schedule_render()
 
-        elif key == "escape":
-            if self._drag_conn:
-                self._drag_conn = None
-                self.emit.info("node-canvas: connection drag cancelled via Escape")
-                self.emit.schedule_render()
+    def on_escape(self, _ctx):
+        if self._drag_conn:
+            self._drag_conn = None
+            self.emit.info("node-canvas: connection drag cancelled via Escape")
+            self.emit.schedule_render()
+            return True
+        return False
 
 
 NodeCanvas().run()

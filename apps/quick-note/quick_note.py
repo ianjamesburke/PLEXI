@@ -93,19 +93,20 @@ class QuickNoteApp(App):
 
     # ── Event handlers ──────────────────────────────────────────────────────
 
+    def on_escape(self, _ctx):
+        if self._mode == "browse":
+            self._mode = "compose"
+            return True
+        return False
+
     def on_key(self, _ctx: RenderContext, key: str, mods: dict) -> None:
         cmd = mods.get("cmd", False)
         if self._mode == "compose":
-            if key == "escape":
-                self.emit.close_self()
-                return
             if cmd and key == "k":
                 self._mode = "browse"
                 self._load_notes()
         elif self._mode == "browse":
-            if key == "escape":
-                self._mode = "compose"
-            elif key == "Enter" and self._notes:
+            if key == "Enter" and self._notes:
                 try:
                     text = self._notes[self._note_list.selected_idx].read_text()
                     self._mode = "compose"

@@ -135,11 +135,23 @@ class TimerApp(App):
 
     # ── keys ──────────────────────────────────────────────────────────────
 
+    def on_escape(self, ctx):
+        if self._editing_msg:
+            self._editing_msg = False
+            self.emit.info(f"Message set: {self._msg!r}")
+            return True
+        if self._state == "running":
+            ctx.cancel_timer(TICK_ID)
+            self._reset(ctx)
+            self.emit.info("Timer cancelled")
+            return True
+        return False
+
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
         if self._state == "setup":
             self._setup_key(ctx, key)
         elif self._state == "running":
-            if key in ("escape", "space", "q"):
+            if key in ("space", "q"):
                 ctx.cancel_timer(TICK_ID)
                 self._reset(ctx)
                 self.emit.info("Timer cancelled")
@@ -148,7 +160,7 @@ class TimerApp(App):
 
     def _setup_key(self, ctx, key: str) -> None:
         if self._editing_msg:
-            if key in ("return", "escape"):
+            if key == "return":
                 self._editing_msg = False
                 self.emit.info(f"Message set: {self._msg!r}")
             elif key == "backspace":

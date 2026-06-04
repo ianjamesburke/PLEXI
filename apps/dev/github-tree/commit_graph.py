@@ -241,6 +241,18 @@ class CommitGraphApp(App):
 
     # ── Input ─────────────────────────────────────────────────────────────────
 
+    def on_escape(self, _ctx):
+        # Clear selection — detail panel shows placeholder.
+        if self._show_help:
+            self._show_help = False
+            self.emit.schedule_render(after_ms=0)
+            return True
+        if self._sel >= 0:
+            self._sel = -1
+            self.emit.schedule_render(after_ms=0)
+            return True
+        return False
+
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:  # noqa: C901
         if self._mode in (MODE_NO_REPO, MODE_NO_GIT, MODE_ERROR):
             if key == "r":
@@ -259,13 +271,6 @@ class CommitGraphApp(App):
         if self._show_help:
             # Any key dismisses help
             self._show_help = False
-            self.emit.schedule_render(after_ms=0)
-            return
-
-        # Esc clears the selection. Detail panel falls back to placeholder.
-        # No tooltip toggle — selection drives the always-visible panel.
-        if key == "escape":
-            self._sel = -1
             self.emit.schedule_render(after_ms=0)
             return
 

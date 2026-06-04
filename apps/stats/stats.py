@@ -420,12 +420,20 @@ class StatsApp(App):
             gap=0,
         ))
 
+    def on_escape(self, _ctx):
+        if self.view_stack:
+            self.view_root = self.view_stack.pop()
+            self.emit.info(f"stats: navigated up to {self.view_root.path}")
+            self.emit.schedule_render(0)
+            return True
+        return False
+
     def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
         if key == "r":
             self._load(ctx)
             self.emit.info("stats: refreshed")
             ctx.emit.schedule_render(0)
-        elif key in ("escape", "backspace"):
+        elif key == "backspace":
             if self.view_stack:
                 self.view_root = self.view_stack.pop()
                 self.emit.info(f"stats: navigated up to {self.view_root.path}")

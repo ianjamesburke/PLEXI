@@ -62,6 +62,17 @@ class WikiApp(App):
                     self._extract, tone="body", max_lines=500,
                 )
 
+    def on_escape(self, _ctx):
+        if self._mode == "article":
+            self._mode = "results"
+            self.emit.schedule_render()
+            return True
+        if self._mode == "results":
+            self._mode = "search"
+            self.emit.schedule_render()
+            return True
+        return False
+
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._mode == "results":
             if self._results_list.handle_key(key):
@@ -72,16 +83,10 @@ class WikiApp(App):
                 if self._results:
                     self._fetch_article(self._results[self._selected])
                 return
-            if key == "escape":
-                self._mode = "search"
-                self.emit.schedule_render()
         elif self._mode == "article":
             if self._article_scroll.handle_key(key):
                 self.emit.schedule_render()
                 return
-            if key == "escape":
-                self._mode = "results"
-                self.emit.schedule_render()
 
     def _fetch_search(self, query: str) -> None:
         self._loading = True

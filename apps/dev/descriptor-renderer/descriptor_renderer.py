@@ -372,6 +372,17 @@ class DescriptorRendererApp(App):
         self.emit.run_in_linked_terminal(self._terminal_pane_id, cmd_str, echo=True)
         self.emit.info(f"descriptor-renderer: ran {cmd_str!r}")
 
+    def on_escape(self, _ctx):
+        if self._view == "form":
+            self._handle("back")
+            self.emit.schedule_render(after_ms=16)
+            return True
+        if self._view == "list" and self._cmd_path:
+            self._handle("back")
+            self.emit.schedule_render(after_ms=16)
+            return True
+        return False
+
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._view == "list":
             if self._list.handle_key(key):
@@ -380,15 +391,9 @@ class DescriptorRendererApp(App):
             elif key == "return":
                 self._handle(self._list.selected_index)
                 self.emit.schedule_render(after_ms=16)
-            elif key == "escape" and self._cmd_path:
-                self._handle("back")
-                self.emit.schedule_render(after_ms=16)
 
         elif self._view == "form":
-            if key == "escape":
-                self._handle("back")
-                self.emit.schedule_render(after_ms=16)
-            elif key == "return":
+            if key == "return":
                 self._handle("run")
                 self.emit.schedule_render(after_ms=16)
 

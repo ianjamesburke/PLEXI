@@ -159,26 +159,37 @@ class LogsApp(App):
             self._copy_row    = 0
             self._copy_anchor = None
 
+    def on_escape(self, _ctx):
+        if self._search_mode:
+            self._search_mode = False
+            self._search_q    = ""
+            self._scroll      = 0.0
+            self._copy_row    = 0
+            self._copy_anchor = None
+            return True
+        if self._copy_mode:
+            self._copy_mode   = False
+            self._copy_anchor = None
+            return True
+        if self._search_q:
+            self._search_q    = ""
+            self._scroll      = 0.0
+            self._copy_row    = 0
+            self._copy_anchor = None
+            return True
+        return False
+
     def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
         shift = mods.get("shift", False)
 
-        # ── search mode: only Esc is handled here; host owns the text field ──
+        # ── search mode: host owns the text field ────────────────────────
         if self._search_mode:
-            if key == "escape":
-                self._search_mode = False
-                self._search_q    = ""
-                self._scroll      = 0.0
-                self._copy_row    = 0
-                self._copy_anchor = None
             return
 
         # ── copy mode ─────────────────────────────────────────────────────
         if self._copy_mode:
             filtered = self._filtered()
-            if key == "escape":
-                self._copy_mode   = False
-                self._copy_anchor = None
-            elif key in ("j", "down", "k", "up"):
+            if key in ("j", "down", "k", "up"):
                 if shift and self._copy_anchor is None:
                     self._copy_anchor = self._copy_row
                 elif not shift:
@@ -221,14 +232,6 @@ class LogsApp(App):
                 self._copy_anchor = None
         elif key == "/":
             self._search_mode = True
-        elif key == "escape":
-            if self._search_q:
-                self._search_q    = ""
-                self._scroll      = 0.0
-                self._copy_row    = 0
-                self._copy_anchor = None
-            else:
-                self.emit.close_self()
         elif key == "y":
             filtered = self._filtered()
             if filtered:

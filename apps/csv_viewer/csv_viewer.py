@@ -2,7 +2,6 @@
 """CSV Viewer — browse and inspect CSV files in the launch directory."""
 
 import csv
-import sys
 from pathlib import Path
 
 from plexi_sdk import App, RenderContext  # type: ignore[attr-defined]
@@ -53,6 +52,12 @@ class CsvViewer(App):
             self._selected = max(0, min(len(self._files) - 1, int(payload["selected"]))) if self._files else 0
             self._file_list.selected_idx = self._selected
 
+    def on_escape(self, _ctx):
+        if self._mode == "detail":
+            self._mode = "list"
+            return True
+        return False
+
     def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
         if self._mode == "list":
             if key in ("up", "k", "down", "j"):
@@ -63,9 +68,6 @@ class CsvViewer(App):
                     self._load_csv(self._files[self._selected])
                     self._mode = "detail"
                     ctx.info(f"csv_viewer: opened {self._files[self._selected].name}")
-            elif key == "escape":
-                ctx.info("csv_viewer: exit via Escape")
-                sys.exit(0)
         else:
             if key in ("up", "k"):
                 self._v_scroll = max(0, self._v_scroll - 1)
@@ -76,9 +78,6 @@ class CsvViewer(App):
             elif key in ("right", "l"):
                 max_h = max(0, len(self._headers) - 1)
                 self._h_scroll = min(max_h, self._h_scroll + 1)
-            elif key == "escape":
-                self._mode = "list"
-                ctx.info("csv_viewer: back to list")
 
     def _load_csv(self, path: Path) -> None:
         self._headers = []
