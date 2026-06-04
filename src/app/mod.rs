@@ -297,6 +297,8 @@ pub struct PlexiApp {
     pub(crate) description_buffer: String,
     pub(crate) description_focus_requested: bool,
     pub(crate) drag_context: Option<usize>,
+    /// Whether the "Parked (N)" section in the sidebar is expanded.
+    pub(crate) parked_section_expanded: bool,
     pub(crate) registry: AppRegistry,
     pub(crate) show_command_palette: bool,
     pub(crate) palette_query: String,
@@ -933,6 +935,7 @@ impl PlexiApp {
                     description_buffer: String::new(),
                     description_focus_requested: false,
                     drag_context: None,
+                    parked_section_expanded: false,
                     show_command_palette: false,
                     palette_query: String::new(),
                     palette_selected: 0,
@@ -1066,6 +1069,7 @@ impl PlexiApp {
                     context_id: 1,
                     parent_id: None,
                     depth: 0,
+                    parked: false,
                 }],
                 0,
             ),
@@ -1105,6 +1109,7 @@ impl PlexiApp {
             description_buffer: String::new(),
             description_focus_requested: false,
             drag_context: None,
+            parked_section_expanded: false,
             show_command_palette: false,
             palette_query: String::new(),
             palette_selected: 0,
@@ -1233,6 +1238,7 @@ impl PlexiApp {
                     context_id: 1,
                     parent_id: None,
                     depth: 0,
+                    parked: false,
                 }],
                 0,
             ),
@@ -1269,6 +1275,7 @@ impl PlexiApp {
             description_buffer: String::new(),
             description_focus_requested: false,
             drag_context: None,
+            parked_section_expanded: false,
             show_command_palette: false,
             palette_query: String::new(),
             palette_selected: 0,
@@ -2738,6 +2745,9 @@ impl eframe::App for PlexiApp {
                             log::warn!("SetContextRootFromCwd: no CWD available for focused pane");
                         }
                     }
+                }
+                Action::ParkContext => {
+                    self.toggle_park_active_context();
                 }
                 Action::ToggleMinimap => {
                     self.minimap.toggle();

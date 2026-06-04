@@ -47,6 +47,7 @@ fn pane_navigate_cross_window_updates_active_window() {
         context_id: 2,
         parent_id: None,
         depth: 0,
+        parked: false,
     });
 
     assert_eq!(h.app.active_window, 0);
@@ -70,6 +71,7 @@ fn pane_navigate_cross_window_syncs_router() {
         context_id: 2,
         parent_id: None,
         depth: 0,
+        parked: false,
     });
 
     assert_eq!(h.app.router.active_idx(), 0);
@@ -93,6 +95,7 @@ fn dispatch_notify_action_pane_focus_navigates() {
         context_id: 2,
         parent_id: None,
         depth: 0,
+        parked: false,
     });
 
     assert_eq!(h.app.active_window, 0);
@@ -152,6 +155,7 @@ fn send_to_pane_searches_all_windows() {
         context_id: 2,
         parent_id: None,
         depth: 0,
+        parked: false,
     });
 
     // active_window remains 0 — pane is in window 1.
@@ -917,6 +921,7 @@ fn delete_context_portal_resets_stale_focused_pane() {
         context_id: child_id,
         parent_id: Some(root_id),
         depth: 1,
+        parked: false,
     });
     app.context_active_window.insert(child_id, child_win_id);
     {
@@ -1002,6 +1007,7 @@ fn delete_context_cascades_and_cleans_depth_stack() {
         context_id: a_id,
         parent_id: Some(root_id),
         depth: 1,
+        parked: false,
     });
     app.router.push(crate::context::Context {
         name: "B".to_string(),
@@ -1011,6 +1017,7 @@ fn delete_context_cascades_and_cleans_depth_stack() {
         context_id: b_id,
         parent_id: Some(a_id),
         depth: 2,
+        parked: false,
     });
 
     // Push minimal windows for A and B without PTY dependency.
@@ -1307,6 +1314,7 @@ fn context_transition_rescans_registry() {
         context_id: ctx_b_id,
         parent_id: None,
         depth: 0,
+        parked: false,
     });
     app.windows.push(Window {
         name: "Context B".into(),

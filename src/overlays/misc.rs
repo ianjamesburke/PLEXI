@@ -50,6 +50,7 @@ impl PlexiApp {
                                     let rows: &[(&[&str], &str)] = &[
                                         (&["\u{2318}", "N"], "New window right"),
                                         (&["\u{2318}", "\u{21E7}", "N"], "New context"),
+                                        (&["\u{2318}", "\u{21E7}", "U"], "Park context"),
                                         (&["\u{2318}", "D"], "Split right"),
                                         (&["\u{2318}", "\u{21E7}", "D"], "Split down"),
                                         (&["\u{2318}", "\\"], "Split right (mirror)"),

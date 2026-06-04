@@ -44,12 +44,14 @@ impl PlexiApp {
         let mut menu_action: Option<(usize, WindowMenuAction)> = None;
         let mut row_rects: Vec<Rect> = Vec::with_capacity(num_contexts);
         let mut drag_released = false;
+        let mut unpark_context: Option<usize> = None;
 
         let focused_cwd = self.windows.get(self.active_window)
             .and_then(|w| w.focused_pane.map(|tile| (w, tile)))
             .and_then(|(w, tile)| w.get_focused_pane_cwd(tile));
 
         // Build display order: top-level contexts first, each followed by children.
+        // Separate into active (unparked) and parked lists.
         let mut display_order: Vec<usize> = Vec::with_capacity(num_contexts);
         for i in 0..num_contexts {
             if self.router.get(i).parent_id.is_none() {
@@ -69,7 +71,18 @@ impl PlexiApp {
             }
         }
 
-        for &i in &display_order {
+        // Partition: active contexts render in the main list, parked ones below.
+        let active_order: Vec<usize> = display_order.iter()
+            .copied()
+            .filter(|&i| !self.router.get(i).parked)
+            .collect();
+        let parked_order: Vec<usize> = display_order.iter()
+            .copied()
+            .filter(|&i| self.router.get(i).parked)
+            .collect();
+
+        // ── Active contexts ─────────────────────────────────────────────
+        for &i in &active_order {
             let is_active = i == self.router.active_idx();
             let is_renaming = self.renaming_window == Some(i);
             let is_dragging = self.drag_context == Some(i);
@@ -274,6 +287,69 @@ impl PlexiApp {
             }
         }
 
+        // ── Parked section ──────────────────────────────────────────────
+        let parked_count = parked_order.len();
+        if parked_count > 0 {
+            ui.add_space(8.0);
+
+            // Divider row: "Parked (N)" -- clickable to expand/collapse
+            let divider_id = egui::Id::new("parked_divider");
+            let expanded = self.parked_section_expanded;
+            let chevron = if expanded { "\u{25BE}" } else { "\u{25B8}" }; // ▾ or ▸
+            let divider_text = format!("{chevron} Parked ({parked_count})");
+
+            let divider_response = ui.horizontal(|ui| {
+                ui.add_space(16.0);
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(divider_text)
+                            .size(10.0)
+                            .color(self.colors.text_dim),
+                    )
+                    .selectable(false)
+                    .sense(egui::Sense::click()),
+                )
+            }).inner;
+
+            let response = ui.interact(divider_response.rect, divider_id, egui::Sense::click());
+            if response.clicked() || divider_response.clicked() {
+                self.parked_section_expanded = !self.parked_section_expanded;
+            }
+            if response.hovered() || divider_response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+
+            // Expanded: show parked context names
+            if self.parked_section_expanded {
+                for &i in &parked_order {
+                    let ctx_name = self.router.get(i).name.clone();
+                    let text_color = self.colors.text_dim;
+
+                    let row_response = ui.horizontal(|ui| {
+                        ui.add_space(24.0);
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&ctx_name)
+                                    .size(11.0)
+                                    .color(text_color),
+                            )
+                            .selectable(false)
+                            .sense(egui::Sense::click()),
+                        )
+                    }).inner;
+
+                    let row_id = egui::Id::new(("parked_ctx", i));
+                    let interact = ui.interact(row_response.rect, row_id, egui::Sense::click());
+                    if interact.clicked() || row_response.clicked() {
+                        unpark_context = Some(i);
+                    }
+                    if interact.hovered() || row_response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                }
+            }
+        }
+
         // Drop slot + drag reorder
         let drop_index: Option<usize> = if self.drag_context.is_some() {
             ui.input(|i| i.pointer.hover_pos())
@@ -296,13 +372,13 @@ impl PlexiApp {
         if let (Some(src), Some(dst)) = (self.drag_context, drop_index) {
             if dst != src && dst != src + 1 {
                 let line_y = if dst == 0 {
-                    row_rects[0].min.y
+                    row_rects.first().map_or(0.0, |r| r.min.y)
                 } else if dst >= row_rects.len() {
-                    row_rects[row_rects.len() - 1].max.y
+                    row_rects.last().map_or(0.0, |r| r.max.y)
                 } else {
                     row_rects[dst - 1].max.y
                 };
-                let x0 = row_rects[0].min.x;
+                let x0 = row_rects.first().map_or(0.0, |r| r.min.x);
                 ui.painter().line_segment(
                     [egui::pos2(x0, line_y), egui::pos2(x0 + sidebar_width, line_y)],
                     Stroke::new(2.0, self.colors.accent),
@@ -310,7 +386,9 @@ impl PlexiApp {
             }
         }
 
-        if let Some((i, action)) = menu_action {
+        if let Some(i) = unpark_context {
+            self.unpark_context(i);
+        } else if let Some((i, action)) = menu_action {
             match action {
                 WindowMenuAction::Rename => {
                     self.renaming_window = Some(i);

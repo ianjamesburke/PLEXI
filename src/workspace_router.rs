@@ -168,6 +168,7 @@ mod tests {
             context_id: id,
             parent_id,
             depth,
+            parked: false,
         }
     }
 
