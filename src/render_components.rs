@@ -90,7 +90,7 @@ pub(crate) fn render_component_tree(
             if *monospace {
                 rich = rich.monospace();
             }
-            ui.label(rich);
+            ui.add(egui::Label::new(rich).selectable(true));
         }
 
         UiNode::Interactive { node_id, child, on_click, on_hover } => {
@@ -311,10 +311,10 @@ pub(crate) fn render_component_tree(
             painter.rect_filled(rect, 0.0, colors.bg_sidebar);
             let text_x = rect.min.x + style::SPACE_MD;
             let max_w = rect.width() - 2.0 * style::SPACE_MD;
+            // Top-align title within the band with consistent top padding.
+            let title_y = rect.min.y + style::SPACE_SM;
             if has_subtitle {
-                let block_h = TITLE_SIZE + 4.0 + style::TEXT_HINT;
-                let title_y = rect.min.y + (band_h - block_h) / 2.0;
-                let sub_y = title_y + TITLE_SIZE + 4.0;
+                let sub_y = title_y + TITLE_SIZE + style::SPACE_XS;
                 let title_galley = ui.fonts(|f| {
                     f.layout(title.clone(), egui::FontId::proportional(TITLE_SIZE),
                              colors.text_primary, max_w)
@@ -326,7 +326,6 @@ pub(crate) fn render_component_tree(
                 });
                 painter.galley(egui::pos2(text_x, sub_y), sub_galley, colors.text_dim);
             } else {
-                let title_y = rect.min.y + (band_h - TITLE_SIZE) / 2.0;
                 let title_galley = ui.fonts(|f| {
                     f.layout(title.clone(), egui::FontId::proportional(TITLE_SIZE),
                              colors.text_primary, max_w)
@@ -419,7 +418,7 @@ pub(crate) fn render_component_tree(
         }
 
         UiNode::Footer { text, color, .. } => {
-            let line_h = style::TEXT_HINT + 5.0;
+            let line_h = style::TEXT_CAPTION + 5.0;
             let total_h = style::SPACE_MD + 1.0 + style::SPACE_MD + line_h;
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(ui.available_width(), total_h), egui::Sense::hover());
@@ -439,7 +438,7 @@ pub(crate) fn render_component_tree(
             let galley = ui.fonts(|f| {
                 f.layout(
                     text.clone(),
-                    egui::FontId::proportional(style::TEXT_HINT),
+                    egui::FontId::proportional(style::TEXT_CAPTION),
                     text_color,
                     rect.width(),
                 )
@@ -486,7 +485,7 @@ pub(crate) fn render_component_tree(
             if *monospace {
                 rich = rich.monospace();
             }
-            let label = egui::Label::new(rich);
+            let label = egui::Label::new(rich).selectable(true);
             let label = if *max_lines > 0 {
                 label.wrap_mode(egui::TextWrapMode::Truncate)
             } else {
