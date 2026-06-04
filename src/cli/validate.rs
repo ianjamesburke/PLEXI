@@ -140,3 +140,65 @@ pub(super) fn resolve_path(path: Option<&str>) -> Result<std::path::PathBuf, Str
             .map_err(|e| format!("error: could not get current directory: {e}")),
     }
 }
+
+#[cfg(test)]
+mod validate_tests {
+    use tempfile::TempDir;
+
+    fn write_valid_manifest(dir: &std::path::Path) {
+        std::fs::write(
+            dir.join("manifest.toml"),
+            "schema_version = 1\n\n\
+             [app]\n\
+             id = \"test-app\"\n\
+             type = \"app\"\n\
+             name = \"Test App\"\n\
+             entry = \"main.py\"\n\
+             version = \"0.1.0\"\n\
+             description = \"A test app\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("main.py"), "# stub\n").unwrap();
+    }
+
+    /// `plexi app validate <path>` must succeed from a bare directory with no
+    /// `.plexi/` workspace ancestor. This is the core invariant: workspace is
+    /// irrelevant for stateless path operations.
+    #[test]
+    fn validate_passes_without_workspace() {
+        let dir = TempDir::new().unwrap();
+        write_valid_manifest(dir.path());
+        let path = dir.path().to_string_lossy().to_string();
+        // The temp dir has no .plexi/ ancestor — must still return 0.
+        let code = super::validate_cli(&path);
+        assert_eq!(code, 0, "validate_cli must succeed without a workspace");
+    }
+
+    #[test]
+    fn validate_fails_on_missing_manifest() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let code = super::validate_cli(&path);
+        assert_eq!(code, 1, "missing manifest.toml must return 1");
+    }
+
+    #[test]
+    fn validate_fails_on_missing_required_field() {
+        let dir = TempDir::new().unwrap();
+        // id is missing
+        std::fs::write(
+            dir.path().join("manifest.toml"),
+            "schema_version = 1\n\n\
+             [app]\n\
+             type = \"app\"\n\
+             name = \"Test App\"\n\
+             entry = \"main.py\"\n\
+             version = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("main.py"), "# stub\n").unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let code = super::validate_cli(&path);
+        assert_eq!(code, 1, "missing [app].id must return 1");
+    }
+}
