@@ -1,3 +1,4 @@
+use super::open::pane_new_cli;
 use super::run::{ROUTINES_FILE, RoutinesCliConfig};
 
 pub fn routine_list() -> i32 {
@@ -76,27 +77,20 @@ pub fn routine_run(name: &str) -> i32 {
         }
     };
 
-    // Spawn via spawn-queue as a terminal pane
-    let queue_dir = crate::config::config_dir().join("spawn-queue");
-    if let Err(e) = std::fs::create_dir_all(&queue_dir) {
-        eprintln!("error: could not create spawn queue: {e}");
-        return 1;
-    }
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let payload = serde_json::json!({
-        "type_id": "terminal",
-        "args": [routine.command.clone()],
-        "ephemeral": routine.ephemeral,
-        "no_focus": false,
-    });
-    let file = queue_dir.join(format!("{ts}.json"));
-    if let Err(e) = std::fs::write(&file, payload.to_string()) {
-        eprintln!("error: could not write spawn request: {e}");
-        return 1;
-    }
-    println!("queued: run routine '{name}' — command: {}", routine.command);
-    0
+    // Spawn via socket (when inside a Plexi pane) with spawn-queue fallback.
+    // pane_new_cli implements the socket-first pattern used by all other spawn paths.
+    log::info!("cli: routine run '{name}' — dispatching command: {}", routine.command);
+    pane_new_cli(
+        Some(&routine.command),
+        Some(name),
+        "split_h",
+        None,
+        None,
+        routine.ephemeral,
+        false,
+        None,
+        &[],
+        None,
+        &[],
+    )
 }
