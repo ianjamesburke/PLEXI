@@ -246,6 +246,7 @@ fn delete_context_portal_resets_stale_focused_pane() {
         context_id: child_id,
         parent_id: Some(root_id),
         depth: 1,
+        parked: false,
     });
     app.context_active_window.insert(child_id, child_win_id);
     {
@@ -331,6 +332,7 @@ fn delete_context_cascades_and_cleans_depth_stack() {
         context_id: a_id,
         parent_id: Some(root_id),
         depth: 1,
+        parked: false,
     });
     app.router.push(crate::context::Context {
         name: "B".to_string(),
@@ -340,6 +342,7 @@ fn delete_context_cascades_and_cleans_depth_stack() {
         context_id: b_id,
         parent_id: Some(a_id),
         depth: 2,
+        parked: false,
     });
 
     // Push minimal windows for A and B without PTY dependency.
