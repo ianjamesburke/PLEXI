@@ -153,7 +153,11 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
         let is_focused = self.focused_tile == Some(tile_id) && !self.modal_open;
 
-        if !is_focused {
+        let is_hidden = self.panes.get(pane_id).map_or(false, |p| p.is_hidden());
+
+        if is_hidden {
+            ui.set_opacity(0.4);
+        } else if !is_focused {
             if let Some(opacity) = self.unfocused_opacity {
                 if opacity < 1.0 {
                     ui.set_opacity(opacity);
@@ -273,15 +277,12 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
 
     fn tab_title_for_pane(&mut self, pane: &PaneId) -> egui::WidgetText {
         let is_hidden = self.panes.get(pane).map_or(false, |p| p.is_hidden());
-        let base_label = if let Some(name) = self.pane_names.get(pane) {
-            name.clone()
-        } else {
-            format!("Terminal {}", pane + 1)
-        };
-        let label = if is_hidden {
-            format!("{base_label} (hidden)")
-        } else {
-            base_label
+        let explicit_name = self.pane_names.get(pane).cloned();
+        let label = match (is_hidden, explicit_name) {
+            (true, Some(name)) => format!("{name} (hidden)"),
+            (true, None) => "hidden".to_string(),
+            (false, Some(name)) => name,
+            (false, None) => format!("Terminal {}", pane + 1),
         };
         let color = if is_hidden {
             crate::sidebar_row::with_alpha(self.colors.text_dim, 0.5)
