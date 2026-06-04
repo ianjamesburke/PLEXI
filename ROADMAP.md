@@ -36,7 +36,7 @@ When a refactor PR already touches a file, move it into the right module in the 
 
 Make what exists feel finished before adding new systems. These are the first things a new user touches.
 
-- [ ] Welcome screen redesign (#1575)
+- [x] ~~Welcome screen redesign (#1575)~~ -- closed as stale; welcome screen already matches proposed design
 - [x] Text editor extraction (#1920, #1922) -- native text-editor builtin pane shipped as `src/text_editor_app.rs`
 - [ ] Terminal Cmd+F search overlay (#1914) -- match cycling, keyboard-navigable
 - [ ] Auto-set pane title to wrapped command (#1037)
@@ -58,18 +58,18 @@ The biggest and most important layer. PGAP becomes L1-only declarative UI. This 
 
 ### 3a: Protocol redesign
 
-Current state: `UiNode` enum exists with 10 variants (Stack, Scroll, Layer, Text, Image, Raw, Button, Input, Badge, Dot). `DrawCommand` is still the primary wire envelope. `ComponentEvent` routing is implemented in `render_components.rs`.
+Current state: `UiNode` enum has 21 variants. L1 layout components (AppBar, FooterKeys, Footer, Section, Label, Spacer, Divider, Card, SelectList) added in v0.0.606. Host-side renderers for all L1 variants live in `render_components.rs`. SDK `to_node()` enables automatic L1 tree emission with L0 fallback for custom canvas components.
 
-- [ ] Design the full L1 UiNode set -- expand from current 10 variants to cover all SDK component types (AppBar, Footer, FooterKeys, List/SelectList, Card, Section, Divider, ScrollLog, Chat, etc.). The `Chat` node is critical: host renders message bubbles, streaming text, thinking indicator, input field. Any app can embed a full chat experience via one node.
+- [x] Design the full L1 UiNode set -- expanded from 12 to 21 variants: AppBar, FooterKeys, Footer, Section, Label, Spacer, Divider, Card, SelectList (v0.0.606). Chat node deferred to Layer 4 (agent app).
 - [x] Remove `_l0` fallback fields from L1 nodes (Button, Input, Badge, Dot) (v0.0.603)
-- [ ] Deprecate and remove L0 flat draw commands as the primary rendering path -- `Raw { command }` node stays as the escape hatch for custom rendering
-- [ ] Host-side L1 renderer -- the host layouts, themes, and renders every L1 node type with consistent spacing, colors, and focus management
+- [x] Deprecate and remove L0 flat draw commands as the primary rendering path -- `render_tree()` now emits UiNode trees via `to_node()` when all children support it; `Raw { command }` stays as escape hatch for custom canvas (v0.0.606)
+- [x] Host-side L1 renderer -- `render_component_tree()` handles all 21 UiNode variants with consistent spacing, colors, and focus management (v0.0.606)
 - [ ] Component event routing (#1904) -- host fires `ComponentEvent` for interactive L1 nodes (Button click, Input submit, List select). Infrastructure exists; SDK surface in validate.
 
 ### 3b: SDK rewrite
 
-- [ ] Rewrite Python SDK to emit UiNode trees instead of L0 draw commands
-- [ ] SDK becomes a tree builder: `ctx.ui([AppBar(...), List(...), Footer(...)])`
+- [x] Rewrite Python SDK to emit UiNode trees instead of L0 draw commands -- `to_node()` on all standard components, `render_tree()` auto-selects L1 path (v0.0.606)
+- [x] SDK becomes a tree builder: `ctx.render(Column([AppBar(...), SelectList(...), FooterKeys(...)]))` emits UiNode tree (v0.0.606)
 - [ ] SDK actionable error messages (#1203) -- audit for cryptic AttributeError/TypeError crashes, add actionable diagnostics
 - [ ] Layout fundamentals (#1527) -- headline alignment, character padding handled by host, not SDK
 - [x] Default Esc behavior in base App class (#1631) (v0.0.599)
@@ -97,7 +97,7 @@ Current app inventory: 18 shipped apps in `apps/`, 29 POC apps in `apps/dev/`.
 - [x] Move non-core apps to `apps/dev/` (v0.0.598) -- kanban, calendar, gh-projects, mind-map, typing-tutor, counter-tree moved; shipped set is 8 core + 3 games
 - [ ] Each core app becomes a reference implementation demonstrating specific L1 patterns
 - [ ] Backlog: integrate TextEdit node for inline editing
-- [ ] Logs: search/filter (#1649) + ~~spacing (#1648)~~ (v0.0.603)
+- [x] Logs: search/filter (#1649) + ~~spacing (#1648)~~ (v0.0.603) -- level filter, target/app_id filter, text search (v0.0.606)
 - [x] Update `plexi app init` scaffold to produce a perfect 30-line L1 example (v0.0.599)
 - [ ] Archive or remove `apps/dev/` POCs that have served their purpose
 - [ ] `plexi app dev` hot-reload command (#1660)

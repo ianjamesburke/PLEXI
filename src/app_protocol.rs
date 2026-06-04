@@ -580,6 +580,29 @@ impl schemars::JsonSchema for LayoutChild {
 
 // ── Component tree wire types (PGAP v3.5) ────────────────────────────────────
 
+fn default_true() -> bool {
+    true
+}
+
+/// Single shortcut entry for `UiNode::FooterKeys`.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct FooterKeyEntry {
+    pub keys: Vec<String>,
+    pub description: String,
+}
+
+/// Item in a `UiNode::SelectList`.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+pub struct SelectListItem {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub leading: String,
+    #[serde(default)]
+    pub trailing: String,
+}
+
 /// Flex direction for a `UiNode::Stack`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -691,6 +714,70 @@ pub enum UiNode {
         #[serde(default)]
         size: f32,
     },
+
+    // ── L1 layout components ────────────────────────────────────────────
+    /// App title bar with optional subtitle.
+    AppBar {
+        title: String,
+        #[serde(default)]
+        subtitle: String,
+    },
+    /// Keyboard shortcut hints row at bottom of pane.
+    FooterKeys {
+        entries: Vec<FooterKeyEntry>,
+        #[serde(default = "default_true")]
+        divider: bool,
+    },
+    /// Single-line status footer with optional color.
+    Footer {
+        text: String,
+        #[serde(default)]
+        color: String,
+    },
+    /// Section header label (small, uppercase, with rule below).
+    Section {
+        title: String,
+    },
+    /// Themed text label with semantic tone.
+    Label {
+        text: String,
+        #[serde(default)]
+        size: f32,
+        #[serde(default)]
+        color: String,
+        #[serde(default)]
+        tone: String,
+        #[serde(default)]
+        bold: bool,
+        #[serde(default)]
+        monospace: bool,
+        #[serde(default)]
+        max_lines: usize,
+    },
+    /// Flexible space between siblings.
+    Spacer {
+        #[serde(default)]
+        size: f32,
+        #[serde(default)]
+        grow: bool,
+    },
+    /// Horizontal divider rule.
+    Divider {
+        #[serde(default)]
+        color: String,
+    },
+    /// Bordered card container.
+    Card {
+        children: Vec<UiNode>,
+        #[serde(default)]
+        padding: f32,
+    },
+    /// Keyboard-navigable scrollable list (selection managed by app).
+    SelectList {
+        items: Vec<SelectListItem>,
+        #[serde(default)]
+        selected_idx: usize,
+    },
 }
 
 // Manual JsonSchema impl to avoid schemars recursion (UiNode contains Box<UiNode>).
@@ -747,6 +834,24 @@ impl PartialEq for UiNode {
              UiNode::Dot { color: c2, size: s2 }) => {
                 c1 == c2 && s1 == s2
             }
+            (UiNode::AppBar { title: t1, subtitle: s1 },
+             UiNode::AppBar { title: t2, subtitle: s2 }) => t1 == t2 && s1 == s2,
+            (UiNode::FooterKeys { entries: e1, divider: d1 },
+             UiNode::FooterKeys { entries: e2, divider: d2 }) => e1 == e2 && d1 == d2,
+            (UiNode::Footer { text: t1, color: c1 },
+             UiNode::Footer { text: t2, color: c2 }) => t1 == t2 && c1 == c2,
+            (UiNode::Section { title: t1 }, UiNode::Section { title: t2 }) => t1 == t2,
+            (UiNode::Label { text: t1, size: s1, color: c1, tone: to1, bold: b1, monospace: m1, max_lines: ml1 },
+             UiNode::Label { text: t2, size: s2, color: c2, tone: to2, bold: b2, monospace: m2, max_lines: ml2 }) => {
+                t1 == t2 && s1 == s2 && c1 == c2 && to1 == to2 && b1 == b2 && m1 == m2 && ml1 == ml2
+            }
+            (UiNode::Spacer { size: s1, grow: g1 },
+             UiNode::Spacer { size: s2, grow: g2 }) => s1 == s2 && g1 == g2,
+            (UiNode::Divider { color: c1 }, UiNode::Divider { color: c2 }) => c1 == c2,
+            (UiNode::Card { children: c1, padding: p1 },
+             UiNode::Card { children: c2, padding: p2 }) => c1 == c2 && p1 == p2,
+            (UiNode::SelectList { items: i1, selected_idx: s1 },
+             UiNode::SelectList { items: i2, selected_idx: s2 }) => i1 == i2 && s1 == s2,
             _ => false,
         }
     }
@@ -3811,6 +3916,59 @@ mod ai_stream_chunk_tests {
                 assert_eq!(delta, "hi");
             }
             other => panic!("expected AiStreamChunk, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn l1_app_bar_round_trips_serde() {
+        let json = r#"{"type":"app_bar","title":"Todo","subtitle":"3 items"}"#;
+        let node: UiNode = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(node, UiNode::AppBar { title: "Todo".into(), subtitle: "3 items".into() });
+    }
+
+    #[test]
+    fn l1_footer_keys_round_trips_serde() {
+        let json = r#"{"type":"footer_keys","entries":[{"keys":["j","k"],"description":"scroll"}],"divider":true}"#;
+        let node: UiNode = serde_json::from_str(json).expect("deserialize");
+        match node {
+            UiNode::FooterKeys { entries, divider } => {
+                assert_eq!(entries.len(), 1);
+                assert_eq!(entries[0].keys, vec!["j", "k"]);
+                assert_eq!(entries[0].description, "scroll");
+                assert!(divider);
+            }
+            other => panic!("expected FooterKeys, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn l1_select_list_round_trips_serde() {
+        let json = r#"{"type":"select_list","items":[{"name":"Item 1"},{"name":"Item 2","description":"details"}],"selected_idx":1}"#;
+        let node: UiNode = serde_json::from_str(json).expect("deserialize");
+        match node {
+            UiNode::SelectList { items, selected_idx } => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0].name, "Item 1");
+                assert_eq!(items[1].description, "details");
+                assert_eq!(selected_idx, 1);
+            }
+            other => panic!("expected SelectList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn l1_full_tree_from_sdk_deserializes() {
+        let json = r#"{"type":"component_tree","root":{"type":"stack","direction":"vertical","children":[{"type":"app_bar","title":"Todo","subtitle":""},{"type":"section","title":"Items"},{"type":"select_list","items":[{"name":"Buy milk"}],"selected_idx":0},{"type":"spacer","size":12.0,"grow":false},{"type":"footer_keys","entries":[{"keys":["space"],"description":"toggle"}],"divider":true}],"gap":12.0,"padding":{"top":8.0,"right":24.0,"bottom":24.0,"left":24.0}}}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialize");
+        match cmd {
+            DrawCommand::Render(RenderCommand::ComponentTree { root }) => {
+                if let UiNode::Stack { children, .. } = &root {
+                    assert_eq!(children.len(), 5);
+                } else {
+                    panic!("expected Stack root, got {root:?}");
+                }
+            }
+            other => panic!("expected ComponentTree, got {other:?}"),
         }
     }
 }

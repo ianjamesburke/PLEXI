@@ -8,6 +8,7 @@
 use egui::Ui;
 
 use crate::app_protocol::{StackDirection, UiNode};
+use crate::style;
 use crate::theme::Colors;
 
 /// Carries the data needed to emit a `PlexiEvent::ComponentEvent`.
@@ -296,6 +297,304 @@ pub(crate) fn render_component_tree(
             );
             ui.painter().circle_filled(rect.center(), dot_size / 2.0, fill);
         }
+
+        // ── L1 layout components ────────────────────────────────────────
+
+        UiNode::AppBar { title, subtitle, .. } => {
+            const TITLE_SIZE: f32 = 16.0;
+            let has_subtitle = !subtitle.is_empty();
+            let band_h = if has_subtitle { 48.0 } else { 34.0 };
+            let total_h = band_h + 1.0;
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), total_h), egui::Sense::hover());
+            let painter = ui.painter();
+            painter.rect_filled(rect, 0.0, colors.bg_sidebar);
+            let text_x = rect.min.x + style::SPACE_MD;
+            let max_w = rect.width() - 2.0 * style::SPACE_MD;
+            if has_subtitle {
+                let block_h = TITLE_SIZE + 4.0 + style::TEXT_HINT;
+                let title_y = rect.min.y + (band_h - block_h) / 2.0;
+                let sub_y = title_y + TITLE_SIZE + 4.0;
+                let title_galley = ui.fonts(|f| {
+                    f.layout(title.clone(), egui::FontId::proportional(TITLE_SIZE),
+                             colors.text_primary, max_w)
+                });
+                painter.galley(egui::pos2(text_x, title_y), title_galley, colors.text_primary);
+                let sub_galley = ui.fonts(|f| {
+                    f.layout(subtitle.clone(), egui::FontId::proportional(style::TEXT_HINT),
+                             colors.text_dim, max_w)
+                });
+                painter.galley(egui::pos2(text_x, sub_y), sub_galley, colors.text_dim);
+            } else {
+                let title_y = rect.min.y + (band_h - TITLE_SIZE) / 2.0;
+                let title_galley = ui.fonts(|f| {
+                    f.layout(title.clone(), egui::FontId::proportional(TITLE_SIZE),
+                             colors.text_primary, max_w)
+                });
+                painter.galley(egui::pos2(text_x, title_y), title_galley, colors.text_primary);
+            }
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(rect.min.x, rect.min.y + band_h),
+                    egui::vec2(rect.width(), 1.0),
+                ),
+                0.0,
+                colors.border,
+            );
+        }
+
+        UiNode::FooterKeys { entries, divider, .. } => {
+            let chip_row_h = style::TEXT_HINT + 6.0;
+            let total_h = if *divider {
+                style::SPACE_SM + 1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM
+            } else {
+                style::SPACE_SM + chip_row_h + style::SPACE_SM
+            };
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), total_h), egui::Sense::hover());
+            let painter = ui.painter();
+            painter.rect_filled(rect, 0.0, colors.bg_sidebar);
+            let mut y = rect.min.y;
+            if *divider {
+                y += style::SPACE_SM;
+                painter.rect_filled(
+                    egui::Rect::from_min_size(egui::pos2(rect.min.x, y), egui::vec2(rect.width(), 1.0)),
+                    0.0,
+                    colors.border,
+                );
+                y += 1.0 + style::SPACE_SM;
+            } else {
+                y += style::SPACE_SM;
+            }
+            let chip_y = y + (chip_row_h - style::TEXT_HINT) / 2.0;
+            let mut cx = rect.min.x + style::SPACE_MD;
+            for entry in entries {
+                for (ki, key) in entry.keys.iter().enumerate() {
+                    if ki > 0 {
+                        cx += 2.0;
+                    }
+                    let font_id = egui::FontId::monospace(style::TEXT_HINT);
+                    let galley = ui.fonts(|f| {
+                        f.layout_no_wrap(key.clone(), font_id, colors.text_primary)
+                    });
+                    let tw = galley.size().x;
+                    let chip_w = tw + 8.0;
+                    let chip_rect = egui::Rect::from_min_size(
+                        egui::pos2(cx, chip_y - 1.0),
+                        egui::vec2(chip_w, style::TEXT_HINT + 4.0),
+                    );
+                    painter.rect_filled(chip_rect, 3.0, colors.bg_active);
+                    painter.rect_stroke(
+                        chip_rect,
+                        3.0,
+                        egui::Stroke::new(0.5, colors.border),
+                        egui::StrokeKind::Inside,
+                    );
+                    painter.galley(
+                        egui::pos2(cx + 4.0, chip_y),
+                        galley,
+                        colors.text_primary,
+                    );
+                    cx += chip_w;
+                }
+                cx += 4.0;
+                let desc_galley = ui.fonts(|f| {
+                    f.layout_no_wrap(
+                        entry.description.clone(),
+                        egui::FontId::proportional(style::TEXT_HINT),
+                        colors.text_dim,
+                    )
+                });
+                painter.galley(egui::pos2(cx, chip_y), desc_galley, colors.text_dim);
+                cx += ui.fonts(|f| {
+                    f.layout_no_wrap(
+                        entry.description.clone(),
+                        egui::FontId::proportional(style::TEXT_HINT),
+                        colors.text_dim,
+                    )
+                    .size()
+                    .x
+                }) + style::SPACE_MD;
+            }
+        }
+
+        UiNode::Footer { text, color, .. } => {
+            let line_h = style::TEXT_HINT + 5.0;
+            let total_h = style::SPACE_MD + 1.0 + style::SPACE_MD + line_h;
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), total_h), egui::Sense::hover());
+            let painter = ui.painter();
+            let line_y = rect.min.y + style::SPACE_MD;
+            painter.rect_filled(
+                egui::Rect::from_min_size(egui::pos2(rect.min.x, line_y), egui::vec2(rect.width(), 1.0)),
+                0.0,
+                colors.border,
+            );
+            let text_color = if color.is_empty() {
+                colors.text_dim
+            } else {
+                parse_color(color).unwrap_or(colors.text_dim)
+            };
+            let text_y = line_y + 1.0 + style::SPACE_MD;
+            let galley = ui.fonts(|f| {
+                f.layout(
+                    text.clone(),
+                    egui::FontId::proportional(style::TEXT_HINT),
+                    text_color,
+                    rect.width(),
+                )
+            });
+            painter.galley(egui::pos2(rect.min.x, text_y), galley, text_color);
+        }
+
+        UiNode::Section { title, .. } => {
+            let total_h = style::SPACE_SM + style::TEXT_HINT + 4.0 + 1.0 + style::SPACE_SM;
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), total_h), egui::Sense::hover());
+            let painter = ui.painter();
+            let label_y = rect.min.y + style::SPACE_SM;
+            let galley = ui.fonts(|f| {
+                f.layout_no_wrap(
+                    title.to_uppercase(),
+                    egui::FontId::proportional(style::TEXT_HINT),
+                    colors.text_dim,
+                )
+            });
+            painter.galley(egui::pos2(rect.min.x, label_y), galley, colors.text_dim);
+            let line_y = label_y + style::TEXT_HINT + 4.0;
+            painter.rect_filled(
+                egui::Rect::from_min_size(
+                    egui::pos2(rect.min.x, line_y),
+                    egui::vec2(rect.width(), 1.0),
+                ),
+                0.0,
+                colors.border,
+            );
+        }
+
+        UiNode::Label { text, size, color, tone, bold, monospace, max_lines, .. } => {
+            let font_size = if *size > 0.0 { *size } else { style::TEXT_BODY };
+            let text_color = if !color.is_empty() {
+                parse_color(color).unwrap_or(colors.text_primary)
+            } else {
+                resolve_tone(tone, colors)
+            };
+            let mut rich = egui::RichText::new(text.as_str()).size(font_size).color(text_color);
+            if *bold {
+                rich = rich.strong();
+            }
+            if *monospace {
+                rich = rich.monospace();
+            }
+            let label = egui::Label::new(rich);
+            let label = if *max_lines > 0 {
+                label.wrap_mode(egui::TextWrapMode::Truncate)
+            } else {
+                label.wrap()
+            };
+            ui.add(label);
+        }
+
+        UiNode::Spacer { size, grow, .. } => {
+            if *grow {
+                ui.allocate_space(ui.available_size());
+            } else {
+                let s = if *size > 0.0 { *size } else { style::SPACE_MD };
+                ui.add_space(s);
+            }
+        }
+
+        UiNode::Divider { color: div_color, .. } => {
+            let fill = if div_color.is_empty() {
+                colors.border
+            } else {
+                parse_color(div_color).unwrap_or(colors.border)
+            };
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 0.0, fill);
+        }
+
+        UiNode::Card { children, padding, .. } => {
+            let pad = if *padding > 0.0 { *padding } else { style::SPACE_MD };
+            egui::Frame::new()
+                .fill(colors.bg_sidebar)
+                .stroke(egui::Stroke::new(1.0, colors.border))
+                .corner_radius(style::RADIUS_MD)
+                .inner_margin(egui::Margin::same(pad as i8))
+                .show(ui, |ui| {
+                    for child in children {
+                        events.extend(render_component_tree(ui, child, colors));
+                    }
+                });
+        }
+
+        UiNode::SelectList { items, selected_idx, .. } => {
+            if items.is_empty() {
+                ui.label(
+                    egui::RichText::new("No items")
+                        .size(style::TEXT_HINT)
+                        .color(colors.text_dim),
+                );
+            } else {
+                let avail = ui.available_size();
+                egui::ScrollArea::vertical()
+                    .max_height(avail.y)
+                    .show(ui, |ui| {
+                        for (i, item) in items.iter().enumerate() {
+                            let selected = i == *selected_idx;
+                            let bg = if selected { colors.bg_active } else { colors.bg_sidebar };
+                            let (rect, _) = ui.allocate_exact_size(
+                                egui::vec2(avail.x, if item.description.is_empty() { 36.0 } else { 52.0 }),
+                                egui::Sense::hover(),
+                            );
+                            let painter = ui.painter();
+                            painter.rect_filled(rect, 0.0, bg);
+                            if selected {
+                                painter.rect_filled(
+                                    egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height())),
+                                    0.0,
+                                    colors.accent,
+                                );
+                            }
+                            let text_x = rect.min.x + style::SPACE_MD;
+                            let max_w = rect.width() - 2.0 * style::SPACE_MD;
+                            if item.description.is_empty() {
+                                let title_y = rect.center().y - style::TEXT_BODY / 2.0;
+                                let galley = ui.fonts(|f| {
+                                    f.layout(item.name.clone(), egui::FontId::proportional(style::TEXT_BODY),
+                                             colors.text_primary, max_w)
+                                });
+                                painter.galley(egui::pos2(text_x, title_y), galley, colors.text_primary);
+                            } else {
+                                let block_h = style::TEXT_BODY + 2.0 + style::TEXT_HINT;
+                                let title_y = rect.center().y - block_h / 2.0;
+                                let desc_y = title_y + style::TEXT_BODY + 2.0;
+                                let galley = ui.fonts(|f| {
+                                    f.layout(item.name.clone(), egui::FontId::proportional(style::TEXT_BODY),
+                                             colors.text_primary, max_w)
+                                });
+                                painter.galley(egui::pos2(text_x, title_y), galley, colors.text_primary);
+                                let desc_galley = ui.fonts(|f| {
+                                    f.layout(item.description.clone(), egui::FontId::proportional(style::TEXT_HINT),
+                                             colors.text_dim, max_w)
+                                });
+                                painter.galley(egui::pos2(text_x, desc_y), desc_galley, colors.text_dim);
+                            }
+                            if !item.trailing.is_empty() {
+                                let tr_galley = ui.fonts(|f| {
+                                    f.layout_no_wrap(item.trailing.clone(),
+                                                     egui::FontId::proportional(style::TEXT_HINT),
+                                                     colors.text_dim)
+                                });
+                                let tr_x = rect.max.x - style::SPACE_MD - tr_galley.size().x;
+                                let tr_y = rect.center().y - tr_galley.size().y / 2.0;
+                                painter.galley(egui::pos2(tr_x, tr_y), tr_galley, colors.text_dim);
+                            }
+                        }
+                    });
+            }
+        }
     }
 
     events
@@ -337,6 +636,18 @@ fn render_stack(
 }
 
 use crate::process_app::render::parse_color;
+
+fn resolve_tone(tone: &str, colors: &Colors) -> egui::Color32 {
+    match tone {
+        "hint" | "dim" | "muted" => colors.text_dim,
+        "danger" | "error" => colors.danger,
+        "success" => colors.success,
+        "warning" => colors.warning,
+        "accent" => colors.accent,
+        "section" => colors.text_section,
+        _ => colors.text_primary,
+    }
+}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

@@ -35,6 +35,8 @@ BADGE_ADV = BADGE_W + COL_GAP
 FILTERS    = ["ALL", "ERROR", "WARN", "INFO", "DEBUG"]
 FILTER_KEY = {"a": 0, "e": 1, "w": 2, "i": 3, "d": 4}
 
+APP_FILTER_KEY = "t"   # cycle through unique targets with 't'
+
 ROW_ALT        = "#1a1a2a"
 COPY_ROW_BG    = "#1e2d1e"   # subtle green tint for copy-mode selected rows
 COPY_CURSOR_BG = "#253525"   # slightly brighter for the active cursor row
@@ -114,6 +116,9 @@ class LogsApp(App):
         # search
         self._search_mode: bool = False
         self._search_q:    str  = ""
+        # app/target filter
+        self._targets:     list[str] = ["ALL"]   # ["ALL", ...unique targets...]
+        self._target_idx:  int       = 0         # index into _targets
         # copy mode
         self._copy_mode:   bool           = False
         self._copy_row:    int            = 0    # active cursor / drag end
@@ -128,7 +133,23 @@ class LogsApp(App):
         if timer_id != TIMER_ID:
             return
         self._lines = _read_log()
+        self._refresh_targets()
         ctx.set_timer(TIMER_ID, POLL_MS)
+
+    def _refresh_targets(self) -> None:
+        """Rebuild the unique target list; preserve current selection if still valid."""
+        seen: list[str] = []
+        for ll in self._lines:
+            if ll.target not in seen:
+                seen.append(ll.target)
+        new_targets = ["ALL"] + seen
+        current = self._targets[self._target_idx] if self._target_idx < len(self._targets) else "ALL"
+        self._targets = new_targets
+        # Preserve selection if the target is still present; otherwise reset to ALL.
+        try:
+            self._target_idx = new_targets.index(current)
+        except ValueError:
+            self._target_idx = 0
 
     def on_text_submitted(self, _ctx: RenderContext, id: str, text: str) -> None:
         if id == "search":
@@ -192,6 +213,12 @@ class LogsApp(App):
             self._scroll      = 0.0
             self._copy_row    = 0
             self._copy_anchor = None
+        elif key == APP_FILTER_KEY:
+            if len(self._targets) > 1:
+                self._target_idx = (self._target_idx + 1) % len(self._targets)
+                self._scroll      = 0.0
+                self._copy_row    = 0
+                self._copy_anchor = None
         elif key == "/":
             self._search_mode = True
         elif key == "escape" and self._search_q:
@@ -274,16 +301,22 @@ class LogsApp(App):
         lines = self._lines if level == "ALL" else [
             ll for ll in self._lines if ll.level == level
         ]
+        target = self._targets[self._target_idx] if self._target_idx < len(self._targets) else "ALL"
+        if target != "ALL":
+            lines = [ll for ll in lines if ll.target == target]
         if not self._search_q:
             return lines
         q = self._search_q.lower()
         return [ll for ll in lines if q in ll.target.lower() or q in ll.message.lower()]
 
     def _subtitle(self) -> str:
-        """Build AppBar subtitle showing active filter / search query."""
+        """Build AppBar subtitle showing active filter / target / search query."""
         parts: list[str] = []
         if self._filter_idx != 0:
             parts.append(FILTERS[self._filter_idx])
+        target = self._targets[self._target_idx] if self._target_idx < len(self._targets) else "ALL"
+        if target != "ALL":
+            parts.append(f"@{target}")
         if self._search_q:
             parts.append(f"/{self._search_q}")
         return "  ".join(parts) if parts else LOG_PATH
@@ -302,7 +335,8 @@ class LogsApp(App):
                 (["esc"], "cancel"),
             ]
         return [
-            (["a", "e", "w", "i", "d"], "filter"),
+            (["a", "e", "w", "i", "d"], "level"),
+            (["t"], "target"),
             (["j", "k"], "scroll"),
             (["g", "G"], "top/btm"),
             (["/"], "search"),
@@ -371,9 +405,16 @@ class LogsApp(App):
                     self._copy_anchor = None
                 chip_x += CHIP_W + CHIP_GAP
 
+            # right-side indicators: active target and/or search query
+            right_parts: list[str] = []
+            active_target = self._targets[self._target_idx] if self._target_idx < len(self._targets) else "ALL"
+            if active_target != "ALL":
+                right_parts.append(f"@{active_target}")
             if self._search_q:
+                right_parts.append(f"/{self._search_q}")
+            if right_parts:
                 ctx.text(w - PAD, AppBar.BAND_H / 2 - TEXT_HINT / 2,
-                         f"/{self._search_q}",
+                         "  ".join(right_parts),
                          size=TEXT_HINT, color=ctx.theme.accent, align="right")
 
         # ── L1 footer ───────────────────────────────────────────────────────

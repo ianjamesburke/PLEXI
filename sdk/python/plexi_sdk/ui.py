@@ -189,6 +189,10 @@ class Component:
         """Emit draw commands. Implementations should stay within (x, y, w, h)."""
         raise NotImplementedError
 
+    def to_node(self) -> "dict | None":
+        """Return a UiNode dict for host-side rendering, or None for L0 fallback."""
+        return None
+
     def render_into(self, ctx, x: float, y: float, w: float) -> float:
         """Measure, render, and return the consumed height.
 
@@ -250,6 +254,11 @@ class Heading(Component):
         ctx.text(x, y, self.text, size=fs, color=self.color or theme.fg, bold=self.bold,
                  max_width=w, elide=True)
 
+    def to_node(self) -> dict:
+        return {"type": "label", "text": self.text,
+                "size": self._font_size(), "bold": self.bold,
+                "color": self.color or "", "tone": ""}
+
 
 @dataclass
 class Label(Component):
@@ -308,6 +317,12 @@ class Label(Component):
             ctx.text(x, y + i * line_h, line,
                      size=fs, color=color, bold=self.bold)
 
+    def to_node(self) -> dict:
+        return {"type": "label", "text": self.text,
+                "size": self._font_size(), "bold": self.bold,
+                "color": self.color or "", "tone": self.tone,
+                "max_lines": self.max_lines, "monospace": False}
+
 
 @dataclass
 class Spacer(Component):
@@ -324,6 +339,9 @@ class Spacer(Component):
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         return
 
+    def to_node(self) -> dict:
+        return {"type": "spacer", "size": self.size, "grow": self.grow}
+
 
 @dataclass
 class Divider(Component):
@@ -337,6 +355,9 @@ class Divider(Component):
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         ctx.rect(x, y + self.margin_top, w, 1.0, self.color or theme.highlight)
+
+    def to_node(self) -> dict:
+        return {"type": "divider", "color": self.color or ""}
 
 
 @dataclass
@@ -388,6 +409,10 @@ class AppBar(Component):
                      max_width=text_w, elide=True)
         ctx.rect(x, y + band, w, self.DIVIDER_H, theme.highlight)
 
+    def to_node(self) -> dict:
+        return {"type": "app_bar", "title": self.title,
+                "subtitle": self.subtitle or ""}
+
 
 @dataclass
 class Section(Component):
@@ -408,6 +433,9 @@ class Section(Component):
                  max_width=w, elide=True)
         line_y = label_y + TEXT_HINT + SPACE_XS
         ctx.rect(x, line_y, w, 1.0, theme.highlight)
+
+    def to_node(self) -> dict:
+        return {"type": "section", "title": self.title}
 
 
 @dataclass
@@ -607,6 +635,12 @@ class Scrollable(Component):
             ctx.rect(bar_x, y, self._SCROLLBAR_W, track_h, theme.highlight)
             ctx.rect(bar_x, thumb_y, self._SCROLLBAR_W, thumb_h, theme.muted)
 
+    def to_node(self) -> "dict | None":
+        child_node = self.child.to_node()
+        if child_node is None:
+            return None
+        return {"type": "scroll", "child": child_node, "horizontal": False}
+
 
 def ensure_visible(scroll_offset: float, viewport_h: float,
                    top: float, bottom: float, margin: float = 0.0) -> float:
@@ -680,6 +714,10 @@ class Footer(Component):
             ctx.text(x, text_y + i * self.LINE_H, line,
                      size=TEXT_HINT, color=self.color or theme.muted)
 
+    def to_node(self) -> dict:
+        return {"type": "footer", "text": self.text,
+                "color": self.color or ""}
+
 
 @dataclass
 class FooterKeys(Component):
@@ -749,6 +787,16 @@ class FooterKeys(Component):
             pairs=list(self.shortcuts),
             font_size=TEXT_HINT,
         )
+
+    def to_node(self) -> dict:
+        entries = []
+        for keys_or_key, desc in self.shortcuts:
+            if isinstance(keys_or_key, str):
+                keys = [keys_or_key]
+            else:
+                keys = list(keys_or_key)
+            entries.append({"keys": keys, "description": desc})
+        return {"type": "footer_keys", "entries": entries, "divider": self.divider}
 
 
 # ── Composite list components ──────────────────────────────────────────────
@@ -1022,6 +1070,15 @@ class Card(Component):
             if i < len(self.children) - 1:
                 cursor += self.gap
 
+    def to_node(self) -> "dict | None":
+        children = []
+        for child in self.children:
+            node = child.to_node()
+            if node is None:
+                return None
+            children.append(node)
+        return {"type": "card", "children": children, "padding": self.padding}
+
 
 @dataclass
 class TextInput(Component):
@@ -1245,6 +1302,18 @@ class SelectList(Component):
             ctx.rect(bar_x, y, sb_w, h, theme.highlight)
             ctx.rect(bar_x, thumb_y, sb_w, thumb_h, theme.muted)
 
+    def to_node(self) -> dict:
+        items = []
+        for item in self.items:
+            items.append({
+                "name": item.get("name", ""),
+                "description": item.get("description", ""),
+                "leading": item.get("leading", ""),
+                "trailing": item.get("trailing", ""),
+            })
+        return {"type": "select_list", "items": items,
+                "selected_idx": self.selected_idx}
+
 
 @dataclass
 class FormField(Component):
@@ -1354,6 +1423,26 @@ class Column(Component):
             if i < len(self.children) - 1:
                 cursor += self.gap
 
+    def to_node(self) -> "dict | None":
+        children = []
+        for child in self.children:
+            node = child.to_node()
+            if node is None:
+                return None
+            children.append(node)
+        return {
+            "type": "stack",
+            "direction": "vertical",
+            "children": children,
+            "gap": self.gap,
+            "padding": {
+                "top": self._pad_top,
+                "right": self.padding,
+                "bottom": self.padding,
+                "left": self.padding,
+            },
+        }
+
 
 # ── Public render entry point ──────────────────────────────────────────────
 
@@ -1363,8 +1452,16 @@ def render_tree(ctx, root: Component, fill: Optional[str] = None) -> None:
 
     `fill` defaults to the active host theme background (`theme.bg`).
     Apps normally call `ctx.render(root)` instead, which calls this.
+
+    If the root component (and all descendants) support ``to_node()``, the tree
+    is emitted as a single ``ComponentTree`` command and the host renders it
+    natively with consistent theming. Otherwise falls back to L0 draw commands.
     """
     ctx.clear(fill or theme.bg)
+    node = root.to_node()
+    if node is not None:
+        ctx.render_tree(node)
+        return
     root.render(ctx, 0.0, 0.0, ctx.w, ctx.h)
 
 
@@ -1472,6 +1569,10 @@ class ButtonRow(Component):
             font_size=self.font_size,
             radius=self.radius,
         )
+
+    def to_node(self) -> dict:
+        return {"type": "button", "node_id": self.id,
+                "label": self.label, "disabled": False}
 
 
 # ── ListView row helpers ───────────────────────────────────────────────────────
