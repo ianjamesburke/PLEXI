@@ -6,6 +6,14 @@ mod notifications;
 pub(crate) mod notification_image;
 mod render;
 mod sync;
+pub mod permissions;
+pub mod registry;
+pub mod registry_watcher;
+pub mod app_trait;
+pub mod packs;
+pub mod plexi_descriptor;
+pub mod text_editor_app;
+pub mod secrets_app;
 
 /// Returns true for old auto-generated window names ("Page 3,1", "Context 2")
 /// Build a shell command string from an args list for passing to `zsh -c <cmd>`.
@@ -15,7 +23,7 @@ fn cmd_from_args(args: &[String]) -> Option<String> {
     match args {
         [] => None,
         [single] => Some(single.clone()),
-        multiple => Some(crate::shell::shell_join(multiple)),
+        multiple => Some(crate::host::shell::shell_join(multiple)),
     }
 }
 
@@ -226,14 +234,14 @@ pub(crate) enum NotificationImageState {
     Pending,
 }
 
-use crate::app_registry::AppRegistry;
+use crate::app::registry::AppRegistry;
 use crate::config;
-use crate::context::Window;
-use crate::keys::{self, Action};
-use crate::pane::{Pane, TerminalPane};
-use crate::shell;
-use crate::theme::{self, Colors};
-use crate::tiling::PaneId;
+use crate::host::context::Window;
+use crate::host::keys::{self, Action};
+use crate::host::pane::{Pane, TerminalPane};
+use crate::host::shell;
+use crate::ui::theme::{self, Colors};
+use crate::spatial::tiling::PaneId;
 use crate::workspace::WorkspaceFile;
 use egui_term::{BackendSettings, PtyEvent, TerminalTheme};
 use egui_tiles::{Tile, Tree};
@@ -249,7 +257,7 @@ struct PaneSwapAnim {
 
 struct EdgePulse {
     tile: egui_tiles::TileId,
-    dir: crate::keys::Direction,
+    dir: crate::host::keys::Direction,
     started_at: std::time::Instant,
 }
 
@@ -263,12 +271,12 @@ pub struct PlexiApp {
     pub(crate) pty_event_rx: mpsc::Receiver<(u64, PtyEvent)>,
     pub(crate) pty_event_tx: mpsc::Sender<(u64, PtyEvent)>,
     pub(crate) last_notify_poll: std::time::Instant,
-    pub(crate) scheduler: crate::scheduler::Scheduler,
+    pub(crate) scheduler: crate::host::scheduler::Scheduler,
     pub(crate) theme: TerminalTheme,
     pub(crate) colors: Colors,
     pub(crate) default_font_size: f32,
     pub(crate) ctx: egui::Context,
-    pub(crate) router: crate::workspace_router::WorkspaceRouter,
+    pub(crate) router: crate::workspace::router::WorkspaceRouter,
     pub(crate) windows: Vec<Window>,
     pub(crate) active_window: usize,
     pub(crate) sidebar_visible: bool,
@@ -285,12 +293,12 @@ pub struct PlexiApp {
     pub(crate) pending_context_close: Option<ContextCloseState>,
     pub(crate) welcome_delete_press_count: u8,
     pub(crate) welcome_delete_last_press: Option<std::time::Instant>,
-    pub(crate) frame_tick: crate::logging::FrameTick,
+    pub(crate) frame_tick: crate::platform::logging::FrameTick,
     /// Cached config so confirmation settings are read through the config
     /// tunnel rather than duplicated as individual bool fields.
     pub(crate) config: crate::config::PlexiConfig,
-    pub(crate) key_bindings: crate::keys::KeyBindings,
-    pub(crate) binding_table: Vec<crate::keys::BindingEntry>,
+    pub(crate) key_bindings: crate::host::keys::KeyBindings,
+    pub(crate) binding_table: Vec<crate::host::keys::BindingEntry>,
     pub(crate) renaming_window: Option<usize>,
     pub(crate) rename_buffer: String,
     pub(crate) editing_description: Option<usize>,
@@ -400,23 +408,23 @@ pub struct PlexiApp {
     /// `hot_reload_rx` is drained each frame; pending requests trigger a
     /// `reload_pane` call which replaces the `ProcessApp` inside the
     /// existing `AppPane` envelope.
-    pub(crate) hot_reload: crate::hot_reload::HotReloadWatcher,
-    pub(crate) hot_reload_rx: std::sync::mpsc::Receiver<crate::hot_reload::ReloadRequest>,
+    pub(crate) hot_reload: crate::host::hot_reload::HotReloadWatcher,
+    pub(crate) hot_reload_rx: std::sync::mpsc::Receiver<crate::host::hot_reload::ReloadRequest>,
     /// Config file watcher (#1115). Watches `config.toml` for saves and fires
     /// a signal so `reload_config()` runs automatically.
-    pub(crate) _config_watcher: Option<crate::config_watcher::ConfigWatcher>,
+    pub(crate) _config_watcher: Option<crate::config::watcher::ConfigWatcher>,
     pub(crate) config_reload_rx: Option<std::sync::mpsc::Receiver<()>>,
     /// App registry filesystem watcher (#1712). Watches the global and workspace-local
     /// apps dirs; signals `registry_reload_rx` on any directory change so the registry
     /// is rescanned without a host restart.
-    pub(crate) _registry_watcher: Option<crate::app_registry_watcher::AppRegistryWatcher>,
+    pub(crate) _registry_watcher: Option<crate::app::registry_watcher::AppRegistryWatcher>,
     pub(crate) registry_reload_rx: Option<std::sync::mpsc::Receiver<()>>,
     /// Watched panes scheduled for crash-restart. Value is the earliest `Instant` at
     /// which the restart fires — giving the developer ~2s to read the crash overlay.
     pub(crate) pending_crash_restarts: HashMap<PaneId, std::time::Instant>,
     /// Spatial-grid minimap overlay state. Controls visibility, fade timer,
     /// and the `Cmd+Shift+M` override-visible flag.
-    pub(crate) minimap: crate::minimap::MinimapState,
+    pub(crate) minimap: crate::render::minimap::MinimapState,
     /// Per-row navigation history for the spatial page grid. Maps `grid_y`
     /// to the `grid_x` of the last page visited on that row. Vertical moves
     /// consult this to land on the most recently accessed page in the target
@@ -461,7 +469,7 @@ pub struct PlexiApp {
     /// dispatched on the first frame where `input_captured_by_overlay()` is false.
     /// Only overlay-unsafe side effects are held here; safe commands (ShowNotification,
     /// pipes, queries) are dispatched immediately even during overlay ownership.
-    pub(crate) overlay_held_cmds: Vec<crate::app_trait::AppCommand>,
+    pub(crate) overlay_held_cmds: Vec<crate::app::app_trait::AppCommand>,
 }
 
 #[cfg(test)]
@@ -640,11 +648,11 @@ impl PlexiApp {
         );
     }
 
-    pub fn new(cc: &eframe::CreationContext<'_>, frame_tick: crate::logging::FrameTick) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, frame_tick: crate::platform::logging::FrameTick) -> Self {
         #[cfg(target_os = "macos")]
-        crate::macos_menu::customize_app_menu();
+        crate::platform::macos_menu::customize_app_menu();
         #[cfg(target_os = "macos")]
-        crate::finder_service::register();
+        crate::platform::finder_service::register();
 
         theme::setup_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
@@ -655,13 +663,13 @@ impl PlexiApp {
         // each frame and reloads the matching pane. Both branches of `new()`
         // (workspace-restore and default) use the same instance via shadow
         // names — kept on stack until consumed by `Self {..}`.
-        let (hr_watcher, hr_rx) = crate::hot_reload::HotReloadWatcher::new();
-        let (hr_watcher2, hr_rx2) = crate::hot_reload::HotReloadWatcher::new();
+        let (hr_watcher, hr_rx) = crate::host::hot_reload::HotReloadWatcher::new();
+        let (hr_watcher2, hr_rx2) = crate::host::hot_reload::HotReloadWatcher::new();
 
         // Config file watcher (#1115). Watches config.toml for saves so the
         // host can hot-reload theme/font/notification settings automatically.
         let (mut cfg_watcher, mut cfg_reload_rx) =
-            match crate::config_watcher::start(crate::config::config_path()) {
+            match crate::config::watcher::start(crate::config::config_path()) {
                 Some((w, rx)) => (Some(w), Some(rx)),
                 None => (None, None),
             };
@@ -672,7 +680,7 @@ impl PlexiApp {
         // project fields preserve the global value.
         let active_workspace = config::active_workspace_root();
         let config = config::PlexiConfig::load_with_workspace(active_workspace.as_deref());
-        let key_bindings = crate::keys::build_key_bindings(config.keybindings.as_ref());
+        let key_bindings = crate::host::keys::build_key_bindings(config.keybindings.as_ref());
         let features = crate::features::FeatureFlags::from_config(&config);
         let notifications_enabled = config
             .notifications
@@ -705,8 +713,8 @@ impl PlexiApp {
         let cwd = std::env::current_dir().unwrap_or_default();
         let registry = AppRegistry::load(&cwd);
 
-        let (mut reg_watcher, mut reg_reload_rx) = match crate::app_registry_watcher::start(
-            crate::app_registry::registry_watch_dirs(&cwd),
+        let (mut reg_watcher, mut reg_reload_rx) = match crate::app::registry_watcher::start(
+            crate::app::registry::registry_watch_dirs(&cwd),
         ) {
             Some((w, rx)) => (Some(w), Some(rx)),
             None => (None, None),
@@ -716,13 +724,13 @@ impl PlexiApp {
         // workspace log goes to .plexi/events.jsonl if we're inside a workspace.
         {
             let global_path = crate::config::config_dir().join("events.jsonl");
-            let workspace_path = crate::event_log::find_workspace_events_path(&cwd);
-            crate::event_log::init_global(global_path, workspace_path);
+            let workspace_path = crate::host::event_log::find_workspace_events_path(&cwd);
+            crate::host::event_log::init_global(global_path, workspace_path);
         }
 
         // Spawn background update check. Sends the latest version once if newer.
         let (update_tx, update_rx) = std::sync::mpsc::channel::<String>();
-        crate::updater::spawn_update_check(crate::config::config_dir(), update_tx);
+        crate::cli::updater::spawn_update_check(crate::config::config_dir(), update_tx);
 
         let (pane_ipc_tx, pane_ipc_rx) = std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
         spawn_socket_listener(pane_ipc_tx);
@@ -757,18 +765,18 @@ impl PlexiApp {
                             continue;
                         };
                         let app_cwd = saved_pane.cwd.clone();
-                        let builtin_perms = crate::app_permissions::AppPermissions::builtin();
+                        let builtin_perms = crate::app::permissions::AppPermissions::builtin();
                         match app_type.as_str() {
                             "file_browser" => {
                                 let mut app =
                                     crate::file_browser::FileBrowserApp::new(app_cwd.clone());
                                 if let Some(state) = &saved_pane.app_state {
-                                    use crate::app_trait::App;
+                                    use crate::app::app_trait::App;
                                     app.restore_state(state);
                                 }
-                                pane_entry = Some(Pane::App(Box::new(crate::pane::AppPane {
+                                pane_entry = Some(Pane::App(Box::new(crate::host::pane::AppPane {
                                     id: saved_pane.id,
-                                    runtime: crate::pane::AppRuntime::Builtin(Box::new(app)),
+                                    runtime: crate::host::pane::AppRuntime::Builtin(Box::new(app)),
                                     workspace_root: app_cwd,
                                     permissions: builtin_perms,
                                     manifest_id: "file_browser".to_string(),
@@ -780,14 +788,14 @@ impl PlexiApp {
                                 })));
                             }
                             "secrets_manager" => {
-                                let mut app = crate::secrets_app::SecretsApp::new(app_cwd.clone());
+                                let mut app = crate::app::secrets_app::SecretsApp::new(app_cwd.clone());
                                 if let Some(state) = &saved_pane.app_state {
-                                    use crate::app_trait::App;
+                                    use crate::app::app_trait::App;
                                     app.restore_state(state);
                                 }
-                                pane_entry = Some(Pane::App(Box::new(crate::pane::AppPane {
+                                pane_entry = Some(Pane::App(Box::new(crate::host::pane::AppPane {
                                     id: saved_pane.id,
-                                    runtime: crate::pane::AppRuntime::Builtin(Box::new(app)),
+                                    runtime: crate::host::pane::AppRuntime::Builtin(Box::new(app)),
                                     workspace_root: app_cwd,
                                     permissions: builtin_perms,
                                     manifest_id: "secrets_manager".to_string(),
@@ -801,10 +809,10 @@ impl PlexiApp {
                             other => {
                                 if let Some(process) = registry.launch_process(other, &app_cwd, &[])
                                 {
-                                    pane_entry = Some(Pane::App(Box::new(crate::pane::AppPane {
+                                    pane_entry = Some(Pane::App(Box::new(crate::host::pane::AppPane {
                                         id: saved_pane.id,
                                         permissions: process.permissions.clone(),
-                                        runtime: crate::pane::AppRuntime::Process(Box::new(
+                                        runtime: crate::host::pane::AppRuntime::Process(Box::new(
                                             process,
                                         )),
                                         workspace_root: app_cwd,
@@ -823,7 +831,7 @@ impl PlexiApp {
                     // Portal panes — restore the tile reference, no process to start.
                     if matches!(saved_pane.kind, crate::workspace::SavedPaneKind::Portal { .. }) {
                         if let crate::workspace::SavedPaneKind::Portal { context_id } = &saved_pane.kind {
-                            pane_entry = Some(Pane::Portal(Box::new(crate::pane::PortalPane {
+                            pane_entry = Some(Pane::Portal(Box::new(crate::host::pane::PortalPane {
                                 pane_id: saved_pane.id,
                                 target_context_id: *context_id,
                                 context_state: None,
@@ -909,7 +917,7 @@ impl PlexiApp {
                     colors,
                     default_font_size,
                     ctx: cc.egui_ctx.clone(),
-                    router: crate::workspace_router::WorkspaceRouter::new(contexts, active_ctx),
+                    router: crate::workspace::router::WorkspaceRouter::new(contexts, active_ctx),
                     windows,
                     active_window: active,
                     sidebar_visible: ws.sidebar_visible,
@@ -925,7 +933,7 @@ impl PlexiApp {
                     welcome_delete_last_press: None,
                     config: config.clone(),
                     key_bindings: key_bindings.clone(),
-                    binding_table: crate::keys::build_binding_table(&key_bindings),
+                    binding_table: crate::host::keys::build_binding_table(&key_bindings),
                     pending_close: false,
                     pending_context_close: None,
                     frame_tick: frame_tick.clone(),
@@ -969,7 +977,7 @@ impl PlexiApp {
                     pane_focus_future: Vec::new(),
                     navigating_history: false,
                     last_notify_poll: std::time::Instant::now(),
-                    scheduler: crate::scheduler::Scheduler::new(),
+                    scheduler: crate::host::scheduler::Scheduler::new(),
                     host,
                     host_services: crate::host::services::HostServices::new(),
                     background_apps: HashMap::new(),
@@ -981,7 +989,7 @@ impl PlexiApp {
                     _registry_watcher: reg_watcher.take(),
                     registry_reload_rx: reg_reload_rx.take(),
                     pending_crash_restarts: HashMap::new(),
-                    minimap: crate::minimap::MinimapState::with_visible(window_count >= 2),
+                    minimap: crate::render::minimap::MinimapState::with_visible(window_count >= 2),
                     last_page_x_per_row: HashMap::new(),
                     context_active_window: ws.context_active_window,
                     minimap_visible_per_context: HashMap::new(),
@@ -1022,7 +1030,7 @@ impl PlexiApp {
             }
         };
 
-        let anchor = crate::anchor::Anchor::detect(&path);
+        let anchor = crate::host::anchor::Anchor::detect(&path);
         let (default_name, default_description, default_root) = match anchor.as_ref() {
             Some(a) => {
                 let defaults = a.context_defaults.as_ref();
@@ -1046,8 +1054,8 @@ impl PlexiApp {
         let default_cwd = std::env::current_dir().unwrap_or_default();
         let default_registry = AppRegistry::load(&default_cwd);
         let (mut default_reg_watcher, mut default_reg_reload_rx) =
-            match crate::app_registry_watcher::start(
-                crate::app_registry::registry_watch_dirs(&default_cwd),
+            match crate::app::registry_watcher::start(
+                crate::app::registry::registry_watch_dirs(&default_cwd),
             ) {
                 Some((w, rx)) => (Some(w), Some(rx)),
                 None => (None, None),
@@ -1060,8 +1068,8 @@ impl PlexiApp {
             colors,
             default_font_size,
             ctx: cc.egui_ctx.clone(),
-            router: crate::workspace_router::WorkspaceRouter::new(
-                vec![crate::context::Context {
+            router: crate::workspace::router::WorkspaceRouter::new(
+                vec![crate::host::context::Context {
                     name: default_name,
                     path: path.clone(),
                     root: default_root,
@@ -1098,7 +1106,7 @@ impl PlexiApp {
             welcome_delete_press_count: 0,
             welcome_delete_last_press: None,
             config,
-            binding_table: crate::keys::build_binding_table(&key_bindings),
+            binding_table: crate::host::keys::build_binding_table(&key_bindings),
             key_bindings,
             pending_close: false,
             pending_context_close: None,
@@ -1143,7 +1151,7 @@ impl PlexiApp {
             pane_focus_future: Vec::new(),
             navigating_history: false,
             last_notify_poll: std::time::Instant::now(),
-            scheduler: crate::scheduler::Scheduler::new(),
+            scheduler: crate::host::scheduler::Scheduler::new(),
             host: crate::host::model::HostModel::new(),
             host_services: crate::host::services::HostServices::new(),
             background_apps: HashMap::new(),
@@ -1155,7 +1163,7 @@ impl PlexiApp {
             _registry_watcher: default_reg_watcher.take(),
             registry_reload_rx: default_reg_reload_rx.take(),
             pending_crash_restarts: HashMap::new(),
-            minimap: crate::minimap::MinimapState::new(),
+            minimap: crate::render::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
             context_active_window: HashMap::new(),
             minimap_visible_per_context: HashMap::new(),
@@ -1178,7 +1186,7 @@ impl PlexiApp {
 
     /// Search ALL windows (not just the active one) for a pane by ID.
     /// Returns (window_index, tile_id). O(n*m) but n is typically 1-3.
-    pub(crate) fn find_pane_in_any_window(&self, pane_id: crate::tiling::PaneId) -> Option<(usize, egui_tiles::TileId)> {
+    pub(crate) fn find_pane_in_any_window(&self, pane_id: crate::spatial::tiling::PaneId) -> Option<(usize, egui_tiles::TileId)> {
         self.windows.iter().enumerate().find_map(|(idx, win)| {
             win.tree.tiles.find_pane(&pane_id).map(|tile| (idx, tile))
         })
@@ -1208,15 +1216,15 @@ impl PlexiApp {
     #[cfg(test)]
     pub fn new_for_test(
         ctx: egui::Context,
-        frame_tick: crate::logging::FrameTick,
+        frame_tick: crate::platform::logging::FrameTick,
     ) -> (Self, std::sync::mpsc::Sender<crate::app_protocol::AppRequest>) {
         let config = config::PlexiConfig::default();
-        let key_bindings = crate::keys::build_key_bindings(config.keybindings.as_ref());
+        let key_bindings = crate::host::keys::build_key_bindings(config.keybindings.as_ref());
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
         configure_egui_ctx(&ctx, &colors);
         let (tx, rx) = mpsc::channel();
-        let (hr_watcher, hr_rx) = crate::hot_reload::HotReloadWatcher::new();
+        let (hr_watcher, hr_rx) = crate::host::hot_reload::HotReloadWatcher::new();
         let path = std::env::temp_dir();
         let features = crate::features::FeatureFlags::from_config(&config);
         let (pane_ipc_tx, pane_ipc_rx) = std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
@@ -1224,13 +1232,13 @@ impl PlexiApp {
             pty_event_rx: rx,
             pty_event_tx: tx,
             last_notify_poll: std::time::Instant::now(),
-            scheduler: crate::scheduler::Scheduler::new(),
+            scheduler: crate::host::scheduler::Scheduler::new(),
             theme: theme::terminal_theme(&theme_cfg),
             colors,
             default_font_size: theme::FONT_SIZE,
             ctx: ctx.clone(),
-            router: crate::workspace_router::WorkspaceRouter::new(
-                vec![crate::context::Context {
+            router: crate::workspace::router::WorkspaceRouter::new(
+                vec![crate::host::context::Context {
                     name: "Test".into(),
                     path: path.clone(),
                     root: None,
@@ -1264,7 +1272,7 @@ impl PlexiApp {
             welcome_delete_press_count: 0,
             welcome_delete_last_press: None,
             config,
-            binding_table: crate::keys::build_binding_table(&key_bindings),
+            binding_table: crate::host::keys::build_binding_table(&key_bindings),
             key_bindings,
             pending_close: false,
             pending_context_close: None,
@@ -1322,7 +1330,7 @@ impl PlexiApp {
             _registry_watcher: None,
             registry_reload_rx: None,
             pending_crash_restarts: HashMap::new(),
-            minimap: crate::minimap::MinimapState::new(),
+            minimap: crate::render::minimap::MinimapState::new(),
             last_page_x_per_row: HashMap::new(),
             context_active_window: HashMap::new(),
             minimap_visible_per_context: HashMap::new(),
@@ -1348,9 +1356,9 @@ impl PlexiApp {
     /// Returns `(tile_id, pane_id)` — `tile_id` is suitable for `focused_pane` assignments.
     #[cfg(test)]
     pub(crate) fn add_test_pane(&mut self) -> (egui_tiles::TileId, u64) {
-        use crate::app_permissions::AppPermissions;
+        use crate::app::permissions::AppPermissions;
         use crate::process_app::ProcessApp;
-        use crate::pane::{AppPane, AppRuntime};
+        use crate::host::pane::{AppPane, AppRuntime};
 
         // Use a simple incrementing id; start high to avoid collisions with HostHarness ids.
         static NEXT_PANE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(10000);
@@ -1371,7 +1379,7 @@ impl PlexiApp {
         };
 
         let win = &mut self.windows[0];
-        win.panes.insert(pane_id, crate::pane::Pane::App(Box::new(app_pane)));
+        win.panes.insert(pane_id, crate::host::pane::Pane::App(Box::new(app_pane)));
         let tile_id = win.tree.tiles.insert_pane(pane_id);
         if win.tree.root.is_none() {
             win.tree.root = Some(tile_id);
@@ -1438,8 +1446,8 @@ impl PlexiApp {
 /// owns keyboard input. Safe commands (ShowNotification, pipes, queries) always
 /// dispatch immediately. Unsafe commands (layout/terminal mutations, focus changes)
 /// are held in `overlay_held_cmds` and released on the next modal-free frame.
-fn is_overlay_unsafe_cmd(cmd: &crate::app_trait::AppCommand) -> bool {
-    use crate::app_trait::AppCommand;
+fn is_overlay_unsafe_cmd(cmd: &crate::app::app_trait::AppCommand) -> bool {
+    use crate::app::app_trait::AppCommand;
     match cmd {
         AppCommand::SpawnApp { .. }
         | AppCommand::SpawnPane { .. }
@@ -1454,8 +1462,8 @@ fn is_overlay_unsafe_cmd(cmd: &crate::app_trait::AppCommand) -> bool {
     }
 }
 
-fn overlay_unsafe_cmd_name(cmd: &crate::app_trait::AppCommand) -> &'static str {
-    use crate::app_trait::AppCommand;
+fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static str {
+    use crate::app::app_trait::AppCommand;
     match cmd {
         AppCommand::SpawnApp { .. } => "SpawnApp",
         AppCommand::SpawnPane { .. } => "SpawnPane",
@@ -1479,7 +1487,7 @@ impl eframe::App for PlexiApp {
         // `dispatch_app_key_events` and `poll_actions` from seeing those events.
         // Global shortcuts (Cmd+Q, Cmd+W, Cmd+P) remain active via `poll_actions`
         // even when an overlay holds focus (see early-return guard in `keys::poll_actions`).
-        let mut early_modal_cmds: Vec<crate::app_trait::AppCommand> = Vec::new();
+        let mut early_modal_cmds: Vec<crate::app::app_trait::AppCommand> = Vec::new();
         let overlay_key_disposition = if self.input_captured_by_overlay() {
             // Step 0: QuickNote preemption (#1626).
             // Cmd+0 is a high-priority action that must fire even when a non-critical
@@ -1495,7 +1503,7 @@ impl eframe::App for PlexiApp {
                 self.sync_notification_modal_focus();
                 self.sync_command_palette_focus();
                 log::info!("quick_note: opened by preempting non-critical modal");
-                crate::app_trait::KeyDisposition::Consumed
+                crate::app::app_trait::KeyDisposition::Consumed
             } else {
             // Step 1: run the overlay's handle_key (consumes its owned key events).
             let disposition = match self.focus_stack.last() {
@@ -1512,7 +1520,7 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::TextInput) => self.text_input_handle_key(ctx),
                 Some(FocusLayer::ContextCloseConfirm) => self.context_close_confirm_handle_key(ctx),
                 Some(FocusLayer::CapabilityModal) => self.capability_modal_handle_key(ctx),
-                None => crate::app_trait::KeyDisposition::Passthrough,
+                None => crate::app::app_trait::KeyDisposition::Passthrough,
             };
             // Step 2: render the overlay (visual only — key reads already done above).
             // .cloned() is required: the QuickNoteSubDestination arm borrows `path` from
@@ -1575,7 +1583,7 @@ impl eframe::App for PlexiApp {
             disposition
             } // end else (non-preempted path)
         } else {
-            crate::app_trait::KeyDisposition::Passthrough
+            crate::app::app_trait::KeyDisposition::Passthrough
         };
 
         // Apps only receive key input when no overlay holds focus. Double-check
@@ -1583,7 +1591,7 @@ impl eframe::App for PlexiApp {
         // have returned Passthrough for keys it doesn't own (e.g. a Choice/Input
         // notification) while still being open. Re-syncs may also have dismissed
         // the overlay, in which case it's safe to forward keys to the app pane.
-        if overlay_key_disposition == crate::app_trait::KeyDisposition::Passthrough
+        if overlay_key_disposition == crate::app::app_trait::KeyDisposition::Passthrough
             && !self.input_captured_by_overlay()
         {
             self.dispatch_app_key_events(ctx);
@@ -1612,7 +1620,7 @@ impl eframe::App for PlexiApp {
 
         // Handle deferred app commands returned from dispatch_app_key_events.
         for cmd in deferred_app_cmds {
-            use crate::app_trait::AppCommand;
+            use crate::app::app_trait::AppCommand;
             // Hold overlay-unsafe side effects (layout/terminal mutations, focus changes)
             // while a modal owns input. Safe commands (ShowNotification, pipes, queries)
             // dispatch immediately. Released on the next modal-free frame.
@@ -2081,10 +2089,10 @@ impl eframe::App for PlexiApp {
                             .get(&pid)
                             .and_then(|p| p.as_app())
                             .map(|a| match &a.runtime {
-                                crate::pane::AppRuntime::Process(pa) => {
+                                crate::host::pane::AppRuntime::Process(pa) => {
                                     pa.pipe_registry.lock().unwrap().has_reader(&pipe_id)
                                 }
-                                crate::pane::AppRuntime::Builtin(_) => false,
+                                crate::host::pane::AppRuntime::Builtin(_) => false,
                             })
                             .unwrap_or(false);
                         if is_reader {
@@ -2117,9 +2125,9 @@ impl eframe::App for PlexiApp {
                         .panes
                         .get(&target_pane_id)
                         .map(|p| match p {
-                            crate::pane::Pane::App(_) => "app",
-                            crate::pane::Pane::Terminal(_) => "terminal",
-                            crate::pane::Pane::Portal(_) => "portal",
+                            crate::host::pane::Pane::App(_) => "app",
+                            crate::host::pane::Pane::Terminal(_) => "terminal",
+                            crate::host::pane::Pane::Portal(_) => "portal",
                         });
                     match target_kind {
                         Some("app") => {
@@ -2254,10 +2262,10 @@ impl eframe::App for PlexiApp {
                             .get(&pid)
                             .and_then(|p| p.as_app())
                             .map(|a| match &a.runtime {
-                                crate::pane::AppRuntime::Process(pa) => {
+                                crate::host::pane::AppRuntime::Process(pa) => {
                                     pa.type_id == originator_type_id
                                 }
-                                crate::pane::AppRuntime::Builtin(_) => false,
+                                crate::host::pane::AppRuntime::Builtin(_) => false,
                             })
                             .unwrap_or(false);
                         if matches {
@@ -2430,10 +2438,10 @@ impl eframe::App for PlexiApp {
                         }
                         crate::pane_ops::SwapResult::AtBoundary => {
                             let moved = match dir {
-                                crate::keys::Direction::Down => {
+                                crate::host::keys::Direction::Down => {
                                     self.move_focused_pane_to_row_boundary(true)
                                 }
-                                crate::keys::Direction::Up => {
+                                crate::host::keys::Direction::Up => {
                                     self.move_focused_pane_to_row_boundary(false)
                                 }
                                 _ => self.move_focused_pane_to_adjacent_window(dir),
@@ -2576,7 +2584,7 @@ impl eframe::App for PlexiApp {
                         self.palette_workspace_root = win
                             .focused_pane
                             .and_then(|tile_id| win.get_focused_pane_cwd(tile_id))
-                            .and_then(|cwd| crate::app_registry::resolve_workspace_root(&cwd));
+                            .and_then(|cwd| crate::app::registry::resolve_workspace_root(&cwd));
                         log::info!(
                             "palette: opened, focused workspace = {:?}",
                             self.palette_workspace_root
@@ -2672,7 +2680,7 @@ impl eframe::App for PlexiApp {
                 Action::ToggleAppFocus => {
                     // Tab navigates between the app pane and the linked
                     // terminal pane below (they're separate tiles now).
-                    self.navigate(crate::keys::Direction::Down);
+                    self.navigate(crate::host::keys::Direction::Down);
                 }
                 Action::OpenFileBrowser => {
                     self.open_file_browser();
@@ -2783,8 +2791,8 @@ impl eframe::App for PlexiApp {
 
         // Reload configuration from disk when the user clicks
         // "Reload Configuration" in the app menu.
-        crate::macos_menu::apply_version_title_once();
-        if crate::macos_menu::take_reload_config_flag() {
+        crate::platform::macos_menu::apply_version_title_once();
+        if crate::platform::macos_menu::take_reload_config_flag() {
             self.reload_config();
         }
 
@@ -2834,7 +2842,7 @@ impl eframe::App for PlexiApp {
                         .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
                 });
             log::info!("app_registry_watcher: rescanning registry for root={}", root.display());
-            self.registry = crate::app_registry::AppRegistry::load(&root);
+            self.registry = crate::app::registry::AppRegistry::load(&root);
         }
 
         // Handle window close request (X button or macOS Cmd+Q OS event).
@@ -2989,14 +2997,14 @@ fn parse_key_str_to_event(key: &str) -> (String, crate::app_protocol::Modifiers)
 
 /// process-app registry to register against (terminals — should never reach
 /// this path; logged at the call site).
-fn register_directed_pipe_on_target(pane: &mut crate::pane::Pane, pipe_id: &str) -> bool {
-    use crate::typed_pipes::PipeDirection;
+fn register_directed_pipe_on_target(pane: &mut crate::host::pane::Pane, pipe_id: &str) -> bool {
+    use crate::host::typed_pipes::PipeDirection;
     let registry = match pane {
-        crate::pane::Pane::App(app) => match &app.runtime {
-            crate::pane::AppRuntime::Process(pa) => Some(pa.pipe_registry.clone()),
-            crate::pane::AppRuntime::Builtin(_) => None,
+        crate::host::pane::Pane::App(app) => match &app.runtime {
+            crate::host::pane::AppRuntime::Process(pa) => Some(pa.pipe_registry.clone()),
+            crate::host::pane::AppRuntime::Builtin(_) => None,
         },
-        crate::pane::Pane::Terminal(_) | crate::pane::Pane::Portal(_) => None,
+        crate::host::pane::Pane::Terminal(_) | crate::host::pane::Pane::Portal(_) => None,
     };
     let Some(registry) = registry else {
         return false;
@@ -3009,7 +3017,7 @@ fn register_directed_pipe_on_target(pane: &mut crate::pane::Pane, pipe_id: &str)
         Ok(()) => true,
         // Already open is acceptable — agents may have called `pipe_open` or
         // received a prior directed pipe with the same id; treat as success.
-        Err(crate::typed_pipes::PipeError::AlreadyOpen(_)) => true,
+        Err(crate::host::typed_pipes::PipeError::AlreadyOpen(_)) => true,
         Err(e) => {
             log::warn!("register_directed_pipe_on_target: open_json failed: {e}");
             false

@@ -2,7 +2,7 @@
 
 use super::PlexiApp;
 use crate::plexi_ai::broker::PaneContext;
-use crate::shell;
+use crate::host::shell;
 
 impl PlexiApp {
     /// Synchronize app panes that join the `cwd` pane group with any terminal's

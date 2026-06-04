@@ -1,6 +1,6 @@
 use super::super::*;
-use crate::app_trait::AppCommand;
-use crate::context::Window;
+use crate::app::app_trait::AppCommand;
+use crate::host::context::Window;
 use crate::testing::HostHarness;
 
 // ── Focus history tests ───────────────────────────────────────────────────

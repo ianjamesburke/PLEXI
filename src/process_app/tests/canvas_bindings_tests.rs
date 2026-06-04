@@ -1,5 +1,5 @@
 use super::super::*;
-use crate::app_permissions::AppPermissions;
+use crate::app::permissions::AppPermissions;
 use crate::app_protocol::{
     ArtifactOpenMode, AppRequest, PathTokenMode, PlexiEvent,
 };

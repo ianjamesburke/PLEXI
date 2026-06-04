@@ -1,4 +1,4 @@
-use crate::plexi_descriptor::{self, PlexiDescriptor};
+use crate::app::plexi_descriptor::{self, PlexiDescriptor};
 use std::process::Command;
 
 /// Indirection so the probe path can be tested without spawning real

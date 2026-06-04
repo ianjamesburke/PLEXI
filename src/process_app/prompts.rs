@@ -1,10 +1,10 @@
 //! Capability and secret prompt modals — shown when an app requests access.
 
-use crate::app_permissions::AppPermissions;
+use crate::app::permissions::AppPermissions;
 use crate::app_protocol::PlexiEvent;
-use crate::event_log::{self, HostEvent};
+use crate::host::event_log::{self, HostEvent};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest};
-use crate::workspace_secrets::SecretStore;
+use crate::workspace::secrets::SecretStore;
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{mpsc::Sender, Arc};
@@ -30,7 +30,7 @@ pub fn persist_granted_secret(
     value: &str,
     store: &dyn SecretStore,
 ) {
-    use crate::workspace_secrets::{
+    use crate::workspace::secrets::{
         keychain_user_name, keychain_workspace_name, WorkspaceConfig, WorkspaceSecrets,
     };
 
@@ -91,8 +91,8 @@ pub(crate) fn show_prompt_modal(
     workspace_root: &Path,
     secret_input_buf: &mut String,
     _config_dir: &Path,
-    permission_store: &mut crate::app_permissions::PermissionStore,
-    colors: &crate::theme::Colors,
+    permission_store: &mut crate::app::permissions::PermissionStore,
+    colors: &crate::ui::theme::Colors,
     deferred_ai_queries: &mut VecDeque<DeferredAiQuery>,
     ai_broker: Arc<dyn AiBroker>,
     http_tx: Sender<PlexiEvent>,
@@ -131,7 +131,7 @@ pub(crate) fn show_prompt_modal(
         .order(egui::Order::Middle)
         .show(ctx, |ui| {
             ui.painter()
-                .rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(crate::style::SCRIM_ALPHA));
+                .rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(crate::ui::style::SCRIM_ALPHA));
             let scrim_resp = ui.allocate_rect(screen_rect, egui::Sense::click());
             if scrim_resp.clicked() {
                 deny_once = true;
@@ -145,7 +145,7 @@ pub(crate) fn show_prompt_modal(
             egui::Frame::new()
                 .fill(colors.bg_sidebar)
                 .stroke(egui::Stroke::new(1.0, colors.border))
-                .corner_radius(crate::style::RADIUS_LG)
+                .corner_radius(crate::ui::style::RADIUS_LG)
                 .inner_margin(egui::Margin::symmetric(20, 16))
                 .show(ui, |ui| {
                     ui.set_width(crate::overlays::MODAL_WIDTH);
@@ -160,13 +160,13 @@ pub(crate) fn show_prompt_modal(
                             ui.add_space(4.0);
                             ui.label(
                                 egui::RichText::new(format!("\"{}\" is requesting access to:", type_id))
-                                    .size(crate::style::TEXT_CAPTION)
+                                    .size(crate::ui::style::TEXT_CAPTION)
                                     .color(colors.text_dim),
                             );
                             ui.add_space(6.0);
                             ui.label(
                                 egui::RichText::new(capability)
-                                    .size(crate::style::TEXT_CAPTION)
+                                    .size(crate::ui::style::TEXT_CAPTION)
                                     .color(colors.text_primary)
                                     .monospace()
                                     .strong(),
@@ -174,16 +174,16 @@ pub(crate) fn show_prompt_modal(
                             ui.add_space(4.0);
                             ui.label(
                                 egui::RichText::new(format!("Workspace: {}", workspace_root.display()))
-                                    .size(crate::style::TEXT_HINT)
+                                    .size(crate::ui::style::TEXT_HINT)
                                     .color(colors.text_dim),
                             );
-                            ui.add_space(crate::style::SPACE_MD);
+                            ui.add_space(crate::ui::style::SPACE_MD);
                             ui.horizontal(|ui| {
                                 if ui
                                     .add(
                                         egui::Button::new(
                                             egui::RichText::new("Grant Once")
-                                                .size(crate::style::TEXT_CAPTION)
+                                                .size(crate::ui::style::TEXT_CAPTION)
                                                 .color(colors.bg_darkest),
                                         )
                                         .fill(colors.accent),
@@ -198,7 +198,7 @@ pub(crate) fn show_prompt_modal(
                                     .add(
                                         egui::Button::new(
                                             egui::RichText::new("Grant Forever")
-                                                .size(crate::style::TEXT_CAPTION)
+                                                .size(crate::ui::style::TEXT_CAPTION)
                                                 .color(colors.bg_darkest),
                                         )
                                         .fill(colors.accent),
@@ -215,7 +215,7 @@ pub(crate) fn show_prompt_modal(
                                     .add(
                                         egui::Button::new(
                                             egui::RichText::new("Deny Once")
-                                                .size(crate::style::TEXT_CAPTION)
+                                                .size(crate::ui::style::TEXT_CAPTION)
                                                 .color(colors.text_dim),
                                         )
                                         .fill(colors.bg_active),
@@ -230,7 +230,7 @@ pub(crate) fn show_prompt_modal(
                                     .add(
                                         egui::Button::new(
                                             egui::RichText::new("Deny Forever")
-                                                .size(crate::style::TEXT_CAPTION)
+                                                .size(crate::ui::style::TEXT_CAPTION)
                                                 .color(colors.bg_darkest),
                                         )
                                         .fill(colors.danger),
@@ -252,18 +252,18 @@ pub(crate) fn show_prompt_modal(
                             ui.add_space(4.0);
                             ui.label(
                                 egui::RichText::new(format!("\"{}\" needs a secret value for:", type_id))
-                                    .size(crate::style::TEXT_CAPTION)
+                                    .size(crate::ui::style::TEXT_CAPTION)
                                     .color(colors.text_dim),
                             );
                             ui.add_space(6.0);
                             ui.label(
                                 egui::RichText::new(key)
-                                    .size(crate::style::TEXT_CAPTION)
+                                    .size(crate::ui::style::TEXT_CAPTION)
                                     .color(colors.text_primary)
                                     .monospace()
                                     .strong(),
                             );
-                            ui.add_space(crate::style::SPACE_SM);
+                            ui.add_space(crate::ui::style::SPACE_SM);
                             ui.scope(|ui| {
                                 ui.visuals_mut().text_cursor.stroke.width = 1.5;
                                 ui.visuals_mut().text_cursor.stroke.color = colors.accent;
@@ -284,13 +284,13 @@ pub(crate) fn show_prompt_modal(
                                     grant_once = true;
                                 }
                             });
-                            ui.add_space(crate::style::SPACE_SM);
+                            ui.add_space(crate::ui::style::SPACE_SM);
                             ui.horizontal(|ui| {
                                 if ui
                                     .add(
                                         egui::Button::new(
                                             egui::RichText::new("Submit")
-                                                .size(crate::style::TEXT_CAPTION)
+                                                .size(crate::ui::style::TEXT_CAPTION)
                                                 .color(colors.bg_darkest),
                                         )
                                         .fill(colors.accent),
@@ -305,7 +305,7 @@ pub(crate) fn show_prompt_modal(
                                     .add(
                                         egui::Button::new(
                                             egui::RichText::new("Cancel")
-                                                .size(crate::style::TEXT_CAPTION)
+                                                .size(crate::ui::style::TEXT_CAPTION)
                                                 .color(colors.text_dim),
                                         )
                                         .fill(colors.bg_active),
@@ -317,15 +317,15 @@ pub(crate) fn show_prompt_modal(
                                 }
                             });
                             ui.add_space(4.0);
-                            crate::widgets::key_combo_list(ui, &[&["↵"]], Some("submit"), colors);
-                            crate::widgets::key_combo_list(ui, &[&["⎋"]], Some("cancel"), colors);
+                            crate::ui::widgets::key_combo_list(ui, &[&["↵"]], Some("submit"), colors);
+                            crate::ui::widgets::key_combo_list(ui, &[&["⎋"]], Some("cancel"), colors);
                         }
                     }
                 });
         });
 
     if grant_once || grant_forever || deny_once || deny_forever {
-        use crate::app_permissions::Capability;
+        use crate::app::permissions::Capability;
         let actually_granted = grant_once || grant_forever;
         match pending_prompts.pop_front() {
             Some(PendingPrompt::Capability {
@@ -341,7 +341,7 @@ pub(crate) fn show_prompt_modal(
                                     type_id,
                                     workspace_root,
                                     cap,
-                                    crate::app_permissions::PermissionState::Green,
+                                    crate::app::permissions::PermissionState::Green,
                                 );
                                 permission_store.save();
                                 log::info!(
@@ -370,7 +370,7 @@ pub(crate) fn show_prompt_modal(
                             type_id,
                             workspace_root,
                             cap,
-                            crate::app_permissions::PermissionState::Red,
+                            crate::app::permissions::PermissionState::Red,
                         );
                         permission_store.save();
                         log::info!(
@@ -494,7 +494,7 @@ pub(crate) fn show_prompt_modal(
                 if let Some(ref v) = value {
                     #[cfg(target_os = "macos")]
                     {
-                        use crate::workspace_secrets::MacKeychain;
+                        use crate::workspace::secrets::MacKeychain;
                         persist_granted_secret(
                             workspace_root,
                             type_id,
@@ -528,7 +528,7 @@ pub(crate) fn show_prompt_modal(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace_secrets::InMemoryKeychain;
+    use crate::workspace::secrets::InMemoryKeychain;
 
     /// Helper that builds a temp workspace with the given secrets.toml content.
     fn setup_workspace(tmp: &tempfile::TempDir, secrets_toml: &str) {

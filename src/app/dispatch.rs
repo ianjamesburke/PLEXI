@@ -1,13 +1,13 @@
 //! App command dispatch — keyboard routing + command drain from app panes.
 
-use crate::app_trait::{App, AppCommand};
+use crate::app::app_trait::{App, AppCommand};
 
 use super::PlexiApp;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_permissions::AppPermissions;
+    use crate::app::permissions::AppPermissions;
     use crate::app_protocol::{NotifyKind, NotifyScope, PlexiEvent};
     use crate::process_app::ProcessApp;
     use crate::testing::HostHarness;
@@ -167,7 +167,7 @@ impl PlexiApp {
         // for keys the app already handled (e.g. Escape exiting search mode
         // in the file browser rather than closing the pane).
         let disposition = ctx.input(|i| app_pane.runtime.handle_key(i));
-        if disposition == crate::app_trait::KeyDisposition::Consumed {
+        if disposition == crate::app::app_trait::KeyDisposition::Consumed {
             ctx.input_mut(|i| {
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
             });
@@ -375,8 +375,8 @@ impl PlexiApp {
 mod ownership_tests {
     use crate::app::FocusLayer;
     use crate::app_protocol::{ArtifactOpenMode, NotifyKind, NotifyScope};
-    use crate::app_trait::AppCommand;
-    use crate::pane::{AppRuntime, Pane};
+    use crate::app::app_trait::AppCommand;
+    use crate::host::pane::{AppRuntime, Pane};
     use crate::testing::HostHarness;
 
     /// Helper: push an `AppCommand` directly onto the `ProcessApp`'s

@@ -8,8 +8,8 @@
 
 use super::PlexiApp;
 use crate::app_protocol::{ArtifactOpenMode, PathTokenMode, PlexiEvent};
-use crate::pane::{Pane, TerminalPane};
-use crate::tiling::PaneId;
+use crate::host::pane::{Pane, TerminalPane};
+use crate::spatial::tiling::PaneId;
 use egui_term::BackendCommand;
 use egui_tiles::Tile;
 
@@ -252,7 +252,7 @@ impl PlexiApp {
             .panes
             .get(&terminal_pane_id)
             .and_then(|p| p.as_terminal())
-            .and_then(|t| crate::shell::get_pid_cwd(t.backend.child_pid()))
+            .and_then(|t| crate::host::shell::get_pid_cwd(t.backend.child_pid()))
             .map(|p| p.display().to_string())
             .unwrap_or_default();
 
@@ -352,12 +352,12 @@ impl PlexiApp {
     /// instead of the focused-pane cwd, since OpenArtifact specifies the
     /// directory it wants browsed.
     fn open_file_browser_at(&mut self, cwd: std::path::PathBuf) {
-        use crate::app_trait::App;
+        use crate::app::app_trait::App;
         let app: Box<dyn App> = self
             .registry
             .launch("file_browser", &cwd, &[])
             .unwrap_or_else(|| Box::new(crate::file_browser::FileBrowserApp::new(cwd.clone())));
-        let perms = crate::app_permissions::AppPermissions::builtin();
+        let perms = crate::app::permissions::AppPermissions::builtin();
         self.open_builtin_app_pane(
             app,
             perms,

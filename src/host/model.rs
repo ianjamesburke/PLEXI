@@ -5,7 +5,7 @@ use crate::host::command::{
 };
 use crate::host::effect::{HostEffect, HostEvent};
 use crate::host::services::HostServices;
-use crate::tiling::PaneId;
+use crate::spatial::tiling::PaneId;
 
 #[derive(Debug, Clone)]
 pub struct HostPane {

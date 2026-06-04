@@ -1,5 +1,5 @@
 use super::helpers::Entry;
-use crate::theme::Colors;
+use crate::ui::theme::Colors;
 use egui::{Color32, CornerRadius, Stroke, StrokeKind};
 
 pub(crate) enum FileIconKind {

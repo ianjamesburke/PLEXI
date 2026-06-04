@@ -3,7 +3,7 @@ use super::*;
 impl PlexiApp {
     /// Quick note compose phase: full-screen scrim + centered text input.
     pub(crate) fn draw_quick_note_modal(&mut self, ctx: &egui::Context) {
-        use crate::style;
+        use crate::ui::style;
         use egui::{Align2, RichText, Vec2};
 
         // Consume Esc to close.
@@ -160,8 +160,8 @@ impl PlexiApp {
 
     /// Quick note destination picker: digit keys route instantly; arrows/jk navigate.
     pub(crate) fn draw_quick_note_destination(&mut self, ctx: &egui::Context) {
-        use crate::style;
-        use crate::widgets;
+        use crate::ui::style;
+        use crate::ui::widgets;
         use egui::{Align2, RichText, Vec2};
 
         let dest_count = self.config.quick_note.as_ref()
@@ -450,8 +450,8 @@ impl PlexiApp {
     /// Recursive quick-note menu renderer. `key_path` is the sequence of keys from the
     /// root destinations list to the current node. E.g. `&[3]` = children of destination 3.
     pub(crate) fn draw_quick_note_menu(&mut self, ctx: &egui::Context, key_path: &[u8]) {
-        use crate::style;
-        use crate::widgets;
+        use crate::ui::style;
+        use crate::ui::widgets;
         use egui::{Align2, RichText, Vec2};
 
         // Resolve the current node by walking key_path through the config tree.
@@ -796,27 +796,27 @@ impl PlexiApp {
     pub(crate) fn quick_note_handle_key(
         &mut self,
         ctx: &egui::Context,
-    ) -> crate::app_trait::KeyDisposition {
+    ) -> crate::app::app_trait::KeyDisposition {
         // Consume Cmd+0 so poll_actions doesn't fire OpenQuickNote while the modal
         // is already open — that would reset mid-session note state.
         ctx.input_mut(|i| { i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0); });
-        crate::app_trait::KeyDisposition::Consumed
+        crate::app::app_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn quick_note_destination_handle_key(
         &mut self,
         ctx: &egui::Context,
-    ) -> crate::app_trait::KeyDisposition {
+    ) -> crate::app::app_trait::KeyDisposition {
         ctx.input_mut(|i| { i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0); });
-        crate::app_trait::KeyDisposition::Consumed
+        crate::app::app_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn quick_note_sub_destination_handle_key(
         &mut self,
         ctx: &egui::Context,
-    ) -> crate::app_trait::KeyDisposition {
+    ) -> crate::app::app_trait::KeyDisposition {
         ctx.input_mut(|i| { i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0); });
-        crate::app_trait::KeyDisposition::Consumed
+        crate::app::app_trait::KeyDisposition::Consumed
     }
 }
 

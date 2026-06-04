@@ -6,7 +6,7 @@
 //! `PlexiDescriptor`. Results are cached to disk under
 //! `~/.plexi-<channel>/cache/descriptors/<cli>.json`.
 
-use crate::plexi_descriptor::{Command, PlexiDescriptor, UiHint};
+use crate::app::plexi_descriptor::{Command, PlexiDescriptor, UiHint};
 
 // ── public types ──────────────────────────────────────────────────────────────
 
@@ -414,7 +414,7 @@ fn extract_version(cli_name: &str, line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plexi_descriptor::PlexiDescriptor;
+    use crate::app::plexi_descriptor::PlexiDescriptor;
 
     struct MockRunner {
         help: String,

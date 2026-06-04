@@ -3,13 +3,13 @@
 //! All visual draw commands stay in the frame pipeline; only control commands
 //! (media, pipes, capabilities, secrets, runs, notifications) are routed here.
 
-use crate::app_permissions::{check, is_blocked, Capability, PermissionCheck};
+use crate::app::permissions::{check, is_blocked, Capability, PermissionCheck};
 use crate::app_protocol::{AudioDeviceWire, AppRequest, MidiPortWire, PlexiEvent, StreamChannel};
-use crate::app_trait::AppCommand;
+use crate::app::app_trait::AppCommand;
 use crate::audio::AudioCaptureRequest;
-use crate::event_log::{self, HostEvent};
+use crate::host::event_log::{self, HostEvent};
 use crate::plexi_ai::broker::AiBrokerRequest;
-use crate::typed_pipes::PipeDirection;
+use crate::host::typed_pipes::PipeDirection;
 use std::io::Read;
 use std::process::Stdio;
 use std::sync::atomic::Ordering;
@@ -87,7 +87,7 @@ impl ProcessApp {
 
                 #[cfg(target_os = "macos")]
                 {
-                    use crate::workspace_secrets::{
+                    use crate::workspace::secrets::{
                         resolve, MacKeychain, ResolveOutcome, WorkspaceConfig,
                         WorkspaceSecrets,
                     };

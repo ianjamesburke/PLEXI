@@ -7,11 +7,11 @@
 //! [`PlexiApp::split_with_new_pane`] in [`super::layout`].
 
 use crate::app::PlexiApp;
-use crate::app_trait::App;
+use crate::app::app_trait::App;
 use crate::host::command::{HostAction, OpenPaneRequest, PaneRuntimeKind, Placement, ShareRatio};
 use crate::host::effect::HostEffect;
-use crate::pane::{Pane, TerminalPane};
-use crate::tiling::PaneId;
+use crate::host::pane::{Pane, TerminalPane};
+use crate::spatial::tiling::PaneId;
 use egui_term::BackendCommand;
 use egui_tiles::{Tile, TileId, Tree};
 use std::collections::HashMap;
@@ -31,11 +31,11 @@ fn builtin_factory(id: &str, args: &[String]) -> Option<Box<dyn App>> {
                 .first()
                 .map(|s| std::path::PathBuf::from(s))
                 .unwrap_or_else(|| crate::config::config_dir().join("notes").join("scratch.md"));
-            Some(Box::new(crate::text_editor_app::TextEditorApp::new(path)))
+            Some(Box::new(crate::app::text_editor_app::TextEditorApp::new(path)))
         }
         "cli-renderer" => {
             let path = args.first().cloned().unwrap_or_default();
-            Some(Box::new(crate::cli_renderer_app::CliRendererApp::new(path)))
+            Some(Box::new(crate::render::cli_renderer_app::CliRendererApp::new(path)))
         }
         _ => None,
     }
@@ -141,10 +141,10 @@ impl PlexiApp {
                             group: Option<String>,
                             linked_pane_id: Option<PaneId>,
                             overlay_replaced: Option<Box<Pane>>| {
-            Pane::App(Box::new(crate::pane::AppPane {
+            Pane::App(Box::new(crate::host::pane::AppPane {
                 id,
                 permissions: process.permissions.clone(),
-                runtime: crate::pane::AppRuntime::Process(Box::new(process)),
+                runtime: crate::host::pane::AppRuntime::Process(Box::new(process)),
                 workspace_root,
                 manifest_id: app_id.to_string(),
                 name: app_id.to_string(),
@@ -228,7 +228,7 @@ impl PlexiApp {
                 .get_mut(&term_id)
                 .and_then(|p| p.as_terminal_mut())
             {
-                let quoted = crate::shell::shell_quote(&msg);
+                let quoted = crate::host::shell::shell_quote(&msg);
                 let cmd = format!("\x15printf '%s\\n' {quoted}\n");
                 term.backend.process_command(BackendCommand::Write(cmd.into_bytes()));
                 log::info!("app::{app_id}: startup message written to terminal pane {term_id}");
@@ -254,16 +254,16 @@ impl PlexiApp {
             self.open_pane_layout(app_id, None, hint, share);
         self.windows[active].panes.insert(
             new_id,
-            crate::pane::Pane::App(Box::new(crate::pane::AppPane {
+            crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
                 id: new_id,
-                runtime: crate::pane::AppRuntime::Builtin(
-                    Box::new(crate::launch_failed::LaunchFailedApp {
+                runtime: crate::host::pane::AppRuntime::Builtin(
+                    Box::new(crate::host::launch_failed::LaunchFailedApp {
                         app_id: app_id.to_string(),
                         missing,
                     }),
                 ),
                 workspace_root,
-                permissions: crate::app_permissions::AppPermissions::default(),
+                permissions: crate::app::permissions::AppPermissions::default(),
                 manifest_id: app_id.to_string(),
                 name: format!("Cannot launch {app_id}"),
                 pane_group: None,
@@ -306,7 +306,7 @@ impl PlexiApp {
             log::debug!("reload_app_pane({pane_id}): not an app pane — ignoring");
             return false;
         };
-        if !matches!(app_pane.runtime, crate::pane::AppRuntime::Process(_)) {
+        if !matches!(app_pane.runtime, crate::host::pane::AppRuntime::Process(_)) {
             log::debug!("reload_app_pane({pane_id}): builtin runtime — cannot reload");
             return false;
         }
@@ -314,7 +314,7 @@ impl PlexiApp {
         let workspace_root = app_pane.workspace_root.clone();
         // Preserve launch args across hot-reload so the reloaded app gets the
         // same arguments the original was opened with.
-        let saved_launch_args: Vec<String> = if let crate::pane::AppRuntime::Process(ref proc) = app_pane.runtime {
+        let saved_launch_args: Vec<String> = if let crate::host::pane::AppRuntime::Process(ref proc) = app_pane.runtime {
             proc.launch_args.clone()
         } else {
             Vec::new()
@@ -385,13 +385,13 @@ impl PlexiApp {
             if let Some(app_pane) = pane.as_app_mut() {
                 // Transfer the last committed frame so the pane doesn't flicker
                 // blank during hot-reload of a crashed app (#1298).
-                if let crate::pane::AppRuntime::Process(ref old_proc) = app_pane.runtime {
+                if let crate::host::pane::AppRuntime::Process(ref old_proc) = app_pane.runtime {
                     new_process.transfer_frame_from(old_proc);
                 }
                 let new_perms = new_process.permissions.clone();
                 let old_runtime = std::mem::replace(
                     &mut app_pane.runtime,
-                    crate::pane::AppRuntime::Process(Box::new(new_process)),
+                    crate::host::pane::AppRuntime::Process(Box::new(new_process)),
                 );
                 app_pane.permissions = new_perms;
                 drop(old_runtime); // explicit — fires Shutdown + reaps child
@@ -433,7 +433,7 @@ impl PlexiApp {
             }
             if let Some(pane) = self.windows[active].panes.get(&pane_id) {
                 if let Some(app_pane) = pane.as_app() {
-                    if let crate::pane::AppRuntime::Process(ref proc) = app_pane.runtime {
+                    if let crate::host::pane::AppRuntime::Process(ref proc) = app_pane.runtime {
                         if proc.lifecycle.state() == LifecycleState::Crashed {
                             log::info!(
                                 "app::{}: crash detected on watched pane {pane_id} — scheduling restart in {}ms",
@@ -479,7 +479,7 @@ impl PlexiApp {
     pub(crate) fn open_builtin_app_pane(
         &mut self,
         app: Box<dyn App>,
-        permissions: crate::app_permissions::AppPermissions,
+        permissions: crate::app::permissions::AppPermissions,
         workspace_root: PathBuf,
         group: Option<String>,
         hint: Option<&str>,
@@ -494,9 +494,9 @@ impl PlexiApp {
                             group: Option<String>,
                             linked_pane_id: Option<PaneId>,
                             overlay_replaced: Option<Box<Pane>>| {
-            Pane::App(Box::new(crate::pane::AppPane {
+            Pane::App(Box::new(crate::host::pane::AppPane {
                 id,
-                runtime: crate::pane::AppRuntime::Builtin(app),
+                runtime: crate::host::pane::AppRuntime::Builtin(app),
                 workspace_root,
                 permissions,
                 manifest_id: app_type_id.clone(),
@@ -612,7 +612,7 @@ impl PlexiApp {
         close_on_exit: bool,
         cwd_override: Option<std::path::PathBuf>,
         keep_focus: bool,
-    ) -> crate::tiling::PaneId {
+    ) -> crate::spatial::tiling::PaneId {
         let new_id = self.host.alloc_pane_id();
         let ctx_id = self.windows[win_idx].context_id;
         let ctx_name = self.context_name_for(ctx_id);
@@ -698,7 +698,7 @@ impl PlexiApp {
 
         // Built-in file browser gets full permissions, joins the "cwd" group so
         // it follows linked-terminal directory changes.
-        let perms = crate::app_permissions::AppPermissions::builtin();
+        let perms = crate::app::permissions::AppPermissions::builtin();
         self.open_builtin_app_pane(
             app,
             perms,
@@ -732,7 +732,7 @@ impl PlexiApp {
             let layout_str = layout.as_deref().unwrap_or("split_h");
             let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
             let new_pane_first = matches!(layout_str, "split_above" | "split_left");
-            let initial_cmd = if args.is_empty() { None } else { Some(crate::shell::shell_join(args)) };
+            let initial_cmd = if args.is_empty() { None } else { Some(crate::host::shell::shell_join(args)) };
             log::info!(
                 "SpawnPane: terminal layout='{layout_str}' vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?}"
             );
@@ -753,7 +753,7 @@ impl PlexiApp {
             log::info!("launch_app_by_id_with_layout: '{id}' resolved as builtin");
             let group = self.registry.group_for(id);
             let hint = layout.unwrap_or_else(|| "overlay".to_string());
-            let perms = crate::app_permissions::AppPermissions::builtin();
+            let perms = crate::app::permissions::AppPermissions::builtin();
             self.open_builtin_app_pane(app, perms, cwd, group, Some(&hint), None);
             return Ok(());
         }
@@ -772,7 +772,7 @@ impl PlexiApp {
         // via `plexi app init` and wasn't present at startup.
         if self.registry.get(id).is_none() {
             log::info!("launch_app_by_id: '{id}' not in startup registry — rescanning from disk");
-            self.registry = crate::app_registry::AppRegistry::load(&cwd);
+            self.registry = crate::app::registry::AppRegistry::load(&cwd);
         }
 
         // Pre-flight: check config-level capability requirements before spawning.
@@ -903,7 +903,7 @@ impl PlexiApp {
             return None;
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let descriptor = crate::plexi_descriptor::parse(&stdout).ok()?;
+        let descriptor = crate::app::plexi_descriptor::parse(&stdout).ok()?;
 
         // None = no plexi_app field declared, skip Tier 4.
         let plexi_app_cmd = descriptor.plexi_app.as_deref()?;
@@ -914,7 +914,7 @@ impl PlexiApp {
         let extra_args: Vec<String> = tokens.map(|s| s.to_string()).collect();
 
         // Step 3: Build permissions from descriptor.capabilities.
-        let perms = crate::app_permissions::AppPermissions::from_capability_strings(
+        let perms = crate::app::permissions::AppPermissions::from_capability_strings(
             &descriptor.capabilities,
         );
         let caps = perms.capabilities.clone();
@@ -973,8 +973,8 @@ impl PlexiApp {
                 .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
         };
 
-        let app = Box::new(crate::secrets_app::SecretsApp::new(cwd.clone()));
-        let perms = crate::app_permissions::AppPermissions::builtin();
+        let app = Box::new(crate::app::secrets_app::SecretsApp::new(cwd.clone()));
+        let perms = crate::app::permissions::AppPermissions::builtin();
         self.open_builtin_app_pane(app, perms, cwd, None, Some("overlay"), None);
     }
 
@@ -1138,7 +1138,7 @@ impl PlexiApp {
         note: &str,
         ctx: &crate::app::QuickNoteCtx,
     ) -> String {
-        let esc = |s: &str| -> String { crate::shell::shell_quote(s) };
+        let esc = |s: &str| -> String { crate::host::shell::shell_quote(s) };
         let cwd_str = ctx.cwd.to_string_lossy().to_string();
         let context_root_str = ctx.context_root
             .as_ref()
@@ -1179,7 +1179,7 @@ impl PlexiApp {
 
         super::apply_initial_cmd(&mut settings, cmd, !stay_alive);
 
-        let Some(mut pane) = crate::pane::TerminalPane::new(
+        let Some(mut pane) = crate::host::pane::TerminalPane::new(
             new_id,
             self.ctx.clone(),
             self.pty_event_tx.clone(),
@@ -1189,7 +1189,7 @@ impl PlexiApp {
             return false;
         };
         pane.ephemeral = !stay_alive;
-        self.windows[active].panes.insert(new_id, crate::pane::Pane::Terminal(Box::new(pane)));
+        self.windows[active].panes.insert(new_id, crate::host::pane::Pane::Terminal(Box::new(pane)));
 
         let ctx = &mut self.windows[active];
         let new_tile = ctx.tree.tiles.insert_pane(new_id);
@@ -1239,7 +1239,7 @@ fn cli_binary_in_path(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_permissions::AppPermissions;
+    use crate::app::permissions::AppPermissions;
     use crate::process_app::ProcessApp;
     use crate::testing::HostHarness;
 
@@ -1510,7 +1510,7 @@ mod tests {
         // New window must contain exactly one Terminal pane.
         assert_eq!(new_win.panes.len(), 1, "new window must have one pane");
         assert!(
-            new_win.panes.values().any(|p| matches!(p, crate::pane::Pane::Terminal(_))),
+            new_win.panes.values().any(|p| matches!(p, crate::host::pane::Pane::Terminal(_))),
             "new window pane must be a Terminal"
         );
     }
@@ -1807,7 +1807,7 @@ mod quick_note_tests {
     #[test]
     fn query_context_state_routes_to_pending_commands() {
         use crate::app_protocol::{AppRequest, DrawCommand};
-        use crate::pane::{AppRuntime, Pane};
+        use crate::host::pane::{AppRuntime, Pane};
         use crate::testing::HostHarness;
 
         let mut h = HostHarness::new();
@@ -1838,7 +1838,7 @@ mod quick_note_tests {
             panic!("expected Process runtime");
         };
         let has_cmd = proc.pending_commands.iter().any(|c| {
-            matches!(c, crate::app_trait::AppCommand::QueryContextState {
+            matches!(c, crate::app::app_trait::AppCommand::QueryContextState {
                 sender_pane_id, context_id
             } if *sender_pane_id == pane && *context_id == 1)
         });

@@ -3,7 +3,7 @@
 //! Reads existing status channels only (StatusSummary for apps, pty_title for
 //! terminals). No new protocol messages.
 
-use crate::tiling::PaneId;
+use crate::spatial::tiling::PaneId;
 
 /// Rolled-up status for a single context, including recursive children.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -50,8 +50,8 @@ impl ContextState {
     /// Reads existing status: `StatusSummary` text for apps, `pty_title` for terminals.
     pub fn compute(
         context_id: u64,
-        contexts: &[crate::context::Context],
-        windows: &[crate::context::Window],
+        contexts: &[crate::host::context::Context],
+        windows: &[crate::host::context::Window],
     ) -> Self {
         let label = contexts
             .iter()
@@ -68,7 +68,7 @@ impl ContextState {
             entries.sort_by_key(|(id, _)| *id);
             for (&pid, pane) in entries {
                 let (plabel, pstatus) = match pane {
-                    crate::pane::Pane::Terminal(t) => {
+                    crate::host::pane::Pane::Terminal(t) => {
                         let name = t.name.clone()
                             .or_else(|| t.pty_title.clone())
                             .unwrap_or_else(|| "Terminal".to_string());
@@ -82,8 +82,8 @@ impl ContextState {
                         }
                         (name, status)
                     }
-                    crate::pane::Pane::App(a) => {
-                        let status_text = if let crate::pane::AppRuntime::Process(pa) = &a.runtime {
+                    crate::host::pane::Pane::App(a) => {
+                        let status_text = if let crate::host::pane::AppRuntime::Process(pa) = &a.runtime {
                             pa.status_summary.clone()
                         } else {
                             None
@@ -101,7 +101,7 @@ impl ContextState {
                         };
                         (a.name.clone(), status)
                     }
-                    crate::pane::Pane::Portal(_) => continue,
+                    crate::host::pane::Pane::Portal(_) => continue,
                 };
                 pane_summaries.push(PaneSummary {
                     pane_id: pid,
@@ -157,7 +157,7 @@ impl ContextState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::{Context, Window};
+    use crate::host::context::{Context, Window};
     use std::path::PathBuf;
 
     fn make_context(id: u64, name: &str, parent: Option<u64>) -> Context {

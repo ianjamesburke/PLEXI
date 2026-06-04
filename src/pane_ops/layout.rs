@@ -2,12 +2,12 @@
 //! zoom-free tree manipulation, font size, scroll.
 
 use crate::app::PlexiApp;
-use crate::context::{replace_child, Window};
+use crate::host::context::{replace_child, Window};
 use crate::host::command::{HostAction, Placement};
 use crate::host::effect::HostEffect;
-use crate::keys::Direction;
-use crate::pane::{Pane, TerminalPane};
-use crate::tiling::PaneId;
+use crate::host::keys::Direction;
+use crate::host::pane::{Pane, TerminalPane};
+use crate::spatial::tiling::PaneId;
 use egui_term::BackendCommand;
 use egui_tiles::{Container, SimplificationOptions, Tile, TileId};
 use std::collections::HashMap;
@@ -249,10 +249,10 @@ impl PlexiApp {
 
         let direction = if vertical { "vertical" } else { "horizontal" }.to_string();
         log::info!("split_focused: emitting PaneSplit pane_id={new_id} direction={direction}");
-        crate::event_log::emit(crate::event_log::HostEvent::PaneSplit {
+        crate::host::event_log::emit(crate::host::event_log::HostEvent::PaneSplit {
             pane_id: new_id,
             direction,
-            timestamp: crate::event_log::now_timestamp(),
+            timestamp: crate::host::event_log::now_timestamp(),
         });
 
         let cwd = self.resolve_new_pane_cwd(cwd_override, Some(focused));
@@ -688,9 +688,9 @@ impl PlexiApp {
 
             let removed = if let Some(Tile::Pane(pane_id)) = ctx.tree.tiles.remove(tile_id) {
                 log::info!("close_tile: emitting PaneClosed pane_id={pane_id}");
-                crate::event_log::emit(crate::event_log::HostEvent::PaneClosed {
+                crate::host::event_log::emit(crate::host::event_log::HostEvent::PaneClosed {
                     pane_id,
-                    timestamp: crate::event_log::now_timestamp(),
+                    timestamp: crate::host::event_log::now_timestamp(),
                 });
                 ctx.panes.remove(&pane_id)
             } else {
@@ -731,7 +731,7 @@ impl PlexiApp {
                 // Hot reload (#83): drop any active watcher for this pane.
                 // Idempotent — no-op when the pane wasn't being watched.
                 self.hot_reload.unwatch(pane_id);
-                if let crate::pane::AppRuntime::Process(mut process_app) = app_pane.runtime {
+                if let crate::host::pane::AppRuntime::Process(mut process_app) = app_pane.runtime {
                     let type_id = process_app.type_id.clone();
                     if self.registry.is_background(&type_id) {
                         process_app.send_event(&crate::app_protocol::PlexiEvent::Suspend);
@@ -775,7 +775,7 @@ impl PlexiApp {
                 let pane_id = *pane_id;
                 if let Some(pane) = self.windows[self.active_window].panes.get_mut(&pane_id) {
                     if let Some(app) = pane.as_app_mut() {
-                        if let crate::pane::AppRuntime::Process(ref mut proc_app) = app.runtime {
+                        if let crate::host::pane::AppRuntime::Process(ref mut proc_app) = app.runtime {
                             proc_app.render_session.pane_just_focused = true;
                         }
                     }
@@ -995,7 +995,7 @@ impl PlexiApp {
         let win_id = self.next_window_id;
         self.next_window_id += 1;
 
-        self.windows.push(crate::context::Window {
+        self.windows.push(crate::host::context::Window {
             name: String::new(),
             path: cwd,
             tree: new_tree,
@@ -1381,7 +1381,7 @@ impl PlexiApp {
         let win_id = self.next_window_id;
         self.next_window_id += 1;
 
-        self.windows.push(crate::context::Window {
+        self.windows.push(crate::host::context::Window {
             name: String::new(),
             path: cwd,
             tree: new_tree,
@@ -1410,15 +1410,15 @@ mod close_pane_by_id_tests {
 
     fn test_app() -> PlexiApp {
         let ctx = egui::Context::default();
-        let ft = crate::logging::new_frame_tick();
+        let ft = crate::platform::logging::new_frame_tick();
         PlexiApp::new_for_test(ctx, ft).0
     }
 
-    fn window_with_pane(context_id: u64, window_id: u64, pane_id: u64, grid_y: u32) -> crate::context::Window {
+    fn window_with_pane(context_id: u64, window_id: u64, pane_id: u64, grid_y: u32) -> crate::host::context::Window {
         let mut tree = egui_tiles::Tree::empty("test_tree_wid");
         let tile = tree.tiles.insert_pane(pane_id);
         tree.root = Some(tile);
-        crate::context::Window {
+        crate::host::context::Window {
             name: "test".into(),
             path: std::env::temp_dir(),
             tree,
@@ -1586,7 +1586,7 @@ mod swap_tests {
 
     fn test_app() -> PlexiApp {
         let ctx = egui::Context::default();
-        let ft = crate::logging::new_frame_tick();
+        let ft = crate::platform::logging::new_frame_tick();
         PlexiApp::new_for_test(ctx, ft).0
     }
 
@@ -1613,16 +1613,16 @@ mod move_to_adjacent_window_tests {
 
     fn test_app() -> PlexiApp {
         let ctx = egui::Context::default();
-        let ft = crate::logging::new_frame_tick();
+        let ft = crate::platform::logging::new_frame_tick();
         PlexiApp::new_for_test(ctx, ft).0
     }
 
-    fn make_app_pane(id: u64) -> crate::pane::Pane {
-        use crate::app_permissions::AppPermissions;
-        use crate::pane::{AppPane, AppRuntime};
+    fn make_app_pane(id: u64) -> crate::host::pane::Pane {
+        use crate::app::permissions::AppPermissions;
+        use crate::host::pane::{AppPane, AppRuntime};
         use crate::process_app::ProcessApp;
         let (process_app, _draw_tx) = ProcessApp::new_for_test(id, AppPermissions::builtin());
-        crate::pane::Pane::App(Box::new(AppPane {
+        crate::host::pane::Pane::App(Box::new(AppPane {
             id,
             runtime: AppRuntime::Process(Box::new(process_app)),
             workspace_root: std::env::temp_dir(),
@@ -1636,8 +1636,8 @@ mod move_to_adjacent_window_tests {
         }))
     }
 
-    fn window_at(context_id: u64, window_id: u64, grid_x: u32, grid_y: u32) -> crate::context::Window {
-        crate::context::Window {
+    fn window_at(context_id: u64, window_id: u64, grid_x: u32, grid_y: u32) -> crate::host::context::Window {
+        crate::host::context::Window {
             name: "test".into(),
             path: std::env::temp_dir(),
             tree: egui_tiles::Tree::empty(format!("tree_{window_id}")),
@@ -1727,16 +1727,16 @@ mod pop_pane_to_new_window_tests {
 
     fn test_app() -> PlexiApp {
         let ctx = egui::Context::default();
-        let ft = crate::logging::new_frame_tick();
+        let ft = crate::platform::logging::new_frame_tick();
         PlexiApp::new_for_test(ctx, ft).0
     }
 
-    fn make_app_pane(id: u64) -> crate::pane::Pane {
-        use crate::app_permissions::AppPermissions;
-        use crate::pane::{AppPane, AppRuntime};
+    fn make_app_pane(id: u64) -> crate::host::pane::Pane {
+        use crate::app::permissions::AppPermissions;
+        use crate::host::pane::{AppPane, AppRuntime};
         use crate::process_app::ProcessApp;
         let (process_app, _draw_tx) = ProcessApp::new_for_test(id, AppPermissions::builtin());
-        crate::pane::Pane::App(Box::new(AppPane {
+        crate::host::pane::Pane::App(Box::new(AppPane {
             id,
             runtime: AppRuntime::Process(Box::new(process_app)),
             workspace_root: std::env::temp_dir(),
@@ -1750,8 +1750,8 @@ mod pop_pane_to_new_window_tests {
         }))
     }
 
-    fn window_at(context_id: u64, window_id: u64, grid_x: u32, grid_y: u32) -> crate::context::Window {
-        crate::context::Window {
+    fn window_at(context_id: u64, window_id: u64, grid_x: u32, grid_y: u32) -> crate::host::context::Window {
+        crate::host::context::Window {
             name: String::new(),
             path: std::env::temp_dir(),
             tree: egui_tiles::Tree::empty(format!("tree_{window_id}")),
@@ -1872,16 +1872,16 @@ mod move_to_row_boundary_tests {
 
     fn test_app() -> PlexiApp {
         let ctx = egui::Context::default();
-        let ft = crate::logging::new_frame_tick();
+        let ft = crate::platform::logging::new_frame_tick();
         PlexiApp::new_for_test(ctx, ft).0
     }
 
-    fn make_app_pane(id: u64) -> crate::pane::Pane {
-        use crate::app_permissions::AppPermissions;
-        use crate::pane::{AppPane, AppRuntime};
+    fn make_app_pane(id: u64) -> crate::host::pane::Pane {
+        use crate::app::permissions::AppPermissions;
+        use crate::host::pane::{AppPane, AppRuntime};
         use crate::process_app::ProcessApp;
         let (process_app, _draw_tx) = ProcessApp::new_for_test(id, AppPermissions::builtin());
-        crate::pane::Pane::App(Box::new(AppPane {
+        crate::host::pane::Pane::App(Box::new(AppPane {
             id,
             runtime: AppRuntime::Process(Box::new(process_app)),
             workspace_root: std::env::temp_dir(),
@@ -1895,8 +1895,8 @@ mod move_to_row_boundary_tests {
         }))
     }
 
-    fn window_at(context_id: u64, window_id: u64, grid_x: u32, grid_y: u32) -> crate::context::Window {
-        crate::context::Window {
+    fn window_at(context_id: u64, window_id: u64, grid_x: u32, grid_y: u32) -> crate::host::context::Window {
+        crate::host::context::Window {
             name: String::new(),
             path: std::env::temp_dir(),
             tree: egui_tiles::Tree::empty(format!("tree_{window_id}")),
@@ -2034,7 +2034,7 @@ mod context_root_cwd_tests {
 
     fn test_app() -> PlexiApp {
         let ctx = egui::Context::default();
-        let ft = crate::logging::new_frame_tick();
+        let ft = crate::platform::logging::new_frame_tick();
         PlexiApp::new_for_test(ctx, ft).0
     }
 
@@ -2059,8 +2059,8 @@ mod context_root_cwd_tests {
 
     #[test]
     fn context_root_beats_focused_pane_cwd() {
-        use crate::app_permissions::AppPermissions;
-        use crate::pane::{AppPane, AppRuntime};
+        use crate::app::permissions::AppPermissions;
+        use crate::host::pane::{AppPane, AppRuntime};
         use crate::process_app::ProcessApp;
 
         let mut app = test_app();
@@ -2100,7 +2100,7 @@ mod context_root_cwd_tests {
 
     #[test]
     fn split_from_portal_tile_falls_back_to_home_dir() {
-        use crate::pane::PortalPane;
+        use crate::host::pane::PortalPane;
 
         let mut app = test_app();
         assert!(app.router.active().root.is_none());
@@ -2150,16 +2150,16 @@ mod navigate_boundary_tests {
 
     fn test_app() -> PlexiApp {
         let ctx = egui::Context::default();
-        let ft = crate::logging::new_frame_tick();
+        let ft = crate::platform::logging::new_frame_tick();
         PlexiApp::new_for_test(ctx, ft).0
     }
 
-    fn make_app_pane(id: u64) -> crate::pane::Pane {
-        use crate::app_permissions::AppPermissions;
-        use crate::pane::{AppPane, AppRuntime};
+    fn make_app_pane(id: u64) -> crate::host::pane::Pane {
+        use crate::app::permissions::AppPermissions;
+        use crate::host::pane::{AppPane, AppRuntime};
         use crate::process_app::ProcessApp;
         let (process_app, _draw_tx) = ProcessApp::new_for_test(id, AppPermissions::builtin());
-        crate::pane::Pane::App(Box::new(AppPane {
+        crate::host::pane::Pane::App(Box::new(AppPane {
             id,
             runtime: AppRuntime::Process(Box::new(process_app)),
             workspace_root: std::env::temp_dir(),
@@ -2173,8 +2173,8 @@ mod navigate_boundary_tests {
         }))
     }
 
-    fn window_at(context_id: u64, window_id: u64, grid_x: u32, grid_y: u32) -> crate::context::Window {
-        crate::context::Window {
+    fn window_at(context_id: u64, window_id: u64, grid_x: u32, grid_y: u32) -> crate::host::context::Window {
+        crate::host::context::Window {
             name: String::new(),
             path: std::env::temp_dir(),
             tree: egui_tiles::Tree::empty(format!("tree_{window_id}")),

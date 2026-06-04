@@ -122,11 +122,11 @@ impl PlexiUiHarness {
 mod tests {
     use super::*;
     use crate::app::{FocusLayer, PlexiApp};
-    use crate::app_permissions::AppPermissions;
-    use crate::pane::{AppPane, AppRuntime, Pane};
+    use crate::app::permissions::AppPermissions;
+    use crate::host::pane::{AppPane, AppRuntime, Pane};
     use crate::process_app::ProcessApp;
 
-    fn add_focused_pane(h: &mut PlexiUiHarness) -> crate::tiling::PaneId {
+    fn add_focused_pane(h: &mut PlexiUiHarness) -> crate::spatial::tiling::PaneId {
         h.with_app_mut(|app| {
             let pane_id = app.host.alloc_pane_id();
             let (process_app, _draw_tx) =

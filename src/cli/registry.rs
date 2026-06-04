@@ -18,7 +18,7 @@
 //! Lookup contract: `lookup("gh", None)` → `gh/latest.json`.
 //! `lookup("gh", Some("2.40.0"))` → `gh/2.40.0.json`.
 
-use crate::plexi_descriptor::{self, DescriptorError, PlexiDescriptor};
+use crate::app::plexi_descriptor::{self, DescriptorError, PlexiDescriptor};
 use std::path::PathBuf;
 #[cfg(test)]
 use std::path::Path;

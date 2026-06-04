@@ -41,7 +41,7 @@ pub(crate) struct RenderSession {
     pub(crate) outbound_events: Vec<PlexiEvent>,
     /// Focus/visibility tracking for `UiNode::TextEdit` nodes in component trees.
     /// Persists across frames to detect newly-visible fields for auto-focus.
-    text_edit_focus_ctx: crate::render_components::TextEditFocusCtx,
+    text_edit_focus_ctx: crate::render::components::TextEditFocusCtx,
 }
 
 impl RenderSession {
@@ -57,7 +57,7 @@ impl RenderSession {
             list_view_intercepts_nav: false,
             pane_just_focused: false,
             outbound_events: Vec::new(),
-            text_edit_focus_ctx: crate::render_components::TextEditFocusCtx::new(),
+            text_edit_focus_ctx: crate::render::components::TextEditFocusCtx::new(),
         }
     }
 
@@ -74,7 +74,7 @@ impl RenderSession {
         ui: &mut egui::Ui,
         pane_rect: egui::Rect,
         frame: &[RenderCommand],
-        colors: &crate::theme::Colors,
+        colors: &crate::ui::theme::Colors,
         commonmark_cache: &mut egui_commonmark::CommonMarkCache,
         audio_peaks: &HashMap<String, f32>,
         pane_id: u64,
@@ -138,7 +138,7 @@ impl RenderSession {
         pane_rect: egui::Rect,
         frame: &[RenderCommand],
         pane_id: u64,
-        colors: &crate::theme::Colors,
+        colors: &crate::ui::theme::Colors,
     ) {
         let origin = pane_rect.min;
         let mut submitted: Vec<String> = Vec::new();

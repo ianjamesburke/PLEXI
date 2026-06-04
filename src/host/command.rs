@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-pub use crate::keys::Direction;
+pub use crate::host::keys::Direction;
 
 pub type Capability = String;
 

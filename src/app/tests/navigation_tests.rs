@@ -1,6 +1,6 @@
 use super::super::*;
-use crate::app_trait::AppCommand;
-use crate::context::Window;
+use crate::app::app_trait::AppCommand;
+use crate::host::context::Window;
 use crate::testing::HostHarness;
 
 fn second_window(context_id: u64, window_id: u64, pane_id: u64) -> Window {
@@ -75,7 +75,7 @@ fn pane_navigate_cross_window_updates_active_window() {
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane();
     h.app.windows.push(second_window(2, 2, 9901));
-    h.app.router.push(crate::context::Context {
+    h.app.router.push(crate::host::context::Context {
         name: "Context B".into(),
         path: std::env::temp_dir(),
         root: None,
@@ -99,7 +99,7 @@ fn pane_navigate_cross_window_syncs_router() {
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane();
     h.app.windows.push(second_window(2, 2, 9902));
-    h.app.router.push(crate::context::Context {
+    h.app.router.push(crate::host::context::Context {
         name: "Context B".into(),
         path: std::env::temp_dir(),
         root: None,
@@ -132,9 +132,9 @@ fn send_to_pane_searches_all_windows() {
     let mut win1 = second_window(2, 2, cross_window_pane_id);
     // Insert an App pane (not Terminal) so we can confirm lookup reaches it.
     let app_pane = {
-        use crate::pane::{AppPane, AppRuntime};
+        use crate::host::pane::{AppPane, AppRuntime};
         use crate::process_app::ProcessApp;
-        use crate::app_permissions::AppPermissions;
+        use crate::app::permissions::AppPermissions;
         let (process_app, _draw_tx) =
             ProcessApp::new_for_test(cross_window_pane_id, AppPermissions::builtin());
         AppPane {
@@ -150,9 +150,9 @@ fn send_to_pane_searches_all_windows() {
             hidden: false,
         }
     };
-    win1.panes.insert(cross_window_pane_id, crate::pane::Pane::App(Box::new(app_pane)));
+    win1.panes.insert(cross_window_pane_id, crate::host::pane::Pane::App(Box::new(app_pane)));
     h.app.windows.push(win1);
-    h.app.router.push(crate::context::Context {
+    h.app.router.push(crate::host::context::Context {
         name: "Context B".into(),
         path: std::env::temp_dir(),
         root: None,
@@ -203,12 +203,12 @@ fn pane_list_excludes_orphaned_panes_and_navigate_succeeds() {
     // or any create-path bug that leaves win.panes ahead of the tile tree.
     let orphan_id: PaneId = 99991;
     let (orphan_process, _tx) =
-        crate::process_app::ProcessApp::new_for_test(orphan_id, crate::app_permissions::AppPermissions::builtin());
-    let orphan_pane = crate::pane::Pane::App(Box::new(crate::pane::AppPane {
+        crate::process_app::ProcessApp::new_for_test(orphan_id, crate::app::permissions::AppPermissions::builtin());
+    let orphan_pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
         id: orphan_id,
-        runtime: crate::pane::AppRuntime::Process(Box::new(orphan_process)),
+        runtime: crate::host::pane::AppRuntime::Process(Box::new(orphan_process)),
         workspace_root: std::env::temp_dir(),
-        permissions: crate::app_permissions::AppPermissions::builtin(),
+        permissions: crate::app::permissions::AppPermissions::builtin(),
         manifest_id: "orphan".to_string(),
         name: "Orphan".to_string(),
         pane_group: None,
@@ -257,7 +257,7 @@ fn navigate_down_at_vertical_boundary_jumps_to_last_window() {
     assert_eq!(h.app.active_window, 0);
 
     // Down from window 0 must jump directly to the LAST window (grid_y=2), not step to grid_y=1.
-    h.app.navigate(crate::keys::Direction::Down);
+    h.app.navigate(crate::host::keys::Direction::Down);
     assert_eq!(h.app.active_window, 2, "navigate(Down) at vertical boundary must jump to last window");
 }
 
@@ -275,7 +275,7 @@ fn navigate_up_at_vertical_boundary_jumps_to_first_window() {
     h.app.active_window = 1;
 
     // Up from window 1 must jump to the FIRST window (grid_y=0).
-    h.app.navigate(crate::keys::Direction::Up);
+    h.app.navigate(crate::host::keys::Direction::Up);
     assert_eq!(h.app.active_window, 0, "navigate(Up) at vertical boundary must jump to first window");
 }
 
@@ -287,7 +287,7 @@ fn navigate_down_single_window_is_noop() {
     let pane_a = h.add_test_pane();
     assert!(h.app.pane_navigate(pane_a), "pane_navigate must succeed");
     assert_eq!(h.app.active_window, 0);
-    h.app.navigate(crate::keys::Direction::Down);
+    h.app.navigate(crate::host::keys::Direction::Down);
     assert_eq!(h.app.active_window, 0, "navigate(Down) in single-window workspace must not change active_window");
 }
 
@@ -299,6 +299,6 @@ fn navigate_left_at_horizontal_boundary_still_page_navigates() {
     assert!(h.app.pane_navigate(pane_a), "pane_navigate must succeed");
     assert_eq!(h.app.active_window, 0);
     // No window to the left of (0,0) → Left is a no-op (not wrapped).
-    h.app.navigate(crate::keys::Direction::Left);
+    h.app.navigate(crate::host::keys::Direction::Left);
     assert_eq!(h.app.active_window, 0, "Left at boundary must not change active_window");
 }

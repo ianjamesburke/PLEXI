@@ -5,67 +5,28 @@
 // PLEXI_AUDIO=mock://. Stubs must return `Err(NotImplemented)` instead.
 #![deny(clippy::todo, clippy::unimplemented)]
 
-mod anchor;
 mod app;
-mod app_permissions;
 mod app_protocol;
-mod app_render;
-mod app_registry;
-mod app_registry_watcher;
-mod app_trait;
-mod audio;
 mod cli;
 
-mod command_palette;
 mod config;
-mod config_watcher;
-mod context;
 mod context_state;
-mod event_log;
 mod features;
 mod file_browser;
 mod host;
-mod keys;
-mod launch_failed;
-mod cli_renderer_app;
-mod text_editor_app;
-mod logging;
-#[cfg(target_os = "macos")]
-mod finder_service;
-#[cfg(target_os = "macos")]
-mod macos_menu;
-mod midi;
+mod platform;
+#[path = "media/audio.rs"] mod audio;
+#[path = "media/midi.rs"] mod midi;
+#[path = "media/video.rs"] mod video;
 mod overlays;
-mod packs;
-mod pane;
 mod pane_ops;
-mod plexi_descriptor;
 mod plexi_ai;
 mod render;
-mod render_components;
 mod process_app;
-mod headless_renderer;
-mod hot_reload;
-mod install;
 mod protocol;
-mod runs;
 mod secrets;
-mod secrets_app;
-mod workspace_router;
-mod workspace_secrets;
-mod scheduler;
-mod shell;
-mod minimap;
-mod sidebar;
-mod sidebar_row;
 mod spatial;
-mod style;
-mod theme;
-mod tiling;
-mod typed_pipes;
-mod updater;
-mod video;
-mod widgets;
+mod ui;
 mod workspace;
 #[cfg(test)]
 mod testing;
@@ -85,27 +46,27 @@ fn main() -> eframe::Result {
     let is_first_launch = crate::config::ensure_profile_initialized();
 
     {
-        let apps_dir = crate::app_registry::apps_dir();
-        let cloner = crate::install::GitCloner;
+        let apps_dir = crate::app::registry::apps_dir();
+        let cloner = crate::cli::install_host::GitCloner;
 
         // On first launch, also seed the example apps.
         if is_first_launch {
             if let Some(outcomes) =
-                crate::install::apply_examples_pack_if_empty(&cloner, &apps_dir)
+                crate::cli::install_host::apply_examples_pack_if_empty(&cloner, &apps_dir)
             {
                 let n_ok = outcomes
                     .iter()
-                    .filter(|o| matches!(o.status, crate::install::InstallStatus::Installed(_)))
+                    .filter(|o| matches!(o.status, crate::cli::install_host::InstallStatus::Installed(_)))
                     .count();
                 log::info!("examples pack: seeded {n_ok} apps to {}", apps_dir.display());
             }
         }
 
         // Always re-seed any deleted core apps.
-        let core_outcomes = crate::install::apply_core_pack_always(&cloner, &apps_dir);
+        let core_outcomes = crate::cli::install_host::apply_core_pack_always(&cloner, &apps_dir);
         let n_installed = core_outcomes
             .iter()
-            .filter(|o| matches!(o.status, crate::install::InstallStatus::Installed(_)))
+            .filter(|o| matches!(o.status, crate::cli::install_host::InstallStatus::Installed(_)))
             .count();
         if n_installed > 0 {
             log::info!(
@@ -114,7 +75,7 @@ fn main() -> eframe::Result {
             );
         }
         for o in &core_outcomes {
-            if let crate::install::InstallStatus::Failed(msg) = &o.status {
+            if let crate::cli::install_host::InstallStatus::Failed(msg) = &o.status {
                 log::warn!("core pack: FAILED {}: {msg}", o.id);
             }
         }
@@ -160,8 +121,8 @@ fn main() -> eframe::Result {
     let cli_mode = raw_args.iter().skip(1).any(|a| {
         !a.starts_with('-') && known_subcommands().contains(a.as_str())
     });
-    crate::logging::init(log_level, retention_days, cli_mode);
-    let frame_tick = crate::logging::new_frame_tick();
+    crate::platform::logging::init(log_level, retention_days, cli_mode);
+    let frame_tick = crate::platform::logging::new_frame_tick();
     // Note: spawn_heartbeat is deferred to just before eframe::run_native so
     // the shell probes below don't trigger false FREEZE alerts. The heartbeat
     // should only monitor actual eframe operation, not pre-startup work.
@@ -172,8 +133,8 @@ fn main() -> eframe::Result {
     // index is in the new flat-string form.
     #[cfg(target_os = "macos")]
     {
-        let store = crate::workspace_secrets::MacKeychain::new();
-        let migrated = crate::workspace_secrets::migrate_legacy_global_secrets(&store);
+        let store = crate::workspace::secrets::MacKeychain::new();
+        let migrated = crate::workspace::secrets::migrate_legacy_global_secrets(&store);
         if migrated > 0 {
             log::info!(
                 "workspace_secrets: migrated {migrated} legacy global secrets to plexi:user:* namespace"
@@ -185,7 +146,7 @@ fn main() -> eframe::Result {
     // Without this, panics on the UI thread only appear in Console.app and are
     // invisible to the Plexi log (the log writer thread is killed mid-write).
     {
-        let panic_log = crate::logging::log_path();
+        let panic_log = crate::platform::logging::log_path();
         std::panic::set_hook(Box::new(move |info| {
             let msg = info.to_string();
             // Best-effort append to the log file directly (logger may be dead).
@@ -666,12 +627,12 @@ fn main() -> eframe::Result {
     // CLI subcommands already inherit the full shell environment from the
     // calling terminal — running this there corrupts terminal signal state
     // (zsh -i hijacks SIGINT) and spams the user's stdout with log noise.
-    crate::shell::install_login_shell_path();
-    crate::shell::install_login_shell_env();
+    crate::host::shell::install_login_shell_path();
+    crate::host::shell::install_login_shell_env();
 
     // Shell probes are done. Start the heartbeat now so it only monitors
     // eframe operation — not pre-startup shell work (#588).
-    crate::logging::spawn_heartbeat(frame_tick.clone());
+    crate::platform::logging::spawn_heartbeat(frame_tick.clone());
 
 
     let native_options = eframe::NativeOptions {
@@ -739,7 +700,7 @@ fn parse_workspace_path_arg(args: &[String]) -> Result<Option<std::path::PathBuf
             Ok(p) => p,
             Err(e) => return Err(format!("canonicalize {}: {e}", candidate.display())),
         };
-        match crate::app_registry::resolve_workspace_root(&canonical) {
+        match crate::app::registry::resolve_workspace_root(&canonical) {
             Some(root) => return Ok(Some(root)),
             None => {
                 crate::config::set_adopted_context_path(canonical);
@@ -819,7 +780,7 @@ fn render_cli() {
         "radius": 0.0,
     }));
     all_commands.extend(commands);
-    let renderer = crate::headless_renderer::HeadlessRenderer::new();
+    let renderer = crate::render::headless_renderer::HeadlessRenderer::new();
     let png_bytes = renderer.render_pgap_frame(&all_commands, width, height);
     if let Err(e) = std::io::stdout().write_all(&png_bytes) {
         eprintln!("plexi --render: failed to write PNG to stdout: {e}");

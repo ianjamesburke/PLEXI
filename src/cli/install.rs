@@ -3,7 +3,7 @@ use super::app::{is_bare_id, resolve_registry_id, is_github_shorthand, app_is_py
 use std::io::{self, Write};
 
 pub fn install_cli(spec: &str) -> i32 {
-    let (source_str, git_ref) = crate::install::split_source_and_ref(spec);
+    let (source_str, git_ref) = crate::cli::install_host::split_source_and_ref(spec);
     let resolved = if is_bare_id(&source_str) {
         match resolve_registry_id(&source_str) {
             Ok(s) => s,
@@ -19,18 +19,18 @@ pub fn install_cli(spec: &str) -> i32 {
     } else {
         source_str
     };
-    let source = match crate::packs::parse_source_spec(&resolved) {
+    let source = match crate::app::packs::parse_source_spec(&resolved) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: {e}");
             return 1;
         }
     };
-    let target_root = crate::app_registry::apps_dir();
-    let cloner = crate::install::GitCloner;
-    match crate::install::install_one(&cloner, &source, git_ref.as_deref(), &target_root) {
+    let target_root = crate::app::registry::apps_dir();
+    let cloner = crate::cli::install_host::GitCloner;
+    match crate::cli::install_host::install_one(&cloner, &source, git_ref.as_deref(), &target_root) {
         Ok(outcome) => match outcome.status {
-            crate::install::InstallStatus::Installed(path) => {
+            crate::cli::install_host::InstallStatus::Installed(path) => {
                 println!("installed '{}' at {}", outcome.id, path.display());
                 if app_is_python(&path) {
                     ensure_plexi_sdk();
@@ -38,11 +38,11 @@ pub fn install_cli(spec: &str) -> i32 {
                 print_tip(&format!("open your app with `plexi app open {}`.", outcome.id));
                 0
             }
-            crate::install::InstallStatus::AlreadyAtVersion => {
+            crate::cli::install_host::InstallStatus::AlreadyAtVersion => {
                 println!("already at requested version");
                 0
             }
-            crate::install::InstallStatus::SkippedOtherVersion {
+            crate::cli::install_host::InstallStatus::SkippedOtherVersion {
                 installed,
                 requested,
             } => {
@@ -53,7 +53,7 @@ pub fn install_cli(spec: &str) -> i32 {
                 );
                 1
             }
-            crate::install::InstallStatus::Failed(msg) => {
+            crate::cli::install_host::InstallStatus::Failed(msg) => {
                 eprintln!("error: {msg}");
                 1
             }
@@ -68,7 +68,7 @@ pub fn install_cli(spec: &str) -> i32 {
 /// `plexi install --pack <path|core>` — apply a whole pack file.
 pub fn install_pack_cli(spec: &str) -> i32 {
     let pack = if spec == "core" {
-        match crate::packs::Pack::from_toml_str(crate::install::CORE_PACK_TOML) {
+        match crate::app::packs::Pack::from_toml_str(crate::cli::install_host::CORE_PACK_TOML) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("error: bundled core pack invalid: {e}");
@@ -76,7 +76,7 @@ pub fn install_pack_cli(spec: &str) -> i32 {
             }
         }
     } else {
-        match crate::packs::Pack::from_path(std::path::Path::new(spec)) {
+        match crate::app::packs::Pack::from_path(std::path::Path::new(spec)) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("error: {e}");
@@ -84,23 +84,23 @@ pub fn install_pack_cli(spec: &str) -> i32 {
             }
         }
     };
-    let target_root = crate::app_registry::apps_dir();
+    let target_root = crate::app::registry::apps_dir();
     if let Err(e) = std::fs::create_dir_all(&target_root) {
         eprintln!("error: create apps dir {}: {e}", target_root.display());
         return 1;
     }
-    let cloner = crate::install::GitCloner;
-    let outcomes = crate::install::apply_pack(&cloner, &pack, &target_root);
+    let cloner = crate::cli::install_host::GitCloner;
+    let outcomes = crate::cli::install_host::apply_pack(&cloner, &pack, &target_root);
     let mut any_failed = false;
     for o in &outcomes {
         match &o.status {
-            crate::install::InstallStatus::Installed(p) => {
+            crate::cli::install_host::InstallStatus::Installed(p) => {
                 println!("  installed  {:30} → {}", o.id, p.display());
             }
-            crate::install::InstallStatus::AlreadyAtVersion => {
+            crate::cli::install_host::InstallStatus::AlreadyAtVersion => {
                 println!("  up-to-date {:30}", o.id);
             }
-            crate::install::InstallStatus::SkippedOtherVersion {
+            crate::cli::install_host::InstallStatus::SkippedOtherVersion {
                 installed,
                 requested,
             } => {
@@ -109,7 +109,7 @@ pub fn install_pack_cli(spec: &str) -> i32 {
                     o.id
                 );
             }
-            crate::install::InstallStatus::Failed(msg) => {
+            crate::cli::install_host::InstallStatus::Failed(msg) => {
                 eprintln!("  FAILED     {:30} {msg}", o.id);
                 any_failed = true;
             }
@@ -177,8 +177,8 @@ pub fn install_workspace_pack_cli() -> i32 {
     log::info!("install_workspace_pack:cli: applying {}", apps_toml.display());
     println!("Applying workspace manifest {}...", apps_toml.display());
 
-    let cloner = crate::install::GitCloner;
-    let outcomes = match crate::install::apply_workspace_pack(&root, &cloner) {
+    let cloner = crate::cli::install_host::GitCloner;
+    let outcomes = match crate::cli::install_host::apply_workspace_pack(&root, &cloner) {
         Ok(o) => o,
         Err(e) => { eprintln!("error: {e}"); return 1; }
     };
@@ -191,16 +191,16 @@ pub fn install_workspace_pack_cli() -> i32 {
     let mut any_failed = false;
     for o in &outcomes {
         match &o.status {
-            crate::install::InstallStatus::Installed(p) => {
+            crate::cli::install_host::InstallStatus::Installed(p) => {
                 println!("  installed  {:30} → {}", o.id, p.display());
             }
-            crate::install::InstallStatus::AlreadyAtVersion => {
+            crate::cli::install_host::InstallStatus::AlreadyAtVersion => {
                 println!("  up-to-date {:30}", o.id);
             }
-            crate::install::InstallStatus::SkippedOtherVersion { installed, requested } => {
+            crate::cli::install_host::InstallStatus::SkippedOtherVersion { installed, requested } => {
                 println!("  skipped    {:30} (installed {installed}, requested {requested})", o.id);
             }
-            crate::install::InstallStatus::Failed(msg) => {
+            crate::cli::install_host::InstallStatus::Failed(msg) => {
                 eprintln!("  FAILED     {:30} {msg}", o.id);
                 any_failed = true;
             }
@@ -354,11 +354,11 @@ pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
 /// Apps that aren't git checkouts (e.g. bundled core entries) are skipped
 /// with a debug-level log line and reported but not failed.
 pub fn update_cli(maybe_id: Option<&str>) -> i32 {
-    let target_root = crate::app_registry::apps_dir();
-    let cloner = crate::install::GitCloner;
+    let target_root = crate::app::registry::apps_dir();
+    let cloner = crate::cli::install_host::GitCloner;
     let ids: Vec<String> = match maybe_id {
         Some(id) => vec![id.to_string()],
-        None => crate::install::installed_versions(&target_root)
+        None => crate::cli::install_host::installed_versions(&target_root)
             .into_keys()
             .collect(),
     };
@@ -368,7 +368,7 @@ pub fn update_cli(maybe_id: Option<&str>) -> i32 {
     }
     let mut any_failed = false;
     for id in ids {
-        match crate::install::update_one(&cloner, &id, &target_root) {
+        match crate::cli::install_host::update_one(&cloner, &id, &target_root) {
             Ok(()) => println!("  updated  {id}"),
             Err(e) if e.contains("not a git checkout") => {
                 println!("  skipped  {id} (not a git checkout)");

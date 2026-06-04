@@ -613,7 +613,7 @@ pub(super) fn open_github_ephemeral(source: &str, layout: Option<&str>, from_pan
         .or_else(|| std::env::current_dir().ok());
     let workspace_root: Option<String> = start_dir
         .as_deref()
-        .and_then(|d| crate::app_registry::resolve_workspace_root(d))
+        .and_then(|d| crate::app::registry::resolve_workspace_root(d))
         .map(|p| p.to_string_lossy().into_owned());
 
     let abs_path = cache_dir.to_string_lossy().into_owned();

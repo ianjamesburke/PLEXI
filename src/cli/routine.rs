@@ -32,8 +32,8 @@ pub fn routine_list() -> i32 {
     }
     println!("Routines:");
     for r in &config.routine {
-        let next = match crate::scheduler::parse_schedule(&r.schedule) {
-            Some(s) => crate::scheduler::next_fire_description(&s, None),
+        let next = match crate::host::scheduler::parse_schedule(&r.schedule) {
+            Some(s) => crate::host::scheduler::next_fire_description(&s, None),
             None => "invalid schedule".to_string(),
         };
         let ctx_label = if r.context.is_empty() { "(active context)".to_string() } else { r.context.clone() };

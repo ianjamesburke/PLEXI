@@ -152,13 +152,13 @@ pub fn run_command(command_name: &str) -> i32 {
     if !secret_keys.is_empty() {
         #[cfg(target_os = "macos")]
         {
-            use crate::workspace_secrets::{
+            use crate::workspace::secrets::{
                 resolve, MacKeychain, ResolveOutcome, WorkspaceConfig, WorkspaceSecrets,
             };
             let store = MacKeychain::new();
             // Load workspace context once — fail early if secrets are required but workspace
             // is not initialised (missing workspace.toml or secrets.toml).
-            let ws_root = crate::app_registry::resolve_workspace_root(&cwd);
+            let ws_root = crate::app::registry::resolve_workspace_root(&cwd);
             let ws_context: Option<(String, WorkspaceSecrets)> = ws_root.as_ref().and_then(|root| {
                 let cfg = match WorkspaceConfig::load(root) {
                     Ok(Some(c)) => c,

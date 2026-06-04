@@ -154,7 +154,7 @@ impl PlexiApp {
                 dismiss_value
             );
             if !n.notify_id.is_empty() && !n.notify_id.starts_with("__host__:") {
-                let cmds = vec![crate::app_trait::AppCommand::DeliverNotifyAction {
+                let cmds = vec![crate::app::app_trait::AppCommand::DeliverNotifyAction {
                     pane_id: n.sender_pane_id,
                     notify_id: n.notify_id.clone(),
                     action_label: "timeout".to_string(),
@@ -178,7 +178,7 @@ impl PlexiApp {
     /// Mark all pending notifications from `pane_id` as tombstoned. Called
     /// when an app pane is closed. Tombstoned notifications remain in the queue
     /// so the user can read them, but their action buttons are hidden.
-    pub(crate) fn tombstone_pane_notifications(&mut self, pane_id: crate::tiling::PaneId) {
+    pub(crate) fn tombstone_pane_notifications(&mut self, pane_id: crate::spatial::tiling::PaneId) {
         for n in &mut self.pending_notifications {
             if n.sender_pane_id == pane_id {
                 n.tombstoned = true;

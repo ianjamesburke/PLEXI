@@ -37,7 +37,7 @@ struct LlmServerReport {
 fn check_openrouter() -> OpenRouterReport {
     #[cfg(target_os = "macos")]
     {
-        use crate::workspace_secrets::{keychain_user_name, MacKeychain, SecretStore};
+        use crate::workspace::secrets::{keychain_user_name, MacKeychain, SecretStore};
         let store = MacKeychain::new();
         let account = keychain_user_name("openrouter-api-key");
         match store.get(&account) {
@@ -204,7 +204,7 @@ pub fn doctor_cli(json: bool) -> i32 {
     log::info!("cli:doctor: starting capability audit (json={json})");
 
     let cwd = std::env::current_dir().unwrap_or_default();
-    let registry = crate::app_registry::AppRegistry::load(&cwd);
+    let registry = crate::app::registry::AppRegistry::load(&cwd);
     let config = crate::config::PlexiConfig::load_with_workspace(
         crate::config::active_workspace_root().as_deref(),
     );

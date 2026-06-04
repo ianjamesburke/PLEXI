@@ -1,6 +1,6 @@
 pub fn list_cli() -> i32 {
     let cwd = std::env::current_dir().unwrap_or_default();
-    let registry = crate::app_registry::AppRegistry::load(&cwd);
+    let registry = crate::app::registry::AppRegistry::load(&cwd);
     let installed = registry.list();
     if installed.is_empty() {
         println!("no apps installed");
@@ -9,13 +9,13 @@ pub fn list_cli() -> i32 {
     }
     // Read versions directly from the global apps dir for the source-of-truth
     // version field — the registry only carries `manifest.version` at load time.
-    let global_versions = crate::install::installed_versions(&crate::app_registry::apps_dir());
-    let workspace_root = crate::app_registry::resolve_workspace_root(&cwd);
-    let core_ids = crate::install::core_pack_ids();
-    let example_ids = crate::install::examples_pack_ids();
+    let global_versions = crate::cli::install_host::installed_versions(&crate::app::registry::apps_dir());
+    let workspace_root = crate::app::registry::resolve_workspace_root(&cwd);
+    let core_ids = crate::cli::install_host::core_pack_ids();
+    let example_ids = crate::cli::install_host::examples_pack_ids();
     let workspace_ids = workspace_root
         .as_ref()
-        .map(|r| crate::install::workspace_manifest_ids(r))
+        .map(|r| crate::cli::install_host::workspace_manifest_ids(r))
         .unwrap_or_default();
     let mut globals: Vec<(String, String, String, &'static str)> = Vec::new();
     let mut workspace: Vec<(String, String, String, &'static str)> = Vec::new();
@@ -35,13 +35,13 @@ pub fn list_cli() -> i32 {
         };
         let row = (app.manifest.id.clone(), app.manifest.name.clone(), version, badge);
         match app.source {
-            crate::app_registry::RegistrySource::Global => globals.push(row),
-            crate::app_registry::RegistrySource::LocalApp
-            | crate::app_registry::RegistrySource::LocalAgent => workspace.push(row),
+            crate::app::registry::RegistrySource::Global => globals.push(row),
+            crate::app::registry::RegistrySource::LocalApp
+            | crate::app::registry::RegistrySource::LocalAgent => workspace.push(row),
         }
     }
     if !globals.is_empty() {
-        println!("Global apps ({})", crate::app_registry::apps_dir().display());
+        println!("Global apps ({})", crate::app::registry::apps_dir().display());
         for (id, name, version, badge) in &globals {
             if badge.is_empty() {
                 println!("  {:30} {:30} {}", id, name, version);
@@ -67,11 +67,11 @@ pub fn list_cli() -> i32 {
 }
 
 /// `plexi app freeze <path>` — write a `pack.toml` snapshot of installed apps to `path`.
-/// See `crate::install::export_pack` for the source-spec inference rules.
+/// See `crate::cli::install_host::export_pack` for the source-spec inference rules.
 pub fn freeze_cli(dest_path: &str) -> i32 {
-    let target_root = crate::app_registry::apps_dir();
+    let target_root = crate::app::registry::apps_dir();
     let dest = std::path::PathBuf::from(dest_path);
-    match crate::install::export_pack(&target_root, &dest) {
+    match crate::cli::install_host::export_pack(&target_root, &dest) {
         Ok(n) => {
             println!("wrote {n} apps → {}", dest.display());
             0

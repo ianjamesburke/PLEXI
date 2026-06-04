@@ -15,7 +15,7 @@ impl PlexiApp {
         if !self.show_shortcuts {
             return;
         }
-        let dismissed = crate::widgets::dismissable_modal(ctx, "shortcuts", |ui| {
+        let dismissed = crate::ui::widgets::dismissable_modal(ctx, "shortcuts", |ui| {
             egui::Frame::new()
                 .fill(self.colors.bg_sidebar.gamma_multiply(0.95))
                 .stroke(Stroke::new(1.0, self.colors.border))
@@ -59,7 +59,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "T"], "New tab"),
                                     ];
                                     for (keys, desc) in rows {
-                                        crate::widgets::key_combo(ui, keys, colors);
+                                        crate::ui::widgets::key_combo(ui, keys, colors);
                                         ui.label(
                                             RichText::new(*desc)
                                                 .size(style::TEXT_HINT)
@@ -77,7 +77,7 @@ impl PlexiApp {
                                 .min_col_width(80.0)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
-                                    crate::widgets::key_combo_list(
+                                    crate::ui::widgets::key_combo_list(
                                         ui,
                                         &[&["\u{2318}"], &["H", "J", "K", "L"]],
                                         None,
@@ -90,7 +90,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::widgets::key_combo_list(
+                                    crate::ui::widgets::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "\u{21E7}", "L"], &["\u{2318}", "\u{21E7}", "H"]],
                                         None,
@@ -103,7 +103,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::widgets::key_combo_list(
+                                    crate::ui::widgets::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "\u{21E7}", "K"], &["\u{2318}", "\u{21E7}", "J"]],
                                         None,
@@ -116,7 +116,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::widgets::key_combo_list(
+                                    crate::ui::widgets::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "["], &["\u{2318}", "]"]],
                                         None,
@@ -129,7 +129,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::widgets::key_combo_list(
+                                    crate::ui::widgets::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "1"], &["\u{2318}", "9"]],
                                         None,
@@ -142,7 +142,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::widgets::key_combo(
+                                    crate::ui::widgets::key_combo(
                                         ui,
                                         &["\u{2318}", "\u{21A9}"],
                                         colors,
@@ -178,7 +178,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "\u{21E7}", "M"], "Toggle minimap"),
                                     ];
                                     for (keys, desc) in rows {
-                                        crate::widgets::key_combo(ui, keys, colors);
+                                        crate::ui::widgets::key_combo(ui, keys, colors);
                                         ui.label(
                                             RichText::new(*desc)
                                                 .size(style::TEXT_HINT)
@@ -196,7 +196,7 @@ impl PlexiApp {
                                 .min_col_width(80.0)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
-                                    crate::widgets::key_combo_list(
+                                    crate::ui::widgets::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "\u{2191}"], &["\u{2318}", "\u{2193}"]],
                                         None,
@@ -209,7 +209,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::widgets::key_combo_list(
+                                    crate::ui::widgets::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "="], &["\u{2318}", "-"]],
                                         None,
@@ -242,7 +242,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "Q"], "Quit"),
                                     ];
                                     for (keys, desc) in rows {
-                                        crate::widgets::key_combo(ui, keys, colors);
+                                        crate::ui::widgets::key_combo(ui, keys, colors);
                                         ui.label(
                                             RichText::new(*desc)
                                                 .size(style::TEXT_HINT)
@@ -271,7 +271,7 @@ impl PlexiApp {
         }
         const CHANGELOG: &str = include_str!("../../CHANGELOG.md");
 
-        let dismissed = crate::widgets::dismissable_modal(ctx, "changelog", |ui| {
+        let dismissed = crate::ui::widgets::dismissable_modal(ctx, "changelog", |ui| {
             egui::Frame::new()
                 .fill(self.colors.bg_sidebar.gamma_multiply(0.95))
                 .stroke(Stroke::new(1.0, self.colors.border))
@@ -305,7 +305,7 @@ impl PlexiApp {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            crate::widgets::copy_button(
+                                            crate::ui::widgets::copy_button(
                                                 ui,
                                                 egui::Id::new("update_banner_copy"),
                                                 "plexi update",
@@ -443,7 +443,7 @@ impl PlexiApp {
 
                         let te_id = egui::Id::new("text_input_overlay_field");
                         let (overlay, _target) = self.text_overlay.as_mut().unwrap();
-                        let te = crate::widgets::styled_text_input(
+                        let te = crate::ui::widgets::styled_text_input(
                             ui,
                             &mut overlay.buffer,
                             hint.as_str(),
@@ -603,7 +603,7 @@ impl PlexiApp {
                         ui.add_space(6.0);
 
                         let te_id = egui::Id::new("rename_pane_input");
-                        let te = crate::widgets::styled_text_input(
+                        let te = crate::ui::widgets::styled_text_input(
                             ui,
                             &mut self.rename_buffer,
                             "Pane name...",
@@ -692,7 +692,7 @@ impl PlexiApp {
                         ui.add_space(6.0);
 
                         let te_id = egui::Id::new("rename_context_input");
-                        let te = crate::widgets::styled_text_input(
+                        let te = crate::ui::widgets::styled_text_input(
                             ui,
                             &mut self.rename_buffer,
                             "Context name...",
@@ -820,35 +820,35 @@ impl PlexiApp {
     pub(crate) fn rename_pane_handle_key(
         &mut self,
         _ctx: &egui::Context,
-    ) -> crate::app_trait::KeyDisposition {
-        crate::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::app_trait::KeyDisposition {
+        crate::app::app_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn context_rename_handle_key(
         &mut self,
         _ctx: &egui::Context,
-    ) -> crate::app_trait::KeyDisposition {
-        crate::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::app_trait::KeyDisposition {
+        crate::app::app_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn context_description_handle_key(
         &mut self,
         _ctx: &egui::Context,
-    ) -> crate::app_trait::KeyDisposition {
-        crate::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::app_trait::KeyDisposition {
+        crate::app::app_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn text_input_handle_key(
         &mut self,
         _ctx: &egui::Context,
-    ) -> crate::app_trait::KeyDisposition {
-        crate::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::app_trait::KeyDisposition {
+        crate::app::app_trait::KeyDisposition::Consumed
     }
 
     pub(crate) fn command_palette_handle_key(
         &mut self,
         _ctx: &egui::Context,
-    ) -> crate::app_trait::KeyDisposition {
-        crate::app_trait::KeyDisposition::Consumed
+    ) -> crate::app::app_trait::KeyDisposition {
+        crate::app::app_trait::KeyDisposition::Consumed
     }
 }

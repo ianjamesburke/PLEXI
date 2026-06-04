@@ -58,17 +58,17 @@ impl PlexiApp {
                                 continue;
                             }
                             let (pane_type, title, cwd) = match pane {
-                                crate::pane::Pane::Terminal(t) => {
+                                crate::host::pane::Pane::Terminal(t) => {
                                     let name = t.name.clone().unwrap_or_else(|| "terminal".to_string());
-                                    let cwd = crate::shell::get_pid_cwd(t.backend.child_pid())
+                                    let cwd = crate::host::shell::get_pid_cwd(t.backend.child_pid())
                                         .map(|p| p.to_string_lossy().into_owned());
                                     ("terminal", name, cwd)
                                 }
-                                crate::pane::Pane::App(a) => {
+                                crate::host::pane::Pane::App(a) => {
                                     let cwd = Some(a.workspace_root.to_string_lossy().into_owned());
                                     ("app", a.name.clone(), cwd)
                                 }
-                                crate::pane::Pane::Portal(p) => {
+                                crate::host::pane::Pane::Portal(p) => {
                                     ("portal", format!("portal:{}", p.target_context_id), None)
                                 }
                             };
@@ -103,8 +103,8 @@ impl PlexiApp {
                         if let Some(pane) = win.panes.get(pane_id) {
                             let focused = win_idx == active_win && focused_pane_id == Some(*pane_id);
                             let info = match pane {
-                                crate::pane::Pane::Terminal(t) => {
-                                    let cwd = crate::shell::get_pid_cwd(t.backend.child_pid())
+                                crate::host::pane::Pane::Terminal(t) => {
+                                    let cwd = crate::host::shell::get_pid_cwd(t.backend.child_pid())
                                         .map(|p| p.to_string_lossy().into_owned());
                                     serde_json::json!({
                                         "id": pane_id,
@@ -116,7 +116,7 @@ impl PlexiApp {
                                         "cwd": cwd,
                                     })
                                 }
-                                crate::pane::Pane::App(a) => {
+                                crate::host::pane::Pane::App(a) => {
                                     serde_json::json!({
                                         "id": pane_id,
                                         "type": "app",
@@ -128,7 +128,7 @@ impl PlexiApp {
                                         "manifest_id": a.manifest_id.clone(),
                                     })
                                 }
-                                crate::pane::Pane::Portal(p) => {
+                                crate::host::pane::Pane::Portal(p) => {
                                     serde_json::json!({
                                         "id": pane_id,
                                         "type": "portal",
