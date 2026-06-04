@@ -71,6 +71,14 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: RoutineCmd,
     },
+    /// Manage workspace agent definitions.
+    ///
+    /// Install agent definitions from the global registry (`~/.plexi/agents/`) into the
+    /// current workspace's `.plexi/agents/` directory, each with scoped memory and logs.
+    Agent {
+        #[command(subcommand)]
+        cmd: AgentCmd,
+    },
     /// Manage the active context (the folder and project scope tied to the current pane).
     Context {
         #[command(subcommand)]
@@ -698,4 +706,30 @@ pub enum NotesCmd {
     /// Requires fzf to be installed. Falls back to printing the notes directory when fzf
     /// is not available or PLEXI_SOCKET is not set.
     Open,
+}
+
+#[derive(Subcommand)]
+pub enum AgentCmd {
+    /// Install an agent definition from the global registry into the current workspace.
+    ///
+    /// Copies `~/.plexi/agents/<name>/AGENT.md` into `.plexi/agents/<name>/AGENT.md`
+    /// and creates `memory/` and `logs/` subdirectories for scoped agent state.
+    ///
+    /// Example: plexi agent add project-manager
+    Add {
+        /// Agent name (must exist in ~/.plexi/agents/<name>/AGENT.md)
+        name: String,
+    },
+    /// Re-install an agent definition from the global registry, preserving memory and logs.
+    ///
+    /// Overwrites `.plexi/agents/<name>/AGENT.md` with the latest version from the global
+    /// registry while leaving the `memory/` and `logs/` directories untouched.
+    ///
+    /// Example: plexi agent update project-manager
+    Update {
+        /// Agent name to update
+        name: String,
+    },
+    /// List agents installed in the current workspace.
+    List,
 }

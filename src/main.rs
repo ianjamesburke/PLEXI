@@ -216,7 +216,7 @@ fn main() -> eframe::Result {
             Some(a.clone())
         })
         .collect();
-    use crate::cli::args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd, ConfigCmd, RoutineCmd, NotesCmd};
+    use crate::cli::args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd, ConfigCmd, RoutineCmd, NotesCmd, AgentCmd};
     use clap::Parser;
 
     match Cli::try_parse_from(&args) {
@@ -233,6 +233,11 @@ fn main() -> eframe::Result {
                     Commands::Routine { cmd } => match cmd {
                         RoutineCmd::List => std::process::exit(cli::routine_list()),
                         RoutineCmd::Run { name } => std::process::exit(cli::routine_run(&name)),
+                    },
+                    Commands::Agent { cmd } => match cmd {
+                        AgentCmd::Add { name } => std::process::exit(cli::agent_add(&name)),
+                        AgentCmd::Update { name } => std::process::exit(cli::agent_update(&name)),
+                        AgentCmd::List => std::process::exit(cli::agent_list()),
                     },
                     Commands::Secret { cmd } => match cmd {
                         SecretCmd::Set { friendly_name, from_env, global, alias } => std::process::exit(cli::workspace_secret_set(&friendly_name, from_env, global, alias.as_deref())),
