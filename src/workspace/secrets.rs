@@ -528,7 +528,8 @@ pub fn init_workspace(workspace_root: &Path, channel_dir: &str) -> Result<Worksp
             "# source  = \"github:org/my-tool\"\n",
             "# version = \"v1.0.0\"\n",
         );
-        let _ = std::fs::write(&apps_toml, stub);
+        std::fs::write(&apps_toml, stub)
+            .map_err(|e| format!("write {}: {e}", apps_toml.display()))?;
     }
 
     // stub commands.toml under the channel dir
@@ -544,7 +545,8 @@ pub fn init_workspace(workspace_root: &Path, channel_dir: &str) -> Result<Worksp
             "[commands]\n",
             "guess = \"$PLEXI_CONFIG_DIR/scripts/guess\"\n",
         );
-        let _ = std::fs::write(&commands_toml, stub);
+        std::fs::write(&commands_toml, stub)
+            .map_err(|e| format!("write {}: {e}", commands_toml.display()))?;
     }
 
     write_gitignore_if_absent(workspace_root)?;

@@ -656,11 +656,14 @@ pub fn workspace_channel_dir() -> String {
     if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
         return format!(".plexi-{profile}");
     }
-    let basename = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "plexi".to_string());
-    channel_suffix_from_basename(&basename)
+    static CHANNEL_DIR: OnceLock<String> = OnceLock::new();
+    CHANNEL_DIR.get_or_init(|| {
+        let basename = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "plexi".to_string());
+        channel_suffix_from_basename(&basename)
+    }).clone()
 }
 
 /// Returns the config directory name based on the running binary basename.
