@@ -378,6 +378,242 @@ fn print_report(hw: &HardwareReport, integrations: &IntegrationReport, rec: &Mod
     println!("  {dim}{}{reset}", rec.note);
 }
 
+// ── Setup wizard ─────────────────────────────────────────────────────────────
+
+/// Write or update the `[ai]` + `[ai.ollama]` section in config.toml.
+///
+/// Strategy: read the existing file as raw text, then:
+/// - If an `[ai]` block already exists, replace it.
+/// - Otherwise, append the block at the end.
+///
+/// This preserves all other sections and comments.
+fn write_ollama_config(model: &str) -> std::io::Result<()> {
+    let path = crate::config::config_path();
+
+    // Ensure parent dir exists.
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let snippet = format!(
+        "\n[ai]\nbackend = \"ollama\"\n\n[ai.ollama]\nhost         = \"http://localhost:11434\"\nmodel_low    = \"{model}\"\nmodel_medium = \"{model}\"\nmodel_high   = \"{model}\"\n"
+    );
+
+    if path.exists() {
+        let existing = std::fs::read_to_string(&path)?;
+
+        // Check if [ai] block already present — strip it out, then append.
+        let stripped = strip_ai_section(&existing);
+        let new_content = format!("{}\n{}", stripped.trim_end(), snippet);
+        std::fs::write(&path, new_content)?;
+    } else {
+        // Config doesn't exist — seed from template, then append.
+        let mut content = crate::config::CONFIG_TEMPLATE.to_string();
+        content.push_str(&snippet);
+        std::fs::write(&path, content)?;
+    }
+
+    Ok(())
+}
+
+/// Remove any existing `[ai]` and `[ai.*]` sections from raw TOML text.
+/// Returns the text with those sections stripped so we can append fresh ones.
+fn strip_ai_section(text: &str) -> String {
+    let mut result = Vec::new();
+    let mut skipping = false;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[ai]" || trimmed.starts_with("[ai.") {
+            skipping = true;
+            continue;
+        }
+        // A new top-level section (not ai) ends the skip.
+        if skipping && trimmed.starts_with('[') && !trimmed.starts_with("[ai") {
+            skipping = false;
+        }
+        if !skipping {
+            result.push(line);
+        }
+    }
+
+    result.join("\n")
+}
+
+pub fn ai_setup_cli() -> i32 {
+    log::info!("cli:ai:setup: starting local model wizard");
+
+    let no_color = std::env::var_os("NO_COLOR").is_some();
+    let green  = if no_color { "" } else { "\x1b[32m" };
+    let yellow = if no_color { "" } else { "\x1b[33m" };
+    let red    = if no_color { "" } else { "\x1b[31m" };
+    let bold   = if no_color { "" } else { "\x1b[1m" };
+    let dim    = if no_color { "" } else { "\x1b[2m" };
+    let reset  = if no_color { "" } else { "\x1b[0m" };
+
+    println!("{bold}plexi ai setup{reset} — local model wizard");
+    println!();
+
+    // ── Step 1: detect hardware ───────────────────────────────────────────────
+    println!("Scanning hardware...");
+    let hw = detect_hardware();
+    let rec = recommend_models(&hw);
+    log::info!(
+        "cli:ai:setup: hardware -- ram_gb={:?} is_apple_silicon={} tier={}",
+        hw.ram_gb, hw.is_apple_silicon, rec.tier
+    );
+
+    if rec.tier == "cloud-recommended" {
+        println!("{yellow}Your hardware is better suited for cloud models.{reset}");
+        println!("  {dim}{}{reset}", rec.note);
+        println!();
+        println!("To configure cloud AI instead, run:");
+        println!("  {dim}plexi secret set openrouter-api-key --global{reset}");
+        crate::cli::print_tip("Use `plexi ai doctor` to see your full hardware and integration report.");
+        return 0;
+    }
+
+    let recommended_model = rec.models.first().copied().unwrap_or("llama3.2:3b");
+    log::info!("cli:ai:setup: recommended model={recommended_model}");
+
+    println!("Hardware: {}", hw.cpu_name.as_deref().unwrap_or("unknown CPU"));
+    if let Some(ram) = hw.ram_gb {
+        println!("RAM:      {ram:.1} GB{}", if hw.is_apple_silicon { " (unified)" } else { "" });
+    }
+    println!("Recommended model: {green}{recommended_model}{reset}");
+    println!("  {dim}{}{reset}", rec.note);
+    println!();
+
+    // ── Step 2: check Ollama installation ─────────────────────────────────────
+    let ollama_installed = crate::cli::binary_in_path("ollama")
+        || std::path::Path::new("/usr/local/bin/ollama").exists()
+        || std::path::Path::new("/opt/homebrew/bin/ollama").exists();
+
+    log::info!("cli:ai:setup: ollama_installed={ollama_installed}");
+
+    if !ollama_installed {
+        println!("{bold}Step 1/3: Install Ollama{reset}");
+        println!("  Ollama is not installed.");
+        println!();
+        println!("  Install with Homebrew:");
+        println!("    {dim}brew install ollama{reset}");
+        println!();
+        println!("  Or with the official installer:");
+        println!("    {dim}curl -fsSL https://ollama.com/install.sh | sh{reset}");
+        println!();
+        println!("{yellow}Re-run `plexi ai setup` after installing Ollama.{reset}");
+        crate::cli::print_tip("After `brew install ollama`, run `ollama serve` in a terminal pane, then re-run `plexi ai setup`.");
+        return 0;
+    }
+
+    println!("{green}\u{2713}{reset} Ollama installed");
+
+    // ── Step 3: check if Ollama is running ───────────────────────────────────
+    let (ollama_running, ollama_models) = probe_ollama();
+    log::info!(
+        "cli:ai:setup: ollama_running={ollama_running} models_count={}",
+        ollama_models.len()
+    );
+
+    if !ollama_running {
+        println!();
+        println!("{bold}Step 2/3: Start Ollama{reset}");
+        println!("  Ollama is installed but not running.");
+        println!();
+        println!("  Start it in another terminal pane:");
+        println!("    {dim}ollama serve{reset}");
+        println!();
+        println!("{yellow}Re-run `plexi ai setup` after starting Ollama.{reset}");
+        crate::cli::print_tip("Open a new Plexi pane with Cmd+D, run `ollama serve`, then come back and re-run `plexi ai setup`.");
+        return 0;
+    }
+
+    println!("{green}\u{2713}{reset} Ollama is running");
+
+    // ── Step 4: check if recommended model is already pulled ─────────────────
+    let already_have_model = ollama_models
+        .iter()
+        .any(|m| m == recommended_model || m.starts_with(&format!("{recommended_model}:")));
+
+    log::info!(
+        "cli:ai:setup: already_have_model={already_have_model} models={:?}",
+        ollama_models
+    );
+
+    if already_have_model {
+        println!("{green}\u{2713}{reset} Model {recommended_model} is already pulled");
+    } else {
+        println!();
+        println!("{bold}Step 3/3: Pull recommended model{reset}");
+        println!("  Pulling {bold}{recommended_model}{reset}...");
+        println!("  {dim}(this may take a few minutes on first run){reset}");
+        println!();
+
+        log::info!("cli:ai:setup: running `ollama pull {recommended_model}`");
+
+        let status = std::process::Command::new("ollama")
+            .args(["pull", recommended_model])
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                log::info!("cli:ai:setup: ollama pull succeeded");
+                println!("{green}\u{2713}{reset} Model {recommended_model} pulled successfully");
+            }
+            Ok(s) => {
+                let code = s.code().unwrap_or(1);
+                log::warn!("cli:ai:setup: ollama pull failed with exit code {code}");
+                eprintln!("{red}error:{reset} `ollama pull {recommended_model}` exited with code {code}");
+                eprintln!("Run it manually and then re-run `plexi ai setup`.");
+                return 1;
+            }
+            Err(e) => {
+                log::warn!("cli:ai:setup: could not spawn ollama pull: {e}");
+                eprintln!("{red}error:{reset} could not run `ollama pull`: {e}");
+                eprintln!("Ensure `ollama` is in your PATH and try again.");
+                return 1;
+            }
+        }
+    }
+
+    // ── Step 5: write config.toml ─────────────────────────────────────────────
+    let config_path = crate::config::config_path();
+    log::info!("cli:ai:setup: writing ollama config to {}", config_path.display());
+
+    match write_ollama_config(recommended_model) {
+        Ok(()) => {
+            println!("{green}\u{2713}{reset} Config updated: {}", config_path.display());
+        }
+        Err(e) => {
+            log::warn!("cli:ai:setup: failed to write config: {e}");
+            eprintln!("{red}error:{reset} could not write config to {}: {e}", config_path.display());
+            eprintln!("You can configure it manually — add this to {}:", config_path.display());
+            eprintln!();
+            eprintln!("[ai]");
+            eprintln!("backend = \"ollama\"");
+            eprintln!();
+            eprintln!("[ai.ollama]");
+            eprintln!("host         = \"http://localhost:11434\"");
+            eprintln!("model_low    = \"{recommended_model}\"");
+            eprintln!("model_medium = \"{recommended_model}\"");
+            eprintln!("model_high   = \"{recommended_model}\"");
+            return 1;
+        }
+    }
+
+    println!();
+    println!("{bold}Setup complete!{reset}");
+    println!("  Plexi apps using the `ai.query` capability will now use {green}{recommended_model}{reset} via Ollama.");
+    println!();
+    println!("Next steps:");
+    println!("  {dim}plexi ai doctor{reset}    — verify your full AI configuration");
+    println!("  {dim}plexi config edit{reset}  — tune model tiers or spending caps");
+
+    crate::cli::print_tip("Use `plexi ai doctor` at any time to see your hardware and integration status.");
+
+    0
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────────
 
 pub fn ai_doctor_cli(json: bool) -> i32 {

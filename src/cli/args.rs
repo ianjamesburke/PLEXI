@@ -811,4 +811,13 @@ pub enum AiCmd {
         #[arg(long)]
         json: bool,
     },
+
+    /// Interactive wizard to configure a local AI model via Ollama.
+    ///
+    /// Walks through Ollama installation detection, model recommendation based on your
+    /// hardware, pulling the recommended model, and writing the [ai.ollama] section to
+    /// your config.toml so Plexi apps can use it immediately.
+    ///
+    /// Example: plexi ai setup
+    Setup,
 }

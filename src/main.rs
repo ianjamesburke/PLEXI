@@ -592,6 +592,7 @@ fn main() -> eframe::Result {
                     },
                     Commands::Ai { cmd } => match cmd {
                         AiCmd::Doctor { json } => std::process::exit(cli::ai_doctor_cli(json)),
+                        AiCmd::Setup => std::process::exit(cli::ai_setup_cli()),
                     },
                     Commands::Doctor { json } => std::process::exit(cli::doctor_cli(json)),
                     Commands::Demo => std::process::exit(cli::demo_cli()),
