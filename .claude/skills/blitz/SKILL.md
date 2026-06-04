@@ -129,6 +129,7 @@ RULES:
 - cargo build must pass (or python syntax check for Python-only changes)
 - Do NOT merge the PR -- just create it and report back
 - If blocked or confused, report BLOCKED with reason -- do not guess
+- NEVER touch apps/dev/ -- dev apps are throwaway POCs, not maintained. Only Core 9 apps get work. If an issue references a dev app, report BLOCKED="dev app, skip per policy"
 ```
 
 **Spawning:**
