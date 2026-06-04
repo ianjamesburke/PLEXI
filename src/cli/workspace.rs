@@ -340,27 +340,50 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
     }
 }
 
-/// `plexi secret delete <friendly-name>` — remove the workspace-scoped
-/// Keychain entry and update the index.
-pub fn workspace_secret_delete(friendly: &str) -> i32 {
-    let (_root, cfg) = match require_workspace() {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
-        }
-    };
+/// `plexi secret delete <friendly-name>` — remove the Keychain entry.
+///
+/// When `global` is true, deletes the user-scoped entry (`plexi:user:<name>`)
+/// without requiring a workspace. When false, requires a workspace and deletes
+/// the workspace-scoped entry.
+pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
+    log::info!("secret_delete:cli: friendly={friendly} global={global}");
     #[cfg(target_os = "macos")]
     {
-        use crate::workspace::secrets::{keychain_workspace_name, MacKeychain, SecretStore};
-        let account = keychain_workspace_name(&cfg.id, friendly);
+        use crate::workspace::secrets::{keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore};
         let store = MacKeychain::new();
+
+        if global {
+            let account = keychain_user_name(friendly);
+            return match store.delete(&account) {
+                Ok(()) => {
+                    log::info!("secret_delete:cli: deleted globally account={account}");
+                    println!("Deleted global secret '{friendly}'");
+                    0
+                }
+                Err(e) => {
+                    log::warn!("secret_delete:cli: not found or failed friendly={friendly} err={e}");
+                    eprintln!("error: keychain delete failed: {e}");
+                    1
+                }
+            };
+        }
+
+        let (_root, cfg) = match require_workspace() {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 1;
+            }
+        };
+        let account = keychain_workspace_name(&cfg.id, friendly);
         match store.delete(&account) {
             Ok(()) => {
+                log::info!("secret_delete:cli: deleted workspace_id={} account={account}", cfg.id);
                 println!("Deleted '{friendly}' from workspace {}", cfg.id);
                 0
             }
             Err(e) => {
+                log::warn!("secret_delete:cli: keychain delete failed account={account} err={e}");
                 eprintln!("error: keychain delete failed: {e}");
                 1
             }
@@ -368,7 +391,7 @@ pub fn workspace_secret_delete(friendly: &str) -> i32 {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (cfg, friendly);
+        let _ = (friendly, global);
         eprintln!("error: keychain not available on this platform");
         1
     }
