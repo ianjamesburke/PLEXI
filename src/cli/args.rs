@@ -153,6 +153,14 @@ pub enum Commands {
         scope: Option<String>,
     },
 
+    // ── AI ────────────────────────────────────────────────────────────────────
+    /// AI configuration and diagnostics — scan hardware, check integrations, recommend models.
+    #[command(next_help_heading = "AI")]
+    Ai {
+        #[command(subcommand)]
+        cmd: AiCmd,
+    },
+
     // ── System ────────────────────────────────────────────────────────────────
     /// Print a shell completion script to stdout.
     ///
@@ -781,4 +789,20 @@ pub enum AgentCmd {
     },
     /// List agents installed in the current workspace.
     List,
+}
+
+#[derive(Subcommand)]
+pub enum AiCmd {
+    /// Scan hardware and report recommended AI models.
+    ///
+    /// Detects your CPU, RAM/VRAM, and GPU, then recommends which local or cloud
+    /// AI models are a good fit. Also checks whether Ollama is installed and running,
+    /// lists any already-pulled models, and verifies OpenRouter configuration.
+    ///
+    /// Example: plexi ai doctor
+    Doctor {
+        /// Output results as JSON (for scripting or agent use)
+        #[arg(long)]
+        json: bool,
+    },
 }
