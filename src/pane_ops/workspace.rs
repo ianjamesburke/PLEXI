@@ -11,7 +11,7 @@ use std::path::PathBuf;
 ///
 /// Idempotent: does nothing when `.plexi/workspace.toml` is already present.
 /// Non-fatal: logs a warning on failure but never prevents the root from being set.
-fn auto_init_workspace(root: &PathBuf) {
+fn auto_init_workspace(root: &std::path::Path) {
     let marker = root.join(".plexi").join("workspace.toml");
     if marker.exists() {
         log::info!("auto_init_workspace: workspace already exists at {}", root.display());
@@ -806,8 +806,8 @@ impl PlexiApp {
             self.router.active().context_id,
             root.display()
         );
-        self.router.get_mut(idx).root = Some(root.clone());
         auto_init_workspace(&root);
+        self.router.get_mut(idx).root = Some(root);
         self.apply_context_transition_effects();
     }
 
