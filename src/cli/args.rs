@@ -596,6 +596,21 @@ pub enum PaneCmd {
         /// Key to press
         key: String,
     },
+    /// Send a shell command to a terminal pane as if typed from the keyboard.
+    ///
+    /// Use `--enter` to append a newline so the command is submitted immediately.
+    ///
+    /// Example: plexi pane command 42 "git status" --enter
+    #[command(name = "command")]
+    Command {
+        /// Pane id to send the command to (from `plexi pane list`)
+        pane_id: u64,
+        /// Text to send to the pane
+        text: String,
+        /// Append a newline after the text, submitting it as a command
+        #[arg(long, short = 'e')]
+        enter: bool,
+    },
 }
 
 #[derive(Subcommand)]

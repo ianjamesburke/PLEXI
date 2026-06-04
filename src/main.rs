@@ -519,6 +519,15 @@ fn main() -> eframe::Result {
                             std::process::exit(cli::pane_close_cli(id));
                         }
                         PaneCmd::Send { pane_id, text } => std::process::exit(cli::pane_send_cli(pane_id, &text)),
+                        PaneCmd::Command { pane_id, text, enter } => {
+                            let payload = if enter {
+                                format!("{text}\n")
+                            } else {
+                                text.clone()
+                            };
+                            log::info!("pane_command:cli: pane_id={pane_id} len={} enter={enter}", payload.len());
+                            std::process::exit(cli::pane_send_cli(pane_id, &payload));
+                        }
                         PaneCmd::Key { pane_id, key } => std::process::exit(cli::pane_key_cli(pane_id, &key)),
                         PaneCmd::Self_ => std::process::exit(cli::pane_self_cli()),
                         PaneCmd::Info => std::process::exit(cli::pane_info_cli()),
