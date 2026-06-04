@@ -392,18 +392,28 @@ pub enum AppCmd {
         #[arg(value_hint = ValueHint::FilePath)]
         path: String,
     },
-    /// Package the app in the current directory and print the registry submission payload.
+    /// Scaffold a new app directly into the global registry and open it in a pane.
     ///
-    /// Validates all required fields, checks that the entry file exists, and prints the
-    /// JSON payload that would be submitted to the Plexi app registry.
+    /// This is the fastest path from zero to running app: one command scaffolds the
+    /// template into `~/.plexi-<channel>/apps/<name>/` and opens it immediately.
+    /// Hot reload is automatic (`watch = true` in the generated manifest).
     ///
-    /// The actual HTTP submission is future work — this command proves the manifest is
-    /// correct and ready for publishing.
-    Publish {
-        /// Print the payload without submitting (currently the only mode — actual registry upload is future work)
+    /// Example: plexi app dev my-widget
+    Dev {
+        /// Name for the new app (used as directory name and app id)
+        name: String,
+        /// Language template: python (default) or rust
+        #[arg(long, default_value = "python")]
+        lang: String,
+        /// Open the new pane relative to this pane ID instead of the focused pane
         #[arg(long)]
-        dry_run: bool,
+        from_pane_id: Option<u64>,
     },
+    /// Publish an app to the Plexi marketplace.
+    ///
+    /// The Plexi app marketplace is under development. This command will be available
+    /// in a future release.
+    Publish,
     /// Check installed apps for available updates.
     ///
     /// Compares each app's recorded installed version against the version in its manifest.

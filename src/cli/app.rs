@@ -549,6 +549,15 @@ pub fn app_info(id: &str) -> i32 {
     println!("name:        {}", m.name);
     println!("version:     {}", m.version);
     println!("description: {}", m.description);
+    if let Some(ref author) = m.author {
+        println!("author:      {author}");
+    }
+    if !m.tags.is_empty() {
+        println!("tags:        {}", m.tags.join(", "));
+    }
+    if let Some(ref repo) = m.repo {
+        println!("repo:        {repo}");
+    }
     if let Some(mcp) = &m.mcp {
         if !mcp.description.is_empty() {
             println!("mcp_desc:    {}", mcp.description);
@@ -777,102 +786,67 @@ fn to_struct_name(s: &str) -> String {
         .collect::<String>()
 }
 
-/// `plexi app publish [--dry-run]` — validate and package the app in CWD for registry submission.
+/// `plexi app dev <name>` — scaffold into global registry + auto-open.
 ///
-/// Reads `manifest.toml` from the current directory, validates required fields and the
-/// entry file, then prints the JSON payload that would be submitted to the registry.
-/// The actual HTTP upload is future work — this command proves the manifest is correct.
-pub fn app_publish(_dry_run: bool) -> i32 {
-    let cwd = match std::env::current_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error: could not determine current directory: {e}");
-            return 1;
-        }
+/// Places the app directly in `apps_dir()/<name>/` so it is immediately
+/// discoverable by the registry. Then opens it in a pane.
+pub fn app_dev(name: &str, lang: &str, from_pane_id: Option<u64>) -> i32 {
+    if name.is_empty() {
+        eprintln!("Usage: plexi app dev <name>");
+        return 1;
+    }
+
+    let app_dir = crate::app_registry::apps_dir().join(name);
+    log::info!("app_dev: name={name} lang={lang} path={}", app_dir.display());
+
+    if app_dir.exists() {
+        eprintln!("error: app '{name}' already exists at {}", app_dir.display());
+        eprintln!("  To open it: plexi app open {name}");
+        return 1;
+    }
+
+    if let Err(e) = std::fs::create_dir_all(&app_dir) {
+        eprintln!("error: could not create {}: {e}", app_dir.display());
+        return 1;
+    }
+
+    let result = match lang {
+        "rust" => scaffold_rust_app(&app_dir, name),
+        _ => scaffold_python_app(&app_dir, name),
     };
-    app_publish_from_dir(&cwd)
+
+    match result {
+        Ok(()) => {
+            println!("Created app '{name}' at {}", app_dir.display());
+            if lang == "rust" {
+                println!("\nNext steps:");
+                println!("  cd {}", app_dir.display());
+                println!("  cargo build --release");
+                println!("  plexi app open {name}");
+            } else {
+                ensure_plexi_sdk();
+                let path_str = app_dir.to_string_lossy().to_string();
+                log::info!("app_dev: auto-opening '{name}' via app_run path={path_str}");
+                let exit_code = app_run(&path_str, from_pane_id);
+                if exit_code != 0 {
+                    eprintln!("warning: app created but could not auto-open (exit {exit_code})");
+                    eprintln!("  Run: plexi app open {name}");
+                }
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("error: failed to scaffold app: {e}");
+            1
+        }
+    }
 }
 
-fn app_publish_from_dir(cwd: &std::path::Path) -> i32 {
-    use crate::app_registry::AppManifest;
-
-    let manifest_path = cwd.join("manifest.toml");
-    if !manifest_path.exists() {
-        eprintln!(
-            "error: manifest.toml not found in {}\n  Run `plexi app init <name>` to scaffold an app.",
-            cwd.display()
-        );
-        return 1;
-    }
-
-    let raw = match std::fs::read_to_string(&manifest_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: could not read {}: {e}", manifest_path.display());
-            return 1;
-        }
-    };
-
-    let manifest: AppManifest = match toml::from_str(&raw) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("error: manifest.toml parse error: {e}");
-            return 1;
-        }
-    };
-
-    let app = &manifest.app;
-
-    // Validate required fields
-    let mut missing: Vec<&str> = Vec::new();
-    if app.id.is_empty() { missing.push("id"); }
-    if app.name.is_empty() { missing.push("name"); }
-    if app.version.is_empty() { missing.push("version"); }
-    if app.entry.is_empty() { missing.push("entry"); }
-    if app.description.is_empty() { missing.push("description"); }
-    if !missing.is_empty() {
-        eprintln!("error: manifest.toml is missing required fields: {}", missing.join(", "));
-        return 1;
-    }
-
-    // Validate entry file exists
-    let entry_path = cwd.join(&app.entry);
-    if !entry_path.exists() {
-        eprintln!(
-            "error: entry file not found: {}\n  Declared in manifest.toml as entry = {:?}",
-            entry_path.display(),
-            app.entry
-        );
-        return 1;
-    }
-
-    // Build the payload from the typed manifest fields
-    let mut payload = serde_json::json!({
-        "id": app.id,
-        "name": app.name,
-        "version": app.version,
-        "description": app.description,
-        "entry": app.entry,
-        "tags": app.tags,
-    });
-    if let Some(ref a) = app.author {
-        payload["author"] = serde_json::Value::String(a.clone());
-    }
-    if let Some(ref r) = app.repo {
-        payload["repo"] = serde_json::Value::String(r.clone());
-    }
-
-    log::info!("app_publish: packaging app id={} version={}", app.id, app.version);
-
-    println!("App ready for registry submission:");
-    match serde_json::to_string_pretty(&payload) {
-        Ok(s) => println!("{s}"),
-        Err(e) => {
-            eprintln!("error: could not serialize payload: {e}");
-            return 1;
-        }
-    }
-
+/// `plexi app publish` — stub for future marketplace.
+pub fn app_publish() -> i32 {
+    log::info!("app_publish: stub invoked");
+    println!("Coming soon! The Plexi app marketplace is under development.");
+    println!("Follow progress at https://plexiapp.com");
     0
 }
 
@@ -998,93 +972,10 @@ mod app_run_tests {
 
 #[cfg(test)]
 mod app_publish_tests {
-    use tempfile::TempDir;
-
-    fn valid_manifest() -> &'static str {
-        r#"schema_version = 1
-
-[app]
-id = "test-app"
-type = "app"
-name = "Test App"
-version = "0.1.0"
-description = "A test app"
-entry = "main.py"
-"#
-    }
-
     #[test]
-    fn publish_missing_manifest_returns_1() {
-        let dir = TempDir::new().unwrap();
-        let code = super::app_publish_from_dir(dir.path());
-        assert_eq!(code, 1, "should fail when manifest.toml is absent");
-    }
-
-    #[test]
-    fn publish_invalid_toml_returns_1() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("manifest.toml"), "not valid toml ][[[").unwrap();
-        let code = super::app_publish_from_dir(dir.path());
-        assert_eq!(code, 1, "should fail on unparseable TOML");
-    }
-
-    #[test]
-    fn publish_missing_entry_file_returns_1() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("manifest.toml"), valid_manifest()).unwrap();
-        // entry = "main.py" but we don't create main.py
-        let code = super::app_publish_from_dir(dir.path());
-        assert_eq!(code, 1, "should fail when entry file is absent");
-    }
-
-    #[test]
-    fn publish_valid_app_returns_0() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("manifest.toml"), valid_manifest()).unwrap();
-        std::fs::write(dir.path().join("main.py"), "# stub\n").unwrap();
-        let code = super::app_publish_from_dir(dir.path());
-        assert_eq!(code, 0, "should succeed on a valid manifest with entry file present");
-    }
-
-    #[test]
-    fn publish_valid_app_with_distribution_fields_returns_0() {
-        let dir = TempDir::new().unwrap();
-        let manifest = r#"schema_version = 1
-
-[app]
-id = "rich-app"
-type = "app"
-name = "Rich App"
-version = "2.0.0"
-description = "Has all the fields"
-entry = "main.py"
-author = "Jane Doe"
-tags = ["productivity", "ai"]
-repo = "https://github.com/example/rich-app"
-"#;
-        std::fs::write(dir.path().join("manifest.toml"), manifest).unwrap();
-        std::fs::write(dir.path().join("main.py"), "# stub\n").unwrap();
-        let code = super::app_publish_from_dir(dir.path());
-        assert_eq!(code, 0, "should succeed with author/tags/repo present");
-    }
-
-    #[test]
-    fn publish_missing_required_field_returns_1() {
-        let dir = TempDir::new().unwrap();
-        // missing description
-        let manifest = r#"schema_version = 1
-
-[app]
-id = "no-desc"
-type = "app"
-name = "No Desc"
-version = "0.1.0"
-entry = "main.py"
-"#;
-        std::fs::write(dir.path().join("manifest.toml"), manifest).unwrap();
-        std::fs::write(dir.path().join("main.py"), "# stub\n").unwrap();
-        let code = super::app_publish_from_dir(dir.path());
-        assert_eq!(code, 1, "should fail when description is absent");
+    fn publish_stub_returns_0() {
+        let code = super::app_publish();
+        assert_eq!(code, 0, "publish stub should always succeed");
     }
 }
 
