@@ -106,6 +106,14 @@ impl PlexiUiHarness {
     {
         f(self.inner.state_mut())
     }
+
+    /// Read-only access to PlexiApp state for assertions.
+    pub fn with_app<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&PlexiApp) -> R,
+    {
+        f(self.inner.state())
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -113,6 +121,7 @@ impl PlexiUiHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::{FocusLayer, PlexiApp};
     use crate::app_permissions::AppPermissions;
     use crate::pane::{AppPane, AppRuntime, Pane};
     use crate::process_app::ProcessApp;
@@ -206,5 +215,83 @@ mod tests {
         h.step();
 
         assert_eq!(h.window_count(), 2);
+    }
+
+    // ── Rename flow tests (require a real egui frame to process key events) ────
+
+    /// Full rename flow: set up rename state → press Enter → verify commit.
+    ///
+    /// The rename commit happens inside `draw_rename_context_overlay`, which reads
+    /// Enter from `ctx.input_mut()` during the egui draw pass. This cannot be
+    /// tested with HostHarness — it requires PlexiUiHarness + a real frame.
+    #[test]
+    fn context_rename_commits_on_enter() {
+        let mut h = PlexiUiHarness::new();
+        h.step();
+
+        // Simulate what Action::RenameContext does: populate rename state and push focus layer.
+        h.with_app_mut(|app| {
+            let ctx_idx = app.router.active_idx();
+            app.rename_buffer = "My Project".to_string();
+            app.renaming_window = Some(ctx_idx);
+            app.focus_stack.push(FocusLayer::ContextRename);
+        });
+
+        // Queue Enter for the next frame — processed by draw_rename_context_overlay.
+        h.harness().press_key(egui::Key::Enter);
+        h.step();
+
+        let (name, still_renaming) = h.with_app(|app| {
+            (app.router.active().name.clone(), app.renaming_window)
+        });
+        assert_eq!(name, "My Project");
+        assert!(still_renaming.is_none(), "renaming_window must be cleared after commit");
+    }
+
+    /// Escape discards the rename buffer; the context name must be unchanged.
+    #[test]
+    fn context_rename_cancels_on_escape() {
+        let mut h = PlexiUiHarness::new();
+        h.step();
+
+        let original_name = h.with_app(|app| app.router.active().name.clone());
+
+        h.with_app_mut(|app| {
+            let ctx_idx = app.router.active_idx();
+            app.rename_buffer = "Discarded Name".to_string();
+            app.renaming_window = Some(ctx_idx);
+            app.focus_stack.push(FocusLayer::ContextRename);
+        });
+
+        h.harness().press_key(egui::Key::Escape);
+        h.step();
+
+        let (name, still_renaming) = h.with_app(|app| {
+            (app.router.active().name.clone(), app.renaming_window)
+        });
+        assert_eq!(name, original_name, "name must be unchanged after Escape");
+        assert!(still_renaming.is_none(), "renaming_window must be cleared after Escape");
+    }
+
+    /// Empty rename buffer must not overwrite the existing name.
+    #[test]
+    fn context_rename_ignores_empty_buffer() {
+        let mut h = PlexiUiHarness::new();
+        h.step();
+
+        let original_name = h.with_app(|app| app.router.active().name.clone());
+
+        h.with_app_mut(|app| {
+            let ctx_idx = app.router.active_idx();
+            app.rename_buffer = "   ".to_string(); // whitespace-only trims to empty
+            app.renaming_window = Some(ctx_idx);
+            app.focus_stack.push(FocusLayer::ContextRename);
+        });
+
+        h.harness().press_key(egui::Key::Enter);
+        h.step();
+
+        let name = h.with_app(|app| app.router.active().name.clone());
+        assert_eq!(name, original_name, "whitespace-only rename must be discarded");
     }
 }
