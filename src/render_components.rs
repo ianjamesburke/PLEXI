@@ -21,6 +21,48 @@ pub(crate) struct ComponentEventPayload {
     pub(crate) payload: Option<serde_json::Value>,
 }
 
+/// Focus and styling context for `UiNode::TextEdit` nodes within a component
+/// tree render pass. Tracks auto-focus state so only the first newly-visible
+/// TextEdit gets focused, and reports back whether any TextEdit has egui focus
+/// (so the host can suppress key forwarding).
+pub(crate) struct TextEditFocusCtx {
+    /// Set of TextEdit node_ids that were visible in the previous frame.
+    /// Used to detect newly-appearing fields for auto-focus.
+    pub(crate) prev_visible: std::collections::HashSet<String>,
+    /// Node_ids visible in the current frame. After render, this becomes
+    /// the next frame's `prev_visible`.
+    pub(crate) current_visible: std::collections::HashSet<String>,
+    /// True if the pane was just focused (tab switch, click).
+    pub(crate) pane_just_focused: bool,
+    /// Set to true during the frame once any TextEdit has been auto-focused,
+    /// preventing multiple fields from grabbing focus simultaneously.
+    focus_granted_this_frame: bool,
+    /// Set to true if any TextEdit has egui focus during this render pass.
+    /// Read by `RenderSession` to suppress key forwarding while the user types.
+    pub(crate) any_has_focus: bool,
+}
+
+impl TextEditFocusCtx {
+    pub(crate) fn new() -> Self {
+        Self {
+            prev_visible: std::collections::HashSet::new(),
+            current_visible: std::collections::HashSet::new(),
+            pane_just_focused: false,
+            focus_granted_this_frame: false,
+            any_has_focus: false,
+        }
+    }
+
+    /// Call after each frame to rotate visibility sets.
+    pub(crate) fn end_frame(&mut self) {
+        std::mem::swap(&mut self.prev_visible, &mut self.current_visible);
+        self.current_visible.clear();
+        self.focus_granted_this_frame = false;
+        self.any_has_focus = false;
+        self.pane_just_focused = false;
+    }
+}
+
 /// Render a `UiNode` tree into the provided egui `Ui`.
 ///
 /// Returns any interaction events that occurred during this frame so the
@@ -32,11 +74,15 @@ pub(crate) struct ComponentEventPayload {
 /// `text_edit_buffers` provides persistent per-node_id text buffers for
 /// `UiNode::TextEdit` nodes. The buffer is seeded from the app's `value`
 /// field when a new node_id first appears.
+///
+/// `focus_ctx` tracks auto-focus and click-focus state for TextEdit nodes
+/// across recursive calls.
 pub(crate) fn render_component_tree(
     ui: &mut Ui,
     node: &UiNode,
     colors: &Colors,
     text_edit_buffers: &mut std::collections::HashMap<String, String>,
+    focus_ctx: &mut TextEditFocusCtx,
 ) -> Vec<ComponentEventPayload> {
     let mut events: Vec<ComponentEventPayload> = Vec::new();
 
@@ -50,10 +96,10 @@ pub(crate) fn render_component_tree(
                 }
                 if padding.left > 0.0 {
                     ui.indent("stack_left_pad", |ui| {
-                        events.extend(render_stack(ui, direction, children, *gap, colors, text_edit_buffers));
+                        events.extend(render_stack(ui, direction, children, *gap, colors, text_edit_buffers, focus_ctx));
                     });
                 } else {
-                    events.extend(render_stack(ui, direction, children, *gap, colors, text_edit_buffers));
+                    events.extend(render_stack(ui, direction, children, *gap, colors, text_edit_buffers, focus_ctx));
                 }
                 if padding.bottom > 0.0 {
                     ui.add_space(padding.bottom);
@@ -68,14 +114,14 @@ pub(crate) fn render_component_tree(
                 egui::ScrollArea::vertical()
             };
             scroll.show(ui, |ui| {
-                events.extend(render_component_tree(ui, child, colors, text_edit_buffers));
+                events.extend(render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx));
             });
         }
 
         UiNode::Layer { children } => {
             // V1: sequential rendering (true Z-stacking is a future improvement).
             for child in children {
-                events.extend(render_component_tree(ui, child, colors, text_edit_buffers));
+                events.extend(render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx));
             }
         }
 
@@ -102,7 +148,7 @@ pub(crate) fn render_component_tree(
             // Render the child inside an interact-sense scope so we get a
             // Response covering the child's bounding rect.
             let child_response = ui.scope(|ui| {
-                let child_evts = render_component_tree(ui, child, colors, text_edit_buffers);
+                let child_evts = render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx);
                 // Bubble child events up.
                 (child_evts, ui.min_rect())
             });
@@ -141,6 +187,9 @@ pub(crate) fn render_component_tree(
             // V1: fresh cache per Raw node — loses cache state across frames.
             // A future pass will thread parent caches through. See epic #1897 A2.
             let mut raw_events: Vec<crate::app_protocol::PlexiEvent> = Vec::new();
+            // Raw escape-hatch uses a throwaway focus ctx — focus tracking doesn't
+            // apply to legacy draw commands embedded inside a component tree.
+            let mut raw_focus_ctx = TextEditFocusCtx::new();
             crate::process_app::render::render_draw_commands(
                 ui,
                 pane_rect,
@@ -155,6 +204,7 @@ pub(crate) fn render_component_tree(
                 &mut std::collections::HashMap::new(),
                 &mut raw_events,
                 text_edit_buffers,
+                &mut raw_focus_ctx,
             );
             // Convert any ComponentEvent payloads back from PlexiEvent (unlikely
             // from a Raw draw command, but keep the pipeline consistent).
@@ -273,39 +323,78 @@ pub(crate) fn render_component_tree(
                 buffer.truncate(*max_length);
             }
 
+            // Track visibility for auto-focus detection.
+            let newly_visible = !focus_ctx.prev_visible.contains(node_id.as_str());
+            focus_ctx.current_visible.insert(node_id.clone());
+
             let prev_value = buffer.clone();
             let widget_id = egui::Id::new(("text_edit_node", node_id.as_str()));
 
+            // Styling matches QuickNote overlay: frameless, monospace, accent cursor,
+            // dim hint text. See src/overlays/quick_note.rs lines 138-154.
             let response = ui.scope(|ui| {
                 ui.visuals_mut().text_cursor.stroke.width = 1.5;
                 ui.visuals_mut().text_cursor.stroke.color = colors.accent;
-                ui.visuals_mut().extreme_bg_color = colors.bg_active;
-                ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
-                ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
 
                 if *multiline {
+                    let hint = egui::RichText::new(placeholder.as_str())
+                        .color(colors.text_dim.linear_multiply(0.3))
+                        .size(style::TEXT_BODY);
                     let mut edit = egui::TextEdit::multiline(buffer)
                         .id(widget_id)
+                        .font(egui::FontId::monospace(style::TEXT_BODY))
+                        .text_color(colors.text_primary)
                         .desired_width(f32::INFINITY)
-                        .hint_text(placeholder.as_str())
-                        .font(egui::TextStyle::Body);
+                        .frame(false)
+                        .hint_text(hint);
                     if *max_length > 0 {
                         edit = edit.char_limit(*max_length);
                     }
                     ui.add(edit)
                 } else {
+                    let hint = egui::RichText::new(placeholder.as_str())
+                        .color(colors.text_dim.linear_multiply(0.3))
+                        .size(style::TEXT_BODY);
                     let mut edit = egui::TextEdit::singleline(buffer)
                         .id(widget_id)
+                        .font(egui::FontId::monospace(style::TEXT_BODY))
+                        .text_color(colors.text_primary)
                         .desired_width(f32::INFINITY)
-                        .hint_text(placeholder.as_str())
-                        .font(egui::TextStyle::Body)
-                        .margin(egui::Margin::symmetric(8, 5));
+                        .frame(false)
+                        .hint_text(hint);
                     if *max_length > 0 {
                         edit = edit.char_limit(*max_length);
                     }
                     ui.add(edit)
                 }
             }).inner;
+
+            // Auto-focus: first newly-visible TextEdit, or first TextEdit when
+            // the pane just gained keyboard focus.
+            if (newly_visible || focus_ctx.pane_just_focused)
+                && !focus_ctx.focus_granted_this_frame
+            {
+                response.request_focus();
+                focus_ctx.focus_granted_this_frame = true;
+                log::info!(
+                    "render_components: TextEdit auto-focus node_id={node_id} newly_visible={newly_visible} pane_focused={}",
+                    focus_ctx.pane_just_focused
+                );
+            }
+
+            // Click-to-focus: if the user clicked inside the TextEdit area,
+            // request focus so the cursor appears and typing works.
+            if response.clicked() {
+                response.request_focus();
+                log::debug!(
+                    "render_components: TextEdit click-focus node_id={node_id}"
+                );
+            }
+
+            // Track focus for key suppression.
+            if response.has_focus() {
+                focus_ctx.any_has_focus = true;
+            }
 
             // Emit "change" event when value differs from previous frame.
             if *buffer != prev_value {
@@ -611,7 +700,7 @@ pub(crate) fn render_component_tree(
                 .inner_margin(egui::Margin::same(pad as i8))
                 .show(ui, |ui| {
                     for child in children {
-                        events.extend(render_component_tree(ui, child, colors, text_edit_buffers));
+                        events.extend(render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx));
                     }
                 });
         }
@@ -696,6 +785,7 @@ fn render_stack(
     gap: f32,
     colors: &Colors,
     text_edit_buffers: &mut std::collections::HashMap<String, String>,
+    focus_ctx: &mut TextEditFocusCtx,
 ) -> Vec<ComponentEventPayload> {
     let mut events = Vec::new();
     match direction {
@@ -705,7 +795,7 @@ fn render_stack(
                     if i > 0 && gap > 0.0 {
                         ui.add_space(gap);
                     }
-                    events.extend(render_component_tree(ui, child, colors, text_edit_buffers));
+                    events.extend(render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx));
                 }
             });
         }
@@ -715,7 +805,7 @@ fn render_stack(
                     if i > 0 && gap > 0.0 {
                         ui.add_space(gap);
                     }
-                    events.extend(render_component_tree(ui, child, colors, text_edit_buffers));
+                    events.extend(render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx));
                 }
             });
         }

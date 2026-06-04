@@ -196,6 +196,7 @@ fn render_commands_to_png(commands: &[RenderCommand], width: u32, height: u32) -
                 let mut lv_offsets = std::collections::HashMap::new();
                 let mut lv_last_sel = std::collections::HashMap::new();
                 let mut te_buffers = std::collections::HashMap::new();
+                let mut te_focus_ctx = crate::render_components::TextEditFocusCtx::new();
                 crate::process_app::render::render_draw_commands(
                     ui, rect, commands, &colors, &mut cm_cache, &peaks,
                     &mut img_cache, &std::env::temp_dir(), false,
@@ -203,6 +204,7 @@ fn render_commands_to_png(commands: &[RenderCommand], width: u32, height: u32) -
                     &mut lv_last_sel,
                     &mut Vec::new(),
                     &mut te_buffers,
+                    &mut te_focus_ctx,
                 );
             });
     });
