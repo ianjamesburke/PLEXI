@@ -7,6 +7,29 @@ use crate::host::shell;
 use crate::workspace::WorkspaceFile;
 use std::path::PathBuf;
 
+/// Auto-initialize a project workspace at `root` if one does not already exist.
+///
+/// Idempotent: does nothing when `.plexi/workspace.toml` is already present.
+/// Non-fatal: logs a warning on failure but never prevents the root from being set.
+fn auto_init_workspace(root: &PathBuf) {
+    let marker = root.join(".plexi").join("workspace.toml");
+    if marker.exists() {
+        log::info!("auto_init_workspace: workspace already exists at {}", root.display());
+        return;
+    }
+    match crate::workspace::secrets::init_workspace(root) {
+        Ok(cfg) => log::info!(
+            "auto_init_workspace: initialized workspace_id={} at {}",
+            cfg.id,
+            root.display()
+        ),
+        Err(e) => log::warn!(
+            "auto_init_workspace: failed to initialize workspace at {}: {e}",
+            root.display()
+        ),
+    }
+}
+
 impl PlexiApp {
     /// Create a child context nested inside `parent_name`. Always creates a fresh
     /// terminal in the child (portal model — no pane adoption). Inserts a Portal
@@ -783,7 +806,8 @@ impl PlexiApp {
             self.router.active().context_id,
             root.display()
         );
-        self.router.get_mut(idx).root = Some(root);
+        self.router.get_mut(idx).root = Some(root.clone());
+        auto_init_workspace(&root);
         self.apply_context_transition_effects();
     }
 
