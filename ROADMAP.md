@@ -64,7 +64,7 @@ Current state: `UiNode` enum has 21 variants. L1 layout components (AppBar, Foot
 - [x] Remove `_l0` fallback fields from L1 nodes (Button, Input, Badge, Dot) (v0.0.603)
 - [x] Deprecate and remove L0 flat draw commands as the primary rendering path -- `render_tree()` now emits UiNode trees via `to_node()` when all children support it; `Raw { command }` stays as escape hatch for custom canvas (v0.0.606)
 - [x] Host-side L1 renderer -- `render_component_tree()` handles all 21 UiNode variants with consistent spacing, colors, and focus management (v0.0.606)
-- [ ] Component event routing (#1904) -- host fires `ComponentEvent` for interactive L1 nodes (Button click, Input submit, List select). Infrastructure exists; SDK surface in validate.
+- [x] Component event routing (#1904) -- host fires `ComponentEvent` for interactive L1 nodes; SDK `on_component_event` hook dispatches to apps (v0.0.609)
 
 ### 3b: SDK rewrite
 
