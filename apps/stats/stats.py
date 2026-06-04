@@ -1,4 +1,19 @@
 #!/usr/bin/env python3
+"""Stats — usage dashboard showing active time, visits, and project treemap.
+
+L1 Reference Implementation
+============================
+Patterns demonstrated:
+  - Column layout with AppBar + growable canvas Component + FooterKeys
+  - Treemap visualization via squarify algorithm (custom Component escape hatch)
+  - Drill-down navigation with view stack (click to zoom, Esc to go back)
+  - Timeline strip with hour markers (rolling 24h window)
+  - Event data parsing from events.jsonl (PLEXI_SOCKET-aware path resolution)
+  - Tree data structure with rollup aggregation
+  - Mouse click handling (on_click) for treemap cell and timeline interaction
+  - ctx.theme colors for text and surfaces; PALETTE for categorical treemap colors
+  - status_summary for pane status bar integration
+"""
 from __future__ import annotations
 
 import json

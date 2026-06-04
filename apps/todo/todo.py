@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Todo — fs.read + fs.write + persistence example for PGAP v3."""
+"""Todo — the "hello world that's useful." Simple list with persistence.
+
+L1 Reference Implementation
+============================
+Patterns demonstrated:
+  - Fully L1: Column + AppBar + Section + SelectList + FooterKeys + Label + Spacer
+  - TextInput for inline item creation
+  - JSON file persistence (.plexi/todos.json in workspace)
+  - on_path_changed: reloads data when workspace context changes
+  - on_escape for contextual mode exit (add mode vs. close)
+  - Minimal state: list of dicts, selected index, adding flag
+"""
 
 import json
 import pathlib

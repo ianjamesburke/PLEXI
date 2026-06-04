@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """Calculator — L1 component-based rendering.
 
-Demonstrates: ButtonRow click detection, AppBar, Heading, FooterKeys.
+L1 Reference Implementation
+============================
+Patterns demonstrated:
+  - Column layout with AppBar + Card + Heading + FooterKeys
+  - ButtonRow for clickable grid buttons (mouse tracking)
+  - Custom Component (ButtonGrid) for fixed grid layout
+  - State machine: digit entry, pending operator, equals evaluation
+  - ctx.theme colors for button fills (accent, danger, surface)
+  - on_escape for contextual clear vs. close
 """
 import os
 import sys

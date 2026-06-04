@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
-"""Logs — live tail of the Plexi host log, newest-first, color-coded by level."""
+"""Logs — live tail of the Plexi host log, newest-first, color-coded by level.
+
+L1 Reference Implementation
+============================
+Patterns demonstrated:
+  - Live data polling via on_timer (2s interval)
+  - AppBar + FooterKeys (L1) framing raw columnar log rows (escape hatch)
+  - Level-based filtering with clickable chip buttons (ctx.button)
+  - Target-based filtering (cycle through unique log targets)
+  - Search mode with host text_input
+  - Copy mode: keyboard + mouse selection, clipboard integration
+  - Mouse tracking: click-to-select, drag-to-extend, shift-click
+  - ctx.theme colors for level badges (danger, warning, accent)
+  - Scrollbar rendering with viewport clipping (push_clip/pop_clip)
+  NOTE: Some copy-mode highlight colors are hardcoded (no theme equivalent).
+"""
 
 import os
 import re
