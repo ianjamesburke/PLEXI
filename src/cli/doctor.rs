@@ -5,6 +5,18 @@ struct DoctorReport {
     healthy: bool,
     apps: Vec<AppReport>,
     llm_servers: Vec<LlmServerReport>,
+    openrouter: OpenRouterReport,
+}
+
+#[derive(Serialize)]
+struct OpenRouterReport {
+    configured: bool,
+    /// Number of models returned by OpenRouter's /v1/models endpoint.
+    /// None if the key is absent or the API call failed.
+    model_count: Option<usize>,
+    /// Human-readable status string for non-JSON output.
+    #[serde(skip)]
+    status: String,
 }
 
 #[derive(Serialize)]
@@ -18,6 +30,99 @@ struct LlmServerReport {
     name: String,
     url: String,
     models: Vec<String>,
+}
+
+/// Check whether an `openrouter-api-key` global secret is stored and, if so,
+/// validate it against the OpenRouter models endpoint.
+fn check_openrouter() -> OpenRouterReport {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::workspace_secrets::{keychain_user_name, MacKeychain, SecretStore};
+        let store = MacKeychain::new();
+        let account = keychain_user_name("openrouter-api-key");
+        match store.get(&account) {
+            None => {
+                log::info!("cli:doctor: openrouter-api-key not found in keychain");
+                return OpenRouterReport {
+                    configured: false,
+                    model_count: None,
+                    status: "not configured".to_string(),
+                };
+            }
+            Some(key) => {
+                log::info!("cli:doctor: openrouter-api-key found -- validating via API");
+                match probe_openrouter_key(key.as_str()) {
+                    Some(count) => {
+                        log::info!("cli:doctor: openrouter key valid -- {count} models");
+                        OpenRouterReport {
+                            configured: true,
+                            model_count: Some(count),
+                            status: format!("configured ({count} models available)"),
+                        }
+                    }
+                    None => {
+                        log::warn!("cli:doctor: openrouter key present but API validation failed");
+                        OpenRouterReport {
+                            configured: true,
+                            model_count: None,
+                            status: "configured (key set, API unreachable)".to_string(),
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        log::info!("cli:doctor: openrouter check skipped -- keychain not available on this platform");
+        OpenRouterReport {
+            configured: false,
+            model_count: None,
+            status: "not configured (keychain unavailable)".to_string(),
+        }
+    }
+}
+
+/// Validate an OpenRouter API key by calling GET /api/v1/models.
+/// Returns the number of models on success, or None if the call fails.
+fn probe_openrouter_key(api_key: &str) -> Option<usize> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_millis(3000))
+        .timeout(std::time::Duration::from_secs(5))
+        .build();
+
+    let resp = match agent
+        .get("https://openrouter.ai/api/v1/models")
+        .set("Authorization", &format!("Bearer {api_key}"))
+        .call()
+    {
+        Ok(r) => r,
+        Err(e) => {
+            log::debug!("cli:doctor: openrouter probe failed: {e}");
+            return None;
+        }
+    };
+
+    let text = match resp.into_string() {
+        Ok(t) => t,
+        Err(e) => {
+            log::debug!("cli:doctor: openrouter probe read error: {e}");
+            return None;
+        }
+    };
+
+    let body: serde_json::Value = match serde_json::from_str(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            log::debug!("cli:doctor: openrouter probe bad JSON: {e}");
+            return None;
+        }
+    };
+
+    // OpenRouter /v1/models returns {"data":[{"id":"..."},...]}
+    body["data"]
+        .as_array()
+        .map(|arr| arr.len())
 }
 
 /// Probe a single LLM server endpoint.
@@ -104,8 +209,9 @@ pub fn doctor_cli(json: bool) -> i32 {
         crate::config::active_workspace_root().as_deref(),
     );
 
-    // Probe for local LLM servers before the app audit.
+    // Probe for local LLM servers and OpenRouter before the app audit.
     let llm_servers = discover_llm_servers();
+    let openrouter = check_openrouter();
 
     let installed = registry.list();
     if installed.is_empty() {
@@ -114,6 +220,7 @@ pub fn doctor_cli(json: bool) -> i32 {
                 healthy: true,
                 apps: Vec::new(),
                 llm_servers,
+                openrouter,
             };
             match serde_json::to_string_pretty(&report) {
                 Ok(s) => println!("{s}"),
@@ -125,6 +232,7 @@ pub fn doctor_cli(json: bool) -> i32 {
         } else {
             println!("No apps installed.");
             print_llm_section(&llm_servers);
+            print_openrouter_section(&openrouter);
         }
         return 0;
     }
@@ -150,6 +258,7 @@ pub fn doctor_cli(json: bool) -> i32 {
             healthy,
             apps: sick_apps,
             llm_servers,
+            openrouter,
         };
         match serde_json::to_string_pretty(&report) {
             Ok(s) => println!("{s}"),
@@ -188,11 +297,21 @@ pub fn doctor_cli(json: bool) -> i32 {
         }
 
         print_llm_section(&llm_servers);
+        print_openrouter_section(&openrouter);
     }
 
     log::info!("cli:doctor: audit complete -- {total} app(s), {sick_count} unhealthy");
 
     if healthy { 0 } else { 1 }
+}
+
+/// Print the OpenRouter section to stdout.
+fn print_openrouter_section(report: &OpenRouterReport) {
+    println!("\nOpenRouter:");
+    println!("  {}", report.status);
+    if !report.configured {
+        println!("  --> run: plexi secret set openrouter-api-key --global");
+    }
 }
 
 /// Print the local LLM servers section to stdout.
