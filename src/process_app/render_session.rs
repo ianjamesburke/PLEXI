@@ -17,8 +17,9 @@ pub(crate) struct RenderSession {
     /// IDs of `TextInput` widgets visible in the most recently rendered frame.
     /// Used to detect newly-visible inputs for auto-focus.
     text_input_visible_prev: HashSet<String>,
-    /// True when any `TextInput` widget had egui focus during the last render pass.
-    /// Read by `handle_key` in mod.rs to suppress key forwarding while the user types.
+    /// True when any `TextInput` or `TextEdit` widget had egui focus during the
+    /// last render pass. Read by `handle_key` in mod.rs to suppress key
+    /// forwarding while the user types.
     pub(crate) text_input_has_focus: bool,
     /// Per-region scroll offsets for `DrawCommand::BeginScroll` / `EndScroll`.
     /// Key = scroll region id; value = current vertical offset in logical pixels.
@@ -38,6 +39,9 @@ pub(crate) struct RenderSession {
     /// Events accumulated during one render pass. Drained after render into
     /// `ProcessApp::outbound_events` by `drain_events`.
     pub(crate) outbound_events: Vec<PlexiEvent>,
+    /// Focus/visibility tracking for `UiNode::TextEdit` nodes in component trees.
+    /// Persists across frames to detect newly-visible fields for auto-focus.
+    text_edit_focus_ctx: crate::render_components::TextEditFocusCtx,
 }
 
 impl RenderSession {
@@ -53,6 +57,7 @@ impl RenderSession {
             list_view_intercepts_nav: false,
             pane_just_focused: false,
             outbound_events: Vec::new(),
+            text_edit_focus_ctx: crate::render_components::TextEditFocusCtx::new(),
         }
     }
 
@@ -80,6 +85,10 @@ impl RenderSession {
     ) {
         log::debug!("render_session: render pane_id={} cmds={}", pane_id, frame.len());
 
+        // Propagate pane_just_focused into the TextEdit focus context so
+        // ComponentTree TextEdit nodes auto-focus on pane switch.
+        self.text_edit_focus_ctx.pane_just_focused = self.pane_just_focused;
+
         // ── Pass 1: draw commands ────────────────────────────────────────────
         crate::process_app::render::render_draw_commands(
             ui,
@@ -95,6 +104,7 @@ impl RenderSession {
             &mut self.list_view_last_aligned_sel,
             &mut self.outbound_events,
             &mut self.text_edit_buffers,
+            &mut self.text_edit_focus_ctx,
         );
 
         // ── Pass 2: TextInput widgets ────────────────────────────────────────
@@ -110,6 +120,15 @@ impl RenderSession {
         if !scroll_consumed {
             self.render_app_scroll(ui, pane_rect, frame);
         }
+
+        // Merge TextEdit focus state: if any ComponentTree TextEdit has focus,
+        // suppress key forwarding (same as TextInput focus).
+        if self.text_edit_focus_ctx.any_has_focus {
+            self.text_input_has_focus = true;
+        }
+
+        // Rotate TextEdit visibility sets for next-frame auto-focus detection.
+        self.text_edit_focus_ctx.end_frame();
     }
 
     /// Pass 2: render every `RenderCommand::TextInput` as a real egui `TextEdit`.

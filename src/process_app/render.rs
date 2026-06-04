@@ -46,6 +46,7 @@ pub(crate) fn render_draw_commands(
     list_view_last_aligned_sel: &mut HashMap<String, usize>,
     outbound_events: &mut Vec<crate::app_protocol::PlexiEvent>,
     text_edit_buffers: &mut HashMap<String, String>,
+    text_edit_focus_ctx: &mut crate::render_components::TextEditFocusCtx,
 ) {
     let origin = pane_rect.min;
 
@@ -1011,7 +1012,7 @@ pub(crate) fn render_draw_commands(
                     pane_rect.min
                 );
                 let component_events =
-                    crate::render_components::render_component_tree(ui, root, colors, text_edit_buffers);
+                    crate::render_components::render_component_tree(ui, root, colors, text_edit_buffers, text_edit_focus_ctx);
                 for evt in component_events {
                     log::info!(
                         "render: ComponentEvent node_id={} event_type={}",
