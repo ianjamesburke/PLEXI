@@ -623,42 +623,54 @@ pub fn self_update_cli() -> i32 {
 
     // For non-main channels, patch the bundle's Info.plist and rename the binary
     // inside it. This mirrors the per-channel patching in scripts/install.sh.
+    // If any patch fails, abort — a misconfigured bundle would break the channel.
     if !suffix.is_empty() {
         log::info!("cli: self-update patching bundle for channel={channel}");
         let plist = staging.join("Contents/Info.plist");
-        if plist.exists() {
-            let plist_str = plist.to_string_lossy();
-            for (key, val) in [
-                ("CFBundleName", display.as_str()),
-                ("CFBundleDisplayName", display.as_str()),
-                ("CFBundleIdentifier", bundle_id.as_str()),
-                ("CFBundleExecutable", binary_name),
-            ] {
-                let plutil_out = std::process::Command::new("/usr/bin/plutil")
-                    .args(["-replace", key, "-string", val, &plist_str])
-                    .output();
-                match plutil_out {
-                    Ok(out) if out.status.success() => {}
-                    Ok(out) => {
-                        log::warn!("cli: self-update plutil -replace {key} failed: {}",
-                            String::from_utf8_lossy(&out.stderr));
-                    }
-                    Err(e) => {
-                        log::warn!("cli: self-update failed to run plutil: {e}");
-                    }
+        if !plist.exists() {
+            eprintln!("error: Info.plist not found in staged bundle at {}", plist.display());
+            let _ = std::fs::remove_dir_all(&staging);
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            return 1;
+        }
+        let plist_str = plist.to_string_lossy();
+        for (key, val) in [
+            ("CFBundleName", display.as_str()),
+            ("CFBundleDisplayName", display.as_str()),
+            ("CFBundleIdentifier", bundle_id.as_str()),
+            ("CFBundleExecutable", binary_name),
+        ] {
+            let plutil_out = std::process::Command::new("/usr/bin/plutil")
+                .args(["-replace", key, "-string", val, &plist_str])
+                .output();
+            match plutil_out {
+                Ok(out) if out.status.success() => {}
+                Ok(out) => {
+                    eprintln!("error: plutil -replace {key} failed: {}",
+                        String::from_utf8_lossy(&out.stderr));
+                    let _ = std::fs::remove_dir_all(&staging);
+                    let _ = std::fs::remove_dir_all(&tmp_dir);
+                    return 1;
+                }
+                Err(e) => {
+                    eprintln!("error: failed to run plutil: {e}");
+                    let _ = std::fs::remove_dir_all(&staging);
+                    let _ = std::fs::remove_dir_all(&tmp_dir);
+                    return 1;
                 }
             }
-            // Rename the binary inside the bundle from plexi → plexi-<channel>.
-            let macos_dir = staging.join("Contents/MacOS");
-            let old_bin = macos_dir.join("plexi");
-            let new_bin = macos_dir.join(binary_name);
-            if old_bin.exists() && old_bin != new_bin {
-                if let Err(e) = std::fs::rename(&old_bin, &new_bin) {
-                    log::warn!("cli: self-update failed to rename binary: {e}");
-                }
+        }
+        // Rename the binary inside the bundle from plexi → plexi-<channel>.
+        let macos_dir = staging.join("Contents/MacOS");
+        let old_bin = macos_dir.join("plexi");
+        let new_bin = macos_dir.join(binary_name);
+        if old_bin.exists() && old_bin != new_bin {
+            if let Err(e) = std::fs::rename(&old_bin, &new_bin) {
+                eprintln!("error: failed to rename binary in bundle: {e}");
+                let _ = std::fs::remove_dir_all(&staging);
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+                return 1;
             }
-        } else {
-            log::warn!("cli: self-update plist not found at {}", plist.display());
         }
     }
 
