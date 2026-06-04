@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Backlog viewer — browse, preview, open, archive, delete, and add backlog items.
 
-hjkl navigation. e/Enter opens in default app. a archives. d deletes (confirm).
-n creates a new item via host TextInput (issue #283). r refreshes. / searches.
+hjkl navigation. e edits inline. Enter opens in default app. a archives.
+d deletes (confirm). n creates a new item via inline TextEdit. r refreshes.
+/ searches.
 Shows items from two sources merged by mtime:
   - workspace backlog: <workspace>/.plexi/backlog/
   - channel backlog:   $PLEXI_CONFIG_DIR/backlog/ (quick notes from host ⌘0)
@@ -15,13 +16,14 @@ L1 Reference Implementation
 Patterns demonstrated:
   - Column layout with AppBar + growable body + FooterKeys
   - SelectList for navigable item lists
-  - TextInput for inline item creation (overlay)
+  - TextEdit for inline item creation and editing (component_tree overlay)
   - Two-pane split via custom Component (escape hatch for HSplit)
   - Filesystem persistence (read/write/delete backlog .md files)
   - CLI argument parsing via Arg descriptor
   - Multi-source data merging (workspace + channel backlog dirs)
   - Search/filter mode with live refiltering
   - Confirm-delete overlay pattern
+  - on_component_event for TextEdit change/submit handling
   - ctx.theme colors throughout (no hardcoded colors)
 """
 
@@ -32,10 +34,10 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
-from plexi_sdk import App, RenderContext, Arg
+from plexi_sdk import App, RenderContext, Arg, TextEdit
 from plexi_sdk.ui import (
     AppBar, Column, Component, Footer, FooterKeys,
-    SelectList, TextInput,
+    SelectList,
     SPACE_MD, TEXT_HINT, TEXT_BODY, TEXT_CAPTION,
 )
 
@@ -147,12 +149,14 @@ class BacklogApp(App):
         self.preview_path = None
         self.confirm_delete = False
         self.in_add = False
+        self._add_value = ""
+        self.in_edit = False
+        self._edit_value = ""
+        self._edit_path: "Path | None" = None
         self.status = ""
 
         # Stateful widgets — created once here, stable across renders
         self._item_list = SelectList([])
-        self._add_input = TextInput("backlog-new",
-                                    placeholder="Title (Enter to create, Esc to cancel)")
         self._body = _TwoPaneBody(self)
 
         self._load()
@@ -239,7 +243,7 @@ class BacklogApp(App):
         self._load()
 
     def _create_item(self, title: str) -> None:
-        """Create a new backlog item from a TextInput submission."""
+        """Create a new backlog item from a TextEdit submission."""
         title = title.strip()
         if not title:
             self.in_add = False
@@ -281,6 +285,80 @@ class BacklogApp(App):
         self.selected = max(0, self.selected - 1)
         self._load()
 
+    def _start_edit(self) -> None:
+        """Enter inline edit mode for the selected item."""
+        if not self.filtered:
+            return
+        path = self.filtered[self.selected]
+        self._edit_path = path
+        self._edit_value = path.stem
+        self.in_edit = True
+        self.emit.info(f"backlog: editing {path.name}")
+
+    # ── Component events (TextEdit) ────────────────────────────────────────────
+
+    def on_component_event(self, ctx, node_id, event_type, payload):
+        value = (payload or {}).get("value", "")
+        if node_id == "backlog-add":
+            if event_type == "change":
+                self._add_value = value
+            elif event_type == "submit":
+                ctx.info(f"backlog: add submit: {value!r}")
+                self._create_item(value)
+                self._add_value = ""
+        elif node_id == "backlog-edit":
+            if event_type == "change":
+                self._edit_value = value
+            elif event_type == "submit":
+                ctx.info(f"backlog: edit submit: {value!r}")
+                self._rename_item(value)
+
+    def _rename_item(self, new_title: str) -> None:
+        """Rename the file for the item being edited."""
+        new_title = new_title.strip()
+        if not new_title or self._edit_path is None:
+            self.in_edit = False
+            self._edit_path = None
+            return
+        old_path = self._edit_path
+        safe = "".join(c if c.isalnum() or c in " -_" else "-" for c in new_title)
+        safe = safe.strip().replace(" ", "-").lower() or "untitled"
+        new_path = old_path.parent / f"{safe}.md"
+        if new_path != old_path:
+            n = 2
+            while new_path.exists():
+                new_path = old_path.parent / f"{safe}-{n}.md"
+                n += 1
+            try:
+                # Rewrite file with new title heading, then rename
+                content = old_path.read_text(errors="replace")
+                lines = content.splitlines(keepends=True)
+                if lines and lines[0].startswith("# "):
+                    lines[0] = f"# {new_title}\n"
+                else:
+                    lines.insert(0, f"# {new_title}\n")
+                old_path.write_text("".join(lines))
+                old_path.rename(new_path)
+                self.status = f"Renamed to {new_path.name}"
+            except OSError as e:
+                self.status = f"Error: {e}"
+        else:
+            # Same filename, just update the heading
+            try:
+                content = old_path.read_text(errors="replace")
+                lines = content.splitlines(keepends=True)
+                if lines and lines[0].startswith("# "):
+                    lines[0] = f"# {new_title}\n"
+                else:
+                    lines.insert(0, f"# {new_title}\n")
+                old_path.write_text("".join(lines))
+                self.status = f"Updated {old_path.name}"
+            except OSError as e:
+                self.status = f"Error: {e}"
+        self.in_edit = False
+        self._edit_path = None
+        self._load()
+
     # ── Render ───────────────────────────────────────────────────────────────────
 
     def on_render(self, ctx: RenderContext) -> None:
@@ -300,7 +378,8 @@ class BacklogApp(App):
         else:
             footer_widget = FooterKeys([
                 ("j/k", "navigate"),
-                ("e", "open"),
+                ("Enter", "open"),
+                ("e", "edit"),
                 ("n", "new"),
                 ("a", "archive"),
                 ("d", "delete"),
@@ -314,20 +393,31 @@ class BacklogApp(App):
             footer_widget,
         ], padding=0.0, padding_top=0, gap=0.0))
 
-        # Check TextInput submission (only active when in_add is True)
-        if self.in_add:
-            submitted = self._add_input.submitted
-            if submitted is not None:
-                self._create_item(submitted)
-
-        # ── Add-item overlay ─────────────────────────────────────────────────────
+        # ── Add-item overlay (TextEdit) ──────────────────────────────────────────
         if self.in_add:
             ox, oy, ow, oh = w / 2 - 200, h / 2 - 36, 400, 86
             ctx.rect(ox, oy, ow, oh, ctx.theme.surface, radius=6.0)
             ctx.rect(ox, oy, ow, 1, ctx.theme.highlight)
             ctx.text(ox + 16, oy + 12, "New backlog item",
                      size=TEXT_CAPTION, color=ctx.theme.accent, bold=True)
-            self._add_input.render(ctx, ox + 16, oy + 36, ow - 32, self._add_input.height)
+            ctx.render_tree(TextEdit(
+                "backlog-add",
+                placeholder="Title (Enter to create, Esc to cancel)",
+                value=self._add_value,
+            ).to_node())
+
+        # ── Edit-item overlay (TextEdit) ─────────────────────────────────────────
+        if self.in_edit and self._edit_path is not None:
+            ox, oy, ow, oh = w / 2 - 200, h / 2 - 36, 400, 86
+            ctx.rect(ox, oy, ow, oh, ctx.theme.surface, radius=6.0)
+            ctx.rect(ox, oy, ow, 1, ctx.theme.highlight)
+            ctx.text(ox + 16, oy + 12, "Edit item title",
+                     size=TEXT_CAPTION, color=ctx.theme.accent, bold=True)
+            ctx.render_tree(TextEdit(
+                "backlog-edit",
+                placeholder="New title (Enter to save, Esc to cancel)",
+                value=self._edit_value,
+            ).to_node())
 
         # ── Delete confirm overlay ───────────────────────────────────────────────
         if self.confirm_delete and self.filtered:
@@ -346,6 +436,12 @@ class BacklogApp(App):
         self.status = ""
         if self.in_add:
             self.in_add = False
+            self._add_value = ""
+            return True
+        if self.in_edit:
+            self.in_edit = False
+            self._edit_value = ""
+            self._edit_path = None
             return True
         if self.confirm_delete:
             self.confirm_delete = False
@@ -360,8 +456,12 @@ class BacklogApp(App):
     def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
         self.status = ""   # clear on any key
 
-        # ── Add-item mode (host owns the buffer) ─────────────────────────────────
+        # ── Add-item mode (host owns the TextEdit buffer) ────────────────────────
         if self.in_add:
+            return
+
+        # ── Edit-item mode (host owns the TextEdit buffer) ───────────────────────
+        if self.in_edit:
             return
 
         # ── Confirm-delete mode ──────────────────────────────────────────────────
@@ -389,14 +489,17 @@ class BacklogApp(App):
             self._item_list.handle_key(key)
             self.selected = self._item_list.selected_idx
             self._cache_preview()
-        elif key in ("e", "return"):
+        elif key == "return":
             self._open()
+        elif key == "e":
+            self._start_edit()
         elif key == "a":
             self._archive()
         elif key == "d" and self.filtered:
             self.confirm_delete = True
         elif key == "n":
             self.in_add = True
+            self._add_value = ""
         elif key == "r":
             self._load()
             self.status = "Refreshed"
