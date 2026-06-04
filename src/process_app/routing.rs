@@ -1744,9 +1744,10 @@ impl ProcessApp {
             // ── App state save ─────────────────────────────────────────────
             AppRequest::SaveAppState { payload } => {
                 let filename = format!("{}.json", self.type_id);
-                let workspace_toml = self.workspace_root.join(".plexi").join("workspace.toml");
+                let channel_dir = crate::config::workspace_channel_dir();
+                let workspace_toml = self.workspace_root.join(&channel_dir).join("workspace.toml");
                 let state_path = if workspace_toml.exists() {
-                    self.workspace_root.join(".plexi").join("app_states").join(&filename)
+                    self.workspace_root.join(&channel_dir).join("app_states").join(&filename)
                 } else {
                     crate::config::config_dir().join("app_states").join(&filename)
                 };

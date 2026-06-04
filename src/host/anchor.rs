@@ -32,13 +32,14 @@ pub struct Anchor {
 }
 
 impl Anchor {
-    /// Detect an anchor at `path`. Returns `Some` if `path/.plexi/` exists
+    /// Detect an anchor at `path`. Returns `Some` if `path/<channel_dir>/` exists
     /// and `path` is not a profile directory (`~/.plexi*`).
     ///
     /// Reads `workspace.toml` for workspace_id and context defaults if present.
     pub fn detect(path: &Path) -> Option<Self> {
-        let dot_plexi = path.join(".plexi");
-        if !dot_plexi.is_dir() {
+        let channel_dir = crate::config::workspace_channel_dir();
+        let channel_path = path.join(&channel_dir);
+        if !channel_path.is_dir() {
             return None;
         }
 

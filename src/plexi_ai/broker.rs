@@ -271,7 +271,7 @@ fn build_context_prefix(
 
     // Append up to 20 recent workspace events (~8000 chars budget).
     let events_path = workspace_root
-        .join(".plexi")
+        .join(crate::config::workspace_channel_dir())
         .join("events.jsonl");
     let recent = crate::host::event_log::read_recent(&events_path, 20);
     if !recent.is_empty() {

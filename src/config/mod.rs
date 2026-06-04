@@ -157,7 +157,7 @@ fn check_unknown_keys(
 pub fn validate_all() -> Vec<ConfigDiagnostic> {
     let mut diags = validate_from_path(&config_path());
     if let Some(root) = active_workspace_root() {
-        let project_path = root.join(".plexi").join("config.toml");
+        let project_path = root.join(workspace_channel_dir()).join("config.toml");
         diags.extend(validate_from_path(&project_path));
     }
     diags
@@ -645,6 +645,25 @@ fn channel_suffix_from_basename(basename: &str) -> String {
     } else {
         ".plexi".to_string()
     }
+}
+
+/// Returns the workspace channel directory name for the current binary.
+/// This is the dot-prefixed dir used inside workspace roots to scope
+/// workspace state per channel: `.plexi` (main), `.plexi-alpha`, `.plexi-beta`,
+/// `.plexi-pr-N`, etc. This is the single source of truth for workspace
+/// channel dirs — never derive it independently elsewhere.
+pub fn workspace_channel_dir() -> String {
+    if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
+        return format!(".plexi-{profile}");
+    }
+    static CHANNEL_DIR: OnceLock<String> = OnceLock::new();
+    CHANNEL_DIR.get_or_init(|| {
+        let basename = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "plexi".to_string());
+        channel_suffix_from_basename(&basename)
+    }).clone()
 }
 
 /// Returns the config directory name based on the running binary basename.

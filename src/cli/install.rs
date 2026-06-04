@@ -122,9 +122,9 @@ pub fn install_pack_cli(spec: &str) -> i32 {
     }
 }
 
-/// `plexi install` with no args — detect `.plexi/apps.toml` and apply it.
+/// `plexi install` with no args — detect `<channel_dir>/apps.toml` and apply it.
 ///
-/// Walks up from CWD looking for `.plexi/` (the workspace marker), reads
+/// Walks up from CWD looking for the channel dir (workspace marker), reads
 /// `apps.toml` from it, and installs declared apps into the workspace-scoped
 /// channel apps dir (`<workspace_root>/<channel_dir>/apps/`).
 pub fn install_workspace_pack_cli() -> i32 {
@@ -134,7 +134,9 @@ pub fn install_workspace_pack_cli() -> i32 {
         Err(e) => { eprintln!("error: {e}"); return 1; }
     };
 
-    // Walk up from CWD looking for `.plexi/` (workspace marker).
+    let channel_dir = crate::config::workspace_channel_dir();
+
+    // Walk up from CWD looking for the channel dir (workspace marker).
     let workspace_root = {
         let home = dirs::home_dir();
         let mut current = cwd.clone();
@@ -148,7 +150,7 @@ pub fn install_workspace_pack_cli() -> i32 {
             if current == std::path::Path::new("/") {
                 break;
             }
-            if current.join(".plexi").is_dir() {
+            if current.join(&channel_dir).is_dir() {
                 found = Some(current);
                 break;
             }
@@ -161,14 +163,14 @@ pub fn install_workspace_pack_cli() -> i32 {
 
     let Some(root) = workspace_root else {
         eprintln!("Usage: plexi app install <source-spec>[@ref] | plexi app install --pack <path|core>");
-        eprintln!("  In a workspace (directory with .plexi/apps.toml), `plexi app install` applies the manifest.");
+        eprintln!("  In a workspace (directory with {channel_dir}/), `plexi app install` applies the manifest.");
         eprintln!("  Run `plexi workspace init` to initialize a workspace here.");
         return 1;
     };
 
-    let apps_toml = root.join(".plexi").join("apps.toml");
+    let apps_toml = root.join(&channel_dir).join("apps.toml");
     if !apps_toml.exists() {
-        eprintln!("no .plexi/apps.toml found in workspace at {}", root.display());
+        eprintln!("no {channel_dir}/apps.toml found in workspace at {}", root.display());
         eprintln!("  Declare app dependencies there, then re-run `plexi app install`.");
         eprintln!("  Usage: plexi app install <source-spec>[@ref] | plexi app install --pack <path|core>");
         return 1;

@@ -2062,8 +2062,9 @@ fn load_app_state(type_id: &str, workspace_root: &std::path::Path) -> serde_json
     let filename = format!("{type_id}.json");
 
     // Migrate old app_state/ → app_states/ on first access (workspace).
-    let ws_old = workspace_root.join(".plexi").join("app_state");
-    let ws_new = workspace_root.join(".plexi").join("app_states");
+    let channel_dir = crate::config::workspace_channel_dir();
+    let ws_old = workspace_root.join(&channel_dir).join("app_state");
+    let ws_new = workspace_root.join(&channel_dir).join("app_states");
     migrate_app_state_dir(&ws_old, &ws_new);
 
     let workspace_path = ws_new.join(&filename);

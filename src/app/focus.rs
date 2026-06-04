@@ -275,7 +275,7 @@ impl PlexiApp {
 
         let mut all_diags = crate::config::validate_from_path(&crate::config::config_path());
         if let Some(root) = active_workspace.as_ref() {
-            let project_path = root.join(".plexi").join("config.toml");
+            let project_path = root.join(crate::config::workspace_channel_dir()).join("config.toml");
             all_diags.extend(crate::config::validate_from_path(&project_path));
         }
 
