@@ -12,20 +12,25 @@ use std::path::PathBuf;
 /// Idempotent: does nothing when `.plexi/workspace.toml` is already present.
 /// Non-fatal: logs a warning on failure but never prevents the root from being set.
 fn auto_init_workspace(root: &std::path::Path) {
-    let marker = root.join(".plexi").join("workspace.toml");
-    if marker.exists() {
-        log::info!("auto_init_workspace: workspace already exists at {}", root.display());
+    let channel_dir_name = crate::config::config_dir()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(".plexi")
+        .to_string();
+    let channel_path = root.join(&channel_dir_name);
+    if channel_path.exists() {
+        log::info!("auto_init_workspace: channel dir already exists at {}", channel_path.display());
         return;
     }
-    match crate::workspace::secrets::init_workspace(root) {
-        Ok(cfg) => log::info!(
-            "auto_init_workspace: initialized workspace_id={} at {}",
-            cfg.id,
+    match std::fs::create_dir_all(&channel_path) {
+        Ok(()) => log::info!(
+            "auto_init_workspace: created channel dir {} at {}",
+            channel_dir_name,
             root.display()
         ),
         Err(e) => log::warn!(
-            "auto_init_workspace: failed to initialize workspace at {}: {e}",
-            root.display()
+            "auto_init_workspace: could not create channel dir {}: {e}",
+            channel_path.display()
         ),
     }
 }
