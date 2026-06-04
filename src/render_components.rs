@@ -448,7 +448,7 @@ pub(crate) fn render_component_tree(
         }
 
         UiNode::Section { title, .. } => {
-            let total_h = style::SPACE_SM + style::TEXT_HINT + 4.0 + 1.0 + style::SPACE_SM;
+            let total_h = style::SPACE_SM + style::TEXT_HINT + style::SPACE_XS + 1.0 + style::SPACE_XS;
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(ui.available_width(), total_h), egui::Sense::hover());
             let painter = ui.painter();
@@ -461,7 +461,7 @@ pub(crate) fn render_component_tree(
                 )
             });
             painter.galley(egui::pos2(rect.min.x, label_y), galley, colors.text_dim);
-            let line_y = label_y + style::TEXT_HINT + 4.0;
+            let line_y = label_y + style::TEXT_HINT + style::SPACE_XS;
             painter.rect_filled(
                 egui::Rect::from_min_size(
                     egui::pos2(rect.min.x, line_y),

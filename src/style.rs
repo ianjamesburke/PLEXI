@@ -20,13 +20,14 @@
 //! ## When to add a token
 //! When two or more places need the same value. The token set here is
 //! intentionally minimal — only the constants actually referenced in the
-//! codebase. Add scale holes (e.g. `SPACE_XS`, `MODAL_WIDTH_SM`) as soon as
-//! a migration needs them, not speculatively.
+//! codebase. Add scale holes (e.g. `MODAL_WIDTH_SM`) as soon as a
+//! migration needs them, not speculatively.
 
 use egui::CornerRadius;
 
 // ── Spacing scale ──────────────────────────────────────────────────────────
 // 4-based scale. Use these for padding, margins, gaps between siblings.
+pub const SPACE_XS: f32 = 4.0;
 pub const SPACE_SM: f32 = 8.0;
 pub const SPACE_MD: f32 = 12.0;
 pub const SPACE_XL: f32 = 24.0;
@@ -84,7 +85,7 @@ pub const BADGE_MIN_W: f32 = 32.0;  // floor width; prevents single-char scrunch
 // ── App protocol — KeyChip geometry ──────────────────────────────────────
 // Padding tokens for the host-rendered KeyChip / KeyChipRow DrawCommands.
 pub const KEYCHIP_PAD_H: f32 = 5.0;    // horizontal padding (text-to-edge each side)
-pub const KEYCHIP_PAD_V: f32 = 1.0;    // vertical padding
+pub const KEYCHIP_PAD_V: f32 = 3.0;    // vertical padding
 pub const KEYCHIP_MIN_W: f32 = 16.0;   // floor width; prevents single-char cramping
 pub const KEYCHIP_GAP: f32 = 2.0;      // gap between chips in a KeyChipRow
 pub const KEYCHIP_DESC_GAP: f32 = 10.0; // gap between last chip and description

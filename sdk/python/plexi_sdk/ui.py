@@ -443,12 +443,14 @@ class Section(Component):
     """Section divider with a small uppercase label sitting above the rule.
 
     Vertical stack: SPACE_SM padding, label (TEXT_HINT), SPACE_XS, divider,
-    SPACE_SM padding.
+    SPACE_XS padding. The bottom padding is intentionally tight (SPACE_XS
+    instead of SPACE_SM) so the section headline sits close to its
+    associated content block below.
     """
     title: str
 
     def measure(self, avail_w: float) -> float:
-        return SPACE_SM + TEXT_HINT + SPACE_XS + 1.0 + SPACE_SM
+        return SPACE_SM + TEXT_HINT + SPACE_XS + 1.0 + SPACE_XS
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         label_y = y + SPACE_SM
@@ -475,7 +477,7 @@ class KeyRow(Component):
     description: str
 
     HEIGHT = 28.0
-    CHIP_PAD_V = 1.0  # used for measure() height only
+    CHIP_PAD_V = 3.0  # used for measure() height only; keep in sync with KEYCHIP_PAD_V in style.rs
 
     def _keys(self) -> List[str]:
         if isinstance(self.key, list):
@@ -783,7 +785,7 @@ class FooterKeys(Component):
 
     # TOP_GAP reduced from SPACE_MD (12px) to SPACE_SM (8px) — trimmer chrome.
     TOP_GAP = SPACE_SM
-    CHIP_H = TEXT_HINT + 2.0 * 1.0   # TEXT_HINT + 2*CHIP_PAD_V
+    CHIP_H = TEXT_HINT + 2.0 * 3.0   # TEXT_HINT + 2*KEYCHIP_PAD_V (style.rs)
     # Single-row height. The host wraps the row to multiple lines when
     # `max_width` can't fit everything; very narrow panes may render past
     # this measurement. Apps wanting exact bounded footers should put
