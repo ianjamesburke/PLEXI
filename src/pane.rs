@@ -24,6 +24,8 @@ pub struct PortalPane {
     pub pane_id: PaneId,
     pub target_context_id: u64,
     pub context_state: Option<crate::context_state::ContextState>,
+    /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
+    pub hidden: bool,
 }
 
 impl Pane {
@@ -32,6 +34,22 @@ impl Pane {
             Pane::Terminal(t) => t.id,
             Pane::App(a) => a.id,
             Pane::Portal(p) => p.pane_id,
+        }
+    }
+
+    pub fn is_hidden(&self) -> bool {
+        match self {
+            Pane::Terminal(t) => t.hidden,
+            Pane::App(a) => a.hidden,
+            Pane::Portal(p) => p.hidden,
+        }
+    }
+
+    pub fn set_hidden(&mut self, val: bool) {
+        match self {
+            Pane::Terminal(t) => t.hidden = val,
+            Pane::App(a) => a.hidden = val,
+            Pane::Portal(p) => p.hidden = val,
         }
     }
 
@@ -110,6 +128,8 @@ pub struct TerminalPane {
     pub(crate) outside_workspace_cached: bool,
     pub(crate) outside_workspace_checked_at: Option<std::time::Instant>,
     pub(crate) outside_workspace_root: Option<PathBuf>,
+    /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
+    pub hidden: bool,
 }
 
 impl TerminalPane {
@@ -139,6 +159,7 @@ impl TerminalPane {
             outside_workspace_cached: false,
             outside_workspace_checked_at: None,
             outside_workspace_root: None,
+            hidden: false,
         })
     }
 }
@@ -290,5 +311,7 @@ pub struct AppPane {
     /// Pane hidden by an overlay app. Closing the app restores this pane instead
     /// of deleting the tile.
     pub overlay_replaced: Option<Box<Pane>>,
+    /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
+    pub hidden: bool,
 }
 

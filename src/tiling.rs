@@ -272,14 +272,25 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
     }
 
     fn tab_title_for_pane(&mut self, pane: &PaneId) -> egui::WidgetText {
-        let label = if let Some(name) = self.pane_names.get(pane) {
+        let is_hidden = self.panes.get(pane).map_or(false, |p| p.is_hidden());
+        let base_label = if let Some(name) = self.pane_names.get(pane) {
             name.clone()
         } else {
             format!("Terminal {}", pane + 1)
         };
+        let label = if is_hidden {
+            format!("{base_label} (hidden)")
+        } else {
+            base_label
+        };
+        let color = if is_hidden {
+            crate::sidebar_row::with_alpha(self.colors.text_dim, 0.5)
+        } else {
+            self.colors.text_dim
+        };
         egui::RichText::new(label)
             .size(11.0)
-            .color(self.colors.text_dim)
+            .color(color)
             .into()
     }
 

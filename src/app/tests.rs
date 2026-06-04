@@ -139,6 +139,7 @@ fn send_to_pane_searches_all_windows() {
             pane_group: None,
             linked_pane_id: None,
             overlay_replaced: None,
+            hidden: false,
         }
     };
     win1.panes.insert(cross_window_pane_id, crate::pane::Pane::App(Box::new(app_pane)));
@@ -204,6 +205,7 @@ fn pane_list_excludes_orphaned_panes_and_navigate_succeeds() {
         pane_group: None,
         linked_pane_id: None,
         overlay_replaced: None,
+        hidden: false,
     }));
     h.app.windows[0].panes.insert(orphan_id, orphan_pane);
     assert!(h.app.windows[0].tree.tiles.find_pane(&orphan_id).is_none(), "orphan has no tile");
@@ -946,6 +948,7 @@ fn delete_context_portal_resets_stale_focused_pane() {
                 pane_id: portal_pane_id,
                 target_context_id: child_id,
                 context_state: None,
+                hidden: false,
             })),
         );
     }

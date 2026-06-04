@@ -81,6 +81,7 @@ impl PlexiApp {
                     pane_id: sub_ctx_pane_id,
                     target_context_id: ctx_id,
                     context_state: None,
+                    hidden: false,
                 })),
             );
         } else {
@@ -217,6 +218,7 @@ impl PlexiApp {
                 pane_id: portal_pane_id,
                 target_context_id: ctx_id,
                 context_state: None,
+                hidden: false,
             })),
         );
 
@@ -909,6 +911,7 @@ impl PlexiApp {
             let mut saved_panes = Vec::new();
             for (&id, pane) in &win.panes {
                 debug_assert_eq!(pane.id(), id);
+                let pane_hidden = pane.is_hidden();
                 if let Some(t) = pane.as_terminal() {
                     let cwd = shell::get_pid_cwd(t.backend.child_pid())
                         .unwrap_or_else(|| win.path.clone());
@@ -919,6 +922,7 @@ impl PlexiApp {
                         name: t.name.clone(),
                         app_id: None,
                         app_state: None,
+                        hidden: pane_hidden,
                     });
                 } else if let Some(a) = pane.as_app() {
                     saved_panes.push(crate::workspace::SavedPane {
@@ -928,6 +932,7 @@ impl PlexiApp {
                         name: Some(a.name.clone()),
                         app_id: Some(a.runtime.type_id().to_string()),
                         app_state: a.runtime.serialize_state(),
+                        hidden: pane_hidden,
                     });
                 } else if let Some(child_ctx_id) = pane.portal_target() {
                     saved_panes.push(crate::workspace::SavedPane {
@@ -937,6 +942,7 @@ impl PlexiApp {
                         name: None,
                         app_id: None,
                         app_state: None,
+                        hidden: pane_hidden,
                     });
                 }
             }

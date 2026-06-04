@@ -41,6 +41,8 @@ pub enum SidebarAction {
 pub struct PaneDots {
     pub count: usize,
     pub focused_idx: Option<usize>,
+    /// Set of dot indices that are hidden (rendered as stroke-only outlines).
+    pub hidden_set: std::collections::HashSet<usize>,
 }
 
 pub struct ContextItem {
@@ -169,12 +171,18 @@ impl ContextItem {
                         let cy = rect.center().y;
                         for dot_i in 0..capped {
                             let cx = rect.min.x + (dot_i as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS;
+                            let is_hidden = dots.hidden_set.contains(&dot_i);
                             let color = if dots.focused_idx == Some(dot_i) {
                                 with_alpha(accent_color, row_alpha)
                             } else {
                                 with_alpha(text_dim, if is_dragging { 0.15 } else { 0.35 })
                             };
-                            painter.circle_filled(egui::pos2(cx, cy), PANE_DOT_RADIUS, color);
+                            let center = egui::pos2(cx, cy);
+                            if is_hidden {
+                                painter.circle_stroke(center, PANE_DOT_RADIUS, egui::Stroke::new(1.0, color));
+                            } else {
+                                painter.circle_filled(center, PANE_DOT_RADIUS, color);
+                            }
                         }
                         if dots.count > PANE_DOT_MAX {
                             let overflow_x = rect.min.x + (capped as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS * 0.5;
