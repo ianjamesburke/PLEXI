@@ -903,6 +903,29 @@
           "type": "object"
         },
         {
+          "description": "Query the last-rendered UI state of a pane. Sent by `plexi pane state`.\nFor app panes: host writes a JSON object with a `frame` array of RenderCommands.\nFor terminal panes: host writes a simple status object.\nHost writes `{\"error\":\"...\"}` if the pane is not found.",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "get_pane_state",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.",
           "properties": {
             "name": {
@@ -2209,6 +2232,14 @@
             "app_id": {
               "description": "Stable identifier for this app instance, e.g. \"audio-recorder\".",
               "type": "string"
+            },
+            "args": {
+              "default": [],
+              "description": "Launch arguments passed via `plexi app open <id> -- <args>` or\nprogrammatic SpawnPane. Also forwarded as subprocess argv for\nbackward compatibility. Empty when no args were provided.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             },
             "capabilities": {
               "description": "Capabilities granted to this app (declared in manifest or runtime-prompted).\ne.g. [\"audio.record\", \"fs.read\"]",
