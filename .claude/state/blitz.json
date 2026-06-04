@@ -1,0 +1,169 @@
+{
+  "version": 2,
+  "source": "ROADMAP.md (canonical, referenced by NORTH_STAR.md)",
+  "current_layer": 3,
+  "layer_start_sha": "6d05b5c9",
+  "layers": {
+    "1": {
+      "name": "Stabilize the Bones",
+      "status": "done",
+      "issues": {}
+    },
+    "2": {
+      "name": "Polish the Surfaces",
+      "status": "done",
+      "issues": {
+        "1643": {"status": "done", "title": "Install modal: closed, install flow sufficient for v1"},
+        "1622": {"status": "done", "title": "QuickNote destination overhaul — closed, Cmd+0 host feature covers this"},
+        "1914": {"status": "done", "title": "Terminal Cmd+F search overlay", "pr": 1941},
+        "1037": {"status": "done", "title": "Auto-set pane title to wrapped command", "pr": 1940},
+        "1938": {"status": "done", "title": "QuickNote modal closes on click-away", "pr": 1939}
+      }
+    },
+    "3": {
+      "name": "Lock the Protocol",
+      "status": "in_progress",
+      "sections": {
+        "3a_protocol": {"status": "done", "note": "All 5 items checked off"},
+        "3b_sdk": {
+          "status": "in_progress",
+          "issues": {
+            "1203": {"status": "done", "title": "SDK actionable error messages audit", "pr": 1946},
+            "1527": {"status": "remaining", "title": "Layout fundamentals: headline alignment, character padding", "load": "M", "area": "sdk/pgap"},
+            "1645": {"status": "remaining", "title": "Text selection in PGAP apps + appbar/footer typography polish", "load": "M", "area": "sdk/pgap"},
+            "textedit_node": {"status": "remaining", "title": "PGAP TextEdit node: host-rendered text editor primitive", "load": "L", "area": "host/render+sdk", "no_issue": true}
+          }
+        },
+        "3c_core9": {
+          "status": "in_progress",
+          "issues": {
+            "reference_impls": {"status": "remaining", "title": "Each core app becomes a reference implementation demonstrating specific L1 patterns", "load": "M", "area": "apps", "no_issue": true},
+            "backlog_textedit": {"status": "remaining", "title": "Backlog: integrate TextEdit node for inline editing", "load": "M", "area": "apps/backlog", "depends_on": ["textedit_node"]},
+            "1943": {"status": "done", "title": "Remove Quick Note app from apps/", "pr": 1944},
+            "1942": {"status": "done", "title": "Archive apps/dev/ POCs", "pr": 1945},
+            "1660": {"status": "remaining", "title": "plexi app dev hot-reload command", "load": "M", "area": "cli"}
+          }
+        },
+        "3d_docs": {
+          "status": "remaining",
+          "issues": {
+            "protocol_reference": {"status": "remaining", "title": "PGAP protocol reference: complete, agent-readable, every node type documented", "load": "M", "area": "docs", "no_issue": true},
+            "sdk_quickstart": {"status": "remaining", "title": "SDK quickstart: your first app in 50 lines", "load": "S", "area": "docs", "no_issue": true},
+            "security_model_docs": {"status": "remaining", "title": "Acknowledge security model in protocol docs", "load": "S", "area": "docs", "no_issue": true}
+          }
+        }
+      }
+    },
+    "4": {
+      "name": "Add Intelligence",
+      "status": "remaining",
+      "sections": {
+        "4a_agent_app": {
+          "issues": {
+            "assistant_app": {"status": "remaining", "title": "Core assistant app: L1 chat UI, multi-turn via ai.query, streaming", "load": "L", "area": "apps/assistant", "no_issue": true},
+            "session_persistence": {"status": "remaining", "title": "Agent session persistence: JSON in workspace .plexi/", "load": "M", "area": "apps/assistant", "no_issue": true},
+            "tool_integration": {"status": "remaining", "title": "Agent tool integration via ExposeTools", "load": "M", "area": "host/ai", "no_issue": true},
+            "cli_tool_access": {"status": "remaining", "title": "Agent CLI tool access: spawn panes, open apps, read context", "load": "M", "area": "host/ai", "no_issue": true},
+            "agent_template": {"status": "remaining", "title": "plexi app init --agent scaffold", "load": "S", "area": "cli", "no_issue": true}
+          }
+        },
+        "4b_ai_onboarding": {
+          "issues": {
+            "ai_doctor": {"status": "remaining", "title": "plexi ai doctor: hardware scan, model recommendation", "load": "M", "area": "cli/ai", "no_issue": true},
+            "1346": {"status": "remaining", "title": "plexi doctor capability audit", "load": "M", "area": "cli"},
+            "local_model_wizard": {"status": "remaining", "title": "Local model setup wizard: Ollama detect/install/configure", "load": "M", "area": "host/ai", "no_issue": true},
+            "openrouter_setup": {"status": "remaining", "title": "OpenRouter guided API key entry + test", "load": "S", "area": "host/ai", "no_issue": true},
+            "plexi_ai_subscription": {"status": "remaining", "title": "Plexi AI subscription backend: PlexiCloudBackend", "load": "L", "area": "host/ai", "no_issue": true},
+            "auto_discovery": {"status": "remaining", "title": "Auto-discovery of running local LLM servers", "load": "S", "area": "host/ai", "no_issue": true}
+          }
+        },
+        "4c_control_surface": {
+          "issues": {
+            "pane_command": {"status": "remaining", "title": "plexi pane command <id> <text>: send structured Command event", "load": "S", "area": "cli"},
+            "pane_state": {"status": "remaining", "title": "plexi pane state <id>: return L1 UiNode tree as JSON", "load": "M", "area": "cli"},
+            "app_action": {"status": "remaining", "title": "plexi app action <id> <action> [args]: semantic actions", "load": "M", "area": "cli"},
+            "1638": {"status": "remaining", "title": "App launch arguments", "load": "M", "area": "host/apps"},
+            "1529": {"status": "remaining", "title": "Prefix-based open namespace: cli:, mcp:, app:", "load": "M", "area": "cli"},
+            "1321": {"status": "remaining", "title": "Unify plexi run with scripts directory", "load": "M", "area": "cli"},
+            "ai_stress_test": {"status": "remaining", "title": "AI stress-test dev app", "load": "S", "area": "apps/dev", "no_issue": true}
+          }
+        },
+        "4d_agent_ecosystem": {
+          "issues": {
+            "1616": {"status": "remaining", "title": "Workspace agent registry: plexi agent add/update, AGENT.md", "load": "M", "area": "host/agents"},
+            "1456": {"status": "remaining", "title": "Crew dispatch dashboard app", "load": "L", "area": "apps/crew"},
+            "agent_marketplace": {"status": "remaining", "title": "Agent marketplace category", "load": "S", "area": "marketplace", "no_issue": true},
+            "example_agents": {"status": "remaining", "title": "Example agent apps: coding, research, writing", "load": "M", "area": "apps", "no_issue": true},
+            "agent_comms": {"status": "remaining", "title": "Agent-to-agent communication via ExposeTools", "load": "M", "area": "host/apps", "no_issue": true}
+          }
+        }
+      }
+    },
+    "5": {
+      "name": "Pane Lifecycle",
+      "status": "remaining",
+      "issues": {
+        "ephemeral_hiding": {"status": "remaining", "title": "Ephemeral pane hiding", "load": "M", "area": "host/panes", "no_issue": true},
+        "inventory_overlay": {"status": "remaining", "title": "Inventory overlay (Cmd+I)", "load": "M", "area": "host/overlays", "no_issue": true},
+        "hidden_notifications": {"status": "remaining", "title": "Notifications from hidden panes", "load": "S", "area": "host/notifications", "no_issue": true},
+        "restore_to_layout": {"status": "remaining", "title": "Restore-to-layout: pull hidden pane back", "load": "M", "area": "host/panes", "no_issue": true},
+        "1634": {"status": "remaining", "title": "Move pane between contexts", "load": "M", "area": "host/contexts"},
+        "1833": {"status": "remaining", "title": "New-child-context shortcut", "load": "S", "area": "host/contexts"},
+        "1495": {"status": "remaining", "title": "Live miniature rendering for portal tiles", "load": "L", "area": "host/minimap"},
+        "pane_activity": {"status": "remaining", "title": "Pane activity detection indicator", "load": "S", "area": "host/panes", "no_issue": true}
+      }
+    },
+    "6": {
+      "name": "Curate the Garden",
+      "status": "remaining",
+      "issues": {
+        "file_browser_v2": {"status": "remaining", "title": "File browser v2: preview, multi-select, rename/delete/move", "load": "L", "area": "apps/file-browser", "no_issue": true},
+        "1857": {"status": "remaining", "title": "GH Projects refactor + L1 migration", "load": "M", "area": "apps"},
+        "1646": {"status": "remaining", "title": "Bluesky UI overhaul", "load": "M", "area": "apps/bluesky"},
+        "1659": {"status": "remaining", "title": "Bluesky avatar images never load", "load": "S", "area": "apps/bluesky"},
+        "calendar_polish": {"status": "remaining", "title": "Calendar polish: marketplace-ready", "load": "M", "area": "apps", "no_issue": true},
+        "kanban_decision": {"status": "remaining", "title": "Kanban polish or merge with GH Projects", "load": "M", "area": "apps", "no_issue": true},
+        "mind_map_polish": {"status": "remaining", "title": "Mind Map polish: marketplace-ready", "load": "M", "area": "apps", "no_issue": true},
+        "games_polish": {"status": "remaining", "title": "Games: Snake, Tetris, Balls, Typing Tutor, Snake Race marketplace-ready", "load": "S", "area": "apps", "no_issue": true},
+        "app_publish": {"status": "remaining", "title": "plexi app publish: package + upload to registry", "load": "M", "area": "cli", "no_issue": true},
+        "publish_all": {"status": "remaining", "title": "Publish all non-core apps to marketplace", "load": "M", "area": "marketplace", "no_issue": true},
+        "1566": {"status": "remaining", "title": "Video player POC validation", "load": "M", "area": "apps"}
+      }
+    },
+    "7": {
+      "name": "Open the Gates",
+      "status": "remaining",
+      "issues": {
+        "marketplace_backend": {"status": "remaining", "title": "Marketplace backend: app registry, hosted", "load": "L", "area": "infra", "no_issue": true},
+        "app_install_remote": {"status": "remaining", "title": "plexi app install <name> from remote registry", "load": "M", "area": "cli", "no_issue": true},
+        "submission_flow": {"status": "remaining", "title": "Submission + review flow for marketplace", "load": "M", "area": "marketplace", "no_issue": true},
+        "revenue_sharing": {"status": "remaining", "title": "Revenue sharing model for app authors", "load": "L", "area": "marketplace", "no_issue": true},
+        "ai_subscription_service": {"status": "remaining", "title": "Plexi AI subscription service: proxy, accounts, billing", "load": "L", "area": "infra", "no_issue": true},
+        "1171": {"status": "remaining", "title": "Website refresh", "load": "L", "area": "web"},
+        "1445": {"status": "remaining", "title": "plexi demo interactive tutorial", "load": "M", "area": "host"},
+        "1735": {"status": "remaining", "title": "Windows support", "load": "L", "area": "host"},
+        "install_crossplatform": {"status": "remaining", "title": "Install experience polish: macOS + Windows + Linux", "load": "L", "area": "infra", "no_issue": true},
+        "architecture_md": {"status": "remaining", "title": "ARCHITECTURE.md: module map, data flow, input dispatch", "load": "M", "area": "docs", "no_issue": true},
+        "contributing_md": {"status": "remaining", "title": "CONTRIBUTING.md: how to add bindings, overlays, CLI cmds, nodes, apps", "load": "M", "area": "docs", "no_issue": true}
+      }
+    }
+  },
+  "spot_check_pending": true,
+  "last_updated": "2026-06-04T00:00:00Z",
+  "merge_queue": [],
+  "feedback": [
+    {
+      "timestamp": "2026-06-03T00:00:00Z",
+      "layer": 2,
+      "context": "user reported during blitz setup",
+      "text": "QuickNote (Cmd+0) modal should close on click-away, not just Escape. Mouse click outside the modal must dismiss it.",
+      "resolution": 1939,
+      "affects_issues": ["1938"]
+    }
+  ],
+  "history": [
+    {"event": "merge_round", "layer": 2, "round": 1, "prs": [1939, 1940, 1941], "timestamp": "2026-06-04T00:00:00Z"},
+    {"event": "merge_round", "layer": 3, "round": 1, "prs": [1944, 1945, 1946], "timestamp": "2026-06-04T00:00:00Z"},
+    {"event": "layer_complete", "layer": 2, "timestamp": "2026-06-04T00:00:00Z"}
+  ]
+}

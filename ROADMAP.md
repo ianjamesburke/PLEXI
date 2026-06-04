@@ -38,14 +38,15 @@ Make what exists feel finished before adding new systems. These are the first th
 
 - [x] ~~Welcome screen redesign (#1575)~~ -- closed as stale; welcome screen already matches proposed design
 - [x] Text editor extraction (#1920, #1922) -- native text-editor builtin pane shipped as `src/text_editor_app.rs`
-- [ ] Terminal Cmd+F search overlay (#1914) -- match cycling, keyboard-navigable
-- [ ] Auto-set pane title to wrapped command (#1037)
+- [x] Terminal Cmd+F search overlay (#1914) -- match cycling, keyboard-navigable (v0.0.610)
+- [x] Auto-set pane title to wrapped command (#1037) -- auto-titles for --mcp and --cli panes (v0.0.610)
 - [x] Notification auto-dismiss when originating pane focused (#1635) (v0.0.603)
 - [x] QuickNote modal blocked by other modals (#1626) (v0.0.603)
 - [x] URL trailing punctuation fix (#1549) (v0.0.599)
-- [ ] Install modal success detection (#1643)
+- [x] ~~Install modal success detection (#1643)~~ -- closed, install flow sufficient for v1
 - [x] Core app theming audit (#1669) -- ctx.theme tokens across 7 apps (v0.0.604)
-- [ ] QuickNote destination overhaul (#1622)
+- [x] ~~QuickNote destination overhaul (#1622)~~ -- closed, Cmd+0 host feature covers this
+- [x] QuickNote (Cmd+0) modal closes on click-away (#1938) (v0.0.610)
 - [x] Portal minimap real-time activity (#1918) -- shipped in `ca2c3e83` (v0.0.597), closed
 
 **Done when:** a new user can install, see a polished welcome screen, open apps that look consistent, use QuickNote without hitting modal bugs.
@@ -70,7 +71,7 @@ Current state: `UiNode` enum has 21 variants. L1 layout components (AppBar, Foot
 
 - [x] Rewrite Python SDK to emit UiNode trees instead of L0 draw commands -- `to_node()` on all standard components, `render_tree()` auto-selects L1 path (v0.0.606)
 - [x] SDK becomes a tree builder: `ctx.render(Column([AppBar(...), SelectList(...), FooterKeys(...)]))` emits UiNode tree (v0.0.606)
-- [ ] SDK actionable error messages (#1203) -- audit for cryptic AttributeError/TypeError crashes, add actionable diagnostics
+- [x] SDK actionable error messages (#1203) -- 17 guarded entry points, 39 new tests (v0.0.610)
 - [ ] Layout fundamentals (#1527) -- headline alignment, character padding handled by host, not SDK
 - [x] Default Esc behavior in base App class (#1631) (v0.0.599)
 - [ ] Text selection in PGAP apps (#1645) -- host handles selection for L1 Text nodes
@@ -99,7 +100,8 @@ Current app inventory: 18 shipped apps in `apps/`, 29 POC apps in `apps/dev/`.
 - [ ] Backlog: integrate TextEdit node for inline editing
 - [x] Logs: search/filter (#1649) + ~~spacing (#1648)~~ (v0.0.603) -- level filter, target/app_id filter, text search (v0.0.606)
 - [x] Update `plexi app init` scaffold to produce a perfect 30-line L1 example (v0.0.599)
-- [ ] Archive or remove `apps/dev/` POCs that have served their purpose
+- [x] Remove Quick Note app from `apps/` (#1943) -- redundant with Cmd+0 host QuickNote feature (v0.0.610)
+- [x] Archive apps/dev/ POCs (#1942) -- 31 removed, kept ai-test, counter-tree, pixel-art-tavern (v0.0.610)
 - [ ] `plexi app dev` hot-reload command (#1660)
 
 ### 3d: Documentation
