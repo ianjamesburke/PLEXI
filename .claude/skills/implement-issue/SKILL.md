@@ -49,15 +49,11 @@ gh issue list --label "in progress" --json number,title
 Surface the in-progress list as context.
 
 **Determine search scope from argument:**
-- No arg → try P0, P1 (no `ready` filter), then P2→P4 filtered to `ready`
-- Priority arg → search only that level; apply `ready` filter for P2+
+- No arg → try P0, P1, then P2→P4 (no `ready` filter at any level)
+- Priority arg → search only that level
 
 ```bash
-# P0/P1:
 gh issue list --label "<priority>" --state open --json number,title,labels,body --limit 50
-
-# P2/P3/P4:
-gh issue list --label "<priority>" --label "ready" --state open --json number,title,labels,body --limit 50
 ```
 
 Sort ascending by issue number. For each:
@@ -96,8 +92,7 @@ ISSUE #<n>: <title>
 1. Unpushed commits on alpha → STOP. "Push alpha first, then re-run."
 2. Dirty working tree → STOP. Print `git status --short`. Do not stash, do not proceed.
 3. Issue is `CLOSED` → set pane `noop`, stop. "Issue #<n> is already closed."
-4. Issue does NOT have `ready` label → STOP. "ERROR: issue #<n> is not labeled `ready`. The PM gates dispatch on this label — triage the issue and label it `ready` first, or run /project-manager."
-5. Issue is labeled `in progress` → STOP. "ERROR: issue #<n> is already in progress." Surface existing worktree + any open PR. Do not proceed.
+4. Issue is labeled `in progress` → STOP. "ERROR: issue #<n> is already in progress." Surface existing worktree + any open PR. Do not proceed.
 
 Then run in parallel:
 ```bash
@@ -303,7 +298,6 @@ plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · pushed"   # bundle: "#
 ## Rules
 
 - When a specific issue number is given, skip Phase 0 entirely
-- Issue must be labeled `ready` to proceed — if not, fail immediately. No exceptions.
 - If the issue body contains a complete `## Action Plan` with named files, trust it. Do not re-read and re-grep those files to re-derive the plan.
 - Never branch from main — always from repo root (alpha)
 - Never skip base verification after `wtp add`
