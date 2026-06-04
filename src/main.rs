@@ -176,7 +176,7 @@ fn main() -> eframe::Result {
             Some(a.clone())
         })
         .collect();
-    use crate::cli::args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd, ConfigCmd, RoutineCmd, NotesCmd, AgentCmd};
+    use crate::cli::args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd, ConfigCmd, RoutineCmd, NotesCmd, AgentCmd, AiCmd};
     use clap::Parser;
 
     match Cli::try_parse_from(&args) {
@@ -589,6 +589,9 @@ fn main() -> eframe::Result {
                     Commands::Notes { cmd } => match cmd {
                         Some(NotesCmd::List) | None => std::process::exit(cli::notes_list_cli()),
                         Some(NotesCmd::Open) => std::process::exit(cli::notes_open_cli()),
+                    },
+                    Commands::Ai { cmd } => match cmd {
+                        AiCmd::Doctor { json } => std::process::exit(cli::ai_doctor_cli(json)),
                     },
                     Commands::Doctor { json } => std::process::exit(cli::doctor_cli(json)),
                     Commands::Demo => std::process::exit(cli::demo_cli()),
