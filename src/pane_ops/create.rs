@@ -574,7 +574,9 @@ impl PlexiApp {
         let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);
         let ctx_name = self.context_name_for(ctx_id);
         let ctx_desc = self.context_description_for(ctx_id);
-        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc);
+        let ctx_root = self.context_root_for(ctx_id);
+        let ctx_depth = self.context_depth_for(ctx_id);
+        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc, ctx_root.as_ref(), ctx_depth);
         if let Some(cmd) = initial_cmd {
             log::info!("create_single_pane_tree: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
@@ -617,12 +619,14 @@ impl PlexiApp {
         let ctx_id = self.windows[win_idx].context_id;
         let ctx_name = self.context_name_for(ctx_id);
         let ctx_desc = self.context_description_for(ctx_id);
+        let ctx_root = self.context_root_for(ctx_id);
+        let ctx_depth = self.context_depth_for(ctx_id);
         let cwd = cwd_override.or_else(|| self.windows[win_idx].get_focused_pane_cwd(target_tile));
         log::info!(
             "spawn_terminal_pane_at: win_idx={win_idx} target_tile={target_tile:?} new_id={new_id} \
              vertical={vertical} keep_focus={keep_focus} initial_cmd={initial_cmd:?}"
         );
-        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc);
+        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc, ctx_root.as_ref(), ctx_depth);
         if let Some(cmd) = initial_cmd {
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
@@ -1175,7 +1179,9 @@ impl PlexiApp {
         let ctx_id = self.windows.get(active).map(|w| w.context_id).unwrap_or(0);
         let ctx_name = self.context_name_for(ctx_id);
         let ctx_desc = self.context_description_for(ctx_id);
-        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc);
+        let ctx_root = self.context_root_for(ctx_id);
+        let ctx_depth = self.context_depth_for(ctx_id);
+        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc, ctx_root.as_ref(), ctx_depth);
 
         super::apply_initial_cmd(&mut settings, cmd, !stay_alive);
 
