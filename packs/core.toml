@@ -7,11 +7,6 @@ source  = "local:backlog"
 version = "bundled"
 
 [[app]]
-id      = "quick-note"
-source  = "local:quick-note"
-version = "bundled"
-
-[[app]]
 id      = "logs"
 source  = "local:logs"
 version = "bundled"
