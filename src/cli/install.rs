@@ -404,7 +404,7 @@ pub fn self_update_cli() -> i32 {
     let suffix = if binary_name == "plexi" {
         String::new() // main channel
     } else {
-        binary_name.strip_prefix("plexi").unwrap_or("-").to_string()
+        binary_name.strip_prefix("plexi").unwrap_or("").to_string()
     };
     let channel = if suffix.is_empty() {
         "main".to_string()
