@@ -22,6 +22,15 @@ web:
 test:
     cargo test
 
+# Generate an HTML line-coverage report and open it in the browser.
+# Requires: cargo install cargo-llvm-cov && rustup component add llvm-tools-preview
+coverage:
+    cargo llvm-cov --bin plexi --html --open -- --skip "welcome_tab_falls_back_to_home_dir_when_no_root"
+
+# Print per-file coverage summary to stdout (no browser).
+coverage-summary:
+    cargo llvm-cov --bin plexi --summary-only -- --skip "welcome_tab_falls_back_to_home_dir_when_no_root"
+
 build:
     cargo build --release
 
