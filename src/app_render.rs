@@ -79,6 +79,7 @@ fn spawn_and_collect_frame(
         compact_threshold: 280.0,
         regular_threshold: 480.0,
         theme: render_colors().to_theme_map(),
+        args: vec![],
     };
     let init_json = serde_json::to_string(&init)
         .map_err(|e| format!("failed to serialize Init: {e}"))?;

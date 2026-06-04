@@ -310,6 +310,13 @@ impl PlexiApp {
         }
         let manifest_id = app_pane.manifest_id.clone();
         let workspace_root = app_pane.workspace_root.clone();
+        // Preserve launch args across hot-reload so the reloaded app gets the
+        // same arguments the original was opened with.
+        let saved_launch_args: Vec<String> = if let crate::pane::AppRuntime::Process(ref proc) = app_pane.runtime {
+            proc.launch_args.clone()
+        } else {
+            Vec::new()
+        };
 
         log::info!(
             "app::{manifest_id} reload triggered ({reason}) for pane {pane_id}"
@@ -318,7 +325,7 @@ impl PlexiApp {
         // Launch the replacement first — if launch fails, leave the old
         // subprocess running so the pane stays usable.
         let cwd = workspace_root.clone();
-        let new_process_opt = self.registry.launch_process(&manifest_id, &cwd, &[]);
+        let new_process_opt = self.registry.launch_process(&manifest_id, &cwd, &saved_launch_args);
         // Path-launched apps (app run / app init) are never inserted into the
         // registry's in-memory map, so launch_process returns None. Fall back
         // to loading the manifest directly from workspace_root.
@@ -335,7 +342,7 @@ impl PlexiApp {
                         installed.manifest.name.clone(),
                         &installed.bin_path,
                         &cwd,
-                        &[],
+                        &saved_launch_args,
                         workspace_root.clone(),
                         caps,
                         keyboard_capture,

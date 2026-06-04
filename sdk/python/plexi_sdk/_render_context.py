@@ -34,6 +34,7 @@ class RenderContext:
         self.workspace_root = workspace_root
         self.capabilities = capabilities
         self.feature_flags = feature_flags
+        self.args: list[str] = app.launch_args
         # Active host theme (light/dark + user overrides). Read colors via
         # ctx.theme.<role>, e.g. ctx.theme.accent / ctx.theme.bg / ctx.theme.danger.
         from ._theme import theme as _theme

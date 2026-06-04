@@ -16,7 +16,7 @@ Patterns demonstrated:
 import csv
 from pathlib import Path
 
-from plexi_sdk import App, RenderContext  # type: ignore[attr-defined]
+from plexi_sdk import App, Arg, RenderContext  # type: ignore[attr-defined]
 from plexi_sdk.ui import (
     AppBar, Column, FooterKeys, Label, Section,
     SelectList, Spacer,
@@ -28,20 +28,43 @@ ROW_H = 24.0
 
 
 class CsvViewer(App):
+    file: Arg[str | None] = Arg(positional=True, default=None)
+
     def on_init(self, ctx: RenderContext) -> None:
         launch_dir = Path(ctx.workspace_root) if ctx.workspace_root else Path.cwd()
-        self._files: list[Path] = sorted(
+
+        # If a file path was passed as a launch argument, open it directly
+        if self.file:
+            target = Path(self.file)
+            if not target.is_absolute():
+                target = launch_dir / target
+            if target.is_file():
+                self._files: list[Path] = [target]
+                self._dir = target.parent
+                self._selected = 0
+                self._mode = "detail"
+                self._headers: list[str] = []
+                self._rows: list[list[str]] = []
+                self._v_scroll = 0
+                self._h_scroll = 0
+                self._file_hints: dict[Path, str] = {}
+                self._file_list = SelectList([{"name": target.name}])
+                self._load_csv(target)
+                ctx.info(f"csv_viewer: opened {target} via launch arg")
+                return
+
+        self._files = sorted(
             launch_dir.glob("*.csv"), key=lambda p: p.name.lower()
         )
         self._dir = launch_dir
         self._selected = 0
         self._mode = "list"
-        self._headers: list[str] = []
-        self._rows: list[list[str]] = []
+        self._headers = []
+        self._rows = []
         self._v_scroll = 0
         self._h_scroll = 0
         # Cache file sizes once at init to avoid stat() calls inside on_render
-        self._file_hints: dict[Path, str] = {}
+        self._file_hints = {}
         for p in self._files:
             try:
                 kb = p.stat().st_size / 1024

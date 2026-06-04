@@ -307,6 +307,9 @@ pub struct ProcessApp {
     /// checks wants_close() each frame and calls close_pane gracefully,
     /// avoiding the crash-restart path that sys.exit() would trigger.
     wants_close_self: bool,
+    /// Launch arguments passed via CLI or SpawnPane. Forwarded in PlexiEvent::Init
+    /// so the SDK can expose them as ctx.args.
+    pub(crate) launch_args: Vec<String>,
 }
 
 impl ProcessApp {
@@ -742,6 +745,7 @@ impl ProcessApp {
             mcp_server: mcp_server_handle,
             mcp_pending: std::collections::HashMap::new(),
             wants_close_self: false,
+            launch_args: args.to_vec(),
         })
     }
 
@@ -888,6 +892,7 @@ impl ProcessApp {
             mcp_server: None,
             mcp_pending: std::collections::HashMap::new(),
             wants_close_self: false,
+            launch_args: Vec::new(),
         };
         (app, draw_tx)
     }
@@ -1363,6 +1368,7 @@ impl App for ProcessApp {
                 .iter()
                 .map(|c| c.to_string())
                 .collect();
+            log::info!("ProcessApp[{}]: sending Init with {} launch arg(s)", self.type_id, self.launch_args.len());
             self.send_event(&PlexiEvent::Init {
                 protocol: "pgap/3".to_string(),
                 app_id: self.type_id.clone(),
@@ -1372,6 +1378,7 @@ impl App for ProcessApp {
                 compact_threshold: self.compact_threshold,
                 regular_threshold: self.regular_threshold,
                 theme: ctx.colors.to_theme_map(),
+                args: self.launch_args.clone(),
             });
             // Inject persisted state before first render so on_inject runs with data.
             let state = load_app_state(&self.type_id, &self.workspace_root);
