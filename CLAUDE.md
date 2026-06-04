@@ -222,6 +222,10 @@ Always name panes after spawning them. Every `plexi terminal`, `plexi app open`,
 
 Contextual tips (e.g. keyboard shortcut hints) use `print_tip()` from `src/cli/mod.rs`. Never raw `eprintln!` a tip. `print_tip` checks `config.cli.tips` (default `true`, user can set `false` in `config.toml` under `[cli]`), respects `NO_COLOR`, and logs via `log::info!`.
 
+## App Priority
+
+**Core 9 only.** Do not fix, update, or improve `apps/dev/` apps unless the change is a POC demonstrating a new SDK/host capability (e.g. counter-tree for ComponentEvent). All dev effort goes to the Core 9 and the SDK/host. Dev apps are throwaway proofs-of-concept, not maintained software.
+
 ## App & SDK Design Philosophy
 
 - **Obvious over clever.** Fight for the solution agents would naturally assume. If a design requires explanation, that's a signal to rethink it. "Simple" and "obvious" aren't always aligned — sometimes the obvious solution is more complex, and that's correct.
