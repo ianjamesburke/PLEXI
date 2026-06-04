@@ -7,6 +7,51 @@ use crate::host::shell;
 use crate::workspace::WorkspaceFile;
 use std::path::PathBuf;
 
+/// Auto-initialize a project workspace at `root` if one does not already exist.
+///
+/// Creates only the channel-specific dir (e.g. `.plexi-alpha/`, `.plexi-pr-N/`).
+/// This is what `resolve_workspace_root` uses for discovery — no channel-agnostic
+/// `.plexi/` is created here. Full channel-aware workspace init is tracked in #1997.
+///
+/// Idempotent — skips if the channel dir already exists.
+/// Non-fatal — logs warn on failure but never prevents the root from being set.
+fn auto_init_workspace(root: &std::path::Path) {
+    // Guard: never init at home dir, filesystem root, or inside a Plexi profile dir.
+    let home = dirs::home_dir();
+    let root_str = root.to_string_lossy();
+    let is_home_or_root = root == std::path::Path::new("/")
+        || home.as_ref().map(|h| root == *h).unwrap_or(false);
+    let is_inside_profile = home.as_ref().map(|h| {
+        let prefix = format!("{}/.plexi", h.to_string_lossy());
+        root_str.starts_with(&prefix)
+    }).unwrap_or(false);
+    if is_home_or_root || is_inside_profile {
+        log::info!("auto_init_workspace: skipping home/root/profile path {}", root.display());
+        return;
+    }
+
+    let channel_dir_name = crate::config::config_dir()
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(".plexi")
+        .to_string();
+    let channel_path = root.join(&channel_dir_name);
+    if channel_path.exists() {
+        log::info!("auto_init_workspace: already initialized at {}", root.display());
+        return;
+    }
+    match std::fs::create_dir_all(&channel_path) {
+        Ok(()) => log::info!(
+            "auto_init_workspace: created {}/{} ",
+            root.display(), channel_dir_name
+        ),
+        Err(e) => log::warn!(
+            "auto_init_workspace: could not create {}: {e}",
+            channel_path.display()
+        ),
+    }
+}
+
 impl PlexiApp {
     /// Create a child context nested inside `parent_name`. Always creates a fresh
     /// terminal in the child (portal model — no pane adoption). Inserts a Portal
@@ -783,6 +828,7 @@ impl PlexiApp {
             self.router.active().context_id,
             root.display()
         );
+        auto_init_workspace(&root);
         self.router.get_mut(idx).root = Some(root);
         self.apply_context_transition_effects();
     }
