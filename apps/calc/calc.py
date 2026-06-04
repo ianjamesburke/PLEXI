@@ -199,7 +199,8 @@ class CalcApp(App):
         elif key in ("=", "return", "enter"):
             self._press("=")
         elif key == "escape":
-            self._press("C")
+            self.emit.close_self()
+            return
         elif key == "backspace":
             self._backspace()
         else:

@@ -221,11 +221,14 @@ class LogsApp(App):
                 self._copy_anchor = None
         elif key == "/":
             self._search_mode = True
-        elif key == "escape" and self._search_q:
-            self._search_q    = ""
-            self._scroll      = 0.0
-            self._copy_row    = 0
-            self._copy_anchor = None
+        elif key == "escape":
+            if self._search_q:
+                self._search_q    = ""
+                self._scroll      = 0.0
+                self._copy_row    = 0
+                self._copy_anchor = None
+            else:
+                self.emit.close_self()
         elif key == "y":
             filtered = self._filtered()
             if filtered:
