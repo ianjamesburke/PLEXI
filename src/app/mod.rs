@@ -2642,6 +2642,7 @@ impl eframe::App for PlexiApp {
                 Action::ToggleCommandPalette => {
                     self.show_command_palette = !self.show_command_palette;
                     if self.show_command_palette {
+                        self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
                         self.palette_query.clear();
                         self.palette_selected = 0;
                         // Resolve focused pane workspace once at open-time — not per draw-frame —
@@ -2660,6 +2661,7 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::RenamePane => {
+                    self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
                     let active_ctx = &self.windows[self.active_window];
                     if let Some(focused_tile) = active_ctx.focused_pane {
                         if let Some(Tile::Pane(pane_id)) = active_ctx.tree.tiles.get(focused_tile) {
