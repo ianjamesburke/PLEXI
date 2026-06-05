@@ -394,7 +394,10 @@ class AssistantApp(App):
     def _cycle_model(self) -> None:
         if self._is_streaming:
             return
-        idx = MODEL_TIERS.index(self._model_tier)
+        try:
+            idx = MODEL_TIERS.index(self._model_tier)
+        except ValueError:
+            idx = -1  # unknown tier (e.g. stale session) → wrap to first
         self._model_tier = MODEL_TIERS[(idx + 1) % len(MODEL_TIERS)]
         self.emit.info(f"model tier → {self._model_tier}")
         self.emit.schedule_render()
