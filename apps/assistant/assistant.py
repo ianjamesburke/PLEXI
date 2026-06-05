@@ -18,9 +18,12 @@ Patterns demonstrated:
 
 import json
 import os
+import subprocess
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+
+PLEXI_BINARY = os.environ.get("PLEXI_BINARY", "plexi-alpha")
 
 from plexi_sdk import App, RenderContext
 from plexi_sdk.ui import (
@@ -47,6 +50,7 @@ class AssistantApp(App):
         self._sessions_dir: Path | None = _resolve_sessions_dir(ctx.workspace_root)
         self._load_latest_session()
         self._register_tools()
+        self._register_cli_tools()
         ctx.info(f"AssistantApp ready — sessions dir: {self._sessions_dir}")
 
     # ── Tool registration (ExposeTools) ────────────────────────────────────────
@@ -94,6 +98,150 @@ class AssistantApp(App):
                 return {"error": str(exc)}
 
         self.emit.info("AssistantApp: exposed ask_assistant tool to workspace")
+
+    def _register_cli_tools(self) -> None:
+        """Register CLI tools that let the AI agent control the Plexi workspace.
+
+        Tools registered:
+          - open_terminal: spawn a new terminal pane (optionally running a command)
+          - open_app: open a Plexi app by ID in a new pane
+          - list_panes: return the current pane list as structured JSON
+          - send_command: send a text command to a specific pane
+        """
+
+        @self.tool(
+            "open_terminal",
+            description=(
+                "Spawn a new terminal pane in the Plexi workspace. "
+                "Optionally run a shell command in it."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command to run in the terminal (optional).",
+                    },
+                },
+                "required": [],
+            },
+        )
+        async def handle_open_terminal(args: dict) -> dict:
+            cmd = [PLEXI_BINARY, "terminal"]
+            command_arg = args.get("command", "").strip()
+            if command_arg:
+                cmd += ["--command", command_arg]
+            self.emit.info(f"open_terminal: {cmd}")
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode != 0:
+                    err = result.stderr.strip() or result.stdout.strip()
+                    self.emit.error(f"open_terminal failed (rc={result.returncode}): {err}")
+                    return {"error": err}
+                pane_id = result.stdout.strip()
+                return {"pane_id": pane_id}
+            except Exception as exc:
+                self.emit.error(f"open_terminal exception: {exc}")
+                return {"error": str(exc)}
+
+        @self.tool(
+            "open_app",
+            description="Open a Plexi app by its app ID in a new pane.",
+            schema={
+                "type": "object",
+                "properties": {
+                    "app_id": {
+                        "type": "string",
+                        "description": "The app ID to open (e.g. 'calculator', 'file-browser').",
+                    },
+                },
+                "required": ["app_id"],
+            },
+        )
+        async def handle_open_app(args: dict) -> dict:
+            app_id = args.get("app_id", "").strip()
+            if not app_id:
+                return {"error": "app_id must not be empty"}
+            cmd = [PLEXI_BINARY, "app", "open", app_id]
+            self.emit.info(f"open_app: {cmd}")
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode != 0:
+                    err = result.stderr.strip() or result.stdout.strip()
+                    self.emit.error(f"open_app failed (rc={result.returncode}): {err}")
+                    return {"error": err}
+                pane_id = result.stdout.strip()
+                return {"pane_id": pane_id}
+            except Exception as exc:
+                self.emit.error(f"open_app exception: {exc}")
+                return {"error": str(exc)}
+
+        @self.tool(
+            "list_panes",
+            description="Return the current list of open panes in the Plexi workspace.",
+            schema={
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        )
+        async def handle_list_panes(_args: dict) -> dict:
+            cmd = [PLEXI_BINARY, "pane", "list", "--json"]
+            self.emit.info("list_panes: fetching pane list")
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode != 0:
+                    err = result.stderr.strip() or result.stdout.strip()
+                    self.emit.error(f"list_panes failed (rc={result.returncode}): {err}")
+                    return {"error": err}
+                try:
+                    panes = json.loads(result.stdout)
+                except json.JSONDecodeError:
+                    panes = result.stdout.strip()
+                return {"panes": panes}
+            except Exception as exc:
+                self.emit.error(f"list_panes exception: {exc}")
+                return {"error": str(exc)}
+
+        @self.tool(
+            "send_command",
+            description="Send a text string as input to a specific pane by ID.",
+            schema={
+                "type": "object",
+                "properties": {
+                    "pane_id": {
+                        "type": "string",
+                        "description": "The target pane ID.",
+                    },
+                    "text": {
+                        "type": "string",
+                        "description": "The text/command to send to the pane.",
+                    },
+                },
+                "required": ["pane_id", "text"],
+            },
+        )
+        async def handle_send_command(args: dict) -> dict:
+            pane_id = args.get("pane_id", "").strip()
+            text = args.get("text", "")
+            if not pane_id:
+                return {"error": "pane_id must not be empty"}
+            if not text:
+                return {"error": "text must not be empty"}
+            cmd = [PLEXI_BINARY, "pane", "command", pane_id, text]
+            self.emit.info(f"send_command: pane={pane_id!r} text={text[:60]!r}")
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode != 0:
+                    err = result.stderr.strip() or result.stdout.strip()
+                    self.emit.error(f"send_command failed (rc={result.returncode}): {err}")
+                    return {"ok": False, "error": err}
+                return {"ok": True}
+            except Exception as exc:
+                self.emit.error(f"send_command exception: {exc}")
+                return {"ok": False, "error": str(exc)}
+
+        self.emit.info("AssistantApp: registered CLI tools (open_terminal, open_app, list_panes, send_command)")
 
     # ── Session persistence ────────────────────────────────────────────────────
 
