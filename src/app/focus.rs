@@ -625,7 +625,24 @@ impl PlexiApp {
         };
         let old_focus = self.windows[self.active_window].focused_pane;
         let old_window_id = self.windows[self.active_window].window_id;
+        // Clear any stale zoom on the destination window — a programmatic focus
+        // redirect must not leave zoomed_pane pointing at a pane that is no longer focused.
+        if self.windows[idx].zoomed_pane.is_some() {
+            self.windows[idx].zoomed_pane = None;
+            log::info!("notify:action: pane_navigate cleared stale zoom on window={idx}");
+        }
         self.windows[idx].focused_pane = Some(tile_id);
+        // Activate the parent Tabs container so the target pane is visible.
+        if let Some((tabs_id, child_id)) = self.windows[idx].find_ancestor_tabs(tile_id) {
+            if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) =
+                self.windows[idx].tree.tiles.get_mut(tabs_id)
+            {
+                tabs.set_active(child_id);
+                log::info!(
+                    "notify:action: pane_navigate activated tab tabs_id={tabs_id:?} child_id={child_id:?}"
+                );
+            }
+        }
         self.push_focus_history(old_window_id, old_focus);
         let prev = self.active_window;
         self.active_window = idx;
