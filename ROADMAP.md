@@ -27,7 +27,7 @@ When a refactor PR already touches a file, move it into the right module in the 
 - [x] CLI module split -- `src/cli.rs` refactored into `src/cli/` submodules (#1870)
 - [x] App module split -- `src/app/mod.rs` refactored into `src/app/` submodules (#1865)
 - [ ] Semantic module reorganization -- group remaining loose `src/*.rs` files into `src/ui/` (widgets, style, render_components, sidebar, minimap, tiling), `src/io/` (audio, video, midi, typed_pipes), `src/state/` (context, workspace, secrets, event_log)
-- [ ] Split `app_protocol.rs` (3,849 lines) into `protocol/events.rs`, `protocol/commands.rs`, `protocol/ui_nodes.rs`
+- [x] Split `app_protocol.rs` into `protocol/` submodules (#2044) (v0.0.634)
 - [ ] Extract reusable UI patterns from overlays into `src/ui/widgets/` (text inputs, scrollable lists, search bars, confirmation dialogs)
 
 ---
@@ -99,14 +99,14 @@ Current app inventory: 18 shipped apps in `apps/`, 29 POC apps in `apps/dev/`.
 - [ ] Each core app becomes a reference implementation demonstrating specific L1 patterns
 - [ ] Backlog: integrate TextEdit node for inline editing
 - [x] Logs: search/filter (#1649) + ~~spacing (#1648)~~ (v0.0.603) -- level filter, target/app_id filter, text search (v0.0.606)
-- [x] Update `plexi app init` scaffold to produce a perfect 30-line L1 example (v0.0.599)
+- [x] Update `plexi app init` scaffold to produce a perfect 30-line L1 example (v0.0.599); rewritten as comprehensive SDK reference (v0.0.633)
 - [x] Remove Quick Note app from `apps/` (#1943) -- redundant with Cmd+0 host QuickNote feature (v0.0.610)
 - [x] Archive apps/dev/ POCs (#1942) -- 31 removed, kept ai-test, counter-tree, pixel-art-tavern (v0.0.610)
-- [ ] `plexi app dev` hot-reload command (#1660)
+- [x] ~~`plexi app dev` hot-reload command (#1660)~~ -- superseded by app init rework: `app init` + `app open <path>` replaces dev workflow (v0.0.633)
 
 ### 3d: Documentation
 
-- [ ] PGAP protocol reference -- complete, agent-readable, every node type documented with examples
+- [x] PGAP protocol reference (#1950) -- `docs/PGAP_REFERENCE.md`, every L1 node type documented with examples (v0.0.633)
 - [ ] SDK quickstart -- "your first app in 50 lines"
 - [ ] Acknowledge security model in protocol docs: capability system is consent + audit, not process isolation. WASM runtime (Phase 4) is the true sandbox endgame.
 
@@ -122,28 +122,28 @@ The agent experience and AI onboarding. The LLM backend infrastructure is substa
 
 The agent is a first-party PGAP app, not a new pane type. This means other people can build their own agent apps with different personalities, system prompts, and tool sets. "Characters" are just different agent app manifests. Currently only dev POCs exist (`apps/dev/ai-test/`, `apps/dev/pixel-art-tavern/`).
 
-- [ ] Core assistant app -- L1 chat UI (Chat node + TextInput), multi-turn conversation loop via `ai.query`, streaming via `AiStreamChunk`
+- [x] Core assistant app (#2041) -- L1 chat UI, multi-turn conversation, streaming via `AiStreamChunk`, model switcher, thinking animation (v0.0.638)
 - [ ] Session persistence -- conversations saved as plain JSON in workspace `.plexi/` directory, resume on reopen
-- [ ] Tool integration -- assistant exposes `ExposeTools` so it can invoke tools from other running apps
-- [ ] CLI tool access -- assistant can run Plexi CLI commands (spawn panes, open apps, read context) via the existing tool dispatch system
-- [ ] Agent app template -- `plexi app init --agent` scaffold with system prompt, tool declarations, and conversation loop boilerplate
+- [x] Tool integration (#2037) -- assistant exposes `ExposeTools` so it can invoke tools from other running apps (v0.0.638)
+- [x] CLI tool access (#2040) -- assistant spawns panes, opens apps, reads context via tool dispatch (v0.0.638)
+- [ ] Agent app template -- `plexi agent init` scaffold with system prompt, tool declarations, and conversation loop boilerplate
 
 ### 4b: AI onboarding (adapted from Odysseus hwfit)
 
-- [ ] `plexi ai doctor` CLI command -- hardware scan (GPU detection: Metal/CUDA/AMD), VRAM measurement, model recommendation. No `plexi ai` CLI namespace exists yet.
-- [ ] `plexi doctor` capability audit (#1346) -- audit installed apps' capability declarations against current config
-- [ ] Local model setup wizard -- detect/install Ollama, pull recommended model based on hardware, configure `[ai.ollama]`
+- [x] `plexi ai doctor` CLI command -- hardware scan, GPU detection, VRAM measurement, model recommendation (v0.0.638)
+- [x] `plexi doctor` capability audit (#1346) -- audits installed apps against config, `--json` for scripting (v0.0.638)
+- [x] Local model setup wizard -- `plexi ai setup` interactive Ollama configuration (v0.0.638)
 - [ ] OpenRouter setup flow -- guided API key entry, test connection
 - [ ] Plexi AI subscription backend (future) -- `PlexiCloudBackend` implementing `AiBackend`, hits Plexi's API proxy. 50 free requests, then paid tier. `BillingModel::Subscription` variant already exists in the codebase.
 - [ ] Auto-discovery of running local LLM servers -- port scan for Ollama/vLLM/LM Studio (adapted from Odysseus model_discovery)
 
 ### 4c: External agent control surface
 
-Any coding agent (Claude Code, Codex, PI, etc.) can drive Plexi and its apps via CLI. Current `PaneCmd` has: New, Name, SetTitle, List, Focus, Close, Send, Self, Info, Capture, Key. Gaps:
+Any coding agent (Claude Code, Codex, PI, etc.) can drive Plexi and its apps via CLI. `PaneCmd` now has: New, Name, SetTitle, List, Focus, Close, Send, Self, Info, Capture, Key, Command, State. `AppCmd` has Action. Remaining gaps:
 
-- [ ] `plexi pane command <id> <text>` -- send structured Command event to app panes (protocol already has `PlexiEvent::Command`, no CLI surface)
-- [ ] `plexi pane state <id>` -- return the app's current L1 UiNode tree as JSON (the agent equivalent of "what does this app look like right now")
-- [ ] `plexi app action <id> <action> [args]` -- semantic actions on apps (navigate, search, select) without simulating keystrokes. Requires apps to declare an action surface in their manifest.
+- [x] `plexi pane command <id> <text>` -- send text with optional `--enter` flag (v0.0.638)
+- [x] `plexi pane state <id>` -- returns L1 UiNode tree as JSON for app panes, status object for terminals (v0.0.638)
+- [x] `plexi app action <id> <action> [args]` (#1980/#2038) -- semantic actions on app panes via `send_app_action` (v0.0.638)
 - [ ] App launch arguments (#1638) -- infrastructure for passing args when opening an app
 - [ ] Prefix-based open namespace (#1529) -- `cli:`, `mcp:`, `app:` with dynamic completions and crawl cache
 - [ ] Unify `plexi run` with scripts directory (#1321) -- global scope scripting surface for agents
@@ -151,10 +151,10 @@ Any coding agent (Claude Code, Codex, PI, etc.) can drive Plexi and its apps via
 
 ### 4d: Agent ecosystem
 
-- [ ] Workspace agent registry (#1616) -- `plexi agent add/update`, AGENT.md spec, scoped memory
+- [x] Workspace agent registry -- `plexi agent init/add/update/list` with scoped memory and logs (v0.0.638)
 - [ ] Crew dispatch dashboard app (#1456) -- agent-agnostic dispatch with issue picker and pane monitoring
 - [ ] Agent marketplace category -- agent apps are just apps with `ai.query` capability; marketplace tags them as "agents"
-- [ ] Example agent apps -- coding assistant, research agent, writing helper (different system prompts + tool sets)
+- [x] Example agent apps (#2036) -- coding, research, writing agent apps shipped (v0.0.638)
 - [ ] Agent-to-agent communication -- apps with `ExposeTools` can offer tools to any agent app in the same workspace
 
 **Done when:** a non-technical user runs `plexi ai doctor`, gets set up with a local or cloud model, opens the assistant app, has a conversation, and the assistant can open apps and terminals on their behalf. Cost tracked, transcript on disk, conversation resumable.
@@ -207,7 +207,7 @@ Marketplace and distribution. Only after the garden is curated (Layer 6).
 - [ ] Revenue sharing model -- app authors earn from paid apps
 - [ ] Plexi AI subscription service -- API proxy server, account system, 50 free requests then paid tier. The business model: apps are free (or paid through marketplace), AI is the subscription
 - [ ] Website refresh (#1171)
-- [ ] Onboarding experience -- `plexi demo` interactive tutorial (#1445)
+- [x] Onboarding experience -- `plexi demo` interactive keybinding tutorial (v0.0.638)
 - [ ] Windows support (#1735, general)
 - [ ] Install experience polish across macOS + Windows + Linux
 - [ ] `ARCHITECTURE.md` -- module map, data flow diagram, input dispatch pipeline. Only write this once the architecture is stable (post-Layer 3). Add a CLAUDE.md rule to update it when architecture changes.
