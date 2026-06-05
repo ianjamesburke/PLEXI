@@ -90,8 +90,18 @@ impl PlexiApp {
 
             // Pane count + focused-pane index for this context
             let ctx_id = self.router.get(i).context_id;
+            let mut ctx_windows: Vec<usize> = self.windows.iter()
+                .enumerate()
+                .filter(|(_, w)| w.context_id == ctx_id)
+                .map(|(idx, _)| idx)
+                .collect();
+            ctx_windows.sort_by_key(|&idx| {
+                let w = &self.windows[idx];
+                (w.grid_y, w.grid_x)
+            });
             let mut pane_ids: Vec<u64> = Vec::new();
-            for w in self.windows.iter().filter(|w| w.context_id == ctx_id) {
+            for &win_idx in &ctx_windows {
+                let w = &self.windows[win_idx];
                 if let Some(root) = w.tree.root() {
                     pane_ids.extend(crate::spatial::tiling::collect_pane_ids_spatial(&w.tree.tiles, root));
                 }
