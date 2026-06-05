@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.624"
+verified_version: "0.0.627"
 order: 7
 ---
 
@@ -285,6 +285,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `dev` | Scaffold a new app directly into the global registry and open it in a pane |
 | `publish` | Publish an app to the Plexi marketplace |
 | `update` | Check installed apps for available updates |
+| `action` | Send a semantic action to a running app pane |
 
 ### `plexi app open`
 
@@ -421,6 +422,20 @@ Compares each app's recorded installed version against the version in its manife
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<id>` | string | no | App id to check (omit to check all installed apps) |
+
+### `plexi app action`
+
+Send a semantic action to a running app pane.
+
+Unlike `pane command` (which sends raw text), `app action` delivers a structured semantic event directly to the app's event handler — no keystroke simulation.
+
+Example: plexi app action 42 refresh Example: plexi app action 42 navigate-to /some/path
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | yes | Pane id of the target app pane (from `plexi pane list`) |
+| `<action>` | string | yes | Action name to invoke (e.g. "refresh", "navigate-to", "add-item") |
+| `<args>` | string (repeatable) | no | Optional arguments forwarded to the action handler |
 
 ## `plexi registry`
 
