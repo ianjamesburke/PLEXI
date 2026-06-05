@@ -116,6 +116,22 @@ sdk-dev:
 # Always cleans the previous PR build first for a fully fresh install.
 # Alias for: just channel-install pr-<number>
 pr-install number: fetch-python-runtime
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Preflight: confirm we're running from a valid repo worktree with Cargo.toml present.
+    if [[ ! -f "Cargo.toml" ]] || ! grep -q 'name = "plexi"' Cargo.toml 2>/dev/null; then
+      echo "Error: pr-install must be run from inside the PLEXI repo root or a worktree."
+      echo "  Current directory: $(pwd)"
+      echo "  Expected a Cargo.toml with name = \"plexi\"."
+      exit 1
+    fi
+    # Preflight: confirm cargo metadata resolves a target-dir before starting a build.
+    _target_dir="$(cargo metadata --format-version=1 --no-deps 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])' 2>/dev/null || echo "")"
+    if [[ -z "$_target_dir" ]]; then
+      echo "Error: could not resolve cargo target directory."
+      echo "  Make sure 'cargo metadata' runs cleanly from $(pwd) and Python 3 is available."
+      exit 1
+    fi
     bash scripts/pr-clean.sh {{number}}
     bash scripts/install.sh "pr-{{number}}"
 

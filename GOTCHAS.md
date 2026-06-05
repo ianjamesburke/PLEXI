@@ -4,6 +4,16 @@
 
 ---
 
+## [cargo · ship] Changing target-dir causes silent install failures
+
+All repo worktrees share a single build cache via `[build] target-dir` in `.cargo/config.toml` (or `CARGO_TARGET_DIR`). `scripts/install.sh` resolves the bundle path by calling `cargo metadata` at install time so it always points at the canonical target directory.
+
+**If you change the target-dir setting, install.sh automatically adapts.** But if `cargo metadata` fails (Python 3 missing, not in a cargo workspace, etc.), the script now exits immediately with a clear error rather than falling back to `"target"` and silently installing nothing.
+
+**Root cause of original failure (d21a8d0f):** the script previously hardcoded `"target"` as a fallback, so when the actual target dir was different (e.g. a shared sibling path), `cargo bundle` built to the real location but the copy step silently found nothing and exited 0. Fixed by: (a) making the metadata lookup non-optional (empty result = immediate failure), and (b) naming the exact path in the bundle-not-found error so engineers can diff expected vs. actual.
+
+---
+
 ## [git · ship] Unpushed alpha commits are silently lost when ship-issue agents rebase
 
 `ship-issue` runs `git pull --rebase origin alpha` at Phase 1. If there are commits on the local alpha branch that haven't been pushed to origin, the rebase replays them on top of origin's HEAD — but if those commits touch files that were also changed by merged PRs (e.g. skill files, CLAUDE.md), they will conflict and be silently dropped or overwritten.
