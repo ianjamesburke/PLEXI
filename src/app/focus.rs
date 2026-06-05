@@ -226,7 +226,12 @@ impl PlexiApp {
             }
             self.windows[idx].focused_pane = Some(tile_id);
             self.active_window = idx;
-            log::info!("focus_history: back — to window={window_id} tile={tile_id:?} history_len={}", self.pane_focus_history.len());
+            // Sync sidebar: router active must match the context of the window we navigated to.
+            let ctx_id = self.windows[idx].context_id;
+            if let Some(ctx_idx) = self.router.position(|c| c.context_id == ctx_id) {
+                self.router.set_active(ctx_idx);
+            }
+            log::info!("focus_history: back — to window={window_id} tile={tile_id:?} ctx={ctx_id} history_len={}", self.pane_focus_history.len());
             break;
         }
         self.navigating_history = false;
@@ -261,7 +266,12 @@ impl PlexiApp {
             }
             self.windows[idx].focused_pane = Some(tile_id);
             self.active_window = idx;
-            log::info!("focus_history: forward — to window={window_id} tile={tile_id:?} future_len={}", self.pane_focus_future.len());
+            // Sync sidebar: router active must match the context of the window we navigated to.
+            let ctx_id = self.windows[idx].context_id;
+            if let Some(ctx_idx) = self.router.position(|c| c.context_id == ctx_id) {
+                self.router.set_active(ctx_idx);
+            }
+            log::info!("focus_history: forward — to window={window_id} tile={tile_id:?} ctx={ctx_id} future_len={}", self.pane_focus_future.len());
             break;
         }
         self.navigating_history = false;
