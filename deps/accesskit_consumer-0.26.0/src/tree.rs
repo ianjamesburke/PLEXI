@@ -763,4 +763,47 @@ mod tests {
         let mut handler = Handler {};
         tree.update_and_process_changes(update, &mut handler);
     }
+
+    // Regression test: when the focused node is a child of the old root and a
+    // root-change update orphans the entire old subtree, the orphan sweep removes
+    // the focused node *after* `self.focus` is set to the update's focus value.
+    // The patched code falls back to the new root instead of panicking in
+    // validate_global with "Focused id #N is not in the node list".
+    #[test]
+    fn root_change_with_focused_orphan_does_not_panic() {
+        // Initial tree: root=0, focused child=1
+        let first_update = TreeUpdate {
+            nodes: vec![
+                (NodeId(0), {
+                    let mut node = Node::new(Role::Window);
+                    node.set_children(vec![NodeId(1)]);
+                    node
+                }),
+                (NodeId(1), Node::new(Role::Button)),
+            ],
+            tree: Some(Tree::new(NodeId(0))),
+            focus: NodeId(1),
+        };
+        let mut tree = super::Tree::new(first_update, true);
+        assert!(tree.state().node_by_id(NodeId(1)).unwrap().is_focused());
+
+        // Root-change update: new root=2, focus still points at old node 1
+        // which no longer exists in the new tree — this is the crash scenario.
+        let second_update = TreeUpdate {
+            nodes: vec![(NodeId(2), Node::new(Role::Window))],
+            tree: Some(Tree::new(NodeId(2))),
+            focus: NodeId(1),
+        };
+        struct Handler;
+        impl super::ChangeHandler for Handler {
+            fn node_added(&mut self, _node: &crate::Node) {}
+            fn node_updated(&mut self, _old_node: &crate::Node, _new_node: &crate::Node) {}
+            fn focus_moved(&mut self, _old_node: Option<&crate::Node>, _new_node: Option<&crate::Node>) {}
+            fn node_removed(&mut self, _node: &crate::Node) {}
+        }
+        // Must not panic. Focus falls back to the new root (NodeId(2)).
+        tree.update_and_process_changes(second_update, &mut Handler);
+        assert_eq!(tree.state().root().id(), NodeId(2));
+        assert!(tree.state().node_by_id(NodeId(1)).is_none());
+    }
 }
