@@ -548,7 +548,25 @@ impl PlexiApp {
             }
         }
 
-        // 4b. Reset any focused_pane that now points to a removed Portal tile.
+        // 4b. Delete surviving windows that are now empty (portal was their only pane),
+        //     but only if a non-empty sibling window exists for the same context. This
+        //     preserves the invariant that every context retains at least one window.
+        {
+            let mut empty_indices: Vec<usize> = self.windows.iter().enumerate()
+                .filter(|(_, w)| w.panes.is_empty())
+                .filter(|(_, w)| self.windows.iter().any(|o| o.context_id == w.context_id && !o.panes.is_empty()))
+                .map(|(i, _)| i)
+                .collect();
+            empty_indices.sort_unstable_by(|a, b| b.cmp(a)); // reverse order
+            for idx in empty_indices {
+                log::info!(
+                    "delete_context: window idx={idx} is empty after portal removal — deleting it",
+                );
+                self.delete_window(idx);
+            }
+        }
+
+        // 4c. Reset any focused_pane that now points to a removed Portal tile.
         for win in &mut self.windows {
             if let Some(fp) = win.focused_pane {
                 if win.tree.tiles.get(fp).is_none() {
