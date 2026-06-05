@@ -817,7 +817,7 @@ impl PlexiApp {
 
     /// Launch an app directly from a filesystem path without looking it up in the registry.
     ///
-    /// Used by `plexi app run <path>` and the `SpawnPane` IPC when `path` is set.
+    /// Used by `plexi app open <path>` and the `SpawnPane` IPC when `path` is set.
     /// The app runs in-place; its own directory is used as `workspace_root`.
     pub(crate) fn launch_app_by_path_with_layout(
         &mut self,

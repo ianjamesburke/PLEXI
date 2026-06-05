@@ -373,8 +373,73 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_
         eprintln!("warning: 'plexi app open terminal' is deprecated, use 'plexi terminal' instead");
     }
 
+    // If type_id looks like a path to an app directory (contains manifest.toml), open by path.
+    let path = std::path::Path::new(type_id);
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    if resolved.join("manifest.toml").exists() {
+        let abs_path = resolved.to_string_lossy().to_string();
+        log::info!("open:cli: detected path with manifest.toml, opening from path={abs_path}");
+        return open_app_by_path(&abs_path, layout, from_pane_id);
+    }
+
     let layout_str = layout.unwrap_or("split_h");
     pane_new_cli(None, None, layout_str, from_pane_id, cwd, false, false, Some(type_id), &[], None, args)
+}
+
+/// Open an app from a local directory path (replaces the old `app run` command).
+fn open_app_by_path(abs_path: &str, layout: Option<&str>, from_pane_id: Option<u64>) -> i32 {
+    let layout_str = layout.unwrap_or("split_h");
+    let from_pane_id = from_pane_id.or_else(|| std::env::var("PLEXI_PANE_ID").ok()?.parse().ok());
+
+    if std::env::var("PLEXI_SOCKET").is_ok() {
+        let id = uuid::Uuid::new_v4();
+        let response_file = crate::config::config_dir()
+            .join(format!("spawn-pane-response-{id}.json"))
+            .to_string_lossy()
+            .into_owned();
+        let mut payload = serde_json::json!({
+            "type": "spawn_pane",
+            "type_id": "",
+            "path": abs_path,
+            "layout": layout_str,
+            "response_file": response_file,
+        });
+        if let Some(pid) = from_pane_id {
+            payload["from_pane_id"] = serde_json::Value::Number(pid.into());
+        }
+        log::info!("open_app_by_path: sending via socket path={abs_path} layout={layout_str} from_pane_id={from_pane_id:?}");
+        let code = send_to_socket(payload);
+        if code != 0 { return code; }
+        return wait_for_response(&response_file);
+    }
+
+    let queue_dir = crate::config::config_dir().join("spawn-queue");
+    if let Err(e) = std::fs::create_dir_all(&queue_dir) {
+        eprintln!("error: could not create spawn queue: {e}");
+        return 1;
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let queue_payload = serde_json::json!({
+        "type_id": "",
+        "path": abs_path,
+        "layout": layout_str,
+    });
+    let file = queue_dir.join(format!("{ts}.json"));
+    if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {
+        eprintln!("error: could not write spawn request: {e}");
+        return 1;
+    }
+    log::info!("open_app_by_path: queued path={abs_path}");
+    println!("queued: open {abs_path}");
+    println!("(running outside a Plexi pane; Plexi will pick this up within a second)");
+    0
 }
 
 /// Thin wrapper preserving the existing `plexi terminal` call site.

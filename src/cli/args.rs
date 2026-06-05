@@ -298,12 +298,13 @@ pub enum SecretCmd {
 
 #[derive(Subcommand)]
 pub enum AppCmd {
-    /// Open an app or tool in a new pane (defaults to overlay).
+    /// Open an app or tool in a new pane.
     ///
-    /// Pass an app id (e.g. `plexi app open snake`) to open an installed app.
-    /// Use `--mcp` to wrap an MCP server, or `--cli` to open any CLI tool with a Plexi UI.
+    /// Pass an app id (e.g. `plexi app open snake`) or a path to an app directory
+    /// containing a manifest.toml. Use `--mcp` to wrap an MCP server, or `--cli`
+    /// to open any CLI tool with a Plexi UI.
     Open {
-        /// App id to open (mutually exclusive with --mcp and --cli)
+        /// App id or path to open (mutually exclusive with --mcp and --cli)
         #[arg(conflicts_with_all = ["mcp", "cli"])]
         type_id: Option<String>,
         /// Wrap a stdio MCP server in a Plexi pane.
@@ -392,24 +393,24 @@ pub enum AppCmd {
     },
     /// Create a new app from a template.
     ///
-    /// Scaffolds the folder structure and files you need to build a Plexi app.
-    /// Use --lang to pick the language (default: python).
+    /// Scaffolds the folder structure and files you need to build a Plexi app,
+    /// then opens it in a split-right pane so you can edit code alongside the
+    /// running app.
+    ///
+    /// By default, the app is placed in your workspace's app directory. If no
+    /// workspace is detected, pass --global to scaffold into the global registry.
+    ///
+    /// Use --no-open to scaffold without opening.
     Init {
         name: String,
         #[arg(long, default_value = "python")]
         lang: String,
-        /// Open the new pane relative to this pane ID instead of the focused pane.
-        /// Defaults to PLEXI_PANE_ID if set in the environment.
+        /// Scaffold into the global app registry instead of the workspace
         #[arg(long)]
-        from_pane_id: Option<u64>,
-    },
-    /// Run an app directly from a local directory without installing or linking.
-    ///
-    /// Opens the app in a pane immediately. Edits to the app take effect on next launch.
-    /// Replaces `plexi app link` for development workflows.
-    Run {
-        /// Path to the app folder containing manifest.toml
-        path: String,
+        global: bool,
+        /// Scaffold the app without opening it in a pane
+        #[arg(long)]
+        no_open: bool,
         /// Open the new pane relative to this pane ID instead of the focused pane.
         /// Defaults to PLEXI_PANE_ID if set in the environment.
         #[arg(long)]
@@ -428,23 +429,6 @@ pub enum AppCmd {
         /// Destination path for the TOML snapshot file
         #[arg(value_hint = ValueHint::FilePath)]
         path: String,
-    },
-    /// Scaffold a new app directly into the global registry and open it in a pane.
-    ///
-    /// This is the fastest path from zero to running app: one command scaffolds the
-    /// template into `~/.plexi-<channel>/apps/<name>/` and opens it immediately.
-    /// Hot reload is automatic (`watch = true` in the generated manifest).
-    ///
-    /// Example: plexi app dev my-widget
-    Dev {
-        /// Name for the new app (used as directory name and app id)
-        name: String,
-        /// Language template: python (default) or rust
-        #[arg(long, default_value = "python")]
-        lang: String,
-        /// Open the new pane relative to this pane ID instead of the focused pane
-        #[arg(long)]
-        from_pane_id: Option<u64>,
     },
     /// Publish an app to the Plexi marketplace.
     ///

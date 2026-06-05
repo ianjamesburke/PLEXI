@@ -78,19 +78,19 @@ pub(super) fn app_init_config_dir() -> String {
         .to_string()
 }
 
-/// `plexi app init [--lang python|rust] <name>` — scaffold a new app.
+/// `plexi app init [--lang python|rust] [--global] [--no-open] <name>`
 ///
-/// Placement: walks up from CWD looking for the nearest ancestor directory
-/// that contains the channel config dir (e.g. `.plexi-alpha/` for the alpha
-/// build, `.plexi/` for main). If found, scaffolds into
-/// `<workspace_root>/<channel_dir>/apps/<name>/`. If no workspace root is
-/// found, falls back to `<cwd>/<channel_dir>/apps/<name>/`.
+/// Without `--global`: walks up from CWD looking for the nearest workspace
+/// (ancestor with `<channel_dir>/`). If none is found, exits with an error
+/// directing the user to pass `--global` or `cd` into a workspace.
 ///
-/// The app is immediately discoverable by the registry without any additional
-/// install step, and hot reload watches the actual source.
-pub fn app_init(name: &str, lang: &str, from_pane_id: Option<u64>) -> i32 {
+/// With `--global`: scaffolds directly into the global registry
+/// (`~/.plexi-<channel>/apps/<name>/`).
+///
+/// Auto-opens the app in a split-right pane unless `--no-open` is passed.
+pub fn app_init(name: &str, lang: &str, global: bool, no_open: bool, from_pane_id: Option<u64>) -> i32 {
     if name.is_empty() {
-        eprintln!("Usage: plexi app init [--lang python|rust] <name>");
+        eprintln!("Usage: plexi app init [--lang python|rust] [--global] [--no-open] <name>");
         return 1;
     }
 
@@ -102,63 +102,44 @@ pub fn app_init(name: &str, lang: &str, from_pane_id: Option<u64>) -> i32 {
         }
     };
 
-    // Root dir: hard reject (no prompt). Home dir: prompt — user may
-    // intentionally want a global-scoped app not tied to any workspace.
-    let home = dirs::home_dir();
-    let is_root = cwd == std::path::Path::new("/");
-    let is_home = home.as_ref().map(|h| cwd == *h).unwrap_or(false);
-    if is_root {
-        log::warn!("app_init: rejected — root dir guard: {}", cwd.display());
+    if cwd == std::path::Path::new("/") {
+        log::warn!("app_init: rejected at root dir");
         eprintln!("error: cannot scaffold an app in the root directory.");
         return 1;
     }
-    if is_home {
-        eprintln!("You're about to create a global-scoped app (not tied to any workspace). Continue? [y/N]");
-        eprintln!("(Or cd into a project directory to create a workspace-scoped app.)");
-        let _ = io::stderr().flush();
-        let mut answer = String::new();
-        if io::stdin().read_line(&mut answer).is_err() {
-            eprintln!("error: failed to read confirmation");
-            return 1;
-        }
-        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
-            log::info!("app_init: user declined global-scoped app at home dir — exiting cleanly");
-            return 0;
-        }
-        log::info!("app_init: user confirmed global-scoped app at home dir");
-    }
 
     let channel_dir = app_init_config_dir();
-
-    // Walk up from CWD looking for a dir named `channel_dir` (e.g. `.plexi-alpha`).
-    // Stop at home and root. If found, place the app there; otherwise fall back to CWD.
-    let workspace_root = {
-        let home_path = home.clone();
-        let mut current = cwd.clone();
-        let mut found: Option<std::path::PathBuf> = None;
-        loop {
-            if let Some(ref h) = home_path {
-                if current == *h {
+    let app_dir = if global {
+        crate::app::registry::apps_dir().join(name)
+    } else {
+        let home = dirs::home_dir();
+        let workspace_root = {
+            let mut current = cwd.clone();
+            let mut found: Option<std::path::PathBuf> = None;
+            loop {
+                if let Some(ref h) = home {
+                    if current == *h { break; }
+                }
+                if current == std::path::Path::new("/") { break; }
+                if current.join(&channel_dir).is_dir() {
+                    found = Some(current);
                     break;
                 }
+                if !current.pop() { break; }
             }
-            if current == std::path::Path::new("/") {
-                break;
-            }
-            if current.join(&channel_dir).is_dir() {
-                found = Some(current);
-                break;
-            }
-            if !current.pop() {
-                break;
+            found
+        };
+        match workspace_root {
+            Some(root) => root.join(&channel_dir).join("apps").join(name),
+            None => {
+                eprintln!("error: no workspace found (no {channel_dir}/ directory in any ancestor).");
+                eprintln!("  Use --global to create a global app, or cd into a project with a workspace.");
+                return 1;
             }
         }
-        found
     };
 
-    let placement = if workspace_root.is_some() { "workspace" } else { "global" };
-    let base = workspace_root.unwrap_or_else(|| home.clone().unwrap_or_else(|| cwd.clone()));
-    let app_dir = base.join(&channel_dir).join("apps").join(name);
+    let placement = if global { "global" } else { "workspace" };
     log::info!("app_init: placement={placement} path={}", app_dir.display());
 
     if app_dir.exists() {
@@ -184,19 +165,19 @@ pub fn app_init(name: &str, lang: &str, from_pane_id: Option<u64>) -> i32 {
                 println!("\nNext steps:");
                 println!("  cd {}", app_dir.display());
                 println!("  cargo build --release");
-                println!("  # then run: plexi app run {}", app_dir.display());
+                println!("  plexi app open {}", app_dir.display());
             } else {
                 ensure_plexi_sdk();
-                // Auto-open the app if PLEXI_SOCKET is set (running inside a pane).
-                if std::env::var("PLEXI_SOCKET").is_ok() {
+                if !no_open {
                     let path_str = app_dir.to_string_lossy().to_string();
-                    log::info!("app_init: auto-opening '{name}' via app_run from_path={path_str} from_pane_id={from_pane_id:?}");
-                    let exit_code = app_run(&path_str, from_pane_id);
+                    log::info!("app_init: auto-opening '{name}' split-right path={path_str} from_pane_id={from_pane_id:?}");
+                    let exit_code = super::open_cli(&path_str, &[], Some("split_h"), from_pane_id, None);
                     if exit_code != 0 {
-                        eprintln!("warning: app created but could not auto-open (exit {exit_code}) — run: plexi app run {}", app_dir.display());
+                        eprintln!("warning: app created but could not auto-open (exit {exit_code})");
+                        eprintln!("  Open with: plexi app open {}", app_dir.display());
                     }
                 } else {
-                    println!("  Run with: plexi app run {}", app_dir.display());
+                    println!("  Open with: plexi app open {}", app_dir.display());
                 }
             }
             0
@@ -451,126 +432,6 @@ fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> 
     Ok(())
 }
 
-/// `plexi app run <path>` — open any directory with a valid manifest.toml as an app pane.
-///
-/// No install, no link required. Edits take effect on next launch.
-pub fn app_run(path: &str, from_pane_id: Option<u64>) -> i32 {
-    let cwd = match std::env::current_dir() {
-        Ok(d) => d,
-        Err(e) => { eprintln!("error: {e}"); return 1; }
-    };
-    let app_dir = if std::path::Path::new(path).is_absolute() {
-        std::path::PathBuf::from(path)
-    } else {
-        cwd.join(path)
-    };
-    let app_dir = match app_dir.canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: could not resolve {path}: {e}");
-            return 1;
-        }
-    };
-    // Validate manifest.toml exists and parses
-    let manifest_path = app_dir.join("manifest.toml");
-    if !manifest_path.exists() {
-        eprintln!("error: no manifest.toml found in {}", app_dir.display());
-        eprintln!("  Is this a Plexi app directory? Run `plexi app init <name>` to scaffold one.");
-        return 1;
-    }
-    let manifest_str = match std::fs::read_to_string(&manifest_path) {
-        Ok(s) => s,
-        Err(e) => { eprintln!("error: could not read manifest.toml: {e}"); return 1; }
-    };
-    let _: toml::Value = match toml::from_str(&manifest_str) {
-        Ok(v) => v,
-        Err(e) => { eprintln!("error: manifest.toml parse failed: {e}"); return 1; }
-    };
-    let abs_path = app_dir.to_string_lossy().to_string();
-    log::info!("app_run:cli: launching app from path={abs_path}");
-
-    if std::env::var("PLEXI_SOCKET").is_ok() {
-        let id = uuid::Uuid::new_v4();
-        let response_file = crate::config::config_dir()
-            .join(format!("spawn-pane-response-{id}.json"))
-            .to_string_lossy()
-            .into_owned();
-        let from_pane_id = from_pane_id.or_else(|| {
-            std::env::var("PLEXI_PANE_ID").ok()?.parse::<u64>().ok()
-        });
-        let mut payload = serde_json::json!({
-            "type": "spawn_pane",
-            "type_id": "",
-            "path": abs_path,
-            "response_file": response_file,
-        });
-        if let Some(pid) = from_pane_id {
-            payload["from_pane_id"] = serde_json::Value::Number(pid.into());
-        }
-        log::info!("app_run:cli: sending via socket path={abs_path} from_pane_id={from_pane_id:?} response_file={response_file}");
-        let code = super::send_to_socket(payload);
-        if code != 0 {
-            return code;
-        }
-        let response_path = std::path::PathBuf::from(&response_file);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if response_path.exists() {
-                match std::fs::read_to_string(&response_path) {
-                    Ok(content) => {
-                        let _ = std::fs::remove_file(&response_path);
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
-                            if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
-                                eprintln!("error: {msg}");
-                                return 1;
-                            }
-                            if let Some(pid) = v.get("pane_id").and_then(|v| v.as_u64()) {
-                                println!("{pid}");
-                                return 0;
-                            }
-                        }
-                        print!("{content}");
-                        return 0;
-                    }
-                    Err(e) => {
-                        eprintln!("error: could not read response file: {e}");
-                        return 1;
-                    }
-                }
-            }
-            if std::time::Instant::now() >= deadline {
-                eprintln!("error: timed out waiting for open response");
-                return 1;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-    }
-
-    // Fallback: write to spawn-queue
-    let queue_dir = crate::config::config_dir().join("spawn-queue");
-    if let Err(e) = std::fs::create_dir_all(&queue_dir) {
-        eprintln!("error: could not create spawn queue: {e}");
-        return 1;
-    }
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let queue_payload = serde_json::json!({
-        "type_id": "",
-        "path": abs_path,
-    });
-    let file = queue_dir.join(format!("{ts}.json"));
-    if let Err(e) = std::fs::write(&file, queue_payload.to_string()) {
-        eprintln!("error: could not write spawn request: {e}");
-        return 1;
-    }
-    log::info!("app_run:cli: queued path={abs_path}");
-    println!("queued: run {abs_path}");
-    println!("(running outside a Plexi pane — Plexi will pick this up within a second)");
-    0
-}
-
 /// `plexi app info <id>` — show manifest info for an installed app, including MCP URL if applicable.
 pub fn app_info(id: &str) -> i32 {
     let registry =
@@ -821,62 +682,6 @@ fn to_struct_name(s: &str) -> String {
         .collect::<String>()
 }
 
-/// `plexi app dev <name>` — scaffold into global registry + auto-open.
-///
-/// Places the app directly in `apps_dir()/<name>/` so it is immediately
-/// discoverable by the registry. Then opens it in a pane.
-pub fn app_dev(name: &str, lang: &str, from_pane_id: Option<u64>) -> i32 {
-    if name.is_empty() {
-        eprintln!("Usage: plexi app dev <name>");
-        return 1;
-    }
-
-    let app_dir = crate::app::registry::apps_dir().join(name);
-    log::info!("app_dev: name={name} lang={lang} path={}", app_dir.display());
-
-    if app_dir.exists() {
-        eprintln!("error: app '{name}' already exists at {}", app_dir.display());
-        eprintln!("  To open it: plexi app open {name}");
-        return 1;
-    }
-
-    if let Err(e) = std::fs::create_dir_all(&app_dir) {
-        eprintln!("error: could not create {}: {e}", app_dir.display());
-        return 1;
-    }
-
-    let result = match lang {
-        "rust" => scaffold_rust_app(&app_dir, name),
-        _ => scaffold_python_app(&app_dir, name),
-    };
-
-    match result {
-        Ok(()) => {
-            println!("Created app '{name}' at {}", app_dir.display());
-            if lang == "rust" {
-                println!("\nNext steps:");
-                println!("  cd {}", app_dir.display());
-                println!("  cargo build --release");
-                println!("  plexi app open {name}");
-            } else {
-                ensure_plexi_sdk();
-                let path_str = app_dir.to_string_lossy().to_string();
-                log::info!("app_dev: auto-opening '{name}' via app_run path={path_str}");
-                let exit_code = app_run(&path_str, from_pane_id);
-                if exit_code != 0 {
-                    eprintln!("warning: app created but could not auto-open (exit {exit_code})");
-                    eprintln!("  Run: plexi app open {name}");
-                }
-            }
-            0
-        }
-        Err(e) => {
-            eprintln!("error: failed to scaffold app: {e}");
-            1
-        }
-    }
-}
-
 /// `plexi app publish` — stub for future marketplace.
 pub fn app_publish() -> i32 {
     log::info!("app_publish: stub invoked");
@@ -1098,33 +903,6 @@ mod app_install_workspace_tests {
     }
 }
 
-#[cfg(test)]
-mod app_run_tests {
-    use tempfile::TempDir;
-
-    #[test]
-    fn app_run_nonexistent_path_returns_1() {
-        let code = super::app_run("/tmp/plexi-test-nonexistent-path-xyzzy-12345", None);
-        assert_eq!(code, 1);
-    }
-
-    #[test]
-    fn app_run_dir_without_manifest_returns_1() {
-        let dir = TempDir::new().unwrap();
-        let path = dir.path().to_string_lossy().to_string();
-        let code = super::app_run(&path, None);
-        assert_eq!(code, 1);
-    }
-
-    #[test]
-    fn app_run_invalid_manifest_returns_1() {
-        let dir = TempDir::new().unwrap();
-        std::fs::write(dir.path().join("manifest.toml"), "this is not valid toml ][[[").unwrap();
-        let path = dir.path().to_string_lossy().to_string();
-        let code = super::app_run(&path, None);
-        assert_eq!(code, 1);
-    }
-}
 
 #[cfg(test)]
 mod app_publish_tests {
