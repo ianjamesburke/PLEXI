@@ -262,7 +262,7 @@ fn stream_process_denied_without_terminal_bindings() {
 #[test]
 fn notification_modal_handle_key_returns_consumed() {
     use crate::app::FocusLayer;
-    use crate::app_trait::KeyDisposition;
+    use crate::app::app_trait::KeyDisposition;
     let mut h = HostHarness::new();
     h.app.push_focus_layer(FocusLayer::NotificationModal);
     let ctx = h.app.ctx.clone();
@@ -292,16 +292,15 @@ fn cwd_for_welcome_tab_returns_context_root_when_set() {
 }
 
 /// Regression guard for #1534: without a context root, `cwd_for_welcome_tab`
-/// must fall back to the window launch path, not panic or return an arbitrary dir.
+/// must fall back to home dir, not panic or return an arbitrary dir.
 #[test]
 fn cwd_for_welcome_tab_falls_back_to_window_path_when_no_root() {
     let h = HostHarness::new();
-    let window_path = h.app.windows[0].path.clone();
-    // No root set — fallback chain: None → window.path
+    // No root set — fallback chain: None → home_dir()
     assert_eq!(
         h.app.cwd_for_welcome_tab(),
-        window_path,
-        "cwd_for_welcome_tab must fall back to window.path when no context root is set"
+        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")),
+        "cwd_for_welcome_tab must fall back to home dir when no context root is set"
     );
 }
 
@@ -323,7 +322,7 @@ fn cwd_for_welcome_tab_falls_back_to_window_path_when_no_root() {
 fn capability_modal_escape_fires_deny_once() {
     use crate::app::FocusLayer;
     use crate::process_app::PendingPrompt;
-    use crate::pane::AppRuntime;
+    use crate::host::pane::AppRuntime;
 
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();
@@ -620,7 +619,7 @@ fn text_input_overlay_focus_wins_after_central_panel_steal() {
 fn capability_secret_overlay_focus_wins_after_central_panel_steal() {
     use crate::app::FocusLayer;
     use crate::process_app::PendingPrompt;
-    use crate::pane::AppRuntime;
+    use crate::host::pane::AppRuntime;
 
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();

@@ -645,19 +645,7 @@ pub fn workspace_apps_dir(workspace_root: &Path) -> PathBuf {
 /// Mirrors the logic in `config_dir_name()` (config.rs) but without the
 /// PROFILE_OVERRIDE global, which is private to that module.
 fn registry_config_dir() -> String {
-    let binary = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
-    match binary.as_deref() {
-        Some(name) if name.contains("alpha") => ".plexi-alpha".to_string(),
-        Some(name) if name.contains("beta") => ".plexi-beta".to_string(),
-        Some(name) if name.contains("v3") => ".plexi-v3".to_string(),
-        Some(name) if name.contains("pr-") => {
-            let suffix = name.trim_start_matches("plexi-");
-            format!(".plexi-{suffix}")
-        }
-        _ => ".plexi".to_string(),
-    }
+    crate::config::workspace_channel_dir()
 }
 
 /// Walk up from `start` toward the filesystem root looking for the nearest
@@ -748,7 +736,8 @@ mod tests {
     fn local_app_shadows_global_with_same_id() {
         let global = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        let local_apps = workspace.path().join(".plexi").join("apps");
+        let channel_dir = crate::config::workspace_channel_dir();
+        let local_apps = workspace.path().join(&channel_dir).join("apps");
         fs::create_dir_all(&local_apps).unwrap();
 
         write_app(global.path(), "foo", "Global Foo");
@@ -780,8 +769,9 @@ mod tests {
     fn global_only_app_still_discovered_when_workspace_open() {
         let global = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        // Workspace exists (.plexi/ dir) but has no local apps/agents.
-        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
+        // Workspace exists (channel dir) but has no local apps/agents.
+        let channel_dir = crate::config::workspace_channel_dir();
+        fs::create_dir_all(workspace.path().join(&channel_dir)).unwrap();
 
         write_app(global.path(), "global-only", "Global Only");
 
@@ -793,7 +783,8 @@ mod tests {
     #[test]
     fn workspace_root_resolved_from_deep_descendant() {
         let workspace = tempfile::tempdir().unwrap();
-        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        fs::create_dir_all(workspace.path().join(&channel_dir)).unwrap();
         let deep = workspace.path().join("a").join("b").join("c");
         fs::create_dir_all(&deep).unwrap();
 
@@ -821,7 +812,8 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
 
         let fake_home = tempfile::tempdir().unwrap();
-        fs::create_dir_all(fake_home.path().join(".plexi")).unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        fs::create_dir_all(fake_home.path().join(&channel_dir)).unwrap();
         let original = std::env::var("HOME").ok();
         // SAFETY: serialised via ENV_LOCK
         unsafe { std::env::set_var("HOME", fake_home.path()) };
@@ -837,7 +829,8 @@ mod tests {
     fn agents_directory_is_discovered() {
         let global = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        let local_agents = workspace.path().join(".plexi").join("agents");
+        let channel_dir = crate::config::workspace_channel_dir();
+        let local_agents = workspace.path().join(&channel_dir).join("agents");
         fs::create_dir_all(&local_agents).unwrap();
 
         write_app(&local_agents, "code-reviewer", "Code Reviewer");
@@ -1003,7 +996,8 @@ watch = true
         // regardless of whether it was discovered globally or workspace-locally.
         let global = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        let local_apps = workspace.path().join(".plexi").join("apps");
+        let channel_dir = crate::config::workspace_channel_dir();
+        let local_apps = workspace.path().join(&channel_dir).join("apps");
         fs::create_dir_all(&local_apps).unwrap();
 
         // Global copy with watch=true.
@@ -1112,8 +1106,9 @@ notification_scope = \"global\"
     fn local_agent_shadows_local_app_with_same_id() {
         let global = tempfile::tempdir().unwrap();
         let workspace = tempfile::tempdir().unwrap();
-        let local_apps = workspace.path().join(".plexi").join("apps");
-        let local_agents = workspace.path().join(".plexi").join("agents");
+        let channel_dir = crate::config::workspace_channel_dir();
+        let local_apps = workspace.path().join(&channel_dir).join("apps");
+        let local_agents = workspace.path().join(&channel_dir).join("agents");
         fs::create_dir_all(&local_apps).unwrap();
         fs::create_dir_all(&local_agents).unwrap();
 

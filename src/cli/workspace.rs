@@ -452,7 +452,8 @@ mod secret_set_tests {
     #[test]
     fn walk_up_finds_nearest_plexi_dir() {
         let workspace = tempfile::tempdir().unwrap();
-        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        fs::create_dir_all(workspace.path().join(&channel_dir)).unwrap();
         let deep = workspace.path().join("a").join("b").join("c");
         fs::create_dir_all(&deep).unwrap();
 

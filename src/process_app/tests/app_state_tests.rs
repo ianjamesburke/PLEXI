@@ -10,7 +10,8 @@ fn load_app_state_returns_empty_when_no_files() {
 #[test]
 fn load_app_state_reads_workspace_file_over_global() {
     let ws_dir = tempfile::tempdir().expect("workspace tempdir");
-    let state_dir = ws_dir.path().join(".plexi").join("app_states");
+    let channel_dir = crate::config::workspace_channel_dir();
+    let state_dir = ws_dir.path().join(&channel_dir).join("app_states");
     std::fs::create_dir_all(&state_dir).expect("mkdir");
     let state_path = state_dir.join("my-app.json");
     std::fs::write(&state_path, r#"{"interval_idx":3}"#).expect("write");
@@ -22,7 +23,8 @@ fn load_app_state_reads_workspace_file_over_global() {
 #[test]
 fn load_app_state_migrates_old_app_state_dir() {
     let ws_dir = tempfile::tempdir().expect("workspace tempdir");
-    let old_dir = ws_dir.path().join(".plexi").join("app_state");
+    let channel_dir = crate::config::workspace_channel_dir();
+    let old_dir = ws_dir.path().join(&channel_dir).join("app_state");
     std::fs::create_dir_all(&old_dir).expect("mkdir");
     std::fs::write(old_dir.join("my-app.json"), r#"{"migrated":true}"#).expect("write");
 
@@ -30,5 +32,5 @@ fn load_app_state_migrates_old_app_state_dir() {
     assert_eq!(result["migrated"], serde_json::json!(true));
     // Old dir must be gone, new dir must exist.
     assert!(!old_dir.exists(), "old app_state dir should have been renamed");
-    assert!(ws_dir.path().join(".plexi").join("app_states").exists());
+    assert!(ws_dir.path().join(&channel_dir).join("app_states").exists());
 }

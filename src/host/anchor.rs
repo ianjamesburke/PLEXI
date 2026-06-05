@@ -123,7 +123,8 @@ mod tests {
     #[test]
     fn detect_returns_anchor_with_dot_plexi() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".plexi")).unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir(dir.path().join(&channel_dir)).unwrap();
         let anchor = Anchor::detect(dir.path()).unwrap();
         assert_eq!(anchor.root, dir.path());
         assert!(anchor.context_defaults.is_none());
@@ -132,7 +133,8 @@ mod tests {
     #[test]
     fn detect_reads_context_defaults() {
         let dir = tempfile::tempdir().unwrap();
-        let dot_plexi = dir.path().join(".plexi");
+        let channel_dir = crate::config::workspace_channel_dir();
+        let dot_plexi = dir.path().join(&channel_dir);
         std::fs::create_dir(&dot_plexi).unwrap();
         std::fs::write(
             dot_plexi.join("workspace.toml"),
@@ -147,7 +149,8 @@ mod tests {
     #[test]
     fn detect_partial_context_defaults() {
         let dir = tempfile::tempdir().unwrap();
-        let dot_plexi = dir.path().join(".plexi");
+        let channel_dir = crate::config::workspace_channel_dir();
+        let dot_plexi = dir.path().join(&channel_dir);
         std::fs::create_dir(&dot_plexi).unwrap();
         std::fs::write(
             dot_plexi.join("workspace.toml"),

@@ -9,11 +9,11 @@
 //!      without a subprocess. `effects_drain()` collects `outbound_events`.
 
 use crate::app::PlexiApp;
-use crate::app_permissions::AppPermissions;
+use crate::app::permissions::AppPermissions;
 use crate::app_protocol::{AiMessage, DrawCommand, AppRequest, ModelTier};
-use crate::pane::{AppPane, AppRuntime, Pane};
+use crate::host::pane::{AppPane, AppRuntime, Pane};
 use crate::process_app::ProcessApp;
-use crate::tiling::PaneId;
+use crate::spatial::tiling::PaneId;
 use egui::RawInput;
 use std::collections::HashMap;
 use std::sync::{

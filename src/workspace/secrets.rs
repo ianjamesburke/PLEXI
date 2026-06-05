@@ -893,9 +893,10 @@ mod tests {
     #[test]
     fn write_default_route_creates_file_when_absent() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".plexi")).unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
         write_default_route(tmp.path(), "AGE", "AGE").expect("should succeed");
-        let raw = std::fs::read_to_string(tmp.path().join(".plexi").join("secrets.toml")).unwrap();
+        let raw = std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
         assert!(raw.contains("fallback = true"), "missing fallback: {raw}");
         assert!(raw.contains("[default]"), "missing section: {raw}");
         assert!(raw.contains("AGE = \"AGE\""), "missing route: {raw}");
@@ -905,11 +906,12 @@ mod tests {
     #[test]
     fn write_default_route_idempotent_when_route_exists() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".plexi")).unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
         let initial = "fallback = true\n\n[default]\nAGE = \"AGE\"\n";
-        std::fs::write(tmp.path().join(".plexi").join("secrets.toml"), initial).unwrap();
+        std::fs::write(tmp.path().join(&channel_dir).join("secrets.toml"), initial).unwrap();
         write_default_route(tmp.path(), "AGE", "AGE").expect("should succeed");
-        let raw = std::fs::read_to_string(tmp.path().join(".plexi").join("secrets.toml")).unwrap();
+        let raw = std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
         // Content must not grow — no duplicate entries.
         assert_eq!(raw.matches("AGE = \"AGE\"").count(), 1, "duplicate entry: {raw}");
     }
@@ -917,11 +919,12 @@ mod tests {
     #[test]
     fn write_default_route_appends_to_existing_default_section() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".plexi")).unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
         let initial = "fallback = true\n\n[default]\nGITHUB_TOKEN = \"gh_personal\"\n";
-        std::fs::write(tmp.path().join(".plexi").join("secrets.toml"), initial).unwrap();
+        std::fs::write(tmp.path().join(&channel_dir).join("secrets.toml"), initial).unwrap();
         write_default_route(tmp.path(), "AGE", "AGE").expect("should succeed");
-        let raw = std::fs::read_to_string(tmp.path().join(".plexi").join("secrets.toml")).unwrap();
+        let raw = std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
         assert!(raw.contains("GITHUB_TOKEN = \"gh_personal\""), "existing entry lost: {raw}");
         assert!(raw.contains("AGE = \"AGE\""), "new entry missing: {raw}");
         WorkspaceSecrets::parse(&raw).expect("file must still parse");
@@ -930,11 +933,12 @@ mod tests {
     #[test]
     fn write_default_route_appends_new_section_when_none_exists() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".plexi")).unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
         let initial = "fallback = true\n\n# [default]\n# GITHUB_TOKEN = \"gh\"\n";
-        std::fs::write(tmp.path().join(".plexi").join("secrets.toml"), initial).unwrap();
+        std::fs::write(tmp.path().join(&channel_dir).join("secrets.toml"), initial).unwrap();
         write_default_route(tmp.path(), "AGE", "AGE").expect("should succeed");
-        let raw = std::fs::read_to_string(tmp.path().join(".plexi").join("secrets.toml")).unwrap();
+        let raw = std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
         assert!(raw.contains("[default]"), "section missing: {raw}");
         assert!(raw.contains("AGE = \"AGE\""), "entry missing: {raw}");
         WorkspaceSecrets::parse(&raw).expect("file must parse");
@@ -943,21 +947,23 @@ mod tests {
     #[test]
     fn write_default_route_with_alias_writes_friendly_name() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".plexi")).unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
         write_default_route(tmp.path(), "OPENAI_API_KEY", "openai_personal")
             .expect("should succeed");
-        let raw = std::fs::read_to_string(tmp.path().join(".plexi").join("secrets.toml")).unwrap();
+        let raw = std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
         assert!(raw.contains("OPENAI_API_KEY = \"openai_personal\""), "route wrong: {raw}");
     }
 
     #[test]
     fn write_default_route_updates_existing_entry_when_alias_changes() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".plexi")).unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
         let initial = "fallback = true\n\n[default]\nOPENAI_API_KEY = \"old_alias\"\n";
-        std::fs::write(tmp.path().join(".plexi").join("secrets.toml"), initial).unwrap();
+        std::fs::write(tmp.path().join(&channel_dir).join("secrets.toml"), initial).unwrap();
         write_default_route(tmp.path(), "OPENAI_API_KEY", "new_alias").expect("should succeed");
-        let raw = std::fs::read_to_string(tmp.path().join(".plexi").join("secrets.toml")).unwrap();
+        let raw = std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
         assert!(raw.contains("OPENAI_API_KEY = \"new_alias\""), "updated entry missing: {raw}");
         assert!(!raw.contains("old_alias"), "stale entry not removed: {raw}");
         WorkspaceSecrets::parse(&raw).expect("must parse");

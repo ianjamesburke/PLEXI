@@ -1420,7 +1420,7 @@ impl PlexiApp {
             .active()
             .root
             .clone()
-            .unwrap_or_else(|| self.windows[self.active_window].path.clone())
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/")))
     }
 }
 

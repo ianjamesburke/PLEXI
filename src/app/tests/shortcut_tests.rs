@@ -1,6 +1,6 @@
-use crate::keys::{Action, BindingContext, Direction, build_binding_table, build_key_bindings};
+use crate::host::keys::{Action, BindingContext, Direction, build_binding_table, build_key_bindings};
 
-fn default_table() -> Vec<crate::keys::BindingEntry> {
+fn default_table() -> Vec<crate::host::keys::BindingEntry> {
     build_binding_table(&build_key_bindings(None))
 }
 

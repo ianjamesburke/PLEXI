@@ -1382,7 +1382,8 @@ mod workspace_pack_tests {
     #[test]
     fn apply_workspace_pack_installs_into_channel_apps_dir() {
         let ws = tempfile::tempdir().unwrap();
-        let plexi_dir = ws.path().join(".plexi");
+        let channel_dir = crate::config::workspace_channel_dir();
+        let plexi_dir = ws.path().join(&channel_dir);
         std::fs::create_dir_all(&plexi_dir).unwrap();
         std::fs::write(
             plexi_dir.join("apps.toml"),
@@ -1415,12 +1416,13 @@ mod workspace_pack_tests {
     #[test]
     fn apply_workspace_pack_errors_when_no_apps_toml() {
         let ws = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(ws.path().join(".plexi")).unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(ws.path().join(&channel_dir)).unwrap();
 
         let cloner = MockCloner::new();
         let err = apply_workspace_pack(ws.path(), &cloner).expect_err("should error");
         assert!(
-            err.contains("no .plexi/apps.toml found"),
+            err.contains(&format!("no {channel_dir}/apps.toml found")),
             "expected no-manifest error, got: {err}"
         );
     }
@@ -1428,7 +1430,8 @@ mod workspace_pack_tests {
     #[test]
     fn workspace_manifest_ids_returns_declared_ids() {
         let ws = tempfile::tempdir().unwrap();
-        let plexi_dir = ws.path().join(".plexi");
+        let channel_dir = crate::config::workspace_channel_dir();
+        let plexi_dir = ws.path().join(&channel_dir);
         std::fs::create_dir_all(&plexi_dir).unwrap();
         std::fs::write(
             plexi_dir.join("apps.toml"),
@@ -1454,7 +1457,8 @@ mod workspace_pack_tests {
     #[test]
     fn apply_workspace_pack_idempotent_on_second_run() {
         let ws = tempfile::tempdir().unwrap();
-        let plexi_dir = ws.path().join(".plexi");
+        let channel_dir = crate::config::workspace_channel_dir();
+        let plexi_dir = ws.path().join(&channel_dir);
         std::fs::create_dir_all(&plexi_dir).unwrap();
         // MockCloner writes version "0.0.1" by default — pack must match for AlreadyAtVersion.
         std::fs::write(

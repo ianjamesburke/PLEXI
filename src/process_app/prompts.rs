@@ -532,7 +532,8 @@ mod tests {
 
     /// Helper that builds a temp workspace with the given secrets.toml content.
     fn setup_workspace(tmp: &tempfile::TempDir, secrets_toml: &str) {
-        let plexi_dir = tmp.path().join(".plexi");
+        let channel_dir = crate::config::workspace_channel_dir();
+        let plexi_dir = tmp.path().join(&channel_dir);
         std::fs::create_dir_all(&plexi_dir).unwrap();
         // Write a deterministic workspace ID so tests can assert on account names.
         std::fs::write(
