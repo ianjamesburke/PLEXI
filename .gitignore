@@ -59,3 +59,10 @@ sdk/python/*.egg-info/
 
 # Claude agent memory (local, not shared)
 .claude/agent-memory/
+
+# MemPalace (local semantic memory index)
+.mempalace/
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json
