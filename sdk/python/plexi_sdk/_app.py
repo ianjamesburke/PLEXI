@@ -754,6 +754,10 @@ class App:
                     q = self._pending_capability.pop(req_id, None)
                     if q:
                         q.put_nowait(granted)
+                    if granted:
+                        cap = ev.get("capability", "")
+                        if cap and cap not in self.capabilities:
+                            self.capabilities.append(cap)
 
                 elif t == "secret_value":
                     key = ev.get("key", "")
