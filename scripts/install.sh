@@ -37,8 +37,22 @@ fi
 
 display="Plexi${cap}"
 bundle_id="com.ianjamesburke.plexi${suffix}"
-# Resolve target-dir from .cargo/config.toml (worktrees share a single target/).
-_target_dir="$(cargo metadata --format-version=1 --no-deps 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])' 2>/dev/null || echo "target")"
+# Resolve target-dir from cargo metadata so all worktrees share a single build
+# cache. The CARGO_TARGET_DIR env var or a [build] target-dir in .cargo/config.toml
+# points every worktree at <repo-root>/target/ rather than a per-worktree target/.
+# INVARIANT: if you change the target-dir in .cargo/config.toml, update this
+# resolver too. A mismatch causes install to silently skip the binary because the
+# bundle lands in the old path while this script looks in the new one.
+_target_dir="$(cargo metadata --format-version=1 --no-deps 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["target_directory"])' 2>/dev/null || echo "")"
+
+# Preflight: fail fast if target-dir resolution failed rather than building and
+# then discovering the bundle in the wrong place.
+if [[ -z "$_target_dir" ]]; then
+  echo "Error: could not resolve cargo target directory."
+  echo "  Make sure 'cargo metadata' runs cleanly from $(pwd) and Python 3 is available."
+  exit 1
+fi
+
 app_src="${_target_dir}/release/bundle/osx/Plexi.app"
 app_dest="/Applications/${display}.app"
 bin_dest="/usr/local/bin/plexi${suffix}"
@@ -47,7 +61,10 @@ profile_dir="$HOME/.plexi${suffix}"
 cargo bundle --release
 
 if [[ ! -d "$app_src" ]]; then
-  echo "Error: bundle not found at $app_src"
+  echo "Error: bundle not found at: $app_src"
+  echo "  Expected cargo to produce the bundle at that path."
+  echo "  If you changed target-dir in .cargo/config.toml, update the cargo metadata"
+  echo "  resolver in scripts/install.sh to match (see INVARIANT comment above)."
   exit 1
 fi
 
