@@ -1043,7 +1043,9 @@ impl PlexiApp {
 
         if let Some(cmd_template) = &node.command {
             let cmd = Self::substitute_note_tokens_static(cmd_template, text, &ctx);
-            let stay_alive = node.stay_alive.unwrap_or(false);
+            // Visible panes default stay_alive=true so the response isn't lost on command exit.
+            // Hidden background spawns don't need it (fire-and-forget).
+            let stay_alive = node.stay_alive.unwrap_or(!node.hidden);
 
             if node.hidden {
                 log::info!("QuickNote: committed via '{}' (hidden background spawn) cmd={cmd:?}", node.label);
@@ -1055,7 +1057,7 @@ impl PlexiApp {
                 }
             } else {
                 // Legacy position support during migration period
-                let position = node.position.as_deref().unwrap_or("split");
+                let position = node.position.as_deref().unwrap_or("new_window");
                 log::info!(
                     "QuickNote: committed via '{}' position={:?} stay_alive={stay_alive} cmd={cmd:?}",
                     node.label, position
@@ -1063,7 +1065,22 @@ impl PlexiApp {
                 match position {
                     "context-end" => self.open_at_context_end(&cmd, stay_alive),
                     "context-start" => self.open_at_context_start(&cmd, stay_alive),
-                    _ => self.split_focused(false, Some(&cmd), !stay_alive, false, None),
+                    "split" => self.split_focused(false, Some(&cmd), !stay_alive, false, None),
+                    _ => {
+                        // Default: open in a new window to the right and pull focus there.
+                        let ws_id = self.router.active().context_id;
+                        let active_y = self.windows[self.active_window].grid_y;
+                        let new_x = self.windows.iter()
+                            .filter(|w| w.context_id == ws_id && w.grid_y == active_y)
+                            .map(|w| w.grid_x)
+                            .max()
+                            .map(|x| x + 1)
+                            .unwrap_or(1);
+                        log::info!(
+                            "QuickNote: opening in new window grid=({new_x},{active_y}) stay_alive={stay_alive}"
+                        );
+                        self.create_page_at(new_x, active_y, Some(&cmd), !stay_alive);
+                    }
                 }
             }
             true
