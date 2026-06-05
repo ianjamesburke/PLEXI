@@ -76,7 +76,7 @@ class AssistantApp(App):
             },
             timeout_ms=35000,
         )
-        async def _handle_ask_assistant(args: dict) -> dict:
+        async def handle_ask_assistant(args: dict) -> dict:
             question = args.get("question", "").strip()
             if not question:
                 return {"error": "question must not be empty"}
@@ -232,7 +232,7 @@ class AssistantApp(App):
         if submitted is not None:
             self._submit(submitted)
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    def on_key(self, _ctx: RenderContext, key: str, mods: dict) -> None:
         if self._scroll.handle_key(key):
             self.emit.schedule_render()
             return
