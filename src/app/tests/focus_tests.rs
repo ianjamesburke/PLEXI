@@ -260,3 +260,129 @@ fn rename_pane_focus_layer_syncs_immediately() {
         "input_captured_by_overlay must be true while rename modal is open"
     );
 }
+
+/// Regression guard for #2043: switch_workspace must push focus history so
+/// Cmd+[ returns to the pane that was active before the context switch.
+#[test]
+fn switch_workspace_pushes_focus_history() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    // Set up a focused pane in context A (the initial context).
+    let (tile_a, _) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_a);
+    let win_a_id = app.windows[0].window_id;
+    let ctx_a_id = app.windows[0].context_id;
+
+    // Add a second context B with its own window.
+    let ctx_b_id = app.next_window_id;
+    app.next_window_id += 1;
+    let win_b_id = app.next_window_id;
+    app.next_window_id += 1;
+    app.router.push(crate::host::context::Context {
+        name: "ctx-b".into(),
+        path: std::path::PathBuf::from("/tmp"),
+        root: None,
+        description: None,
+        context_id: ctx_b_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    app.windows.push(crate::host::context::Window {
+        name: String::new(),
+        path: std::path::PathBuf::from("/tmp"),
+        tree: egui_tiles::Tree::empty("test_ctx_b"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 0,
+        window_id: win_b_id,
+        context_id: ctx_b_id,
+    });
+    app.context_active_window.insert(ctx_b_id, win_b_id);
+    let ctx_b_idx = app.router.len() - 1;
+
+    // Switch to context B — this should record (win_a_id, tile_a) in history.
+    app.switch_workspace(ctx_b_idx);
+
+    assert!(
+        !app.pane_focus_history.is_empty(),
+        "focus history must be non-empty after switch_workspace"
+    );
+    let (recorded_win, recorded_tile) = app.pane_focus_history.last().unwrap();
+    assert_eq!(*recorded_win, win_a_id, "recorded window must be context A's window");
+    assert_eq!(*recorded_tile, tile_a, "recorded tile must be the pane focused in context A");
+
+    // Cmd+[ (step_focus_history_back) must restore focus to context A's window and tile.
+    app.step_focus_history_back();
+    assert_eq!(
+        app.windows[app.active_window].window_id,
+        win_a_id,
+        "active window must return to context A after step_focus_history_back"
+    );
+    assert_eq!(
+        app.windows[app.active_window].focused_pane,
+        Some(tile_a),
+        "focused pane must return to tile_a after step_focus_history_back"
+    );
+
+    let _ = ctx_a_id; // suppress unused warning
+}
+
+/// Regression guard for #2043: repeated switch_workspace calls do not
+/// double-push when the navigating_history guard is active.
+#[test]
+fn switch_workspace_no_double_push_during_history_navigation() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let (tile_a, _) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_a);
+
+    let ctx_b_id = app.next_window_id;
+    app.next_window_id += 1;
+    let win_b_id = app.next_window_id;
+    app.next_window_id += 1;
+    app.router.push(crate::host::context::Context {
+        name: "ctx-b".into(),
+        path: std::path::PathBuf::from("/tmp"),
+        root: None,
+        description: None,
+        context_id: ctx_b_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    app.windows.push(crate::host::context::Window {
+        name: String::new(),
+        path: std::path::PathBuf::from("/tmp"),
+        tree: egui_tiles::Tree::empty("test_ctx_b2"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 0,
+        window_id: win_b_id,
+        context_id: ctx_b_id,
+    });
+    app.context_active_window.insert(ctx_b_id, win_b_id);
+    let ctx_b_idx = app.router.len() - 1;
+
+    app.switch_workspace(ctx_b_idx);
+    let history_len_after_switch = app.pane_focus_history.len();
+
+    // Simulate navigating_history = true (as happens inside step_focus_history_back).
+    app.navigating_history = true;
+    app.switch_workspace(0);
+    app.navigating_history = false;
+
+    assert_eq!(
+        app.pane_focus_history.len(),
+        history_len_after_switch,
+        "navigating_history guard must prevent push during history traversal"
+    );
+}

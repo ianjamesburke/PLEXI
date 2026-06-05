@@ -749,6 +749,11 @@ impl PlexiApp {
     /// This is the **only** place context navigation should be performed —
     /// calling `router.set_active` directly bypasses the minimap save/restore.
     pub(crate) fn switch_workspace(&mut self, new_ctx_idx: usize) {
+        // Record the outgoing focus so Cmd+[ can return here from any context.
+        let old_window_id = self.windows[self.active_window].window_id;
+        let old_focus = self.windows[self.active_window].focused_pane;
+        self.push_focus_history(old_window_id, old_focus);
+
         // Save current context's active window + minimap state.
         let old_ctx_id = self.router.active().context_id;
         self.context_active_window
