@@ -714,7 +714,7 @@ impl PlexiApp {
                                             use egui_term::TerminalView;
                                             use crate::ui::theme;
                                             let terminal = TerminalView::new(ui, &mut t.backend)
-                                                .set_focus(true)
+                                                .set_focus(!modal_open)
                                                 .set_theme(self.theme.clone())
                                                 .set_font(theme::terminal_font(font_size))
                                                 .set_size(Vec2::new(
@@ -727,7 +727,7 @@ impl PlexiApp {
                                     } else if let Some(a) = pane.as_app_mut() {
                                         let app_ctx = crate::app::app_trait::AppRenderContext {
                                             colors: &self.colors,
-                                            is_focused: true, // zoomed pane is always focused
+                                            is_focused: !modal_open,
                                         };
                                         a.runtime.ui(ui, &app_ctx);
                                     }
