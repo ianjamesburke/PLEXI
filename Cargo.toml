@@ -114,3 +114,6 @@ objc2-core-foundation = { version = "0.3", features = [
 [dev-dependencies]
 tempfile = "3"
 egui_kittest = { version = "0.31", features = ["wgpu", "eframe"] }
+
+[patch.crates-io]
+accesskit_consumer = { path = "deps/accesskit_consumer-0.26.0" }
