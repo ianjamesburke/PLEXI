@@ -4,6 +4,7 @@
 // the LICENSE-MIT file), at your option.
 
 #![no_std]
+#![allow(elided_lifetimes_in_paths, mismatched_lifetime_syntaxes)]
 
 extern crate alloc;
 
