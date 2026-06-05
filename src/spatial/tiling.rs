@@ -444,6 +444,47 @@ fn collect_tile_rects(
     }
 }
 
+/// Collect leaf pane IDs by walking the tile tree in spatial order
+/// (left-to-right for horizontal splits, top-to-bottom for vertical).
+pub(crate) fn collect_pane_ids_spatial(
+    tiles: &egui_tiles::Tiles<PaneId>,
+    root: egui_tiles::TileId,
+) -> Vec<PaneId> {
+    let mut out = Vec::new();
+    collect_pane_ids_recursive(tiles, root, &mut out);
+    out
+}
+
+fn collect_pane_ids_recursive(
+    tiles: &egui_tiles::Tiles<PaneId>,
+    tile_id: egui_tiles::TileId,
+    out: &mut Vec<PaneId>,
+) {
+    match tiles.get(tile_id) {
+        Some(egui_tiles::Tile::Pane(pid)) => out.push(*pid),
+        Some(egui_tiles::Tile::Container(container)) => match container {
+            egui_tiles::Container::Linear(linear) => {
+                for &child_id in &linear.children {
+                    collect_pane_ids_recursive(tiles, child_id, out);
+                }
+            }
+            egui_tiles::Container::Tabs(tabs) => {
+                if let Some(active) = tabs.active {
+                    collect_pane_ids_recursive(tiles, active, out);
+                } else if let Some(&first) = tabs.children.first() {
+                    collect_pane_ids_recursive(tiles, first, out);
+                }
+            }
+            egui_tiles::Container::Grid(grid) => {
+                for child_id in grid.children() {
+                    collect_pane_ids_recursive(tiles, *child_id, out);
+                }
+            }
+        },
+        None => {}
+    }
+}
+
 // ── Portal x-ray minimap ─────────────────────────────────────────────────────
 
 /// Render the x-ray minimap for a portal tile.
