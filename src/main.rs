@@ -804,7 +804,8 @@ mod cli_tests {
     #[test]
     fn plexi_path_arg_adopts_workspace() {
         let workspace = tempfile::tempdir().unwrap();
-        fs::create_dir_all(workspace.path().join(".plexi")).unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        fs::create_dir_all(workspace.path().join(&channel_dir)).unwrap();
         let path_str = workspace.path().to_string_lossy().to_string();
 
         let resolved = parse_workspace_path_arg(&argv(&[path_str.as_str()]))
