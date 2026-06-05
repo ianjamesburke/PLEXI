@@ -98,6 +98,16 @@ pub enum PlexiEvent {
     MouseMove { x: f32, y: f32, buttons: Vec<MouseButton>, modifiers: Modifiers },
     /// User submitted a command via the command bar.
     Command { text: String },
+    /// Semantic action dispatched by `plexi app action <pane_id> <action> [args...]`.
+    /// Apps receive this in `on_event` and dispatch on `action` name.
+    /// `args` is empty when no extra arguments were provided.
+    Action {
+        /// Action name, e.g. "refresh", "navigate-to", "add-item".
+        action: String,
+        /// Optional positional arguments forwarded as-is from the CLI.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        args: Vec<String>,
+    },
     /// Response to a runtime CapabilityRequest.
     CapabilityDecision { request_id: String, granted: bool },
     /// Secret broker response. value is None when denied.
@@ -1556,6 +1566,20 @@ pub enum AppRequest {
     GetPaneState {
         pane_id: u64,
         response_file: String,
+    },
+
+    /// Dispatch a semantic action to an app pane. Sent by `plexi app action <pane_id> <action> [args...]`.
+    /// Host delivers `PlexiEvent::Action { action, args }` to the target app pane.
+    /// Writes `{"ok":true}` or `{"error":"..."}` to `response_file`.
+    SendAppAction {
+        pane_id: u64,
+        /// Action name, e.g. "refresh", "navigate-to".
+        action: String,
+        /// Optional extra arguments forwarded from the CLI.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        args: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
     },
 
     /// Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.

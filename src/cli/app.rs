@@ -977,6 +977,70 @@ pub fn app_update_cli(id: Option<&str>) -> i32 {
     0
 }
 
+/// `plexi app action <pane_id> <action> [args...]`
+///
+/// Sends a `send_app_action` message to the host over PLEXI_SOCKET.
+/// The host delivers a `PlexiEvent::Action { action, args }` to the target app pane.
+/// Returns 0 on success, 1 on error.
+pub fn app_action_cli(pane_id: u64, action: &str, args: &[String]) -> i32 {
+    let id = uuid::Uuid::new_v4();
+    let response_file = crate::config::config_dir()
+        .join(format!("app-action-response-{id}.json"))
+        .to_string_lossy()
+        .into_owned();
+
+    log::info!(
+        "app_action:cli: pane_id={pane_id} action={action:?} args={args:?} response_file={response_file:?}"
+    );
+
+    let mut payload = serde_json::json!({
+        "type": "send_app_action",
+        "pane_id": pane_id,
+        "action": action,
+        "response_file": response_file,
+    });
+    if !args.is_empty() {
+        payload["args"] = serde_json::json!(args);
+    }
+
+    let code = super::send_to_socket(payload);
+    if code != 0 {
+        return code;
+    }
+
+    let response_path = std::path::PathBuf::from(&response_file);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if response_path.exists() {
+            match std::fs::read_to_string(&response_path) {
+                Ok(content) => {
+                    let _ = std::fs::remove_file(&response_path);
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            return 0;
+                        }
+                        if let Some(msg) = v.get("error").and_then(|v| v.as_str()) {
+                            eprintln!("error: {msg}");
+                            return 1;
+                        }
+                    }
+                    return 0;
+                }
+                Err(e) => {
+                    log::warn!("app_action:cli: could not read response file: {e}");
+                    eprintln!("error: could not read response file: {e}");
+                    return 1;
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!("error: timed out waiting for app action response");
+            return 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 #[cfg(test)]
 mod app_install_workspace_tests {
     use tempfile::TempDir;

@@ -460,6 +460,23 @@ pub enum AppCmd {
         /// App id to check (omit to check all installed apps)
         id: Option<String>,
     },
+    /// Send a semantic action to a running app pane.
+    ///
+    /// Unlike `pane command` (which sends raw text), `app action` delivers a structured
+    /// semantic event directly to the app's event handler — no keystroke simulation.
+    ///
+    /// Example: plexi app action 42 refresh
+    /// Example: plexi app action 42 navigate-to /some/path
+    #[command(name = "action")]
+    Action {
+        /// Pane id of the target app pane (from `plexi pane list`)
+        pane_id: u64,
+        /// Action name to invoke (e.g. "refresh", "navigate-to", "add-item")
+        action: String,
+        /// Optional arguments forwarded to the action handler
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]

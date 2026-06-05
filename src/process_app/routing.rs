@@ -1793,6 +1793,14 @@ impl ProcessApp {
                 );
             }
 
+            // ── SendAppAction — host-only, routed via PLEXI_SOCKET ────────
+            AppRequest::SendAppAction { pane_id, .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: SendAppAction pane_id={pane_id} received in app routing — ignored (host-only command)",
+                    self.type_id
+                );
+            }
+
             // ── Query context state (#1518) ───────────────────────────────
             AppRequest::QueryContextState { context_id } => {
                 log::info!(
