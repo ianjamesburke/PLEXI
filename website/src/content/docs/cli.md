@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.615"
+verified_version: "0.0.620"
 order: 7
 ---
 
@@ -82,11 +82,14 @@ Show all secrets stored for this project
 
 ### `plexi secret delete`
 
-Delete a stored secret
+Delete a stored secret.
+
+Use --global to delete a globally-stored secret (one stored with `secret set --global`). Without --global, deletes the workspace-scoped entry for the current project.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<friendly_name>` | string | yes |  |
+| `--global` | flag | no | Delete from the global store instead of the project-scoped store |
 
 ## `plexi routine`
 
@@ -624,6 +627,35 @@ Send a notification to the Plexi UI
 | `--host-action` | string (repeatable) | no | Action to perform on the host when a button is clicked. Format: `key:action_type:action_arg`. Repeatable. The host runs this even after the process that sent the notification has exited |
 | `--timeout` | string | no | How many seconds before the notification disappears (0 = stays until dismissed) Default: `0`. |
 | `--scope` | string | no | Which panes see this notification: window, context, or global (default: global) Default: `global`. |
+
+## `plexi ai`
+
+AI configuration and diagnostics — scan hardware, check integrations, recommend models
+
+| Subcommand | Description |
+|---|---|
+| `doctor` | Scan hardware and report recommended AI models |
+| `setup` | Interactive wizard to configure a local AI model via Ollama |
+
+### `plexi ai doctor`
+
+Scan hardware and report recommended AI models.
+
+Detects your CPU, RAM/VRAM, and GPU, then recommends which local or cloud AI models are a good fit. Also checks whether Ollama is installed and running, lists any already-pulled models, and verifies OpenRouter configuration.
+
+Example: plexi ai doctor
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--json` | flag | no | Output results as JSON (for scripting or agent use) |
+
+### `plexi ai setup`
+
+Interactive wizard to configure a local AI model via Ollama.
+
+Walks through Ollama installation detection, model recommendation based on your hardware, pulling the recommended model, and writing the [ai.ollama] section to your config.toml so Plexi apps can use it immediately.
+
+Example: plexi ai setup
 
 ## `plexi completions`
 
