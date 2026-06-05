@@ -926,6 +926,43 @@
           "type": "object"
         },
         {
+          "description": "Dispatch a semantic action to an app pane. Sent by `plexi app action <pane_id> <action> [args...]`.\nHost delivers `PlexiEvent::Action { action, args }` to the target app pane.\nWrites `{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`.",
+          "properties": {
+            "action": {
+              "description": "Action name, e.g. \"refresh\", \"navigate-to\".",
+              "type": "string"
+            },
+            "args": {
+              "description": "Optional extra arguments forwarded from the CLI.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "send_app_action",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "action"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.",
           "properties": {
             "name": {
@@ -2502,6 +2539,31 @@
           "required": [
             "type",
             "text"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Semantic action dispatched by `plexi app action <pane_id> <action> [args...]`.\nApps receive this in `on_event` and dispatch on `action` name.\n`args` is empty when no extra arguments were provided.",
+          "properties": {
+            "action": {
+              "description": "Action name, e.g. \"refresh\", \"navigate-to\", \"add-item\".",
+              "type": "string"
+            },
+            "args": {
+              "description": "Optional positional arguments forwarded as-is from the CLI.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "action",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "action"
           ],
           "type": "object"
         },
