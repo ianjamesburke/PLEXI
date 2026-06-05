@@ -549,11 +549,12 @@ impl PlexiApp {
         }
 
         // 4b. Delete surviving windows that are now empty (portal was their only pane),
-        //     but only if another window exists for the same context (sole-page guard).
+        //     but only if a non-empty sibling window exists for the same context. This
+        //     preserves the invariant that every context retains at least one window.
         {
             let mut empty_indices: Vec<usize> = self.windows.iter().enumerate()
                 .filter(|(_, w)| w.panes.is_empty())
-                .filter(|(_, w)| self.windows.iter().filter(|o| o.context_id == w.context_id).count() > 1)
+                .filter(|(_, w)| self.windows.iter().any(|o| o.context_id == w.context_id && !o.panes.is_empty()))
                 .map(|(i, _)| i)
                 .collect();
             empty_indices.sort_unstable_by(|a, b| b.cmp(a)); // reverse order

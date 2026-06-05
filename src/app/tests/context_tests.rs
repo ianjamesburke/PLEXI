@@ -663,3 +663,99 @@ fn delete_context_collapses_empty_portal_window() {
     assert!(root_windows[0].panes.contains_key(&_root_pane_id),
         "original root pane must survive");
 }
+
+/// Issue #2029 (edge case): when ALL windows in a context each contain only a portal
+/// to the deleted child, none has a non-empty sibling — so ALL must be preserved.
+/// Deleting all of them would strip the context of every window, violating the invariant.
+#[test]
+fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
+    use std::collections::HashMap;
+
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let root_id = app.router.active().context_id;
+    // Window 0 already exists for root_id but has NO real pane — it will also be empty after portal removal.
+    // Add window 1 to root_id; both will have only a portal pane.
+    let win2_id = 88801u64;
+    {
+        let mut tiles = egui_tiles::Tiles::default();
+        let placeholder = tiles.insert_pane(88802u64);
+        app.windows.push(Window {
+            name: String::new(),
+            path: std::path::PathBuf::from("/tmp/test_2029_edge"),
+            tree: egui_tiles::Tree::new("test_2029_edge_win2", placeholder, tiles),
+            panes: HashMap::new(),
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x: 1,
+            grid_y: 0,
+            window_id: win2_id,
+            context_id: root_id,
+        });
+    }
+
+    // Child context.
+    let child_id = 88810u64;
+    let child_win_id = 88811u64;
+    app.router.push(crate::host::context::Context {
+        name: "ChildEdge".to_string(),
+        path: std::path::PathBuf::from("/tmp/test_2029_edge_child"),
+        root: None,
+        description: None,
+        context_id: child_id,
+        parent_id: Some(root_id),
+        depth: 1,
+        parked: false,
+    });
+    app.context_active_window.insert(child_id, child_win_id);
+    {
+        let mut tiles = egui_tiles::Tiles::default();
+        let r = tiles.insert_pane(88812u64);
+        app.windows.push(Window {
+            name: String::new(),
+            path: std::path::PathBuf::from("/tmp/test_2029_edge_child"),
+            tree: egui_tiles::Tree::new("test_2029_edge_child", r, tiles),
+            panes: HashMap::new(),
+            focused_pane: None,
+            zoomed_pane: None,
+            grid_x: 0,
+            grid_y: 0,
+            window_id: child_win_id,
+            context_id: child_id,
+        });
+    }
+
+    // Insert a portal into window 0 (initially has no panes) and window 1 — both portal-only.
+    for (win_id, portal_pane_id) in [(app.windows[0].window_id, 88820u64), (win2_id, 88821u64)] {
+        let win = app.windows.iter_mut().find(|w| w.window_id == win_id).unwrap();
+        let portal_tile = win.tree.tiles.insert_pane(portal_pane_id);
+        win.tree.root = Some(portal_tile);
+        win.panes.clear();
+        win.panes.insert(
+            portal_pane_id,
+            crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                pane_id: portal_pane_id,
+                target_context_id: child_id,
+                context_state: None,
+                hidden: false,
+            })),
+        );
+    }
+
+    assert_eq!(app.windows.iter().filter(|w| w.context_id == root_id).count(), 2,
+        "setup: 2 windows in root context, both portal-only");
+
+    let child_idx = app.router.position(|c| c.context_id == child_id).unwrap();
+    app.delete_context(child_idx);
+
+    // Both windows became empty but neither had a non-empty sibling — both must survive.
+    // The root context must still have windows (invariant: context always has >= 1 window).
+    let root_windows = app.windows.iter().filter(|w| w.context_id == root_id).count();
+    assert!(root_windows >= 1,
+        "root context must retain at least 1 window; got {root_windows}");
+    // Specifically: neither empty window had a non-empty sibling, so both are kept.
+    assert_eq!(root_windows, 2,
+        "both portal-only windows must survive when no non-empty sibling exists");
+}
