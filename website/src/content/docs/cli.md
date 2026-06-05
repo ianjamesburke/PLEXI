@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.629"
+verified_version: "0.0.638"
 order: 7
 ---
 
@@ -272,30 +272,28 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 
 | Subcommand | Description |
 |---|---|
-| `open` | Open an app or tool in a new pane (defaults to overlay) |
+| `open` | Open an app or tool in a new pane |
 | `install` | Install an app from a local path, a remote source, or a pack file |
 | `uninstall` | Remove an installed app by id |
 | `list` | Show all installed apps with their versions |
 | `render` | Render an app to a PNG image without opening the UI (useful for screenshots and testing) |
 | `info` | Show details about an installed app: id, name, version, and available tools |
 | `init` | Create a new app from a template |
-| `run` | Run an app directly from a local directory without installing or linking |
 | `validate` | Check a Plexi app directory for errors before publishing or installing |
 | `freeze` | Export your currently installed apps as a single TOML snapshot for sharing or backup |
-| `dev` | Scaffold a new app directly into the global registry and open it in a pane |
 | `publish` | Publish an app to the Plexi marketplace |
 | `update` | Check installed apps for available updates |
 | `action` | Send a semantic action to a running app pane |
 
 ### `plexi app open`
 
-Open an app or tool in a new pane (defaults to overlay).
+Open an app or tool in a new pane.
 
-Pass an app id (e.g. `plexi app open snake`) to open an installed app. Use `--mcp` to wrap an MCP server, or `--cli` to open any CLI tool with a Plexi UI.
+Pass an app id (e.g. `plexi app open snake`) or a path to an app directory containing a manifest.toml. Use `--mcp` to wrap an MCP server, or `--cli` to open any CLI tool with a Plexi UI.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<type_id>` | string | no | App id to open (mutually exclusive with --mcp and --cli) |
+| `<type_id>` | string | no | App id or path to open (mutually exclusive with --mcp and --cli) |
 | `--mcp` | string (repeatable) | no | Wrap a stdio MCP server in a Plexi pane.  Example: plexi app open --mcp npx @modelcontextprotocol/server-filesystem /tmp |
 | `--cli` | string | no | Wrap a CLI tool in a Plexi pane with a visual UI.  Example: plexi app open --cli git |
 | `--down` / `-d` | flag | no | Split below |
@@ -356,23 +354,18 @@ Show details about an installed app: id, name, version, and available tools
 
 Create a new app from a template.
 
-Scaffolds the folder structure and files you need to build a Plexi app. Use --lang to pick the language (default: python).
+Scaffolds the folder structure and files you need to build a Plexi app, then opens it in a split-right pane so you can edit code alongside the running app.
+
+By default, the app is placed in your workspace's app directory. If no workspace is detected, pass --global to scaffold into the global registry.
+
+Use --no-open to scaffold without opening.
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | yes |  |
 | `--lang` | string | no | Default: `python`. |
-| `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane. Defaults to PLEXI_PANE_ID if set in the environment |
-
-### `plexi app run`
-
-Run an app directly from a local directory without installing or linking.
-
-Opens the app in a pane immediately. Edits to the app take effect on next launch. Replaces `plexi app link` for development workflows.
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<path>` | string | yes | Path to the app folder containing manifest.toml |
+| `--global` | flag | no | Scaffold into the global app registry instead of the workspace |
+| `--no-open` | flag | no | Scaffold the app without opening it in a pane |
 | `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane. Defaults to PLEXI_PANE_ID if set in the environment |
 
 ### `plexi app validate`
@@ -392,20 +385,6 @@ Like `pip freeze` — captures exactly what's installed so you can replay it lat
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<path>` | string | yes | Destination path for the TOML snapshot file |
-
-### `plexi app dev`
-
-Scaffold a new app directly into the global registry and open it in a pane.
-
-This is the fastest path from zero to running app: one command scaffolds the template into `~/.plexi-<channel>/apps/<name>/` and opens it immediately. Hot reload is automatic (`watch = true` in the generated manifest).
-
-Example: plexi app dev my-widget
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<name>` | string | yes | Name for the new app (used as directory name and app id) |
-| `--lang` | string | no | Language template: python (default) or rust Default: `python`. |
-| `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane |
 
 ### `plexi app publish`
 
