@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.627"
+verified_version: "0.0.628"
 order: 7
 ---
 
