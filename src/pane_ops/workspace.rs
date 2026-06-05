@@ -225,10 +225,13 @@ impl PlexiApp {
             .or(pane_name)
             .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1));
 
-        let parent_path = self.router.iter()
+        let (parent_path, parent_root) = self.router.iter()
             .find(|c| c.context_id == parent_ctx_id)
-            .map(|c| c.path.clone())
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+            .map(|c| (c.path.clone(), c.root.clone()))
+            .unwrap_or_else(|| {
+                let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
+                (home.clone(), Some(home))
+            });
 
         let ctx_id = self.next_window_id;
         self.next_window_id += 1;
@@ -273,7 +276,7 @@ impl PlexiApp {
         self.router.push(crate::host::context::Context {
             name: ctx_name,
             path: parent_path.clone(),
-            root: Some(parent_path.clone()),
+            root: parent_root,
             description: None,
             context_id: ctx_id,
             parent_id: Some(parent_ctx_id),
