@@ -524,6 +524,38 @@ impl PlexiApp {
                         log::error!("pane_ipc: get_pane_state: could not write response file {response_file:?}: {e}");
                     }
                 }
+                crate::app_protocol::AppRequest::SendAppAction { pane_id, action, args, response_file } => {
+                    log::info!("pane_ipc: kind=send_app_action pane_id={pane_id} action={action:?} args={args:?}");
+                    let result = match self.windows.iter_mut().find_map(|win| win.panes.get_mut(pane_id)) {
+                        None => {
+                            log::warn!("pane_ipc: send_app_action: pane_id={pane_id} not found");
+                            Err(format!("pane {pane_id} not found"))
+                        }
+                        Some(pane) => {
+                            if let Some(app_pane) = pane.as_app_mut() {
+                                app_pane.runtime.queue_outbound_event(
+                                    crate::app_protocol::PlexiEvent::Action {
+                                        action: action.clone(),
+                                        args: args.clone(),
+                                    }
+                                );
+                                Ok(())
+                            } else {
+                                log::warn!("pane_ipc: send_app_action: pane_id={pane_id} is not an app pane");
+                                Err(format!("pane {pane_id} is not an app pane"))
+                            }
+                        }
+                    };
+                    if let Some(rf) = response_file {
+                        let json = match &result {
+                            Ok(()) => serde_json::json!({"ok": true}).to_string(),
+                            Err(msg) => serde_json::json!({"error": msg}).to_string(),
+                        };
+                        if let Err(e) = std::fs::write(rf, &json) {
+                            log::error!("pane_ipc: send_app_action: could not write response file: {e}");
+                        }
+                    }
+                }
                 crate::app_protocol::AppRequest::Notify {
                     level, title, body, kind, options, input_prompt,
                     required, priority, image_inline, image_pipe_id,

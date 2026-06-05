@@ -351,6 +351,10 @@ fn main() -> eframe::Result {
                             log::info!("app_update:cli: id={id:?}");
                             std::process::exit(cli::app_update_cli(id.as_deref()));
                         }
+                        AppCmd::Action { pane_id, action, args } => {
+                            log::info!("app_action:cli: pane_id={pane_id} action={action:?} args={args:?}");
+                            std::process::exit(cli::app_action_cli(pane_id, &action, &args));
+                        }
                     },
                     Commands::Uninstall { keep_data, yes } => std::process::exit(cli::plexi_uninstall_cli(keep_data, yes)),
                     Commands::Update { subcommand } => match subcommand {
