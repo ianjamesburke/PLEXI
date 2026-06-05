@@ -172,7 +172,7 @@ class ResearchAgentApp(App):
         if submitted is not None:
             self._submit(submitted)
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    def on_key(self, _ctx: RenderContext, key: str, mods: dict) -> None:
         if self._scroll.handle_key(key):
             self.emit.schedule_render()
             return
