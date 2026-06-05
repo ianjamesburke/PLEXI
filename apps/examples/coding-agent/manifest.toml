@@ -1,0 +1,14 @@
+schema_version = 1
+
+[app]
+id = "coding-agent"
+type = "app"
+name = "Coding Agent"
+version = "0.1.0"
+description = "AI coding assistant focused on code review, debugging, and engineering best practices."
+entry = "coding_agent.py"
+
+[app.capabilities]
+capabilities = ["ai.query"]
+
+[launch]

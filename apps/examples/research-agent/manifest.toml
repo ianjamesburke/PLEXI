@@ -1,0 +1,14 @@
+schema_version = 1
+
+[app]
+id = "research-agent"
+type = "app"
+name = "Research Agent"
+version = "0.1.0"
+description = "AI research assistant that summarizes topics, cites sources, and helps structure findings."
+entry = "research_agent.py"
+
+[app.capabilities]
+capabilities = ["ai.query"]
+
+[launch]
