@@ -51,7 +51,7 @@ Each build channel is a **fully isolated instance** — its own binary, app bund
 | Alpha | `plexi-alpha` | `~/.plexi-alpha/` | `Plexi Alpha.app` |
 | PR build | `plexi-pr-<N>` | `~/.plexi-pr-<N>/` | `Plexi PR<N>.app` |
 
-**PR builds** are ephemeral isolated instances installed by `just pr-install <N>` from inside the feature worktree. They never capture the bare `plexi` symlink. Remove them after merge with `just pr-clean <N>`.
+**PR builds** are ephemeral isolated instances installed by `just pr-install <N>` from inside the feature worktree. They never capture the bare `plexi` symlink. Remove them after merge with `just channel-clean pr-<N>`.
 
 **Alpha config stays default.** `~/.plexi-alpha/config.toml` is reset to the default template on every `just install`. Never customize it — use beta or main for personal config. PR builds seed from the alpha config, so a customized alpha would pollute every PR channel.
 
@@ -110,7 +110,7 @@ Release flow:
 
 `just bump [minor|major]` without install is for explicit pre-promote version bumps when you need a minor or major release.
 
-**Always bump and install after committing to alpha.** Every commit to alpha must end with `just bump && just install` so the running alpha build reflects the latest code. If unrelated uncommitted changes block `just bump`, stash them first and pop after. Never leave a session without installing.
+**Bump and install after Rust code commits to alpha.** Only needed when Rust source changes — skip for commits that only touch docs, skills, scripts, or config. Every Rust commit to alpha must end with `just bump && just install`. If unrelated uncommitted changes block `just bump`, stash them first and pop after.
 
 **Never claim a task complete based on an install from a feature worktree.** Uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. The full done cycle is: commit → PR → squash-merge to alpha → `git pull` in the repo root → `just bump && just install` from the repo root.
 
