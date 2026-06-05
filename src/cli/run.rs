@@ -266,7 +266,9 @@ pub fn run_command(command_name: &str) -> i32 {
 
 // ── plexi routine subcommands ─────────────────────────────────────────────────
 
-pub(super) const ROUTINES_FILE: &str = ".plexi/routines.toml";
+pub(super) fn routines_file() -> String {
+    format!("{}/routines.toml", crate::config::workspace_channel_dir())
+}
 
 /// Parsed `.plexi/routines.toml` for CLI use
 #[derive(serde::Deserialize)]
