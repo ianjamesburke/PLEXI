@@ -258,8 +258,10 @@ impl PartialEq for UiNode {
             }
             // Raw: compare via serde JSON round-trip to avoid cascading PartialEq.
             (UiNode::Raw { command: cmd1 }, UiNode::Raw { command: cmd2 }) => {
-                serde_json::to_string(cmd1.as_ref()).ok()
-                    == serde_json::to_string(cmd2.as_ref()).ok()
+                match (serde_json::to_string(cmd1.as_ref()), serde_json::to_string(cmd2.as_ref())) {
+                    (Ok(s1), Ok(s2)) => s1 == s2,
+                    _ => false,
+                }
             }
             (UiNode::Surface { id: i1 }, UiNode::Surface { id: i2 }) => i1 == i2,
             (UiNode::Button { node_id: n1, label: l1, disabled: d1 },
