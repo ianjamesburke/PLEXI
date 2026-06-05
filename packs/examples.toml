@@ -45,3 +45,18 @@ version = "bundled"
 id      = "calendar"
 source  = "local:calendar"
 version = "bundled"
+
+[[app]]
+id      = "coding-agent"
+source  = "local:coding-agent"
+version = "bundled"
+
+[[app]]
+id      = "research-agent"
+source  = "local:research-agent"
+version = "bundled"
+
+[[app]]
+id      = "writing-agent"
+source  = "local:writing-agent"
+version = "bundled"

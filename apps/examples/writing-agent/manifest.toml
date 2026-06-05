@@ -1,0 +1,14 @@
+schema_version = 1
+
+[app]
+id = "writing-agent"
+type = "app"
+name = "Writing Agent"
+version = "0.1.0"
+description = "AI writing editor that improves clarity, tone, and structure in your writing."
+entry = "writing_agent.py"
+
+[app.capabilities]
+capabilities = ["ai.query"]
+
+[launch]
