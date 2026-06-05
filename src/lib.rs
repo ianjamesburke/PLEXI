@@ -4,6 +4,7 @@
 //! these tools reference, using stub types that satisfy the type system
 //! without pulling in the full GUI/audio dependency tree.
 
+pub mod protocol;
 pub mod app_protocol;
 #[path = "cli/args.rs"]
 pub mod cli_args;
