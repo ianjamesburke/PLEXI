@@ -10,6 +10,10 @@ Patterns demonstrated:
   - Background ai_query with emit.run_sync
   - Column + AppBar + Scrollable + TextInput + FooterKeys
   - Session persistence via JSON in .plexi/assistant_sessions/
+  - ExposeTools: registers an ask_assistant tool so other workspace apps
+    can invoke the assistant programmatically (#2034)
+  - Tool consumption: ai_query automatically receives tools exposed by
+    other panes in the same workspace via the host tool dispatcher
 """
 
 import json
@@ -24,7 +28,11 @@ from plexi_sdk.ui import (
     FooterKeys, TextInput, Label,
 )
 
-SYSTEM_PROMPT = "You are a helpful assistant. Be concise and clear."
+SYSTEM_PROMPT = (
+    "You are a helpful assistant. Be concise and clear. "
+    "You have access to tools offered by other running Plexi apps in this workspace — "
+    "use them when they help answer the user's request."
+)
 MODEL_TIER = "medium"
 
 
@@ -38,7 +46,54 @@ class AssistantApp(App):
         self._session_id = _new_session_id()
         self._sessions_dir: Path | None = _resolve_sessions_dir(ctx.workspace_root)
         self._load_latest_session()
+        self._register_tools()
         ctx.info(f"AssistantApp ready — sessions dir: {self._sessions_dir}")
+
+    # ── Tool registration (ExposeTools) ────────────────────────────────────────
+
+    def _register_tools(self) -> None:
+        """Register tools this app exposes to other workspace apps via ExposeTools.
+
+        The ask_assistant tool lets any other PGAP app in the same workspace
+        send a plain-text question to the assistant and receive a response
+        without requiring a full UI interaction.
+        """
+        @self.tool(
+            "ask_assistant",
+            description=(
+                "Send a question to the AI assistant and get a response. "
+                "Use this to query the assistant from another app without opening the chat UI."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "The question or instruction to send to the assistant.",
+                    },
+                },
+                "required": ["question"],
+            },
+            timeout_ms=35000,
+        )
+        async def _handle_ask_assistant(args: dict) -> dict:
+            question = args.get("question", "").strip()
+            if not question:
+                return {"error": "question must not be empty"}
+            self.emit.info(f"ask_assistant tool invoked: {question[:80]!r}")
+            try:
+                resp = await self.emit.ai_query(
+                    model_tier=MODEL_TIER,
+                    system=SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": question}],
+                )
+                answer = resp.content or ""
+                return {"answer": answer}
+            except Exception as exc:
+                self.emit.error(f"ask_assistant ai_query failed: {exc}")
+                return {"error": str(exc)}
+
+        self.emit.info("AssistantApp: exposed ask_assistant tool to workspace")
 
     # ── Session persistence ────────────────────────────────────────────────────
 
@@ -96,7 +151,13 @@ class AssistantApp(App):
         self.emit.schedule_render()
 
     def _send_query(self) -> None:
-        """Run ai_query on a background thread."""
+        """Run ai_query on a background thread.
+
+        The host tool dispatcher automatically injects tools exposed by other
+        panes in the same workspace into the ai_query call. The broker handles
+        the tool call loop internally, so this method receives the final
+        resolved response after any tool rounds complete.
+        """
         messages = [{"role": m["role"], "content": m["content"]} for m in self._messages]
         try:
             resp = self.emit.run_sync(
