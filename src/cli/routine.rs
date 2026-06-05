@@ -1,5 +1,5 @@
 use super::open::pane_new_cli;
-use super::run::{ROUTINES_FILE, RoutinesCliConfig};
+use super::run::{routines_file, RoutinesCliConfig};
 
 pub fn routine_list() -> i32 {
     log::info!("cli: routine list");
@@ -7,13 +7,14 @@ pub fn routine_list() -> i32 {
         Ok(d) => d,
         Err(e) => { eprintln!("error: could not determine current directory: {e}"); return 1; }
     };
-    let config_path = cwd.join(ROUTINES_FILE);
+    let rf = routines_file();
+    let config_path = cwd.join(&rf);
     let contents = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             println!("No routines configured.");
             println!();
-            println!("To set up routines, create {} in your project:", ROUTINES_FILE);
+            println!("To set up routines, create {} in your project:", rf);
             println!("  [[routine]]");
             println!("  name = \"morning-sync\"");
             println!("  command = \"./scripts/morning.sh\"");
@@ -25,10 +26,10 @@ pub fn routine_list() -> i32 {
     };
     let config: RoutinesCliConfig = match toml::from_str(&contents) {
         Ok(c) => c,
-        Err(e) => { eprintln!("error: failed to parse {ROUTINES_FILE}: {e}"); return 1; }
+        Err(e) => { eprintln!("error: failed to parse {rf}: {e}"); return 1; }
     };
     if config.routine.is_empty() {
-        println!("No routines defined in {ROUTINES_FILE}.");
+        println!("No routines defined in {rf}.");
         return 0;
     }
     println!("Routines:");
@@ -52,23 +53,24 @@ pub fn routine_run(name: &str) -> i32 {
         Ok(d) => d,
         Err(e) => { eprintln!("error: could not determine current directory: {e}"); return 1; }
     };
-    let config_path = cwd.join(ROUTINES_FILE);
+    let rf = routines_file();
+    let config_path = cwd.join(&rf);
     let contents = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!("error: no {ROUTINES_FILE} found in {}", cwd.display());
+            eprintln!("error: no {rf} found in {}", cwd.display());
             return 1;
         }
         Err(e) => { eprintln!("error: could not read {}: {e}", config_path.display()); return 1; }
     };
     let config: RoutinesCliConfig = match toml::from_str(&contents) {
         Ok(c) => c,
-        Err(e) => { eprintln!("error: failed to parse {ROUTINES_FILE}: {e}"); return 1; }
+        Err(e) => { eprintln!("error: failed to parse {rf}: {e}"); return 1; }
     };
     let routine = match config.routine.iter().find(|r| r.name == name) {
         Some(r) => r,
         None => {
-            eprintln!("error: routine '{name}' not found in {ROUTINES_FILE}");
+            eprintln!("error: routine '{name}' not found in {rf}");
             if !config.routine.is_empty() {
                 let names: Vec<&str> = config.routine.iter().map(|r| r.name.as_str()).collect();
                 eprintln!("Available routines: {}", names.join(", "));

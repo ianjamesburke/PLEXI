@@ -2,7 +2,9 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-const ROUTINES_FILE: &str = ".plexi/routines.toml";
+fn routines_file() -> String {
+    format!("{}/routines.toml", crate::config::workspace_channel_dir())
+}
 
 /// Parsed `.plexi/routines.toml`
 #[derive(Deserialize, Default)]
@@ -76,7 +78,7 @@ impl Scheduler {
         }
         self.loaded_roots.insert(root.to_path_buf(), std::time::Instant::now());
 
-        let path = root.join(ROUTINES_FILE);
+        let path = root.join(routines_file());
         if !path.exists() {
             // Prune any entries that came from this root (file was deleted)
             self.entries.retain(|e| e.source_root != root);
