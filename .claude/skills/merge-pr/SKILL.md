@@ -122,7 +122,7 @@ If `stash pop` conflicts: take squash version (`git checkout --theirs <file>`).
 
 ```bash
 rm -f test_pr$PR_NUMBER.py
-just pr-clean $PR_NUMBER        # skip if no pr-install was run (diff-review path)
+just channel-clean pr-$PR_NUMBER        # skip if no pr-install was run (diff-review path)
 wtp remove $BRANCH --force --with-branch
 git push origin --delete $BRANCH 2>/dev/null || true  # remote may already be gone
 ```
@@ -246,7 +246,7 @@ plexi notify \
 ## Rules
 
 - CWD must be repo root for all commands in this skill
-- `just pr-clean`, `just bump`, `just install` run from repo root
+- `just channel-clean pr-<N>`, `just bump`, `just install` run from repo root
 - `just pr-install` runs from the feature worktree (only if re-needed)
 - Never pass `--delete-branch` to `gh pr merge` — git refuses to delete a branch checked out by a worktree
 - Never commit directly to alpha, beta, or main

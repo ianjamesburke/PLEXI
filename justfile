@@ -135,17 +135,6 @@ pr-install number: fetch-python-runtime
     bash scripts/pr-clean.sh {{number}}
     bash scripts/install.sh "pr-{{number}}"
 
-# Remove a PR build: app bundle, CLI binary, and profile directory.
-# Run after the PR is merged and approved: just pr-clean 123
-# Alias for: just channel-clean pr-<number>
-pr-clean number:
-    bash scripts/pr-clean.sh {{number}}
-
-# Remove all PR builds whose GitHub PR is no longer open.
-# Cleans app bundle, CLI binary, and profile directory for each closed/merged PR.
-pr-clean-merged:
-    bash scripts/pr-clean-merged.sh
-
 # Generic channel install. Auto-detects from branch if no channel given.
 # Errors if branch is not main/alpha/beta — pass channel name explicitly for dev builds.
 #   just channel-install          — auto-detect from branch

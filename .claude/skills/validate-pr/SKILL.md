@@ -354,7 +354,7 @@ gh issue edit $ISSUE_NUMBER \
 
 5. **Clean up:**
 ```bash
-just pr-clean $PR_NUMBER
+just channel-clean pr-$PR_NUMBER
 wtp remove feature/<branch> --force
 git push origin --delete feature/<branch>
 ```

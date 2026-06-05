@@ -51,7 +51,7 @@ for app in /Applications/Plexi\ PR*.app; do
     fi
 done
 
-# Check for orphaned feature/fix worktrees with no open PR
+# Remove orphaned feature/fix worktrees with no open PR
 echo ""
 echo "Checking for orphaned worktrees..."
 orphans=0
@@ -62,8 +62,14 @@ for wt_dir in "$REPO_ROOT"/worktrees/feature/* "$REPO_ROOT"/worktrees/fix/* "$RE
     open_count=$(gh pr list --head "$branch" --state open --json number -q 'length' 2>/dev/null || echo "0")
     if [[ "$open_count" == "0" ]]; then
         orphans=1
-        echo "  ORPHAN: worktrees/$(basename "$(dirname "$wt_dir")")/$(basename "$wt_dir") (branch: $branch) — no open PR"
-        echo "          remove with: wtp remove $branch"
+        echo "  Removing orphaned worktree: $wt_dir (branch: $branch)"
+        git -C "$REPO_ROOT" worktree remove --force "$wt_dir" 2>/dev/null && echo "    removed worktree" || echo "    worktree removal failed, skipping"
+        if git -C "$REPO_ROOT" branch --list "$branch" | grep -q .; then
+            git -C "$REPO_ROOT" branch -D "$branch" && echo "    deleted local branch: $branch" || echo "    local branch delete failed"
+        fi
+        if git -C "$REPO_ROOT" ls-remote --heads origin "$branch" | grep -q .; then
+            git -C "$REPO_ROOT" push origin --delete "$branch" && echo "    deleted remote branch: $branch" || echo "    remote branch delete failed (may already be gone)"
+        fi
     fi
 done
 if [[ $orphans -eq 0 ]]; then
