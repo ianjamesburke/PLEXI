@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -36,7 +37,8 @@ SYSTEM_PROMPT = (
     "You have access to tools offered by other running Plexi apps in this workspace — "
     "use them when they help answer the user's request."
 )
-MODEL_TIER = "medium"
+MODEL_TIERS = ["low", "medium", "high"]
+_THINKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 
 class AssistantApp(App):
@@ -44,14 +46,15 @@ class AssistantApp(App):
         self._messages: list[dict] = []  # {role, content}
         self._streaming_text = ""
         self._is_streaming = False
-        self._input = TextInput("chat-input", placeholder="Type a message...", height=48.0)
+        self._model_tier = "low"
+        self._input = TextInput("chat-input", placeholder="Message assistant…", height=56.0)
         self._scroll = Scrollable(child=Spacer())  # replaced each render
         self._session_id = _new_session_id()
         self._sessions_dir: Path | None = _resolve_sessions_dir(ctx.workspace_root)
         self._load_latest_session()
         self._register_tools()
         self._register_cli_tools()
-        ctx.info(f"AssistantApp ready — sessions dir: {self._sessions_dir}")
+        ctx.info(f"AssistantApp ready — model={self._model_tier} sessions dir: {self._sessions_dir}")
 
     # ── Tool registration (ExposeTools) ────────────────────────────────────────
 
@@ -87,7 +90,7 @@ class AssistantApp(App):
             self.emit.info(f"ask_assistant tool invoked: {question[:80]!r}")
             try:
                 resp = await self.emit.ai_query(
-                    model_tier=MODEL_TIER,
+                    model_tier=self._model_tier,
                     system=SYSTEM_PROMPT,
                     messages=[{"role": "user", "content": question}],
                 )
@@ -276,7 +279,7 @@ class AssistantApp(App):
             payload = {
                 "session_id": self._session_id,
                 "created": self._session_id,
-                "model_tier": MODEL_TIER,
+                "model_tier": self._model_tier,
                 "messages": self._messages,
             }
             path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -307,10 +310,11 @@ class AssistantApp(App):
         resolved response after any tool rounds complete.
         """
         messages = [{"role": m["role"], "content": m["content"]} for m in self._messages]
+        model_tier = self._model_tier
         try:
             resp = self.emit.run_sync(
                 self.emit.ai_query(
-                    model_tier=MODEL_TIER,
+                    model_tier=model_tier,
                     system=SYSTEM_PROMPT,
                     messages=messages,
                 )
@@ -343,6 +347,11 @@ class AssistantApp(App):
 
     # ── Rendering ──────────────────────────────────────────────────────────────
 
+    def _thinking_label(self) -> Label:
+        """Animated thinking indicator — Braille spinner at 8 fps."""
+        frame = _THINKING_FRAMES[int(time.monotonic() * 8) % len(_THINKING_FRAMES)]
+        return Label(f"{frame}  thinking…", tone="hint")
+
     def _build_chat_column(self) -> Column:
         """Build a Column of ChatBubble nodes for the message history."""
         children = []
@@ -354,7 +363,8 @@ class AssistantApp(App):
                 text=self._streaming_text, role="assistant", max_lines=100,
             ))
         elif self._is_streaming:
-            children.append(Label("Thinking...", tone="hint"))
+            children.append(self._thinking_label())
+            self.emit.schedule_render()
         if not children:
             children.append(Label("Send a message to start.", tone="hint"))
         return Column(children, padding=0.0, padding_top=0.0, gap=8.0)
@@ -364,10 +374,11 @@ class AssistantApp(App):
         # Auto-scroll to bottom on new content
         self._scroll.scroll_offset = max(0.0, self._scroll._child_h - self._scroll._avail_h)
 
-        subtitle = f"model: {MODEL_TIER}"
-        footer_keys = [("Enter", "send"), ("N", "new"), ("Esc", "quit")]
+        subtitle = f"{self._model_tier} · ⌘M to switch"
         if self._is_streaming:
-            footer_keys = [("...", "streaming"), ("Esc", "quit")]
+            footer_keys: list[tuple[str, str]] = [("Esc", "quit")]
+        else:
+            footer_keys = [("Enter", "send"), ("⌘M", "model"), ("⌘N", "new"), ("Esc", "quit")]
 
         ctx.render(Column([
             AppBar(title="Assistant", subtitle=subtitle),
@@ -380,11 +391,24 @@ class AssistantApp(App):
         if submitted is not None:
             self._submit(submitted)
 
+    def _cycle_model(self) -> None:
+        if self._is_streaming:
+            return
+        try:
+            idx = MODEL_TIERS.index(self._model_tier)
+        except ValueError:
+            idx = -1  # unknown tier (e.g. stale session) → wrap to first
+        self._model_tier = MODEL_TIERS[(idx + 1) % len(MODEL_TIERS)]
+        self.emit.info(f"model tier → {self._model_tier}")
+        self.emit.schedule_render()
+
     def on_key(self, _ctx: RenderContext, key: str, mods: dict) -> None:
         if self._scroll.handle_key(key):
             self.emit.schedule_render()
             return
-        # Cmd+N or bare 'n' (when not focused on input) starts a new conversation.
+        if key == "m" and mods.get("cmd"):
+            self._cycle_model()
+            return
         if key == "n" and mods.get("cmd"):
             self._new_conversation()
 
