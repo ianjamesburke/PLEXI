@@ -4,11 +4,14 @@ schema_version = 1
 id = "assistant"
 type = "app"
 name = "Assistant"
-version = "0.1.0"
-description = "AI chat assistant powered by Plexi's ai.query broker."
+version = "0.2.0"
+description = "AI chat assistant powered by Plexi's ai.query broker. Exposes an ask_assistant tool so other workspace apps can invoke it programmatically."
 entry = "assistant.py"
 
 [app.capabilities]
+# ai.query: issue brokered LLM calls. The host tool dispatcher automatically
+# injects tools exposed by other workspace panes into each ai_query call, so
+# the assistant can invoke them without any additional capability declaration.
 capabilities = ["ai.query"]
 
 [launch]
