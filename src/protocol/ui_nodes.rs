@@ -54,12 +54,19 @@ pub struct UiPadding {
     pub left: f32,
 }
 
+/// Which edge to pin a child against within a vertical Stack.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PinnedEdge {
+    Bottom,
+    Top,
+    Left,
+    Right,
+}
+
 /// Component tree node. L0 primitives compose into rich UI; L1 sugar variants
 /// are rendered natively by the host.
-///
-/// `JsonSchema` is implemented manually to avoid schemars recursion issues
-/// (UiNode contains Box<UiNode>).
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum UiNode {
     // ── L0 primitives ────────────────────────────────────────────────────
@@ -107,6 +114,21 @@ pub enum UiNode {
     Raw { command: Box<RenderCommand> },
     /// Future GPU surface placeholder — reserved, not yet rendered.
     Surface { id: String },
+    /// Pinned layout wrapper. In a vertical Stack, `Pinned { edge: Bottom }` children
+    /// are rendered flush to the available rect bottom regardless of body content height.
+    Pinned {
+        edge: PinnedEdge,
+        child: Box<UiNode>,
+    },
+    /// Semantic column container — standard app margins (SPACE_XL left/right),
+    /// sticky-footer host contract. Emitted by `Column.to_node()` in the Python SDK.
+    Column {
+        children: Vec<UiNode>,
+        #[serde(default)]
+        gap: f32,
+        #[serde(default)]
+        padding_top: f32,
+    },
 
     // ── L1 sugar ─────────────────────────────────────────────────────────
     /// Host-rendered button.
@@ -224,16 +246,6 @@ pub enum UiNode {
     },
 }
 
-// Manual JsonSchema impl to avoid schemars recursion (UiNode contains Box<UiNode>).
-impl schemars::JsonSchema for UiNode {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "UiNode".into()
-    }
-    fn json_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({})
-    }
-}
-
 // Manual PartialEq impl — UiNode::Raw wraps RenderCommand which would require
 // PartialEq on hundreds of transitive types. Raw nodes are structural escape
 // hatches; we compare them via their serde round-trip JSON representation so
@@ -302,6 +314,13 @@ impl PartialEq for UiNode {
              UiNode::Card { children: c2, padding: p2 }) => c1 == c2 && p1 == p2,
             (UiNode::SelectList { items: i1, selected_idx: s1 },
              UiNode::SelectList { items: i2, selected_idx: s2 }) => i1 == i2 && s1 == s2,
+            (UiNode::Pinned { edge: e1, child: c1 }, UiNode::Pinned { edge: e2, child: c2 }) => {
+                e1 == e2 && c1 == c2
+            }
+            (UiNode::Column { children: c1, gap: g1, padding_top: p1 },
+             UiNode::Column { children: c2, gap: g2, padding_top: p2 }) => {
+                c1 == c2 && g1 == g2 && p1 == p2
+            }
             _ => false,
         }
     }

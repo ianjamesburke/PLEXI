@@ -741,8 +741,8 @@ class Footer(Component):
                      size=TEXT_HINT, color=self.color or theme.muted)
 
     def to_node(self) -> dict:
-        return {"type": "footer", "text": self.text,
-                "color": self.color or ""}
+        inner = {"type": "footer", "text": self.text, "color": self.color or ""}
+        return {"type": "pinned", "edge": "bottom", "child": inner}
 
 
 @dataclass
@@ -831,7 +831,8 @@ class FooterKeys(Component):
             else:
                 keys = list(keys_or_key)
             entries.append({"keys": keys, "description": desc})
-        return {"type": "footer_keys", "entries": entries, "divider": self.divider}
+        inner = {"type": "footer_keys", "entries": entries, "divider": self.divider}
+        return {"type": "pinned", "edge": "bottom", "child": inner}
 
 
 # ── Composite list components ──────────────────────────────────────────────
@@ -1532,16 +1533,10 @@ class Column(Component):
                 return None
             children.append(node)
         return {
-            "type": "stack",
-            "direction": "vertical",
+            "type": "column",
             "children": children,
             "gap": self.gap,
-            "padding": {
-                "top": self._pad_top,
-                "right": self.padding,
-                "bottom": self.padding,
-                "left": self.padding,
-            },
+            "padding_top": self._pad_top,
         }
 
 
