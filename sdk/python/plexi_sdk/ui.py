@@ -1460,13 +1460,9 @@ class Column(Component):
     any `Spacer(grow=True)` descendants at the top level.
 
     Padding defaults to `SPACE_XL` (24px) on the sides and bottom, and
-    `SPACE_SM` (8px) on the top. A top-of-pane `Header` carries its own
-    visual weight via TEXT_TITLE_XL and its own bottom rhythm (gap +
-    divider), so anything above a few px reads as "the title is dropped"
-    rather than anchored. The other three sides stay at 24px where content
-    *does* need breathing room.
-
-    Override either with `padding=` (all sides) or `padding_top=` (top only).
+    `SPACE_SM` (8px) on the top. Pass `padding=0` for full-width content
+    (e.g. apps whose children manage their own horizontal margins).
+    Override top-only with `padding_top=`.
     """
     children: List[Component]
     padding: float = SPACE_XL
@@ -1537,6 +1533,7 @@ class Column(Component):
             "children": children,
             "gap": self.gap,
             "padding_top": self._pad_top,
+            "padding": self.padding,
         }
 
 

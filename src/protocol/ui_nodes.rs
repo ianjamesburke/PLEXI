@@ -8,6 +8,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_space_xl() -> f32 {
+    24.0 // SPACE_XL — keep in sync with src/ui/style.rs
+}
+
 /// Single shortcut entry for `UiNode::FooterKeys`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq)]
 pub struct FooterKeyEntry {
@@ -120,14 +124,17 @@ pub enum UiNode {
         edge: PinnedEdge,
         child: Box<UiNode>,
     },
-    /// Semantic column container — standard app margins (SPACE_XL left/right),
-    /// sticky-footer host contract. Emitted by `Column.to_node()` in the Python SDK.
+    /// Semantic column container with sticky-footer host contract.
+    /// `padding` sets left/right/bottom margins (default SPACE_XL); `padding_top`
+    /// sets the top margin independently. Emitted by `Column.to_node()` in the SDK.
     Column {
         children: Vec<UiNode>,
         #[serde(default)]
         gap: f32,
         #[serde(default)]
         padding_top: f32,
+        #[serde(default = "default_space_xl")]
+        padding: f32,
     },
 
     // ── L1 sugar ─────────────────────────────────────────────────────────
@@ -317,9 +324,9 @@ impl PartialEq for UiNode {
             (UiNode::Pinned { edge: e1, child: c1 }, UiNode::Pinned { edge: e2, child: c2 }) => {
                 e1 == e2 && c1 == c2
             }
-            (UiNode::Column { children: c1, gap: g1, padding_top: p1 },
-             UiNode::Column { children: c2, gap: g2, padding_top: p2 }) => {
-                c1 == c2 && g1 == g2 && p1 == p2
+            (UiNode::Column { children: c1, gap: g1, padding_top: p1, padding: pa1 },
+             UiNode::Column { children: c2, gap: g2, padding_top: p2, padding: pa2 }) => {
+                c1 == c2 && g1 == g2 && p1 == p2 && pa1 == pa2
             }
             _ => false,
         }

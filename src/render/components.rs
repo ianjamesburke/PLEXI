@@ -479,12 +479,15 @@ pub(crate) fn render_component_tree(
 
         // ── L1 layout components ────────────────────────────────────────
 
-        UiNode::Column { children, gap, padding_top } => {
-            log::info!("render_components: Column {} children gap={gap} padding_top={padding_top}", children.len());
+        UiNode::Column { children, gap, padding_top, padding } => {
+            log::info!(
+                "render_components: Column {} children gap={gap} padding_top={padding_top} padding={padding}",
+                children.len()
+            );
             egui::Frame::new()
                 .inner_margin(egui::Margin {
-                    left: style::SPACE_XL as i8,
-                    right: style::SPACE_XL as i8,
+                    left: *padding as i8,
+                    right: *padding as i8,
                     top: *padding_top as i8,
                     bottom: 0,
                 })
@@ -845,6 +848,10 @@ fn render_stack(
                     if let Some(h) = bottom_pin_height(inner) {
                         pinned_bottom.push((h, inner.as_ref()));
                         continue;
+                    } else {
+                        log::warn!(
+                            "render_components: Pinned{{Bottom}} wraps a node with unknown intrinsic height — rendering inline; add it to bottom_pin_height()"
+                        );
                     }
                 }
                 body_children.push(child);
@@ -855,7 +862,10 @@ fn render_stack(
                 let body_h = (ui.available_height() - total_pinned_h).max(0.0);
 
                 // Body gets a constrained-height allocation; pinned fills the rest below.
+                // set_min_height forces the cursor to advance by the full body_h even when
+                // content is short, ensuring the footer renders flush to the bottom.
                 ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
+                    ui.set_min_height(body_h);
                     for (i, child) in body_children.iter().enumerate() {
                         if i > 0 && gap > 0.0 {
                             ui.add_space(gap);
@@ -1115,6 +1125,7 @@ mod render_component_tree_tests {
             ],
             gap: 8.0,
             padding_top: 0.0,
+            padding: crate::ui::style::SPACE_XL,
         };
         if let UiNode::Column { children, gap, .. } = &node {
             assert_eq!(children.len(), 1);
@@ -1146,6 +1157,7 @@ mod render_component_tree_tests {
             children: vec![UiNode::AppBar { title: "T".into(), subtitle: String::new() }],
             gap: 4.0,
             padding_top: 8.0,
+            padding: 0.0,
         };
         let json = serde_json::to_string(&node).unwrap();
         assert!(json.contains("\"type\":\"column\""), "json={json}");
