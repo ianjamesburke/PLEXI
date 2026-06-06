@@ -492,6 +492,10 @@ pub(crate) fn render_component_tree(
                     bottom: 0,
                 })
                 .show(ui, |ui| {
+                    // Expand the inner ui to fill available height so render_stack's
+                    // sticky-footer partition can see the full remaining pane height.
+                    let h = ui.available_height();
+                    ui.set_min_height(h);
                     events.extend(render_stack(ui, &StackDirection::Vertical, children, *gap, colors, text_edit_buffers, focus_ctx));
                 });
         }
