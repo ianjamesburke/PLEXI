@@ -15,7 +15,7 @@ class __CLASS_NAME__(App):
             AppBar(title="__DISPLAY_NAME__"),
             Spacer(24),
             Label(str(self._count), bold=True),
-            Spacer(24),
+            Spacer(grow=True),
             FooterKeys([
                 ("space", "start/stop"),
                 ("+/-", "increment"),
@@ -25,13 +25,13 @@ class __CLASS_NAME__(App):
         ]))
 
     async def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
-        if key in ("equal", "plus"):
+        if key in ("=", "+"):
             self._count += 1
-        elif key in ("minus", "hyphen"):
+        elif key == "-":
             self._count -= 1
         elif key == "r":
             self._count = 0
-        elif key == "space":
+        elif key == " ":
             if self._running:
                 self.emit.cancel_timer("tick")
                 self._running = False
