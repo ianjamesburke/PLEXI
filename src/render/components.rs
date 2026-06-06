@@ -7,7 +7,7 @@
 
 use egui::Ui;
 
-use crate::app_protocol::{StackDirection, UiNode};
+use crate::app_protocol::{PinnedEdge, StackDirection, UiNode};
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
@@ -90,21 +90,16 @@ pub(crate) fn render_component_tree(
         // ── L0 primitives ────────────────────────────────────────────────
 
         UiNode::Stack { direction, children, gap, padding } => {
-            ui.scope(|ui| {
-                if padding.top > 0.0 {
-                    ui.add_space(padding.top);
-                }
-                if padding.left > 0.0 {
-                    ui.indent("stack_left_pad", |ui| {
-                        events.extend(render_stack(ui, direction, children, *gap, colors, text_edit_buffers, focus_ctx));
-                    });
-                } else {
+            egui::Frame::new()
+                .inner_margin(egui::Margin {
+                    left: padding.left as i8,
+                    right: padding.right as i8,
+                    top: padding.top as i8,
+                    bottom: padding.bottom as i8,
+                })
+                .show(ui, |ui| {
                     events.extend(render_stack(ui, direction, children, *gap, colors, text_edit_buffers, focus_ctx));
-                }
-                if padding.bottom > 0.0 {
-                    ui.add_space(padding.bottom);
-                }
-            });
+                });
         }
 
         UiNode::Scroll { child, horizontal } => {
@@ -179,6 +174,13 @@ pub(crate) fn render_component_tree(
                     payload: None,
                 });
             }
+        }
+
+        UiNode::Pinned { edge, child } => {
+            // Bottom-pinned nodes are handled by render_stack's partition pass.
+            // When Pinned appears outside a vertical Stack (e.g. at tree root), render inline.
+            log::trace!("render_components: Pinned {:?} rendered inline (no enclosing vertical Stack)", edge);
+            events.extend(render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx));
         }
 
         UiNode::Raw { command } => {
@@ -477,6 +479,23 @@ pub(crate) fn render_component_tree(
 
         // ── L1 layout components ────────────────────────────────────────
 
+        UiNode::Column { children, gap, padding_top, padding } => {
+            log::info!(
+                "render_components: Column {} children gap={gap} padding_top={padding_top} padding={padding}",
+                children.len()
+            );
+            egui::Frame::new()
+                .inner_margin(egui::Margin {
+                    left: *padding as i8,
+                    right: *padding as i8,
+                    top: *padding_top as i8,
+                    bottom: 0,
+                })
+                .show(ui, |ui| {
+                    events.extend(render_stack(ui, &StackDirection::Vertical, children, *gap, colors, text_edit_buffers, focus_ctx));
+                });
+        }
+
         UiNode::AppBar { title, subtitle, .. } => {
             const TITLE_SIZE: f32 = 16.0;
             let has_subtitle = !subtitle.is_empty();
@@ -529,7 +548,6 @@ pub(crate) fn render_component_tree(
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(ui.available_width(), total_h), egui::Sense::hover());
             let painter = ui.painter();
-            painter.rect_filled(rect, 0.0, colors.bg_sidebar);
             let mut y = rect.min.y;
             if *divider {
                 y += style::SPACE_SM;
@@ -778,6 +796,25 @@ pub(crate) fn render_component_tree(
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
+/// Returns the known fixed height of a node that can be bottom-pinned, or `None`
+/// if the height cannot be determined without rendering.
+fn bottom_pin_height(node: &UiNode) -> Option<f32> {
+    match node {
+        UiNode::FooterKeys { divider, .. } => {
+            let chip_row_h = style::TEXT_HINT + 6.0;
+            Some(if *divider {
+                style::SPACE_SM + 1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM
+            } else {
+                style::SPACE_SM + chip_row_h + style::SPACE_SM
+            })
+        }
+        UiNode::Footer { .. } => {
+            Some(style::SPACE_MD + 1.0 + style::SPACE_MD + style::TEXT_CAPTION + 5.0)
+        }
+        _ => None,
+    }
+}
+
 fn render_stack(
     ui: &mut Ui,
     direction: &StackDirection,
@@ -800,14 +837,58 @@ fn render_stack(
             });
         }
         StackDirection::Vertical => {
-            ui.vertical(|ui| {
-                for (i, child) in children.iter().enumerate() {
-                    if i > 0 && gap > 0.0 {
-                        ui.add_space(gap);
+            // Partition bottom-pinned children (those with a known fixed height) out of
+            // the body. They are rendered at the bottom of the available rect by
+            // constraining the body height first.
+            let mut pinned_bottom: Vec<(f32, &UiNode)> = Vec::new();
+            let mut body_children: Vec<&UiNode> = Vec::new();
+
+            for child in children {
+                if let UiNode::Pinned { edge: PinnedEdge::Bottom, child: inner } = child {
+                    if let Some(h) = bottom_pin_height(inner) {
+                        pinned_bottom.push((h, inner.as_ref()));
+                        continue;
+                    } else {
+                        log::warn!(
+                            "render_components: Pinned{{Bottom}} wraps a node with unknown intrinsic height — rendering inline; add it to bottom_pin_height()"
+                        );
                     }
-                    events.extend(render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx));
                 }
-            });
+                body_children.push(child);
+            }
+
+            if !pinned_bottom.is_empty() {
+                let total_pinned_h: f32 = pinned_bottom.iter().map(|(h, _)| h).sum();
+                let body_h = (ui.available_height() - total_pinned_h).max(0.0);
+
+                // Body gets a constrained-height allocation; pinned fills the rest below.
+                // set_min_height forces the cursor to advance by the full body_h even when
+                // content is short, ensuring the footer renders flush to the bottom.
+                ui.allocate_ui(egui::vec2(ui.available_width(), body_h), |ui| {
+                    ui.set_min_height(body_h);
+                    for (i, child) in body_children.iter().enumerate() {
+                        if i > 0 && gap > 0.0 {
+                            ui.add_space(gap);
+                        }
+                        events.extend(render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx));
+                    }
+                });
+                for (_, inner) in &pinned_bottom {
+                    events.extend(render_component_tree(ui, inner, colors, text_edit_buffers, focus_ctx));
+                }
+                log::info!(
+                    "render_components: render_stack vertical pinned body_h={body_h:.0} footer_h={total_pinned_h:.0}"
+                );
+            } else {
+                ui.vertical(|ui| {
+                    for (i, child) in children.iter().enumerate() {
+                        if i > 0 && gap > 0.0 {
+                            ui.add_space(gap);
+                        }
+                        events.extend(render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx));
+                    }
+                });
+            }
         }
     }
     events
@@ -1020,6 +1101,89 @@ mod render_component_tree_tests {
         } else {
             panic!("wrong variant");
         }
+    }
+
+    /// `UiNode::Pinned` can be constructed and matches correctly.
+    #[test]
+    fn pinned_node_constructable() {
+        use crate::app_protocol::PinnedEdge;
+        let inner = UiNode::Text { text: "footer".into(), size: 12.0, color: String::new(), bold: false, monospace: false };
+        let node = UiNode::Pinned { edge: PinnedEdge::Bottom, child: Box::new(inner) };
+        if let UiNode::Pinned { edge, .. } = &node {
+            assert_eq!(*edge, PinnedEdge::Bottom);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    /// `UiNode::Column` can be constructed with children.
+    #[test]
+    fn column_node_constructable() {
+        let node = UiNode::Column {
+            children: vec![
+                UiNode::Text { text: "body".into(), size: 14.0, color: String::new(), bold: false, monospace: false },
+            ],
+            gap: 8.0,
+            padding_top: 0.0,
+            padding: crate::ui::style::SPACE_XL,
+        };
+        if let UiNode::Column { children, gap, .. } = &node {
+            assert_eq!(children.len(), 1);
+            assert_eq!(*gap, 8.0);
+        } else {
+            panic!("wrong variant");
+        }
+    }
+
+    /// Serde round-trip for `UiNode::Pinned`.
+    #[test]
+    fn pinned_serde_roundtrip() {
+        use crate::app_protocol::PinnedEdge;
+        let node = UiNode::Pinned {
+            edge: PinnedEdge::Bottom,
+            child: Box::new(UiNode::Footer { text: "status".into(), color: String::new() }),
+        };
+        let json = serde_json::to_string(&node).unwrap();
+        assert!(json.contains("\"type\":\"pinned\""), "json={json}");
+        assert!(json.contains("\"bottom\""), "json={json}");
+        let parsed: UiNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(node, parsed);
+    }
+
+    /// Serde round-trip for `UiNode::Column`.
+    #[test]
+    fn column_serde_roundtrip() {
+        let node = UiNode::Column {
+            children: vec![UiNode::AppBar { title: "T".into(), subtitle: String::new() }],
+            gap: 4.0,
+            padding_top: 8.0,
+            padding: 0.0,
+        };
+        let json = serde_json::to_string(&node).unwrap();
+        assert!(json.contains("\"type\":\"column\""), "json={json}");
+        let parsed: UiNode = serde_json::from_str(&json).unwrap();
+        assert_eq!(node, parsed);
+    }
+
+    /// `bottom_pin_height` returns correct heights for FooterKeys and Footer.
+    #[test]
+    fn bottom_pin_height_known_nodes() {
+        use super::bottom_pin_height;
+        use crate::ui::style;
+        let fk_with_div = UiNode::FooterKeys { entries: vec![], divider: true };
+        let fk_no_div = UiNode::FooterKeys { entries: vec![], divider: false };
+        let footer = UiNode::Footer { text: "s".into(), color: String::new() };
+        let label = UiNode::Label { text: "x".into(), size: 0.0, color: String::new(), tone: String::new(), bold: false, monospace: false, max_lines: 0 };
+
+        let chip_row_h = style::TEXT_HINT + 6.0;
+        let expected_with_div = style::SPACE_SM + 1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM;
+        let expected_no_div = style::SPACE_SM + chip_row_h + style::SPACE_SM;
+        let expected_footer = style::SPACE_MD + 1.0 + style::SPACE_MD + style::TEXT_CAPTION + 5.0;
+
+        assert_eq!(bottom_pin_height(&fk_with_div), Some(expected_with_div));
+        assert_eq!(bottom_pin_height(&fk_no_div), Some(expected_no_div));
+        assert_eq!(bottom_pin_height(&footer), Some(expected_footer));
+        assert_eq!(bottom_pin_height(&label), None);
     }
 
     /// `UiNode::TextEdit` PartialEq works.
