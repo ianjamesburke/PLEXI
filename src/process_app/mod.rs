@@ -307,6 +307,10 @@ pub struct ProcessApp {
     /// checks wants_close() each frame and calls close_pane gracefully,
     /// avoiding the crash-restart path that sys.exit() would trigger.
     wants_close_self: bool,
+    /// True between a click event and the next FrameDone. Keeps the repaint
+    /// cadence at 0ms (immediate) so the selection update renders without
+    /// falling into the 100ms idle branch.
+    click_awaiting_frame: bool,
     /// Launch arguments passed via CLI or SpawnPane. Forwarded in PlexiEvent::Init
     /// so the SDK can expose them as ctx.args.
     pub(crate) launch_args: Vec<String>,
@@ -745,6 +749,7 @@ impl ProcessApp {
             mcp_server: mcp_server_handle,
             mcp_pending: std::collections::HashMap::new(),
             wants_close_self: false,
+            click_awaiting_frame: false,
             launch_args: args.to_vec(),
         })
     }
@@ -892,6 +897,7 @@ impl ProcessApp {
             mcp_server: None,
             mcp_pending: std::collections::HashMap::new(),
             wants_close_self: false,
+            click_awaiting_frame: false,
             launch_args: Vec::new(),
         };
         (app, draw_tx)
@@ -1220,6 +1226,7 @@ impl ProcessApp {
                 }
                 std::mem::swap(&mut self.frame, &mut self.pending_frame);
                 self.pending_frame.clear();
+                self.click_awaiting_frame = false;
                 // Lifecycle: a frame just landed → Running (unless terminal).
                 self.lifecycle.on_frame_done();
             }
@@ -1812,6 +1819,9 @@ impl App for ProcessApp {
         // moving we keep the repaint cadence near 60 FPS so host->app hover state
         // does not feel sticky.
         if needs_click_repaint {
+            self.click_awaiting_frame = true;
+            ui.ctx().request_repaint();
+        } else if self.click_awaiting_frame {
             ui.ctx().request_repaint();
         } else if needs_tracking_repaint {
             ui.ctx()
