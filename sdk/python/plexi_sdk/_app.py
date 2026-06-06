@@ -82,6 +82,19 @@ _KEY_ALIASES: "dict[str, str]" = {
     "Tab": "tab",
     # Space arrives as Event::Text(" "), not Event::Key
     " ": "space",
+    # Printable symbols arrive as raw chars via Event::Text
+    "-": "minus",
+    "=": "equals",
+    "+": "plus",
+    "[": "open_bracket",
+    "]": "close_bracket",
+    "\\": "backslash",
+    ";": "semicolon",
+    "'": "quote",
+    "`": "backtick",
+    ",": "comma",
+    ".": "period",
+    "/": "slash",
 }
 
 
