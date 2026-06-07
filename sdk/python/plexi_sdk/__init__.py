@@ -5,47 +5,35 @@ Spec: docs/specs/releases/plexi-v3.0.md §3 (PGAP v3), §7 (typed pipes).
 Zero dependencies, pure stdlib.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-QUICK START
+QUICK START (SDK v2)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-    from plexi_sdk import App, BODY
+    from plexi_sdk import App
+    from plexi_sdk.ui import Column, AppBar, Label, Spacer, FooterKeys
 
     class CounterApp(App):
-        async def on_init(self, ctx):
-            # Called once after the host completes the Init handshake.
-            # ctx.workspace_root, ctx.capabilities, ctx.feature_flags are set.
-            # Hooks may be async def (to use await) or plain def (fire-and-forget).
-            self.count = 0
-            self.emit.info("CounterApp ready")
-            # Blocking helpers are coroutines — await them directly:
-            # api_key = await self.emit.secret_get("MY_API_KEY")
+        def on_init(self) -> None:
+            self.count = self.state.get("count", 0)
 
-        def on_render(self, ctx):
-            # Pure-sync render hooks work unchanged — no await needed here.
-            # ctx.w / ctx.h are the current pane dimensions.
-            # ctx.elapsed is seconds since the previous render (0.0 on first frame).
-            ctx.clear(ctx.theme.bg)
-            ctx.rect(20, 20, ctx.w - 40, 60, fill="#313244", radius=8.0)
-            ctx.text(36, 42, f"Count: {self.count}", size=BODY, color=ctx.theme.fg)
-            ctx.text(36, 72, "Press +/- to change  •  q to quit", size=12.0, color="#6c7086")
+        def view(self):
+            return Column([
+                AppBar("Counter"),
+                Spacer(grow=True),
+                Label(str(self.count), bold=True),
+                Spacer(grow=True),
+                FooterKeys([("+", "increment"), ("-", "decrement")]),
+            ])
 
-        def on_key(self, ctx, key, mods):
-            # key is a string: "a"-"z", "up", "down", "left", "right",
-            # "return", "escape", "backspace", "tab", "space", "f1"…"f12", etc.
-            # mods shape: {"shift": bool, "ctrl": bool, "alt": bool, "meta": bool}
-            if key == "+" or (key == "=" and mods.get("shift")):
-                self.count += 1
-            elif key == "-":
-                self.count -= 1
-            elif key == "q":
-                pass  # host handles quit; apps cannot self-exit
-
-        def on_click(self, ctx, x, y, button):
-            # button: "primary" | "secondary" | "middle"
-            # x, y are pixel coordinates within the pane
-            ctx.notify("Clicked", priority=50, body=f"({x:.0f}, {y:.0f}) {button}")
+        def on_key(self, key: str, mods: dict) -> None:
+            if key == "plus":    self.count += 1
+            elif key == "minus": self.count -= 1
+            self.state.save({"count": self.count})
+            self.emit.schedule_render()
 
     CounterApp().run()
+
+    # Canvas/game apps: override on_render(self, ctx) instead of view().
+    # Full reference: docs/sdk-v2.md
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
