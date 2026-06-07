@@ -528,15 +528,13 @@ impl<'a> TerminalView<'a> {
         let cell_width = content.terminal_size.cell_width as f32;
         let cell_height = content.terminal_size.cell_height as f32;
 
-        // Expand the clip rect leftward by half a cell so column-0 glyphs whose
-        // rendered ink bounds exceed the (floored) cell_width aren't clipped.
-        // Some Unicode characters (✳, ❯, box-drawing corners) render significantly
-        // wider than their cell advance width. Expanding by cell_width/2 allows any
-        // glyph that fits within its cell to bleed into the left padding without
-        // clipping. The caller (tiling.rs) adds TERM_H_PAD >= cell_width/2 of left
-        // padding, so this expansion stays within the pane background area.
+        // Expand clip rect by 1px on the left so column-0 glyphs whose rendered
+        // width slightly exceeds the (floored) cell_width aren't clipped at the
+        // pane boundary. cell_width is floor(font_advance), so glyphs can overflow
+        // up to 1px left of layout_min.x. Expanding by 1px is safe: the pane gap
+        // is always larger than this.
         let painter = painter.with_clip_rect(
-            painter.clip_rect().expand2(Vec2::new(cell_width / 2.0, 0.0))
+            painter.clip_rect().expand2(Vec2::new(1.0, 0.0))
         );
         let global_bg =
             self.theme.get_color(Color::Named(NamedColor::Background));
