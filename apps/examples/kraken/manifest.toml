@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "kraken"
+type = "app"
+name = "Kraken"
+entry = "main.py"
+version = "0.1.0"
+description = "A Plexi app"
+watch = true
+
+[app.capabilities]
+capabilities = ["timer"]
+
+[launch]
