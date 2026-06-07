@@ -38,16 +38,16 @@ MODEL_TIER = "medium"
 
 
 class WritingAgentApp(App):
-    def on_init(self, ctx: RenderContext) -> None:
+    def on_init(self) -> None:
         self._messages: list[dict] = []
         self._streaming_text = ""
         self._is_streaming = False
         self._input = TextInput("chat-input", placeholder="Paste text to edit or describe what you're working on...", height=48.0)
         self._scroll = Scrollable(child=Spacer())
         self._session_id = _new_session_id()
-        self._sessions_dir: Path | None = _resolve_sessions_dir(ctx.workspace_root)
+        self._sessions_dir: Path | None = _resolve_sessions_dir(self.workspace_root)
         self._load_latest_session()
-        ctx.info(f"WritingAgentApp ready — sessions dir: {self._sessions_dir}")
+        self.emit.info(f"WritingAgentApp ready — sessions dir: {self._sessions_dir}")
 
     # ── Session persistence ──────────────────────────────────────────────────
 
@@ -172,7 +172,7 @@ class WritingAgentApp(App):
         if submitted is not None:
             self._submit(submitted)
 
-    def on_key(self, _ctx: RenderContext, key: str, mods: dict) -> None:
+    def on_key(self, key: str, mods: dict) -> None:
         if self._scroll.handle_key(key):
             self.emit.schedule_render()
             return

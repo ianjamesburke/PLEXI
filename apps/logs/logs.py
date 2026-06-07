@@ -174,7 +174,7 @@ class LogsApp(App):
             self._copy_row    = 0
             self._copy_anchor = None
 
-    def on_escape(self, _ctx):
+    def on_escape(self):
         if self._search_mode:
             self._search_mode = False
             self._search_q    = ""

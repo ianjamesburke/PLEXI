@@ -131,33 +131,33 @@ class App:
     Override any of:
 
     Awaited (block the event loop until they return):
-        on_init(ctx)                                — after Init handshake
-        on_render(ctx)                              — on each Render event
-        on_render_seed(ctx, payload)                — on RenderSeed (headless only, before first Render)
+        on_init()                                   — after Init handshake
+        on_render(ctx)                              — on each Render event (ctx IS the drawing surface)
+        on_render_seed(payload)                     — on RenderSeed (headless only, before first Render)
         on_suspend()                                — on Suspend
         on_resume()                                 — on Resume
         on_shutdown()                               — on Shutdown
 
     Task (dispatched as asyncio tasks — event loop continues):
-        on_key(ctx, key, mods)                      — on Key event
-        on_click(ctx, x, y, button)                 — on Click event
-        on_mouse_down(ctx, x, y, button, mods={})   — on MouseDown event
-        on_mouse_up(ctx, x, y, button, mods={})     — on MouseUp event
-        on_mouse_move(ctx, x, y, buttons, mods={})  — on MouseMove event
-        on_command(ctx, text)                        — on Command event
-        on_paste(ctx, text)                          — on Paste event
-        on_component_event(ctx, node_id, event_type, payload)
+        on_key(key, mods)                           — on Key event
+        on_click(x, y, button)                      — on Click event
+        on_mouse_down(x, y, button, mods={})        — on MouseDown event
+        on_mouse_up(x, y, button, mods={})          — on MouseUp event
+        on_mouse_move(x, y, buttons, mods={})       — on MouseMove event
+        on_command(text)                            — on Command event
+        on_paste(text)                              — on Paste event
+        on_component_event(node_id, event_type, payload)
                                                     — on L1 ComponentEvent (button click, input change)
-        on_text_submitted(ctx, id, text)             — on TextInput Enter press
-        on_pipe_message(ctx, pipe_id, payload)       — on PipeMessage
-        on_path_changed(ctx, cwd)                    — on PathChanged
-        on_inject(ctx, payload)                      — on Inject event
-        on_nav_back(ctx, view_id)                    — on NavBack event
-        on_timer(ctx, timer_id)                      — on Timer event
-        on_scroll(ctx, id, offset_y)                 — on Scroll event
-        on_file_picked(ctx, request_id, paths)       — on FilePicked event
-        on_file_pick_cancelled(ctx, request_id)      — on FilePickCancelled
-        on_mcp_call(ctx, tool_name, arguments)       — on MCP tool call
+        on_text_submitted(id, text)                  — on TextInput Enter press
+        on_pipe_message(pipe_id, payload)            — on PipeMessage
+        on_path_changed(cwd)                        — on PathChanged
+        on_inject(payload)                          — on Inject event
+        on_nav_back(view_id)                        — on NavBack event
+        on_timer(timer_id)                          — on Timer event
+        on_scroll(id, offset_y)                     — on Scroll event
+        on_file_picked(request_id, paths)           — on FilePicked event
+        on_file_pick_cancelled(request_id)          — on FilePickCancelled
+        on_mcp_call(tool_name, arguments)           — on MCP tool call
 
     Fire-and-forget (no RenderContext — called outside a render frame):
         on_pane_spawned(pane_id, request_id)         — pane spawn succeeded
@@ -270,6 +270,14 @@ class App:
         self._scroll_consumers: list = []
 
     @property
+    def w(self) -> float:
+        return self._rect["w"]
+
+    @property
+    def h(self) -> float:
+        return self._rect["h"]
+
+    @property
     def state(self) -> "_AppStateProxy":
         """Host-persisted state. Use self.state.get/save instead of ctx.load_state/save_state."""
         return _AppStateProxy(self)
@@ -305,32 +313,32 @@ class App:
     # Return type is `Coroutine[Any, Any, None] | None` so Pyright accepts
     # both sync (`def` → returns None) and async (`async def` → returns
     # Coroutine) overrides without reportIncompatibleMethodOverride.
-    def on_init(self, _ctx: RenderContext) -> "Coroutine[Any, Any, None] | None": return None
+    def on_init(self) -> "Coroutine[Any, Any, None] | None": return None
     def on_render(self, _ctx: RenderContext) -> None: pass
-    def on_key(self, _ctx: RenderContext, _key: str, _mods: dict) -> "Coroutine[Any, Any, None] | None":
+    def on_key(self, _key: str, _mods: dict) -> "Coroutine[Any, Any, None] | None":
         return None
-    def on_escape(self, _ctx: RenderContext) -> bool:
+    def on_escape(self) -> "bool | Coroutine[Any, Any, bool]":
         """Called when Escape is pressed. Return True if you handled it (e.g.
         dismissed a modal, exited a sub-page). Return False to let the
         framework close the app. Default: False (close)."""
         return False
-    def on_click(self, _ctx: RenderContext, _x: float, _y: float, _button: str) -> "Coroutine[Any, Any, None] | None": return None
-    def on_mouse_down(self, _ctx: RenderContext, _x: float, _y: float, _button: str, _mods: dict = {}) -> "Coroutine[Any, Any, None] | None": return None
-    def on_mouse_up(self, _ctx: RenderContext, _x: float, _y: float, _button: str, _mods: dict = {}) -> "Coroutine[Any, Any, None] | None": return None
-    def on_mouse_move(self, _ctx: RenderContext, _x: float, _y: float, _buttons: list, _mods: dict = {}) -> "Coroutine[Any, Any, None] | None": return None
-    def on_command(self, _ctx: RenderContext, _text: str) -> "Coroutine[Any, Any, None] | None": return None
-    def on_paste(self, _ctx: RenderContext, _text: str) -> "Coroutine[Any, Any, None] | None": return None
-    def on_pipe_message(self, _ctx: RenderContext, _pipe_id: str, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
-    def on_path_changed(self, _ctx: RenderContext, _cwd: str) -> "Coroutine[Any, Any, None] | None": return None
-    def on_inject(self, _ctx: RenderContext, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
-    def on_render_seed(self, _ctx: RenderContext, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
-    def on_nav_back(self, _ctx: RenderContext, _view_id: str) -> "Coroutine[Any, Any, None] | None":
+    def on_click(self, _x: float, _y: float, _button: str) -> "Coroutine[Any, Any, None] | None": return None
+    def on_mouse_down(self, _x: float, _y: float, _button: str, _mods: dict = {}) -> "Coroutine[Any, Any, None] | None": return None
+    def on_mouse_up(self, _x: float, _y: float, _button: str, _mods: dict = {}) -> "Coroutine[Any, Any, None] | None": return None
+    def on_mouse_move(self, _x: float, _y: float, _buttons: list, _mods: dict = {}) -> "Coroutine[Any, Any, None] | None": return None
+    def on_command(self, _text: str) -> "Coroutine[Any, Any, None] | None": return None
+    def on_paste(self, _text: str) -> "Coroutine[Any, Any, None] | None": return None
+    def on_pipe_message(self, _pipe_id: str, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
+    def on_path_changed(self, _cwd: str) -> "Coroutine[Any, Any, None] | None": return None
+    def on_inject(self, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
+    def on_render_seed(self, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
+    def on_nav_back(self, _view_id: str) -> "Coroutine[Any, Any, None] | None":
         """Called when the host emits ``NavBack`` — user pressed Cmd+[ or the
         back arrow in the pane chrome. ``view_id`` is the view being navigated
         *back to* (the new top of stack, or empty string for root).
 
         The app should update its own view state to show ``view_id``, then call
-        ``ctx.emit.pop_nav()`` to remove the entry from the host stack.
+        ``self.emit.pop_nav()`` to remove the entry from the host stack.
         """
         return None
     def on_app_spawned(self, _pane_id: int, _type_id: str) -> None: pass
@@ -348,25 +356,25 @@ class App:
         context ids).
         """
 
-    def on_timer(self, _ctx: RenderContext, _timer_id: str) -> "Coroutine[Any, Any, None] | None": return None
-    def on_scroll(self, _ctx: RenderContext, _id: str, _offset_y: float) -> "Coroutine[Any, Any, None] | None": return None
-    def on_scroll_delta(self, _ctx: RenderContext, _delta_y: float) -> "Coroutine[Any, Any, None] | None": return None
-    def on_list_select(self, _ctx: "RenderContext", _id: str, _index: int) -> "Coroutine[Any, Any, None] | None":
+    def on_timer(self, _timer_id: str) -> "Coroutine[Any, Any, None] | None": return None
+    def on_scroll(self, _id: str, _offset_y: float) -> "Coroutine[Any, Any, None] | None": return None
+    def on_scroll_delta(self, _delta_y: float) -> "Coroutine[Any, Any, None] | None": return None
+    def on_list_select(self, _id: str, _index: int) -> "Coroutine[Any, Any, None] | None":
         """Called when a list_view selection changes via j/k/up/down."""
         return None
-    def on_list_activate(self, _ctx: "RenderContext", _id: str, _index: int) -> "Coroutine[Any, Any, None] | None":
+    def on_list_activate(self, _id: str, _index: int) -> "Coroutine[Any, Any, None] | None":
         """Called when Enter is pressed on a selected list_view item."""
         return None
-    def on_component_event(self, _ctx: RenderContext, _node_id: str, _event_type: str, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
-    def on_text_submitted(self, _ctx: RenderContext, _id: str, _text: str) -> "Coroutine[Any, Any, None] | None": return None
-    def on_file_picked(self, _ctx: RenderContext, _request_id: str, _paths: "list[str]") -> "Coroutine[Any, Any, None] | None":
+    def on_component_event(self, _node_id: str, _event_type: str, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
+    def on_text_submitted(self, _id: str, _text: str) -> "Coroutine[Any, Any, None] | None": return None
+    def on_file_picked(self, _request_id: str, _paths: "list[str]") -> "Coroutine[Any, Any, None] | None":
         """Called when the user selected one or more files in the picker.
 
-        ``_request_id`` matches the id passed to ``ctx.emit.open_file_picker``.
+        ``_request_id`` matches the id passed to ``self.emit.open_file_picker``.
         ``_paths`` is a list of absolute file paths chosen by the user.
         """
         return None
-    def on_file_pick_cancelled(self, _ctx: RenderContext, _request_id: str) -> "Coroutine[Any, Any, None] | None":
+    def on_file_pick_cancelled(self, _request_id: str) -> "Coroutine[Any, Any, None] | None":
         """Called when the user dismissed the file picker without selecting a file,
         or if the ``fs.pick`` capability was not declared.
         """
@@ -377,7 +385,7 @@ class App:
     vertical offset in logical pixels. Override to re-render content at the
     new position.
     """
-    def on_mcp_call(self, _ctx: RenderContext, _tool_name: str, _arguments: dict) -> "dict | Coroutine[Any, Any, dict] | None":
+    def on_mcp_call(self, _tool_name: str, _arguments: dict) -> "dict | Coroutine[Any, Any, dict] | None":
         """Called when an external MCP client calls a tool declared in [app.mcp].
 
         Override to handle the call and return a result dict. The result should
@@ -477,20 +485,6 @@ class App:
 
     # ── Internal ────────────────────────────────────────────────────────────
 
-    def _hook_param_count(self, hook_name: str) -> int:
-        """Return the number of non-self params for a hook override. Cached."""
-        cache = getattr(self, "_hook_pc_cache", None)
-        if cache is None:
-            cache = {}
-            object.__setattr__(self, "_hook_pc_cache", cache)
-        if hook_name not in cache:
-            method = getattr(type(self), hook_name, None)
-            if method is None:
-                cache[hook_name] = 0
-            else:
-                params = list(inspect.signature(method).parameters.values())
-                cache[hook_name] = len(params) - 1  # subtract self
-        return cache[hook_name]
 
     async def _handle_tool_call(self, ev: dict) -> None:
         """Dispatch a ``PlexiEvent::ToolCall`` to the registered handler.
@@ -555,9 +549,9 @@ class App:
         try:
             import inspect as _inspect
             if _inspect.iscoroutinefunction(self.on_mcp_call):
-                result = await self.on_mcp_call(self._make_ctx(), tool_name, arguments)
+                result = await self.on_mcp_call(tool_name, arguments)
             else:
-                result = self.on_mcp_call(self._make_ctx(), tool_name, arguments)
+                result = self.on_mcp_call(tool_name, arguments)
 
             if result is None:
                 _emit({
@@ -1001,7 +995,7 @@ class App:
                         self._text_submissions[tid] = value
                         if type(self).on_text_submitted is not App.on_text_submitted:
                             self._dispatch_hook_task(
-                                self.on_text_submitted, self._make_ctx(), tid, value
+                                self.on_text_submitted, tid, value
                             )
 
                 elif t == "run_update":
@@ -1041,13 +1035,7 @@ class App:
                     self.emit.info(f"sdk: default_background={self.default_background!r}")
                     if getattr(type(self), "_arg_specs", None):
                         self._parse_launch_args(self._make_ctx())
-                    _on_init_params = list(
-                        inspect.signature(type(self).on_init).parameters.values()
-                    )
-                    if len(_on_init_params) <= 1:
-                        await self._dispatch_hook(self.on_init)
-                    else:
-                        await self._dispatch_hook(self.on_init, self._make_ctx())
+                    await self._dispatch_hook(self.on_init)
 
                 elif t == "render":
                     import time as _time
@@ -1057,10 +1045,6 @@ class App:
                     frame_id = ev.get("frame_id", 0)
                     if "rect" in ev:
                         self._rect = ev["rect"]
-                    elif "width" in ev:
-                        # legacy compat
-                        self._rect = {"x": 0.0, "y": 0.0,
-                                      "w": ev["width"], "h": ev["height"]}
                     pending_clicks = list(self._click_buf)
                     self._click_buf.clear()
                     ctx = self._make_ctx(frame_id, elapsed=elapsed, clicks=pending_clicks)
@@ -1087,10 +1071,9 @@ class App:
                     ctx.frame_done()
 
                 elif t == "key":
-                    ctx = self._make_ctx()
                     key = _normalize_key(ev.get("key", ""))
                     if key == "escape":
-                        result = self.on_escape(ctx)
+                        result = self.on_escape()
                         if inspect.isawaitable(result):
                             handled = await result
                         else:
@@ -1098,68 +1081,38 @@ class App:
                         if not handled:
                             self.emit.close_self()
                     else:
-                        if self._hook_param_count("on_key") <= 2:
-                            self._dispatch_hook_task(self.on_key, key, ev.get("modifiers", {}))
-                        else:
-                            self._dispatch_hook_task(self.on_key, ctx, key, ev.get("modifiers", {}))
+                        self._dispatch_hook_task(self.on_key, key, ev.get("modifiers", {}))
 
                 elif t == "click":
                     self._click_buf.append((ev.get("x", 0.0), ev.get("y", 0.0)))
-                    ctx = self._make_ctx()
-                    if self._hook_param_count("on_click") <= 3:
-                        self._dispatch_hook_task(self.on_click, ev.get("x", 0.0), ev.get("y", 0.0),
-                                                 ev.get("button", "primary"))
-                    else:
-                        self._dispatch_hook_task(self.on_click, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
-                                                 ev.get("button", "primary"))
+                    self._dispatch_hook_task(self.on_click, ev.get("x", 0.0), ev.get("y", 0.0),
+                                             ev.get("button", "primary"))
 
                 elif t == "mouse_down":
-                    ctx = self._make_ctx()
-                    if self._hook_param_count("on_mouse_down") <= 4:
-                        await self._dispatch_hook(self.on_mouse_down, ev.get("x", 0.0), ev.get("y", 0.0),
-                                                  ev.get("button", "primary"), ev.get("modifiers", {}))
-                    else:
-                        await self._dispatch_hook(self.on_mouse_down, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
-                                                  ev.get("button", "primary"), ev.get("modifiers", {}))
+                    await self._dispatch_hook(self.on_mouse_down, ev.get("x", 0.0), ev.get("y", 0.0),
+                                              ev.get("button", "primary"), ev.get("modifiers", {}))
 
                 elif t == "mouse_up":
-                    ctx = self._make_ctx()
-                    if self._hook_param_count("on_mouse_up") <= 4:
-                        await self._dispatch_hook(self.on_mouse_up, ev.get("x", 0.0), ev.get("y", 0.0),
-                                                  ev.get("button", "primary"), ev.get("modifiers", {}))
-                    else:
-                        await self._dispatch_hook(self.on_mouse_up, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
-                                                  ev.get("button", "primary"), ev.get("modifiers", {}))
+                    await self._dispatch_hook(self.on_mouse_up, ev.get("x", 0.0), ev.get("y", 0.0),
+                                              ev.get("button", "primary"), ev.get("modifiers", {}))
 
                 elif t == "mouse_move":
                     self._mx = ev.get("x", 0.0)
                     self._my = ev.get("y", 0.0)
-                    ctx = self._make_ctx()
-                    if self._hook_param_count("on_mouse_move") <= 4:
-                        await self._dispatch_hook(self.on_mouse_move, ev.get("x", 0.0), ev.get("y", 0.0),
-                                                  ev.get("buttons", []), ev.get("modifiers", {}))
-                    else:
-                        await self._dispatch_hook(self.on_mouse_move, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
-                                                  ev.get("buttons", []), ev.get("modifiers", {}))
+                    await self._dispatch_hook(self.on_mouse_move, ev.get("x", 0.0), ev.get("y", 0.0),
+                                              ev.get("buttons", []), ev.get("modifiers", {}))
 
                 elif t == "command":
-                    ctx = self._make_ctx()
-                    self._dispatch_hook_task(self.on_command, ctx, ev.get("text", ""))
+                    self._dispatch_hook_task(self.on_command, ev.get("text", ""))
 
                 elif t == "paste":
-                    ctx = self._make_ctx()
-                    self._dispatch_hook_task(self.on_paste, ctx, ev.get("text", ""))
+                    self._dispatch_hook_task(self.on_paste, ev.get("text", ""))
 
                 elif t == "pipe_message":
-                    ctx = self._make_ctx()
-                    self._dispatch_hook_task(self.on_pipe_message, ctx, ev.get("pipe_id", ""), ev.get("payload"))
+                    self._dispatch_hook_task(self.on_pipe_message, ev.get("pipe_id", ""), ev.get("payload"))
 
                 elif t == "path_changed":
-                    ctx = self._make_ctx()
-                    if self._hook_param_count("on_path_changed") <= 1:
-                        self._dispatch_hook_task(self.on_path_changed, ev.get("cwd", ""))
-                    else:
-                        self._dispatch_hook_task(self.on_path_changed, ctx, ev.get("cwd", ""))
+                    self._dispatch_hook_task(self.on_path_changed, ev.get("cwd", ""))
 
                 elif t == "suspend":
                     await self._dispatch_hook(self.on_suspend)
@@ -1187,16 +1140,14 @@ class App:
 
                 elif t == "inject_state":
                     self._app_state = ev.get("payload") or {}
-                    ctx = self._make_ctx()
-                    self._dispatch_hook_task(self.on_inject, ctx, ev.get("payload", {}))
+                    self._dispatch_hook_task(self.on_inject, ev.get("payload", {}))
 
                 elif t == "render_seed":
                     # Headless-only: sent by `plexi app render --state` before the first
                     # Render event. Awaited so state is applied before on_render fires.
                     # Does not affect live inject behavior.
                     sys.stderr.write("plexi_sdk: render_seed received — applying headless seed state\n")
-                    ctx = self._make_ctx()
-                    await self._dispatch_hook(self.on_render_seed, ctx, ev.get("payload", {}))
+                    await self._dispatch_hook(self.on_render_seed, ev.get("payload", {}))
 
                 elif t == "midi_input_opened":
                     # Confirms an OpenMidiInput call landed a CoreMIDI source.
@@ -1212,11 +1163,7 @@ class App:
 
                 elif t == "timer":
                     timer_id = ev.get("timer_id", "")
-                    ctx = self._make_ctx()
-                    if self._hook_param_count("on_timer") <= 1:
-                        self._dispatch_hook_task(self.on_timer, timer_id)
-                    else:
-                        self._dispatch_hook_task(self.on_timer, ctx, timer_id)
+                    self._dispatch_hook_task(self.on_timer, timer_id)
 
                 elif t == "scroll_offset":
                     # Host-managed scroll region (#446): the user scrolled inside
@@ -1224,9 +1171,8 @@ class App:
                     # store the new offset and re-render at the translated position.
                     scroll_id = ev.get("id", "")
                     offset_y = float(ev.get("offset_y", 0.0))
-                    ctx = self._make_ctx()
                     try:
-                        await self._dispatch_hook(self.on_scroll, ctx, scroll_id, offset_y)
+                        await self._dispatch_hook(self.on_scroll, scroll_id, offset_y)
                     except Exception as e:
                         sys.stderr.write(f"on_scroll handler raised: {e}\n")
 
@@ -1250,9 +1196,8 @@ class App:
                                 )
                         self.emit.schedule_render()
                     else:
-                        ctx = self._make_ctx()
                         try:
-                            await self._dispatch_hook(self.on_scroll_delta, ctx, delta_y)
+                            await self._dispatch_hook(self.on_scroll_delta, delta_y)
                         except Exception as e:
                             sys.stderr.write(f"on_scroll_delta handler raised: {e}\n")
 
@@ -1268,8 +1213,7 @@ class App:
                     if _lid is None or _lidx is None:
                         sys.stderr.write(f"list_select event missing required fields: {ev}\n")
                     else:
-                        ctx = self._make_ctx()
-                        self._dispatch_hook_task(self.on_list_select, ctx, _lid, _lidx)
+                        self._dispatch_hook_task(self.on_list_select, _lid, _lidx)
 
                 elif t == "list_activate":
                     _lid = ev.get("id")
@@ -1277,8 +1221,7 @@ class App:
                     if _lid is None or _lidx is None:
                         sys.stderr.write(f"list_activate event missing required fields: {ev}\n")
                     else:
-                        ctx = self._make_ctx()
-                        self._dispatch_hook_task(self.on_list_activate, ctx, _lid, _lidx)
+                        self._dispatch_hook_task(self.on_list_activate, _lid, _lidx)
 
                 elif t == "app_spawned":
                     # Confirmation that a SpawnApp request succeeded. Apps that
@@ -1315,40 +1258,28 @@ class App:
                     # Navigation stack back event (#392). The host pops the top
                     # nav entry and sends this with the view_id the app should
                     # navigate back to (empty string = root view).
-                    ctx = self._make_ctx()
                     await self._dispatch_hook(
-                        self.on_nav_back, ctx, str(ev.get("view_id", ""))
+                        self.on_nav_back, str(ev.get("view_id", ""))
                     )
 
                 elif t == "file_picked":
                     # File picker result (#514) — user selected one or more files.
                     request_id = str(ev.get("request_id", ""))
                     paths: list[str] = list(ev.get("paths", []))
-                    ctx = self._make_ctx()
-                    await self._dispatch_hook(self.on_file_picked, ctx, request_id, paths)
+                    await self._dispatch_hook(self.on_file_picked, request_id, paths)
 
                 elif t == "file_pick_cancelled":
                     # File picker cancelled (#514) — dialog dismissed or capability denied.
                     request_id = str(ev.get("request_id", ""))
-                    ctx = self._make_ctx()
-                    await self._dispatch_hook(self.on_file_pick_cancelled, ctx, request_id)
+                    await self._dispatch_hook(self.on_file_pick_cancelled, request_id)
 
                 elif t == "component_event":
-                    ctx = self._make_ctx()
-                    if self._hook_param_count("on_component_event") <= 3:
-                        self._dispatch_hook_task(
-                            self.on_component_event,
-                            ev.get("node_id", ""),
-                            ev.get("event_type", ""),
-                            ev.get("payload"),
-                        )
-                    else:
-                        self._dispatch_hook_task(
-                            self.on_component_event, ctx,
-                            ev.get("node_id", ""),
-                            ev.get("event_type", ""),
-                            ev.get("payload"),
-                        )
+                    self._dispatch_hook_task(
+                        self.on_component_event,
+                        ev.get("node_id", ""),
+                        ev.get("event_type", ""),
+                        ev.get("payload"),
+                    )
 
                 elif t == "tool_call":
                     # v3.7 tool protocol (#399). Host asks this pane to execute

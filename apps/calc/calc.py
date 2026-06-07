@@ -165,7 +165,7 @@ class CalcApp(App):
                 self.pending_val = None
                 self.fresh = True
 
-    def on_escape(self, _ctx):
+    def on_escape(self):
         if self.display != "0" or self.pending_op is not None:
             self._press("C")
             return True

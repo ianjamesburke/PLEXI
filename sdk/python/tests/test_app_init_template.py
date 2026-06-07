@@ -30,7 +30,10 @@ def test_single_grow_spacer():
 def test_template_uses_view():
     src = TEMPLATE.read_text()
     assert "def view(self)" in src, "Template must use view() — not on_render()"
-    assert "def on_render" not in src, "Template must not use on_render (that's the canvas path)"
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "on_render":
+            raise AssertionError("Template must not define on_render (that's the canvas path)")
 
 
 def test_template_uses_self_state():

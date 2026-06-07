@@ -78,7 +78,7 @@ class TodoApp(App):
             self._selected = 0
         self._list.selected_idx = self._selected
 
-    def on_escape(self, _ctx):
+    def on_escape(self):
         if self._adding:
             self._adding = False
             return True

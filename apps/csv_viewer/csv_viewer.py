@@ -87,7 +87,7 @@ class CsvViewer(App):
             self._selected = max(0, min(len(self._files) - 1, int(payload["selected"]))) if self._files else 0
             self._file_list.selected_idx = self._selected
 
-    def on_escape(self, _ctx):
+    def on_escape(self):
         if self._mode == "detail":
             self._mode = "list"
             return True

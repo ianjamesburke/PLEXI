@@ -1,4 +1,4 @@
-"""Tests for ctx-free on_init — v2 apps use def on_init(self) with no ctx param."""
+"""Tests for on_init lifecycle hook."""
 
 import asyncio
 import json
@@ -26,8 +26,8 @@ def _drive(app):
                     pass
 
 
-def test_on_init_without_ctx_does_not_raise():
-    """on_init(self) with no ctx param must not cause TypeError."""
+def test_on_init_runs():
+    """on_init(self) runs and can set state."""
     class MyApp(App):
         def on_init(self):
             self.x = 42
@@ -40,23 +40,8 @@ def test_on_init_without_ctx_does_not_raise():
     assert getattr(app, "x", None) == 42, "on_init body should have run"
 
 
-def test_on_init_with_ctx_still_works():
-    """on_init(self, ctx) old style must keep working."""
-    ctx_types = []
-
-    class MyApp(App):
-        async def on_init(self, ctx):
-            ctx_types.append(type(ctx).__name__)
-
-        def view(self):
-            return Column([AppBar("Test")])
-
-    _drive(MyApp())
-    assert ctx_types == ["RenderContext"]
-
-
-def test_on_init_async_without_ctx():
-    """async def on_init(self) with no ctx param."""
+def test_on_init_async():
+    """async def on_init(self) works."""
     ran = []
 
     class MyApp(App):

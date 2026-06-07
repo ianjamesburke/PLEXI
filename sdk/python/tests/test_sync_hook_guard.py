@@ -84,13 +84,13 @@ def test_sync_hook_dispatch_raises_for_blocking_emit():
     from plexi_sdk._app import App
 
     class BadApp(App):
-        def on_init(self, ctx):
+        def on_init(self):
             self.emit.capability_request("net.http")
 
     app = BadApp()
 
     async def _run():
         with pytest.raises(TypeError, match="async def"):
-            await app._dispatch_hook(app.on_init, None)
+            await app._dispatch_hook(app.on_init)
 
     asyncio.run(_run())

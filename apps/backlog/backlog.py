@@ -432,7 +432,7 @@ class BacklogApp(App):
 
     # ── Keys ─────────────────────────────────────────────────────────────────────
 
-    def on_escape(self, _ctx):
+    def on_escape(self):
         self.status = ""
         if self.in_add:
             self.in_add = False

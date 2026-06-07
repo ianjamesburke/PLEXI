@@ -19,19 +19,18 @@ _HOOK_APP = textwrap.dedent("""
     from plexi_sdk import App, RenderContext
 
     class HookApp(App):
-        def on_init(self, ctx: RenderContext) -> None:
+        def on_init(self) -> None:
             self._hook_calls: list[tuple[str, str]] = []
             self._render_count = 0
 
         def on_render(self, ctx: RenderContext) -> None:
             self._render_count += 1
-            # Render a TextInput — do NOT act on return value (migrated pattern)
             ctx.text_input("field1", x=10, y=10, w=200, placeholder="enter text")
             count = len(self._hook_calls)
             ctx.text(10, 50, f"hook_calls={count}", size=14, color="#ffffff")
             ctx.text(10, 70, f"renders={self._render_count}", size=14, color="#ffffff")
 
-        async def on_text_submitted(self, ctx: RenderContext, id: str, text: str) -> None:
+        async def on_text_submitted(self, id: str, text: str) -> None:
             self._hook_calls.append((id, text))
 
     HookApp().run()
@@ -42,7 +41,7 @@ _COMPAT_APP = textwrap.dedent("""
     from plexi_sdk import App, RenderContext
 
     class CompatApp(App):
-        def on_init(self, ctx: RenderContext) -> None:
+        def on_init(self) -> None:
             self._last_submitted: str | None = None
 
         def on_render(self, ctx: RenderContext) -> None:

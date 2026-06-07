@@ -154,17 +154,17 @@ class BallsApp(App):
     default_background = "#0d0d1a"
     count: Arg[int] = Arg(positional=True, type=int, default=10)
 
-    def on_init(self, ctx: RenderContext) -> None:
+    def on_init(self) -> None:
         count = max(1, min(self.count, MAX_BALLS))
         self.balls: list[Ball] = []
-        w, h = ctx.w, ctx.h
+        w, h = self._rect["w"], self._rect["h"]
         for i in range(count):
             ball = _new_ball(0, 0, i)
             ball.x = random.uniform(ball.r, w - ball.r)
             ball.y = random.uniform(ball.r, h * 0.6)
             self.balls.append(ball)
         self._canvas = _BallCanvas(self)
-        ctx.emit.info(f"balls: init complete, spawned {count} balls")
+        self.emit.info(f"balls: init complete, spawned {count} balls")
 
     def on_render(self, ctx: RenderContext) -> None:
         count = len(self.balls)
@@ -174,18 +174,18 @@ class BallsApp(App):
             FooterKeys([("click", "add/remove")]),
         ]))
 
-    def on_click(self, ctx: RenderContext, x: float, y: float, _button: str) -> None:
+    def on_click(self, x: float, y: float, _button: str) -> None:
         # Click on an existing ball → remove it (check largest/topmost first)
         for i in range(len(self.balls) - 1, -1, -1):
             b = self.balls[i]
             if (x - b.x) ** 2 + (y - b.y) ** 2 <= b.r ** 2:
                 self.balls.pop(i)
-                ctx.emit.info(f"balls: removed ball at ({x:.0f}, {y:.0f}), count={len(self.balls)}")
+                self.emit.info(f"balls: removed ball at ({x:.0f}, {y:.0f}), count={len(self.balls)}")
                 return
         # Click on empty space → spawn at cursor
         if len(self.balls) < MAX_BALLS:
             self.balls.append(_new_ball(x, y, len(self.balls), vy=random.uniform(-300.0, -120.0)))
-            ctx.emit.info(f"balls: spawned ball at ({x:.0f}, {y:.0f}), count={len(self.balls)}")
+            self.emit.info(f"balls: spawned ball at ({x:.0f}, {y:.0f}), count={len(self.balls)}")
 
 
 if __name__ == "__main__":

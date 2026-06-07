@@ -75,7 +75,7 @@ class WikiApp(App):
                     self._extract, tone="body", max_lines=500,
                 )
 
-    def on_escape(self, _ctx):
+    def on_escape(self):
         if self._mode == "article":
             self._mode = "results"
             self.emit.schedule_render()

@@ -435,7 +435,7 @@ class StatsApp(App):
             gap=0,
         ))
 
-    def on_escape(self, _ctx):
+    def on_escape(self):
         if self.view_stack:
             self.view_root = self.view_stack.pop()
             self.emit.info(f"stats: navigated up to {self.view_root.path}")

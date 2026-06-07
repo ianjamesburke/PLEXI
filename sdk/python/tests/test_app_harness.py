@@ -12,7 +12,7 @@ _COUNTER_APP = textwrap.dedent("""
     from plexi_sdk import App, RenderContext
 
     class CounterApp(App):
-        def on_init(self, ctx: RenderContext) -> None:
+        def on_init(self) -> None:
             self._count = 0
 
         def on_render(self, ctx: RenderContext) -> None:
@@ -20,7 +20,7 @@ _COUNTER_APP = textwrap.dedent("""
             ctx.rect(0, 0, 100, 50, fill="#ff0000")
             ctx.text(10, 10, f"count={self._count}", size=14, color="#ffffff")
 
-        def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+        def on_key(self, key: str, mods: dict) -> None:
             if key == "enter":
                 self._count += 1
 
