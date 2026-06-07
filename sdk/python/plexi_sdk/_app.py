@@ -477,6 +477,21 @@ class App:
 
     # ── Internal ────────────────────────────────────────────────────────────
 
+    def _hook_param_count(self, hook_name: str) -> int:
+        """Return the number of non-self params for a hook override. Cached."""
+        cache = getattr(self, "_hook_pc_cache", None)
+        if cache is None:
+            cache = {}
+            object.__setattr__(self, "_hook_pc_cache", cache)
+        if hook_name not in cache:
+            method = getattr(type(self), hook_name, None)
+            if method is None:
+                cache[hook_name] = 0
+            else:
+                params = list(inspect.signature(method).parameters.values())
+                cache[hook_name] = len(params) - 1  # subtract self
+        return cache[hook_name]
+
     async def _handle_tool_call(self, ev: dict) -> None:
         """Dispatch a ``PlexiEvent::ToolCall`` to the registered handler.
 
@@ -1083,30 +1098,49 @@ class App:
                         if not handled:
                             self.emit.close_self()
                     else:
-                        self._dispatch_hook_task(self.on_key, ctx, key, ev.get("modifiers", {}))
+                        if self._hook_param_count("on_key") <= 2:
+                            self._dispatch_hook_task(self.on_key, key, ev.get("modifiers", {}))
+                        else:
+                            self._dispatch_hook_task(self.on_key, ctx, key, ev.get("modifiers", {}))
 
                 elif t == "click":
                     self._click_buf.append((ev.get("x", 0.0), ev.get("y", 0.0)))
                     ctx = self._make_ctx()
-                    self._dispatch_hook_task(self.on_click, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
-                                             ev.get("button", "primary"))
+                    if self._hook_param_count("on_click") <= 3:
+                        self._dispatch_hook_task(self.on_click, ev.get("x", 0.0), ev.get("y", 0.0),
+                                                 ev.get("button", "primary"))
+                    else:
+                        self._dispatch_hook_task(self.on_click, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
+                                                 ev.get("button", "primary"))
 
                 elif t == "mouse_down":
                     ctx = self._make_ctx()
-                    await self._dispatch_hook(self.on_mouse_down, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
-                                              ev.get("button", "primary"), ev.get("modifiers", {}))
+                    if self._hook_param_count("on_mouse_down") <= 4:
+                        await self._dispatch_hook(self.on_mouse_down, ev.get("x", 0.0), ev.get("y", 0.0),
+                                                  ev.get("button", "primary"), ev.get("modifiers", {}))
+                    else:
+                        await self._dispatch_hook(self.on_mouse_down, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
+                                                  ev.get("button", "primary"), ev.get("modifiers", {}))
 
                 elif t == "mouse_up":
                     ctx = self._make_ctx()
-                    await self._dispatch_hook(self.on_mouse_up, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
-                                              ev.get("button", "primary"), ev.get("modifiers", {}))
+                    if self._hook_param_count("on_mouse_up") <= 4:
+                        await self._dispatch_hook(self.on_mouse_up, ev.get("x", 0.0), ev.get("y", 0.0),
+                                                  ev.get("button", "primary"), ev.get("modifiers", {}))
+                    else:
+                        await self._dispatch_hook(self.on_mouse_up, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
+                                                  ev.get("button", "primary"), ev.get("modifiers", {}))
 
                 elif t == "mouse_move":
                     self._mx = ev.get("x", 0.0)
                     self._my = ev.get("y", 0.0)
                     ctx = self._make_ctx()
-                    await self._dispatch_hook(self.on_mouse_move, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
-                                              ev.get("buttons", []), ev.get("modifiers", {}))
+                    if self._hook_param_count("on_mouse_move") <= 4:
+                        await self._dispatch_hook(self.on_mouse_move, ev.get("x", 0.0), ev.get("y", 0.0),
+                                                  ev.get("buttons", []), ev.get("modifiers", {}))
+                    else:
+                        await self._dispatch_hook(self.on_mouse_move, ctx, ev.get("x", 0.0), ev.get("y", 0.0),
+                                                  ev.get("buttons", []), ev.get("modifiers", {}))
 
                 elif t == "command":
                     ctx = self._make_ctx()
@@ -1122,7 +1156,10 @@ class App:
 
                 elif t == "path_changed":
                     ctx = self._make_ctx()
-                    self._dispatch_hook_task(self.on_path_changed, ctx, ev.get("cwd", ""))
+                    if self._hook_param_count("on_path_changed") <= 1:
+                        self._dispatch_hook_task(self.on_path_changed, ev.get("cwd", ""))
+                    else:
+                        self._dispatch_hook_task(self.on_path_changed, ctx, ev.get("cwd", ""))
 
                 elif t == "suspend":
                     await self._dispatch_hook(self.on_suspend)
@@ -1176,7 +1213,10 @@ class App:
                 elif t == "timer":
                     timer_id = ev.get("timer_id", "")
                     ctx = self._make_ctx()
-                    self._dispatch_hook_task(self.on_timer, ctx, timer_id)
+                    if self._hook_param_count("on_timer") <= 1:
+                        self._dispatch_hook_task(self.on_timer, timer_id)
+                    else:
+                        self._dispatch_hook_task(self.on_timer, ctx, timer_id)
 
                 elif t == "scroll_offset":
                     # Host-managed scroll region (#446): the user scrolled inside
@@ -1295,12 +1335,20 @@ class App:
 
                 elif t == "component_event":
                     ctx = self._make_ctx()
-                    self._dispatch_hook_task(
-                        self.on_component_event, ctx,
-                        ev.get("node_id", ""),
-                        ev.get("event_type", ""),
-                        ev.get("payload"),
-                    )
+                    if self._hook_param_count("on_component_event") <= 3:
+                        self._dispatch_hook_task(
+                            self.on_component_event,
+                            ev.get("node_id", ""),
+                            ev.get("event_type", ""),
+                            ev.get("payload"),
+                        )
+                    else:
+                        self._dispatch_hook_task(
+                            self.on_component_event, ctx,
+                            ev.get("node_id", ""),
+                            ev.get("event_type", ""),
+                            ev.get("payload"),
+                        )
 
                 elif t == "tool_call":
                     # v3.7 tool protocol (#399). Host asks this pane to execute
