@@ -12,18 +12,13 @@ class __CLASS_NAME__(App):
     def on_render(self, ctx: RenderContext) -> None:
         ctx.render(Column([
             AppBar(title="__DISPLAY_NAME__"),
-            Spacer(flex=1),
             Label(str(self.count), bold=True),
-            Spacer(flex=1),
-            FooterKeys(
-                divider=False,
-                shortcuts=[
-                    ("+", "increment"),
-                    ("-", "decrement"),
-                    ("r", "reset"),
-                    ("esc", "close"),
-                ],
-            ),
+            Spacer(grow=True),
+            FooterKeys(shortcuts=[
+                ("+", "increment"),
+                ("-", "decrement"),
+                ("r", "reset"),
+            ]),
         ]))
 
     async def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
