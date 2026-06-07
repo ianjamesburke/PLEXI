@@ -57,6 +57,25 @@ Make what exists feel finished before adding new systems. These are the first th
 
 The biggest and most important layer. PGAP becomes L1-only declarative UI. This is the "100 lines of Python, ChatGPT gets it right" milestone.
 
+### ⚠️ 3-OVERHAUL: SDK v2 Overhaul (TOP PRIORITY — do before anything else in Layer 3)
+
+The Python SDK has two render paths, ctx leaking into event handlers, a broken scaffold template, and no canonical state API. An agent reading the template today cannot produce a correct app. Fix this before any new apps ship.
+
+**Full plan:** `docs/superpowers/plans/2026-06-07-sdk-overhaul.md`
+
+- [ ] Emergency template fix — broken layout, invisible footer (`divider=False` bug)
+- [ ] `App.state` property — `self.state.get/save` replaces `ctx.load_state/save_state`
+- [ ] `view()` as primary hook — apps return component tree, SDK dispatches it
+- [ ] `on_init(self)` ctx-free dispatch — no ctx needed at init time
+- [ ] Rewrite scaffold template with v2 API
+- [ ] Migrate all Core 9 apps to v2 API
+- [ ] `plexi pane key <id> <key>` CLI command — agent dev loop (Playwright for apps)
+- [ ] `docs/sdk-v2.md` — golden developer reference
+
+**Done when:** An agent can read `docs/sdk-v2.md` + the `app_init` template and produce a working, visually correct Plexi app on the first try. All Core 9 apps use the v2 pattern.
+
+---
+
 ### 3a: Protocol redesign
 
 Current state: `UiNode` enum has 21 variants. L1 layout components (AppBar, FooterKeys, Footer, Section, Label, Spacer, Divider, Card, SelectList) added in v0.0.606. Host-side renderers for all L1 variants live in `render_components.rs`. SDK `to_node()` enables automatic L1 tree emission with L0 fallback for custom canvas components.
