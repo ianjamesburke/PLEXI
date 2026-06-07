@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Kraken — a text-adventure stress test for inventory-conditional rendering."""
 from plexi_sdk import App
-from plexi_sdk.ui import AppBar, Card, Column, FooterKeys, Label, Section, Spacer
+from plexi_sdk.ui import AppBar, Card, Column, FooterKeys, Label, Spacer
 
 
 NODES = {
@@ -38,11 +38,7 @@ class Kraken(App):
         node = NODES.get(self.node, NODES["wake_up"])
         children = [
             AppBar(title=f"Kraken: {node['title']}"),
-            Card(content=[
-                Section(title="", content=[
-                    Label(node["text"]),
-                ]),
-            ]),
+            Card(children=[Label(node["text"])]),
             Spacer(grow=True),
         ]
 
