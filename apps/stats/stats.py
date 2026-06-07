@@ -21,7 +21,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from plexi_sdk import App, RenderContext, dim
+from plexi_sdk import App, dim
 from plexi_sdk.ui import (
     Column, AppBar, FooterKeys, Component,
     TEXT_HINT, TEXT_CAPTION, TEXT_BODY,
@@ -249,7 +249,7 @@ class _StatsCanvas(Component):
     def measure(self, _avail_w: float) -> float:
         return 0.0
 
-    def render(self, ctx: RenderContext, x: float, y: float, w: float, h: float) -> None:
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         app = self._app
         # Store canvas y-offset so on_click can translate global coords
         app._canvas_y = y
@@ -356,7 +356,7 @@ class _StatsCanvas(Component):
 
 class StatsApp(App):
 
-    async def on_init(self, ctx: RenderContext) -> None:
+    async def on_init(self) -> None:
         self.root: TreeNode | None = None
         self.view_root: TreeNode | None = None
         self.view_stack: list[TreeNode] = []
@@ -369,10 +369,10 @@ class StatsApp(App):
         self.highlight_path: str | None = None
         self._canvas_y: float = 0.0
         self._canvas = _StatsCanvas(self)
-        self._load(ctx)
+        self._load()
         self.emit.info("stats: initialized")
 
-    def _load(self, ctx: RenderContext) -> None:
+    def _load(self) -> None:
         self.events_path = _resolve_events_path()
         if not self.events_path:
             self.emit.warn("stats: no events.jsonl found")
@@ -417,9 +417,9 @@ class StatsApp(App):
                         break
             self.timeline.append((start_frac, end_frac, cwd, color_idx))
 
-        ctx.status_summary(f"{_fmt_duration(self.total_time)} active")
+        self.emit.status_summary(f"{_fmt_duration(self.total_time)} active")
 
-    def on_render(self, ctx: RenderContext) -> None:
+    def on_render(self, ctx) -> None:
         subtitle = (
             f"{_fmt_duration(self.total_time)} active · "
             f"{self.total_visits} visits · "
@@ -443,24 +443,24 @@ class StatsApp(App):
             return True
         return False
 
-    def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
+    def on_key(self, key: str, _mods: dict) -> None:
         if key == "r":
-            self._load(ctx)
+            self._load()
             self.emit.info("stats: refreshed")
-            ctx.emit.schedule_render(0)
+            self.emit.schedule_render(0)
         elif key == "backspace":
             if self.view_stack:
                 self.view_root = self.view_stack.pop()
                 self.emit.info(f"stats: navigated up to {self.view_root.path}")
-                ctx.emit.schedule_render(0)
+                self.emit.schedule_render(0)
 
-    def on_click(self, ctx: RenderContext, x: float, y: float, _button: str) -> None:
-        w = ctx.w
+    def on_click(self, x: float, y: float, _button: str) -> None:
+        w = self.w
         # Translate global y to canvas-local y
         local_y = y - self._canvas_y
 
         # Determine timeline bounds in canvas-local space
-        canvas_h = ctx.h - self._canvas_y
+        canvas_h = self.h - self._canvas_y
         # canvas renders: treemap then stats bar then timeline at the bottom
         tl_local_y = canvas_h - TIMELINE_H
 
@@ -473,7 +473,7 @@ class StatsApp(App):
                     if start_frac <= frac <= end_frac:
                         self.highlight_path = cwd
                         self.emit.info(f"stats: highlighted {cwd}")
-                        ctx.emit.schedule_render(0)
+                        self.emit.schedule_render(0)
                         break
             return
 
@@ -484,7 +484,7 @@ class StatsApp(App):
                     self.view_stack.append(self.view_root)
                     self.view_root = node
                     self.emit.info(f"stats: drilled into {node.path}")
-                    ctx.emit.schedule_render(0)
+                    self.emit.schedule_render(0)
                 break
 
 

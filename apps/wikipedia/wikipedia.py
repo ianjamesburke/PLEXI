@@ -19,7 +19,7 @@ import threading
 import urllib.parse
 
 from plexi_sdk import (
-    App, RenderContext, CapabilityDeniedError,
+    App, CapabilityDeniedError,
 )
 from plexi_sdk.ui import (
     Column, AppBar, Spacer, Footer, FooterKeys,
@@ -31,7 +31,7 @@ EXTRACT_API = "https://en.wikipedia.org/api/rest_v1/page/summary/"
 
 
 class WikiApp(App):
-    async def on_init(self, _ctx: RenderContext) -> None:
+    async def on_init(self) -> None:
         self._query = ""
         self._results: list[str] = []
         self._selected = 0
@@ -57,7 +57,7 @@ class WikiApp(App):
             self._error_msg = "Network access denied. Search requires net.http."
             self.emit.warn("wikipedia: net.http capability denied")
 
-    def on_inject(self, _ctx: RenderContext, payload: dict) -> None:
+    def on_inject(self, payload: dict) -> None:
         """Layer-1 test seam — seed mode/query/results/extract without network."""
         if isinstance(payload, dict):
             if "mode" in payload:
@@ -86,7 +86,7 @@ class WikiApp(App):
             return True
         return False
 
-    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
+    def on_key(self, key: str, _mods: dict) -> None:
         if self._mode == "results":
             if self._results_list.handle_key(key):
                 self._selected = self._results_list.selected_idx
@@ -191,7 +191,7 @@ class WikiApp(App):
             ("esc", "back to results"),
         ])
 
-    def on_render(self, ctx: RenderContext) -> None:
+    def on_render(self, ctx) -> None:
         # Check for search submission from TextInput
         if self._search_input.submitted is not None:
             query = self._search_input.submitted.strip()

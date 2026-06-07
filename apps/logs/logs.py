@@ -19,7 +19,7 @@ Patterns demonstrated:
 import os
 import re
 
-from plexi_sdk import App, RenderContext
+from plexi_sdk import App
 from plexi_sdk.ui import (
     TEXT_HINT, TEXT_CAPTION,
     SPACE_SM,
@@ -123,7 +123,7 @@ _APPBAR_H = AppBar.BAND_H + AppBar.DIVIDER_H
 
 
 class LogsApp(App):
-    def on_init(self, ctx: RenderContext) -> None:
+    def on_init(self) -> None:
         self._lines:       list[LogLine] = []
         self._filter_idx:  int   = 0
         self._scroll:      float = 0.0
@@ -139,17 +139,17 @@ class LogsApp(App):
         self._copy_row:    int            = 0    # active cursor / drag end
         self._copy_anchor: "int | None"   = None  # selection start; None = single row
         self._is_dragging: bool           = False
-        ctx.emit.set_mouse_tracking(True)
-        ctx.status_summary("Logs")
-        ctx.set_timer(TIMER_ID, 50)
+        self.emit.set_mouse_tracking(True)
+        self.emit.status_summary("Logs")
+        self.emit.set_timer(TIMER_ID, 50)
         self.emit.info(f"logs: ready — {LOG_PATH}")
 
-    def on_timer(self, ctx: RenderContext, timer_id: str) -> None:
+    def on_timer(self, timer_id: str) -> None:
         if timer_id != TIMER_ID:
             return
         self._lines = _read_log()
         self._refresh_targets()
-        ctx.set_timer(TIMER_ID, POLL_MS)
+        self.emit.set_timer(TIMER_ID, POLL_MS)
 
     def _refresh_targets(self) -> None:
         """Rebuild the unique target list; preserve current selection if still valid."""
@@ -166,7 +166,7 @@ class LogsApp(App):
         except ValueError:
             self._target_idx = 0
 
-    def on_text_submitted(self, _ctx: RenderContext, id: str, text: str) -> None:
+    def on_text_submitted(self, id: str, text: str) -> None:
         if id == "search":
             self._search_q    = text.strip()
             self._search_mode = False
@@ -194,7 +194,7 @@ class LogsApp(App):
             return True
         return False
 
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
+    def on_key(self, key: str, mods: dict) -> None:
         shift = mods.get("shift", False)
 
         # ── search mode: host owns the text field ────────────────────────
@@ -216,7 +216,7 @@ class LogsApp(App):
                 if filtered:
                     lo, hi = self._copy_range(len(filtered))
                     text = "\n".join(filtered[i].as_text() for i in range(lo, hi + 1))
-                    ctx.copy_to_clipboard(text)
+                    self.emit.copy_to_clipboard(text)
                     self.emit.info(f"logs: copied {hi - lo + 1} line(s) to clipboard")
                 self._copy_mode   = False
                 self._copy_anchor = None
@@ -254,7 +254,7 @@ class LogsApp(App):
                 self._copy_row    = min(self._copy_row, len(filtered) - 1)
                 self._copy_anchor = None
 
-    def on_mouse_down(self, _ctx: RenderContext, _x: float, y: float, button: str, mods: dict = {}) -> None:
+    def on_mouse_down(self, _x: float, y: float, button: str, mods: dict = {}) -> None:
         if button not in ("left", "primary"):
             return
         row = self._row_at_y(y)
@@ -270,7 +270,7 @@ class LogsApp(App):
             self._copy_row    = row
             self.emit.info(f"logs: mouse select started at row {row}")
 
-    def on_mouse_move(self, _ctx: RenderContext, _x: float, y: float, buttons: list, _mods: dict = {}) -> None:
+    def on_mouse_move(self, _x: float, y: float, buttons: list, _mods: dict = {}) -> None:
         if not self._is_dragging or not any(b in buttons for b in ("left", "primary")):
             self._is_dragging = False
             return
@@ -279,7 +279,7 @@ class LogsApp(App):
             self._copy_row = row
             self._ensure_copy_row_visible()
 
-    def on_mouse_up(self, _ctx: RenderContext, _x: float, _y: float, button: str, _mods: dict = {}) -> None:
+    def on_mouse_up(self, _x: float, _y: float, button: str, _mods: dict = {}) -> None:
         if button in ("left", "primary"):
             self._is_dragging = False
 
@@ -364,7 +364,7 @@ class LogsApp(App):
             (["y"], "copy"),
         ]
 
-    def on_render(self, ctx: RenderContext) -> None:
+    def on_render(self, ctx) -> None:
         w, h = ctx.w, ctx.h
         filtered = self._filtered()
 

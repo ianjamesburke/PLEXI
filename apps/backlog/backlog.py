@@ -34,7 +34,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
-from plexi_sdk import App, RenderContext, Arg, TextEdit
+from plexi_sdk import App, Arg, TextEdit
 from plexi_sdk.ui import (
     AppBar, Column, Component, Footer, FooterKeys,
     SelectList,
@@ -136,8 +136,8 @@ class _TwoPaneBody(Component):
 class BacklogApp(App):
     global_only: Arg[bool] = Arg("-g", "--global", dest="global_only", type=bool, default=False)
 
-    def on_init(self, ctx: RenderContext) -> None:
-        self.backlog_dir = Path(ctx.workspace_root) / ".plexi" / "backlog"
+    def on_init(self) -> None:
+        self.backlog_dir = Path(self.workspace_root) / ".plexi" / "backlog"
         self.channel_dir = _detect_channel_backlog_dir()
         self.items: list = []
         self._source: dict = {}
@@ -297,20 +297,20 @@ class BacklogApp(App):
 
     # ── Component events (TextEdit) ────────────────────────────────────────────
 
-    def on_component_event(self, ctx, node_id, event_type, payload):
+    def on_component_event(self, node_id, event_type, payload):
         value = (payload or {}).get("value", "")
         if node_id == "backlog-add":
             if event_type == "change":
                 self._add_value = value
             elif event_type == "submit":
-                ctx.info(f"backlog: add submit: {value!r}")
+                self.emit.info(f"backlog: add submit: {value!r}")
                 self._create_item(value)
                 self._add_value = ""
         elif node_id == "backlog-edit":
             if event_type == "change":
                 self._edit_value = value
             elif event_type == "submit":
-                ctx.info(f"backlog: edit submit: {value!r}")
+                self.emit.info(f"backlog: edit submit: {value!r}")
                 self._rename_item(value)
 
     def _rename_item(self, new_title: str) -> None:
@@ -361,7 +361,7 @@ class BacklogApp(App):
 
     # ── Render ───────────────────────────────────────────────────────────────────
 
-    def on_render(self, ctx: RenderContext) -> None:
+    def on_render(self, ctx) -> None:
         w, h = ctx.w, ctx.h
         title = "backlog (global)" if self.global_only else "backlog"
         item_count = len(self.filtered)
@@ -453,7 +453,7 @@ class BacklogApp(App):
             return True
         return False
 
-    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
+    def on_key(self, key: str, _mods: dict) -> None:
         self.status = ""   # clear on any key
 
         # ── Add-item mode (host owns the TextEdit buffer) ────────────────────────

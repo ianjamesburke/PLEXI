@@ -26,7 +26,7 @@ from pathlib import Path
 
 PLEXI_BINARY = os.environ.get("PLEXI_BINARY", "plexi-alpha")
 
-from plexi_sdk import App, RenderContext
+from plexi_sdk import App
 from plexi_sdk.ui import (
     Column, AppBar, ChatBubble, Scrollable, Spacer,
     FooterKeys, TextInput, Label,
@@ -42,7 +42,7 @@ _THINKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇
 
 
 class AssistantApp(App):
-    def on_init(self, ctx: RenderContext) -> None:
+    def on_init(self) -> None:
         self._messages: list[dict] = []  # {role, content}
         self._streaming_text = ""
         self._is_streaming = False
@@ -50,11 +50,11 @@ class AssistantApp(App):
         self._input = TextInput("chat-input", placeholder="Message assistant…", height=56.0)
         self._scroll = Scrollable(child=Spacer())  # replaced each render
         self._session_id = _new_session_id()
-        self._sessions_dir: Path | None = _resolve_sessions_dir(ctx.workspace_root)
+        self._sessions_dir: Path | None = _resolve_sessions_dir(self.workspace_root)
         self._load_latest_session()
         self._register_tools()
         self._register_cli_tools()
-        ctx.info(f"AssistantApp ready — model={self._model_tier} sessions dir: {self._sessions_dir}")
+        self.emit.info(f"AssistantApp ready — model={self._model_tier} sessions dir: {self._sessions_dir}")
 
     # ── Tool registration (ExposeTools) ────────────────────────────────────────
 
@@ -369,7 +369,7 @@ class AssistantApp(App):
             children.append(Label("Send a message to start.", tone="hint"))
         return Column(children, padding=0.0, padding_top=0.0, gap=8.0)
 
-    def on_render(self, ctx: RenderContext) -> None:
+    def on_render(self, ctx) -> None:
         self._scroll.child = self._build_chat_column()
         # Auto-scroll to bottom on new content
         self._scroll.scroll_offset = max(0.0, self._scroll._child_h - self._scroll._avail_h)
@@ -402,7 +402,7 @@ class AssistantApp(App):
         self.emit.info(f"model tier → {self._model_tier}")
         self.emit.schedule_render()
 
-    def on_key(self, _ctx: RenderContext, key: str, mods: dict) -> None:
+    def on_key(self, key: str, mods: dict) -> None:
         if self._scroll.handle_key(key):
             self.emit.schedule_render()
             return

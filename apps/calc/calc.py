@@ -16,6 +16,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
 
 from plexi_sdk import App, RenderContext
+from plexi_sdk._theme import theme
 from plexi_sdk.ui import (
     Column, Card, AppBar, Heading, FooterKeys, ButtonRow, Spacer, Component,
     SPACE_SM, SPACE_MD,
@@ -74,31 +75,30 @@ class ButtonGrid(Component):
 
 
 class CalcApp(App):
-    def on_init(self, ctx: RenderContext) -> None:
+    def on_init(self) -> None:
         self.display = "0"
         self.pending_op: str | None = None
         self.pending_val: float | None = None
         self.fresh = True  # next digit starts a new number
 
-        ctx.emit.set_mouse_tracking(True)
+        self.emit.set_mouse_tracking(True)
 
-        # Create all ButtonRow widgets once; stable across renders.
         self._btns: dict[str, ButtonRow] = {}
         for label, _, _ in BUTTONS:
             if label in self._btns:
-                continue  # "." only appears once, but guard for safety
+                continue
             if _is_op(label):
-                fill = ctx.theme.accent
-                hover_fill = ctx.theme.highlight
-                text_color = ctx.theme.bg
+                fill = theme.accent
+                hover_fill = theme.highlight
+                text_color = theme.bg
             elif _is_clear(label):
-                fill = ctx.theme.danger
-                hover_fill = ctx.theme.surface
-                text_color = ctx.theme.bg
+                fill = theme.danger
+                hover_fill = theme.surface
+                text_color = theme.bg
             else:
-                fill = ctx.theme.surface
-                hover_fill = ctx.theme.highlight
-                text_color = ctx.theme.fg
+                fill = theme.surface
+                hover_fill = theme.highlight
+                text_color = theme.fg
 
             self._btns[label] = ButtonRow(
                 id=f"btn_{label}",
@@ -111,7 +111,7 @@ class CalcApp(App):
             )
 
         self._grid = ButtonGrid(self._btns)
-        ctx.info("CalcApp ready (L1)")
+        self.emit.info("CalcApp ready (L1)")
 
     def _press(self, label: str) -> None:
         if label.isdigit():
@@ -197,7 +197,7 @@ class CalcApp(App):
             return
         self.display = self.display[:-1] or "0"
 
-    def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
+    def on_key(self, key: str, _mods: dict) -> None:
         if key in "0123456789":
             self._press(key)
         elif key == ".":
@@ -215,7 +215,7 @@ class CalcApp(App):
         elif key == "backspace":
             self._backspace()
         else:
-            ctx.debug(f"calc: unhandled key {key!r}")
+            self.emit.debug(f"calc: unhandled key {key!r}")
 
 
 CalcApp().run()

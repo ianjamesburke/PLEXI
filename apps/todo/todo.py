@@ -15,7 +15,7 @@ Patterns demonstrated:
 import json
 import pathlib
 
-from plexi_sdk import App, RenderContext
+from plexi_sdk import App
 from plexi_sdk.ui import (
     Column, AppBar, Section, Spacer, FooterKeys,
     SelectList, TextInput, Label,
@@ -25,7 +25,7 @@ TODO_FILE = ".plexi/todos.json"
 
 
 class TodoApp(App):
-    def on_init(self, _ctx: RenderContext) -> None:
+    def on_init(self) -> None:
         self._items: list[dict] = []
         self._selected = 0
         self._adding = False
@@ -34,7 +34,7 @@ class TodoApp(App):
         self._input = TextInput("todo-add", placeholder="New item…", height=48.0)
         self._load()
 
-    def on_path_changed(self, _ctx: RenderContext, cwd: str) -> None:
+    def on_path_changed(self, cwd: str) -> None:
         if not cwd:
             return
         new_cwd = pathlib.Path(cwd)
@@ -84,7 +84,7 @@ class TodoApp(App):
             return True
         return False
 
-    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
+    def on_key(self, key: str, _mods: dict) -> None:
         if self._adding:
             return
 
@@ -106,7 +106,7 @@ class TodoApp(App):
             self._save()
             self._sync_list()
 
-    def on_render(self, ctx: RenderContext) -> None:
+    def on_render(self, ctx) -> None:
         if self._adding:
             body = Column([
                 AppBar(title="Todo"),

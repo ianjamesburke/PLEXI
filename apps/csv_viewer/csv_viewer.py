@@ -16,7 +16,7 @@ Patterns demonstrated:
 import csv
 from pathlib import Path
 
-from plexi_sdk import App, Arg, RenderContext  # type: ignore[attr-defined]
+from plexi_sdk import App, Arg  # type: ignore[attr-defined]
 from plexi_sdk.ui import (
     AppBar, Column, FooterKeys, Label, Section,
     SelectList, Spacer,
@@ -30,8 +30,8 @@ ROW_H = 24.0
 class CsvViewer(App):
     file: Arg[str | None] = Arg(positional=True, default=None)
 
-    def on_init(self, ctx: RenderContext) -> None:
-        launch_dir = Path(ctx.workspace_root) if ctx.workspace_root else Path.cwd()
+    def on_init(self) -> None:
+        launch_dir = Path(self.workspace_root) if self.workspace_root else Path.cwd()
 
         # If a file path was passed as a launch argument, open it directly
         if self.file:
@@ -50,7 +50,7 @@ class CsvViewer(App):
                 self._file_hints: dict[Path, str] = {}
                 self._file_list = SelectList([{"name": target.name}])
                 self._load_csv(target)
-                ctx.info(f"csv_viewer: opened {target} via launch arg")
+                self.emit.info(f"csv_viewer: opened {target} via launch arg")
                 return
 
         self._files = sorted(
@@ -74,9 +74,9 @@ class CsvViewer(App):
         self._file_list = SelectList(
             [{"name": p.name, "description": self._file_hints.get(p) or None} for p in self._files]
         )
-        ctx.info(f"csv_viewer: {len(self._files)} CSV files in {launch_dir}")
+        self.emit.info(f"csv_viewer: {len(self._files)} CSV files in {launch_dir}")
 
-    def on_inject(self, _ctx: RenderContext, payload: dict) -> None:
+    def on_inject(self, payload: dict) -> None:
         if "mode" in payload:
             self._mode = payload["mode"]
         if "headers" in payload:
@@ -93,7 +93,7 @@ class CsvViewer(App):
             return True
         return False
 
-    def on_key(self, ctx: RenderContext, key: str, _mods: dict) -> None:
+    def on_key(self, key: str, _mods: dict) -> None:
         if self._mode == "list":
             if key in ("up", "k", "down", "j"):
                 self._file_list.handle_key(key)
@@ -102,7 +102,7 @@ class CsvViewer(App):
                 if self._files:
                     self._load_csv(self._files[self._selected])
                     self._mode = "detail"
-                    ctx.info(f"csv_viewer: opened {self._files[self._selected].name}")
+                    self.emit.info(f"csv_viewer: opened {self._files[self._selected].name}")
         else:
             if key in ("up", "k"):
                 self._v_scroll = max(0, self._v_scroll - 1)
@@ -129,13 +129,13 @@ class CsvViewer(App):
         except OSError as e:
             self._headers = [f"Error: {e}"]
 
-    def on_render(self, ctx: RenderContext) -> None:
+    def on_render(self, ctx) -> None:
         if self._mode == "list":
             self._draw_list(ctx)
         else:
             self._draw_detail(ctx)
 
-    def _draw_list(self, ctx: RenderContext) -> None:
+    def _draw_list(self, ctx) -> None:
         n = len(self._files)
         label = f"{n} CSV file{'s' if n != 1 else ''}" if self._files else "No CSV files found."
         subtitle = str(self._dir)
@@ -163,7 +163,7 @@ class CsvViewer(App):
             ]),
         ], padding=0.0, padding_top=0, gap=0))
 
-    def _draw_detail(self, ctx: RenderContext) -> None:
+    def _draw_detail(self, ctx) -> None:
         if not self._files:
             return
         path = self._files[self._selected]
