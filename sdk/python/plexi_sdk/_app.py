@@ -102,6 +102,26 @@ def _normalize_key(key: str) -> str:
     return _KEY_ALIASES.get(key, key)
 
 
+# ── Host-persisted state proxy ─────────────────────────────────────────────────
+
+class _AppStateProxy:
+    """Returned by App.state — read/write the host-persisted state dict."""
+    __slots__ = ("_app",)
+
+    def __init__(self, app: "App") -> None:
+        self._app = app
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._app._app_state.get(key, default)
+
+    def all(self) -> dict:
+        return dict(self._app._app_state)
+
+    def save(self, payload: dict) -> None:
+        self._app._app_state = dict(payload)
+        _emit({"type": "save_app_state", "payload": payload})
+
+
 # ── App base class ────────────────────────────────────────────────────────────
 
 class App:
@@ -248,6 +268,11 @@ class App:
         # Scroll consumers registered by components during the last completed
         # render frame. Populated from ctx._scroll_consumers after on_render (#1802).
         self._scroll_consumers: list = []
+
+    @property
+    def state(self) -> "_AppStateProxy":
+        """Host-persisted state. Use self.state.get/save instead of ctx.load_state/save_state."""
+        return _AppStateProxy(self)
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -1001,7 +1026,13 @@ class App:
                     self.emit.info(f"sdk: default_background={self.default_background!r}")
                     if getattr(type(self), "_arg_specs", None):
                         self._parse_launch_args(self._make_ctx())
-                    await self._dispatch_hook(self.on_init, self._make_ctx())
+                    _on_init_params = list(
+                        inspect.signature(type(self).on_init).parameters.values()
+                    )
+                    if len(_on_init_params) <= 1:
+                        await self._dispatch_hook(self.on_init)
+                    else:
+                        await self._dispatch_hook(self.on_init, self._make_ctx())
 
                 elif t == "render":
                     import time as _time
@@ -1022,7 +1053,12 @@ class App:
                         bg = ctx.theme.bg if self.default_background == "__theme__" else self.default_background
                         ctx.clear(bg)
                     try:
-                        await self._dispatch_hook(self.on_render, ctx)
+                        if type(self).view is not App.view:
+                            tree = self.view()
+                            if tree is not None:
+                                ctx.render(tree)
+                        else:
+                            await self._dispatch_hook(self.on_render, ctx)
                         self._consecutive_render_errors = 0
                     except Exception as e:
                         self._consecutive_render_errors += 1
