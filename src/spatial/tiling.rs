@@ -188,7 +188,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             // column-0 content isn't flush against the pane border. The clip rect
             // stays as pane_rect (inherited from the tile scope) so column-0 glyphs
             // can still overflow into the padding without being clipped.
-            const TERM_H_PAD: f32 = 4.0;
+            const TERM_H_PAD: f32 = 6.0;
             let terminal_rect = egui::Rect::from_min_max(
                 egui::pos2(pane_rect.min.x + TERM_H_PAD, pane_rect.min.y),
                 egui::pos2(pane_rect.max.x - TERM_H_PAD, pane_rect.max.y),
