@@ -38,6 +38,11 @@ pub enum PlexiEvent {
         /// backward compatibility. Empty when no args were provided.
         #[serde(default)]
         args: Vec<String>,
+        /// Pre-seeded app state for headless rendering (--state flag).
+        /// When present, the SDK populates self.state before calling on_init.
+        /// Omitted in live (non-headless) Init events.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<serde_json::Value>,
     },
     /// Request a new frame. App replies with DrawCommands terminated by FrameDone.
     Render {
@@ -138,10 +143,9 @@ pub enum PlexiEvent {
     /// Sent at startup with persisted app state (workspace if available, else global).
     /// Also usable from `pgap_test_harness` to seed deterministic state.
     InjectState { payload: serde_json::Value },
-    /// Sent by the headless renderer to seed app state before the first render.
-    /// Unlike InjectState (which fires on_inject as a background task and is a live
-    /// protocol event), RenderSeed fires on_render_seed awaited, so state is applied
-    /// before the Render event arrives. Live app behavior is completely unaffected.
+    /// DEPRECATED: superseded by the `state` field on Init.
+    /// Kept for backwards compatibility with older SDK versions. The headless
+    /// renderer no longer sends this event.
     RenderSeed { payload: serde_json::Value },
     /// Host broker response to a `DrawCommand::HttpRequest`. `error` is present
     /// when the request failed; `body` may still carry a partial response.

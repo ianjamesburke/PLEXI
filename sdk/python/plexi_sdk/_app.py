@@ -133,7 +133,6 @@ class App:
     Awaited (block the event loop until they return):
         on_init()                                   — after Init handshake
         on_render(ctx)                              — on each Render event (ctx IS the drawing surface)
-        on_render_seed(payload)                     — on RenderSeed (headless only, before first Render)
         on_suspend()                                — on Suspend
         on_resume()                                 — on Resume
         on_shutdown()                               — on Shutdown
@@ -331,7 +330,6 @@ class App:
     def on_pipe_message(self, _pipe_id: str, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
     def on_path_changed(self, _cwd: str) -> "Coroutine[Any, Any, None] | None": return None
     def on_inject(self, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
-    def on_render_seed(self, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
     def on_nav_back(self, _view_id: str) -> "Coroutine[Any, Any, None] | None":
         """Called when the host emits ``NavBack`` — user pressed Cmd+[ or the
         back arrow in the pane chrome. ``view_id`` is the view being navigated
@@ -1033,6 +1031,10 @@ class App:
                                       if f in ("pane_groups_v1",)]
                     _emit({"type": "ready", "sdk": SDK_ID, "features_used": features_used})
                     self.emit.info(f"sdk: default_background={self.default_background!r}")
+                    # Pre-populate app state if the host provided it (headless --state injection)
+                    init_state = ev.get("state")
+                    if init_state and isinstance(init_state, dict):
+                        self._app_state = dict(init_state)
                     if getattr(type(self), "_arg_specs", None):
                         self._parse_launch_args(self._make_ctx())
                     await self._dispatch_hook(self.on_init)
@@ -1141,13 +1143,6 @@ class App:
                 elif t == "inject_state":
                     self._app_state = ev.get("payload") or {}
                     self._dispatch_hook_task(self.on_inject, ev.get("payload", {}))
-
-                elif t == "render_seed":
-                    # Headless-only: sent by `plexi app render --state` before the first
-                    # Render event. Awaited so state is applied before on_render fires.
-                    # Does not affect live inject behavior.
-                    sys.stderr.write("plexi_sdk: render_seed received — applying headless seed state\n")
-                    await self._dispatch_hook(self.on_render_seed, ev.get("payload", {}))
 
                 elif t == "midi_input_opened":
                     # Confirms an OpenMidiInput call landed a CoreMIDI source.

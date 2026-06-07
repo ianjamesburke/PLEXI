@@ -1386,6 +1386,7 @@ impl App for ProcessApp {
                 regular_threshold: self.regular_threshold,
                 theme: ctx.colors.to_theme_map(),
                 args: self.launch_args.clone(),
+                state: None,
             });
             // Inject persisted state before first render so on_inject runs with data.
             let state = load_app_state(&self.type_id, &self.workspace_root);

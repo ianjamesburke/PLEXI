@@ -82,7 +82,7 @@ fn spawn_and_collect_frame(
     let stdout = child.stdout.take().ok_or("no stdout")?;
     let mut reader = BufReader::new(stdout);
 
-    // Send Init
+    // Send Init (with optional seed state embedded)
     let init = PlexiEvent::Init {
         protocol: PROTOCOL.to_string(),
         app_id: app_id.to_string(),
@@ -93,6 +93,7 @@ fn spawn_and_collect_frame(
         regular_threshold: 480.0,
         theme: render_colors().to_theme_map(),
         args: vec![],
+        state: seed_state,
     };
     let init_json = serde_json::to_string(&init)
         .map_err(|e| format!("failed to serialize Init: {e}"))?;
@@ -122,15 +123,6 @@ fn spawn_and_collect_frame(
                 log::warn!("app_render[{app_id}]: parse error before Ready: {e} (line: {line})");
             }
         }
-    }
-
-    // Send RenderSeed if caller provided seed data
-    if let Some(payload) = seed_state {
-        let seed = PlexiEvent::RenderSeed { payload };
-        let seed_json = serde_json::to_string(&seed)
-            .map_err(|e| format!("failed to serialize RenderSeed: {e}"))?;
-        writeln!(stdin, "{seed_json}").map_err(|e| format!("failed to write RenderSeed: {e}"))?;
-        log::info!("app_render[{app_id}]: sent RenderSeed");
     }
 
     // Send Render
