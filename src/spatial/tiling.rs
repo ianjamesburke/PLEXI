@@ -184,8 +184,17 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             render::app_pane::render(&mut app_ui, app_pane, &self.colors, is_focused);
         } else if let Some(terminal) = pane.as_terminal_mut() {
             ui.painter().rect_filled(pane_rect, 0.0, self.colors.terminal_bg);
+            // Inset the terminal content rect by a small horizontal padding so
+            // column-0 content isn't flush against the pane border. The clip rect
+            // stays as pane_rect (inherited from the tile scope) so column-0 glyphs
+            // can still overflow into the padding without being clipped.
+            const TERM_H_PAD: f32 = 4.0;
+            let terminal_rect = egui::Rect::from_min_max(
+                egui::pos2(pane_rect.min.x + TERM_H_PAD, pane_rect.min.y),
+                egui::pos2(pane_rect.max.x - TERM_H_PAD, pane_rect.max.y),
+            );
             let mut terminal_ui =
-                ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
+                ui.new_child(egui::UiBuilder::new().max_rect(terminal_rect));
             let close_exited = render::terminal_pane::render(
                 &mut terminal_ui,
                 terminal,
