@@ -25,3 +25,34 @@ def test_single_grow_spacer():
     assert len(spacer_lines) == 1, f"Expected 1 grow Spacer, got {len(spacer_lines)}"
     assert label_lines and spacer_lines[0] > label_lines[0], \
         "Grow Spacer must appear after Label (pushes footer to bottom)"
+
+
+def test_template_uses_view():
+    src = TEMPLATE.read_text()
+    assert "def view(self)" in src, "Template must use view() — not on_render()"
+    assert "def on_render" not in src, "Template must not use on_render (that's the canvas path)"
+
+
+def test_template_uses_self_state():
+    src = TEMPLATE.read_text()
+    assert "self.state.get" in src, "Template must use self.state.get() not ctx.load_state()"
+    assert "ctx.load_state" not in src
+    assert "ctx.save_state" not in src
+    assert "self.state.save" in src
+
+
+def test_template_on_init_no_ctx():
+    src = TEMPLATE.read_text()
+    assert "def on_init(self)" in src
+    assert "def on_init(self, ctx" not in src
+
+
+def test_template_on_key_no_ctx():
+    src = TEMPLATE.read_text()
+    assert "def on_key(self, key" in src or "async def on_key(self, key" in src
+    assert "def on_key(self, ctx" not in src
+
+
+def test_template_no_render_context_import():
+    src = TEMPLATE.read_text()
+    assert "RenderContext" not in src, "Template should not import RenderContext (not needed with v2 API)"
