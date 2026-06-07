@@ -485,9 +485,9 @@ pub fn app_list() -> i32 {
     super::list::list_cli()
 }
 
-/// `plexi app render <id> --size WxH [--state state.json] [--output path.png]`
-/// Renders an app to PNG headlessly via the offscreen egui/wgpu pipeline.
-pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str>) -> i32 {
+/// `plexi app render <id> --size WxH [--state state.json] [--output path] [--png]`
+/// Renders an app headlessly. Default: JSON frame tree. With --png: PNG image.
+pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str>, png: bool) -> i32 {
     // Parse WxH
     let (width, height) = match parse_render_size(size) {
         Some(v) => v,
@@ -533,34 +533,58 @@ pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str
         }
     };
 
-    let png_bytes = match crate::render::app_render::render_app_to_png(id, &app_bin, width, height, seed_state) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: render failed: {e}");
-            return 1;
-        }
-    };
-
-    // Write output
-    match output {
-        Some(path) => {
-            if let Err(e) = std::fs::write(path, &png_bytes) {
-                eprintln!("error: could not write output to '{path}': {e}");
+    if png {
+        // PNG mode: rasterize and write binary
+        let png_bytes = match crate::render::app_render::render_app_to_png(id, &app_bin, width, height, seed_state) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("error: render failed: {e}");
                 return 1;
             }
-            log::info!("app_render[{id}]: wrote {width}×{height} PNG to '{path}'");
-            eprintln!("Wrote {width}×{height} PNG to '{path}'");
+        };
+        match output {
+            Some(path) => {
+                if let Err(e) = std::fs::write(path, &png_bytes) {
+                    eprintln!("error: could not write output to '{path}': {e}");
+                    return 1;
+                }
+                log::info!("app_render[{id}]: wrote {width}×{height} PNG to '{path}'");
+                eprintln!("Wrote {width}×{height} PNG to '{path}'");
+            }
+            None => {
+                use std::io::Write;
+                if let Err(e) = std::io::stdout().write_all(&png_bytes) {
+                    eprintln!("error: could not write PNG to stdout: {e}");
+                    return 1;
+                }
+                log::info!(
+                    "app_render[{id}]: wrote {width}×{height} PNG to stdout ({} bytes)",
+                    png_bytes.len()
+                );
+            }
         }
-        None => {
-            use std::io::Write;
-            if let Err(e) = std::io::stdout().write_all(&png_bytes) {
-                eprintln!("error: could not write PNG to stdout: {e}");
+    } else {
+        // JSON mode (default): return raw frame commands
+        let json = match crate::render::app_render::render_app_to_json(id, &app_bin, width, height, seed_state) {
+            Ok(j) => j,
+            Err(e) => {
+                eprintln!("error: render failed: {e}");
                 return 1;
             }
-            log::info!(
-                "app_render[{id}]: wrote {width}×{height} PNG to stdout ({} bytes)",
-                png_bytes.len()
-            );
+        };
+        match output {
+            Some(path) => {
+                if let Err(e) = std::fs::write(path, &json) {
+                    eprintln!("error: could not write output to '{path}': {e}");
+                    return 1;
+                }
+                log::info!("app_render[{id}]: wrote JSON frame to '{path}'");
+                eprintln!("Wrote JSON frame to '{path}'");
+            }
+            None => {
+                println!("{json}");
+                log::info!("app_render[{id}]: wrote JSON frame to stdout");
+            }
         }
     }
 

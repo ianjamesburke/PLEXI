@@ -373,7 +373,7 @@ pub enum AppCmd {
     },
     /// Show all installed apps with their versions.
     List,
-    /// Render an app to a PNG image without opening the UI (useful for screenshots and testing).
+    /// Render an app headlessly (JSON frame tree by default, or PNG with --png).
     Render {
         /// App id to render (e.g. "snake")
         id: String,
@@ -383,9 +383,12 @@ pub enum AppCmd {
         /// Pre-seed the app's state from a JSON file before rendering
         #[arg(long, value_hint = ValueHint::FilePath)]
         state: Option<String>,
-        /// Where to save the PNG (default: stdout)
+        /// Where to save the output (default: stdout)
         #[arg(long, value_hint = ValueHint::FilePath)]
         output: Option<String>,
+        /// Render to a PNG image instead of JSON (default: JSON)
+        #[arg(long)]
+        png: bool,
     },
     /// Show details about an installed app: id, name, version, and available tools.
     Info {
@@ -401,6 +404,52 @@ pub enum AppCmd {
     /// workspace is detected, pass --global to scaffold into the global registry.
     ///
     /// Use --no-open to scaffold without opening.
+    #[command(after_long_help = r#"APP DEVELOPMENT GUIDE:
+
+  Two rendering modes (pick one per app):
+    view(self)         Declarative UI trees: forms, lists, dashboards
+    on_render(self, ctx)  Canvas drawing: games, animations, visualizations
+
+  UI components (view mode):
+    Read plexi_sdk/ui.py for the full API. Key widgets:
+    AppBar, Column, Row, Label, Spacer, FooterKeys, SelectList, TextInput,
+    Card, Section, Tabs, Grid, Toggle, ScrollLog, ChatBubble, InfoTable,
+    FormField, ButtonRow, ProgressBar, Clickable, Divider, Scrollable
+
+  Key names (use these exact strings in on_key):
+    space, return, escape, up, down, left, right, backspace, tab
+    a-z (lowercase), plus, minus, equals, f1-f12
+
+  State persistence:
+    self.state.get("key", default)   Load on init
+    self.state.save({"key": val})    Persist after changes
+
+  Canvas API (on_render mode only):
+    ctx.rect/text/circle/line | self.w, self.h | ctx.elapsed
+    self.emit.schedule_render(after_ms=16)  # game loop
+
+  Hooks (override any of these):
+    on_init(self)              Called once at startup
+    on_key(self, key, mods)    Keyboard input
+    on_click(self, x, y, btn)  Mouse input
+    on_escape(self) -> bool    Return True to consume
+    on_text_submitted(self, id, text)  TextInput submission
+    on_path_changed(self, cwd) Working directory changed
+    on_shutdown(self)          Cleanup
+
+  Emit methods:
+    self.emit.schedule_render()         Request a redraw
+    self.emit.notify(title, priority, body)
+    self.emit.info/warn/error(msg)      Logging
+    self.emit.http_get(url)             Network requests
+    self.emit.ai_query(tier, sys, msgs) LLM queries
+
+  Headless testing:
+    plexi app render <id>                           JSON frame tree to stdout
+    plexi app render <id> --png --output shot.png   PNG image to file
+    Use --state file.json to pre-populate app state before on_init.
+    The JSON is available via self.state.get() — no special handler needed.
+"#)]
     Init {
         name: String,
         #[arg(long, default_value = "python")]

@@ -14,6 +14,19 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(10);
 const FRAME_TIMEOUT: Duration = Duration::from_secs(10);
 const PROTOCOL: &str = "pgap/3";
 
+/// Spawn the app, collect one frame, return raw RenderCommands as JSON.
+pub fn render_app_to_json(
+    app_id: &str,
+    bin_path: &Path,
+    width: u32,
+    height: u32,
+    seed_state: Option<serde_json::Value>,
+) -> Result<String, String> {
+    let commands = spawn_and_collect_frame(app_id, bin_path, width, height, seed_state)?;
+    serde_json::to_string_pretty(&commands)
+        .map_err(|e| format!("failed to serialize frame: {e}"))
+}
+
 /// Spawn the app at `bin_path`, collect one frame at `width`×`height`, render to PNG bytes.
 pub fn render_app_to_png(
     app_id: &str,
