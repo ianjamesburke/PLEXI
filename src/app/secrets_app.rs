@@ -221,9 +221,9 @@ impl App for SecretsApp {
             if self.pending_delete {
                 self.delete_selected();
                 self.pending_delete = false;
-            } else {
+            } else if let Some(entry) = self.entries.get(self.selected) {
                 self.pending_delete = true;
-                let key = self.entries[self.selected].key.clone();
+                let key = entry.key.clone();
                 self.status_msg =
                     Some(format!("Delete '{key}'? Press d/y to confirm, Esc to cancel."));
             }
@@ -240,6 +240,7 @@ impl App for SecretsApp {
             consumed = true;
         }
         if input.key_pressed(egui::Key::C) && !self.entries.is_empty() {
+            self.pending_delete = false;
             self.copy_pending = true;
             consumed = true;
         }
@@ -316,7 +317,7 @@ impl App for SecretsApp {
         });
 
         // ── Status message ───────────────────────────────────────────────────
-        let status_h = if let Some(msg) = self.status_msg.clone() {
+        let status_h = if let Some(msg) = &self.status_msg {
             let status_rect = egui::Rect::from_min_size(
                 egui::pos2(rect.left(), rect.top() + HEADER_H),
                 egui::vec2(rect.width(), 28.0),
@@ -328,7 +329,7 @@ impl App for SecretsApp {
             );
             status_ui.centered_and_justified(|ui| {
                 ui.label(
-                    egui::RichText::new(msg)
+                    egui::RichText::new(msg.as_str())
                         .size(style::TEXT_HINT)
                         .color(colors.text_dim)
                         .family(egui::FontFamily::Monospace),
@@ -575,31 +576,11 @@ impl SecretsApp {
         colors: &crate::ui::theme::Colors,
         rect: egui::Rect,
     ) {
-        struct RowData {
-            key: String,
-            subtitle: String,
-            inject: bool,
-        }
-
-        let rows: Vec<RowData> = self
-            .entries
-            .iter()
-            .map(|e| RowData {
-                key: e.key.clone(),
-                subtitle: if e.directory.is_empty() || e.directory == "/" {
-                    e.app_id.clone()
-                } else {
-                    format!("{} · {}", e.app_id, e.directory)
-                },
-                inject: e.inject,
-            })
-            .collect();
-
         let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
         egui::ScrollArea::vertical()
             .id_salt("secrets_list")
             .show(&mut list_ui, |ui| {
-                if rows.is_empty() {
+                if self.entries.is_empty() {
                     ui.add_space(40.0);
                     ui.vertical_centered(|ui| {
                         ui.label(
@@ -622,22 +603,28 @@ impl SecretsApp {
 
                 let mut clicked_idx: Option<usize> = None;
 
-                for (idx, row) in rows.iter().enumerate() {
+                for (idx, entry) in self.entries.iter().enumerate() {
                     let is_selected = idx == self.selected;
                     let (resp, _) = widgets::selectable_row(ui, is_selected, colors, |ui| {
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
                                 ui.label(
-                                    egui::RichText::new(&row.key)
+                                    egui::RichText::new(&entry.key)
                                         .size(style::TEXT_BODY)
                                         .color(colors.text_primary),
                                 );
                                 ui.scope(|ui| {
                                     ui.set_max_width(300.0);
-                                    widgets::description_label(ui, &row.subtitle, colors);
+                                    let subtitle =
+                                        if entry.directory.is_empty() || entry.directory == "/" {
+                                            entry.app_id.clone()
+                                        } else {
+                                            format!("{} · {}", entry.app_id, entry.directory)
+                                        };
+                                    widgets::description_label(ui, &subtitle, colors);
                                 });
                             });
-                            if row.inject {
+                            if entry.inject {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
