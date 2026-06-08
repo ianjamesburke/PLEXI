@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.638"
+verified_version: "0.0.662"
 order: 7
 ---
 
@@ -276,7 +276,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `install` | Install an app from a local path, a remote source, or a pack file |
 | `uninstall` | Remove an installed app by id |
 | `list` | Show all installed apps with their versions |
-| `render` | Render an app to a PNG image without opening the UI (useful for screenshots and testing) |
+| `render` | Render an app headlessly (JSON frame tree by default, or PNG with --png) |
 | `info` | Show details about an installed app: id, name, version, and available tools |
 | `init` | Create a new app from a template |
 | `validate` | Check a Plexi app directory for errors before publishing or installing |
@@ -333,14 +333,15 @@ Show all installed apps with their versions
 
 ### `plexi app render`
 
-Render an app to a PNG image without opening the UI (useful for screenshots and testing)
+Render an app headlessly (JSON frame tree by default, or PNG with --png)
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<id>` | string | yes | App id to render (e.g. "snake") |
 | `--size` | string | no | Image dimensions as WxH (e.g. 500x500) Default: `800x600`. |
 | `--state` | string | no | Pre-seed the app's state from a JSON file before rendering |
-| `--output` | string | no | Where to save the PNG (default: stdout) |
+| `--output` | string | no | Where to save the output (default: stdout) |
+| `--png` | flag | no | Render to a PNG image instead of JSON (default: JSON) |
 
 ### `plexi app info`
 
