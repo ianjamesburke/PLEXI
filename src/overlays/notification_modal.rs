@@ -449,10 +449,12 @@ impl PlexiApp {
                                     // RTL layout: L first (rightmost), then H.
                                     crate::ui::widgets::key_chip(
                                         ui, "L", &self.colors,
+                                        egui::FontId::monospace(crate::ui::style::TEXT_CAPTION),
                                     );
                                     ui.add_space(4.0);
                                     crate::ui::widgets::key_chip(
                                         ui, "H", &self.colors,
+                                        egui::FontId::monospace(crate::ui::style::TEXT_CAPTION),
                                     );
                                     ui.add_space(8.0);
                                     ui.label(

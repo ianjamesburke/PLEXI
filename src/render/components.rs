@@ -553,6 +553,7 @@ pub(crate) fn render_component_tree(
         }
 
         UiNode::FooterKeys { entries, divider, .. } => {
+            let chip_h = style::TEXT_HINT + 4.0;
             let chip_row_h = style::TEXT_HINT + 6.0;
             let total_h = if *divider {
                 1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM
@@ -561,7 +562,6 @@ pub(crate) fn render_component_tree(
             };
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(ui.available_width(), total_h), egui::Sense::hover());
-            let painter = ui.painter();
 
             // Full-bleed: expand to clip rect width so footer spans the pane edge-to-edge
             let clip = ui.clip_rect();
@@ -569,90 +569,70 @@ pub(crate) fn render_component_tree(
                 egui::pos2(clip.min.x, rect.min.y),
                 egui::vec2(clip.width(), total_h),
             );
-            painter.rect_filled(full_rect, 0.0, colors.bg_sidebar);
+            ui.painter().rect_filled(full_rect, 0.0, colors.bg_sidebar);
 
             if *divider {
-                painter.rect_filled(
+                ui.painter().rect_filled(
                     egui::Rect::from_min_size(egui::pos2(full_rect.min.x, full_rect.min.y), egui::vec2(full_rect.width(), 1.0)),
                     0.0,
                     colors.border,
                 );
             }
-            let chip_y = full_rect.min.y + (total_h - style::TEXT_HINT) / 2.0;
 
-            // Measure total content width for centering
+            // Measure total content width so we can center the group horizontally.
+            let chip_font = egui::FontId::monospace(style::TEXT_HINT);
+            let desc_font = egui::FontId::proportional(style::TEXT_HINT);
             let mut content_w: f32 = 0.0;
             for (ei, entry) in entries.iter().enumerate() {
                 for (ki, key) in entry.keys.iter().enumerate() {
                     if ki > 0 { content_w += 2.0; }
                     let tw = ui.fonts(|f| {
-                        f.layout_no_wrap(key.clone(), egui::FontId::monospace(style::TEXT_HINT), colors.text_primary).size().x
+                        f.layout_no_wrap(key.clone(), chip_font.clone(), colors.text_primary).size().x
                     });
-                    let chip_h = style::TEXT_HINT + 4.0;
                     content_w += (tw + 8.0).max(chip_h);
                 }
                 content_w += 4.0;
                 content_w += ui.fonts(|f| {
-                    f.layout_no_wrap(entry.description.clone(), egui::FontId::proportional(style::TEXT_HINT), colors.text_dim).size().x
+                    f.layout_no_wrap(entry.description.clone(), desc_font.clone(), colors.text_dim).size().x
                 });
                 if ei + 1 < entries.len() {
                     content_w += style::SPACE_MD;
                 }
             }
 
-            let mut cx = full_rect.min.x + ((full_rect.width() - content_w) / 2.0).max(style::SPACE_MD);
-            for (ei, entry) in entries.iter().enumerate() {
-                for (ki, key) in entry.keys.iter().enumerate() {
-                    if ki > 0 {
-                        cx += 2.0;
-                    }
-                    let font_id = egui::FontId::monospace(style::TEXT_HINT);
-                    let galley = ui.fonts(|f| {
-                        f.layout_no_wrap(key.clone(), font_id, colors.text_primary)
-                    });
-                    let tw = galley.size().x;
-                    let chip_h = style::TEXT_HINT + 4.0;
-                    let chip_w = (tw + 8.0).max(chip_h);
-                    let chip_rect = egui::Rect::from_min_size(
-                        egui::pos2(cx, chip_y - 2.0),
-                        egui::vec2(chip_w, chip_h),
-                    );
-                    painter.rect_filled(chip_rect, 3.0, colors.bg_active);
-                    painter.rect_stroke(
-                        chip_rect,
-                        3.0,
-                        egui::Stroke::new(0.5, colors.border),
-                        egui::StrokeKind::Inside,
-                    );
-                    painter.galley(
-                        egui::pos2(cx + (chip_w - tw) / 2.0, chip_y),
-                        galley,
-                        colors.text_primary,
-                    );
-                    cx += chip_w;
-                }
-                cx += 4.0;
-                let desc_galley = ui.fonts(|f| {
-                    f.layout_no_wrap(
-                        entry.description.clone(),
-                        egui::FontId::proportional(style::TEXT_HINT),
-                        colors.text_dim,
-                    )
-                });
-                painter.galley(egui::pos2(cx, chip_y), desc_galley, colors.text_dim);
-                cx += ui.fonts(|f| {
-                    f.layout_no_wrap(
-                        entry.description.clone(),
-                        egui::FontId::proportional(style::TEXT_HINT),
-                        colors.text_dim,
-                    )
-                    .size()
-                    .x
-                });
-                if ei + 1 < entries.len() {
-                    cx += style::SPACE_MD;
-                }
-            }
+            // Center the content group inside the full-bleed band; clamp left edge.
+            let left = (full_rect.center().x - content_w / 2.0)
+                .max(full_rect.min.x + style::SPACE_MD);
+            let content_rect = egui::Rect::from_min_size(
+                egui::pos2(left, full_rect.center().y - chip_h / 2.0),
+                egui::vec2(content_w, chip_h),
+            );
+
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+                ui.with_layout(
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        for (ei, entry) in entries.iter().enumerate() {
+                            for (ki, key) in entry.keys.iter().enumerate() {
+                                if ki > 0 {
+                                    ui.add_space(2.0);
+                                }
+                                crate::ui::widgets::key_chip(ui, key, colors, chip_font.clone());
+                            }
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(entry.description.clone())
+                                    .size(style::TEXT_HINT)
+                                    .color(colors.text_dim),
+                            );
+                            if ei + 1 < entries.len() {
+                                ui.add_space(style::SPACE_MD);
+                            }
+                        }
+                    },
+                );
+            });
         }
 
         UiNode::Footer { text, color, .. } => {
@@ -660,9 +640,8 @@ pub(crate) fn render_component_tree(
             let total_h = style::SPACE_MD + 1.0 + style::SPACE_MD + line_h;
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(ui.available_width(), total_h), egui::Sense::hover());
-            let painter = ui.painter();
             let line_y = rect.min.y + style::SPACE_MD;
-            painter.rect_filled(
+            ui.painter().rect_filled(
                 egui::Rect::from_min_size(egui::pos2(rect.min.x, line_y), egui::vec2(rect.width(), 1.0)),
                 0.0,
                 colors.border,
@@ -672,16 +651,24 @@ pub(crate) fn render_component_tree(
             } else {
                 parse_color(color).unwrap_or(colors.text_dim)
             };
-            let text_y = line_y + 1.0 + style::SPACE_MD;
-            let galley = ui.fonts(|f| {
-                f.layout(
-                    text.clone(),
-                    egui::FontId::proportional(style::TEXT_CAPTION),
-                    text_color,
-                    rect.width(),
-                )
+            // Content area sits below the divider line, vertically centered in
+            // the remaining height. egui handles DPI/rounding internally.
+            let content_rect = egui::Rect::from_min_size(
+                egui::pos2(rect.min.x, line_y + 1.0),
+                egui::vec2(rect.width(), style::SPACE_MD + line_h),
+            );
+            ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+                ui.with_layout(
+                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new(text.clone())
+                                .size(style::TEXT_CAPTION)
+                                .color(text_color),
+                        );
+                    },
+                );
             });
-            painter.galley(egui::pos2(rect.min.x, text_y), galley, text_color);
         }
 
         UiNode::Section { title, .. } => {

@@ -395,7 +395,7 @@ impl PlexiApp {
                         row0_frame.show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = style::SPACE_SM;
-                                widgets::key_chip(ui, "0", &self.colors);
+                                widgets::key_chip(ui, "0", &self.colors, egui::FontId::monospace(style::TEXT_CAPTION));
                                 ui.label(
                                     RichText::new("Backlog (global)")
                                         .color(self.colors.text_dim)
@@ -425,7 +425,7 @@ impl PlexiApp {
                             row_frame.show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = style::SPACE_SM;
-                                    widgets::key_chip(ui, &dest.key.to_string(), &self.colors);
+                                    widgets::key_chip(ui, &dest.key.to_string(), &self.colors, egui::FontId::monospace(style::TEXT_CAPTION));
                                     ui.label(
                                         RichText::new(&label)
                                             .color(self.colors.text_dim)
@@ -730,7 +730,7 @@ impl PlexiApp {
                                 row_frame.show(ui, |ui| {
                                     ui.horizontal(|ui| {
                                         ui.spacing_mut().item_spacing.x = style::SPACE_SM;
-                                        widgets::key_chip(ui, &child.key.to_string(), &self.colors);
+                                        widgets::key_chip(ui, &child.key.to_string(), &self.colors, egui::FontId::monospace(style::TEXT_CAPTION));
                                         ui.label(
                                             RichText::new(&child_label)
                                                 .color(self.colors.text_dim)

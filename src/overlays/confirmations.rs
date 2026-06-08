@@ -128,14 +128,14 @@ impl PlexiApp {
                         k = true;
                     }
                     ui.add_space(12.0);
-                    crate::ui::widgets::key_chip(ui, "Enter", &self.colors);
+                    crate::ui::widgets::key_chip(ui, "Enter", &self.colors, egui::FontId::monospace(style::TEXT_CAPTION));
                     ui.label(
                         RichText::new("confirm")
                             .size(style::TEXT_HINT)
                             .color(self.colors.text_dim),
                     );
                     ui.add_space(style::SPACE_SM);
-                    crate::ui::widgets::key_chip(ui, "Esc", &self.colors);
+                    crate::ui::widgets::key_chip(ui, "Esc", &self.colors, egui::FontId::monospace(style::TEXT_CAPTION));
                     ui.label(
                         RichText::new("cancel")
                             .size(style::TEXT_HINT)
@@ -351,21 +351,21 @@ impl PlexiApp {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    crate::ui::widgets::key_chip(ui, "Enter", &colors);
+                    crate::ui::widgets::key_chip(ui, "Enter", &colors, egui::FontId::monospace(style::TEXT_CAPTION));
                     ui.label(
                         RichText::new("close all")
                             .size(style::TEXT_HINT)
                             .color(colors.text_dim),
                     );
                     ui.add_space(style::SPACE_SM);
-                    crate::ui::widgets::key_chip(ui, "D", &colors);
+                    crate::ui::widgets::key_chip(ui, "D", &colors, egui::FontId::monospace(style::TEXT_CAPTION));
                     ui.label(
                         RichText::new("dissolve")
                             .size(style::TEXT_HINT)
                             .color(colors.text_dim),
                     );
                     ui.add_space(style::SPACE_SM);
-                    crate::ui::widgets::key_chip(ui, "Esc", &colors);
+                    crate::ui::widgets::key_chip(ui, "Esc", &colors, egui::FontId::monospace(style::TEXT_CAPTION));
                     ui.label(
                         RichText::new("cancel")
                             .size(style::TEXT_HINT)

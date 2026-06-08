@@ -83,8 +83,15 @@ const KEYCAP_PAD_V: f32 = 3.0;
 
 /// Render a single keycap chip. Allocates its own exact-size rect and
 /// returns the egui Response so callers can compose with other widgets.
-pub(crate) fn key_chip(ui: &mut egui::Ui, label: &str, colors: &Colors) -> egui::Response {
-    let font_id = egui::FontId::monospace(style::TEXT_CAPTION);
+///
+/// Pass `egui::FontId::monospace(style::TEXT_CAPTION)` for the standard size,
+/// or `egui::FontId::monospace(style::TEXT_HINT)` for compact footer chips.
+pub(crate) fn key_chip(
+    ui: &mut egui::Ui,
+    label: &str,
+    colors: &Colors,
+    font_id: egui::FontId,
+) -> egui::Response {
     let galley = ui
         .fonts(|f| f.layout_no_wrap(label.to_string(), font_id, colors.text_primary));
     let text_w = galley.size().x;
@@ -131,7 +138,7 @@ pub(crate) fn key_combo(ui: &mut egui::Ui, keys: &[&str], colors: &Colors) {
                         .color(colors.text_dim),
                 );
             }
-            key_chip(ui, key, colors);
+            key_chip(ui, key, colors, egui::FontId::monospace(style::TEXT_CAPTION));
         }
     });
 }
@@ -156,7 +163,7 @@ pub(crate) fn key_combo_list(
                 if j > 0 {
                     ui.add_space(INTRA_COMBO_GAP);
                 }
-                key_chip(ui, key, colors);
+                key_chip(ui, key, colors, egui::FontId::monospace(style::TEXT_CAPTION));
             }
         }
         if let Some(text) = trailing {
