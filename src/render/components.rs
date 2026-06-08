@@ -484,11 +484,16 @@ pub(crate) fn render_component_tree(
                 "render_components: Column {} children gap={gap} padding_top={padding_top} padding={padding}",
                 children.len()
             );
+            // Skip top padding when the first child is AppBar (it's full-bleed chrome)
+            let effective_top = match children.first() {
+                Some(UiNode::AppBar { .. }) => 0,
+                _ => *padding_top as i8,
+            };
             egui::Frame::new()
                 .inner_margin(egui::Margin {
                     left: *padding as i8,
                     right: *padding as i8,
-                    top: *padding_top as i8,
+                    top: effective_top,
                     bottom: 0,
                 })
                 .show(ui, |ui| {
@@ -885,6 +890,11 @@ fn render_stack(
             // Partition bottom-pinned children (those with a known fixed height) out of
             // the body. They are rendered at the bottom of the available rect by
             // constraining the body height first.
+            //
+            // Two sources of pinning:
+            //   1. Explicit: `Pinned { edge: Bottom, child }` wrapper
+            //   2. Implicit: FooterKeys/Footer at the tail of the children list
+            //      (the SDK doesn't wrap them in Pinned, but they always pin to bottom)
             let mut pinned_bottom: Vec<(f32, &UiNode)> = Vec::new();
             let mut body_children: Vec<&UiNode> = Vec::new();
 
@@ -901,6 +911,17 @@ fn render_stack(
                 }
                 body_children.push(child);
             }
+
+            // Auto-pin: pull FooterKeys/Footer off the tail of body_children
+            while let Some(last) = body_children.last() {
+                if let Some(h) = bottom_pin_height(last) {
+                    pinned_bottom.push((h, body_children.pop().unwrap()));
+                } else {
+                    break;
+                }
+            }
+            // Reverse so they render in original order (we popped from the end)
+            pinned_bottom.reverse();
 
             if !pinned_bottom.is_empty() {
                 let total_pinned_h: f32 = pinned_bottom.iter().map(|(h, _)| h).sum();
