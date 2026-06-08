@@ -1,6 +1,181 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.660] — 2026-06-08
+
+### Changes
+- refactor(footer): replace manual position math with egui layout primitives
+- fix(footer): center chip text with min chip width, matching key_chip
+- fix(footer): center chip in full footer height, not chip_row
+- fix(footer): remove padding above divider, center chip rect
+- fix(render): auto-pin FooterKeys to bottom, skip top padding before AppBar
+- fix(render): AppBar and FooterKeys render full-bleed across pane width
+- fix(render): Label wraps text instead of truncating; FooterKeys centered with bg fill
+- feat(apps): add kraken text-adventure for inventory-conditional render testing
+- feat(apps): add kraken text-adventure for inventory-conditional render testing
+- feat(protocol): unify state injection via Init, remove on_render_seed
+- feat(cli): default headless render to JSON, add --png flag
+- docs(skill): update plexi-cli skill to v4.0.0 for plexi v0.0.651
+- feat(sdk)!: remove all ctx-passing compat shims from hook dispatch
+- feat(sdk): embed agent-readable SDK reference in app scaffold
+- feat(sdk): ctx-free dispatch for all event hooks
+- feat(apps): migrate Core 9 to SDK v2 — ctx-free on_init, on_key, on_path_changed
+- docs(sdk): update __init__.py quick-start to v2 API
+- docs: golden SDK v2 reference — view(), self.state, agent dev loop pattern
+- feat(sdk): rewrite app_init template with v2 API — view(), self.state, no ctx
+- feat(sdk): v2 core — App.state proxy, view() dispatch, ctx-free on_init
+- fix(sdk): correct app_init template — remove divider=False, fix grow Spacer placement
+- docs: SDK v2 overhaul plan + ROADMAP reprioritization
+- Revert "fix(terminal): expand clip rect 1px left to prevent column-0 glyph clipping"
+- Revert "fix(terminal): add 4px horizontal padding so column-0 content isn't flush against pane border"
+- Revert "fix(terminal): expand clip by cell_width/2 for wide Unicode glyphs at column 0, bump TERM_H_PAD to 6px"
+- fix(terminal): expand clip by cell_width/2 for wide Unicode glyphs at column 0, bump TERM_H_PAD to 6px
+- fix(terminal): add 4px horizontal padding so column-0 content isn't flush against pane border
+- fix(terminal): expand clip rect 1px left to prevent column-0 glyph clipping
+- refactor: simplify counter template, update FooterKeys API, center layout with spacers
+- fix: expand Column inner ui height so sticky footer sees full pane height
+- ..
+- fix: normalize key strings in SDK, clean up counter template
+- fix: counter template key names and footer layout
+- fix: eliminate click-to-render latency in PGAP apps
+- fix(cli): only declare timer capability in app init scaffold (clipboard/notify are ungated)
+- fix(cli): add timer/clipboard/notify capabilities to app init scaffold
+- refactor(pgap/sdk): explicit protocol constraints — Pinned, Column, Frame padding (#2064) (#2065)
+- docs: add MCPUI protocol integration design spec (#2056)
+- docs: check off 13 roadmap items landed since v0.0.628
+- refactor(skills): strip plexi-cli SKILL.md to patterns-only (#2057)
+- feat(pgap): add send_app_action command and action event for app action dispatch
+- chore(website): regenerate CLI reference docs
+- fix(host/navigation): pane_navigate clears stale zoomed_pane on destination window (#2053) (#2055)
+- fix(skills): rewrite plexi-cli skill to match v0.0.633 CLI state (#2047) (#2049)
+- fix(host/navigation): gate zoomed pane focus on modal_open (#2046) (#2051)
+- Fix Cmd+[ / Cmd+] focus history across context switches (#2043) (#2045)
+- refactor(protocol): split app_protocol.rs into focused submodules (#2044) (#2048)
+- fix: rewrite app init boilerplate as comprehensive SDK reference
+- refactor: unify app init/dev/run into app init + app open
+- chore: remove outdated V1_ROADMAP.md
+- fix: sort windows spatially (grid_y, grid_x) before collecting pips
+- fix: order sidebar pips by spatial position, not creation time
+- chore: add MemPalace cache and config to gitignore
+- chore(website): regenerate CLI reference docs
+- docs: skip bump+install for non-Rust commits, fix pr-clean ref
+- chore: remove pr-clean/pr-clean-merged aliases, update skills
+- chore(website): regenerate CLI reference docs
+- test(accesskit): regression test for focused orphan root-change panic
+- fix(crash): recover from stale AccessKit focus node instead of panicking
+- chore(website): regenerate CLI reference docs
+- polish(apps/assistant): UI refinements — input styling, model switcher, focus, thinking animation (#2012) (#2041)
+- fix(cli): use channel-scoped workspace dir for routines.toml (#2017) (#2042)
+- feat(apps/assistant): CLI tool access -- spawn panes, open apps, read context (#2039) (#2040)
+- feat(cli): plexi app action <id> <action> [args] (#1980) (#2038)
+- feat(apps/assistant): ExposeTools integration (#2034) (#2037)
+- feat(apps/examples): coding, research, writing agent apps (#2035) (#2036)
+- fix(quick-note): open destination in new window and keep pane alive (#2033)
+- fix(install): add guardrails to prevent silent path errors in install.sh (#2032)
+- fix(sdk): update capabilities list on capability_decision grant (#1659) (#2031)
+- chore(website): regenerate CLI reference docs
+- fix(host/context): delete empty portal window after delete_context (#2029) (#2030)
+- fix(tests): fix hardcoded .plexi path in cli_tests
+- fix(tests): fix broken imports and hardcoded .plexi paths in test suite
+- fix(workspace): subcontext inherits parent workspace root, not transient cwd
+- fix(overlay): surrender egui focus before opening command palette and rename pane
+- chore(website): regenerate CLI reference docs
+- chore: remove daily-check skill
+- feat(host): send pane in direction — Ctrl+Opt+Cmd+HJKL (#1710) (#2016)
+- fix(cli): audit workspace preconditions — add regression tests (#1609) (#2015)
+- feat(cli): inject PLEXI_CONTEXT_ROOT/DEPTH env vars into spawned panes (#1831) (#2014)
+- fix(cli): routine run uses PLEXI_SOCKET for error feedback (#1702) (#2013)
+- fix(cli): config get supports all config fields via TOML path lookup (#1701) (#2011)
+- feat(cli): plexi ai setup — local model wizard (#2008) (#2010)
+- feat(apps/assistant): session persistence — save/resume conversations (#2006) (#2009)
+- fix(cli): app uninstall finds workspace-local apps (#1699) (#2007)
+- fix(cli): add --global flag to secret delete (#1700) (#2005)
+- feat(cli): plexi ai doctor — hardware scan + model recommendation (#2002) (#2004)
+- feat(apps): core assistant app — L1 chat UI with ai.query streaming (#2001) (#2003)
+- feat(cli): channel-scoped self-update — make plexi-beta update actually work (#1999) (#2000)
+- audit: full channel-aware workspace management system (#1997) (#1998)
+- docs: add gotcha about skill file edits not needing bump+install
+- remove ready flag gate from implement-issue skill
+- feat(context): auto-init workspace when context root is set (#1995) (#1996)
+- feat(pgap): add get_pane_state query and launch arguments for apps
+- chore(website): regenerate CLI reference docs
+- refactor(src): reorganize 54 flat modules into subdirectories (#1993)
+- feat(testing): egui_kittest UI harness + flow regression tests (#1991)
+- fix(cli): fix agent template + move scaffold to plexi agent init (#1992)
+- fix(ui): hidden pane opacity and title improvements (#1990)
+- feat(ui): context-level parking via Cmd+Shift+U (#1949) (#1988)
+- feat(cli): prefix-based open namespace -- cli:, mcp:, app: routing (#1529) (#1987)
+- feat(host): pane-level hiding via Cmd+U (#1948) (#1986)
+- feat(cli): add --agent flag to plexi app init (#1977) (#1985)
+- feat(cli): add plexi pane state subcommand (#1975) (#1983)
+- fix(pgap): TextEdit focus and styling to match QuickNote (#1971) (#1982)
+- feat(ai): add OpenRouter API key detection and validation to plexi doctor (#1978) (#1981)
+- feat(host/context): new-child-context shortcut (#1833) (#1979)
+- feat(ai): auto-discover local LLM servers in plexi doctor (#1973) (#1976)
+- feat(cli): add plexi pane command subcommand (#1972) (#1974)
+- feat(apps): backlog inline editing with TextEdit (#1967) (#1970)
+- feat(cli): workspace agent registry (#1616) (#1969)
+- feat(cli): plexi doctor capability audit (#1346) (#1968)
+- feat(host+sdk): PGAP TextEdit node — host-rendered text input (#1951) (#1966)
+- feat(host): app launch arguments (#1638) (#1965)
+- docs: security model in protocol docs (#1960) (#1964)
+- feat(cli): plexi app dev + publish stub (#1660) (#1959)
+- feat(host): text selection in PGAP apps + typography polish (#1645) (#1958)
+- docs: SDK quickstart guide (#1956) (#1957)
+- feat(sdk): layout fundamentals — headline alignment, character padding (#1527) (#1955)
+- docs: PGAP protocol reference -- every node type documented (#1950) (#1954)
+- docs(apps): annotate Core 9 as L1 reference implementations (#1952) (#1953)
+- feat(host): native Rust CLI renderer builtin (#1947)
+- docs(roadmap): add pane hiding (#1948) and context parking (#1949) to Layer 5
+- style(sidebar): increase pane dot radius from 2.5 to 4.0
+- refactor(apps): rename descriptor-renderer to cli-renderer
+- fix(skills): add dev app skip rule to blitz sub-agent prompt
+- fix(apps): restore descriptor-renderer, mcp-renderer, node-canvas
+- feat(skills): add /blitz roadmap executor with continuous dispatch
+- docs(roadmap): check off 6 items from Layer 2 + Layer 3 (v0.0.610)
+- feat(sdk): actionable error messages audit (#1203) (#1946)
+- chore(apps): archive 31 dev POCs, keep 3 reference apps (#1942) (#1945)
+- chore(apps): remove Quick Note app — redundant with Cmd+0 host feature (#1943) (#1944)
+- feat(host/terminal): Cmd+F search overlay with match cycling (#1914) (#1941)
+- feat(open): auto-set pane title for --mcp and --cli (#1037) (#1940)
+- feat(host/overlays): dismiss QuickNote modal on click-away (#1938) (#1939)
+- docs(roadmap): check off 3a component event routing (v0.0.609)
+- docs: add app priority rule — Core 9 only, skip dev apps
+- feat(sdk): route ComponentEvent to on_component_event callback (#1904) (#1937)
+- feat(sdk): on_escape hook replaces per-app Escape handling
+- fix(apps): Esc closes calc and logs apps
+- feat(protocol): L1 UiNode expansion + host renderers + SDK tree emission
+- fix(apps): restore escape-to-close in snake, tetris, todo, quick-note
+- docs(roadmap): check off core app theming audit (v0.0.604)
+- chore(apps): core app theming audit -- ctx.theme across 7 apps (#1669)
+- docs(roadmap): check off v0.0.603 items -- _l0 removal, notification auto-dismiss, QuickNote preemption, logs spacing
+- refactor(protocol): remove _l0 fallback fields from L1 UiNode variants
+- fix(overlays): allow QuickNote to open over non-critical modals (#1626)
+- fix(host/notifications): auto-dismiss notification when originating pane is focused (#1635)
+- fix(apps/logs): uniform badge sizes, consistent table padding (#1648)
+- docs(roadmap): mark Layer 1 core complete, defer FocusLayer unification to v2.0
+- chore: restructure product phases, document session practices, add pane naming support
+- fix(host/keys): exact modifier check broken on macOS
+- feat(host/pane-ops): viewport overtake indicator bar (#1931)
+- refactor(ui/overlays): extract modal_shell helper (#1930)
+- refactor(host/keys): declarative binding table (#1929)
+- refactor(cli): remove layout_hint from manifests and registry (#1928)
+- fix(terminal): strip trailing punctuation from clickable URLs (#1549)
+- feat(sdk): default Esc behavior in base App class (#1631)
+- refactor(cli): clean namespace split for pane new vs app open (#1928)
+- fix(cli): pane new direction flags produce wrong split orientation (#1927)
+- feat(scaffold): trim app init template to 30-line L1 example
+- feat(apps): migrate balls, snake, tetris, stats to L1 rendering
+- refactor: move 6 non-core apps to apps/dev/
+- docs(roadmap): check off L1 app migration (v0.0.597)
+- feat(apps): migrate 11 apps from L0 draw commands to L1 Component rendering
+- feat(cli): unify pane spawning under `pane new` (#1923) (#1926)
+- feat(scratchpad): native text-editor builtin pane, open from any pane type (#1920) (#1922)
+- fix(snake-race): request panes.spawn capability before spawning
+- fix(snake-race): replace bare color constants with ctx.theme.* lookups
+- Add keyboard shortcut tip for context_set_root, document CLI pane naming and tips patterns
+- fix: restore draw_triple_tap_overlay after inspector removal, clean up dead code
+- Remove context inspector modal, replace Cmd+I with SetContextRootFromCwd action
 ## [0.0.659] — 2026-06-08
 
 ### Changes
