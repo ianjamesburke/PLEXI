@@ -306,12 +306,12 @@ impl App for SecretsApp {
                 if self.mode == Mode::Adding {
                     widgets::key_combo_list(ui, &[&["Esc"]], Some("cancel"), colors);
                 } else {
-                    widgets::key_combo_list(
-                        ui,
-                        &[&["n"], &["d"], &["c"], &["i"], &["r"]],
-                        Some("new · del · copy · inject · refresh"),
-                        colors,
-                    );
+                    // RTL: emit rightmost first → visual L→R: [n] new [d] del [c] copy [i] inject [r] refresh
+                    widgets::key_combo_list(ui, &[&["r"]], Some("refresh"), colors);
+                    widgets::key_combo_list(ui, &[&["i"]], Some("inject"), colors);
+                    widgets::key_combo_list(ui, &[&["c"]], Some("copy"), colors);
+                    widgets::key_combo_list(ui, &[&["d"]], Some("del"), colors);
+                    widgets::key_combo_list(ui, &[&["n"]], Some("new"), colors);
                 }
             });
         });
