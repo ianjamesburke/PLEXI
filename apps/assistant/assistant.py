@@ -371,21 +371,25 @@ class AssistantApp(App):
 
     def on_render(self, ctx) -> None:
         self._scroll.child = self._build_chat_column()
-        # Auto-scroll to bottom on new content
         self._scroll.scroll_offset = max(0.0, self._scroll._child_h - self._scroll._avail_h)
 
-        subtitle = f"{self._model_tier} · ⌘M to switch"
         if self._is_streaming:
-            footer_keys: list[tuple[str, str]] = [("Esc", "quit")]
+            footer_keys: list[tuple] = [("esc", "stop")]
         else:
-            footer_keys = [("Enter", "send"), ("⌘M", "model"), ("⌘N", "new"), ("Esc", "quit")]
+            footer_keys = [
+                ("↵", "send"),
+                ("⌘M", "model"),
+                ("⌘N", "new"),
+                ("esc", "quit"),
+            ]
 
         ctx.render(Column([
-            AppBar(title="Assistant", subtitle=subtitle),
+            AppBar(title="Assistant", subtitle=self._model_tier),
             self._scroll,
             self._input,
+            Spacer(grow=False),
             FooterKeys(footer_keys),
-        ]))
+        ], padding=0.0, padding_top=0, gap=0.0))
 
         submitted = self._input.submitted
         if submitted is not None:
