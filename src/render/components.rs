@@ -571,19 +571,14 @@ pub(crate) fn render_component_tree(
             );
             painter.rect_filled(full_rect, 0.0, colors.bg_sidebar);
 
-            let mut y = full_rect.min.y;
             if *divider {
-                // Divider is flush with the top edge — no padding above it.
                 painter.rect_filled(
-                    egui::Rect::from_min_size(egui::pos2(full_rect.min.x, y), egui::vec2(full_rect.width(), 1.0)),
+                    egui::Rect::from_min_size(egui::pos2(full_rect.min.x, full_rect.min.y), egui::vec2(full_rect.width(), 1.0)),
                     0.0,
                     colors.border,
                 );
-                y += 1.0 + style::SPACE_SM;
-            } else {
-                y += style::SPACE_SM;
             }
-            let chip_y = y + (chip_row_h - style::TEXT_HINT) / 2.0;
+            let chip_y = full_rect.min.y + (total_h - style::TEXT_HINT) / 2.0;
 
             // Measure total content width for centering
             let mut content_w: f32 = 0.0;
