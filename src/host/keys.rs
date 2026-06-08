@@ -139,6 +139,8 @@ pub enum Action {
     HidePane,
     /// Park/unpark the focused context. Bound to Cmd+Shift+U.
     ParkContext,
+    /// Open the notes picker overlay (text-editor pane only). Bound to Cmd+O when AppActive.
+    OpenNotesPicker,
 }
 
 /// Resolved keybindings — one `(Modifiers, Key)` pair per named action.
@@ -197,6 +199,7 @@ pub struct KeyBindings {
     pub set_context_root_from_cwd: (egui::Modifiers, egui::Key),
     pub hide_pane: (egui::Modifiers, egui::Key),
     pub park_context: (egui::Modifiers, egui::Key),
+    pub open_notes_picker: (egui::Modifiers, egui::Key),
 }
 
 fn cmd() -> egui::Modifiers { egui::Modifiers::COMMAND }
@@ -270,6 +273,7 @@ impl Default for KeyBindings {
             set_context_root_from_cwd: (cmd_shift(),     egui::Key::I),
             hide_pane:                 (cmd(),           egui::Key::U),
             park_context:              (cmd_shift(),     egui::Key::U),
+            open_notes_picker:             (cmd(),           egui::Key::O),
         }
     }
 }
@@ -427,6 +431,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
     apply_override!(set_context_root_from_cwd, "set_context_root_from_cwd");
     apply_override!(hide_pane, "hide_pane");
     apply_override!(park_context, "park_context");
+    apply_override!(open_notes_picker, "open_notes_picker");
 
     // Conflict detection
     let named: &[(&str, (egui::Modifiers, egui::Key))] = &[
@@ -481,6 +486,7 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
         ("set_context_root_from_cwd", bindings.set_context_root_from_cwd),
         ("hide_pane",                 bindings.hide_pane),
         ("park_context",             bindings.park_context),
+        ("open_notes_picker",         bindings.open_notes_picker),
     ];
 
     let mut seen: std::collections::HashMap<u64, &str> = std::collections::HashMap::new();
@@ -605,6 +611,7 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
         // CloseApp (Escape) — also suppressed when shortcuts overlay is open.
         BindingEntry { modifiers: egui::Modifiers::NONE, key: egui::Key::Escape, exact: false, context: BindingContext::AppActive, action: Action::CloseApp },
         BindingEntry { modifiers: egui::Modifiers::NONE, key: egui::Key::Tab,    exact: false, context: BindingContext::AppActive, action: Action::ToggleAppFocus },
+        BindingEntry { modifiers: b.open_notes_picker.0, key: b.open_notes_picker.1, exact: false, context: BindingContext::AppActive, action: Action::OpenNotesPicker },
     ];
 
     // Sort: exact before non-exact; within each group, higher modifier count first.

@@ -1,17 +1,17 @@
 //! Built-in file-backed text editor pane.
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
-use crate::ui::style;
-use egui::RichText;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+const DEBOUNCE: Duration = Duration::from_secs(2);
 
 pub struct TextEditorApp {
     path: PathBuf,
     content: String,
-    dirty: bool,
+    last_edit: Option<Instant>,
     wants_close: bool,
     load_error: Option<String>,
-    /// True once we have called request_focus() on the TextEdit after open.
     focus_requested: bool,
 }
 
@@ -23,28 +23,23 @@ impl TextEditorApp {
             Err(e) => (String::new(), Some(e.to_string())),
         };
         log::info!("TextEditorApp: opened {:?} ({} bytes)", path, content.len());
-        Self { path, content, dirty: false, wants_close: false, load_error, focus_requested: false }
+        Self { path, content, last_edit: None, wants_close: false, load_error, focus_requested: false }
     }
 
-    fn save(&mut self) -> bool {
-        if !self.dirty {
-            return true;
-        }
+    fn flush(&mut self) {
         if let Some(parent) = self.path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 log::warn!("TextEditorApp: could not create parent dir {:?}: {e}", parent);
-                return false;
+                return;
             }
         }
         match std::fs::write(&self.path, &self.content) {
             Ok(()) => {
                 log::info!("TextEditorApp: saved {:?} ({} bytes)", self.path, self.content.len());
-                self.dirty = false;
-                true
+                self.last_edit = None;
             }
             Err(e) => {
                 log::warn!("TextEditorApp: save failed for {:?}: {e}", self.path);
-                false
             }
         }
     }
@@ -66,11 +61,7 @@ impl App for TextEditorApp {
         false
     }
 
-    fn handle_key(&mut self, input: &egui::InputState) -> KeyDisposition {
-        if input.modifiers.command && input.key_pressed(egui::Key::S) {
-            self.save();
-            return KeyDisposition::Consumed;
-        }
+    fn handle_key(&mut self, _input: &egui::InputState) -> KeyDisposition {
         KeyDisposition::Passthrough
     }
 
@@ -80,8 +71,8 @@ impl App for TextEditorApp {
         if let Some(err) = &self.load_error {
             ui.centered_and_justified(|ui| {
                 ui.label(
-                    RichText::new(format!("Failed to open file: {err}"))
-                        .size(style::TEXT_BODY)
+                    egui::RichText::new(format!("Failed to open file: {err}"))
+                        .size(crate::ui::style::TEXT_BODY)
                         .color(colors.danger),
                 );
             });
@@ -91,15 +82,8 @@ impl App for TextEditorApp {
         ui.visuals_mut().extreme_bg_color = colors.bg_darkest;
         ui.visuals_mut().override_text_color = Some(colors.text_primary);
 
-        // Pre-shrink the available rect so the hint renders below without overlap.
-        let hint_height = style::TEXT_HINT + style::SPACE_SM * 2.0;
-        let mut available = ui.available_rect_before_wrap();
-        if self.dirty {
-            available.max.y -= hint_height;
-        }
-
         let response = ui.add_sized(
-            available.size(),
+            ui.available_size(),
             egui::TextEdit::multiline(&mut self.content)
                 .font(egui::TextStyle::Monospace)
                 .desired_width(f32::INFINITY)
@@ -107,22 +91,18 @@ impl App for TextEditorApp {
         );
 
         if response.changed() {
-            self.dirty = true;
+            self.last_edit = Some(Instant::now());
         }
 
-        // Auto-focus on first render so the user can type immediately.
+        if let Some(t) = self.last_edit {
+            if t.elapsed() >= DEBOUNCE {
+                self.flush();
+            }
+        }
+
         if !self.focus_requested {
             response.request_focus();
             self.focus_requested = true;
-        }
-
-        if self.dirty {
-            ui.add_space(style::SPACE_SM);
-            ui.label(
-                RichText::new("Cmd+S to save")
-                    .size(style::TEXT_HINT)
-                    .color(colors.text_dim),
-            );
         }
     }
 
@@ -143,18 +123,17 @@ impl App for TextEditorApp {
             let new_path = PathBuf::from(p);
             if new_path != self.path {
                 log::info!("TextEditorApp: switching from {:?} to {:?}", self.path, new_path);
-                if self.save() {
-                    let (content, load_error) = match std::fs::read_to_string(&new_path) {
-                        Ok(s) => (s, None),
-                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
-                        Err(e) => (String::new(), Some(e.to_string())),
-                    };
-                    self.path = new_path;
-                    self.content = content;
-                    self.load_error = load_error;
-                    self.dirty = false;
-                    self.focus_requested = false;
-                }
+                self.flush();
+                let (content, load_error) = match std::fs::read_to_string(&new_path) {
+                    Ok(s) => (s, None),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), None),
+                    Err(e) => (String::new(), Some(e.to_string())),
+                };
+                self.path = new_path;
+                self.content = content;
+                self.load_error = load_error;
+                self.last_edit = None;
+                self.focus_requested = false;
             }
         }
     }
@@ -162,6 +141,8 @@ impl App for TextEditorApp {
 
 impl Drop for TextEditorApp {
     fn drop(&mut self) {
-        self.save();
+        if self.last_edit.is_some() {
+            self.flush();
+        }
     }
 }

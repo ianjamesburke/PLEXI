@@ -72,6 +72,7 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "open_secrets_manager", "force_reload_app", "toggle_notification_modal",
     "open_scratchpad", "set_context_root_from_cwd",
     "push_to_subcontext", "new_child_context",
+    "open_notes_picker",
 ];
 
 pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
@@ -226,6 +227,7 @@ pub struct KeybindingsConfig {
     pub set_context_root_from_cwd: Option<String>,
     pub hide_pane: Option<String>,
     pub park_context: Option<String>,
+    pub open_notes_picker: Option<String>,
 }
 
 impl KeybindingsConfig {
@@ -288,6 +290,7 @@ impl KeybindingsConfig {
         overlay_field!(set_context_root_from_cwd);
         overlay_field!(hide_pane);
         overlay_field!(park_context);
+        overlay_field!(open_notes_picker);
     }
 }
 
