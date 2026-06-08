@@ -1,25 +1,9 @@
 #!/usr/bin/env python3
-"""Calculator — L1 component-based rendering.
-
-L1 Reference Implementation
-============================
-Patterns demonstrated:
-  - Column layout with AppBar + Card + Heading + FooterKeys
-  - ButtonRow for clickable grid buttons (mouse tracking)
-  - Custom Component (ButtonGrid) for fixed grid layout
-  - State machine: digit entry, pending operator, equals evaluation
-  - ctx.theme colors for button fills (accent, danger, surface)
-  - on_escape for contextual clear vs. close
-"""
-import os
-import sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
-
-from plexi_sdk import App, RenderContext
-from plexi_sdk._theme import theme
+"""Calculator — button grid with state machine evaluation."""
+from plexi_sdk import App
 from plexi_sdk.ui import (
     Column, Card, AppBar, Heading, FooterKeys, ButtonRow, Spacer, Component,
-    SPACE_SM, SPACE_MD,
+    SPACE_SM, SPACE_MD, theme,
 )
 
 # Grid geometry — fixed per-button size; gap matches Card inner gap default.
@@ -171,7 +155,7 @@ class CalcApp(App):
             return True
         return False
 
-    def on_render(self, ctx: RenderContext) -> None:
+    def on_render(self, ctx) -> None:
         subtitle = f"op: {self.pending_op}" if self.pending_op else None
         ctx.render(Column([
             AppBar("Calculator", subtitle=subtitle),

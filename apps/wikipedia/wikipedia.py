@@ -1,18 +1,5 @@
 #!/usr/bin/env python3
-"""Wikipedia — search and read Wikipedia articles via the MediaWiki API.
-
-L1 Reference Implementation
-============================
-Patterns demonstrated:
-  - Fully L1: Column + AppBar + Section + SelectList + Scrollable + Label + FooterKeys
-  - TextInput for search queries
-  - net.http capability request (async, with CapabilityDeniedError handling)
-  - Async networking via threading + emit.run_sync(emit.http_get(...))
-  - Multi-view navigation: search -> results -> article (Esc to go back)
-  - on_inject for test seam (seed mode/query/results/extract without network)
-  - Scrollable wrapping Label for long article text
-  - Loading state management with status_summary
-"""
+"""Wikipedia — search and read Wikipedia articles via the MediaWiki API."""
 
 import json
 import threading
@@ -191,20 +178,20 @@ class WikiApp(App):
             ("esc", "back to results"),
         ])
 
-    def on_render(self, ctx) -> None:
-        # Check for search submission from TextInput
-        if self._search_input.submitted is not None:
-            query = self._search_input.submitted.strip()
+    def on_text_submitted(self, id: str, text: str) -> None:
+        if id == "wiki_search":
+            query = text.strip()
             if query:
                 self._query = query
                 self._fetch_search(query)
 
-        ctx.render(Column([
+    def view(self):
+        return Column([
             AppBar(title="Wikipedia"),
             *self._body_children(),
             Spacer(grow=False),
             self._footer_component(),
-        ]))
+        ])
 
 
 if __name__ == "__main__":

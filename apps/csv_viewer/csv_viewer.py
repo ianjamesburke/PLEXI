@@ -1,22 +1,10 @@
 #!/usr/bin/env python3
-"""CSV Viewer — browse and inspect CSV files in the launch directory.
-
-L1 Reference Implementation
-============================
-Patterns demonstrated:
-  - Two-view navigation: file list (L1 SelectList) and detail grid
-  - Column layout with AppBar + Section + SelectList + FooterKeys
-  - Filesystem capability: reads CSV files from workspace_root
-  - Detail view uses raw ctx.rect/ctx.text for dense columnar data (escape hatch)
-  - Horizontal and vertical scrolling in detail mode
-  - ctx.theme colors throughout (accent for headers, fg for data, surface for rows)
-  - on_inject for test seam (seed state without filesystem)
-"""
+"""CSV Viewer — browse and inspect CSV files in the launch directory."""
 
 import csv
 from pathlib import Path
 
-from plexi_sdk import App, Arg  # type: ignore[attr-defined]
+from plexi_sdk import App, Arg
 from plexi_sdk.ui import (
     AppBar, Column, FooterKeys, Label, Section,
     SelectList, Spacer,

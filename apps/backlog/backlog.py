@@ -1,39 +1,11 @@
 #!/usr/bin/env python3
-"""Backlog viewer — browse, preview, open, archive, delete, and add backlog items.
-
-hjkl navigation. e edits inline. Enter opens in default app. a archives.
-d deletes (confirm). n creates a new item via inline TextEdit. r refreshes.
-/ searches.
-Shows items from two sources merged by mtime:
-  - workspace backlog: <workspace>/.plexi/backlog/
-  - channel backlog:   $PLEXI_CONFIG_DIR/backlog/ (quick notes from host ⌘0)
-Items from the channel backlog are prefixed with [ch] in the list.
-
-Pass -g/--global to show only channel-level items: plexi open backlog -g
-
-L1 Reference Implementation
-============================
-Patterns demonstrated:
-  - Column layout with AppBar + growable body + FooterKeys
-  - SelectList for navigable item lists
-  - TextEdit for inline item creation and editing (component_tree overlay)
-  - Two-pane split via custom Component (escape hatch for HSplit)
-  - Filesystem persistence (read/write/delete backlog .md files)
-  - CLI argument parsing via Arg descriptor
-  - Multi-source data merging (workspace + channel backlog dirs)
-  - Search/filter mode with live refiltering
-  - Confirm-delete overlay pattern
-  - on_component_event for TextEdit change/submit handling
-  - ctx.theme colors throughout (no hardcoded colors)
-"""
+"""Backlog viewer — browse, preview, open, archive, delete, and add backlog items."""
 
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
 from plexi_sdk import App, Arg, TextEdit
 from plexi_sdk.ui import (
     AppBar, Column, Component, Footer, FooterKeys,

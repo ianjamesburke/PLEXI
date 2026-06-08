@@ -1,16 +1,5 @@
 #!/usr/bin/env python3
-"""Todo — the "hello world that's useful." Simple list with persistence.
-
-L1 Reference Implementation
-============================
-Patterns demonstrated:
-  - Fully L1: Column + AppBar + Section + SelectList + FooterKeys + Label + Spacer
-  - TextInput for inline item creation
-  - JSON file persistence (.plexi/todos.json in workspace)
-  - on_path_changed: reloads data when workspace context changes
-  - on_escape for contextual mode exit (add mode vs. close)
-  - Minimal state: list of dicts, selected index, adding flag
-"""
+"""Todo — simple list with persistence."""
 
 import json
 import pathlib
@@ -106,9 +95,18 @@ class TodoApp(App):
             self._save()
             self._sync_list()
 
-    def on_render(self, ctx) -> None:
+    def on_text_submitted(self, id: str, text: str) -> None:
+        if id == "todo-add":
+            val = text.strip()
+            if val:
+                self._items.append({"text": val, "done": False})
+                self._save()
+                self._sync_list()
+            self._adding = False
+
+    def view(self):
         if self._adding:
-            body = Column([
+            return Column([
                 AppBar(title="Todo"),
                 Section("Add item"),
                 self._input,
@@ -118,32 +116,20 @@ class TodoApp(App):
                     ("Esc", "cancel"),
                 ]),
             ])
-            ctx.render(body)
-            submitted = self._input.submitted
-            if submitted is not None:
-                text = submitted.strip()
-                if text:
-                    self._items.append({"text": text, "done": False})
-                    self._save()
-                    self._sync_list()
-                self._adding = False
-        else:
-            if self._items:
-                list_area = self._list
-            else:
-                list_area = Label("No items. Press 'a' to add.", tone="hint")  # type: ignore[assignment]
-            ctx.render(Column([
-                AppBar(title="Todo"),
-                Section("Current list"),
-                list_area,
-                Spacer(grow=False),
-                FooterKeys([
-                    (["↑", "↓"], "select"),
-                    ("space", "toggle"),
-                    ("a", "add"),
-                    ("d", "delete"),
-                ]),
-            ]))
+
+        list_area = self._list if self._items else Label("No items. Press 'a' to add.", tone="hint")
+        return Column([
+            AppBar(title="Todo"),
+            Section("Current list"),
+            list_area,
+            Spacer(grow=False),
+            FooterKeys([
+                (["↑", "↓"], "select"),
+                ("space", "toggle"),
+                ("a", "add"),
+                ("d", "delete"),
+            ]),
+        ])
 
 
 if __name__ == "__main__":

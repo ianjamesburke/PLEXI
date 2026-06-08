@@ -552,6 +552,10 @@ pub(crate) fn render_component_tree(
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(ui.available_width(), total_h), egui::Sense::hover());
             let painter = ui.painter();
+
+            // Background fill behind the entire footer
+            painter.rect_filled(rect, 0.0, colors.bg_sidebar);
+
             let mut y = rect.min.y;
             if *divider {
                 y += style::SPACE_SM;
@@ -565,8 +569,28 @@ pub(crate) fn render_component_tree(
                 y += style::SPACE_SM;
             }
             let chip_y = y + (chip_row_h - style::TEXT_HINT) / 2.0;
-            let mut cx = rect.min.x + style::SPACE_MD;
-            for entry in entries {
+
+            // Measure total content width for centering
+            let mut content_w: f32 = 0.0;
+            for (ei, entry) in entries.iter().enumerate() {
+                for (ki, key) in entry.keys.iter().enumerate() {
+                    if ki > 0 { content_w += 2.0; }
+                    let tw = ui.fonts(|f| {
+                        f.layout_no_wrap(key.clone(), egui::FontId::monospace(style::TEXT_HINT), colors.text_primary).size().x
+                    });
+                    content_w += tw + 8.0;
+                }
+                content_w += 4.0;
+                content_w += ui.fonts(|f| {
+                    f.layout_no_wrap(entry.description.clone(), egui::FontId::proportional(style::TEXT_HINT), colors.text_dim).size().x
+                });
+                if ei + 1 < entries.len() {
+                    content_w += style::SPACE_MD;
+                }
+            }
+
+            let mut cx = rect.min.x + ((rect.width() - content_w) / 2.0).max(style::SPACE_MD);
+            for (ei, entry) in entries.iter().enumerate() {
                 for (ki, key) in entry.keys.iter().enumerate() {
                     if ki > 0 {
                         cx += 2.0;
@@ -612,7 +636,10 @@ pub(crate) fn render_component_tree(
                     )
                     .size()
                     .x
-                }) + style::SPACE_MD;
+                });
+                if ei + 1 < entries.len() {
+                    cx += style::SPACE_MD;
+                }
             }
         }
 
@@ -684,13 +711,17 @@ pub(crate) fn render_component_tree(
             if *monospace {
                 rich = rich.monospace();
             }
-            let label = egui::Label::new(rich).selectable(true);
-            let label = if *max_lines > 0 {
-                label.wrap_mode(egui::TextWrapMode::Truncate)
+            let label = egui::Label::new(rich).selectable(true).wrap();
+            if *max_lines > 0 {
+                let line_h = font_size + 4.0;
+                let max_h = *max_lines as f32 * line_h;
+                ui.scope(|ui| {
+                    ui.set_max_height(max_h);
+                    ui.add(label);
+                });
             } else {
-                label.wrap()
-            };
-            ui.add(label);
+                ui.add(label);
+            }
         }
 
         UiNode::Spacer { size, grow, .. } => {
