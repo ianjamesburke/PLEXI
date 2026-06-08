@@ -100,7 +100,7 @@ fn validate_workspace_root(workspace_root: &Path, op: &str, app_id: &str, key: &
     true
 }
 
-// ── Index file (keys only — values stay in Keychain) ──────────────────
+// ── Index file (legacy inject list — values stay in Keychain) ────────────────
 
 fn index_path() -> std::path::PathBuf {
     crate::config::config_dir().join("secrets-index.json")
@@ -121,70 +121,7 @@ fn read_index() -> Vec<SecretEntry> {
     }
 }
 
-fn write_index(entries: &[SecretEntry]) {
-    let path = index_path();
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            error!("secrets: failed to create config dir: {e}");
-            return;
-        }
-    }
-    match serde_json::to_string_pretty(entries) {
-        Ok(s) => {
-            if let Err(e) = std::fs::write(&path, s) {
-                error!("secrets: failed to write index: {e}");
-            }
-        }
-        Err(e) => error!("secrets: failed to serialize index: {e}"),
-    }
-}
-
-fn index_add(key: &str, app_id: &str, directory: &str) {
-    let mut entries = read_index();
-    // Preserve inject flag if an entry already exists with this triple.
-    let existing_inject = entries
-        .iter()
-        .find(|e| e.key == key && e.app_id == app_id && e.directory == directory)
-        .map(|e| e.inject)
-        .unwrap_or(false);
-    // Remove any existing entry with the same triple to avoid duplicates.
-    entries.retain(|e| !(e.key == key && e.app_id == app_id && e.directory == directory));
-    entries.push(SecretEntry {
-        app_id: app_id.to_string(),
-        directory: directory.to_string(),
-        key: key.to_string(),
-        workspace_root: None, // v1/v2 legacy path — no workspace scoping
-        inject: existing_inject,
-    });
-    write_index(&entries);
-}
-
-fn index_remove(key: &str, app_id: &str, directory: &str) {
-    let mut entries = read_index();
-    entries.retain(|e| !(e.key == key && e.app_id == app_id && e.directory == directory));
-    write_index(&entries);
-}
-
-// ── v1/v2 app-scoped secret API ───────────────────────────────────────────────
-// v1/v2 app-scoped secret API. v3 uses get_secret_scoped/set_secret_scoped keyed by workspace_root.
-// Call sites migrate in layer 3.
-
-#[cfg(target_os = "macos")]
-pub fn store_secret(key: &str, value: &str, app_id: &str, directory: &str) -> bool {
-    use security_framework::passwords::set_generic_password;
-
-    let account = account_key(key, app_id, directory);
-    match set_generic_password(SERVICE_NAME, &account, value.as_bytes()) {
-        Ok(()) => {
-            index_add(key, app_id, directory);
-            true
-        }
-        Err(e) => {
-            error!("secrets::store_secret failed for account={account}: {e}");
-            false
-        }
-    }
-}
+// ── v1/v2 read-only API (still used by shell.rs inject and process_app routing) ─
 
 #[cfg(target_os = "macos")]
 pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<Zeroizing<String>> {
@@ -203,67 +140,15 @@ pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<Zeroi
     }
 }
 
-#[cfg(target_os = "macos")]
-pub fn delete_secret(key: &str, app_id: &str, directory: &str) -> bool {
-    use security_framework::passwords::delete_generic_password;
-
-    let account = account_key(key, app_id, directory);
-    match delete_generic_password(SERVICE_NAME, &account) {
-        Ok(()) => {
-            index_remove(key, app_id, directory);
-            true
-        }
-        Err(e) if e.code() == -25300 => {
-            // Already gone — treat as success.
-            index_remove(key, app_id, directory);
-            true
-        }
-        Err(e) => {
-            error!("secrets::delete_secret failed for account={account}: {e}");
-            false
-        }
-    }
-}
-
-/// List every Plexi secret across all app_ids — reads from the index.
-pub fn list_all_secrets() -> Vec<SecretEntry> {
-    read_index()
-}
-
 /// Return all secrets flagged with inject=true.
 pub fn list_inject_secrets() -> Vec<SecretEntry> {
     read_index().into_iter().filter(|e| e.inject).collect()
 }
 
-/// Toggle the inject flag for the given key+app_id+directory triple.
-/// Returns the new inject value, or None if the entry was not found.
-pub fn toggle_inject_secret(key: &str, app_id: &str, directory: &str) -> Option<bool> {
-    let mut entries = read_index();
-    let entry = entries
-        .iter_mut()
-        .find(|e| e.key == key && e.app_id == app_id && e.directory == directory)?;
-    entry.inject = !entry.inject;
-    let new_value = entry.inject;
-    write_index(&entries);
-    Some(new_value)
-}
-
 // ── Non-macOS stubs ────────────────────────────────────────────────────
-
-#[cfg(not(target_os = "macos"))]
-pub fn store_secret(key: &str, _value: &str, app_id: &str, directory: &str) -> bool {
-    warn!("secrets::store_secret({key}, {app_id}, {directory}): Keychain not available on this platform");
-    false
-}
 
 #[cfg(not(target_os = "macos"))]
 pub fn retrieve_secret(key: &str, app_id: &str, directory: &str) -> Option<Zeroizing<String>> {
     warn!("secrets::retrieve_secret({key}, {app_id}, {directory}): Keychain not available on this platform");
     None
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn delete_secret(key: &str, app_id: &str, directory: &str) -> bool {
-    warn!("secrets::delete_secret({key}, {app_id}, {directory}): Keychain not available on this platform");
-    false
 }
