@@ -485,9 +485,10 @@ pub fn app_list() -> i32 {
     super::list::list_cli()
 }
 
-/// `plexi app render <id> --size WxH [--state state.json] [--output path] [--png]`
-/// Renders an app headlessly. Default: JSON frame tree. With --png: PNG image.
-pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str>, png: bool) -> i32 {
+/// `plexi app render <app> --size WxH [--state state.json] [--output path] [--png]`
+/// Renders an app headlessly. `app` may be an installed app ID or a local directory path.
+/// Default output: JSON frame tree. With --png: PNG image.
+pub fn app_render(app: &str, size: &str, state: Option<&str>, output: Option<&str>, png: bool) -> i32 {
     // Parse WxH
     let (width, height) = match parse_render_size(size) {
         Some(v) => v,
@@ -509,10 +510,7 @@ pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str
             }
         };
         match serde_json::from_str(&json) {
-            Ok(v) => {
-                log::info!("app_render[{id}]: loaded seed state from '{s}'");
-                Some(v)
-            }
+            Ok(v) => Some(v),
             Err(e) => {
                 eprintln!("error: invalid JSON in state file '{s}': {e}");
                 return 1;
@@ -522,20 +520,72 @@ pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str
         None
     };
 
-    // Resolve the app binary
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let registry = crate::app::registry::AppRegistry::load(&cwd);
-    let app_bin = match registry.list().into_iter().find(|a| a.manifest.id == id) {
-        Some(a) => a.bin_path.clone(),
-        None => {
-            eprintln!("error: app '{id}' not found — run `plexi app list` to see installed apps");
+    // Resolve (app_id, bin_path): path argument takes priority over registry lookup.
+    // A path is detected by prefix (./  ../  /) or by existing as a directory.
+    // Path: more than one component (./foo, ../foo, /abs/path) OR an existing directory.
+    // Using components() instead of prefix checks is portable across platforms.
+    let (app_id, app_bin) = if std::path::Path::new(app).components().count() > 1 || std::path::Path::new(app).is_dir() {
+        let app_dir = match std::path::Path::new(app).canonicalize() {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("app_render: could not resolve '{app}': {e}");
+                eprintln!("error: could not resolve '{app}': {e}");
+                return 1;
+            }
+        };
+        if !app_dir.is_dir() {
+            eprintln!("error: '{app}' is not a directory — expected an app directory containing manifest.toml");
             return 1;
+        }
+        let manifest_path = app_dir.join("manifest.toml");
+        let manifest_str = match std::fs::read_to_string(&manifest_path) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("app_render: no manifest.toml in {}: {e}", app_dir.display());
+                eprintln!("error: no manifest.toml in {}: {e}", app_dir.display());
+                eprintln!("  Is this a Plexi app directory? Run `plexi app init <name>` to scaffold one.");
+                return 1;
+            }
+        };
+        let manifest: crate::app::registry::AppManifest = match toml::from_str(&manifest_str) {
+            Ok(m) => m,
+            Err(e) => {
+                log::warn!("app_render: invalid manifest.toml in {}: {e}", app_dir.display());
+                eprintln!("error: invalid manifest.toml: {e}");
+                return 1;
+            }
+        };
+        if manifest.schema_version > crate::app::registry::MANIFEST_SCHEMA_VERSION {
+            eprintln!(
+                "error: manifest.toml schema_version {} is newer than supported (max {}); update Plexi to render this app",
+                manifest.schema_version,
+                crate::app::registry::MANIFEST_SCHEMA_VERSION
+            );
+            return 1;
+        }
+        let entry = app_dir.join(&manifest.app.entry);
+        if !entry.exists() {
+            eprintln!("error: app entry '{}' not found in {}", manifest.app.entry, app_dir.display());
+            return 1;
+        }
+        log::info!("app_render[{}]: loaded from path '{app}'", manifest.app.id);
+        (manifest.app.id, entry)
+    } else {
+        // ID-based: registry lookup
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let registry = crate::app::registry::AppRegistry::load(&cwd);
+        match registry.list().into_iter().find(|a| a.manifest.id == app) {
+            Some(a) => (a.manifest.id.clone(), a.bin_path.clone()),
+            None => {
+                eprintln!("error: app '{app}' not found — run `plexi app list` to see installed apps");
+                return 1;
+            }
         }
     };
 
     if png {
         // PNG mode: rasterize and write binary
-        let png_bytes = match crate::render::app_render::render_app_to_png(id, &app_bin, width, height, seed_state) {
+        let png_bytes = match crate::render::app_render::render_app_to_png(&app_id, &app_bin, width, height, seed_state) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("error: render failed: {e}");
@@ -548,7 +598,7 @@ pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str
                     eprintln!("error: could not write output to '{path}': {e}");
                     return 1;
                 }
-                log::info!("app_render[{id}]: wrote {width}×{height} PNG to '{path}'");
+                log::info!("app_render[{app_id}]: wrote {width}×{height} PNG to '{path}'");
                 eprintln!("Wrote {width}×{height} PNG to '{path}'");
             }
             None => {
@@ -558,14 +608,14 @@ pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str
                     return 1;
                 }
                 log::info!(
-                    "app_render[{id}]: wrote {width}×{height} PNG to stdout ({} bytes)",
+                    "app_render[{app_id}]: wrote {width}×{height} PNG to stdout ({} bytes)",
                     png_bytes.len()
                 );
             }
         }
     } else {
         // JSON mode (default): return raw frame commands
-        let json = match crate::render::app_render::render_app_to_json(id, &app_bin, width, height, seed_state) {
+        let json = match crate::render::app_render::render_app_to_json(&app_id, &app_bin, width, height, seed_state) {
             Ok(j) => j,
             Err(e) => {
                 eprintln!("error: render failed: {e}");
@@ -578,12 +628,12 @@ pub fn app_render(id: &str, size: &str, state: Option<&str>, output: Option<&str
                     eprintln!("error: could not write output to '{path}': {e}");
                     return 1;
                 }
-                log::info!("app_render[{id}]: wrote JSON frame to '{path}'");
+                log::info!("app_render[{app_id}]: wrote JSON frame to '{path}'");
                 eprintln!("Wrote JSON frame to '{path}'");
             }
             None => {
                 println!("{json}");
-                log::info!("app_render[{id}]: wrote JSON frame to stdout");
+                log::info!("app_render[{app_id}]: wrote JSON frame to stdout");
             }
         }
     }

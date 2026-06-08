@@ -327,8 +327,8 @@ fn main() -> eframe::Result {
                         AppCmd::Init { name, lang, global, no_open, from_pane_id } => std::process::exit(cli::app_init(&name, &lang, global, no_open, from_pane_id)),
                         AppCmd::Uninstall { id, yes } => std::process::exit(cli::app_uninstall(&id, yes)),
                         AppCmd::List => std::process::exit(cli::app_list()),
-                        AppCmd::Render { id, size, state, output, png } => {
-                            std::process::exit(cli::app_render(&id, &size, state.as_deref(), output.as_deref(), png))
+                        AppCmd::Render { app, size, state, output, png } => {
+                            std::process::exit(cli::app_render(&app, &size, state.as_deref(), output.as_deref(), png))
                         }
                         AppCmd::Info { id } => std::process::exit(cli::app_info(&id)),
                         AppCmd::Validate { path } => {
