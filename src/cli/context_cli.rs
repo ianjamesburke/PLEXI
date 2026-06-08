@@ -210,11 +210,22 @@ fn print_json_output(json_str: &str) -> i32 {
         match Command::new("jq").arg(".").stdin(Stdio::piped()).spawn() {
             Ok(mut child) => {
                 if let Some(mut stdin) = child.stdin.take() {
-                    let _ = stdin.write_all(json_str.as_bytes());
+                    if let Err(e) = stdin.write_all(json_str.as_bytes()) {
+                        log::warn!("context_list:print_json_output: failed writing to jq stdin ({e})");
+                    }
                 }
-                let _ = child.wait();
-                log::info!("context_list:print_json_output: rendered via jq");
-                return 0;
+                match child.wait() {
+                    Ok(status) if status.success() => {
+                        log::info!("context_list:print_json_output: rendered via jq");
+                        return 0;
+                    }
+                    Ok(status) => {
+                        log::warn!("context_list:print_json_output: jq exited non-zero ({status}), falling back to serde");
+                    }
+                    Err(e) => {
+                        log::warn!("context_list:print_json_output: jq wait failed ({e}), falling back to serde");
+                    }
+                }
             }
             Err(e) => {
                 log::warn!("context_list:print_json_output: jq spawn failed ({e}), falling back to serde");
@@ -233,9 +244,9 @@ fn print_json_output(json_str: &str) -> i32 {
                 1
             }
         },
-        Err(_) => {
-            print!("{json_str}");
-            0
+        Err(e) => {
+            eprintln!("error: invalid JSON output: {e}");
+            1
         }
     }
 }
