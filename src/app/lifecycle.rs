@@ -90,6 +90,30 @@ impl PlexiApp {
                         log::error!("pane_ipc: list_panes: could not write response file {response_file:?}: {e}");
                     }
                 }
+                crate::app_protocol::AppRequest::ListContexts { response_file } => {
+                    log::info!("pane_ipc: kind=list_contexts response_file={:?}", response_file);
+                    let active_ctx_id = self.router.active().context_id;
+                    let entries: Vec<serde_json::Value> = self.router.iter().map(|ctx| {
+                        serde_json::json!({
+                            "context_id": ctx.context_id,
+                            "name": ctx.name,
+                            "path": ctx.path.to_string_lossy(),
+                            "root": ctx.root.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                            "description": ctx.description,
+                            "parent_id": ctx.parent_id,
+                            "depth": ctx.depth,
+                            "is_active": ctx.context_id == active_ctx_id,
+                        })
+                    }).collect();
+                    let json_str = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
+                    let temp_file = format!("{}.tmp", response_file);
+                    if let Err(e) = std::fs::write(&temp_file, &json_str) {
+                        log::error!("pane_ipc: list_contexts: could not write temp response file {temp_file:?}: {e}");
+                    } else if let Err(e) = std::fs::rename(&temp_file, &response_file) {
+                        log::error!("pane_ipc: list_contexts: could not rename temp response file to {response_file:?}: {e}");
+                        let _ = std::fs::remove_file(&temp_file);
+                    }
+                }
                 crate::app_protocol::AppRequest::GetPaneInfo { pane_id, response_file } => {
                     log::info!("pane_ipc: kind=get_pane_info pane_id={pane_id} response_file={:?}", response_file);
                     let active_win = self.active_window;

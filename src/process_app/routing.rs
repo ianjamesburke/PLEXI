@@ -1716,6 +1716,12 @@ impl ProcessApp {
                     self.type_id
                 );
             }
+            AppRequest::ListContexts { .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: received ListContexts over PGAP — ignored (use PLEXI_SOCKET instead)",
+                    self.type_id
+                );
+            }
             AppRequest::FocusPane { .. } => {
                 log::warn!(
                     "ProcessApp[{}]: received FocusPane over PGAP — ignored (use PLEXI_SOCKET instead)",

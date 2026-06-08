@@ -177,6 +177,7 @@ pub use config_cli::{config_check, config_edit, config_get, config_reset};
 pub use context_cli::{
     context_new_cli, context_zoom_cli, context_zoom_out_cli, context_open_cli,
     context_set_root_cli, context_current_cli, context_describe_cli, context_push_cli,
+    context_list_cli,
 };
 pub use demo::demo_cli;
 pub use doctor::doctor_cli;
