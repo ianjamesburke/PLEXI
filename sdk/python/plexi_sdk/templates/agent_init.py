@@ -6,7 +6,7 @@ from plexi_sdk.ui import AppBar, Card, Column, FooterKeys, Label, TextInput
 
 
 class __CLASS_NAME__(App):
-    async def on_init(self, ctx: RenderContext) -> None:
+    async def on_init(self) -> None:
         self._messages: list[dict] = []
         self._input = TextInput("input", placeholder="Type a message and press Enter…")
         self.emit.info("__DISPLAY_NAME__ initialized")
@@ -28,17 +28,17 @@ class __CLASS_NAME__(App):
                 self._messages.append({"role": "user", "content": text})
                 threading.Thread(target=self._send_query, args=(text,), daemon=True).start()
 
-    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
+    def on_key(self, key: str, _mods: dict) -> None:
         if key == "escape":
             self.emit.close_self()
 
     def _send_query(self, text: str) -> None:
         try:
-            response = self.emit.ai_query(
+            response = self.emit.run_sync(self.emit.ai_query(
                 model_tier="low",
                 system="You are a helpful assistant.",
                 messages=[{"role": "user", "content": text}],
-            )
+            ))
             self._messages.append({"role": "agent", "content": response.content})
         except Exception as e:
             self._messages.append({"role": "agent", "content": f"error: {e}"})
