@@ -2703,15 +2703,39 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::SwitchContext(n) => {
-                    if n < self.router.len() {
-                        let target_parent = self.router.get(n).parent_id;
+                    // Map display position n (0-indexed) to the actual router index by
+                    // computing the same active display order the sidebar renders.
+                    let num = self.router.len();
+                    let mut display_order: Vec<usize> = Vec::with_capacity(num);
+                    for i in 0..num {
+                        if self.router.get(i).parent_id.is_none() {
+                            display_order.push(i);
+                            let ctx_id = self.router.get(i).context_id;
+                            for j in 0..num {
+                                if self.router.get(j).parent_id == Some(ctx_id) {
+                                    display_order.push(j);
+                                }
+                            }
+                        }
+                    }
+                    for i in 0..num {
+                        if !display_order.contains(&i) {
+                            display_order.push(i);
+                        }
+                    }
+                    let active_order: Vec<usize> = display_order.into_iter()
+                        .filter(|&i| !self.router.get(i).parked)
+                        .collect();
+                    if let Some(&router_idx) = active_order.get(n) {
+                        let target_parent = self.router.get(router_idx).parent_id;
                         let current_ctx_id = self.router.active().context_id;
                         if target_parent == Some(current_ctx_id) {
                             let current_win_id = self.windows[self.active_window].window_id;
                             let focused_tile = self.windows[self.active_window].focused_pane;
                             self.router.push_depth(current_ctx_id, current_win_id, focused_tile);
                         }
-                        self.switch_workspace(n);
+                        log::info!("SwitchContext: display_pos={} → router_idx={}", n + 1, router_idx);
+                        self.switch_workspace(router_idx);
                     }
                 }
                 Action::NextTab => {

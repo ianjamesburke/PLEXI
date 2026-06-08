@@ -82,7 +82,7 @@ impl PlexiApp {
             .collect();
 
         // ── Active contexts ─────────────────────────────────────────────
-        for &i in &active_order {
+        for (display_idx, &i) in active_order.iter().enumerate() {
             let is_active = i == self.router.active_idx();
             let is_renaming = self.renaming_window == Some(i);
             let is_dragging = self.drag_context == Some(i);
@@ -223,7 +223,7 @@ impl PlexiApp {
                 any_dragging,
                 action_enabled: num_contexts > 1 && !any_dragging,
                 ctx_name,
-                ctx_index: Some(i),
+                ctx_index: Some(display_idx),
                 badge_count,
                 subtitle,
                 pane_dots,
