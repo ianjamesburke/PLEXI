@@ -50,8 +50,37 @@ fn spawn_and_collect_frame(
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     // Mirror the env setup from ProcessApp::launch so Python apps can import plexi_sdk.
+    // .py entries are launched via python3 — no shebang or execute bit required (mirrors ProcessApp::launch).
     const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
-    let mut cmd = Command::new(bin_path);
+    let bundle_contents = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()));
+    let bundled_py_bin = bundle_contents.as_ref()
+        .map(|c| c.join("Resources").join("assets").join("python").join("bin"));
+    let bundle_sdk = bundle_contents.as_ref()
+        .map(|c| c.join("Resources").join("sdk").join("python"));
+    let is_python = bin_path.extension().and_then(|e| e.to_str()) == Some("py");
+    let mut cmd = if is_python {
+        let venv_python = bin_path
+            .parent()
+            .map(|app_dir| app_dir.join(".venv").join("bin").join("python"))
+            .filter(|p| p.exists());
+        let py = venv_python
+            .map(std::ffi::OsString::from)
+            .or_else(|| {
+                bundled_py_bin.as_ref()
+                    .map(|b| b.join("python3"))
+                    .filter(|p| p.exists())
+                    .map(std::ffi::OsString::from)
+            })
+            .unwrap_or_else(|| std::ffi::OsString::from("python3"));
+        log::info!("app_render[{app_id}]: launching .py entry via {:?}", py);
+        let mut c = Command::new(py);
+        c.arg(bin_path);
+        c
+    } else {
+        Command::new(bin_path)
+    };
     cmd.current_dir(&cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -67,10 +96,6 @@ fn spawn_and_collect_frame(
             cmd.env(k, v);
         }
     }
-    let bundle_sdk = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()))
-        .map(|p| p.join("Resources").join("sdk").join("python"));
     let pythonpath = crate::config::build_pythonpath(bundle_sdk.as_deref());
     cmd.env("PYTHONPATH", &pythonpath);
     log::info!("app_render[{app_id}]: PYTHONPATH={pythonpath}");
