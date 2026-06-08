@@ -121,22 +121,38 @@ impl SecretsApp {
 
         #[cfg(target_os = "macos")]
         {
-            use crate::workspace::secrets::{keychain_user_name, MacKeychain, SecretStore};
-            let account = keychain_user_name(&name);
+            use crate::workspace::secrets::{
+                keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore,
+                WorkspaceConfig,
+            };
+
+            // Resolve scope: workspace-scoped if cwd is inside an initialized workspace.
+            let workspace = crate::app::registry::resolve_workspace_root(&self.cwd)
+                .and_then(|root| {
+                    WorkspaceConfig::load(&root)
+                        .ok()
+                        .flatten()
+                        .map(|cfg| (root, cfg))
+                });
+
+            let (account, scope) = match &workspace {
+                Some((_, cfg)) => (keychain_workspace_name(&cfg.id, &name), cfg.id.clone()),
+                None => (keychain_user_name(&name), "global".to_string()),
+            };
+
             let store = MacKeychain::new();
             match store.set(&account, &value) {
                 Ok(()) => {
-                    // Optimistic update — no need to re-read the full index.
                     self.entries.retain(|e| e.account != account);
                     self.entries.push(ManagedSecret {
                         account,
                         name: name.clone(),
-                        scope: "global".to_string(),
+                        scope: scope.clone(),
                     });
                     self.selected = self.entries.len().saturating_sub(1);
                     self.mode = Mode::List;
                     self.status_msg = Some(format!("Stored '{name}'."));
-                    log::info!("secrets_manager: stored global secret '{name}'");
+                    log::info!("secrets_manager: stored secret '{name}' scope={scope}");
                 }
                 Err(e) => {
                     self.status_msg = Some("Failed to store secret — check logs.".to_string());

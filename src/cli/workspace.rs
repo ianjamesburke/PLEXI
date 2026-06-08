@@ -190,8 +190,9 @@ pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool, alias:
                         log::info!(
                             "secret_set:cli: wrote default route {friendly} → {effective_friendly} in secrets.toml"
                         );
+                        let channel_dir = crate::config::workspace_channel_dir();
                         print_tip(&format!(
-                            "Route written to .plexi/secrets.toml — use in commands.toml: [secrets] required = [\"{friendly}\"]"
+                            "Route written to {channel_dir}/secrets.toml — use in commands.toml: [secrets] required = [\"{friendly}\"]"
                         ));
                     }
                     Err(e) => {
