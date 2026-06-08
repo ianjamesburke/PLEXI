@@ -88,7 +88,7 @@ def _parse(raw: str) -> "LogLine | None":
     return LogLine(time, level, target, message)
 
 
-def _read_log(max_lines: int = 5_000) -> list[LogLine]:
+def _read_log(max_lines: int = 500) -> list[LogLine]:
     try:
         with open(LOG_PATH) as f:
             tail = f.readlines()[-max_lines:]
