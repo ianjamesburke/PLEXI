@@ -193,30 +193,16 @@ pub fn pane_self_cli() -> i32 {
     }
 }
 
-/// `plexi pane info`
+/// `plexi pane info [--previous]`
 ///
-/// Sends a `get_pane_info` command to PLEXI_SOCKET for the current pane
-/// (identified by PLEXI_PANE_ID). Merges in client-side fields (socket, channel)
-/// and pretty-prints the result as JSON. Returns 0 on success, 1 on error.
-pub fn pane_info_cli() -> i32 {
-    let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane");
-            return 1;
-        }
-    };
+/// Sends a `get_pane_info` or `get_previous_pane_info` command to PLEXI_SOCKET.
+/// Merges in client-side fields (socket, channel) and pretty-prints the result
+/// as JSON. Returns 0 on success, 1 on error.
+pub fn pane_info_cli(previous: bool) -> i32 {
     let socket_path = match std::env::var("PLEXI_SOCKET") {
         Ok(v) => v,
         Err(_) => {
             eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
-            return 1;
-        }
-    };
-    let pane_id: u64 = match pane_id_str.parse() {
-        Ok(n) => n,
-        Err(_) => {
-            eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
             return 1;
         }
     };
@@ -227,13 +213,34 @@ pub fn pane_info_cli() -> i32 {
         .to_string_lossy()
         .into_owned();
 
-    let payload = serde_json::json!({
-        "type": "get_pane_info",
-        "pane_id": pane_id,
-        "response_file": response_file,
-    });
-
-    log::info!("pane_info:cli: pane_id={pane_id} response_file={:?}", response_file);
+    let payload = if previous {
+        log::info!("pane_info:cli: previous=true response_file={:?}", response_file);
+        serde_json::json!({
+            "type": "get_previous_pane_info",
+            "response_file": response_file,
+        })
+    } else {
+        let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
+            Ok(v) => v,
+            Err(_) => {
+                eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane");
+                return 1;
+            }
+        };
+        let pane_id: u64 = match pane_id_str.parse() {
+            Ok(n) => n,
+            Err(_) => {
+                eprintln!("error: PLEXI_PANE_ID is not a valid number: {pane_id_str}");
+                return 1;
+            }
+        };
+        log::info!("pane_info:cli: pane_id={pane_id} response_file={:?}", response_file);
+        serde_json::json!({
+            "type": "get_pane_info",
+            "pane_id": pane_id,
+            "response_file": response_file,
+        })
+    };
 
     let code = send_to_socket(payload);
     if code != 0 {
