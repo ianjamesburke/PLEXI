@@ -762,6 +762,8 @@ pub enum ContextCmd {
         /// Name for the new sub-context. Defaults to the pane name.
         name: Option<String>,
     },
+    /// List all open contexts as a JSON array.
+    List,
 }
 
 #[derive(Subcommand)]

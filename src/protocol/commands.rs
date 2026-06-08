@@ -646,6 +646,12 @@ pub enum AppRequest {
         context_id: Option<u64>,
     },
 
+    /// List all open contexts. Host writes a JSON array to `response_file`.
+    /// Sent by `plexi context list`.
+    ListContexts {
+        response_file: String,
+    },
+
     /// Query info for a specific pane by ID. Host writes JSON object to `response_file`.
     /// Sent by `plexi pane info`.
     GetPaneInfo {
