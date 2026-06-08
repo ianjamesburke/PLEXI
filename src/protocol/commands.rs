@@ -659,6 +659,15 @@ pub enum AppRequest {
         response_file: String,
     },
 
+    /// Query info for the previously focused pane. Host walks `pane_focus_history`
+    /// from the end, finds the last entry whose tile resolves to a live pane, and
+    /// writes the same JSON shape as `GetPaneInfo` to `response_file`.
+    /// Returns `{"error":"..."}` if history is empty or no valid pane found.
+    /// Sent by `plexi pane info --previous`.
+    GetPreviousPaneInfo {
+        response_file: String,
+    },
+
     /// Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.
     FocusPane {
         pane_id: u64,

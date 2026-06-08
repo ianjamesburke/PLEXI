@@ -1786,6 +1786,12 @@ impl ProcessApp {
                     self.type_id
                 );
             }
+            AppRequest::GetPreviousPaneInfo { .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: GetPreviousPaneInfo received in app routing — ignored (host-only command)",
+                    self.type_id
+                );
+            }
             AppRequest::CapturePane { pane_id, .. } => {
                 log::warn!(
                     "ProcessApp[{}]: CapturePane pane_id={pane_id} received in app routing — ignored (use PLEXI_SOCKET instead)",

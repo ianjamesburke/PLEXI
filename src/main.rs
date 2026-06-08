@@ -507,7 +507,7 @@ fn main() -> eframe::Result {
                         }
                         PaneCmd::Key { pane_id, key } => std::process::exit(cli::pane_key_cli(pane_id, &key)),
                         PaneCmd::Self_ => std::process::exit(cli::pane_self_cli()),
-                        PaneCmd::Info => std::process::exit(cli::pane_info_cli()),
+                        PaneCmd::Info { previous } => std::process::exit(cli::pane_info_cli(previous)),
                         PaneCmd::Capture { pane_id, lines, full_output, from_cursor } => std::process::exit(cli::pane_capture_cli(pane_id, lines, full_output, from_cursor)),
                         PaneCmd::State { pane_id } => std::process::exit(cli::pane_state_cli(pane_id)),
                         PaneCmd::New { cmd, name, down, left, up, right, tab, window, overlay, from, ephemeral, no_focus, cwd } => {

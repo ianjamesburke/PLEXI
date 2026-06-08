@@ -177,6 +177,70 @@ impl PlexiApp {
                         }
                     }
                 }
+                crate::app_protocol::AppRequest::GetPreviousPaneInfo { response_file } => {
+                    log::info!("pane_ipc: kind=get_previous_pane_info response_file={:?}", response_file);
+                    let mut found = false;
+                    'prev_outer: for (window_id, tile_id) in self.pane_focus_history.iter().rev() {
+                        if let Some(win) = self.windows.iter().find(|w| w.window_id == *window_id) {
+                            if let Some(egui_tiles::Tile::Pane(pane_id)) = win.tree.tiles.get(*tile_id) {
+                                if let Some(pane) = win.panes.get(pane_id) {
+                                    let info = match pane {
+                                        crate::host::pane::Pane::Terminal(t) => {
+                                            let cwd = crate::host::shell::get_pid_cwd(t.backend.child_pid())
+                                                .map(|p| p.to_string_lossy().into_owned());
+                                            serde_json::json!({
+                                                "id": pane_id,
+                                                "type": "terminal",
+                                                "title": t.name.clone().unwrap_or_else(|| "terminal".to_string()),
+                                                "focused": false,
+                                                "context_id": win.context_id,
+                                                "window_id": win.window_id,
+                                                "cwd": cwd,
+                                            })
+                                        }
+                                        crate::host::pane::Pane::App(a) => {
+                                            serde_json::json!({
+                                                "id": pane_id,
+                                                "type": "app",
+                                                "title": a.name.clone(),
+                                                "focused": false,
+                                                "context_id": win.context_id,
+                                                "window_id": win.window_id,
+                                                "cwd": a.workspace_root.to_string_lossy().as_ref(),
+                                                "manifest_id": a.manifest_id.clone(),
+                                            })
+                                        }
+                                        crate::host::pane::Pane::Portal(p) => {
+                                            serde_json::json!({
+                                                "id": pane_id,
+                                                "type": "portal",
+                                                "context_id": p.target_context_id,
+                                                "focused": false,
+                                            })
+                                        }
+                                    };
+                                    let json_str = serde_json::to_string(&info).unwrap_or_else(|_| "{}".to_string());
+                                    let temp_file = format!("{}.tmp", response_file);
+                                    if let Err(e) = std::fs::write(&temp_file, &json_str) {
+                                        log::error!("pane_ipc: get_previous_pane_info: could not write temp response file {temp_file:?}: {e}");
+                                    } else if let Err(e) = std::fs::rename(&temp_file, response_file) {
+                                        log::error!("pane_ipc: get_previous_pane_info: could not rename temp response file to {:?}: {e}", response_file);
+                                        let _ = std::fs::remove_file(&temp_file);
+                                    }
+                                    found = true;
+                                    break 'prev_outer;
+                                }
+                            }
+                        }
+                    }
+                    if !found {
+                        log::warn!("pane_ipc: get_previous_pane_info: no previous pane found in history");
+                        let json_str = "{\"error\":\"no previous pane in history\"}";
+                        if let Err(e) = std::fs::write(response_file, json_str) {
+                            log::error!("pane_ipc: get_previous_pane_info: could not write error response: {e}");
+                        }
+                    }
+                }
                 crate::app_protocol::AppRequest::FocusPane { pane_id } => {
                     log::info!("pane_ipc: kind=focus_pane pane_id={pane_id}");
                     if !self.pane_navigate(*pane_id) {

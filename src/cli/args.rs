@@ -630,8 +630,12 @@ pub enum PaneCmd {
     /// Useful in scripts: MY_PANE=$(plexi pane self)
     #[command(name = "self")]
     Self_,
-    /// Print details about the current pane as JSON.
-    Info,
+    /// Print details about the current pane (or the previously focused pane) as JSON.
+    Info {
+        /// Return info for the previously focused pane instead of the current one.
+        #[arg(long)]
+        previous: bool,
+    },
     /// Capture the last N lines of a pane's output as a JSON array.
     ///
     /// Defaults to the current pane when no pane id is given.

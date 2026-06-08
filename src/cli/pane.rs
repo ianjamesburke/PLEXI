@@ -198,18 +198,81 @@ pub fn pane_self_cli() -> i32 {
 /// Sends a `get_pane_info` command to PLEXI_SOCKET for the current pane
 /// (identified by PLEXI_PANE_ID). Merges in client-side fields (socket, channel)
 /// and pretty-prints the result as JSON. Returns 0 on success, 1 on error.
-pub fn pane_info_cli() -> i32 {
-    let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
-        Ok(v) => v,
-        Err(_) => {
-            eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane");
-            return 1;
-        }
-    };
+pub fn pane_info_cli(previous: bool) -> i32 {
     let socket_path = match std::env::var("PLEXI_SOCKET") {
         Ok(v) => v,
         Err(_) => {
             eprintln!("error: PLEXI_SOCKET is not set — run this inside a Plexi terminal pane");
+            return 1;
+        }
+    };
+
+    if previous {
+        let id = uuid::Uuid::new_v4();
+        let response_file = crate::config::config_dir()
+            .join(format!("pane-info-response-{id}.json"))
+            .to_string_lossy()
+            .into_owned();
+
+        let payload = serde_json::json!({
+            "type": "get_previous_pane_info",
+            "response_file": response_file,
+        });
+
+        log::info!("pane_info:cli: previous=true response_file={:?}", response_file);
+
+        let code = send_to_socket(payload);
+        if code != 0 {
+            return code;
+        }
+
+        let response_path = std::path::PathBuf::from(&response_file);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if response_path.exists() {
+                match std::fs::read_to_string(&response_path) {
+                    Ok(content) => {
+                        let _ = std::fs::remove_file(&response_path);
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(err) = v.get("error").and_then(|e| e.as_str()) {
+                                eprintln!("error: {err}");
+                                return 1;
+                            }
+                            let mut obj = v;
+                            obj["socket"] = serde_json::Value::String(socket_path.clone());
+                            let channel = crate::config::build_channel().unwrap_or_else(|| "main".to_string());
+                            obj["channel"] = serde_json::Value::String(channel);
+                            match serde_json::to_string(&obj) {
+                                Ok(json_str) => { return print_json_output(&json_str); }
+                                Err(e) => {
+                                    eprintln!("error: could not serialize response: {e}");
+                                    return 1;
+                                }
+                            }
+                        } else {
+                            eprintln!("error: invalid JSON from host: {content}");
+                            return 1;
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("pane_info:cli: could not read response file: {e}");
+                        eprintln!("error: could not read response file: {e}");
+                        return 1;
+                    }
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                eprintln!("error: timed out waiting for pane info response");
+                return 1;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
+        Ok(v) => v,
+        Err(_) => {
+            eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane");
             return 1;
         }
     };
