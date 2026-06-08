@@ -555,7 +555,7 @@ pub(crate) fn render_component_tree(
         UiNode::FooterKeys { entries, divider, .. } => {
             let chip_row_h = style::TEXT_HINT + 6.0;
             let total_h = if *divider {
-                style::SPACE_SM + 1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM
+                1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM
             } else {
                 style::SPACE_SM + chip_row_h + style::SPACE_SM
             };
@@ -573,7 +573,7 @@ pub(crate) fn render_component_tree(
 
             let mut y = full_rect.min.y;
             if *divider {
-                y += style::SPACE_SM;
+                // Divider is flush with the top edge — no padding above it.
                 painter.rect_filled(
                     egui::Rect::from_min_size(egui::pos2(full_rect.min.x, y), egui::vec2(full_rect.width(), 1.0)),
                     0.0,
@@ -617,7 +617,7 @@ pub(crate) fn render_component_tree(
                     let tw = galley.size().x;
                     let chip_w = tw + 8.0;
                     let chip_rect = egui::Rect::from_min_size(
-                        egui::pos2(cx, chip_y - 1.0),
+                        egui::pos2(cx, chip_y - 2.0),
                         egui::vec2(chip_w, style::TEXT_HINT + 4.0),
                     );
                     painter.rect_filled(chip_rect, 3.0, colors.bg_active);
@@ -853,7 +853,7 @@ fn bottom_pin_height(node: &UiNode) -> Option<f32> {
         UiNode::FooterKeys { divider, .. } => {
             let chip_row_h = style::TEXT_HINT + 6.0;
             Some(if *divider {
-                style::SPACE_SM + 1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM
+                1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM
             } else {
                 style::SPACE_SM + chip_row_h + style::SPACE_SM
             })
@@ -1242,7 +1242,7 @@ mod render_component_tree_tests {
         let label = UiNode::Label { text: "x".into(), size: 0.0, color: String::new(), tone: String::new(), bold: false, monospace: false, max_lines: 0 };
 
         let chip_row_h = style::TEXT_HINT + 6.0;
-        let expected_with_div = style::SPACE_SM + 1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM;
+        let expected_with_div = 1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM;
         let expected_no_div = style::SPACE_SM + chip_row_h + style::SPACE_SM;
         let expected_footer = style::SPACE_MD + 1.0 + style::SPACE_MD + style::TEXT_CAPTION + 5.0;
 
