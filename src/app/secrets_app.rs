@@ -1,10 +1,45 @@
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
-use crate::secrets::SecretEntry;
 use crate::ui::{style, widgets};
 use std::path::PathBuf;
 
-/// Match the CLI app_id so `plexi secret list` sees manually-stored entries.
-const APP_ID_USER: &str = "plexi-run";
+#[derive(Clone)]
+struct ManagedSecret {
+    /// Full Keychain account string: `plexi:user:<name>` or `plexi:<ws-id>:<name>`.
+    account: String,
+    /// Friendly display name (everything after the second `:`).
+    name: String,
+    /// `"global"` for user-scoped, or the workspace ID for workspace-scoped.
+    scope: String,
+}
+
+impl ManagedSecret {
+    fn from_account(account: String) -> Option<Self> {
+        let (scope_part, name) = account.strip_prefix("plexi:")?.split_once(':')?;
+        let scope = if scope_part == "user" {
+            "global".to_string()
+        } else {
+            scope_part.to_string()
+        };
+        let name = name.to_string();
+        Some(Self { account, name, scope })
+    }
+}
+
+fn load_entries() -> Vec<ManagedSecret> {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::workspace::secrets::{MacKeychain, SecretStore};
+        MacKeychain::new()
+            .list_with_prefix("plexi:")
+            .into_iter()
+            .filter_map(ManagedSecret::from_account)
+            .collect()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
@@ -16,19 +51,16 @@ enum Mode {
 enum FormField {
     Key,
     Value,
-    Dir,
 }
 
 pub struct SecretsApp {
-    entries: Vec<SecretEntry>,
+    entries: Vec<ManagedSecret>,
     selected: usize,
     cwd: PathBuf,
 
     mode: Mode,
     new_key: String,
     new_value: String,
-    new_dir: String,
-    new_inject: bool,
     form_focus: FormField,
     focus_requested: bool,
 
@@ -43,8 +75,7 @@ pub struct SecretsApp {
 
 impl SecretsApp {
     pub fn new(cwd: PathBuf) -> Self {
-        let entries = crate::secrets::list_all_secrets();
-        let dir = cwd.to_string_lossy().to_string();
+        let entries = load_entries();
         Self {
             entries,
             selected: 0,
@@ -52,8 +83,6 @@ impl SecretsApp {
             mode: Mode::List,
             new_key: String::new(),
             new_value: String::new(),
-            new_dir: dir,
-            new_inject: false,
             form_focus: FormField::Key,
             focus_requested: false,
             pending_delete: false,
@@ -64,15 +93,14 @@ impl SecretsApp {
     }
 
     fn refresh(&mut self) {
-        self.entries = crate::secrets::list_all_secrets();
+        self.entries = load_entries();
         self.selected = self.selected.min(self.entries.len().saturating_sub(1));
+        log::info!("secrets_manager: refreshed — {} entries", self.entries.len());
     }
 
     fn begin_add(&mut self) {
         self.new_key.clear();
         self.new_value.clear();
-        self.new_dir = self.cwd.to_string_lossy().to_string();
-        self.new_inject = false;
         self.form_focus = FormField::Key;
         self.focus_requested = false;
         self.mode = Mode::Adding;
@@ -83,73 +111,70 @@ impl SecretsApp {
     }
 
     fn commit_add(&mut self) {
-        let key = self.new_key.trim().to_string();
+        let name = self.new_key.trim().to_string();
         let value = self.new_value.trim().to_string();
-        let dir = self.new_dir.trim().to_string();
 
-        if key.is_empty() || value.is_empty() {
-            self.status_msg = Some("Key and value cannot be empty.".to_string());
+        if name.is_empty() || value.is_empty() {
+            self.status_msg = Some("Name and value cannot be empty.".to_string());
             return;
         }
 
-        if crate::secrets::store_secret(&key, &value, APP_ID_USER, &dir) {
-            if self.new_inject {
-                crate::secrets::toggle_inject_secret(&key, APP_ID_USER, &dir);
+        #[cfg(target_os = "macos")]
+        {
+            use crate::workspace::secrets::{keychain_user_name, MacKeychain, SecretStore};
+            let account = keychain_user_name(&name);
+            let store = MacKeychain::new();
+            match store.set(&account, &value) {
+                Ok(()) => {
+                    // Optimistic update — no need to re-read the full index.
+                    self.entries.retain(|e| e.account != account);
+                    self.entries.push(ManagedSecret {
+                        account,
+                        name: name.clone(),
+                        scope: "global".to_string(),
+                    });
+                    self.selected = self.entries.len().saturating_sub(1);
+                    self.mode = Mode::List;
+                    self.status_msg = Some(format!("Stored '{name}'."));
+                    log::info!("secrets_manager: stored global secret '{name}'");
+                }
+                Err(e) => {
+                    self.status_msg = Some("Failed to store secret — check logs.".to_string());
+                    log::error!("secrets_manager: store failed for '{name}': {e}");
+                }
             }
-            // Optimistic update: push directly instead of re-dumping the keychain
-            // (dump-keychain triggers a macOS permission prompt every call).
-            self.entries
-                .retain(|e| !(e.key == key && e.directory == dir && e.app_id == APP_ID_USER));
-            self.entries.push(SecretEntry {
-                app_id: APP_ID_USER.to_string(),
-                directory: dir,
-                key: key.clone(),
-                workspace_root: None, // v1/v2 legacy path — no workspace scoping
-                inject: self.new_inject,
-            });
-            self.selected = self.entries.len().saturating_sub(1);
-            self.mode = Mode::List;
-            self.status_msg = Some(format!("Stored '{key}'. Press r to sync."));
-            log::info!("secrets_manager: stored key '{key}'");
-        } else {
-            self.status_msg = Some("Failed to store secret - check logs.".to_string());
         }
-    }
-
-    fn toggle_inject_selected(&mut self) {
-        if let Some(entry) = self.entries.get(self.selected).cloned() {
-            match crate::secrets::toggle_inject_secret(&entry.key, &entry.app_id, &entry.directory)
-            {
-                Some(new_inject) => {
-                    if let Some(e) = self.entries.get_mut(self.selected) {
-                        e.inject = new_inject;
-                    }
-                    let label = if new_inject { "inject enabled" } else { "inject disabled" };
-                    self.status_msg = Some(format!("'{}' — {label}.", entry.key));
-                    log::info!(
-                        "secrets_manager: toggled inject for '{}' -> {new_inject}",
-                        entry.key
-                    );
-                }
-                None => {
-                    self.status_msg =
-                        Some("Secret not found in index — press r to refresh".to_string());
-                }
-            }
+        #[cfg(not(target_os = "macos"))]
+        {
+            log::warn!("secrets_manager: commit_add: Keychain not available on this platform");
         }
     }
 
     fn delete_selected(&mut self) {
         if let Some(entry) = self.entries.get(self.selected).cloned() {
-            if crate::secrets::delete_secret(&entry.key, &entry.app_id, &entry.directory) {
-                self.entries.remove(self.selected);
-                if self.selected > 0 && self.selected >= self.entries.len() {
-                    self.selected = self.entries.len().saturating_sub(1);
+            #[cfg(target_os = "macos")]
+            {
+                use crate::workspace::secrets::{MacKeychain, SecretStore};
+                let store = MacKeychain::new();
+                match store.delete(&entry.account) {
+                    Ok(()) => {
+                        let name = entry.name.clone();
+                        self.entries.remove(self.selected);
+                        if self.selected > 0 && self.selected >= self.entries.len() {
+                            self.selected = self.entries.len().saturating_sub(1);
+                        }
+                        self.status_msg = Some(format!("Deleted '{name}'."));
+                        log::info!("secrets_manager: deleted '{name}'");
+                    }
+                    Err(e) => {
+                        self.status_msg = Some("Failed to delete — check logs.".to_string());
+                        log::error!("secrets_manager: delete failed for '{}': {e}", entry.name);
+                    }
                 }
-                self.status_msg = Some(format!("Deleted '{}'.", entry.key));
-                log::info!("secrets_manager: deleted key '{}'", entry.key);
-            } else {
-                self.status_msg = Some("Failed to delete - check logs.".to_string());
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                log::warn!("secrets_manager: delete_selected: Keychain not available");
             }
         }
     }
@@ -175,18 +200,15 @@ impl App for SecretsApp {
                 self.cancel_add();
                 return KeyDisposition::Consumed;
             }
-            // Let all other keys go to TextEdit widgets in ui()
             return KeyDisposition::Passthrough;
         }
 
-        // Cancel pending delete with Escape before checking modifiers.
         if self.pending_delete && input.key_pressed(egui::Key::Escape) {
             self.pending_delete = false;
             self.status_msg = None;
             return KeyDisposition::Consumed;
         }
 
-        // List mode — don't intercept modified keys.
         if input.modifiers.command || input.modifiers.alt {
             return KeyDisposition::Passthrough;
         }
@@ -223,20 +245,15 @@ impl App for SecretsApp {
                 self.pending_delete = false;
             } else if let Some(entry) = self.entries.get(self.selected) {
                 self.pending_delete = true;
-                let key = entry.key.clone();
+                let name = entry.name.clone();
                 self.status_msg =
-                    Some(format!("Delete '{key}'? Press d/y to confirm, Esc to cancel."));
+                    Some(format!("Delete '{name}'? Press d/y to confirm, Esc to cancel."));
             }
             consumed = true;
         }
         if input.key_pressed(egui::Key::Y) && self.pending_delete && !self.entries.is_empty() {
             self.delete_selected();
             self.pending_delete = false;
-            consumed = true;
-        }
-        if input.key_pressed(egui::Key::I) && !self.entries.is_empty() {
-            self.pending_delete = false;
-            self.toggle_inject_selected();
             consumed = true;
         }
         if input.key_pressed(egui::Key::C) && !self.entries.is_empty() {
@@ -254,27 +271,30 @@ impl App for SecretsApp {
         ui.painter().rect_filled(rect, 0.0, colors.terminal_bg);
 
         const HEADER_H: f32 = 44.0;
-        const FORM_H: f32 = 188.0;
+        const FORM_H: f32 = 140.0;
 
         // Process clipboard copy request (needs ui.ctx() — not available in handle_key).
         if self.copy_pending {
             self.copy_pending = false;
             if let Some(entry) = self.entries.get(self.selected) {
-                let key = entry.key.clone();
-                let app_id = entry.app_id.clone();
-                let dir = entry.directory.clone();
-                match crate::secrets::retrieve_secret(&key, &app_id, &dir) {
-                    Some(value) => {
-                        ui.ctx().copy_text((*value).clone());
-                        self.status_msg = Some(format!("'{}' copied to clipboard.", key));
-                        log::info!("secrets_manager: copied value for key '{key}'");
-                    }
-                    None => {
-                        self.status_msg =
-                            Some(format!("Could not retrieve '{key}' — check logs."));
-                        log::warn!(
-                            "secrets_manager: retrieve_secret returned None for key '{key}'"
-                        );
+                let account = entry.account.clone();
+                let name = entry.name.clone();
+                #[cfg(target_os = "macos")]
+                {
+                    use crate::workspace::secrets::{MacKeychain, SecretStore};
+                    match MacKeychain::new().get(&account) {
+                        Some(value) => {
+                            ui.ctx().copy_text((*value).clone());
+                            self.status_msg = Some(format!("'{name}' copied to clipboard."));
+                            log::info!("secrets_manager: copied value for '{name}'");
+                        }
+                        None => {
+                            self.status_msg =
+                                Some(format!("Could not retrieve '{name}' — check logs."));
+                            log::warn!(
+                                "secrets_manager: MacKeychain::get returned None for account='{account}'"
+                            );
+                        }
                     }
                 }
             }
@@ -306,9 +326,8 @@ impl App for SecretsApp {
                 if self.mode == Mode::Adding {
                     widgets::key_combo_list(ui, &[&["Esc"]], Some("cancel"), colors);
                 } else {
-                    // RTL: emit rightmost first → visual L→R: [n] new [d] del [c] copy [i] inject [r] refresh
+                    // RTL: emit rightmost first → visual L→R: [n] new [d] del [c] copy [r] refresh
                     widgets::key_combo_list(ui, &[&["r"]], Some("refresh"), colors);
-                    widgets::key_combo_list(ui, &[&["i"]], Some("inject"), colors);
                     widgets::key_combo_list(ui, &[&["c"]], Some("copy"), colors);
                     widgets::key_combo_list(ui, &[&["d"]], Some("del"), colors);
                     widgets::key_combo_list(ui, &[&["n"]], Some("new"), colors);
@@ -383,10 +402,10 @@ impl App for SecretsApp {
                     .inner
                 };
 
-                // Key field
+                // Name field
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("Key   ")
+                        egui::RichText::new("Name  ")
                             .color(colors.text_dim)
                             .size(style::TEXT_HINT)
                             .family(egui::FontFamily::Monospace),
@@ -440,38 +459,7 @@ impl App for SecretsApp {
                     if val_resp.has_focus() {
                         self.form_focus = FormField::Value;
                     }
-                    if val_resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Tab)) {
-                        self.form_focus = FormField::Dir;
-                    }
-                });
-
-                ui.add_space(style::SPACE_XS);
-
-                // Directory field
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Dir   ")
-                            .color(colors.text_dim)
-                            .size(style::TEXT_HINT)
-                            .family(egui::FontFamily::Monospace),
-                    );
-                    let dir_resp = styled_input(
-                        ui,
-                        egui::TextEdit::singleline(&mut self.new_dir)
-                            .desired_width(f32::INFINITY)
-                            .font(egui::FontId::monospace(style::TEXT_CAPTION))
-                            .text_color(colors.text_primary)
-                            .frame(true)
-                            .margin(egui::Margin::symmetric(8, 5))
-                            .hint_text("/path/to/project"),
-                    );
-                    if self.form_focus == FormField::Dir && !dir_resp.has_focus() {
-                        dir_resp.request_focus();
-                    }
-                    if dir_resp.has_focus() {
-                        self.form_focus = FormField::Dir;
-                    }
-                    if dir_resp.has_focus()
+                    if val_resp.has_focus()
                         && ui
                             .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
                     {
@@ -479,36 +467,7 @@ impl App for SecretsApp {
                     }
                 });
 
-                ui.add_space(style::SPACE_XS);
-
-                // Inject toggle
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Inject")
-                            .color(colors.text_dim)
-                            .size(style::TEXT_HINT)
-                            .family(egui::FontFamily::Monospace),
-                    );
-                    ui.add_space(style::SPACE_XS);
-                    ui.checkbox(
-                        &mut self.new_inject,
-                        egui::RichText::new(
-                            "inject as env var into new terminal panes (e.g. for API keys)",
-                        )
-                        .color(colors.text_dim.linear_multiply(0.65))
-                        .size(style::TEXT_HINT)
-                        .family(egui::FontFamily::Monospace),
-                    );
-                });
-
                 ui.add_space(style::SPACE_SM);
-
-                if self.form_focus == FormField::Value
-                    && ui
-                        .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
-                {
-                    self.commit_add();
-                }
 
                 ui.horizontal(|ui| {
                     if ui
@@ -609,38 +568,18 @@ impl SecretsApp {
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
                                 ui.label(
-                                    egui::RichText::new(&entry.key)
+                                    egui::RichText::new(&entry.name)
                                         .size(style::TEXT_BODY)
                                         .color(colors.text_primary),
                                 );
                                 ui.scope(|ui| {
                                     ui.set_max_width(300.0);
-                                    let subtitle =
-                                        if entry.directory.is_empty() || entry.directory == "/" {
-                                            entry.app_id.clone()
-                                        } else {
-                                            format!("{} · {}", entry.app_id, entry.directory)
-                                        };
-                                    widgets::description_label(ui, &subtitle, colors);
+                                    widgets::description_label(ui, &entry.scope, colors);
                                 });
                             });
-                            if entry.inject {
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        ui.label(
-                                            egui::RichText::new("→env")
-                                                .size(style::TEXT_HINT)
-                                                .color(colors.accent)
-                                                .family(egui::FontFamily::Monospace),
-                                        );
-                                    },
-                                );
-                            }
                         });
                     });
 
-                    // Accent bar drawn over the row rect after layout is known.
                     if is_selected {
                         ui.painter().rect_filled(
                             egui::Rect::from_min_size(
