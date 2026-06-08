@@ -3179,4 +3179,36 @@ mod ai_stream_chunk_tests {
             other => panic!("expected ComponentTree, got {other:?}"),
         }
     }
+
+    /// Wire-format round-trip for GetPreviousPaneInfo.
+    #[test]
+    fn get_previous_pane_info_round_trips_serde() {
+        let json = r#"{"type":"get_previous_pane_info","response_file":"/tmp/prev.json"}"#;
+        let req: AppRequest = serde_json::from_str(json).expect("deserialise");
+        match &req {
+            AppRequest::GetPreviousPaneInfo { response_file } => {
+                assert_eq!(response_file, "/tmp/prev.json");
+            }
+            other => panic!("expected GetPreviousPaneInfo, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&req).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"get_previous_pane_info""#),
+            "wire tag missing: {serialised}"
+        );
+        assert!(
+            serialised.contains(r#""response_file":"/tmp/prev.json""#),
+            "response_file missing: {serialised}"
+        );
+    }
+
+    /// Missing response_file must fail deserialization.
+    #[test]
+    fn get_previous_pane_info_missing_response_file_fails() {
+        let json = r#"{"type":"get_previous_pane_info"}"#;
+        assert!(
+            serde_json::from_str::<AppRequest>(json).is_err(),
+            "missing required response_file must fail"
+        );
+    }
 }

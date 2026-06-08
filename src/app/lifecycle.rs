@@ -236,8 +236,12 @@ impl PlexiApp {
                     if !found {
                         log::warn!("pane_ipc: get_previous_pane_info: no previous pane found in history");
                         let json_str = "{\"error\":\"no previous pane in history\"}";
-                        if let Err(e) = std::fs::write(response_file, json_str) {
-                            log::error!("pane_ipc: get_previous_pane_info: could not write error response: {e}");
+                        let temp_file = format!("{}.tmp", response_file);
+                        if let Err(e) = std::fs::write(&temp_file, json_str) {
+                            log::error!("pane_ipc: get_previous_pane_info: could not write temp error response {temp_file:?}: {e}");
+                        } else if let Err(e) = std::fs::rename(&temp_file, response_file) {
+                            log::error!("pane_ipc: get_previous_pane_info: could not rename temp error response to {:?}: {e}", response_file);
+                            let _ = std::fs::remove_file(&temp_file);
                         }
                     }
                 }

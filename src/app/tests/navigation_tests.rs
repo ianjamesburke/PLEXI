@@ -302,3 +302,81 @@ fn navigate_left_at_horizontal_boundary_still_page_navigates() {
     h.app.navigate(crate::host::keys::Direction::Left);
     assert_eq!(h.app.active_window, 0, "Left at boundary must not change active_window");
 }
+
+/// GetPreviousPaneInfo returns the last live entry from pane_focus_history.
+#[test]
+fn get_previous_pane_info_returns_previous_pane() {
+    let mut h = HostHarness::new();
+    let pane_a = h.add_test_pane();
+    let pane_b = h.add_test_pane();
+
+    // Simulate: user was in pane_a, moved to pane_b (pushes pane_a's tile into history).
+    let tile_a = h.app.windows[0].tree.tiles.find_pane(&pane_a).expect("tile_a must exist");
+    let window_id = h.app.windows[0].window_id;
+    h.app.pane_focus_history.push((window_id, tile_a));
+
+    let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_info.json");
+    let _ = std::fs::remove_file(&resp_file);
+
+    h.inject_ipc(crate::app_protocol::AppRequest::GetPreviousPaneInfo {
+        response_file: resp_file.to_string_lossy().to_string(),
+    });
+    h.app.drain_pane_cmd_channel();
+
+    let json = std::fs::read_to_string(&resp_file).expect("response file must be written");
+    let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert!(v.get("error").is_none(), "unexpected error: {json}");
+    assert_eq!(v["id"].as_u64(), Some(pane_a), "previous pane must be pane_a, not pane_b; got: {json}");
+    let _ = std::fs::remove_file(&resp_file);
+    let _ = pane_b;
+}
+
+/// GetPreviousPaneInfo skips stale tile entries (tile no longer in tree) and
+/// falls through to the next valid entry.
+#[test]
+fn get_previous_pane_info_skips_stale_tile() {
+    let mut h = HostHarness::new();
+    let pane_a = h.add_test_pane();
+    let window_id = h.app.windows[0].window_id;
+
+    // Push a stale (nonexistent) tile first, then a valid one.
+    let stale_tile = egui_tiles::TileId::from_u64(99999);
+    let tile_a = h.app.windows[0].tree.tiles.find_pane(&pane_a).expect("tile_a must exist");
+    h.app.pane_focus_history.push((window_id, tile_a));    // older: pane_a
+    h.app.pane_focus_history.push((window_id, stale_tile)); // newer (but stale)
+
+    let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_stale.json");
+    let _ = std::fs::remove_file(&resp_file);
+
+    h.inject_ipc(crate::app_protocol::AppRequest::GetPreviousPaneInfo {
+        response_file: resp_file.to_string_lossy().to_string(),
+    });
+    h.app.drain_pane_cmd_channel();
+
+    let json = std::fs::read_to_string(&resp_file).expect("response file must be written");
+    let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert!(v.get("error").is_none(), "unexpected error after stale skip: {json}");
+    assert_eq!(v["id"].as_u64(), Some(pane_a), "must fall through to pane_a after skipping stale tile; got: {json}");
+    let _ = std::fs::remove_file(&resp_file);
+}
+
+/// GetPreviousPaneInfo returns an error JSON when history is empty.
+#[test]
+fn get_previous_pane_info_empty_history_returns_error() {
+    let mut h = HostHarness::new();
+    let _pane_a = h.add_test_pane();
+    assert!(h.app.pane_focus_history.is_empty(), "history must start empty");
+
+    let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_empty.json");
+    let _ = std::fs::remove_file(&resp_file);
+
+    h.inject_ipc(crate::app_protocol::AppRequest::GetPreviousPaneInfo {
+        response_file: resp_file.to_string_lossy().to_string(),
+    });
+    h.app.drain_pane_cmd_channel();
+
+    let json = std::fs::read_to_string(&resp_file).expect("response file must be written even on error");
+    let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+    assert!(v.get("error").is_some(), "expected error field in response; got: {json}");
+    let _ = std::fs::remove_file(&resp_file);
+}
