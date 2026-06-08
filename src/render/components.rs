@@ -508,11 +508,16 @@ pub(crate) fn render_component_tree(
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(ui.available_width(), total_h), egui::Sense::hover());
             let painter = ui.painter();
-            painter.rect_filled(rect, 0.0, colors.bg_sidebar);
-            let text_x = rect.min.x + style::SPACE_MD;
-            let max_w = rect.width() - 2.0 * style::SPACE_MD;
-            // Top-align title within the band with consistent top padding.
-            let title_y = rect.min.y + style::SPACE_SM;
+            // Full-bleed: expand to clip rect width so AppBar spans the pane edge-to-edge
+            let clip = ui.clip_rect();
+            let full_rect = egui::Rect::from_min_size(
+                egui::pos2(clip.min.x, rect.min.y),
+                egui::vec2(clip.width(), total_h),
+            );
+            painter.rect_filled(full_rect, 0.0, colors.bg_sidebar);
+            let text_x = full_rect.min.x + style::SPACE_MD;
+            let max_w = full_rect.width() - 2.0 * style::SPACE_MD;
+            let title_y = full_rect.min.y + style::SPACE_SM;
             if has_subtitle {
                 let sub_y = title_y + TITLE_SIZE + style::SPACE_XS;
                 let title_galley = ui.fonts(|f| {
@@ -534,8 +539,8 @@ pub(crate) fn render_component_tree(
             }
             painter.rect_filled(
                 egui::Rect::from_min_size(
-                    egui::pos2(rect.min.x, rect.min.y + band_h),
-                    egui::vec2(rect.width(), 1.0),
+                    egui::pos2(full_rect.min.x, full_rect.min.y + band_h),
+                    egui::vec2(full_rect.width(), 1.0),
                 ),
                 0.0,
                 colors.border,
@@ -553,14 +558,19 @@ pub(crate) fn render_component_tree(
                 ui.allocate_exact_size(egui::vec2(ui.available_width(), total_h), egui::Sense::hover());
             let painter = ui.painter();
 
-            // Background fill behind the entire footer
-            painter.rect_filled(rect, 0.0, colors.bg_sidebar);
+            // Full-bleed: expand to clip rect width so footer spans the pane edge-to-edge
+            let clip = ui.clip_rect();
+            let full_rect = egui::Rect::from_min_size(
+                egui::pos2(clip.min.x, rect.min.y),
+                egui::vec2(clip.width(), total_h),
+            );
+            painter.rect_filled(full_rect, 0.0, colors.bg_sidebar);
 
-            let mut y = rect.min.y;
+            let mut y = full_rect.min.y;
             if *divider {
                 y += style::SPACE_SM;
                 painter.rect_filled(
-                    egui::Rect::from_min_size(egui::pos2(rect.min.x, y), egui::vec2(rect.width(), 1.0)),
+                    egui::Rect::from_min_size(egui::pos2(full_rect.min.x, y), egui::vec2(full_rect.width(), 1.0)),
                     0.0,
                     colors.border,
                 );
@@ -589,7 +599,7 @@ pub(crate) fn render_component_tree(
                 }
             }
 
-            let mut cx = rect.min.x + ((rect.width() - content_w) / 2.0).max(style::SPACE_MD);
+            let mut cx = full_rect.min.x + ((full_rect.width() - content_w) / 2.0).max(style::SPACE_MD);
             for (ei, entry) in entries.iter().enumerate() {
                 for (ki, key) in entry.keys.iter().enumerate() {
                     if ki > 0 {
