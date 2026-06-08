@@ -148,7 +148,7 @@ impl PlexiApp {
         let new_tile = insert_split_tile(&mut ctx.tree, Some(split_target), new_pane_id, vertical, share, new_pane_first);
 
         if !keep_focus {
-            ctx.focused_pane = Some(new_tile);
+            ctx.navigate_to(new_tile);
         }
         Some(new_tile)
     }
@@ -345,7 +345,7 @@ impl PlexiApp {
             }
         }
 
-        ctx.focused_pane = Some(new_tile);
+        ctx.navigate_to(new_tile);
     }
 
     pub(crate) fn new_tab(&mut self, initial_cmd: Option<&str>, close_on_exit: bool) {
@@ -380,7 +380,7 @@ impl PlexiApp {
             let pane_tile = ctx.tree.tiles.insert_pane(new_id);
             let tab_tile = ctx.tree.tiles.insert_tab_tile(vec![pane_tile]);
             ctx.tree.root = Some(tab_tile);
-            ctx.focused_pane = Some(pane_tile);
+            ctx.navigate_to(pane_tile);
             return;
         }
 
@@ -428,7 +428,7 @@ impl PlexiApp {
                 tabs.add_child(new_tile);
                 tabs.set_active(new_tile);
             }
-            ctx.focused_pane = Some(new_tile);
+            ctx.navigate_to(new_tile);
             return;
         }
 
@@ -447,7 +447,7 @@ impl PlexiApp {
             ctx.tree.root = Some(tab_tile);
         }
 
-        ctx.focused_pane = Some(new_tile);
+        ctx.navigate_to(new_tile);
     }
 
     pub(crate) fn cycle_tab(&mut self, forward: bool) {
@@ -487,9 +487,10 @@ impl PlexiApp {
         }
 
         if let Some(pane_tile) = ctx.find_first_pane_in(target) {
-            ctx.focused_pane = Some(pane_tile);
             if ctx.zoomed_pane.is_some() {
-                ctx.zoomed_pane = Some(pane_tile);
+                ctx.zoom_to(pane_tile);
+            } else {
+                ctx.navigate_to(pane_tile);
             }
         }
     }
@@ -522,9 +523,10 @@ impl PlexiApp {
         }
 
         if let Some(pane_tile) = ctx.find_first_pane_in(target) {
-            ctx.focused_pane = Some(pane_tile);
             if ctx.zoomed_pane.is_some() {
-                ctx.zoomed_pane = Some(pane_tile);
+                ctx.zoom_to(pane_tile);
+            } else {
+                ctx.navigate_to(pane_tile);
             }
         }
     }
@@ -712,7 +714,7 @@ impl PlexiApp {
             // A background-pane close must not steal focus from the current pane.
             if let Some(new_focus) = next {
                 log::info!("close_tile: focus -> {:?}", new_focus);
-                ctx.focused_pane = Some(new_focus);
+                ctx.navigate_to(new_focus);
             } else if is_focused {
                 // Closed tile was focused but no sibling found — clear focus.
                 log::info!("close_tile: focus -> None (no sibling)");
@@ -723,7 +725,7 @@ impl PlexiApp {
             // this, but clearing it here avoids a one-frame inconsistency where
             // ToggleZoom sees zoomed_pane pointing at a dead tile.
             if is_zoomed {
-                ctx.zoomed_pane = None;
+                ctx.clear_zoom();
                 log::info!("close_tile: cleared stale zoom (closed tile was zoomed)");
             }
 
@@ -772,7 +774,7 @@ impl PlexiApp {
             .and_then(|focused| ctx.find_pane_in_direction_from(focused, dir));
 
         if let Some(target) = pane_neighbor {
-            self.windows[self.active_window].focused_pane = Some(target);
+            self.windows[self.active_window].navigate_to(target);
             // Signal the newly-focused pane so render_text_inputs auto-focuses
             // the first TextInput on the next frame.
             if let Some(egui_tiles::Tile::Pane(pane_id)) =
@@ -832,7 +834,7 @@ impl PlexiApp {
                     };
                     if let Some(tile_id) = leftmost {
                         log::info!("navigate({:?}): focused_pane → leftmost {:?}", dir, tile_id);
-                        self.windows[idx].focused_pane = Some(tile_id);
+                        self.windows[idx].navigate_to(tile_id);
                     }
                 }
             }
@@ -876,7 +878,7 @@ impl PlexiApp {
         }
 
         // Focus follows content: move focus to the tile now containing this pane.
-        ctx.focused_pane = Some(neighbor);
+        ctx.navigate_to(neighbor);
 
         log::info!(
             "swap_pane({:?}): pane {} ↔ pane {} (tiles {:?} ↔ {:?})",
@@ -1287,7 +1289,7 @@ impl PlexiApp {
                 ctx.tree.root = Some(container_tile);
             }
         }
-        ctx.focused_pane = Some(new_tile);
+        ctx.navigate_to(new_tile);
 
         log::info!(
             "move_focused_pane_to_adjacent_window({:?}): pane {} moved from window index {} to {}",
@@ -1380,14 +1382,14 @@ impl PlexiApp {
             .is_some();
         if is_app {
             self.close_tile(active, focused_tile);
-            self.windows[active].zoomed_pane = None;
+            self.windows[active].clear_zoom();
         }
     }
 
     /// Execute the close-pane action (called directly when confirm_close is false,
     /// or from the confirm-close dialog when the user confirms).
     pub(crate) fn execute_close_pane(&mut self) -> bool {
-        self.windows[self.active_window].zoomed_pane = None;
+        self.windows[self.active_window].clear_zoom();
         if !self.windows[self.active_window].panes.is_empty() {
             self.close_focused();
         }

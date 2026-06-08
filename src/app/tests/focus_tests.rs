@@ -386,3 +386,49 @@ fn switch_workspace_no_double_push_during_history_navigation() {
         "navigating_history guard must prevent push during history traversal"
     );
 }
+
+/// Regression guard for #2054: navigate_to activates ancestor Tabs so focused_pane
+/// is never pointing at a tab-hidden tile, and assert_focus_invariants catches
+/// zoom/focus desync.
+#[test]
+fn navigate_to_activates_ancestor_tabs() {
+    use egui_tiles::{Container, Tile};
+    let egui_ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(egui_ctx, frame_tick);
+
+    // Build two panes in a Tabs container.
+    let (tile_a, _) = app.add_test_pane();
+    let (tile_b, _) = app.add_test_pane();
+    let ctx = &mut app.windows[0];
+    let tab_tile = ctx.tree.tiles.insert_tab_tile(vec![tile_a, tile_b]);
+    ctx.tree.root = Some(tab_tile);
+    // Start with tile_a active.
+    if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get_mut(tab_tile) {
+        tabs.set_active(tile_a);
+    }
+    ctx.focused_pane = Some(tile_a);
+
+    // Navigate to tile_b (which is in the same Tabs but currently inactive).
+    app.windows[0].navigate_to(tile_b);
+
+    // focused_pane must be tile_b.
+    assert_eq!(app.windows[0].focused_pane, Some(tile_b));
+
+    // The Tabs container must have tile_b as active.
+    let ctx = &app.windows[0];
+    if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get(tab_tile) {
+        assert_eq!(tabs.active, Some(tile_b), "Tabs must activate tile_b after navigate_to");
+    } else {
+        panic!("Expected Tabs container at tab_tile");
+    }
+
+    // assert_focus_invariants must not panic when zoomed_pane is None.
+    #[cfg(debug_assertions)]
+    app.windows[0].assert_focus_invariants();
+
+    // Set a consistent zoom state and verify invariant holds.
+    app.windows[0].zoomed_pane = Some(tile_b);
+    #[cfg(debug_assertions)]
+    app.windows[0].assert_focus_invariants();
+}

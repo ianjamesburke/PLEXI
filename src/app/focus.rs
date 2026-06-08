@@ -224,7 +224,7 @@ impl PlexiApp {
                     self.pane_focus_future.remove(0);
                 }
             }
-            self.windows[idx].focused_pane = Some(tile_id);
+            self.windows[idx].navigate_to(tile_id);
             self.active_window = idx;
             // Sync sidebar: router active must match the context of the window we navigated to.
             let ctx_id = self.windows[idx].context_id;
@@ -264,7 +264,7 @@ impl PlexiApp {
                     self.pane_focus_history.remove(0);
                 }
             }
-            self.windows[idx].focused_pane = Some(tile_id);
+            self.windows[idx].navigate_to(tile_id);
             self.active_window = idx;
             // Sync sidebar: router active must match the context of the window we navigated to.
             let ctx_id = self.windows[idx].context_id;
@@ -628,21 +628,11 @@ impl PlexiApp {
         // Clear any stale zoom on the destination window — a programmatic focus
         // redirect must not leave zoomed_pane pointing at a pane that is no longer focused.
         if self.windows[idx].zoomed_pane.is_some() {
-            self.windows[idx].zoomed_pane = None;
+            self.windows[idx].clear_zoom();
             log::info!("notify:action: pane_navigate cleared stale zoom on window={idx}");
         }
-        self.windows[idx].focused_pane = Some(tile_id);
-        // Activate the parent Tabs container so the target pane is visible.
-        if let Some((tabs_id, child_id)) = self.windows[idx].find_ancestor_tabs(tile_id) {
-            if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) =
-                self.windows[idx].tree.tiles.get_mut(tabs_id)
-            {
-                tabs.set_active(child_id);
-                log::info!(
-                    "notify:action: pane_navigate activated tab tabs_id={tabs_id:?} child_id={child_id:?}"
-                );
-            }
-        }
+        // navigate_to sets focused_pane and activates the ancestor Tabs container.
+        self.windows[idx].navigate_to(tile_id);
         self.push_focus_history(old_window_id, old_focus);
         let prev = self.active_window;
         self.active_window = idx;

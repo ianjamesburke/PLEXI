@@ -333,24 +333,16 @@ impl PlexiApp {
 
                 let ctx = &mut self.windows[self.active_window];
 
-                // Resolve focused_pane if simplifier moved the tile
-                if let Some(fp) = ctx.focused_pane {
-                    if !matches!(ctx.tree.tiles.get(fp), Some(Tile::Pane(_))) {
-                        ctx.focused_pane = ctx.find_first_pane_in(fp);
-                    }
+                let zoom_cleared = ctx.reconcile_stale_tiles();
+                if zoom_cleared {
+                    self.ctx.memory_mut(|m| {
+                        if let Some(id) = m.focused() {
+                            m.surrender_focus(id);
+                        }
+                    });
                 }
-
-                // Validate zoomed pane still exists
-                if let Some(zp) = ctx.zoomed_pane {
-                    if !matches!(ctx.tree.tiles.get(zp), Some(Tile::Pane(_))) {
-                        ctx.zoomed_pane = None;
-                        self.ctx.memory_mut(|m| {
-                            if let Some(id) = m.focused() {
-                                m.surrender_focus(id);
-                            }
-                        });
-                    }
-                }
+                #[cfg(debug_assertions)]
+                ctx.assert_focus_invariants();
 
                 let zoomed_pane = ctx.zoomed_pane;
                 let tab_info = ctx.compute_tab_info();
@@ -542,22 +534,10 @@ impl PlexiApp {
                     }
                 }
 
-                let canvas_focus_changed = if let Some(new) = behavior.new_focused {
-                    let changed = Some(new) != canvas_old_focus;
-                    ctx.focused_pane = Some(new);
-                    changed
-                } else {
-                    false
-                };
-
-                if canvas_focus_changed {
-                    if let Some(new_tile) = ctx.focused_pane {
-                        let win_id = ctx.window_id;
-                        log::info!("focus: canvas click flash → win={win_id} tile={new_tile:?}");
-                        self.click_flash = Some(ClickFlash { window_id: win_id, tile: new_tile, started_at: std::time::Instant::now() });
-                    }
-                }
-
+                // Extract new_focused before the zoom overlay block so we can
+                // call ctx.navigate_to() after behavior is dropped (navigate_to
+                // needs &mut ctx but behavior holds &mut ctx.panes).
+                let new_focused = behavior.new_focused;
                 let should_close_exited = behavior.close_exited.is_some();
                 let portal_zoom = behavior.portal_zoom_request.take();
 
@@ -754,6 +734,24 @@ impl PlexiApp {
                     }
                 } else {
                     drop(behavior);
+                }
+
+                // Apply canvas focus change now that behavior is dropped and
+                // ctx is freely borrowable again.
+                let canvas_focus_changed = if let Some(new) = new_focused {
+                    let changed = Some(new) != canvas_old_focus;
+                    ctx.navigate_to(new);
+                    changed
+                } else {
+                    false
+                };
+
+                if canvas_focus_changed {
+                    if let Some(new_tile) = ctx.focused_pane {
+                        let win_id = ctx.window_id;
+                        log::info!("focus: canvas click flash → win={win_id} tile={new_tile:?}");
+                        self.click_flash = Some(ClickFlash { window_id: win_id, tile: new_tile, started_at: std::time::Instant::now() });
+                    }
                 }
 
                 // ── Pane swap animation overlays ────────────────────────────────────────

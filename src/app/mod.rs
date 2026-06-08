@@ -1204,7 +1204,7 @@ impl PlexiApp {
     /// Use this everywhere instead of `self.windows[i].focused_pane = Some(...)` directly
     /// so that the grep pattern `windows[active].focused_pane = ` has zero matches outside tests.
     pub(crate) fn set_window_focused_pane(&mut self, win_idx: usize, tile: egui_tiles::TileId) {
-        self.windows[win_idx].focused_pane = Some(tile);
+        self.windows[win_idx].navigate_to(tile);
         let window_id = self.windows[win_idx].window_id;
         log::info!("focus: flash set — win={window_id} tile={tile:?}");
         self.click_flash = Some(ClickFlash { window_id, tile, started_at: std::time::Instant::now() });
@@ -2409,25 +2409,25 @@ impl eframe::App for PlexiApp {
         for action in keys::poll_actions(ctx, &self.binding_table, app_active, keyboard_capture_active, modal_open, self.show_shortcuts) {
             match action {
                 Action::SplitHorizontal => {
-                    self.windows[self.active_window].zoomed_pane = None;
+                    self.windows[self.active_window].clear_zoom();
                     self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
                     self.split_focused(false, None, false, false, None);
                     self.save_workspace();
                 }
                 Action::SplitVertical => {
-                    self.windows[self.active_window].zoomed_pane = None;
+                    self.windows[self.active_window].clear_zoom();
                     self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
                     self.split_focused(true, None, false, false, None);
                     self.save_workspace();
                 }
                 Action::SplitRight => {
-                    self.windows[self.active_window].zoomed_pane = None;
+                    self.windows[self.active_window].clear_zoom();
                     self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
                     self.split_focused_mirror(crate::host::command::Placement::Right);
                     self.save_workspace();
                 }
                 Action::SplitDown => {
-                    self.windows[self.active_window].zoomed_pane = None;
+                    self.windows[self.active_window].clear_zoom();
                     self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
                     self.split_focused_mirror(crate::host::command::Placement::Below);
                     self.save_workspace();
@@ -2439,7 +2439,9 @@ impl eframe::App for PlexiApp {
                     self.navigate(dir);
                     if was_zoomed {
                         let new_pane = self.windows[self.active_window].focused_pane;
-                        self.windows[self.active_window].zoomed_pane = new_pane;
+                        if let Some(tile) = new_pane {
+                            self.windows[self.active_window].zoom_to(tile);
+                        }
                         log::info!("zoom: navigate — new zoomed pane={new_pane:?}");
                         self.ctx.memory_mut(|m| {
                             if let Some(id) = m.focused() {
@@ -2598,10 +2600,10 @@ impl eframe::App for PlexiApp {
                         let ctx = &mut self.windows[self.active_window];
                         if let Some(focused) = ctx.focused_pane {
                             if ctx.zoomed_pane == Some(focused) {
-                                ctx.zoomed_pane = None;
+                                ctx.clear_zoom();
                                 log::info!("zoom: toggle off — pane={focused:?}");
                             } else {
-                                ctx.zoomed_pane = Some(focused);
+                                ctx.zoom_to(focused);
                                 log::info!("zoom: toggle on — pane={focused:?}");
                             }
                             self.ctx.memory_mut(|m| {
