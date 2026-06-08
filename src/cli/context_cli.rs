@@ -180,6 +180,7 @@ pub fn context_list_cli() -> i32 {
                     return print_json_output(&content);
                 }
                 Err(e) => {
+                    let _ = std::fs::remove_file(&response_path);
                     log::warn!("context_list:cli: could not read response file: {e}");
                     eprintln!("error: could not read response file: {e}");
                     return 1;
@@ -187,6 +188,7 @@ pub fn context_list_cli() -> i32 {
             }
         }
         if std::time::Instant::now() >= deadline {
+            let _ = std::fs::remove_file(&response_path);
             eprintln!("error: timed out waiting for context list response");
             return 1;
         }
