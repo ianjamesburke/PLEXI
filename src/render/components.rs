@@ -588,7 +588,8 @@ pub(crate) fn render_component_tree(
                     let tw = ui.fonts(|f| {
                         f.layout_no_wrap(key.clone(), egui::FontId::monospace(style::TEXT_HINT), colors.text_primary).size().x
                     });
-                    content_w += tw + 8.0;
+                    let chip_h = style::TEXT_HINT + 4.0;
+                    content_w += (tw + 8.0).max(chip_h);
                 }
                 content_w += 4.0;
                 content_w += ui.fonts(|f| {
@@ -610,10 +611,11 @@ pub(crate) fn render_component_tree(
                         f.layout_no_wrap(key.clone(), font_id, colors.text_primary)
                     });
                     let tw = galley.size().x;
-                    let chip_w = tw + 8.0;
+                    let chip_h = style::TEXT_HINT + 4.0;
+                    let chip_w = (tw + 8.0).max(chip_h);
                     let chip_rect = egui::Rect::from_min_size(
                         egui::pos2(cx, chip_y - 2.0),
-                        egui::vec2(chip_w, style::TEXT_HINT + 4.0),
+                        egui::vec2(chip_w, chip_h),
                     );
                     painter.rect_filled(chip_rect, 3.0, colors.bg_active);
                     painter.rect_stroke(
@@ -623,7 +625,7 @@ pub(crate) fn render_component_tree(
                         egui::StrokeKind::Inside,
                     );
                     painter.galley(
-                        egui::pos2(cx + 4.0, chip_y),
+                        egui::pos2(cx + (chip_w - tw) / 2.0, chip_y),
                         galley,
                         colors.text_primary,
                     );
