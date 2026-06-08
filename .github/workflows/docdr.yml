@@ -1,0 +1,22 @@
+name: DocDr
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main, master]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-docs:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ianjamesburke/docdr@v1
+        with:
+          license-key: ${{ secrets.DOCDR_LICENSE_KEY }}
