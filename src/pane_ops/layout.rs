@@ -487,9 +487,10 @@ impl PlexiApp {
         }
 
         if let Some(pane_tile) = ctx.find_first_pane_in(target) {
-            ctx.navigate_to(pane_tile);
             if ctx.zoomed_pane.is_some() {
-                ctx.zoomed_pane = Some(pane_tile);
+                ctx.zoom_to(pane_tile);
+            } else {
+                ctx.navigate_to(pane_tile);
             }
         }
     }
@@ -522,9 +523,10 @@ impl PlexiApp {
         }
 
         if let Some(pane_tile) = ctx.find_first_pane_in(target) {
-            ctx.navigate_to(pane_tile);
             if ctx.zoomed_pane.is_some() {
-                ctx.zoomed_pane = Some(pane_tile);
+                ctx.zoom_to(pane_tile);
+            } else {
+                ctx.navigate_to(pane_tile);
             }
         }
     }

@@ -123,21 +123,31 @@ impl Window {
         }
     }
 
-    /// Navigate to a tile: sets focused_pane and activates its ancestor Tabs container.
-    /// This is the canonical way to change focused_pane — call instead of assigning directly.
-    /// Does NOT touch zoomed_pane; callers own zoom transitions.
+    /// Navigate to a tile: sets focused_pane and activates ALL ancestor Tabs containers
+    /// (walking up through nested tab layouts). This is the canonical way to change
+    /// focused_pane — call instead of assigning directly. Does NOT touch zoomed_pane;
+    /// callers own zoom transitions.
     pub(crate) fn navigate_to(&mut self, tile_id: TileId) {
         self.focused_pane = Some(tile_id);
-        if let Some((tabs_id, child_id)) = self.find_ancestor_tabs(tile_id) {
+        let mut current = tile_id;
+        while let Some((tabs_id, child_id)) = self.find_ancestor_tabs(current) {
             if let Some(Tile::Container(Container::Tabs(tabs))) = self.tree.tiles.get_mut(tabs_id) {
                 tabs.set_active(child_id);
             }
+            current = tabs_id;
         }
     }
 
     /// Clear zoom state on this window.
     pub(crate) fn clear_zoom(&mut self) {
         self.zoomed_pane = None;
+    }
+
+    /// Zoom to a tile: navigates to it (activating ancestor tabs) and sets zoomed_pane.
+    /// Use instead of directly assigning zoomed_pane to keep focus and zoom in sync.
+    pub(crate) fn zoom_to(&mut self, tile_id: TileId) {
+        self.navigate_to(tile_id);
+        self.zoomed_pane = Some(tile_id);
     }
 
     /// Reconcile stale tile references after the tile tree simplifier runs.

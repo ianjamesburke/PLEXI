@@ -2439,7 +2439,9 @@ impl eframe::App for PlexiApp {
                     self.navigate(dir);
                     if was_zoomed {
                         let new_pane = self.windows[self.active_window].focused_pane;
-                        self.windows[self.active_window].zoomed_pane = new_pane;
+                        if let Some(tile) = new_pane {
+                            self.windows[self.active_window].zoom_to(tile);
+                        }
                         log::info!("zoom: navigate — new zoomed pane={new_pane:?}");
                         self.ctx.memory_mut(|m| {
                             if let Some(id) = m.focused() {
@@ -2601,7 +2603,7 @@ impl eframe::App for PlexiApp {
                                 ctx.clear_zoom();
                                 log::info!("zoom: toggle off — pane={focused:?}");
                             } else {
-                                ctx.zoomed_pane = Some(focused);
+                                ctx.zoom_to(focused);
                                 log::info!("zoom: toggle on — pane={focused:?}");
                             }
                             self.ctx.memory_mut(|m| {
