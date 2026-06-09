@@ -10,7 +10,6 @@ docs/scratch/
 .vscode/
 
 # AI tool configs (local only)
-.agents/
 .claude/settings.local.json
 .claude/*.lock
 .kiro/

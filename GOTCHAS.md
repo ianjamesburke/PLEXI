@@ -147,3 +147,8 @@ workspace that should contain it.
 `resolve_workspace_root` is legitimate inside `AppRegistry::load` (to surface
 workspace-local apps) and in `app init` (to decide where to scaffold). In those cases
 `None` gracefully degrades (falls back to global) rather than hard-failing.
+
+
+## `just pr-install` must run from the feature worktree
+
+`scripts/install.sh` derives `REPO_ROOT` from `${BASH_SOURCE[0]}/..`. Running from the repo root resolves to alpha's working tree, so `rsync -a apps/dev/` syncs alpha's `apps/dev/` — missing any apps that only exist on the feature branch. Always `cd worktrees/feature/<branch> && just pr-install <N>`.
