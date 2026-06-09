@@ -3,6 +3,9 @@ use crate::ui::style;
 
 impl PlexiApp {
     pub(crate) fn notes_picker_handle_key(&mut self, ctx: &egui::Context) {
+        // Keep the TextEdit from reclaiming egui focus while the picker is open.
+        ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
+
         let count = self.notes_picker_entries.len();
         if count == 0 {
             self.pop_focus_layer(&FocusLayer::NotesPicker);
@@ -71,13 +74,18 @@ impl PlexiApp {
         let selected = self.notes_picker_selected;
 
         let screen = ctx.screen_rect();
-        egui::Area::new(egui::Id::new("notes_picker_scrim"))
+
+        // Scrim — clicking outside the modal dismisses it.
+        let scrim_clicked = egui::Area::new(egui::Id::new("notes_picker_scrim"))
             .fixed_pos(screen.min)
             .order(egui::Order::Middle)
             .show(ctx, |ui| {
                 ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(style::SCRIM_ALPHA));
-                let _ = ui.allocate_rect(screen, egui::Sense::hover());
-            });
+                ui.allocate_rect(screen, egui::Sense::click()).clicked()
+            }).inner;
+
+        // Track which row the user clicked × on (Cell for shared borrow across nested closures).
+        let delete_cell = std::cell::Cell::new(None::<usize>);
 
         egui::Area::new(egui::Id::new("notes_picker"))
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -134,10 +142,10 @@ impl PlexiApp {
                                             .color(if is_selected { colors.text_primary } else { colors.text_dim }),
                                     );
                                     if !preview.is_empty() {
-                                        let truncated: String = preview.chars().take(60).collect();
+                                        let truncated: String = preview.chars().take(50).collect();
                                         ui.add_space(style::SPACE_SM);
                                         ui.scope(|ui| {
-                                            ui.set_max_width(200.0);
+                                            ui.set_max_width(160.0);
                                             ui.label(
                                                 egui::RichText::new(truncated)
                                                     .size(style::TEXT_HINT)
@@ -145,6 +153,21 @@ impl PlexiApp {
                                             );
                                         });
                                     }
+                                    // Delete button — right-aligned via RTL sub-layout.
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.add_space(style::SPACE_SM);
+                                        let del = ui.add(
+                                            egui::Button::new(
+                                                egui::RichText::new("×")
+                                                    .size(style::TEXT_HINT)
+                                                    .color(colors.text_dim),
+                                            )
+                                            .frame(false),
+                                        );
+                                        if del.clicked() {
+                                            delete_cell.set(Some(i));
+                                        }
+                                    });
                                 });
                             }
                         });
@@ -159,5 +182,26 @@ impl PlexiApp {
                         });
                     });
             });
+
+        // Handle delete: remove file and entry from the list.
+        if let Some(idx) = delete_cell.get() {
+            if let Some((path, _)) = self.notes_picker_entries.get(idx) {
+                if let Err(e) = std::fs::remove_file(path) {
+                    log::warn!("notes_picker: failed to delete {:?}: {e}", path);
+                } else {
+                    log::info!("notes_picker: deleted {:?}", path);
+                }
+            }
+            self.notes_picker_entries.remove(idx);
+            if self.notes_picker_selected >= self.notes_picker_entries.len() {
+                self.notes_picker_selected = self.notes_picker_entries.len().saturating_sub(1);
+            }
+        }
+
+        // Dismiss on click outside the modal (processed after picker Area so it doesn't
+        // fire when clicking inside the modal itself).
+        if scrim_clicked {
+            self.pop_focus_layer(&FocusLayer::NotesPicker);
+        }
     }
 }

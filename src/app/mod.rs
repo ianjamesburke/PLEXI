@@ -3086,6 +3086,9 @@ impl PlexiApp {
         self.notes_picker_entries = entries;
         self.notes_picker_selected = 0;
         self.push_focus_layer(FocusLayer::NotesPicker);
+        // Surrender egui keyboard focus from the active TextEdit so the picker
+        // receives j/k and other navigation keys immediately on the first frame.
+        self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
     }
 }
 

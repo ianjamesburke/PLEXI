@@ -15,7 +15,6 @@ pub struct TextEditorApp {
     last_edit: Option<Instant>,
     wants_close: bool,
     load_error: Option<String>,
-    focus_requested: bool,
     font_size: f32,
 }
 
@@ -33,12 +32,23 @@ impl TextEditorApp {
             last_edit: None,
             wants_close: false,
             load_error,
-            focus_requested: false,
             font_size: FONT_SIZE_DEFAULT,
         }
     }
 
     fn flush(&mut self) {
+        self.last_edit = None;
+        // Empty content → delete the file rather than writing an empty document.
+        if self.content.is_empty() {
+            if self.path.exists() {
+                if let Err(e) = std::fs::remove_file(&self.path) {
+                    log::warn!("TextEditorApp: failed to delete empty note {:?}: {e}", self.path);
+                } else {
+                    log::info!("TextEditorApp: deleted empty note {:?}", self.path);
+                }
+            }
+            return;
+        }
         if let Some(parent) = self.path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 log::warn!("TextEditorApp: could not create parent dir {:?}: {e}", parent);
@@ -48,7 +58,6 @@ impl TextEditorApp {
         match std::fs::write(&self.path, &self.content) {
             Ok(()) => {
                 log::info!("TextEditorApp: saved {:?} ({} bytes)", self.path, self.content.len());
-                self.last_edit = None;
             }
             Err(e) => {
                 log::warn!("TextEditorApp: save failed for {:?}: {e}", self.path);
@@ -96,14 +105,17 @@ impl App for TextEditorApp {
             return;
         }
 
+        // Fill the entire pane rect for consistent background in both tiled and zoomed modes.
+        ui.painter().rect_filled(ui.max_rect(), 0.0, colors.bg_darkest);
+
         ui.visuals_mut().extreme_bg_color = colors.bg_darkest;
         ui.visuals_mut().override_text_color = Some(colors.text_primary);
 
         let te_id = egui::Id::new("text_editor_content").with(&self.path);
         let font_id = egui::FontId::monospace(self.font_size);
 
-        // Minimum rows to fill the pane even on short documents.
-        let min_rows = ((ui.available_height() / self.font_size) as usize).max(10) + 5;
+        // Minimum rows = fill the pane without overflow so the scroll area starts inactive.
+        let min_rows = ((ui.available_height() / self.font_size) as usize).max(1);
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -152,9 +164,11 @@ impl App for TextEditorApp {
                     }
                 }
 
-                if !self.focus_requested {
+                // Request focus whenever this pane is active but the TextEdit doesn't
+                // have it — handles initial open, zoom/fullscreen toggles, and pane
+                // switches without a one-shot guard that breaks after focus changes.
+                if ctx.is_focused && !output.response.has_focus() {
                     output.response.request_focus();
-                    self.focus_requested = true;
                 }
             });
     }
@@ -186,7 +200,6 @@ impl App for TextEditorApp {
                 self.content = content;
                 self.load_error = load_error;
                 self.last_edit = None;
-                self.focus_requested = false;
             }
         }
     }
@@ -194,7 +207,8 @@ impl App for TextEditorApp {
 
 impl Drop for TextEditorApp {
     fn drop(&mut self) {
-        if self.last_edit.is_some() {
+        // Save unsaved edits; also clean up if content was cleared (flush deletes empty files).
+        if self.last_edit.is_some() || self.content.is_empty() {
             self.flush();
         }
     }
