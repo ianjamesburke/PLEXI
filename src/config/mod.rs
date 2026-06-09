@@ -72,6 +72,7 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "open_secrets_manager", "force_reload_app", "toggle_notification_modal",
     "open_scratchpad", "set_context_root_from_cwd",
     "push_to_subcontext", "new_child_context",
+    "hide_pane", "park_context",
     "open_notes_picker",
 ];
 
@@ -160,7 +161,7 @@ fn check_unknown_keys(
 pub fn validate_all() -> Vec<ConfigDiagnostic> {
     let mut diags = validate_from_path(&config_path());
     if let Some(root) = active_workspace_root() {
-        let project_path = root.join(workspace_channel_dir()).join("config.toml");
+        let project_path = workspace_config_path(&root);
         diags.extend(validate_from_path(&project_path));
     }
     diags
@@ -704,6 +705,14 @@ pub fn config_dir() -> PathBuf {
         .join(config_dir_name())
 }
 
+pub fn workspace_config_path(workspace_root: &Path) -> PathBuf {
+    workspace_config_path_for_channel(workspace_root, &workspace_channel_dir())
+}
+
+fn workspace_config_path_for_channel(workspace_root: &Path, channel_dir: &str) -> PathBuf {
+    workspace_root.join(channel_dir).join("config.toml")
+}
+
 /// Dev override: when `PLEXI_SDK_PATH` is set, Python apps import the SDK from
 /// that directory (which must contain the `plexi_sdk` package) instead of the
 /// binary-embedded copy. This enables live SDK iteration — edit
@@ -875,7 +884,7 @@ pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
 impl PlexiConfig {
     /// Load the global config only — no project-level merge. Most call sites
     /// should prefer [`load_with_workspace`] so a workspace's
-    /// `.plexi/config.toml` can override.
+    /// channel-scoped config can override.
     pub fn load() -> Self {
         let path = config_path();
         if !path.exists() {
@@ -912,15 +921,15 @@ impl PlexiConfig {
         }
     }
 
-    /// Load the global config and overlay `<workspace_root>/.plexi/config.toml`
-    /// on top if it exists. Project-level values override globals on a
+    /// Load the global config and overlay the workspace's channel-scoped
+    /// config on top if it exists. Project-level values override globals on a
     /// per-field basis; unset project fields preserve the global value.
     pub fn load_with_workspace(workspace_root: Option<&Path>) -> Self {
         let mut merged = Self::load();
         let Some(root) = workspace_root else {
             return merged;
         };
-        let project_path = root.join(".plexi").join("config.toml");
+        let project_path = workspace_config_path(root);
         if let Some(project) = Self::load_from_path(&project_path) {
             merged.overlay(project);
         }
@@ -1272,6 +1281,19 @@ mod tests {
     }
 
     #[test]
+    fn validate_known_keybindings_cover_pane_hide_and_context_park() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "[keybindings]\nhide_pane = \"cmd+u\"\npark_context = \"cmd+shift+u\"\n",
+        )
+        .unwrap();
+        let diags = validate_from_path(&path);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+    }
+
+    #[test]
     fn validate_parse_error() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -1345,6 +1367,24 @@ mod tests {
     }
 
     #[test]
+    fn workspace_config_path_uses_channel_dir() {
+        let workspace = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            workspace_config_path_for_channel(workspace.path(), ".plexi"),
+            workspace.path().join(".plexi").join("config.toml")
+        );
+        assert_eq!(
+            workspace_config_path_for_channel(workspace.path(), ".plexi-alpha"),
+            workspace.path().join(".plexi-alpha").join("config.toml")
+        );
+        assert_eq!(
+            workspace_config_path_for_channel(workspace.path(), ".plexi-pr-817"),
+            workspace.path().join(".plexi-pr-817").join("config.toml")
+        );
+    }
+
+    #[test]
     fn missing_project_config_keeps_global() {
         let global_dir = tempfile::tempdir().unwrap();
         let global_path = global_dir.path().join("config.toml");
@@ -1353,7 +1393,7 @@ mod tests {
             "font_size = 12.0\n[log]\nlevel = \"warn\"\n[theme]\naccent = \"#bbbbbb\"\n",
         );
 
-        // Workspace exists but has no .plexi/config.toml.
+        // Workspace exists but has no main-channel config.toml.
         let workspace = tempfile::tempdir().unwrap();
         let project_path = workspace.path().join(".plexi").join("config.toml");
         assert!(!project_path.exists());
@@ -1452,4 +1492,3 @@ mod tests {
     }
 
 }
-

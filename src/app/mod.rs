@@ -681,7 +681,7 @@ impl PlexiApp {
             };
 
         // Resolve the active workspace (explicit `plexi <path>` arg, then
-        // CWD-walk fallback) and overlay its `.plexi/config.toml` on top of
+        // CWD-walk fallback) and overlay its channel-scoped config on top of
         // the global config. Project values win on a per-field basis; unset
         // project fields preserve the global value.
         let active_workspace = config::active_workspace_root();

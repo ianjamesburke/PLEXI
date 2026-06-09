@@ -74,8 +74,8 @@ pub(super) fn app_init_config_dir() -> String {
     crate::config::config_dir()
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or(".plexi")
-        .to_string()
+        .map(str::to_owned)
+        .unwrap_or_else(crate::config::workspace_channel_dir)
 }
 
 /// `plexi app init [--lang python|rust] [--global] [--no-open] <name>`

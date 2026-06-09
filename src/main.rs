@@ -104,7 +104,7 @@ fn main() -> eframe::Result {
         }
     }
 
-    // Merge global config with the workspace's `.plexi/config.toml` if a
+    // Merge global config with the workspace's channel-scoped config if a
     // workspace is in scope. The `log` level needs the merged value so a
     // project-level `[log] level = "debug"` actually takes effect.
     let merged_config_root = adopted_root

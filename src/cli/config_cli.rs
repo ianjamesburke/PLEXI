@@ -6,7 +6,7 @@ pub fn config_check() -> i32 {
         let path = crate::config::config_path();
         eprintln!("✓ {} is valid", path.display());
         if let Some(root) = crate::config::active_workspace_root() {
-            let project_path = root.join(".plexi").join("config.toml");
+            let project_path = crate::config::workspace_config_path(&root);
             if project_path.exists() {
                 eprintln!("✓ {} is valid", project_path.display());
             }
@@ -107,7 +107,7 @@ pub fn config_get(key: &str) -> i32 {
 
     // Overlay workspace config on top if one exists.
     if let Some(workspace_root) = crate::config::active_workspace_root() {
-        let project_path = workspace_root.join(".plexi").join("config.toml");
+        let project_path = crate::config::workspace_config_path(&workspace_root);
         if let Ok(data) = std::fs::read_to_string(&project_path) {
             if let Ok(project_val) = toml::from_str::<toml::Value>(&data) {
                 toml_merge(&mut root, project_val);
@@ -195,4 +195,3 @@ pub fn config_reset() -> i32 {
         }
     }
 }
-
