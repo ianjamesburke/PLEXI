@@ -88,6 +88,9 @@ impl PlexiApp {
         };
         let context_name = self.context_name_for(win.context_id);
         let context_description = self.context_description_for(win.context_id);
+        let context_root = self
+            .context_root_for(win.context_id)
+            .map(|p| p.to_string_lossy().into_owned());
 
         let (cwd, pty_title, pane_name, app_type_id) = match pane {
             crate::host::pane::Pane::Terminal(t) => {
@@ -104,12 +107,13 @@ impl PlexiApp {
         };
 
         log::info!(
-            "focus_changed: pane_id={pane_id} context={context_name:?} duration_secs={duration_secs} pty_title={pty_title:?} pane_name={pane_name:?} app_type_id={app_type_id:?}"
+            "focus_changed: pane_id={pane_id} context={context_name:?} context_root={context_root:?} duration_secs={duration_secs} pty_title={pty_title:?} pane_name={pane_name:?} app_type_id={app_type_id:?}"
         );
         crate::host::event_log::emit(crate::host::event_log::HostEvent::FocusChanged {
             pane_id,
             context_name,
             context_description,
+            context_root,
             cwd,
             pty_title,
             pane_name,

@@ -23,14 +23,76 @@ TIMELINE_H = 50.0
 MIN_CELL_W = 60.0
 MIN_CELL_H = 40.0
 HOME = str(Path.home())
+UNKNOWN_CONTEXT = "Unknown"
 
 
 def _shorten(path: str) -> str:
+    if path.startswith("context:"):
+        return path.removeprefix("context:")
     if path == HOME:
         return "~"
     if path.startswith(HOME + "/"):
         return "~" + path[len(HOME):]
     return path
+
+
+def _clean_text(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or value == "(none)":
+        return None
+    return value
+
+
+def _project_root(path: str | None) -> str | None:
+    if not path:
+        return None
+    parts = Path(path).parts
+    if "GitHub" in parts:
+        idx = parts.index("GitHub")
+        if idx + 1 < len(parts):
+            return str(Path(*parts[:idx + 2]))
+    return path
+
+
+def _project_label(path: str | None) -> str:
+    if not path:
+        return "No CWD"
+    if path == HOME:
+        return "~"
+    parts = Path(path).parts
+    if "GitHub" in parts:
+        idx = parts.index("GitHub")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    name = Path(path).name
+    return name or _shorten(path)
+
+
+def _cwd_label(path: str) -> str:
+    if path == HOME:
+        return "~"
+    name = Path(path).name
+    return name or _shorten(path)
+
+
+def _event_context_identity(ev: dict) -> tuple[str, str]:
+    context_root = _clean_text(ev.get("context_root"))
+    if context_root:
+        root = _project_root(context_root) or context_root
+        return root, _project_label(root)
+
+    context_name = _clean_text(ev.get("context_name"))
+    if context_name:
+        return f"context:{context_name}", context_name
+
+    cwd = _clean_text(ev.get("cwd"))
+    root = _project_root(cwd)
+    if root:
+        return root, _project_label(root)
+
+    return "context:unknown", UNKNOWN_CONTEXT
 
 
 def _fmt_duration(secs: float) -> str:
@@ -98,32 +160,53 @@ class TreeNode:
 
 
 def _build_tree(events: list[dict]) -> TreeNode:
-    by_cwd: dict[str, tuple[float, int]] = {}
+    by_context: dict[str, tuple[str, float, int]] = {}
+    by_context_cwd: dict[tuple[str, str], tuple[str, float, int]] = {}
+
     for ev in events:
-        cwd = ev.get("cwd") or HOME
+        context_path, context_label = _event_context_identity(ev)
+        cwd = _clean_text(ev.get("cwd"))
         dur = ev.get("duration_secs", 0)
-        prev = by_cwd.get(cwd, (0.0, 0))
-        by_cwd[cwd] = (prev[0] + dur, prev[1] + 1)
+        prev_context = by_context.get(context_path, (context_label, 0.0, 0))
+        by_context[context_path] = (
+            context_label,
+            prev_context[1],
+            prev_context[2] + 1,
+        )
 
-    root = TreeNode(HOME, "~")
-    nodes: dict[str, TreeNode] = {HOME: root}
+        if cwd:
+            leaf_key = (context_path, cwd)
+            prev_leaf = by_context_cwd.get(leaf_key, (_cwd_label(cwd), 0.0, 0))
+            by_context_cwd[leaf_key] = (
+                prev_leaf[0],
+                prev_leaf[1] + dur,
+                prev_leaf[2] + 1,
+            )
+        else:
+            by_context[context_path] = (
+                context_label,
+                prev_context[1] + dur,
+                prev_context[2] + 1,
+            )
 
-    for cwd in sorted(by_cwd.keys()):
-        parts = cwd.split("/")
-        for i in range(1, len(parts) + 1):
-            prefix = "/".join(parts[:i]) or "/"
-            if prefix not in nodes:
-                parent_path = "/".join(parts[:i - 1]) or "/"
-                parent = nodes.get(parent_path, root)
-                node = TreeNode(prefix, parts[i - 1] if i > 0 else "/")
-                nodes[prefix] = node
-                parent.children.append(node)
+    root = TreeNode("contexts", "Contexts")
+    context_nodes: dict[str, TreeNode] = {}
 
-    for cwd, (dur, visits) in by_cwd.items():
-        node = nodes.get(cwd)
-        if node:
-            node.self_duration = dur
-            node.visits = visits
+    for context_path, (context_label, dur, visits) in sorted(by_context.items()):
+        node = TreeNode(context_path, context_label)
+        node.self_duration = dur
+        node.visits = visits
+        root.children.append(node)
+        context_nodes[context_path] = node
+
+    for (context_path, cwd), (label, dur, visits) in sorted(by_context_cwd.items()):
+        parent = context_nodes.get(context_path)
+        if not parent:
+            continue
+        node = TreeNode(cwd, label)
+        node.self_duration = dur
+        node.visits = visits
+        parent.children.append(node)
 
     def rollup(n: TreeNode) -> float:
         child_total = sum(rollup(c) for c in n.children)
@@ -263,26 +346,35 @@ class _StatsCanvas(Component):
         app.cells = _squarify(items, (x, y, w, treemap_h))
 
         for node, cx, cy, cw, ch in app.cells:
+            draw_x = max(x, cx + 1)
+            draw_y = max(y, cy + 1)
+            draw_r = min(x + w, cx + max(0, cw - 1))
+            draw_b = min(y + treemap_h, cy + max(0, ch - 1))
+            draw_w = max(0.0, draw_r - draw_x)
+            draw_h = max(0.0, draw_b - draw_y)
+            if draw_w <= 0 or draw_h <= 0:
+                continue
+
             color = PALETTE[node.color_index % len(PALETTE)]
             is_highlighted = app.highlight_path and node.path == app.highlight_path
             fill = color if not is_highlighted else "#ffffff"
-            ctx.rect(cx + 1, cy + 1, max(0, cw - 2), max(0, ch - 2),
+            ctx.rect(draw_x, draw_y, draw_w, draw_h,
                      fill=dim(fill, 180 if not is_highlighted else 255), radius=3.0)
 
-            if cw >= MIN_CELL_W and ch >= MIN_CELL_H:
+            if draw_w >= MIN_CELL_W and draw_h >= MIN_CELL_H:
                 parent_label = _shorten(os.path.dirname(node.path))
                 if parent_label and parent_label != _shorten(vr.path):
-                    ctx.text(cx + 6, cy + ch - 14 - TEXT_BODY - TEXT_HINT - 2,
+                    ctx.text(draw_x + 5, draw_y + draw_h - 14 - TEXT_BODY - TEXT_HINT - 2,
                              parent_label, size=TEXT_HINT, color=dim(ctx.theme.fg, 100))
 
-                ctx.text(cx + 6, cy + ch - 14 - TEXT_BODY,
+                ctx.text(draw_x + 5, draw_y + draw_h - 14 - TEXT_BODY,
                          node.label, size=TEXT_BODY, color=ctx.theme.fg, bold=True)
-                ctx.text(cx + 6, cy + ch - 14,
+                ctx.text(draw_x + 5, draw_y + draw_h - 14,
                          _fmt_duration(node.total_duration), size=TEXT_CAPTION,
                          color=dim(ctx.theme.fg, 180))
 
                 if node.visits > 0:
-                    ctx.text(cx + cw - 40, cy + 6,
+                    ctx.text(draw_x + draw_w - 40, draw_y + 5,
                              f"{node.visits}x", size=TEXT_HINT, color=dim(ctx.theme.fg, 100))
 
         # stats bar
@@ -310,7 +402,7 @@ class _StatsCanvas(Component):
 
         bar_y = tl_y + 4
         bar_h = TIMELINE_H - 20
-        for start_frac, end_frac, _, color_idx in app.timeline:
+        for start_frac, end_frac, _, _, color_idx in app.timeline:
             bx = x + start_frac * w
             bw = max(2.0, (end_frac - start_frac) * w)
             color = PALETTE[color_idx % len(PALETTE)]
@@ -347,7 +439,7 @@ class StatsApp(App):
         self.view_root: TreeNode | None = None
         self.view_stack: list[TreeNode] = []
         self.cells: list[tuple[TreeNode, float, float, float, float]] = []
-        self.timeline: list[tuple[float, float, str, int]] = []
+        self.timeline: list[tuple[float, float, str, str, int]] = []
         self.total_time = 0.0
         self.total_visits = 0
         self.total_projects = 0
@@ -380,28 +472,25 @@ class StatsApp(App):
 
         self.total_time = sum(ev.get("duration_secs", 0) for ev in events)
         self.total_visits = len(events)
-        self.total_projects = len({ev.get("context_name", "") for ev in events})
+        self.total_projects = len({_event_context_identity(ev)[0] for ev in events})
 
         now = datetime.now(timezone.utc)
         start_window = now - timedelta(hours=24)
         self.timeline = []
+        context_colors = {}
+        if self.root:
+            context_colors = {child.path: i for i, child in enumerate(self.root.children)}
         for ev in events:
             ts = ev["_ts"]
             dur = ev.get("duration_secs", 0)
-            cwd = ev.get("cwd") or HOME
+            cwd = _clean_text(ev.get("cwd")) or ""
+            context_path, _ = _event_context_identity(ev)
             end_frac = (ts - start_window).total_seconds() / 86400.0
             start_frac = ((ts - timedelta(seconds=dur)) - start_window).total_seconds() / 86400.0
             start_frac = max(0.0, min(1.0, start_frac))
             end_frac = max(0.0, min(1.0, end_frac))
-            parts = cwd.replace(HOME, "").strip("/").split("/")
-            top_dir = parts[0] if parts and parts[0] else "~"
-            color_idx = 0
-            if self.root:
-                for i, child in enumerate(self.root.children):
-                    if child.label == top_dir or child.path.endswith("/" + top_dir):
-                        color_idx = i
-                        break
-            self.timeline.append((start_frac, end_frac, cwd, color_idx))
+            color_idx = context_colors.get(context_path, 0)
+            self.timeline.append((start_frac, end_frac, context_path, cwd, color_idx))
 
         self.emit.status_summary(f"{_fmt_duration(self.total_time)} active")
 
@@ -455,10 +544,13 @@ class StatsApp(App):
             bar_h = TIMELINE_H - 20
             if bar_local_y <= local_y <= bar_local_y + bar_h:
                 frac = x / w if w > 0 else 0
-                for start_frac, end_frac, cwd, _ in self.timeline:
+                for start_frac, end_frac, context_path, cwd, _ in self.timeline:
                     if start_frac <= frac <= end_frac:
-                        self.highlight_path = cwd
-                        self.emit.info(f"stats: highlighted {cwd}")
+                        if self.view_root and self.view_root.path == context_path and cwd:
+                            self.highlight_path = cwd
+                        else:
+                            self.highlight_path = context_path
+                        self.emit.info(f"stats: highlighted {self.highlight_path}")
                         self.emit.schedule_render(0)
                         break
             return

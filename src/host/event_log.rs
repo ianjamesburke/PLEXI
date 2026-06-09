@@ -124,6 +124,8 @@ pub enum HostEvent {
         context_name: String,
         /// Description of the context.
         context_description: String,
+        /// Root path assigned to the context, if any.
+        context_root: Option<String>,
         /// CWD of the departing pane (terminals via proc_info; apps via workspace_root).
         cwd: Option<String>,
         /// Last OSC 2 title string the process wrote, if any.
