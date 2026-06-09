@@ -1556,7 +1556,7 @@ mod tests {
         );
     }
 
-    /// `plexi terminal --layout tab` must create a new tab pane alongside the
+    /// `plexi pane new --tab` must create a new tab pane alongside the
     /// focused pane (wrapping both in a Tabs container) rather than splitting.
     #[test]
     fn spawn_pane_tab_creates_tab_not_split() {
@@ -1613,7 +1613,7 @@ mod tests {
         );
     }
 
-    /// `plexi terminal --layout new_window` must create a new spatial grid window
+    /// `plexi pane new --window` must create a new spatial grid window
     /// in the current context rather than splitting the active pane.
     #[test]
     fn spawn_pane_new_window_creates_separate_window() {
