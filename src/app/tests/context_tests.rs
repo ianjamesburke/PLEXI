@@ -1232,6 +1232,9 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
         context_id: child_ctx_id,
     });
 
+    app.minimap.visible = false;
+    app.minimap_visible_per_context.insert(parent_ctx_id, false);
+
     app.dissolve_portal(child_ctx_id);
 
     assert!(
@@ -1333,6 +1336,15 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
         parent_window_coords.len(),
         parent_window_count,
         "promoted child windows should have deterministic non-colliding grid coordinates"
+    );
+    assert!(
+        app.minimap.visible,
+        "dissolving a multi-window child context should show the parent minimap"
+    );
+    assert_eq!(
+        app.minimap_visible_per_context.get(&parent_ctx_id),
+        Some(&true),
+        "parent minimap state should be saved as visible after promoted child windows"
     );
     assert!(
         app.windows

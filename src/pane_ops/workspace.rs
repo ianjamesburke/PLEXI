@@ -1196,6 +1196,7 @@ impl PlexiApp {
             self.router.retain_depth_stack(|cid| cid != child_ctx_id);
             return;
         };
+        let promoted_child_window_count = child_windows.len().saturating_sub(1);
 
         let Some(primary_idx) = self
             .windows
@@ -1216,7 +1217,7 @@ impl PlexiApp {
 
         log::info!(
             "dissolve_portal: ctx={child_ctx_id} parent_ctx={parent_ctx_id} graft_primary_window={primary_child_window_id} promote_windows={}",
-            child_windows.len().saturating_sub(1)
+            promoted_child_window_count
         );
 
         {
@@ -1364,11 +1365,19 @@ impl PlexiApp {
             .iter()
             .filter(|w| w.context_id == parent_ctx_id)
             .count();
-        self.minimap.visible = self
+        let restored_minimap_visible = self
             .minimap_visible_per_context
             .get(&parent_ctx_id)
             .copied()
             .unwrap_or(page_count > 1);
+        let show_promoted_windows = promoted_child_window_count > 0 && page_count > 1;
+        self.minimap.visible = restored_minimap_visible || show_promoted_windows;
+        if show_promoted_windows {
+            self.minimap_visible_per_context.insert(parent_ctx_id, true);
+            log::info!(
+                "dissolve_portal: parent ctx={parent_ctx_id} now has {page_count} windows; showing minimap"
+            );
+        }
     }
 
     pub(crate) fn save_workspace(&self) {
