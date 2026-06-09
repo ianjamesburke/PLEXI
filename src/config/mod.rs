@@ -779,11 +779,9 @@ pub fn workspace_channel_dir() -> String {
     if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
         return format!(".plexi-{profile}");
     }
-    if let Ok(channel) = std::env::var("PLEXI_CHANNEL") {
-        if !channel.is_empty() {
-            log::info!("workspace_channel_dir: using PLEXI_CHANNEL={channel}");
-            return channel_suffix_from_basename(&format!("plexi-{channel}"));
-        }
+    if let Some(channel) = std::env::var("PLEXI_CHANNEL").ok().filter(|c| !c.is_empty()) {
+        log::info!("workspace_channel_dir: using PLEXI_CHANNEL={channel}");
+        return format!(".plexi-{channel}");
     }
     static CHANNEL_DIR: OnceLock<String> = OnceLock::new();
     CHANNEL_DIR
@@ -802,11 +800,9 @@ fn config_dir_name() -> String {
     if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
         return format!(".plexi-{profile}");
     }
-    if let Ok(channel) = std::env::var("PLEXI_CHANNEL") {
-        if !channel.is_empty() {
-            log::info!("config_dir_name: using PLEXI_CHANNEL={channel}");
-            return channel_suffix_from_basename(&format!("plexi-{channel}"));
-        }
+    if let Some(channel) = std::env::var("PLEXI_CHANNEL").ok().filter(|c| !c.is_empty()) {
+        log::info!("config_dir_name: using PLEXI_CHANNEL={channel}");
+        return format!(".plexi-{channel}");
     }
     let basename = std::env::current_exe()
         .ok()
