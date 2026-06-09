@@ -264,6 +264,17 @@ class GhIssues(App):
 
     # ── input ─────────────────────────────────────────────────────────────────
 
+    def on_escape(self) -> bool:
+        if self._view == self.VIEW_DETAIL:
+            self._view   = self.VIEW_LIST
+            self._detail = None
+            self._error  = None
+            self.emit.info("gh-issues: back to list")
+            self.emit.status_summary("Issues")
+            self.emit.schedule_render()
+            return True
+        return False
+
     async def on_key(self, key: str, _mods: dict) -> None:
         if self._loading:
             return
@@ -278,14 +289,7 @@ class GhIssues(App):
                 self._new_issue()
 
         elif self._view == self.VIEW_DETAIL:
-            if key == "escape":
-                self._view   = self.VIEW_LIST
-                self._detail = None
-                self._error  = None
-                self.emit.info("gh-issues: back to list")
-                self.emit.status_summary("Issues")
-                self.emit.schedule_render()
-            elif key == "o":
+            if key == "o":
                 if self._detail:
                     num = self._detail["number"]
                     rc, _, _ = await asyncio.to_thread(
