@@ -114,8 +114,11 @@ impl App for TextEditorApp {
         let te_id = egui::Id::new("text_editor_content").with(&self.path);
         let font_id = egui::FontId::monospace(self.font_size);
 
-        // Minimum rows = fill the pane without overflow so the scroll area starts inactive.
-        let min_rows = ((ui.available_height() / self.font_size) as usize).max(1);
+        // Use the actual rendered row height (not font em-size) so desired_rows fills
+        // the viewport exactly. font_size alone ignores line leading, causing the TextEdit
+        // to be taller than the viewport and triggering an unwanted scrollbar.
+        let row_height = ui.fonts(|f| f.row_height(&font_id));
+        let min_rows = ((ui.available_height() / row_height).floor() as usize).max(1);
 
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -125,6 +128,7 @@ impl App for TextEditorApp {
                     .font(font_id)
                     .desired_width(f32::INFINITY)
                     .desired_rows(min_rows)
+                    .margin(egui::vec2(4.0, 0.0))
                     .frame(false)
                     .show(ui);
 
