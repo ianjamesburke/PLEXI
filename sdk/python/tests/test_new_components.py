@@ -1,6 +1,6 @@
 """Tests for B2 UiNode component classes: Tabs, Grid, Toggle, Clickable, ProgressBar."""
 
-from plexi_sdk.ui import Tabs, Grid, Toggle, Clickable, ProgressBar
+from plexi_sdk.ui import Tabs, Grid, Toggle, Clickable, ProgressBar, TextEdit, Column
 
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -194,3 +194,39 @@ def test_progress_bar_default_color() -> None:
     node = ProgressBar(0.5).to_node()
     filled = node["children"][0]
     assert filled["color"] == "accent"
+
+
+# ── TextEdit ───────────────────────────────────────────────────────────────
+
+
+def test_textedit_is_component() -> None:
+    from plexi_sdk.ui import Component
+    te = TextEdit("x")
+    assert isinstance(te, Component)
+
+
+def test_textedit_to_node_fields() -> None:
+    te = TextEdit("notes", placeholder="Write here", value="hello", multiline=True, max_length=500)
+    assert te.to_node() == {
+        "type": "text_edit",
+        "node_id": "notes",
+        "placeholder": "Write here",
+        "value": "hello",
+        "multiline": True,
+        "max_length": 500,
+    }
+
+
+def test_textedit_nested_in_column_no_fallback() -> None:
+    te = TextEdit("body", placeholder="Type...", multiline=True, height=120.0)
+    col = Column([te])
+    node = col.to_node()
+    assert node is not None, "Column.to_node() returned None — TextEdit triggered L0 fallback"
+    child_node = node["children"][0]
+    assert child_node["type"] == "text_edit"
+    assert child_node["node_id"] == "body"
+
+
+def test_textedit_measure() -> None:
+    te = TextEdit("x", height=80.0)
+    assert te.measure(400.0) == 80.0

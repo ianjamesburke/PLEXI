@@ -128,6 +128,7 @@ class SnakeApp(App):
 | `FooterKeys(shortcuts)` | Bottom key hint row. `shortcuts`: list of `(key, description)` tuples. |
 | `SelectList(items, selected_idx=0)` | Keyboard-navigable list. |
 | `TextInput(id, placeholder="")` | Single-line text input. |
+| `TextEdit(node_id, placeholder="", value="", multiline=False, max_length=0, height=48.0)` | Host-rendered text editor. Change/submit events via `on_component_event`. |
 | `Divider()` | Horizontal rule. |
 
 ## Agent dev loop (testing and automation)

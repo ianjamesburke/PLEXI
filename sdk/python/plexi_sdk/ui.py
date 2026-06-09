@@ -1154,34 +1154,47 @@ class TextInput(Component):
         return self._submitted
 
 
-class TextEdit:
-    """Host-rendered text editor node for component trees (PGAP v3.5+).
+@dataclass
+class TextEdit(Component):
+    """Host-rendered text editor. Use inside ``view()`` like any other component.
 
-    Produces a ``UiNode::TextEdit`` wire dict. The host maintains a persistent
-    buffer keyed on ``node_id``. Typing fires ``ComponentEvent`` with
-    ``event_type="change"`` and ``payload={"value": "..."}``; Enter (single-line)
-    or Cmd+Enter (multiline) fires ``event_type="submit"``.
+    The host maintains a persistent buffer keyed on ``node_id``. Typing fires
+    ``ComponentEvent`` with ``event_type="change"`` and ``payload={"value": "..."}``;
+    Enter (single-line) or Cmd+Enter (multiline) fires ``event_type="submit"``.
 
-    Use this in ``ctx.render_tree()`` calls, not inside ``ctx.render(Column([...]))``.
+    ``height`` controls the allocated row height (pixels). Default ``48.0`` suits
+    single-line use; set it larger for multiline (e.g. ``height=120.0``).
 
     Example::
 
-        ctx.render_tree(TextEdit("notes", placeholder="Type here...", multiline=True).to_node())
+        def view(self):
+            return Column([
+                TextEdit("body", multiline=True, height=120.0, placeholder="Type here..."),
+                FooterKeys([("↩", "submit")]),
+            ])
     """
 
-    def __init__(
-        self,
-        node_id: str,
-        placeholder: str = "",
-        value: str = "",
-        multiline: bool = False,
-        max_length: int = 0,
-    ) -> None:
-        self.node_id = node_id
-        self.placeholder = placeholder
-        self.value = value
-        self.multiline = multiline
-        self.max_length = max_length
+    node_id: str
+    placeholder: str = ""
+    value: str = ""
+    multiline: bool = False
+    max_length: int = 0
+    height: float = 48.0
+
+    _submitted: Optional[str] = field(default=None, init=False, repr=False)
+
+    def measure(self, _avail_w: float) -> float:
+        return self.height
+
+    def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+        self._submitted = ctx.text_input(self.node_id, x=x, y=y, w=w,
+                                         placeholder=self.placeholder,
+                                         h=h, multiline=self.multiline)
+
+    @property
+    def submitted(self) -> Optional[str]:
+        """Text submitted this frame (user pressed Enter) during L0 fallback, else None."""
+        return self._submitted
 
     def to_node(self) -> dict:
         return {
