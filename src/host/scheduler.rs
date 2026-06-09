@@ -64,7 +64,10 @@ pub(crate) struct Scheduler {
 
 impl Scheduler {
     pub fn new() -> Self {
-        Self { entries: Vec::new(), loaded_roots: HashMap::new() }
+        Self {
+            entries: Vec::new(),
+            loaded_roots: HashMap::new(),
+        }
     }
 
     /// Load (or reload) routines from `root/.plexi/routines.toml`.
@@ -76,7 +79,8 @@ impl Scheduler {
                 return;
             }
         }
-        self.loaded_roots.insert(root.to_path_buf(), std::time::Instant::now());
+        self.loaded_roots
+            .insert(root.to_path_buf(), std::time::Instant::now());
 
         let path = root.join(routines_file());
         if !path.exists() {
@@ -99,7 +103,8 @@ impl Scheduler {
             }
         };
         // Preserve last_fire for routines that survive the reload (avoid re-firing immediately)
-        let mut last_fires: HashMap<String, Option<chrono::DateTime<chrono::Local>>> = HashMap::new();
+        let mut last_fires: HashMap<String, Option<chrono::DateTime<chrono::Local>>> =
+            HashMap::new();
         for e in &self.entries {
             if e.source_root == root {
                 last_fires.insert(e.routine.name.clone(), e.last_fire);
@@ -112,7 +117,11 @@ impl Scheduler {
             let schedule = match parse_schedule(&routine.schedule) {
                 Some(s) => s,
                 None => {
-                    log::warn!("scheduler: routine '{}' has unparseable schedule '{}', skipping", routine.name, routine.schedule);
+                    log::warn!(
+                        "scheduler: routine '{}' has unparseable schedule '{}', skipping",
+                        routine.name,
+                        routine.schedule
+                    );
                     continue;
                 }
             };
@@ -145,14 +154,16 @@ impl Scheduler {
     }
 }
 
-fn is_due(schedule: &ParsedSchedule, now: chrono::DateTime<chrono::Local>, last_fire: Option<&chrono::DateTime<chrono::Local>>) -> bool {
+fn is_due(
+    schedule: &ParsedSchedule,
+    now: chrono::DateTime<chrono::Local>,
+    last_fire: Option<&chrono::DateTime<chrono::Local>>,
+) -> bool {
     match schedule {
-        ParsedSchedule::Interval { secs } => {
-            match last_fire {
-                None => true,
-                Some(lf) => (now - *lf).num_seconds() >= *secs as i64,
-            }
-        }
+        ParsedSchedule::Interval { secs } => match last_fire {
+            None => true,
+            Some(lf) => (now - *lf).num_seconds() >= *secs as i64,
+        },
         ParsedSchedule::Cron(expr) => {
             if !cron_matches(expr, &now) {
                 return false;
@@ -205,7 +216,10 @@ pub(crate) fn parse_schedule(s: &str) -> Option<ParsedSchedule> {
     let s = s.trim();
 
     // "every 30m" / "every 2h" / "every 5s"
-    if let Some(rest) = s.strip_prefix("every ").or_else(|| s.strip_prefix("Every ")) {
+    if let Some(rest) = s
+        .strip_prefix("every ")
+        .or_else(|| s.strip_prefix("Every "))
+    {
         let rest = rest.trim();
         if let Some(n_str) = rest.strip_suffix('m') {
             let n: u64 = n_str.trim().parse().ok()?;
@@ -220,13 +234,20 @@ pub(crate) fn parse_schedule(s: &str) -> Option<ParsedSchedule> {
             return Some(ParsedSchedule::Interval { secs: n });
         }
         // "every minute" / "every hour"
-        if rest.eq_ignore_ascii_case("minute") { return Some(ParsedSchedule::Interval { secs: 60 }); }
-        if rest.eq_ignore_ascii_case("hour") { return Some(ParsedSchedule::Interval { secs: 3600 }); }
+        if rest.eq_ignore_ascii_case("minute") {
+            return Some(ParsedSchedule::Interval { secs: 60 });
+        }
+        if rest.eq_ignore_ascii_case("hour") {
+            return Some(ParsedSchedule::Interval { secs: 3600 });
+        }
         return None;
     }
 
     // "daily at 9am" / "daily at 10:30am"
-    if let Some(rest) = s.strip_prefix("daily at ").or_else(|| s.strip_prefix("Daily at ")) {
+    if let Some(rest) = s
+        .strip_prefix("daily at ")
+        .or_else(|| s.strip_prefix("Daily at "))
+    {
         let (hour, minute) = parse_time(rest)?;
         return Some(ParsedSchedule::Cron(CronExpr {
             minute: CronField::Single(minute),
@@ -238,7 +259,10 @@ pub(crate) fn parse_schedule(s: &str) -> Option<ParsedSchedule> {
     }
 
     // "weekdays at 9am"
-    if let Some(rest) = s.strip_prefix("weekdays at ").or_else(|| s.strip_prefix("Weekdays at ")) {
+    if let Some(rest) = s
+        .strip_prefix("weekdays at ")
+        .or_else(|| s.strip_prefix("Weekdays at "))
+    {
         let (hour, minute) = parse_time(rest)?;
         return Some(ParsedSchedule::Cron(CronExpr {
             minute: CronField::Single(minute),
@@ -250,7 +274,10 @@ pub(crate) fn parse_schedule(s: &str) -> Option<ParsedSchedule> {
     }
 
     // "weekends at 9am"
-    if let Some(rest) = s.strip_prefix("weekends at ").or_else(|| s.strip_prefix("Weekends at ")) {
+    if let Some(rest) = s
+        .strip_prefix("weekends at ")
+        .or_else(|| s.strip_prefix("Weekends at "))
+    {
         let (hour, minute) = parse_time(rest)?;
         return Some(ParsedSchedule::Cron(CronExpr {
             minute: CronField::Single(minute),
@@ -296,19 +323,29 @@ fn parse_time(s: &str) -> Option<(u32, u32)> {
     if let Some((h_str, m_str)) = s.split_once(':') {
         let mut h: u32 = h_str.parse().ok()?;
         let m: u32 = m_str.parse().ok()?;
-        if pm && h != 12 { h += 12; }
-        if !pm && h == 12 { h = 0; }
+        if pm && h != 12 {
+            h += 12;
+        }
+        if !pm && h == 12 {
+            h = 0;
+        }
         return Some((h, m));
     }
     // Just hour
     let mut h: u32 = s.parse().ok()?;
-    if pm && h != 12 { h += 12; }
-    if !pm && h == 12 { h = 0; }
+    if pm && h != 12 {
+        h += 12;
+    }
+    if !pm && h == 12 {
+        h = 0;
+    }
     Some((h, 0))
 }
 
 fn parse_cron_field(s: &str) -> Option<CronField> {
-    if s == "*" { return Some(CronField::Any); }
+    if s == "*" {
+        return Some(CronField::Any);
+    }
     if let Some((a, b)) = s.split_once('-') {
         let a: u32 = a.parse().ok()?;
         let b: u32 = b.parse().ok()?;
@@ -355,34 +392,36 @@ fn parse_cron_field_dow(s: &str) -> Option<CronField> {
 }
 
 /// Compute human-readable next-fire description for CLI display.
-pub(crate) fn next_fire_description(schedule: &ParsedSchedule, last_fire: Option<&chrono::DateTime<chrono::Local>>) -> String {
+pub(crate) fn next_fire_description(
+    schedule: &ParsedSchedule,
+    last_fire: Option<&chrono::DateTime<chrono::Local>>,
+) -> String {
     let now = chrono::Local::now();
     match schedule {
-        ParsedSchedule::Interval { secs } => {
-            match last_fire {
-                None => format!("in {}s (never fired)", secs),
-                Some(lf) => {
-                    let elapsed = (now - *lf).num_seconds().max(0) as u64;
-                    if elapsed >= *secs {
-                        "now (overdue)".to_string()
+        ParsedSchedule::Interval { secs } => match last_fire {
+            None => format!("in {}s (never fired)", secs),
+            Some(lf) => {
+                let elapsed = (now - *lf).num_seconds().max(0) as u64;
+                if elapsed >= *secs {
+                    "now (overdue)".to_string()
+                } else {
+                    let remaining = secs - elapsed;
+                    if remaining >= 3600 {
+                        format!("in {}h {}m", remaining / 3600, (remaining % 3600) / 60)
+                    } else if remaining >= 60 {
+                        format!("in {}m {}s", remaining / 60, remaining % 60)
                     } else {
-                        let remaining = secs - elapsed;
-                        if remaining >= 3600 {
-                            format!("in {}h {}m", remaining / 3600, (remaining % 3600) / 60)
-                        } else if remaining >= 60 {
-                            format!("in {}m {}s", remaining / 60, remaining % 60)
-                        } else {
-                            format!("in {}s", remaining)
-                        }
+                        format!("in {}s", remaining)
                     }
                 }
             }
-        }
+        },
         ParsedSchedule::Cron(expr) => {
             // Find the next minute that matches
             use chrono::Duration;
             let mut t = now + Duration::minutes(1);
-            for _ in 0..10080 {  // search up to 7 days
+            for _ in 0..10080 {
+                // search up to 7 days
                 if cron_matches(expr, &t) {
                     use chrono::Timelike;
                     return format!("at {:02}:{:02}", t.hour(), t.minute());
@@ -402,7 +441,10 @@ mod tests {
     fn parse_interval_minutes() {
         match parse_schedule("every 30m") {
             Some(ParsedSchedule::Interval { secs: 1800 }) => {}
-            other => panic!("expected Interval(1800), got {:?}", other.as_ref().map(|_| "Some")),
+            other => panic!(
+                "expected Interval(1800), got {:?}",
+                other.as_ref().map(|_| "Some")
+            ),
         }
     }
 
@@ -410,7 +452,10 @@ mod tests {
     fn parse_interval_hours() {
         match parse_schedule("every 2h") {
             Some(ParsedSchedule::Interval { secs: 7200 }) => {}
-            other => panic!("expected Interval(7200), got {:?}", other.as_ref().map(|_| "Some")),
+            other => panic!(
+                "expected Interval(7200), got {:?}",
+                other.as_ref().map(|_| "Some")
+            ),
         }
     }
 

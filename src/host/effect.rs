@@ -1,4 +1,4 @@
-use crate::host::command::{Placement, PaneRuntimeKind, ShareRatio};
+use crate::host::command::{PaneRuntimeKind, Placement, ShareRatio};
 use crate::spatial::tiling::PaneId;
 use serde::Serialize;
 
@@ -13,9 +13,22 @@ pub enum HostEvent {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "effect", rename_all = "snake_case")]
 pub enum HostEffect {
-    PaneOpened { pane_id: PaneId, kind: PaneRuntimeKind, share: ShareRatio, placement: Placement },
-    PaneClosed { pane_id: PaneId },
-    FocusChanged { pane_id: Option<PaneId> },
-    SplitOpened { pane_id: PaneId, kind: PaneRuntimeKind, placement: Placement },
+    PaneOpened {
+        pane_id: PaneId,
+        kind: PaneRuntimeKind,
+        share: ShareRatio,
+        placement: Placement,
+    },
+    PaneClosed {
+        pane_id: PaneId,
+    },
+    FocusChanged {
+        pane_id: Option<PaneId>,
+    },
+    SplitOpened {
+        pane_id: PaneId,
+        kind: PaneRuntimeKind,
+        placement: Placement,
+    },
     EventEmitted(HostEvent),
 }

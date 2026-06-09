@@ -2,8 +2,8 @@
 //! zoom-free tree manipulation, font size, scroll.
 
 use crate::app::PlexiApp;
-use crate::host::context::{replace_child, Window};
 use crate::host::command::{HostAction, Placement};
+use crate::host::context::{replace_child, Window};
 use crate::host::effect::HostEffect;
 use crate::host::keys::Direction;
 use crate::host::pane::{Pane, TerminalPane};
@@ -13,7 +13,10 @@ use egui_tiles::{Container, SimplificationOptions, Tile, TileId};
 use std::collections::HashMap;
 
 pub(crate) enum SwapResult {
-    Swapped { rect_a: egui::Rect, rect_b: egui::Rect },
+    Swapped {
+        rect_a: egui::Rect,
+        rect_b: egui::Rect,
+    },
     AtBoundary,
     NoFocus,
 }
@@ -79,7 +82,11 @@ pub(crate) fn insert_split_tile(
 
     // LinearDir::Horizontal = side-by-side (left/right); Vertical = stacked (top/bottom).
     // `vertical` here means "split vertically" (new pane to the right), so we need Horizontal.
-    let split_dir = if vertical { LinearDir::Horizontal } else { LinearDir::Vertical };
+    let split_dir = if vertical {
+        LinearDir::Horizontal
+    } else {
+        LinearDir::Vertical
+    };
     let parent = tree.tiles.parent_of(target);
 
     let inserted_as_sibling = if let Some(parent_id) = parent {
@@ -89,10 +96,18 @@ pub(crate) fn insert_split_tile(
                     let insert_pos = if new_pane_first { pos } else { pos + 1 };
                     linear.children.insert(insert_pos, new_tile);
                     true
-                } else { false }
-            } else { false }
-        } else { false }
-    } else { false };
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
 
     if !inserted_as_sibling {
         let ordered = if new_pane_first {
@@ -105,7 +120,9 @@ pub(crate) fn insert_split_tile(
         } else {
             tree.tiles.insert_vertical_tile(ordered)
         };
-        if let Some(Tile::Container(Container::Linear(ref mut lin))) = tree.tiles.get_mut(container_tile) {
+        if let Some(Tile::Container(Container::Linear(ref mut lin))) =
+            tree.tiles.get_mut(container_tile)
+        {
             lin.shares.set_share(target, share.denominator);
             lin.shares.set_share(new_tile, share.numerator);
         }
@@ -145,7 +162,14 @@ impl PlexiApp {
         self.push_focus_history(old_window_id, old_focus);
 
         let ctx = &mut self.windows[self.active_window];
-        let new_tile = insert_split_tile(&mut ctx.tree, Some(split_target), new_pane_id, vertical, share, new_pane_first);
+        let new_tile = insert_split_tile(
+            &mut ctx.tree,
+            Some(split_target),
+            new_pane_id,
+            vertical,
+            share,
+            new_pane_first,
+        );
 
         if !keep_focus {
             ctx.navigate_to(new_tile);
@@ -168,7 +192,9 @@ impl PlexiApp {
             // the tree. If it has panes but none focused (rare), drop into the
             // standard terminal split path which will no-op for now.
             if self.windows[active].panes.is_empty() {
-                if let Some((tree, panes, root_tile)) = self.create_single_pane_tree(None, None, false) {
+                if let Some((tree, panes, root_tile)) =
+                    self.create_single_pane_tree(None, None, false)
+                {
                     self.windows[active].tree = tree;
                     self.windows[active].panes = panes;
                     self.set_window_focused_pane(active, root_tile);
@@ -177,8 +203,7 @@ impl PlexiApp {
             return;
         };
 
-        let Some(Tile::Pane(focused_pane_id)) =
-            self.windows[active].tree.tiles.get(focused_tile)
+        let Some(Tile::Pane(focused_pane_id)) = self.windows[active].tree.tiles.get(focused_tile)
         else {
             return;
         };
@@ -223,7 +248,14 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn split_focused(&mut self, vertical: bool, initial_cmd: Option<&str>, close_on_exit: bool, new_pane_first: bool, cwd_override: Option<std::path::PathBuf>) {
+    pub(crate) fn split_focused(
+        &mut self,
+        vertical: bool,
+        initial_cmd: Option<&str>,
+        close_on_exit: bool,
+        new_pane_first: bool,
+        cwd_override: Option<std::path::PathBuf>,
+    ) {
         let old_window_id = self.windows[self.active_window].window_id;
         let old_focus = self.windows[self.active_window].focused_pane;
         let Some(focused) = self.windows[self.active_window].focused_pane else {
@@ -236,7 +268,10 @@ impl PlexiApp {
             HostAction::SplitHorizontal
         };
         let effects = self.submit(cmd);
-        log::debug!("split_focused(vertical={vertical} new_pane_first={new_pane_first}) effects: {:?}", effects);
+        log::debug!(
+            "split_focused(vertical={vertical} new_pane_first={new_pane_first}) effects: {:?}",
+            effects
+        );
         let (new_id, vertical) = effects
             .iter()
             .find_map(|e| match e {
@@ -256,13 +291,29 @@ impl PlexiApp {
         });
 
         let cwd = self.resolve_new_pane_cwd(cwd_override, Some(focused));
-        log::info!("split_focused: cwd={cwd:?} context_root={:?}", self.router.active().root);
-        let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);
+        log::info!(
+            "split_focused: cwd={cwd:?} context_root={:?}",
+            self.router.active().root
+        );
+        let ctx_id = self
+            .windows
+            .get(self.active_window)
+            .map(|w| w.context_id)
+            .unwrap_or(0);
         let ctx_name = self.context_name_for(ctx_id);
         let ctx_desc = self.context_description_for(ctx_id);
         let ctx_root = self.context_root_for(ctx_id);
         let ctx_depth = self.context_depth_for(ctx_id);
-        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc, ctx_root.as_ref(), ctx_depth);
+        let mut settings = Self::make_backend_settings(
+            new_id,
+            cwd,
+            &self.colors,
+            ctx_id,
+            &ctx_name,
+            &ctx_desc,
+            ctx_root.as_ref(),
+            ctx_depth,
+        );
         if let Some(cmd) = initial_cmd {
             log::info!("split_focused: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
@@ -352,16 +403,34 @@ impl PlexiApp {
         // Empty context (welcome screen): create the first pane as tree root.
         if self.windows[self.active_window].panes.is_empty() {
             let new_id = self.host.alloc_pane_id();
-            let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);
+            let ctx_id = self
+                .windows
+                .get(self.active_window)
+                .map(|w| w.context_id)
+                .unwrap_or(0);
             let ctx_name = self.context_name_for(ctx_id);
             let ctx_desc = self.context_description_for(ctx_id);
             let ctx_root = self.context_root_for(ctx_id);
             let ctx_depth = self.context_depth_for(ctx_id);
             let cwd = self.cwd_for_welcome_tab();
-            log::info!("new_tab (empty context): cwd={cwd:?} context_root={:?}", self.router.active().root);
-            let mut settings = Self::make_backend_settings(new_id, Some(cwd), &self.colors, ctx_id, &ctx_name, &ctx_desc, ctx_root.as_ref(), ctx_depth);
+            log::info!(
+                "new_tab (empty context): cwd={cwd:?} context_root={:?}",
+                self.router.active().root
+            );
+            let mut settings = Self::make_backend_settings(
+                new_id,
+                Some(cwd),
+                &self.colors,
+                ctx_id,
+                &ctx_name,
+                &ctx_desc,
+                ctx_root.as_ref(),
+                ctx_depth,
+            );
             if let Some(cmd) = initial_cmd {
-                log::info!("new_tab (empty context): initial_cmd={cmd:?} close_on_exit={close_on_exit}");
+                log::info!(
+                    "new_tab (empty context): initial_cmd={cmd:?} close_on_exit={close_on_exit}"
+                );
                 super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
             }
             let Some(mut pane) = TerminalPane::new(
@@ -393,13 +462,29 @@ impl PlexiApp {
         let new_id = self.host.alloc_pane_id();
 
         let cwd = self.resolve_new_pane_cwd(None, Some(focused));
-        log::info!("new_tab: cwd={cwd:?} context_root={:?}", self.router.active().root);
-        let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);
+        log::info!(
+            "new_tab: cwd={cwd:?} context_root={:?}",
+            self.router.active().root
+        );
+        let ctx_id = self
+            .windows
+            .get(self.active_window)
+            .map(|w| w.context_id)
+            .unwrap_or(0);
         let ctx_name = self.context_name_for(ctx_id);
         let ctx_desc = self.context_description_for(ctx_id);
         let ctx_root = self.context_root_for(ctx_id);
         let ctx_depth = self.context_depth_for(ctx_id);
-        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc, ctx_root.as_ref(), ctx_depth);
+        let mut settings = Self::make_backend_settings(
+            new_id,
+            cwd,
+            &self.colors,
+            ctx_id,
+            &ctx_name,
+            &ctx_desc,
+            ctx_root.as_ref(),
+            ctx_depth,
+        );
         if let Some(cmd) = initial_cmd {
             log::info!("new_tab: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
@@ -587,8 +672,11 @@ impl PlexiApp {
                 // Without this, the window stays in self.windows[] as a phantom grid cell.
                 if self.windows[ctx_idx].panes.is_empty() {
                     let ctx_id = self.windows[ctx_idx].context_id;
-                    let pages_in_context =
-                        self.windows.iter().filter(|w| w.context_id == ctx_id).count();
+                    let pages_in_context = self
+                        .windows
+                        .iter()
+                        .filter(|w| w.context_id == ctx_id)
+                        .count();
                     if pages_in_context > 1 {
                         log::info!(
                             "close_pane_by_id: window {ctx_idx} empty, {pages_in_context} pages in context {ctx_id} — deleting zombie window"
@@ -744,8 +832,11 @@ impl PlexiApp {
                     if self.registry.is_background(&type_id) {
                         process_app.send_event(&crate::app_protocol::PlexiEvent::Suspend);
                         let park_context_id = self.windows[ctx_idx].context_id;
-                        log::info!("parking background app '{type_id}' in context_id {park_context_id}");
-                        self.background_apps.insert(type_id, (park_context_id, process_app));
+                        log::info!(
+                            "parking background app '{type_id}' in context_id {park_context_id}"
+                        );
+                        self.background_apps
+                            .insert(type_id, (park_context_id, process_app));
                     }
                     // else: process_app drops here — Drop impl sends Shutdown + kills process
                 }
@@ -763,14 +854,15 @@ impl PlexiApp {
         log::debug!("navigate({:?}) effects: {:?}", dir, effects);
 
         let (dx, dy) = match dir {
-            Direction::Left  => (-1,  0),
-            Direction::Right => ( 1,  0),
-            Direction::Up    => ( 0, -1),
-            Direction::Down  => ( 0,  1),
+            Direction::Left => (-1, 0),
+            Direction::Right => (1, 0),
+            Direction::Up => (0, -1),
+            Direction::Down => (0, 1),
         };
 
         let ctx = &self.windows[self.active_window];
-        let pane_neighbor = ctx.focused_pane
+        let pane_neighbor = ctx
+            .focused_pane
             .and_then(|focused| ctx.find_pane_in_direction_from(focused, dir));
 
         if let Some(target) = pane_neighbor {
@@ -783,7 +875,9 @@ impl PlexiApp {
                 let pane_id = *pane_id;
                 if let Some(pane) = self.windows[self.active_window].panes.get_mut(&pane_id) {
                     if let Some(app) = pane.as_app_mut() {
-                        if let crate::host::pane::AppRuntime::Process(ref mut proc_app) = app.runtime {
+                        if let crate::host::pane::AppRuntime::Process(ref mut proc_app) =
+                            app.runtime
+                        {
                             proc_app.render_session.pane_just_focused = true;
                         }
                     }
@@ -795,19 +889,27 @@ impl PlexiApp {
             // Up at top → first window. This is a list-end jump, not a one-step move.
             let ws_id = self.router.active().context_id;
             let jump_idx = if dy < 0 {
-                self.windows.iter().enumerate()
+                self.windows
+                    .iter()
+                    .enumerate()
                     .filter(|(_, w)| w.context_id == ws_id)
                     .min_by_key(|(_, w)| (w.grid_y, w.grid_x))
                     .map(|(i, _)| i)
             } else {
-                self.windows.iter().enumerate()
+                self.windows
+                    .iter()
+                    .enumerate()
                     .filter(|(_, w)| w.context_id == ws_id)
                     .max_by_key(|(_, w)| (w.grid_y, w.grid_x))
                     .map(|(i, _)| i)
             };
             if let Some(idx) = jump_idx {
                 if idx != self.active_window {
-                    log::info!("navigate({:?}): jumping to {} window in workspace", dir, if dy < 0 { "first" } else { "last" });
+                    log::info!(
+                        "navigate({:?}): jumping to {} window in workspace",
+                        dir,
+                        if dy < 0 { "first" } else { "last" }
+                    );
                     self.active_window = idx;
                     let w = &self.windows[idx];
                     let wid = w.window_id;
@@ -817,7 +919,9 @@ impl PlexiApp {
                     // If the window has not yet been rendered (no rects), leave focused_pane as-is.
                     let leftmost: Option<TileId> = {
                         let dest = &self.windows[idx];
-                        dest.tree.active_tiles().into_iter()
+                        dest.tree
+                            .active_tiles()
+                            .into_iter()
                             .filter_map(|tile_id| {
                                 if !matches!(dest.tree.tiles.get(tile_id), Some(Tile::Pane(_))) {
                                     return None;
@@ -826,9 +930,14 @@ impl PlexiApp {
                                 Some((tile_id, rect))
                             })
                             .min_by(|(_, a), (_, b)| {
-                                a.left().partial_cmp(&b.left())
+                                a.left()
+                                    .partial_cmp(&b.left())
                                     .unwrap_or(std::cmp::Ordering::Equal)
-                                    .then(a.top().partial_cmp(&b.top()).unwrap_or(std::cmp::Ordering::Equal))
+                                    .then(
+                                        a.top()
+                                            .partial_cmp(&b.top())
+                                            .unwrap_or(std::cmp::Ordering::Equal),
+                                    )
                             })
                             .map(|(tile_id, _)| tile_id)
                     };
@@ -882,7 +991,11 @@ impl PlexiApp {
 
         log::info!(
             "swap_pane({:?}): pane {} ↔ pane {} (tiles {:?} ↔ {:?})",
-            dir, pane_a, pane_b, focused, neighbor
+            dir,
+            pane_a,
+            pane_b,
+            focused,
+            neighbor
         );
 
         SwapResult::Swapped { rect_a, rect_b }
@@ -937,7 +1050,12 @@ impl PlexiApp {
 
         log::info!(
             "send_pane({:?}): pane {} ↔ pane {} (tiles {:?} ↔ {:?}), focus stays at {:?}",
-            dir, pane_a, pane_b, focused, neighbor, focused
+            dir,
+            pane_a,
+            pane_b,
+            focused,
+            neighbor,
+            focused
         );
 
         SwapResult::Swapped { rect_a, rect_b }
@@ -1138,10 +1256,10 @@ impl PlexiApp {
         use egui_tiles::Tile;
 
         let (dx, dy): (i32, i32) = match dir {
-            Direction::Left  => (-1,  0),
-            Direction::Right => ( 1,  0),
-            Direction::Up    => ( 0, -1),
-            Direction::Down  => ( 0,  1),
+            Direction::Left => (-1, 0),
+            Direction::Right => (1, 0),
+            Direction::Up => (0, -1),
+            Direction::Down => (0, 1),
         };
 
         let src_idx = self.active_window;
@@ -1176,9 +1294,7 @@ impl PlexiApp {
                     .iter()
                     .enumerate()
                     .filter(|(_, &(_, gy, ws))| gy == ty && ws == ws_id)
-                    .min_by_key(|(_, &(gx, _, _))| {
-                        (gx as i64 - preferred_x as i64).unsigned_abs()
-                    })
+                    .min_by_key(|(_, &(gx, _, _))| (gx as i64 - preferred_x as i64).unsigned_abs())
                     .map(|(i, _)| i)
             }
         };
@@ -1224,7 +1340,11 @@ impl PlexiApp {
         // If source window is now empty, delete it and adjust adj_idx for the
         // removed slot.
         let adj_idx = if self.windows[src_idx].panes.is_empty() {
-            let adjusted = if adj_idx > src_idx { adj_idx - 1 } else { adj_idx };
+            let adjusted = if adj_idx > src_idx {
+                adj_idx - 1
+            } else {
+                adj_idx
+            };
             self.delete_window(src_idx);
             adjusted
         } else {
@@ -1402,7 +1522,11 @@ impl PlexiApp {
         // sole page, keep it alive so the welcome screen renders.
         if self.windows[self.active_window].panes.is_empty() {
             let ctx_id = self.windows[self.active_window].context_id;
-            let pages_in_context = self.windows.iter().filter(|w| w.context_id == ctx_id).count();
+            let pages_in_context = self
+                .windows
+                .iter()
+                .filter(|w| w.context_id == ctx_id)
+                .count();
             if pages_in_context > 1 {
                 self.delete_window(self.active_window);
             }
@@ -1412,10 +1536,16 @@ impl PlexiApp {
 }
 
 impl PlexiApp {
-    pub(crate) fn resolve_new_pane_cwd(&self, cwd_override: Option<std::path::PathBuf>, focused: Option<TileId>) -> Option<std::path::PathBuf> {
+    pub(crate) fn resolve_new_pane_cwd(
+        &self,
+        cwd_override: Option<std::path::PathBuf>,
+        focused: Option<TileId>,
+    ) -> Option<std::path::PathBuf> {
         cwd_override
             .or_else(|| self.router.active().root.clone())
-            .or_else(|| focused.and_then(|f| self.windows[self.active_window].get_focused_pane_cwd(f)))
+            .or_else(|| {
+                focused.and_then(|f| self.windows[self.active_window].get_focused_pane_cwd(f))
+            })
             .or_else(dirs::home_dir)
     }
 
@@ -1533,7 +1663,12 @@ mod close_pane_by_id_tests {
         PlexiApp::new_for_test(ctx, ft).0
     }
 
-    fn window_with_pane(context_id: u64, window_id: u64, pane_id: u64, grid_y: u32) -> crate::host::context::Window {
+    fn window_with_pane(
+        context_id: u64,
+        window_id: u64,
+        pane_id: u64,
+        grid_y: u32,
+    ) -> crate::host::context::Window {
         let mut tree = egui_tiles::Tree::empty("test_tree_wid");
         let tile = tree.tiles.insert_pane(pane_id);
         tree.root = Some(tile);
@@ -1563,7 +1698,11 @@ mod close_pane_by_id_tests {
 
         assert_eq!(app.windows.len(), 2);
         app.close_pane_by_id(pane_id);
-        assert_eq!(app.windows.len(), 1, "zombie window must be deleted after IPC close of last pane");
+        assert_eq!(
+            app.windows.len(),
+            1,
+            "zombie window must be deleted after IPC close of last pane"
+        );
     }
 
     /// Regression guard for #917: closing the last pane in the active window via IPC
@@ -1581,8 +1720,15 @@ mod close_pane_by_id_tests {
         assert_eq!(app.windows.len(), 2);
         assert_eq!(app.active_window, 0);
         app.close_pane_by_id(pane_id);
-        assert_eq!(app.windows.len(), 1, "zombie active window must be deleted after IPC close of last pane");
-        assert_eq!(app.active_window, 0, "active_window must point to the remaining window after deletion");
+        assert_eq!(
+            app.windows.len(),
+            1,
+            "zombie active window must be deleted after IPC close of last pane"
+        );
+        assert_eq!(
+            app.active_window, 0,
+            "active_window must point to the remaining window after deletion"
+        );
     }
 
     /// Sole-page window must stay alive when its last pane closes — welcome screen path.
@@ -1595,7 +1741,11 @@ mod close_pane_by_id_tests {
 
         assert_eq!(app.windows.len(), 1);
         app.close_pane_by_id(pane_id);
-        assert_eq!(app.windows.len(), 1, "sole-page window must remain alive showing welcome screen");
+        assert_eq!(
+            app.windows.len(),
+            1,
+            "sole-page window must remain alive showing welcome screen"
+        );
     }
 
     /// Closing the active tab of a background tab container must not steal focus.
@@ -1607,22 +1757,24 @@ mod close_pane_by_id_tests {
         let bg_active_id: u64 = 101;
         let bg_inactive_id: u64 = 102;
 
-        let tile_focused    = app.windows[0].tree.tiles.insert_pane(focused_id);
-        let tile_bg_active  = app.windows[0].tree.tiles.insert_pane(bg_active_id);
+        let tile_focused = app.windows[0].tree.tiles.insert_pane(focused_id);
+        let tile_bg_active = app.windows[0].tree.tiles.insert_pane(bg_active_id);
         let tile_bg_inactive = app.windows[0].tree.tiles.insert_pane(bg_inactive_id);
 
-        let tabs_tile = app.windows[0].tree.tiles.insert_tab_tile(
-            vec![tile_bg_active, tile_bg_inactive],
-        );
+        let tabs_tile = app.windows[0]
+            .tree
+            .tiles
+            .insert_tab_tile(vec![tile_bg_active, tile_bg_inactive]);
         if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs))) =
             app.windows[0].tree.tiles.get_mut(tabs_tile)
         {
             tabs.set_active(tile_bg_active);
         }
 
-        let container_tile = app.windows[0].tree.tiles.insert_horizontal_tile(
-            vec![tile_focused, tabs_tile],
-        );
+        let container_tile = app.windows[0]
+            .tree
+            .tiles
+            .insert_horizontal_tile(vec![tile_focused, tabs_tile]);
         app.windows[0].tree.root = Some(container_tile);
         app.windows[0].focused_pane = Some(tile_focused);
 
@@ -1646,12 +1798,14 @@ mod close_pane_by_id_tests {
         let extra_id: u64 = 102;
 
         let tile_focused = app.windows[0].tree.tiles.insert_pane(focused_id);
-        let tile_bg      = app.windows[0].tree.tiles.insert_pane(bg_id);
-        let tile_extra   = app.windows[0].tree.tiles.insert_pane(extra_id);
+        let tile_bg = app.windows[0].tree.tiles.insert_pane(bg_id);
+        let tile_extra = app.windows[0].tree.tiles.insert_pane(extra_id);
 
-        let container_tile = app.windows[0].tree.tiles.insert_horizontal_tile(
-            vec![tile_focused, tile_bg, tile_extra],
-        );
+        let container_tile = app.windows[0].tree.tiles.insert_horizontal_tile(vec![
+            tile_focused,
+            tile_bg,
+            tile_extra,
+        ]);
         app.windows[0].tree.root = Some(container_tile);
         app.windows[0].focused_pane = Some(tile_focused);
 
@@ -1674,11 +1828,12 @@ mod close_pane_by_id_tests {
         let bg_id: u64 = 201;
 
         let tile_zoomed = app.windows[0].tree.tiles.insert_pane(zoomed_id);
-        let tile_bg     = app.windows[0].tree.tiles.insert_pane(bg_id);
+        let tile_bg = app.windows[0].tree.tiles.insert_pane(bg_id);
 
-        let container_tile = app.windows[0].tree.tiles.insert_horizontal_tile(
-            vec![tile_zoomed, tile_bg],
-        );
+        let container_tile = app.windows[0]
+            .tree
+            .tiles
+            .insert_horizontal_tile(vec![tile_zoomed, tile_bg]);
         app.windows[0].tree.root = Some(container_tile);
         app.windows[0].focused_pane = Some(tile_zoomed);
         app.windows[0].zoomed_pane = Some(tile_zoomed);
@@ -1712,7 +1867,10 @@ mod swap_tests {
     #[test]
     fn swap_pane_no_focus_returns_no_focus() {
         let mut app = test_app();
-        assert!(matches!(app.swap_pane(Direction::Right), SwapResult::NoFocus));
+        assert!(matches!(
+            app.swap_pane(Direction::Right),
+            SwapResult::NoFocus
+        ));
     }
 
     #[test]
@@ -1721,7 +1879,10 @@ mod swap_tests {
         let tile = app.windows[0].tree.tiles.insert_pane(1u64);
         app.windows[0].focused_pane = Some(tile);
         // No neighbors (rects unset = Rect::ZERO, geometric search returns None)
-        assert!(matches!(app.swap_pane(Direction::Right), SwapResult::AtBoundary));
+        assert!(matches!(
+            app.swap_pane(Direction::Right),
+            SwapResult::AtBoundary
+        ));
     }
 }
 
@@ -1738,7 +1899,10 @@ mod send_pane_tests {
     #[test]
     fn send_pane_no_focus_returns_no_focus() {
         let mut app = test_app();
-        assert!(matches!(app.send_pane(Direction::Right), SwapResult::NoFocus));
+        assert!(matches!(
+            app.send_pane(Direction::Right),
+            SwapResult::NoFocus
+        ));
     }
 
     #[test]
@@ -1747,9 +1911,11 @@ mod send_pane_tests {
         let tile = app.windows[0].tree.tiles.insert_pane(1u64);
         app.windows[0].focused_pane = Some(tile);
         // No neighbors (rects unset = Rect::ZERO, geometric search returns None)
-        assert!(matches!(app.send_pane(Direction::Right), SwapResult::AtBoundary));
+        assert!(matches!(
+            app.send_pane(Direction::Right),
+            SwapResult::AtBoundary
+        ));
     }
-
 }
 
 #[cfg(test)]
@@ -1782,7 +1948,12 @@ mod move_to_adjacent_window_tests {
         }))
     }
 
-    fn window_at(context_id: u64, window_id: u64, grid_x: u32, grid_y: u32) -> crate::host::context::Window {
+    fn window_at(
+        context_id: u64,
+        window_id: u64,
+        grid_x: u32,
+        grid_y: u32,
+    ) -> crate::host::context::Window {
         crate::host::context::Window {
             name: "test".into(),
             path: std::env::temp_dir(),
@@ -1830,7 +2001,10 @@ mod move_to_adjacent_window_tests {
         // Source had only 1 pane → deleted; one window remains (destination, compacted to grid_x=0)
         assert_eq!(app.windows.len(), 1, "empty source window must be deleted");
         assert_eq!(app.active_window, 0);
-        assert!(app.windows[0].panes.contains_key(&pane_id), "pane must be in destination");
+        assert!(
+            app.windows[0].panes.contains_key(&pane_id),
+            "pane must be in destination"
+        );
         // compact_workspace_grid renumbers the surviving column to 0
         assert_eq!(app.windows[0].grid_x, 0);
     }
@@ -1843,7 +2017,10 @@ mod move_to_adjacent_window_tests {
         let pane_b: u64 = 20;
         let tile_a = app.windows[0].tree.tiles.insert_pane(pane_a);
         let tile_b = app.windows[0].tree.tiles.insert_pane(pane_b);
-        let container = app.windows[0].tree.tiles.insert_horizontal_tile(vec![tile_a, tile_b]);
+        let container = app.windows[0]
+            .tree
+            .tiles
+            .insert_horizontal_tile(vec![tile_a, tile_b]);
         app.windows[0].tree.root = Some(container);
         app.windows[0].focused_pane = Some(tile_a);
         app.windows[0].panes.insert(pane_a, make_app_pane(pane_a));
@@ -1859,10 +2036,19 @@ mod move_to_adjacent_window_tests {
         // Active window is the destination (index 1 is unchanged since source survived)
         assert_eq!(app.active_window, 1);
         assert_eq!(app.windows[1].grid_x, 1);
-        assert!(app.windows[1].panes.contains_key(&pane_a), "moved pane in destination");
+        assert!(
+            app.windows[1].panes.contains_key(&pane_a),
+            "moved pane in destination"
+        );
         // Source still has pane_b
-        assert!(app.windows[0].panes.contains_key(&pane_b), "remaining pane still in source");
-        assert!(!app.windows[0].panes.contains_key(&pane_a), "moved pane no longer in source");
+        assert!(
+            app.windows[0].panes.contains_key(&pane_b),
+            "remaining pane still in source"
+        );
+        assert!(
+            !app.windows[0].panes.contains_key(&pane_a),
+            "moved pane no longer in source"
+        );
     }
 }
 
@@ -1896,7 +2082,12 @@ mod pop_pane_to_new_window_tests {
         }))
     }
 
-    fn window_at(context_id: u64, window_id: u64, grid_x: u32, grid_y: u32) -> crate::host::context::Window {
+    fn window_at(
+        context_id: u64,
+        window_id: u64,
+        grid_x: u32,
+        grid_y: u32,
+    ) -> crate::host::context::Window {
         crate::host::context::Window {
             name: String::new(),
             path: std::env::temp_dir(),
@@ -1926,9 +2117,15 @@ mod pop_pane_to_new_window_tests {
         assert_eq!(app.windows.len(), 2, "new window must be created");
         // New window is active and has the pane.
         let new_win = &app.windows[app.active_window];
-        assert!(new_win.panes.contains_key(&pane_id), "pane must be in new window");
+        assert!(
+            new_win.panes.contains_key(&pane_id),
+            "pane must be in new window"
+        );
         assert_eq!(new_win.grid_y, 0, "new window must be in the same row");
-        assert!(new_win.grid_x > 0, "new window must be to the right of grid_x=0");
+        assert!(
+            new_win.grid_x > 0,
+            "new window must be to the right of grid_x=0"
+        );
     }
 
     /// Single pane in window with a sibling window: source is deleted after pop.
@@ -1949,8 +2146,15 @@ mod pop_pane_to_new_window_tests {
         // Original had 1 pane → deleted; the empty sibling + new window → 2 windows total.
         // After compact_workspace_grid the empty sibling at old x=1 becomes x=0.
         let pane_win = app.windows.iter().find(|w| w.panes.contains_key(&pane_id));
-        assert!(pane_win.is_some(), "pane must be in one of the surviving windows");
-        assert_eq!(app.active_window, app.windows.len() - 1, "active must be the newly created window");
+        assert!(
+            pane_win.is_some(),
+            "pane must be in one of the surviving windows"
+        );
+        assert_eq!(
+            app.active_window,
+            app.windows.len() - 1,
+            "active must be the newly created window"
+        );
     }
 
     /// Window with two panes: source survives with the remaining pane.
@@ -1961,7 +2165,10 @@ mod pop_pane_to_new_window_tests {
         let pane_b: u64 = 20;
         let tile_a = app.windows[0].tree.tiles.insert_pane(pane_a);
         let tile_b = app.windows[0].tree.tiles.insert_pane(pane_b);
-        let container = app.windows[0].tree.tiles.insert_horizontal_tile(vec![tile_a, tile_b]);
+        let container = app.windows[0]
+            .tree
+            .tiles
+            .insert_horizontal_tile(vec![tile_a, tile_b]);
         app.windows[0].tree.root = Some(container);
         app.windows[0].focused_pane = Some(tile_a);
         app.windows[0].panes.insert(pane_a, make_app_pane(pane_a));
@@ -1971,10 +2178,23 @@ mod pop_pane_to_new_window_tests {
         assert!(popped);
         assert_eq!(app.windows.len(), 2, "new window added, original survives");
         let new_win = &app.windows[app.active_window];
-        assert!(new_win.panes.contains_key(&pane_a), "popped pane in new window");
-        assert!(!new_win.panes.contains_key(&pane_b), "other pane stays in source");
-        let src_win = app.windows.iter().find(|w| w.panes.contains_key(&pane_b)).unwrap();
-        assert!(!src_win.panes.contains_key(&pane_a), "source no longer has popped pane");
+        assert!(
+            new_win.panes.contains_key(&pane_a),
+            "popped pane in new window"
+        );
+        assert!(
+            !new_win.panes.contains_key(&pane_b),
+            "other pane stays in source"
+        );
+        let src_win = app
+            .windows
+            .iter()
+            .find(|w| w.panes.contains_key(&pane_b))
+            .unwrap();
+        assert!(
+            !src_win.panes.contains_key(&pane_a),
+            "source no longer has popped pane"
+        );
     }
 
     /// New window is appended at max_grid_x + 1, not at a fixed offset.
@@ -1987,7 +2207,10 @@ mod pop_pane_to_new_window_tests {
         let pane_b: u64 = 2;
         let tile_a = app.windows[0].tree.tiles.insert_pane(pane_a);
         let tile_b = app.windows[0].tree.tiles.insert_pane(pane_b);
-        let container = app.windows[0].tree.tiles.insert_horizontal_tile(vec![tile_a, tile_b]);
+        let container = app.windows[0]
+            .tree
+            .tiles
+            .insert_horizontal_tile(vec![tile_a, tile_b]);
         app.windows[0].tree.root = Some(container);
         app.windows[0].focused_pane = Some(tile_a);
         app.windows[0].panes.insert(pane_a, make_app_pane(pane_a));
@@ -2041,7 +2264,12 @@ mod move_to_row_boundary_tests {
         }))
     }
 
-    fn window_at(context_id: u64, window_id: u64, grid_x: u32, grid_y: u32) -> crate::host::context::Window {
+    fn window_at(
+        context_id: u64,
+        window_id: u64,
+        grid_x: u32,
+        grid_y: u32,
+    ) -> crate::host::context::Window {
         crate::host::context::Window {
             name: String::new(),
             path: std::env::temp_dir(),
@@ -2062,7 +2290,10 @@ mod move_to_row_boundary_tests {
         let pane_b: u64 = 20;
         let tile_a = app.windows[0].tree.tiles.insert_pane(pane_a);
         let tile_b = app.windows[0].tree.tiles.insert_pane(pane_b);
-        let container = app.windows[0].tree.tiles.insert_horizontal_tile(vec![tile_a, tile_b]);
+        let container = app.windows[0]
+            .tree
+            .tiles
+            .insert_horizontal_tile(vec![tile_a, tile_b]);
         app.windows[0].tree.root = Some(container);
         app.windows[0].focused_pane = Some(tile_a);
         app.windows[0].panes.insert(pane_a, make_app_pane(pane_a));
@@ -2166,11 +2397,22 @@ mod move_to_row_boundary_tests {
         let moved = app.move_focused_pane_to_row_boundary(true);
         assert!(moved);
         // Source (x=0, sole pane) was deleted; sibling + new window remain (2 windows).
-        assert_eq!(app.windows.len(), 2, "source deleted → 1 sibling + 1 new = 2 windows");
+        assert_eq!(
+            app.windows.len(),
+            2,
+            "source deleted → 1 sibling + 1 new = 2 windows"
+        );
         // No window should still hold pane_a at a non-rightmost position.
-        let new_win = app.windows.iter().find(|w| w.panes.contains_key(&pane_a)).unwrap();
+        let new_win = app
+            .windows
+            .iter()
+            .find(|w| w.panes.contains_key(&pane_a))
+            .unwrap();
         let max_x = app.windows.iter().map(|w| w.grid_x).max().unwrap();
-        assert_eq!(new_win.grid_x, max_x, "pane_a must be in the rightmost window");
+        assert_eq!(
+            new_win.grid_x, max_x,
+            "pane_a must be in the rightmost window"
+        );
     }
 }
 
@@ -2229,11 +2471,21 @@ mod context_root_cwd_tests {
         let tile = app.windows[0].tree.tiles.insert_pane(pane_id);
         app.windows[0].tree.root = Some(tile);
         app.windows[0].focused_pane = Some(tile);
-        app.windows[0].panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+        app.windows[0]
+            .panes
+            .insert(pane_id, Pane::App(Box::new(app_pane)));
         let pane_cwd = app.windows[0].get_focused_pane_cwd(tile);
-        assert_eq!(pane_cwd, Some(std::path::PathBuf::from("/other/workspace")), "pane has its own CWD");
+        assert_eq!(
+            pane_cwd,
+            Some(std::path::PathBuf::from("/other/workspace")),
+            "pane has its own CWD"
+        );
         let cwd = app.resolve_new_pane_cwd(None, Some(tile));
-        assert_eq!(cwd, Some(root), "context root must take priority over focused pane CWD");
+        assert_eq!(
+            cwd,
+            Some(root),
+            "context root must take priority over focused pane CWD"
+        );
     }
 
     #[test]
@@ -2241,7 +2493,11 @@ mod context_root_cwd_tests {
         let app = test_app();
         assert!(app.router.active().root.is_none());
         let cwd = app.resolve_new_pane_cwd(None, None);
-        assert_eq!(cwd, dirs::home_dir(), "no context root and no focused pane falls back to home dir");
+        assert_eq!(
+            cwd,
+            dirs::home_dir(),
+            "no context root and no focused pane falls back to home dir"
+        );
     }
 
     #[test]
@@ -2251,13 +2507,24 @@ mod context_root_cwd_tests {
         let mut app = test_app();
         assert!(app.router.active().root.is_none());
         let pane_id: u64 = 99;
-        let portal = PortalPane { pane_id, target_context_id: 1, context_state: None, hidden: false };
+        let portal = PortalPane {
+            pane_id,
+            target_context_id: 1,
+            context_state: None,
+            hidden: false,
+        };
         let tile = app.windows[0].tree.tiles.insert_pane(pane_id);
         app.windows[0].tree.root = Some(tile);
         app.windows[0].focused_pane = Some(tile);
-        app.windows[0].panes.insert(pane_id, Pane::Portal(Box::new(portal)));
+        app.windows[0]
+            .panes
+            .insert(pane_id, Pane::Portal(Box::new(portal)));
         let cwd = app.resolve_new_pane_cwd(None, Some(tile));
-        assert_eq!(cwd, dirs::home_dir(), "splitting while a Portal tile is focused must fall back to home, not /");
+        assert_eq!(
+            cwd,
+            dirs::home_dir(),
+            "splitting while a Portal tile is focused must fall back to home, not /"
+        );
     }
 
     #[test]
@@ -2266,7 +2533,11 @@ mod context_root_cwd_tests {
         app.windows[0].path = std::path::PathBuf::from("/tmp/test-dir");
         assert!(app.router.active().root.is_none());
         let cwd = app.cwd_for_welcome_tab();
-        assert_eq!(cwd, dirs::home_dir().unwrap(), "welcome tab uses home dir when context root is None");
+        assert_eq!(
+            cwd,
+            dirs::home_dir().unwrap(),
+            "welcome tab uses home dir when context root is None"
+        );
     }
 
     #[test]
@@ -2276,7 +2547,10 @@ mod context_root_cwd_tests {
         app.router.get_mut(0).root = Some(root_dir.clone());
         app.windows[0].path = std::path::PathBuf::from("/tmp/window-dir");
         let cwd = app.cwd_for_welcome_tab();
-        assert_eq!(cwd, root_dir, "context root must take priority over window.path");
+        assert_eq!(
+            cwd, root_dir,
+            "context root must take priority over window.path"
+        );
     }
 
     #[test]
@@ -2285,7 +2559,11 @@ mod context_root_cwd_tests {
         // root is None, window.path is temp_dir (set by new_for_test)
         assert!(app.router.active().root.is_none());
         let cwd = app.cwd_for_welcome_tab();
-        assert_ne!(cwd, std::path::PathBuf::from("/"), "should never fall through to filesystem root");
+        assert_ne!(
+            cwd,
+            std::path::PathBuf::from("/"),
+            "should never fall through to filesystem root"
+        );
     }
 }
 
@@ -2319,7 +2597,12 @@ mod navigate_boundary_tests {
         }))
     }
 
-    fn window_at(context_id: u64, window_id: u64, grid_x: u32, grid_y: u32) -> crate::host::context::Window {
+    fn window_at(
+        context_id: u64,
+        window_id: u64,
+        grid_x: u32,
+        grid_y: u32,
+    ) -> crate::host::context::Window {
         crate::host::context::Window {
             name: String::new(),
             path: std::env::temp_dir(),
@@ -2343,7 +2626,9 @@ mod navigate_boundary_tests {
         let dest_pane: u64 = 1;
         let dest_tile = app.windows[0].tree.tiles.insert_pane(dest_pane);
         app.windows[0].tree.root = Some(dest_tile);
-        app.windows[0].panes.insert(dest_pane, make_app_pane(dest_pane));
+        app.windows[0]
+            .panes
+            .insert(dest_pane, make_app_pane(dest_pane));
         app.windows[0].grid_x = 0;
         app.windows[0].grid_y = 0;
 
@@ -2361,7 +2646,10 @@ mod navigate_boundary_tests {
 
         assert_eq!(app.active_window, 0, "should have jumped to first window");
         // No rects available → focused_pane is unchanged (still None from setup)
-        assert_eq!(app.windows[0].focused_pane, None, "no rects — focused_pane left unchanged");
+        assert_eq!(
+            app.windows[0].focused_pane, None,
+            "no rects — focused_pane left unchanged"
+        );
     }
 
     // Same jump but the destination already has a focused_pane set.
@@ -2374,7 +2662,10 @@ mod navigate_boundary_tests {
         let pane_b: u64 = 20;
         let tile_a = app.windows[0].tree.tiles.insert_pane(pane_a);
         let tile_b = app.windows[0].tree.tiles.insert_pane(pane_b);
-        let container = app.windows[0].tree.tiles.insert_horizontal_tile(vec![tile_a, tile_b]);
+        let container = app.windows[0]
+            .tree
+            .tiles
+            .insert_horizontal_tile(vec![tile_a, tile_b]);
         app.windows[0].tree.root = Some(container);
         app.windows[0].focused_pane = Some(tile_b); // previously-focused pane
         app.windows[0].panes.insert(pane_a, make_app_pane(pane_a));
@@ -2396,6 +2687,10 @@ mod navigate_boundary_tests {
 
         assert_eq!(app.active_window, 0, "should jump to first window");
         // No rects available → fallback, focused_pane unchanged at tile_b
-        assert_eq!(app.windows[0].focused_pane, Some(tile_b), "no rects — focused_pane left unchanged");
+        assert_eq!(
+            app.windows[0].focused_pane,
+            Some(tile_b),
+            "no rects — focused_pane left unchanged"
+        );
     }
 }

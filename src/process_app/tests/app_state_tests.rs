@@ -31,6 +31,9 @@ fn load_app_state_migrates_old_app_state_dir() {
     let result = load_app_state("my-app", ws_dir.path());
     assert_eq!(result["migrated"], serde_json::json!(true));
     // Old dir must be gone, new dir must exist.
-    assert!(!old_dir.exists(), "old app_state dir should have been renamed");
+    assert!(
+        !old_dir.exists(),
+        "old app_state dir should have been renamed"
+    );
     assert!(ws_dir.path().join(&channel_dir).join("app_states").exists());
 }

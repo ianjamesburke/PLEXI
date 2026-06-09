@@ -1,4 +1,8 @@
-use clap::{Parser, Subcommand, builder::ValueHint, builder::styling::{AnsiColor, Effects, Styles}};
+use clap::{
+    builder::styling::{AnsiColor, Effects, Styles},
+    builder::ValueHint,
+    Parser, Subcommand,
+};
 
 fn plexi_styles() -> Styles {
     Styles::styled()
@@ -407,9 +411,7 @@ pub enum AppCmd {
         png_dir: Option<String>,
     },
     /// Show details about an installed app: id, name, version, and available tools.
-    Info {
-        id: String,
-    },
+    Info { id: String },
     /// Create a new app from a template.
     ///
     /// Scaffolds the folder structure and files you need to build a Plexi app,
@@ -758,13 +760,9 @@ pub enum ContextCmd {
         parent: Option<String>,
     },
     /// Switch the current pane to a context at the given path.
-    Open {
-        path: Option<String>,
-    },
+    Open { path: Option<String> },
     /// Change the root folder for the active context.
-    SetRoot {
-        path: Option<String>,
-    },
+    SetRoot { path: Option<String> },
     /// Print the id and name of the current pane's context as JSON.
     Current,
     /// Set the description for the active context
@@ -773,9 +771,7 @@ pub enum ContextCmd {
         text: String,
     },
     /// Zoom into a sub-context by its numeric context_id.
-    Zoom {
-        context_id: u64,
-    },
+    Zoom { context_id: u64 },
     /// Zoom out of the current sub-context to the parent.
     ZoomOut,
     /// Push the focused pane into a new sub-context.

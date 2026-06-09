@@ -35,11 +35,19 @@ pub fn apply_version_title_once() {
     if VERSION_TITLE_APPLIED.swap(true, Ordering::SeqCst) {
         return;
     }
-    let Some(title) = menu_bar_title() else { return };
-    let Some(mtm) = MainThreadMarker::new() else { return };
+    let Some(title) = menu_bar_title() else {
+        return;
+    };
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
     let app = NSApplication::sharedApplication(mtm);
-    let Some(main_menu) = app.mainMenu() else { return };
-    let Some(app_menu_item) = main_menu.itemAtIndex(0) else { return };
+    let Some(main_menu) = app.mainMenu() else {
+        return;
+    };
+    let Some(app_menu_item) = main_menu.itemAtIndex(0) else {
+        return;
+    };
     app_menu_item.setTitle(&NSString::from_str(&title));
 }
 

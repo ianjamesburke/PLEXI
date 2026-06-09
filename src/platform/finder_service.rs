@@ -19,8 +19,8 @@ fn register_provider_class() -> &'static objc2::runtime::AnyClass {
     static CLASS: OnceLock<&'static objc2::runtime::AnyClass> = OnceLock::new();
     CLASS.get_or_init(|| {
         let superclass = NSObject::class();
-        let mut builder =
-            ClassBuilder::new(c"PlexiServicesProvider", superclass).expect("class already registered");
+        let mut builder = ClassBuilder::new(c"PlexiServicesProvider", superclass)
+            .expect("class already registered");
 
         unsafe extern "C" fn open_in_plexi(
             _this: &AnyObject,

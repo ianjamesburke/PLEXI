@@ -8,19 +8,15 @@
 //!      directly into a `ProcessApp`'s channel so `route_command` executes
 //!      without a subprocess. `effects_drain()` collects `outbound_events`.
 
-use crate::app::PlexiApp;
 use crate::app::permissions::AppPermissions;
-use crate::app_protocol::{AiMessage, DrawCommand, AppRequest, ModelTier};
+use crate::app::PlexiApp;
+use crate::app_protocol::{AiMessage, AppRequest, DrawCommand, ModelTier};
 use crate::host::pane::{AppPane, AppRuntime, Pane};
 use crate::process_app::ProcessApp;
 use crate::spatial::tiling::PaneId;
 use egui::RawInput;
 use std::collections::HashMap;
-use std::sync::{
-    atomic::AtomicU64,
-    mpsc::Sender,
-    Arc,
-};
+use std::sync::{atomic::AtomicU64, mpsc::Sender, Arc};
 
 // ─── HostSnapshot ────────────────────────────────────────────────────────────
 
@@ -239,7 +235,11 @@ impl HostHarness {
         let win = &mut self.app.windows[self.app.active_window];
         let tile_id = win.tree.tiles.iter().find_map(|(tid, tile)| {
             if let egui_tiles::Tile::Pane(pid) = tile {
-                if *pid == pane_id { Some(tid) } else { None }
+                if *pid == pane_id {
+                    Some(tid)
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -299,6 +299,6 @@ pub fn ai_query(request_id: &str) -> DrawCommand {
 }
 
 #[cfg(test)]
-mod harness_tests;
-#[cfg(test)]
 mod flow_tests;
+#[cfg(test)]
+mod harness_tests;

@@ -3,13 +3,13 @@
 //! All visual draw commands stay in the frame pipeline; only control commands
 //! (media, pipes, capabilities, secrets, runs, notifications) are routed here.
 
-use crate::app::permissions::{check, is_blocked, Capability, PermissionCheck};
-use crate::app_protocol::{AudioDeviceWire, AppRequest, MidiPortWire, PlexiEvent, StreamChannel};
 use crate::app::app_trait::AppCommand;
-use crate::media::audio::AudioCaptureRequest;
+use crate::app::permissions::{check, is_blocked, Capability, PermissionCheck};
+use crate::app_protocol::{AppRequest, AudioDeviceWire, MidiPortWire, PlexiEvent, StreamChannel};
 use crate::host::event_log::{self, HostEvent};
-use crate::plexi_ai::broker::AiBrokerRequest;
 use crate::host::typed_pipes::PipeDirection;
+use crate::media::audio::AudioCaptureRequest;
+use crate::plexi_ai::broker::AiBrokerRequest;
 use std::io::Read;
 use std::process::Stdio;
 use std::sync::atomic::Ordering;
@@ -27,46 +27,45 @@ impl ProcessApp {
             AppRequest::CapabilityRequest {
                 request_id,
                 capability,
-            } => {
-                match Capability::try_from(capability.as_str()) {
-                    Ok(cap) => {
-                        if let PermissionCheck::Allowed = check(&self.permissions, cap) {
-                            self.outbound_events
-                                .push_back(PlexiEvent::CapabilityDecision {
-                                    request_id,
-                                    granted: true,
-                                });
-                        } else if is_blocked(&self.permissions, cap) {
-                            log::info!(
-                                "ProcessApp[{}]: {} permanently blocked — auto-denying",
-                                self.type_id, cap
-                            );
-                            self.outbound_events
-                                .push_back(PlexiEvent::CapabilityDecision {
-                                    request_id,
-                                    granted: false,
-                                });
-                        } else {
-                            self.pending_prompts
-                                .push_back(super::PendingPrompt::Capability {
-                                    request_id,
-                                    capability,
-                                });
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!(
-                            "ProcessApp[{}]: CapabilityRequest with {e}; auto-denying",
-                            self.type_id
+            } => match Capability::try_from(capability.as_str()) {
+                Ok(cap) => {
+                    if let PermissionCheck::Allowed = check(&self.permissions, cap) {
+                        self.outbound_events
+                            .push_back(PlexiEvent::CapabilityDecision {
+                                request_id,
+                                granted: true,
+                            });
+                    } else if is_blocked(&self.permissions, cap) {
+                        log::info!(
+                            "ProcessApp[{}]: {} permanently blocked — auto-denying",
+                            self.type_id,
+                            cap
                         );
                         self.outbound_events
                             .push_back(PlexiEvent::CapabilityDecision {
                                 request_id,
                                 granted: false,
                             });
+                    } else {
+                        self.pending_prompts
+                            .push_back(super::PendingPrompt::Capability {
+                                request_id,
+                                capability,
+                            });
                     }
                 }
-            }
+                Err(e) => {
+                    log::warn!(
+                        "ProcessApp[{}]: CapabilityRequest with {e}; auto-denying",
+                        self.type_id
+                    );
+                    self.outbound_events
+                        .push_back(PlexiEvent::CapabilityDecision {
+                            request_id,
+                            granted: false,
+                        });
+                }
+            },
 
             // ── Secret get ─────────────────────────────────────────────────
             AppRequest::SecretGet { key } => {
@@ -88,17 +87,14 @@ impl ProcessApp {
                 #[cfg(target_os = "macos")]
                 {
                     use crate::workspace::secrets::{
-                        resolve, MacKeychain, ResolveOutcome, WorkspaceConfig,
-                        WorkspaceSecrets,
+                        resolve, MacKeychain, ResolveOutcome, WorkspaceConfig, WorkspaceSecrets,
                     };
                     // Step 0: load workspace.toml + secrets.toml. Both must
                     // exist for routed lookup; missing either falls back to
                     // the legacy global-scoped secrets path so that apps
                     // running outside an initialized workspace still work
                     // until the user runs `plexi workspace init`.
-                    let ws_cfg = WorkspaceConfig::load(&self.workspace_root)
-                        .ok()
-                        .flatten();
+                    let ws_cfg = WorkspaceConfig::load(&self.workspace_root).ok().flatten();
                     let router = WorkspaceSecrets::load(&self.workspace_root)
                         .map_err(|e| {
                             log::error!(
@@ -112,47 +108,39 @@ impl ProcessApp {
                         .flatten();
                     let store = MacKeychain::new();
                     match (ws_cfg, router) {
-                        (Some(cfg), Some(r)) => match resolve(
-                            &cfg.id,
-                            &self.type_id,
-                            &key,
-                            &r,
-                            &store,
-                        ) {
-                            ResolveOutcome::Found(value) => {
-                                self.outbound_events.push_back(
-                                    PlexiEvent::SecretValue {
+                        (Some(cfg), Some(r)) => {
+                            match resolve(&cfg.id, &self.type_id, &key, &r, &store) {
+                                ResolveOutcome::Found(value) => {
+                                    self.outbound_events.push_back(PlexiEvent::SecretValue {
                                         key,
                                         value: Some(value.to_string()),
-                                    },
-                                );
+                                    });
+                                }
+                                ResolveOutcome::HardMissing { reason } => {
+                                    log::warn!(
+                                        "ProcessApp[{}]: SecretGet '{key}' hard-missing: {reason}",
+                                        self.type_id
+                                    );
+                                    event_log::emit(HostEvent::SecretDenied {
+                                        app_id: self.type_id.clone(),
+                                        key: key.clone(),
+                                        reason: format!("hard_missing: {reason}"),
+                                        timestamp: event_log::now_timestamp(),
+                                    });
+                                    self.outbound_events
+                                        .push_back(PlexiEvent::SecretValue { key, value: None });
+                                }
+                                ResolveOutcome::PromptUser => {
+                                    event_log::emit(HostEvent::SecretPrompted {
+                                        app_id: self.type_id.clone(),
+                                        key: key.clone(),
+                                        timestamp: event_log::now_timestamp(),
+                                    });
+                                    self.pending_prompts
+                                        .push_back(super::PendingPrompt::Secret { key });
+                                }
                             }
-                            ResolveOutcome::HardMissing { reason } => {
-                                log::warn!(
-                                    "ProcessApp[{}]: SecretGet '{key}' hard-missing: {reason}",
-                                    self.type_id
-                                );
-                                event_log::emit(HostEvent::SecretDenied {
-                                    app_id: self.type_id.clone(),
-                                    key: key.clone(),
-                                    reason: format!("hard_missing: {reason}"),
-                                    timestamp: event_log::now_timestamp(),
-                                });
-                                self.outbound_events.push_back(
-                                    PlexiEvent::SecretValue { key, value: None },
-                                );
-                            }
-                            ResolveOutcome::PromptUser => {
-                                event_log::emit(HostEvent::SecretPrompted {
-                                    app_id: self.type_id.clone(),
-                                    key: key.clone(),
-                                    timestamp: event_log::now_timestamp(),
-                                });
-                                self.pending_prompts.push_back(
-                                    super::PendingPrompt::Secret { key },
-                                );
-                            }
-                        },
+                        }
                         _ => {
                             // No workspace config / router yet — fall back
                             // to the legacy v3.0 path (workspace_root-keyed
@@ -164,12 +152,10 @@ impl ProcessApp {
                                 &self.workspace_root,
                             ) {
                                 Some(value) => {
-                                    self.outbound_events.push_back(
-                                        PlexiEvent::SecretValue {
-                                            key,
-                                            value: Some(value.to_string()),
-                                        },
-                                    );
+                                    self.outbound_events.push_back(PlexiEvent::SecretValue {
+                                        key,
+                                        value: Some(value.to_string()),
+                                    });
                                 }
                                 None => {
                                     event_log::emit(HostEvent::SecretPrompted {
@@ -177,9 +163,8 @@ impl ProcessApp {
                                         key: key.clone(),
                                         timestamp: event_log::now_timestamp(),
                                     });
-                                    self.pending_prompts.push_back(
-                                        super::PendingPrompt::Secret { key },
-                                    );
+                                    self.pending_prompts
+                                        .push_back(super::PendingPrompt::Secret { key });
                                 }
                             }
                         }
@@ -229,7 +214,10 @@ impl ProcessApp {
                     "ProcessApp[{}]: RunComplete run_id='{run_id}' result={result}",
                     self.type_id
                 );
-                let originator = self.run_registry.originator_of(&run_id).map(|s| s.to_string());
+                let originator = self
+                    .run_registry
+                    .originator_of(&run_id)
+                    .map(|s| s.to_string());
                 self.run_registry.complete(&run_id);
                 let update = PlexiEvent::RunUpdate {
                     run_id,
@@ -494,10 +482,9 @@ impl ProcessApp {
                             target_pane_id,
                         });
                     }
-                    Err(e) => log::warn!(
-                        "ProcessApp[{}]: PipeOpenDirected failed: {e}",
-                        self.type_id
-                    ),
+                    Err(e) => {
+                        log::warn!("ProcessApp[{}]: PipeOpenDirected failed: {e}", self.type_id)
+                    }
                 }
             }
 
@@ -533,7 +520,8 @@ impl ProcessApp {
 
             // ── Navigation stack ───────────────────────────────────────────
             AppRequest::PushNav { view_id, title } => {
-                self.nav_stack.push(crate::process_app::NavEntry { view_id, title });
+                self.nav_stack
+                    .push(crate::process_app::NavEntry { view_id, title });
                 log::debug!(
                     "ProcessApp[{}]: PushNav → depth={} title={:?}",
                     self.type_id,
@@ -598,16 +586,17 @@ impl ProcessApp {
                 let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 self.stream_handles.insert(
                     correlation_id.clone(),
-                    StreamHandle { cancel: Arc::clone(&cancel), pid },
+                    StreamHandle {
+                        cancel: Arc::clone(&cancel),
+                        pid,
+                    },
                 );
                 // Take the appropriate pipe before moving child into the thread.
                 let pipe: Box<dyn Read + Send> = match channel {
                     StreamChannel::Stdout | StreamChannel::Structured => {
                         Box::new(child.stdout.take().expect("stdout piped"))
                     }
-                    StreamChannel::Stderr => {
-                        Box::new(child.stderr.take().expect("stderr piped"))
-                    }
+                    StreamChannel::Stderr => Box::new(child.stderr.take().expect("stderr piped")),
                 };
                 let tx = self.http_tx.clone();
                 let type_id = self.type_id.clone();
@@ -685,17 +674,22 @@ impl ProcessApp {
                     std::thread::Builder::new()
                         .name(format!("sigkill-{pid}"))
                         .spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_secs(1));
-                        unsafe {
-                            libc::kill(pid as libc::pid_t, libc::SIGKILL);
-                        }
-                    }).expect("failed to spawn sigkill thread");
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                            unsafe {
+                                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+                            }
+                        })
+                        .expect("failed to spawn sigkill thread");
                 }
                 // else: stream already ended — no-op, no error event.
             }
 
             // ── File picker (#514) ─────────────────────────────────────────
-            AppRequest::OpenFilePicker { request_id, filter, multiple } => {
+            AppRequest::OpenFilePicker {
+                request_id,
+                filter,
+                multiple,
+            } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::FsPick)
                 {
@@ -703,7 +697,8 @@ impl ProcessApp {
                         "ProcessApp[{}]: OpenFilePicker {request_id} denied — {reason}",
                         self.type_id
                     );
-                    self.outbound_events.push_back(PlexiEvent::FilePickCancelled { request_id });
+                    self.outbound_events
+                        .push_back(PlexiEvent::FilePickCancelled { request_id });
                     return;
                 }
                 log::debug!(
@@ -715,16 +710,19 @@ impl ProcessApp {
                 std::thread::Builder::new()
                     .name(format!("file-picker-{type_id}"))
                     .spawn(move || {
-                    let result = pick_files(&filter, multiple);
-                    log::debug!("ProcessApp[{type_id}]: OpenFilePicker {request_id} → {result:?}");
-                    let event = match result {
-                        Some(paths) if !paths.is_empty() => {
-                            PlexiEvent::FilePicked { request_id, paths }
-                        }
-                        _ => PlexiEvent::FilePickCancelled { request_id },
-                    };
-                    let _ = tx.send(event);
-                }).expect("failed to spawn file-picker thread");
+                        let result = pick_files(&filter, multiple);
+                        log::debug!(
+                            "ProcessApp[{type_id}]: OpenFilePicker {request_id} → {result:?}"
+                        );
+                        let event = match result {
+                            Some(paths) if !paths.is_empty() => {
+                                PlexiEvent::FilePicked { request_id, paths }
+                            }
+                            _ => PlexiEvent::FilePickCancelled { request_id },
+                        };
+                        let _ = tx.send(event);
+                    })
+                    .expect("failed to spawn file-picker thread");
             }
 
             // ── Mouse tracking toggle ──────────────────────────────────────
@@ -816,13 +814,12 @@ impl ProcessApp {
                         "ProcessApp[{}]: HttpRequest {request_id} denied — {reason}",
                         self.type_id
                     );
-                    self.outbound_events
-                        .push_back(PlexiEvent::HttpResponse {
-                            request_id,
-                            status: 403,
-                            body: String::new(),
-                            error: Some(format!("capability_denied: {reason}")),
-                        });
+                    self.outbound_events.push_back(PlexiEvent::HttpResponse {
+                        request_id,
+                        status: 403,
+                        body: String::new(),
+                        error: Some(format!("capability_denied: {reason}")),
+                    });
                     return;
                 }
 
@@ -838,20 +835,27 @@ impl ProcessApp {
                             request_id,
                             status: 400,
                             body: String::new(),
-                            error: Some("invalid_url: malformed URL or unsupported scheme".to_string()),
+                            error: Some(
+                                "invalid_url: malformed URL or unsupported scheme".to_string(),
+                            ),
                         });
                         return;
                     }
                 };
 
                 // Pre-normalize allowed_hosts patterns once for initial check and all redirect hops.
-                let normalized_allowed_hosts: Vec<String> = self.permissions.allowed_hosts.iter()
+                let normalized_allowed_hosts: Vec<String> = self
+                    .permissions
+                    .allowed_hosts
+                    .iter()
                     .map(|p| p.to_lowercase().trim_end_matches('.').to_string())
                     .collect();
 
                 // Check initial URL against allowed_hosts.
                 if !normalized_allowed_hosts.is_empty() {
-                    let allowed = normalized_allowed_hosts.iter().any(|pattern| host_matches(&initial_host, pattern));
+                    let allowed = normalized_allowed_hosts
+                        .iter()
+                        .any(|pattern| host_matches(&initial_host, pattern));
                     if !allowed {
                         log::warn!(
                             "ProcessApp[{}]: HttpRequest {request_id} denied — host '{}' not in allowed_hosts",
@@ -861,7 +865,10 @@ impl ProcessApp {
                             request_id,
                             status: 403,
                             body: String::new(),
-                            error: Some(format!("host_not_allowed: '{}' is not in this app's allowed_hosts list", initial_host)),
+                            error: Some(format!(
+                                "host_not_allowed: '{}' is not in this app's allowed_hosts list",
+                                initial_host
+                            )),
                         });
                         return;
                     }
@@ -1053,10 +1060,11 @@ impl ProcessApp {
                                 if capability == "ai.query")
                         });
                         if !already_pending {
-                            self.pending_prompts.push_back(super::PendingPrompt::Capability {
-                                request_id: uuid::Uuid::new_v4().to_string(),
-                                capability: "ai.query".to_string(),
-                            });
+                            self.pending_prompts
+                                .push_back(super::PendingPrompt::Capability {
+                                    request_id: uuid::Uuid::new_v4().to_string(),
+                                    capability: "ai.query".to_string(),
+                                });
                         }
                     }
                     return;
@@ -1085,42 +1093,43 @@ impl ProcessApp {
                 std::thread::Builder::new()
                     .name(format!("ai-query-{app_id}-{request_id}"))
                     .spawn(move || {
-                    let resp = broker.dispatch(AiBrokerRequest {
-                        app_id,
-                        model_tier,
-                        system,
-                        messages,
-                        tools,
-                        workspace_root: Some(workspace_root),
-                        open_panes,
-                        tool_dispatcher: Some(tool_dispatcher),
-                    });
-                    // Send incremental stream chunks before the final AiResponse
-                    // so the app can display tokens as they arrive.
-                    let n_chunks = resp.stream_deltas.len();
-                    for (i, delta) in resp.stream_deltas.into_iter().enumerate() {
-                        let done = i + 1 == n_chunks;
-                        let chunk = PlexiEvent::AiStreamChunk {
-                            request_id: request_id.clone(),
-                            delta,
-                            done,
-                        };
-                        if let Err(e) = tx.send(chunk) {
-                            log::warn!("ai broker: stream chunk receiver dropped: {e}");
-                            return;
+                        let resp = broker.dispatch(AiBrokerRequest {
+                            app_id,
+                            model_tier,
+                            system,
+                            messages,
+                            tools,
+                            workspace_root: Some(workspace_root),
+                            open_panes,
+                            tool_dispatcher: Some(tool_dispatcher),
+                        });
+                        // Send incremental stream chunks before the final AiResponse
+                        // so the app can display tokens as they arrive.
+                        let n_chunks = resp.stream_deltas.len();
+                        for (i, delta) in resp.stream_deltas.into_iter().enumerate() {
+                            let done = i + 1 == n_chunks;
+                            let chunk = PlexiEvent::AiStreamChunk {
+                                request_id: request_id.clone(),
+                                delta,
+                                done,
+                            };
+                            if let Err(e) = tx.send(chunk) {
+                                log::warn!("ai broker: stream chunk receiver dropped: {e}");
+                                return;
+                            }
                         }
-                    }
-                    let event = PlexiEvent::AiResponse {
-                        request_id,
-                        content: resp.content,
-                        tokens_in: resp.tokens_in,
-                        tokens_out: resp.tokens_out,
-                        error: resp.error,
-                    };
-                    if let Err(e) = tx.send(event) {
-                        log::warn!("ai broker: response receiver dropped: {e}");
-                    }
-                }).expect("failed to spawn ai-query thread");
+                        let event = PlexiEvent::AiResponse {
+                            request_id,
+                            content: resp.content,
+                            tokens_in: resp.tokens_in,
+                            tokens_out: resp.tokens_out,
+                            error: resp.error,
+                        };
+                        if let Err(e) = tx.send(event) {
+                            log::warn!("ai broker: response receiver dropped: {e}");
+                        }
+                    })
+                    .expect("failed to spawn ai-query thread");
             }
 
             AppRequest::AudioPlay {
@@ -1132,10 +1141,7 @@ impl ProcessApp {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::AudioPlayback)
                 {
-                    log::warn!(
-                        "ProcessApp[{}]: AudioPlay denied — {reason}",
-                        self.type_id
-                    );
+                    log::warn!("ProcessApp[{}]: AudioPlay denied — {reason}", self.type_id);
                     return;
                 }
 
@@ -1156,25 +1162,26 @@ impl ProcessApp {
                                     self.type_id
                                 );
                             } else {
-                            let req = crate::media::audio::PlaybackRequest {
-                                source: src.to_owned(),
-                                volume,
-                            };
-                            match crate::media::audio::start_playback(req) {
-                                Ok(session) => {
-                                    log::info!(
-                                        "ProcessApp[{}]: AudioPlay started: source={src}",
-                                        self.type_id
-                                    );
-                                    self.audio_playback_sessions.insert(src.to_owned(), session);
-                                }
-                                Err(e) => {
-                                    log::warn!(
+                                let req = crate::media::audio::PlaybackRequest {
+                                    source: src.to_owned(),
+                                    volume,
+                                };
+                                match crate::media::audio::start_playback(req) {
+                                    Ok(session) => {
+                                        log::info!(
+                                            "ProcessApp[{}]: AudioPlay started: source={src}",
+                                            self.type_id
+                                        );
+                                        self.audio_playback_sessions
+                                            .insert(src.to_owned(), session);
+                                    }
+                                    Err(e) => {
+                                        log::warn!(
                                         "ProcessApp[{}]: AudioPlay start failed for {src:?}: {e}",
                                         self.type_id
                                     );
+                                    }
                                 }
-                            }
                             }
                         } else if pipe_id.is_some() {
                             log::warn!(
@@ -1239,10 +1246,11 @@ impl ProcessApp {
                         "ProcessApp[{}]: AudioCapture denied — {reason}",
                         self.type_id
                     );
-                    self.outbound_events.push_back(PlexiEvent::AudioCaptureError {
-                        pipe_id,
-                        error: format!("capability denied: {reason}"),
-                    });
+                    self.outbound_events
+                        .push_back(PlexiEvent::AudioCaptureError {
+                            pipe_id,
+                            error: format!("capability denied: {reason}"),
+                        });
                     return;
                 }
                 self.start_audio_capture(pipe_id, device_id, sample_rate, buffer_size);
@@ -1259,24 +1267,25 @@ impl ProcessApp {
                 std::thread::Builder::new()
                     .name(format!("audio-devices-{type_id}"))
                     .spawn(move || {
-                    let inputs = audio
-                        .list_input_devices()
-                        .into_iter()
-                        .map(AudioDeviceWire::from)
-                        .collect();
-                    let outputs = audio
-                        .list_output_devices()
-                        .into_iter()
-                        .map(AudioDeviceWire::from)
-                        .collect();
-                    log::info!("ProcessApp[{type_id}]: ListAudioDevices complete");
-                    let _ = tx.send(PlexiEvent::AudioDevicesListed {
-                        request_id,
-                        inputs,
-                        outputs,
-                        error: None,
-                    });
-                }).expect("failed to spawn audio-devices thread");
+                        let inputs = audio
+                            .list_input_devices()
+                            .into_iter()
+                            .map(AudioDeviceWire::from)
+                            .collect();
+                        let outputs = audio
+                            .list_output_devices()
+                            .into_iter()
+                            .map(AudioDeviceWire::from)
+                            .collect();
+                        log::info!("ProcessApp[{type_id}]: ListAudioDevices complete");
+                        let _ = tx.send(PlexiEvent::AudioDevicesListed {
+                            request_id,
+                            inputs,
+                            outputs,
+                            error: None,
+                        });
+                    })
+                    .expect("failed to spawn audio-devices thread");
             }
             AppRequest::ListMidiDevices { request_id } => {
                 // MIDI enumeration mirrors audio: not gated. Port names are
@@ -1288,24 +1297,25 @@ impl ProcessApp {
                 std::thread::Builder::new()
                     .name(format!("midi-devices-{type_id}"))
                     .spawn(move || {
-                    let inputs = midi
-                        .list_input_ports()
-                        .into_iter()
-                        .map(MidiPortWire::from)
-                        .collect();
-                    let outputs = midi
-                        .list_output_ports()
-                        .into_iter()
-                        .map(MidiPortWire::from)
-                        .collect();
-                    log::info!("ProcessApp[{type_id}]: ListMidiDevices complete");
-                    let _ = tx.send(PlexiEvent::MidiDevicesListed {
-                        request_id,
-                        inputs,
-                        outputs,
-                        error: None,
-                    });
-                }).expect("failed to spawn midi-devices thread");
+                        let inputs = midi
+                            .list_input_ports()
+                            .into_iter()
+                            .map(MidiPortWire::from)
+                            .collect();
+                        let outputs = midi
+                            .list_output_ports()
+                            .into_iter()
+                            .map(MidiPortWire::from)
+                            .collect();
+                        log::info!("ProcessApp[{type_id}]: ListMidiDevices complete");
+                        let _ = tx.send(PlexiEvent::MidiDevicesListed {
+                            request_id,
+                            inputs,
+                            outputs,
+                            error: None,
+                        });
+                    })
+                    .expect("failed to spawn midi-devices thread");
             }
             AppRequest::OpenMidiInput { port_id, pipe_id } => {
                 if let PermissionCheck::Denied(reason) =
@@ -1327,10 +1337,7 @@ impl ProcessApp {
                 // Drop the session — its Drop impl disconnects from CoreMIDI.
                 // No response event; closing is fire-and-forget.
                 if self.midi_input_sessions.remove(&port_id).is_some() {
-                    log::info!(
-                        "app::{} midi.input closed: port_id={port_id}",
-                        self.type_id
-                    );
+                    log::info!("app::{} midi.input closed: port_id={port_id}", self.type_id);
                 } else {
                     log::debug!(
                         "ProcessApp[{}]: CloseMidiInput on inactive port_id={port_id} (no-op)",
@@ -1342,10 +1349,7 @@ impl ProcessApp {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::MidiOut)
                 {
-                    log::warn!(
-                        "ProcessApp[{}]: SendMidi denied — {reason}",
-                        self.type_id
-                    );
+                    log::warn!("ProcessApp[{}]: SendMidi denied — {reason}", self.type_id);
                     self.outbound_events.push_back(PlexiEvent::MidiSendError {
                         port_id,
                         error: format!("capability denied: {reason}"),
@@ -1363,10 +1367,7 @@ impl ProcessApp {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::VideoPlayback)
                 {
-                    log::warn!(
-                        "ProcessApp[{}]: OpenVideo denied — {reason}",
-                        self.type_id
-                    );
+                    log::warn!("ProcessApp[{}]: OpenVideo denied — {reason}", self.type_id);
                     self.outbound_events.push_back(PlexiEvent::VideoOpenError {
                         request_id,
                         error: format!("capability denied: {reason}"),
@@ -1414,10 +1415,7 @@ impl ProcessApp {
                             .expect("pipe_registry poisoned")
                             .close(&pipe_id);
                     }
-                    log::info!(
-                        "app::{} video.close: handle_id={handle_id}",
-                        self.type_id
-                    );
+                    log::info!("app::{} video.close: handle_id={handle_id}", self.type_id);
                 } else {
                     log::debug!(
                         "ProcessApp[{}]: CloseVideo on inactive handle_id={handle_id} (no-op)",
@@ -1426,11 +1424,13 @@ impl ProcessApp {
                 }
             }
 
-
             // ── Cd request ─────────────────────────────────────────────────
             AppRequest::CdRequest { cwd } => {
                 log::info!("ProcessApp[{}]: CdRequest cwd='{cwd}'", self.type_id);
-                self.pending_commands.push(AppCommand::CdRequest { cwd, sender_pane_id: self.pane_id });
+                self.pending_commands.push(AppCommand::CdRequest {
+                    cwd,
+                    sender_pane_id: self.pane_id,
+                });
             }
 
             // ── Async image load ───────────────────────────────────────────
@@ -1441,30 +1441,37 @@ impl ProcessApp {
                     "ProcessApp[{}]: LoadImage handle={handle} src={src}",
                     self.type_id
                 );
-                self.image_cache.request_by_handle(&handle, &src, net_http_granted);
+                self.image_cache
+                    .request_by_handle(&handle, &src, net_http_granted);
                 // Immediate error completions (e.g. capability denied) were pushed to
                 // image_cache.immediate_completions and will be drained in the next poll().
             }
 
             // ── Set timer ──────────────────────────────────────────────────
             AppRequest::SetTimer { timer_id, after_ms } => {
-                if let PermissionCheck::Denied(reason) = check(&self.permissions, Capability::Timer) {
-                    log::warn!("ProcessApp[{}]: SetTimer {timer_id} denied — {reason}", self.type_id);
+                if let PermissionCheck::Denied(reason) = check(&self.permissions, Capability::Timer)
+                {
+                    log::warn!(
+                        "ProcessApp[{}]: SetTimer {timer_id} denied — {reason}",
+                        self.type_id
+                    );
                     return;
                 }
                 let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-                self.pending_timers.insert(timer_id.clone(), std::sync::Arc::clone(&cancelled));
+                self.pending_timers
+                    .insert(timer_id.clone(), std::sync::Arc::clone(&cancelled));
                 let tx = self.http_tx.clone();
                 let type_id = self.type_id.clone();
                 std::thread::Builder::new()
                     .name(format!("timer-{type_id}-{timer_id}"))
                     .spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_millis(after_ms));
-                    if !cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                        log::debug!("ProcessApp[{type_id}]: timer {timer_id} fired");
-                        let _ = tx.send(PlexiEvent::Timer { timer_id });
-                    }
-                }).expect("failed to spawn timer thread");
+                        std::thread::sleep(std::time::Duration::from_millis(after_ms));
+                        if !cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                            log::debug!("ProcessApp[{type_id}]: timer {timer_id} fired");
+                            let _ = tx.send(PlexiEvent::Timer { timer_id });
+                        }
+                    })
+                    .expect("failed to spawn timer thread");
             }
 
             // ── Cancel timer ───────────────────────────────────────────────
@@ -1481,7 +1488,11 @@ impl ProcessApp {
             // injecting bytes into its PTY) lives at the `PlexiApp`
             // dispatch site — the routing layer just enforces the
             // capability gate, logs, and forwards an `AppCommand`.
-            AppRequest::RequestLinkedTerminal { request_id, cwd, label } => {
+            AppRequest::RequestLinkedTerminal {
+                request_id,
+                cwd,
+                label,
+            } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::TerminalBindings)
                 {
@@ -1492,25 +1503,29 @@ impl ProcessApp {
                     // No event-shape on the wire for "denied" on this call —
                     // mirror the iq.query precedent: respond with an explicit
                     // error event so the SDK's blocking helper unblocks.
-                    self.outbound_events.push_back(
-                        PlexiEvent::LinkedTerminalReady {
+                    self.outbound_events
+                        .push_back(PlexiEvent::LinkedTerminalReady {
                             request_id,
                             // pane_id 0 sentinel = "no terminal opened". The
                             // SDK helper checks for 0 and raises
                             // CapabilityDeniedError.
                             terminal_pane_id: 0,
-                        },
-                    );
+                        });
                     return;
                 }
-                self.pending_commands.push(AppCommand::RequestLinkedTerminal {
-                    sender_pane_id: self.pane_id,
-                    request_id,
-                    cwd,
-                    label,
-                });
+                self.pending_commands
+                    .push(AppCommand::RequestLinkedTerminal {
+                        sender_pane_id: self.pane_id,
+                        request_id,
+                        cwd,
+                        label,
+                    });
             }
-            AppRequest::RunInLinkedTerminal { terminal_pane_id, command, echo } => {
+            AppRequest::RunInLinkedTerminal {
+                terminal_pane_id,
+                command,
+                echo,
+            } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::TerminalBindings)
                 {
@@ -1527,7 +1542,11 @@ impl ProcessApp {
                     echo,
                 });
             }
-            AppRequest::InsertPathToken { terminal_pane_id, path, mode } => {
+            AppRequest::InsertPathToken {
+                terminal_pane_id,
+                path,
+                mode,
+            } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::TerminalBindings)
                 {
@@ -1544,7 +1563,11 @@ impl ProcessApp {
                     mode,
                 });
             }
-            AppRequest::RequestCommandPreview { request_id, terminal_pane_id, command } => {
+            AppRequest::RequestCommandPreview {
+                request_id,
+                terminal_pane_id,
+                command,
+            } => {
                 if let PermissionCheck::Denied(reason) =
                     check(&self.permissions, Capability::TerminalBindings)
                 {
@@ -1559,12 +1582,13 @@ impl ProcessApp {
                     });
                     return;
                 }
-                self.pending_commands.push(AppCommand::RequestCommandPreview {
-                    sender_pane_id: self.pane_id,
-                    request_id,
-                    terminal_pane_id,
-                    command,
-                });
+                self.pending_commands
+                    .push(AppCommand::RequestCommandPreview {
+                        sender_pane_id: self.pane_id,
+                        request_id,
+                        terminal_pane_id,
+                        command,
+                    });
             }
             AppRequest::OpenArtifact { path, mode } => {
                 if let PermissionCheck::Denied(reason) =
@@ -1626,10 +1650,7 @@ impl ProcessApp {
                 );
                 crate::plexi_ai::tool_dispatch::resolve_pending(
                     &call_id,
-                    crate::plexi_ai::tool_dispatch::ToolCallResult {
-                        output_json,
-                        error,
-                    },
+                    crate::plexi_ai::tool_dispatch::ToolCallResult { output_json, error },
                 );
             }
 
@@ -1645,10 +1666,8 @@ impl ProcessApp {
                     result.is_some(),
                 );
                 if let Some(tx) = self.mcp_pending.remove(&call_id) {
-                    let _ = tx.send(crate::process_app::mcp_server::McpToolResponse {
-                        result,
-                        error,
-                    });
+                    let _ =
+                        tx.send(crate::process_app::mcp_server::McpToolResponse { result, error });
                 } else {
                     log::warn!(
                         "ProcessApp[{}]: McpToolResult for unknown call_id={call_id:?}",
@@ -1751,22 +1770,36 @@ impl ProcessApp {
             AppRequest::SaveAppState { payload } => {
                 let filename = format!("{}.json", self.type_id);
                 let channel_dir = crate::config::workspace_channel_dir();
-                let workspace_toml = self.workspace_root.join(&channel_dir).join("workspace.toml");
+                let workspace_toml = self
+                    .workspace_root
+                    .join(&channel_dir)
+                    .join("workspace.toml");
                 let state_path = if workspace_toml.exists() {
-                    self.workspace_root.join(&channel_dir).join("app_states").join(&filename)
+                    self.workspace_root
+                        .join(&channel_dir)
+                        .join("app_states")
+                        .join(&filename)
                 } else {
-                    crate::config::config_dir().join("app_states").join(&filename)
+                    crate::config::config_dir()
+                        .join("app_states")
+                        .join(&filename)
                 };
                 if let Some(dir) = state_path.parent() {
                     if let Err(e) = std::fs::create_dir_all(dir) {
-                        log::warn!("ProcessApp[{}]: SaveAppState: mkdir failed: {e}", self.type_id);
+                        log::warn!(
+                            "ProcessApp[{}]: SaveAppState: mkdir failed: {e}",
+                            self.type_id
+                        );
                         return;
                     }
                 }
                 match serde_json::to_vec_pretty(&payload) {
                     Ok(bytes) => {
                         if let Err(e) = std::fs::write(&state_path, &bytes) {
-                            log::warn!("ProcessApp[{}]: SaveAppState: write failed: {e}", self.type_id);
+                            log::warn!(
+                                "ProcessApp[{}]: SaveAppState: write failed: {e}",
+                                self.type_id
+                            );
                         } else {
                             log::info!(
                                 "ProcessApp[{}]: saved app state to {}",
@@ -1776,7 +1809,10 @@ impl ProcessApp {
                         }
                     }
                     Err(e) => {
-                        log::warn!("ProcessApp[{}]: SaveAppState: serialize failed: {e}", self.type_id);
+                        log::warn!(
+                            "ProcessApp[{}]: SaveAppState: serialize failed: {e}",
+                            self.type_id
+                        );
                     }
                 }
             }
@@ -1871,10 +1907,11 @@ impl ProcessApp {
                     "ProcessApp[{}]: AudioCapture pipe alloc failed for {pipe_id}: {e}",
                     self.type_id
                 );
-                self.outbound_events.push_back(PlexiEvent::AudioCaptureError {
-                    pipe_id,
-                    error: format!("pipe alloc failed: {e}"),
-                });
+                self.outbound_events
+                    .push_back(PlexiEvent::AudioCaptureError {
+                        pipe_id,
+                        error: format!("pipe alloc failed: {e}"),
+                    });
                 return;
             }
         };
@@ -1894,10 +1931,11 @@ impl ProcessApp {
                     .lock()
                     .expect("pipe_registry poisoned")
                     .close(&pipe_id);
-                self.outbound_events.push_back(PlexiEvent::AudioCaptureError {
-                    pipe_id,
-                    error: "pipe ring missing after open".to_owned(),
-                });
+                self.outbound_events
+                    .push_back(PlexiEvent::AudioCaptureError {
+                        pipe_id,
+                        error: "pipe ring missing after open".to_owned(),
+                    });
                 return;
             }
         };
@@ -1976,10 +2014,11 @@ impl ProcessApp {
                     .lock()
                     .expect("pipe_registry poisoned")
                     .close(&pipe_id);
-                self.outbound_events.push_back(PlexiEvent::AudioCaptureError {
-                    pipe_id,
-                    error: format!("{e}"),
-                });
+                self.outbound_events
+                    .push_back(PlexiEvent::AudioCaptureError {
+                        pipe_id,
+                        error: format!("{e}"),
+                    });
             }
         }
     }
@@ -2143,12 +2182,7 @@ impl ProcessApp {
     /// `source`, and wire decoded RGBA8 frames into the pipe ring (#345).
     /// On any failure emits `PlexiEvent::VideoOpenError` and frees the pipe
     /// so the app's `pipe_open` queue stays consistent.
-    pub(super) fn start_video(
-        &mut self,
-        request_id: String,
-        source: String,
-        pipe_id: String,
-    ) {
+    pub(super) fn start_video(&mut self, request_id: String, source: String, pipe_id: String) {
         // Allocate the binary pipe first — without a destination the decoder
         // would have nowhere to push frames. Mirrors the audio / MIDI flow.
         let socket_path = match self
@@ -2198,7 +2232,10 @@ impl ProcessApp {
             socket_path,
         });
 
-        match self.video_device.open(&source, std::sync::Arc::clone(&ring)) {
+        match self
+            .video_device
+            .open(&source, std::sync::Arc::clone(&ring))
+        {
             Ok((ack, handle)) => {
                 log::info!(
                     "app::{} video.open: handle_id={}, source={source:?}, {}x{} @ {} fps, duration_ms={}",
@@ -2287,9 +2324,9 @@ fn host_matches(host: &str, pattern: &str) -> bool {
 /// Blocks the calling (background) thread; must NOT be called on the main thread.
 /// Returns `Some(paths)` with the selected paths, or `None` if cancelled.
 fn pick_files(filter: &[String], multiple: bool) -> Option<Vec<String>> {
+    use std::pin::pin;
     use std::sync::{Arc, Condvar, Mutex};
     use std::task::{Context, Poll, Wake, Waker};
-    use std::pin::pin;
 
     // Minimal block_on that parks the current thread while a future is pending.
     // Works correctly with rfd::AsyncFileDialog, which resolves its future via
@@ -2298,8 +2335,12 @@ fn pick_files(filter: &[String], multiple: bool) -> Option<Vec<String>> {
         let signal = Arc::new((Mutex::new(false), Condvar::new()));
         struct Signal(Arc<(Mutex<bool>, Condvar)>);
         impl Wake for Signal {
-            fn wake(self: Arc<Self>) { self.signal(); }
-            fn wake_by_ref(self: &Arc<Self>) { self.signal(); }
+            fn wake(self: Arc<Self>) {
+                self.signal();
+            }
+            fn wake_by_ref(self: &Arc<Self>) {
+                self.signal();
+            }
         }
         impl Signal {
             fn signal(&self) {
@@ -2317,7 +2358,9 @@ fn pick_files(filter: &[String], multiple: bool) -> Option<Vec<String>> {
                 Poll::Pending => {
                     let (lock, cvar) = &*signal;
                     let mut ready = lock.lock().unwrap();
-                    while !*ready { ready = cvar.wait(ready).unwrap(); }
+                    while !*ready {
+                        ready = cvar.wait(ready).unwrap();
+                    }
                     *ready = false;
                 }
             }
@@ -2333,7 +2376,12 @@ fn pick_files(filter: &[String], multiple: bool) -> Option<Vec<String>> {
 
     if multiple {
         let handles = block_on(dialog.pick_files())?;
-        Some(handles.into_iter().map(|h| h.path().to_string_lossy().into_owned()).collect())
+        Some(
+            handles
+                .into_iter()
+                .map(|h| h.path().to_string_lossy().into_owned())
+                .collect(),
+        )
     } else {
         let handle = block_on(dialog.pick_file())?;
         Some(vec![handle.path().to_string_lossy().into_owned()])
@@ -2346,31 +2394,55 @@ mod allowed_hosts_tests {
 
     #[test]
     fn extract_host_basic() {
-        assert_eq!(extract_host_normalized("https://example.com/path"), Some("example.com".to_string()));
-        assert_eq!(extract_host_normalized("http://example.com:8080/"), Some("example.com".to_string()));
+        assert_eq!(
+            extract_host_normalized("https://example.com/path"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            extract_host_normalized("http://example.com:8080/"),
+            Some("example.com".to_string())
+        );
     }
 
     #[test]
     fn extract_host_normalizes_case() {
-        assert_eq!(extract_host_normalized("https://EXAMPLE.COM/"), Some("example.com".to_string()));
-        assert_eq!(extract_host_normalized("https://Example.Com/path?q=1"), Some("example.com".to_string()));
+        assert_eq!(
+            extract_host_normalized("https://EXAMPLE.COM/"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            extract_host_normalized("https://Example.Com/path?q=1"),
+            Some("example.com".to_string())
+        );
     }
 
     #[test]
     fn extract_host_strips_trailing_dot() {
-        assert_eq!(extract_host_normalized("https://example.com./"), Some("example.com".to_string()));
+        assert_eq!(
+            extract_host_normalized("https://example.com./"),
+            Some("example.com".to_string())
+        );
     }
 
     #[test]
     fn extract_host_rejects_credentials() {
         // Credential injection: http://user:pass@evil.com/ should still give evil.com
-        assert_eq!(extract_host_normalized("http://user:pass@evil.com/"), Some("evil.com".to_string()));
+        assert_eq!(
+            extract_host_normalized("http://user:pass@evil.com/"),
+            Some("evil.com".to_string())
+        );
     }
 
     #[test]
     fn extract_host_ipv6() {
-        assert_eq!(extract_host_normalized("http://[::1]:8080/"), Some("::1".to_string()));
-        assert_eq!(extract_host_normalized("https://[2001:db8::1]/path"), Some("2001:db8::1".to_string()));
+        assert_eq!(
+            extract_host_normalized("http://[::1]:8080/"),
+            Some("::1".to_string())
+        );
+        assert_eq!(
+            extract_host_normalized("https://[2001:db8::1]/path"),
+            Some("2001:db8::1".to_string())
+        );
     }
 
     #[test]

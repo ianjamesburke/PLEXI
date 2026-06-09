@@ -1,5 +1,5 @@
 use crate::host::context::WindowMenuAction;
-use crate::ui::sidebar_row::{SidebarAction, ContextItem, PaneDots};
+use crate::ui::sidebar_row::{ContextItem, PaneDots, SidebarAction};
 use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 use egui_tiles::Tile;
 
@@ -23,11 +23,20 @@ impl PlexiApp {
         let mut add_clicked = false;
         ui.horizontal(|ui| {
             ui.add_space(16.0);
-            ui.label(RichText::new("Contexts").size(10.0).color(self.colors.text_section));
+            ui.label(
+                RichText::new("Contexts")
+                    .size(10.0)
+                    .color(self.colors.text_section),
+            );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(12.0);
                 if ui
-                    .add(egui::Button::new(RichText::new("+").size(12.0).color(self.colors.text_dim)).frame(false))
+                    .add(
+                        egui::Button::new(
+                            RichText::new("+").size(12.0).color(self.colors.text_dim),
+                        )
+                        .frame(false),
+                    )
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .on_hover_text("New context")
                     .clicked()
@@ -46,7 +55,9 @@ impl PlexiApp {
         let mut drag_released = false;
         let mut unpark_context: Option<usize> = None;
 
-        let focused_cwd = self.windows.get(self.active_window)
+        let focused_cwd = self
+            .windows
+            .get(self.active_window)
             .and_then(|w| w.focused_pane.map(|tile| (w, tile)))
             .and_then(|(w, tile)| w.get_focused_pane_cwd(tile));
 
@@ -72,11 +83,13 @@ impl PlexiApp {
         }
 
         // Partition: active contexts render in the main list, parked ones below.
-        let active_order: Vec<usize> = display_order.iter()
+        let active_order: Vec<usize> = display_order
+            .iter()
             .copied()
             .filter(|&i| !self.router.get(i).parked)
             .collect();
-        let parked_order: Vec<usize> = display_order.iter()
+        let parked_order: Vec<usize> = display_order
+            .iter()
             .copied()
             .filter(|&i| self.router.get(i).parked)
             .collect();
@@ -90,7 +103,9 @@ impl PlexiApp {
 
             // Pane count + focused-pane index for this context
             let ctx_id = self.router.get(i).context_id;
-            let mut ctx_windows: Vec<usize> = self.windows.iter()
+            let mut ctx_windows: Vec<usize> = self
+                .windows
+                .iter()
                 .enumerate()
                 .filter(|(_, w)| w.context_id == ctx_id)
                 .map(|(idx, _)| idx)
@@ -103,13 +118,17 @@ impl PlexiApp {
             for &win_idx in &ctx_windows {
                 let w = &self.windows[win_idx];
                 if let Some(root) = w.tree.root() {
-                    pane_ids.extend(crate::spatial::tiling::collect_pane_ids_spatial(&w.tree.tiles, root));
+                    pane_ids.extend(crate::spatial::tiling::collect_pane_ids_spatial(
+                        &w.tree.tiles,
+                        root,
+                    ));
                 }
             }
             let pane_count = pane_ids.len();
 
             let focused_pane_idx: Option<usize> = if is_active {
-                self.windows.get(self.active_window)
+                self.windows
+                    .get(self.active_window)
                     .and_then(|w| w.focused_pane)
                     .and_then(|tile_id| {
                         let w = &self.windows[self.active_window];
@@ -126,7 +145,9 @@ impl PlexiApp {
             let pane_dots = if pane_count > 0 {
                 let mut hidden_set = std::collections::HashSet::new();
                 for (dot_idx, &pid) in pane_ids.iter().enumerate() {
-                    let is_hidden = self.windows.iter()
+                    let is_hidden = self
+                        .windows
+                        .iter()
                         .filter(|w| w.context_id == ctx_id)
                         .find_map(|w| w.panes.get(&pid))
                         .map_or(false, |p| p.is_hidden());
@@ -145,7 +166,11 @@ impl PlexiApp {
 
             // --- Renaming: special-cased before ContextItem path ---
             if is_renaming {
-                let fill = if is_active { self.colors.bg_active } else { self.colors.bg_sidebar_hover };
+                let fill = if is_active {
+                    self.colors.bg_active
+                } else {
+                    self.colors.bg_sidebar_hover
+                };
                 let bg_idx = ui.painter().add(egui::Shape::Noop);
                 let te_id = egui::Id::new(("rename_ctx", i));
                 let accent = self.colors.accent;
@@ -155,16 +180,18 @@ impl PlexiApp {
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.add_space(20.0);
-                        let te = ui.scope(|ui| {
-                            ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                            ui.visuals_mut().text_cursor.stroke.color = accent;
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.rename_buffer)
-                                    .id(te_id)
-                                    .desired_width(sidebar_w - 56.0)
-                                    .font(egui::TextStyle::Body),
-                            )
-                        }).inner;
+                        let te = ui
+                            .scope(|ui| {
+                                ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                                ui.visuals_mut().text_cursor.stroke.color = accent;
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.rename_buffer)
+                                        .id(te_id)
+                                        .desired_width(sidebar_w - 56.0)
+                                        .font(egui::TextStyle::Body),
+                                )
+                            })
+                            .inner;
                         if te.lost_focus() {
                             if ui.input(|inp| inp.key_pressed(egui::Key::Escape)) {
                                 self.renaming_window = None;
@@ -183,10 +210,12 @@ impl PlexiApp {
                         if te.gained_focus() || !te.has_focus() {
                             te.request_focus();
                             if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
-                                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
-                                    egui::text::CCursor::new(0),
-                                    egui::text::CCursor::new(self.rename_buffer.len()),
-                                )));
+                                state
+                                    .cursor
+                                    .set_char_range(Some(egui::text::CCursorRange::two(
+                                        egui::text::CCursor::new(0),
+                                        egui::text::CCursor::new(self.rename_buffer.len()),
+                                    )));
                                 state.store(ui.ctx(), te_id);
                             }
                         }
@@ -195,7 +224,10 @@ impl PlexiApp {
                 });
                 let row_rect = scope.response.rect;
                 row_rects.push(row_rect);
-                ui.painter().set(bg_idx, egui::Shape::rect_filled(row_rect, CornerRadius::ZERO, fill));
+                ui.painter().set(
+                    bg_idx,
+                    egui::Shape::rect_filled(row_rect, CornerRadius::ZERO, fill),
+                );
                 if is_active {
                     ui.painter().rect_filled(
                         Rect::from_min_size(row_rect.min, Vec2::new(3.0, row_rect.height())),
@@ -213,7 +245,11 @@ impl PlexiApp {
             } else {
                 self.context_notification_count(i)
             };
-            let subtitle = self.router.get(i).root.as_ref()
+            let subtitle = self
+                .router
+                .get(i)
+                .root
+                .as_ref()
                 .map(|p| p.display().to_string());
 
             let indent = self.router.get(i).depth;
@@ -228,13 +264,18 @@ impl PlexiApp {
                 subtitle,
                 pane_dots,
                 indent,
-            }.draw(ui, egui::Id::new(("ctx", i)), &self.colors);
+            }
+            .draw(ui, egui::Id::new(("ctx", i)), &self.colors);
 
             row_rects.push(response.rect);
 
             match action {
-                SidebarAction::DragStart => { self.drag_context = Some(i); }
-                SidebarAction::DragEnd => { drag_released = true; }
+                SidebarAction::DragStart => {
+                    self.drag_context = Some(i);
+                }
+                SidebarAction::DragEnd => {
+                    drag_released = true;
+                }
                 _ => {}
             }
 
@@ -253,12 +294,24 @@ impl PlexiApp {
                     }
                     ui.separator();
                     if i > 0 {
-                        if ui.button("Move to Top").clicked() { menu_action = Some((i, WindowMenuAction::MoveToTop)); ui.close_menu(); }
-                        if ui.button("Move Up").clicked() { menu_action = Some((i, WindowMenuAction::MoveUp)); ui.close_menu(); }
+                        if ui.button("Move to Top").clicked() {
+                            menu_action = Some((i, WindowMenuAction::MoveToTop));
+                            ui.close_menu();
+                        }
+                        if ui.button("Move Up").clicked() {
+                            menu_action = Some((i, WindowMenuAction::MoveUp));
+                            ui.close_menu();
+                        }
                     }
                     if i < num_ctxs - 1 {
-                        if ui.button("Move Down").clicked() { menu_action = Some((i, WindowMenuAction::MoveDown)); ui.close_menu(); }
-                        if ui.button("Move to Bottom").clicked() { menu_action = Some((i, WindowMenuAction::MoveToBottom)); ui.close_menu(); }
+                        if ui.button("Move Down").clicked() {
+                            menu_action = Some((i, WindowMenuAction::MoveDown));
+                            ui.close_menu();
+                        }
+                        if ui.button("Move to Bottom").clicked() {
+                            menu_action = Some((i, WindowMenuAction::MoveToBottom));
+                            ui.close_menu();
+                        }
                     }
                     ui.separator();
                     if let Some(cwd) = &cwd_for_menu {
@@ -268,7 +321,11 @@ impl PlexiApp {
                         }
                     }
                     {
-                        let label = if has_root { "Edit root\u{2026}" } else { "Set root\u{2026}" };
+                        let label = if has_root {
+                            "Edit root\u{2026}"
+                        } else {
+                            "Set root\u{2026}"
+                        };
                         if ui.button(label).clicked() {
                             menu_action = Some((i, WindowMenuAction::OpenRootOverlay));
                             ui.close_menu();
@@ -282,15 +339,25 @@ impl PlexiApp {
                     }
                     if num_ctxs > 1 {
                         ui.separator();
-                        if ui.button("Delete").clicked() { menu_action = Some((i, WindowMenuAction::Delete)); ui.close_menu(); }
+                        if ui.button("Delete").clicked() {
+                            menu_action = Some((i, WindowMenuAction::Delete));
+                            ui.close_menu();
+                        }
                     }
                 });
 
                 match action {
-                    SidebarAction::Delete => { delete_context = Some(i); }
-                    SidebarAction::Rename => { menu_action = Some((i, WindowMenuAction::Rename)); }
+                    SidebarAction::Delete => {
+                        delete_context = Some(i);
+                    }
+                    SidebarAction::Rename => {
+                        menu_action = Some((i, WindowMenuAction::Rename));
+                    }
                     SidebarAction::Activate => {
-                        log::debug!("sidebar: activate ctx={i} active={}", self.router.active_idx());
+                        log::debug!(
+                            "sidebar: activate ctx={i} active={}",
+                            self.router.active_idx()
+                        );
                         clicked_workspace = Some(i);
                     }
                     _ => {}
@@ -309,18 +376,20 @@ impl PlexiApp {
             let chevron = if expanded { "\u{25BE}" } else { "\u{25B8}" }; // ▾ or ▸
             let divider_text = format!("{chevron} Parked ({parked_count})");
 
-            let divider_response = ui.horizontal(|ui| {
-                ui.add_space(16.0);
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(divider_text)
-                            .size(10.0)
-                            .color(self.colors.text_dim),
+            let divider_response = ui
+                .horizontal(|ui| {
+                    ui.add_space(16.0);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(divider_text)
+                                .size(10.0)
+                                .color(self.colors.text_dim),
+                        )
+                        .selectable(false)
+                        .sense(egui::Sense::click()),
                     )
-                    .selectable(false)
-                    .sense(egui::Sense::click()),
-                )
-            }).inner;
+                })
+                .inner;
 
             let response = ui.interact(divider_response.rect, divider_id, egui::Sense::click());
             if response.clicked() || divider_response.clicked() {
@@ -336,18 +405,18 @@ impl PlexiApp {
                     let ctx_name = self.router.get(i).name.clone();
                     let text_color = self.colors.text_dim;
 
-                    let row_response = ui.horizontal(|ui| {
-                        ui.add_space(24.0);
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(&ctx_name)
-                                    .size(11.0)
-                                    .color(text_color),
+                    let row_response = ui
+                        .horizontal(|ui| {
+                            ui.add_space(24.0);
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&ctx_name).size(11.0).color(text_color),
+                                )
+                                .selectable(false)
+                                .sense(egui::Sense::click()),
                             )
-                            .selectable(false)
-                            .sense(egui::Sense::click()),
-                        )
-                    }).inner;
+                        })
+                        .inner;
 
                     let row_id = egui::Id::new(("parked_ctx", i));
                     let interact = ui.interact(row_response.rect, row_id, egui::Sense::click());
@@ -391,7 +460,10 @@ impl PlexiApp {
                 };
                 let x0 = row_rects.first().map_or(0.0, |r| r.min.x);
                 ui.painter().line_segment(
-                    [egui::pos2(x0, line_y), egui::pos2(x0 + sidebar_width, line_y)],
+                    [
+                        egui::pos2(x0, line_y),
+                        egui::pos2(x0 + sidebar_width, line_y),
+                    ],
                     Stroke::new(2.0, self.colors.accent),
                 );
             }
@@ -408,7 +480,8 @@ impl PlexiApp {
                 WindowMenuAction::EditDescription => {
                     log::info!("sidebar: edit context description ctx_idx={i}");
                     self.editing_description = Some(i);
-                    self.description_buffer = self.router.get(i).description.clone().unwrap_or_default();
+                    self.description_buffer =
+                        self.router.get(i).description.clone().unwrap_or_default();
                     self.description_focus_requested = false;
                     self.push_focus_layer(crate::app::FocusLayer::ContextDescription);
                 }
@@ -429,7 +502,10 @@ impl PlexiApp {
                     self.router.move_to_back_tracking_active(i);
                 }
                 WindowMenuAction::SetRoot(path) => {
-                    log::info!("sidebar: set context root ctx_idx={i} root={}", path.display());
+                    log::info!(
+                        "sidebar: set context root ctx_idx={i} root={}",
+                        path.display()
+                    );
                     self.router.get_mut(i).root = Some(path);
                     self.save_workspace();
                 }
@@ -439,7 +515,11 @@ impl PlexiApp {
                     self.save_workspace();
                 }
                 WindowMenuAction::OpenRootOverlay => {
-                    let existing = self.router.get(i).root.as_ref()
+                    let existing = self
+                        .router
+                        .get(i)
+                        .root
+                        .as_ref()
                         .map(|p| p.display().to_string())
                         .unwrap_or_default();
                     log::info!("TextInputOverlay: opened target=ContextRoot({i}) via sidebar");
@@ -466,7 +546,8 @@ impl PlexiApp {
             if target_parent == Some(current_ctx_id) {
                 let current_win_id = self.windows[self.active_window].window_id;
                 let focused_tile = self.windows[self.active_window].focused_pane;
-                self.router.push_depth(current_ctx_id, current_win_id, focused_tile);
+                self.router
+                    .push_depth(current_ctx_id, current_win_id, focused_tile);
             }
             self.switch_workspace(i);
         }

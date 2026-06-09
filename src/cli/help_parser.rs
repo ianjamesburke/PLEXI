@@ -46,8 +46,8 @@ pub fn parse_help_to_descriptor(binary: &str) -> Result<String, CliParseError> {
 // ── subprocess helpers ────────────────────────────────────────────────────────
 
 fn run_with_timeout(binary: &str, arg: &str) -> Result<String, CliParseError> {
-    use std::sync::mpsc;
     use std::process::Stdio;
+    use std::sync::mpsc;
 
     let child = std::process::Command::new(binary)
         .arg(arg)
@@ -118,14 +118,10 @@ mod tests {
         // cargo is guaranteed to exist in Rust dev environments and always
         // exits 0 with a rich --help output.
         let result = parse_help_to_descriptor("cargo");
-        assert!(
-            result.is_ok(),
-            "expected Ok, got: {:?}",
-            result.err()
-        );
+        assert!(result.is_ok(), "expected Ok, got: {:?}", result.err());
         let json = result.unwrap();
-        let value: serde_json::Value = serde_json::from_str(&json)
-            .expect("returned string must be valid JSON");
+        let value: serde_json::Value =
+            serde_json::from_str(&json).expect("returned string must be valid JSON");
         assert!(value.get("name").is_some(), "descriptor must have `name`");
         assert!(
             value.get("commands").is_some(),

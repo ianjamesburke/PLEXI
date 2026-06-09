@@ -71,7 +71,7 @@ pub fn probe_with_options<R: DescriptorRunner>(
             Ok(d) => Some(d),
             Err(_) => None, // Fall through to Tier 2 — bad/empty stdout.
         },
-        Ok(_) => None, // Non-zero exit — `--plexi` not implemented.
+        Ok(_) => None,  // Non-zero exit — `--plexi` not implemented.
         Err(_) => None, // Spawn failed (e.g. command not on PATH).
     };
 
@@ -198,8 +198,10 @@ pub struct MockRunner {
 #[cfg(test)]
 impl DescriptorRunner for MockRunner {
     fn run(&self, command: &str, args: &[&str]) -> std::io::Result<RunOutput> {
-        *self.captured.borrow_mut() =
-            Some((command.to_string(), args.iter().map(|s| s.to_string()).collect()));
+        *self.captured.borrow_mut() = Some((
+            command.to_string(),
+            args.iter().map(|s| s.to_string()).collect(),
+        ));
         Ok(RunOutput {
             status_success: self.success,
             stdout: self.stdout.clone(),
@@ -273,7 +275,10 @@ mod descriptor_tests {
         // Same setup, but registry disabled. Should fail because Tier 1
         // fell through and Tier 2 is gated off.
         let mock = no_plexi_runner();
-        let opts = ProbeOptions { use_registry: false, use_crawl: false };
+        let opts = ProbeOptions {
+            use_registry: false,
+            use_crawl: false,
+        };
         let code = probe_with_options(&mock, "gh", &[], &opts);
         assert_eq!(code, 1, "without registry or crawl, gh has no descriptor");
     }

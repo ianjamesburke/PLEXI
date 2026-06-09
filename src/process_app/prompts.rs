@@ -39,9 +39,7 @@ pub fn persist_granted_secret(
     // (app_id, canonical key) pair. Write under that name so the next
     // `resolve()` call returns Found instead of PromptUser.
     let ws_cfg = WorkspaceConfig::load(workspace_root).ok().flatten();
-    let router = WorkspaceSecrets::load(workspace_root)
-        .ok()
-        .flatten();
+    let router = WorkspaceSecrets::load(workspace_root).ok().flatten();
 
     let account = if let (Some(cfg), Some(r)) = (ws_cfg, router) {
         if let Some(friendly) = r.route_for(app_id, key) {
@@ -104,25 +102,26 @@ pub(crate) fn show_prompt_modal(
 
     // Detect keys at frame level — before any window or button rendering — so
     // egui button focus cannot intercept Enter and misfire an action.
-    let (mut grant_once, mut grant_forever, mut deny_once, mut deny_forever) =
-        match prompt {
-            PendingPrompt::Capability { .. } => {
-                ctx.input_mut(|i| {
-                    let shift_enter = i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter);
-                    let key_a = i.consume_key(egui::Modifiers::NONE, egui::Key::A);
-                    let key_d = i.consume_key(egui::Modifiers::NONE, egui::Key::D);
-                    let shift_esc = i.consume_key(egui::Modifiers::SHIFT, egui::Key::Escape);
-                    let plain_enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-                    let plain_esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-                    (plain_enter, shift_enter || key_a, plain_esc, shift_esc || key_d)
-                })
-            }
-            PendingPrompt::Secret { .. } => {
-                let esc = ctx
-                    .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
-                (false, false, esc, false)
-            }
-        };
+    let (mut grant_once, mut grant_forever, mut deny_once, mut deny_forever) = match prompt {
+        PendingPrompt::Capability { .. } => ctx.input_mut(|i| {
+            let shift_enter = i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter);
+            let key_a = i.consume_key(egui::Modifiers::NONE, egui::Key::A);
+            let key_d = i.consume_key(egui::Modifiers::NONE, egui::Key::D);
+            let shift_esc = i.consume_key(egui::Modifiers::SHIFT, egui::Key::Escape);
+            let plain_enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            let plain_esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+            (
+                plain_enter,
+                shift_enter || key_a,
+                plain_esc,
+                shift_esc || key_d,
+            )
+        }),
+        PendingPrompt::Secret { .. } => {
+            let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            (false, false, esc, false)
+        }
+    };
 
     // Scrim
     let screen_rect = ctx.screen_rect();
@@ -130,8 +129,11 @@ pub(crate) fn show_prompt_modal(
         .fixed_pos(screen_rect.min)
         .order(egui::Order::Middle)
         .show(ctx, |ui| {
-            ui.painter()
-                .rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(crate::ui::style::SCRIM_ALPHA));
+            ui.painter().rect_filled(
+                screen_rect,
+                0.0,
+                egui::Color32::from_black_alpha(crate::ui::style::SCRIM_ALPHA),
+            );
             let scrim_resp = ui.allocate_rect(screen_rect, egui::Sense::click());
             if scrim_resp.clicked() {
                 deny_once = true;
@@ -159,9 +161,12 @@ pub(crate) fn show_prompt_modal(
                             );
                             ui.add_space(4.0);
                             ui.label(
-                                egui::RichText::new(format!("\"{}\" is requesting access to:", type_id))
-                                    .size(crate::ui::style::TEXT_CAPTION)
-                                    .color(colors.text_dim),
+                                egui::RichText::new(format!(
+                                    "\"{}\" is requesting access to:",
+                                    type_id
+                                ))
+                                .size(crate::ui::style::TEXT_CAPTION)
+                                .color(colors.text_dim),
                             );
                             ui.add_space(6.0);
                             ui.label(
@@ -173,9 +178,12 @@ pub(crate) fn show_prompt_modal(
                             );
                             ui.add_space(4.0);
                             ui.label(
-                                egui::RichText::new(format!("Workspace: {}", workspace_root.display()))
-                                    .size(crate::ui::style::TEXT_HINT)
-                                    .color(colors.text_dim),
+                                egui::RichText::new(format!(
+                                    "Workspace: {}",
+                                    workspace_root.display()
+                                ))
+                                .size(crate::ui::style::TEXT_HINT)
+                                .color(colors.text_dim),
                             );
                             ui.add_space(crate::ui::style::SPACE_MD);
                             ui.horizontal(|ui| {
@@ -251,9 +259,12 @@ pub(crate) fn show_prompt_modal(
                             );
                             ui.add_space(4.0);
                             ui.label(
-                                egui::RichText::new(format!("\"{}\" needs a secret value for:", type_id))
-                                    .size(crate::ui::style::TEXT_CAPTION)
-                                    .color(colors.text_dim),
+                                egui::RichText::new(format!(
+                                    "\"{}\" needs a secret value for:",
+                                    type_id
+                                ))
+                                .size(crate::ui::style::TEXT_CAPTION)
+                                .color(colors.text_dim),
                             );
                             ui.add_space(6.0);
                             ui.label(
@@ -317,8 +328,18 @@ pub(crate) fn show_prompt_modal(
                                 }
                             });
                             ui.add_space(4.0);
-                            crate::ui::widgets::key_combo_list(ui, &[&["↵"]], Some("submit"), colors);
-                            crate::ui::widgets::key_combo_list(ui, &[&["⎋"]], Some("cancel"), colors);
+                            crate::ui::widgets::key_combo_list(
+                                ui,
+                                &[&["↵"]],
+                                Some("submit"),
+                                colors,
+                            );
+                            crate::ui::widgets::key_combo_list(
+                                ui,
+                                &[&["⎋"]],
+                                Some("cancel"),
+                                colors,
+                            );
                         }
                     }
                 });
@@ -359,7 +380,9 @@ pub(crate) fn show_prompt_modal(
                             }
                         }
                         Err(e) => {
-                            log::warn!("prompts: cannot grant {e}; capability string not recognized");
+                            log::warn!(
+                                "prompts: cannot grant {e}; capability string not recognized"
+                            );
                         }
                     }
                 }
@@ -536,11 +559,7 @@ mod tests {
         let plexi_dir = tmp.path().join(&channel_dir);
         std::fs::create_dir_all(&plexi_dir).unwrap();
         // Write a deterministic workspace ID so tests can assert on account names.
-        std::fs::write(
-            plexi_dir.join("workspace.toml"),
-            "id = \"test-ws-id\"\n",
-        )
-        .unwrap();
+        std::fs::write(plexi_dir.join("workspace.toml"), "id = \"test-ws-id\"\n").unwrap();
         if !secrets_toml.is_empty() {
             std::fs::write(plexi_dir.join("secrets.toml"), secrets_toml).unwrap();
         }

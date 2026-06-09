@@ -48,7 +48,10 @@ fn fetch_url_image(url: &str) -> Result<egui::ColorImage, String> {
     let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
     let rgba = img.to_rgba8();
     let size = [rgba.width() as usize, rgba.height() as usize];
-    Ok(egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw()))
+    Ok(egui::ColorImage::from_rgba_unmultiplied(
+        size,
+        rgba.as_raw(),
+    ))
 }
 
 impl ImageCache {
@@ -78,7 +81,9 @@ impl ImageCache {
             return;
         }
         if !net_http_granted {
-            log::warn!("ImageCache: load_image handle={handle} denied — net.http capability required");
+            log::warn!(
+                "ImageCache: load_image handle={handle} denied — net.http capability required"
+            );
             self.cache.insert(
                 handle.to_string(),
                 CachedImage::Error("net.http capability required".to_string()),
@@ -138,8 +143,10 @@ impl ImageCache {
         }
         if src.contains("..") || Path::new(src).is_absolute() {
             log::warn!("ImageCache: blocked disallowed image path '{src}'");
-            self.cache
-                .insert(src.to_string(), CachedImage::Error("Access denied".to_string()));
+            self.cache.insert(
+                src.to_string(),
+                CachedImage::Error("Access denied".to_string()),
+            );
             return;
         }
         let path: PathBuf = ctx_dir.join(src);
@@ -172,11 +179,8 @@ impl ImageCache {
             let is_handle = self.handle_keys.remove(&key);
             match result {
                 Ok(color_image) => {
-                    let handle = egui_ctx.load_texture(
-                        &key,
-                        color_image,
-                        egui::TextureOptions::LINEAR,
-                    );
+                    let handle =
+                        egui_ctx.load_texture(&key, color_image, egui::TextureOptions::LINEAR);
                     if is_handle {
                         log::info!("ImageCache: handle={key} loaded");
                         completed.push((key.clone(), Ok(())));

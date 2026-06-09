@@ -41,9 +41,9 @@ enum FileBrowserAction {
 }
 
 fn key_pressed_no_repeat(input: &egui::InputState, key: egui::Key) -> bool {
-    input.events.iter().any(|e| {
-        matches!(e, egui::Event::Key { key: k, pressed: true, repeat: false, .. } if *k == key)
-    })
+    input.events.iter().any(
+        |e| matches!(e, egui::Event::Key { key: k, pressed: true, repeat: false, .. } if *k == key),
+    )
 }
 
 // in_search gates all letter keys so that j/k/h/l/s/r/slash fall through
@@ -277,8 +277,13 @@ impl FileBrowserApp {
             return;
         }
         #[cfg(not(test))]
-        match std::process::Command::new(Self::system_opener()).arg(path).status() {
-            Ok(status) if status.success() => log::info!("file_browser: opened '{}'", path.display()),
+        match std::process::Command::new(Self::system_opener())
+            .arg(path)
+            .status()
+        {
+            Ok(status) if status.success() => {
+                log::info!("file_browser: opened '{}'", path.display())
+            }
             Ok(status) => log::error!(
                 "file_browser: system-open failed for '{}': {status}",
                 path.display()
@@ -338,7 +343,9 @@ impl FileBrowserApp {
 
     fn selected_entry(&self) -> Option<&Entry> {
         if self.in_search {
-            self.search_indices.get(self.selected).and_then(|&i| self.entries.get(i))
+            self.search_indices
+                .get(self.selected)
+                .and_then(|&i| self.entries.get(i))
         } else {
             self.entries.get(self.selected)
         }
@@ -469,9 +476,17 @@ impl FileBrowserApp {
         let mut navigate_to: Option<(PathBuf, bool)> = None;
         let should_scroll = self.pending_scroll;
         self.pending_scroll = false;
-        let display_count = if self.in_search { self.search_indices.len() } else { self.entries.len() };
+        let display_count = if self.in_search {
+            self.search_indices.len()
+        } else {
+            self.entries.len()
+        };
         for idx in 0..display_count {
-            let actual_idx = if self.in_search { self.search_indices[idx] } else { idx };
+            let actual_idx = if self.in_search {
+                self.search_indices[idx]
+            } else {
+                idx
+            };
             let entry = self.entries[actual_idx].clone();
             let (rect, resp) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), ROW_HEIGHT),
@@ -717,7 +732,6 @@ impl FileBrowserApp {
                 }
             });
     }
-
 }
 
 impl App for FileBrowserApp {
@@ -773,12 +787,20 @@ impl App for FileBrowserApp {
                 if self.in_search {
                     ui.horizontal(|ui| {
                         ui.colored_label(colors.accent, "/");
-                        ui.colored_label(colors.text_primary,
-                            if self.search_query.is_empty() { "type to filter…" } else { &self.search_query });
+                        ui.colored_label(
+                            colors.text_primary,
+                            if self.search_query.is_empty() {
+                                "type to filter…"
+                            } else {
+                                &self.search_query
+                            },
+                        );
                         let count = self.search_indices.len();
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.colored_label(colors.text_dim,
-                                format!("{count} match{}", if count == 1 { "" } else { "es" }));
+                            ui.colored_label(
+                                colors.text_dim,
+                                format!("{count} match{}", if count == 1 { "" } else { "es" }),
+                            );
                         });
                     });
                 }
@@ -1006,13 +1028,22 @@ mod tests {
     use egui::{Event, Key, Modifiers, RawInput};
 
     fn key_event(key: Key, modifiers: Modifiers) -> Event {
-        Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers }
+        Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
     }
 
     fn run_handle_key(app: &mut FileBrowserApp, events: Vec<Event>) -> bool {
         use crate::app::app_trait::KeyDisposition;
         let ctx = egui::Context::default();
-        let raw = RawInput { events, ..Default::default() };
+        let raw = RawInput {
+            events,
+            ..Default::default()
+        };
         let mut consumed = false;
         let _ = ctx.run(raw, |ctx| {
             ctx.input(|i| {
@@ -1044,14 +1075,20 @@ mod tests {
         assert!(app.entries.is_empty());
         let consumed = run_handle_key(&mut app, vec![key_event(Key::Escape, Modifiers::default())]);
         assert!(consumed, "Escape must be consumed in empty dir");
-        assert!(app.should_close, "Escape must set should_close in empty dir");
+        assert!(
+            app.should_close,
+            "Escape must set should_close in empty dir"
+        );
     }
 
     #[test]
     fn empty_dir_arrow_left_navigates_up() {
         let (mut app, _dir) = make_empty_dir_app();
         let parent = app.cwd.parent().map(|p| p.to_path_buf()).unwrap();
-        let consumed = run_handle_key(&mut app, vec![key_event(Key::ArrowLeft, Modifiers::default())]);
+        let consumed = run_handle_key(
+            &mut app,
+            vec![key_event(Key::ArrowLeft, Modifiers::default())],
+        );
         assert!(consumed, "← must be consumed in empty dir");
         assert_eq!(app.cwd, parent, "← must navigate to parent in empty dir");
     }
@@ -1069,7 +1106,10 @@ mod tests {
     fn empty_dir_backspace_navigates_up() {
         let (mut app, _dir) = make_empty_dir_app();
         let parent = app.cwd.parent().map(|p| p.to_path_buf()).unwrap();
-        let consumed = run_handle_key(&mut app, vec![key_event(Key::Backspace, Modifiers::default())]);
+        let consumed = run_handle_key(
+            &mut app,
+            vec![key_event(Key::Backspace, Modifiers::default())],
+        );
         assert!(consumed);
         assert_eq!(app.cwd, parent);
     }
@@ -1077,7 +1117,10 @@ mod tests {
     #[test]
     fn empty_dir_other_keys_not_consumed() {
         let (mut app, _dir) = make_empty_dir_app();
-        let consumed = run_handle_key(&mut app, vec![key_event(Key::ArrowDown, Modifiers::default())]);
+        let consumed = run_handle_key(
+            &mut app,
+            vec![key_event(Key::ArrowDown, Modifiers::default())],
+        );
         assert!(!consumed, "↓ must not be consumed in empty dir");
     }
 
@@ -1106,7 +1149,10 @@ mod tests {
         app.search_query = "abc".to_string();
         run_handle_key(&mut app, vec![key_event(Key::Escape, Modifiers::default())]);
         assert!(!app.in_search);
-        assert!(!app.should_close, "Escape in search must not close the browser");
+        assert!(
+            !app.should_close,
+            "Escape in search must not close the browser"
+        );
     }
 
     #[test]
@@ -1115,19 +1161,33 @@ mod tests {
         // This test fails at compile time if violated — it's a documentation check.
         // The real enforcement is: grep the source for key_pressed outside classify_key.
         let src = include_str!("mod.rs");
-        let classify_start = src.find("fn classify_key").expect("classify_key must exist");
+        let classify_start = src
+            .find("fn classify_key")
+            .expect("classify_key must exist");
         let handle_key_start = src.find("fn handle_key").expect("handle_key must exist");
         let handle_key_body = &src[handle_key_start..];
         let after_classify = &src[classify_start..handle_key_start];
         // classify_key should contain key_pressed calls (for scroll keys)
-        assert!(after_classify.contains("key_pressed"), "classify_key must contain key_pressed calls");
+        assert!(
+            after_classify.contains("key_pressed"),
+            "classify_key must contain key_pressed calls"
+        );
         // classify_key must also use key_pressed_no_repeat for action/activation keys (Escape, Enter, etc.)
         // scroll keys (ArrowDown, ArrowUp, j, k) still use key_pressed to allow repeating
-        assert!(after_classify.contains("key_pressed_no_repeat"), "classify_key must use key_pressed_no_repeat for action/activation keys");
+        assert!(
+            after_classify.contains("key_pressed_no_repeat"),
+            "classify_key must use key_pressed_no_repeat for action/activation keys"
+        );
         // handle_key body must not contain key_pressed calls
-        let handle_body_end = handle_key_body[10..].find("fn ").map(|i| i + 10).unwrap_or(handle_key_body.len());
+        let handle_body_end = handle_key_body[10..]
+            .find("fn ")
+            .map(|i| i + 10)
+            .unwrap_or(handle_key_body.len());
         let handle_body = &handle_key_body[..handle_body_end];
-        assert!(!handle_body.contains("key_pressed"), "handle_key must not contain key_pressed calls — they belong in classify_key");
+        assert!(
+            !handle_body.contains("key_pressed"),
+            "handle_key must not contain key_pressed calls — they belong in classify_key"
+        );
     }
 
     #[test]
@@ -1177,13 +1237,29 @@ mod tests {
     #[test]
     fn enter_on_file_opens_file_and_browser_stays_open() {
         let (mut app, _dir) = make_file_only_dir_app();
-        assert!(!app.entries.is_empty(), "entries must be populated after new()");
-        assert!(!app.entries[0].is_dir, "first entry must be a file (no dirs in fixture)");
+        assert!(
+            !app.entries.is_empty(),
+            "entries must be populated after new()"
+        );
+        assert!(
+            !app.entries[0].is_dir,
+            "first entry must be a file (no dirs in fixture)"
+        );
         let consumed = run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
         assert!(consumed, "Enter on a file must be consumed");
-        assert_eq!(app.opened_files.len(), 1, "Enter on a file must call open_file");
-        assert!(app.opened_files[0].ends_with("readme.txt"), "must open the selected file");
-        assert!(!app.should_close, "browser must stay open after opening a file");
+        assert_eq!(
+            app.opened_files.len(),
+            1,
+            "Enter on a file must call open_file"
+        );
+        assert!(
+            app.opened_files[0].ends_with("readme.txt"),
+            "must open the selected file"
+        );
+        assert!(
+            !app.should_close,
+            "browser must stay open after opening a file"
+        );
     }
 
     #[test]
@@ -1197,7 +1273,10 @@ mod tests {
     #[test]
     fn arrow_right_on_file_opens_file() {
         let (mut app, _dir) = make_file_only_dir_app();
-        let consumed = run_handle_key(&mut app, vec![key_event(Key::ArrowRight, Modifiers::default())]);
+        let consumed = run_handle_key(
+            &mut app,
+            vec![key_event(Key::ArrowRight, Modifiers::default())],
+        );
         assert!(consumed);
         assert_eq!(app.opened_files.len(), 1, "→ on a file must call open_file");
     }
@@ -1206,10 +1285,16 @@ mod tests {
     fn enter_on_dir_navigates_not_opens() {
         let (mut app, _dir) = make_mixed_dir_app();
         // dirs sort first — selected=0 is the subdir
-        assert!(app.entries[0].is_dir, "first entry must be the subdirectory");
+        assert!(
+            app.entries[0].is_dir,
+            "first entry must be the subdirectory"
+        );
         let consumed = run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
         assert!(consumed);
-        assert!(app.opened_files.is_empty(), "Enter on a dir must navigate, not open_file");
+        assert!(
+            app.opened_files.is_empty(),
+            "Enter on a dir must navigate, not open_file"
+        );
     }
 
     #[test]
@@ -1221,7 +1306,11 @@ mod tests {
         // press Enter to open the (only) filtered result
         let consumed = run_handle_key(&mut app, vec![key_event(Key::Enter, Modifiers::default())]);
         assert!(consumed);
-        assert_eq!(app.opened_files.len(), 1, "Enter in search mode on a file must call open_file");
+        assert_eq!(
+            app.opened_files.len(),
+            1,
+            "Enter in search mode on a file must call open_file"
+        );
         assert!(!app.in_search, "search mode must exit after opening a file");
     }
 
@@ -1235,7 +1324,10 @@ mod tests {
         app.in_search = true;
         app.refilter();
         run_handle_key(&mut app, vec![key_event(Key::H, Modifiers::default())]);
-        assert_eq!(app.cwd, original_cwd, "H in search mode must not navigate to parent");
+        assert_eq!(
+            app.cwd, original_cwd,
+            "H in search mode must not navigate to parent"
+        );
     }
 
     #[test]
@@ -1243,11 +1335,17 @@ mod tests {
         let (mut app, _dir) = make_populated_dir_app();
         app.in_search = true;
         app.refilter();
-        run_handle_key(&mut app, vec![
-            key_event(Key::H, Modifiers::default()),
-            egui::Event::Text("h".to_string()),
-        ]);
-        assert_eq!(app.search_query, "h", "H in search mode must append to query");
+        run_handle_key(
+            &mut app,
+            vec![
+                key_event(Key::H, Modifiers::default()),
+                egui::Event::Text("h".to_string()),
+            ],
+        );
+        assert_eq!(
+            app.search_query, "h",
+            "H in search mode must append to query"
+        );
     }
 
     #[test]
@@ -1256,7 +1354,10 @@ mod tests {
         app.in_search = true;
         app.refilter();
         run_handle_key(&mut app, vec![key_event(Key::L, Modifiers::default())]);
-        assert!(app.opened_files.is_empty(), "L in search mode must not open a file");
+        assert!(
+            app.opened_files.is_empty(),
+            "L in search mode must not open a file"
+        );
     }
 
     #[test]
@@ -1264,11 +1365,17 @@ mod tests {
         let (mut app, _dir) = make_populated_dir_app();
         app.in_search = true;
         app.refilter();
-        run_handle_key(&mut app, vec![
-            key_event(Key::L, Modifiers::default()),
-            egui::Event::Text("l".to_string()),
-        ]);
-        assert_eq!(app.search_query, "l", "L in search mode must append to query");
+        run_handle_key(
+            &mut app,
+            vec![
+                key_event(Key::L, Modifiers::default()),
+                egui::Event::Text("l".to_string()),
+            ],
+        );
+        assert_eq!(
+            app.search_query, "l",
+            "L in search mode must append to query"
+        );
     }
 
     #[test]
@@ -1276,11 +1383,17 @@ mod tests {
         let (mut app, _dir) = make_populated_dir_app();
         app.in_search = true;
         app.refilter();
-        run_handle_key(&mut app, vec![
-            key_event(Key::J, Modifiers::default()),
-            egui::Event::Text("j".to_string()),
-        ]);
-        assert_eq!(app.search_query, "j", "J in search mode must append to query");
+        run_handle_key(
+            &mut app,
+            vec![
+                key_event(Key::J, Modifiers::default()),
+                egui::Event::Text("j".to_string()),
+            ],
+        );
+        assert_eq!(
+            app.search_query, "j",
+            "J in search mode must append to query"
+        );
     }
 
     #[test]
@@ -1288,11 +1401,17 @@ mod tests {
         let (mut app, _dir) = make_populated_dir_app();
         app.in_search = true;
         app.refilter();
-        run_handle_key(&mut app, vec![
-            key_event(Key::K, Modifiers::default()),
-            egui::Event::Text("k".to_string()),
-        ]);
-        assert_eq!(app.search_query, "k", "K in search mode must append to query");
+        run_handle_key(
+            &mut app,
+            vec![
+                key_event(Key::K, Modifiers::default()),
+                egui::Event::Text("k".to_string()),
+            ],
+        );
+        assert_eq!(
+            app.search_query, "k",
+            "K in search mode must append to query"
+        );
     }
 
     #[test]
@@ -1301,12 +1420,21 @@ mod tests {
         let original_sort = app.sort_mode;
         app.in_search = true;
         app.refilter();
-        run_handle_key(&mut app, vec![
-            key_event(Key::S, Modifiers::default()),
-            egui::Event::Text("s".to_string()),
-        ]);
-        assert_eq!(app.sort_mode, original_sort, "S in search mode must not toggle sort");
-        assert_eq!(app.search_query, "s", "S in search mode must append to query");
+        run_handle_key(
+            &mut app,
+            vec![
+                key_event(Key::S, Modifiers::default()),
+                egui::Event::Text("s".to_string()),
+            ],
+        );
+        assert_eq!(
+            app.sort_mode, original_sort,
+            "S in search mode must not toggle sort"
+        );
+        assert_eq!(
+            app.search_query, "s",
+            "S in search mode must append to query"
+        );
     }
 
     #[test]
@@ -1314,11 +1442,17 @@ mod tests {
         let (mut app, _dir) = make_populated_dir_app();
         app.in_search = true;
         app.refilter();
-        run_handle_key(&mut app, vec![
-            key_event(Key::R, Modifiers::default()),
-            egui::Event::Text("r".to_string()),
-        ]);
-        assert_eq!(app.search_query, "r", "R in search mode must append to query");
+        run_handle_key(
+            &mut app,
+            vec![
+                key_event(Key::R, Modifiers::default()),
+                egui::Event::Text("r".to_string()),
+            ],
+        );
+        assert_eq!(
+            app.search_query, "r",
+            "R in search mode must append to query"
+        );
     }
 
     #[test]
@@ -1329,10 +1463,20 @@ mod tests {
         app.refresh();
         app.in_search = true;
         app.refilter();
-        assert!(app.search_indices.len() >= 2, "need at least 2 entries for this test");
+        assert!(
+            app.search_indices.len() >= 2,
+            "need at least 2 entries for this test"
+        );
         let before = app.selected;
-        run_handle_key(&mut app, vec![key_event(Key::ArrowDown, Modifiers::default())]);
-        assert_eq!(app.selected, before + 1, "↓ must still move selection in search mode");
+        run_handle_key(
+            &mut app,
+            vec![key_event(Key::ArrowDown, Modifiers::default())],
+        );
+        assert_eq!(
+            app.selected,
+            before + 1,
+            "↓ must still move selection in search mode"
+        );
         assert_eq!(app.search_query, "", "↓ must not append to query");
     }
 }

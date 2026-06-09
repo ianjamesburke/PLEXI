@@ -242,7 +242,6 @@ impl LifecycleTracker {
         }
         self.set_state(LifecycleState::Hung)
     }
-
 }
 
 #[cfg(test)]

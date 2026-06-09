@@ -46,9 +46,11 @@ impl PlexiApp {
                     new_chars.extend(chars[hi..].iter().copied());
                     self.quick_note_text = new_chars.into_iter().collect();
                     let new_pos = lo + pasted.chars().count();
-                    state.cursor.set_char_range(Some(egui::text::CCursorRange::one(
-                        egui::text::CCursor::new(new_pos),
-                    )));
+                    state
+                        .cursor
+                        .set_char_range(Some(egui::text::CCursorRange::one(
+                            egui::text::CCursor::new(new_pos),
+                        )));
                     state.store(ctx, te_id);
                     true
                 } else {
@@ -94,7 +96,8 @@ impl PlexiApp {
                     0.0,
                     egui::Color32::from_black_alpha(style::SCRIM_ALPHA),
                 );
-                ui.allocate_rect(screen_rect, egui::Sense::click()).clicked()
+                ui.allocate_rect(screen_rect, egui::Sense::click())
+                    .clicked()
             })
             .inner;
         if scrim_clicked {
@@ -164,7 +167,10 @@ impl PlexiApp {
         use crate::ui::widgets;
         use egui::{Align2, RichText, Vec2};
 
-        let dest_count = self.config.quick_note.as_ref()
+        let dest_count = self
+            .config
+            .quick_note
+            .as_ref()
             .map(|qn| qn.destinations.len())
             .unwrap_or(0);
         let total = 1 + dest_count;
@@ -218,16 +224,24 @@ impl PlexiApp {
                 }
                 return;
             }
-            let dest = self.config.quick_note.as_ref()
+            let dest = self
+                .config
+                .quick_note
+                .as_ref()
                 .and_then(|qn| qn.destinations.get(cursor - 1).cloned());
             if let Some(dest) = dest {
-                log::info!("QuickNote: destination selected via Enter: cursor={cursor} key={}", dest.key);
+                log::info!(
+                    "QuickNote: destination selected via Enter: cursor={cursor} key={}",
+                    dest.key
+                );
                 if dest.options.is_some() || dest.children_cmd.is_some() {
                     let key = dest.key;
                     self.quick_note_sub_cursor = 0;
                     self.quick_note_children_cache.clear();
                     self.quick_note_children_rx = None;
-                    self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(vec![key]));
+                    self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(vec![
+                        key,
+                    ]));
                     log::info!("QuickNote: submenu opened: path=[{key}]");
                     self.draw_quick_note_menu(ctx, &[key]);
                 } else {
@@ -252,7 +266,10 @@ impl PlexiApp {
         if enter_sub {
             let cursor = self.quick_note_dest_cursor;
             if cursor > 0 {
-                let dest = self.config.quick_note.as_ref()
+                let dest = self
+                    .config
+                    .quick_note
+                    .as_ref()
                     .and_then(|qn| qn.destinations.get(cursor - 1).cloned());
                 if let Some(dest) = dest {
                     if dest.options.is_some() || dest.children_cmd.is_some() {
@@ -260,7 +277,9 @@ impl PlexiApp {
                         self.quick_note_sub_cursor = 0;
                         self.quick_note_children_cache.clear();
                         self.quick_note_children_rx = None;
-                        self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(vec![key]));
+                        self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(
+                            vec![key],
+                        ));
                         log::info!("QuickNote: submenu opened via L: path=[{key}]");
                         self.draw_quick_note_menu(ctx, &[key]);
                         return;
@@ -270,9 +289,7 @@ impl PlexiApp {
         }
 
         // N → open config file to add a new destination.
-        let add_dest = ctx.input_mut(|i| {
-            i.consume_key(egui::Modifiers::NONE, egui::Key::N)
-        });
+        let add_dest = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::N));
         if add_dest {
             log::info!("QuickNote: opening config to add destination");
             crate::config::open_config_file();
@@ -293,7 +310,10 @@ impl PlexiApp {
                 }
                 return;
             }
-            let dest = self.config.quick_note.as_ref()
+            let dest = self
+                .config
+                .quick_note
+                .as_ref()
                 .and_then(|qn| qn.destinations.iter().find(|d| d.key == key).cloned());
             if let Some(dest) = dest {
                 log::info!("QuickNote: destination selected: key={key}");
@@ -301,7 +321,9 @@ impl PlexiApp {
                     self.quick_note_sub_cursor = 0;
                     self.quick_note_children_cache.clear();
                     self.quick_note_children_rx = None;
-                    self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(vec![key]));
+                    self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(vec![
+                        key,
+                    ]));
                     log::info!("QuickNote: submenu opened: path=[{key}]");
                     self.draw_quick_note_menu(ctx, &[key]);
                 } else {
@@ -334,7 +356,10 @@ impl PlexiApp {
 
         let modal_w = (screen_rect.width() * 0.6).min(672.0).max(408.0);
         let cursor = self.quick_note_dest_cursor;
-        let destinations = self.config.quick_note.as_ref()
+        let destinations = self
+            .config
+            .quick_note
+            .as_ref()
             .map(|qn| qn.destinations.as_slice())
             .unwrap_or(&[]);
         egui::Area::new(egui::Id::new("quick_note_dest_modal"))
@@ -352,7 +377,8 @@ impl PlexiApp {
                         // Note preview — up to 4 lines, each truncated at 80 chars.
                         let preview = {
                             let t = self.quick_note_text.trim();
-                            let mut lines: Vec<String> = t.lines()
+                            let mut lines: Vec<String> = t
+                                .lines()
                                 .take(4)
                                 .map(|line| {
                                     if let Some((idx, _)) = line.char_indices().nth(80) {
@@ -389,13 +415,17 @@ impl PlexiApp {
                                 .corner_radius(egui::CornerRadius::same(4))
                                 .inner_margin(egui::Margin::symmetric(4, 2))
                         } else {
-                            egui::Frame::new()
-                                .inner_margin(egui::Margin::symmetric(4, 2))
+                            egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2))
                         };
                         row0_frame.show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = style::SPACE_SM;
-                                widgets::key_chip(ui, "0", &self.colors, egui::FontId::monospace(style::TEXT_CAPTION));
+                                widgets::key_chip(
+                                    ui,
+                                    "0",
+                                    &self.colors,
+                                    egui::FontId::monospace(style::TEXT_CAPTION),
+                                );
                                 ui.label(
                                     RichText::new("Backlog (global)")
                                         .color(self.colors.text_dim)
@@ -419,13 +449,17 @@ impl PlexiApp {
                                     .corner_radius(egui::CornerRadius::same(4))
                                     .inner_margin(egui::Margin::symmetric(4, 2))
                             } else {
-                                egui::Frame::new()
-                                    .inner_margin(egui::Margin::symmetric(4, 2))
+                                egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2))
                             };
                             row_frame.show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = style::SPACE_SM;
-                                    widgets::key_chip(ui, &dest.key.to_string(), &self.colors, egui::FontId::monospace(style::TEXT_CAPTION));
+                                    widgets::key_chip(
+                                        ui,
+                                        &dest.key.to_string(),
+                                        &self.colors,
+                                        egui::FontId::monospace(style::TEXT_CAPTION),
+                                    );
                                     ui.label(
                                         RichText::new(&label)
                                             .color(self.colors.text_dim)
@@ -438,10 +472,12 @@ impl PlexiApp {
 
                         ui.add_space(style::SPACE_XL);
                         ui.label(
-                            RichText::new("↑↓/jk navigate  ·  Enter select  ·  n add dest  ·  H/Esc back")
-                                .color(self.colors.text_dim.linear_multiply(0.4))
-                                .size(style::TEXT_HINT)
-                                .family(egui::FontFamily::Monospace),
+                            RichText::new(
+                                "↑↓/jk navigate  ·  Enter select  ·  n add dest  ·  H/Esc back",
+                            )
+                            .color(self.colors.text_dim.linear_multiply(0.4))
+                            .size(style::TEXT_HINT)
+                            .family(egui::FontFamily::Monospace),
                         );
                     });
             });
@@ -490,17 +526,24 @@ impl PlexiApp {
                         Ok(Ok(children)) => {
                             log::info!(
                                 "QuickNote: children_cmd result received for path={:?} count={}",
-                                node_path, children.len()
+                                node_path,
+                                children.len()
                             );
                             received = Some((node_path.clone(), Ok(children)));
                         }
                         Ok(Err(e)) => {
-                            log::error!("QuickNote: children_cmd failed for path={:?}: {e}", node_path);
+                            log::error!(
+                                "QuickNote: children_cmd failed for path={:?}: {e}",
+                                node_path
+                            );
                             received = Some((node_path.clone(), Err(e)));
                         }
                         Err(std::sync::mpsc::TryRecvError::Empty) => {}
                         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            log::error!("QuickNote: children_cmd sender dropped for path={:?}", node_path);
+                            log::error!(
+                                "QuickNote: children_cmd sender dropped for path={:?}",
+                                node_path
+                            );
                             received = Some((node_path.clone(), Err("sender dropped".to_string())));
                         }
                     }
@@ -509,8 +552,12 @@ impl PlexiApp {
             if let Some((path, result)) = received {
                 self.quick_note_children_rx = None;
                 match result {
-                    Ok(children) => { self.quick_note_children_cache.insert(path, children); }
-                    Err(_) => { self.quick_note_children_cache.insert(path, vec![]); }
+                    Ok(children) => {
+                        self.quick_note_children_cache.insert(path, children);
+                    }
+                    Err(_) => {
+                        self.quick_note_children_cache.insert(path, vec![]);
+                    }
                 }
                 self.quick_note_sub_cursor = 0;
             }
@@ -526,7 +573,11 @@ impl PlexiApp {
         };
         let loading = static_options.is_none()
             && dynamic_children.is_none()
-            && self.quick_note_children_rx.as_ref().map(|(p, _)| p == &node_path).unwrap_or(false);
+            && self
+                .quick_note_children_rx
+                .as_ref()
+                .map(|(p, _)| p == &node_path)
+                .unwrap_or(false);
 
         // Kick off children_cmd loading if needed and not already in flight.
         if static_options.is_none() && dynamic_children.is_none() && !loading {
@@ -555,7 +606,10 @@ impl PlexiApp {
                             });
                         let _ = tx.send(result);
                     });
-                    log::info!("QuickNote: children_cmd spawned for path={:?}", path_for_log);
+                    log::info!(
+                        "QuickNote: children_cmd spawned for path={:?}",
+                        path_for_log
+                    );
                     self.quick_note_children_rx = Some((node_path, rx));
                     ctx.request_repaint_after(std::time::Duration::from_millis(100));
                 }
@@ -637,7 +691,9 @@ impl PlexiApp {
                 if child.options.is_some() || child.children_cmd.is_some() {
                     let mut new_path = key_path.to_vec();
                     new_path.push(child.key);
-                    self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(new_path.clone()));
+                    self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(
+                        new_path.clone(),
+                    ));
                     self.quick_note_sub_cursor = 0;
                     log::info!("QuickNote: menu enter via L: path={new_path:?}");
                     self.draw_quick_note_menu(ctx, &new_path);
@@ -647,9 +703,7 @@ impl PlexiApp {
         }
 
         // N → open config file to add a new destination.
-        let add_dest = ctx.input_mut(|i| {
-            i.consume_key(egui::Modifiers::NONE, egui::Key::N)
-        });
+        let add_dest = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::N));
         if add_dest {
             log::info!("QuickNote: opening config to add destination (from submenu)");
             crate::config::open_config_file();
@@ -672,7 +726,11 @@ impl PlexiApp {
             .fixed_pos(screen_rect.min)
             .order(egui::Order::Middle)
             .show(ctx, |ui| {
-                ui.painter().rect_filled(screen_rect, 0.0, egui::Color32::from_black_alpha(style::SCRIM_ALPHA));
+                ui.painter().rect_filled(
+                    screen_rect,
+                    0.0,
+                    egui::Color32::from_black_alpha(style::SCRIM_ALPHA),
+                );
             });
 
         let modal_w = (screen_rect.width() * 0.6).min(672.0).max(408.0);
@@ -765,7 +823,9 @@ impl PlexiApp {
             // Submenu — navigate deeper.
             let mut new_path = parent_path.to_vec();
             new_path.push(child.key);
-            self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(new_path.clone()));
+            self.push_focus_layer(crate::app::FocusLayer::QuickNoteSubDestination(
+                new_path.clone(),
+            ));
             self.quick_note_sub_cursor = 0;
             log::info!("QuickNote: menu enter: path={new_path:?}");
             self.draw_quick_note_menu(ctx, &new_path);
@@ -774,7 +834,9 @@ impl PlexiApp {
             let text = self.quick_note_text.clone();
             log::info!(
                 "QuickNote: menu commit: path={:?} key={} label='{}'",
-                parent_path, child.key, child.label
+                parent_path,
+                child.key,
+                child.label
             );
             if self.commit_quick_note(&text, child) {
                 // Pop all submenu layers + destination + compose layers.
@@ -799,7 +861,9 @@ impl PlexiApp {
     ) -> crate::app::app_trait::KeyDisposition {
         // Consume Cmd+0 so poll_actions doesn't fire OpenQuickNote while the modal
         // is already open — that would reset mid-session note state.
-        ctx.input_mut(|i| { i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0); });
+        ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0);
+        });
         crate::app::app_trait::KeyDisposition::Consumed
     }
 
@@ -807,7 +871,9 @@ impl PlexiApp {
         &mut self,
         ctx: &egui::Context,
     ) -> crate::app::app_trait::KeyDisposition {
-        ctx.input_mut(|i| { i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0); });
+        ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0);
+        });
         crate::app::app_trait::KeyDisposition::Consumed
     }
 
@@ -815,16 +881,21 @@ impl PlexiApp {
         &mut self,
         ctx: &egui::Context,
     ) -> crate::app::app_trait::KeyDisposition {
-        ctx.input_mut(|i| { i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0); });
+        ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0);
+        });
         crate::app::app_trait::KeyDisposition::Consumed
     }
 }
 
 fn parse_children_cmd_output(stdout: &str) -> Vec<crate::config::QuickNoteNode> {
-    stdout.lines()
+    stdout
+        .lines()
         .filter_map(|line| {
             let line = line.trim();
-            if line.is_empty() { return None; }
+            if line.is_empty() {
+                return None;
+            }
             let (key_str, rest) = line.split_once('|')?;
             let (label, command) = rest.split_once('|')?;
             let key: u8 = key_str.trim().parse().ok()?;

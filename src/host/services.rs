@@ -26,7 +26,10 @@ impl FileEventSink {
     pub fn new(path: std::path::PathBuf) -> Self {
         if let Some(parent) = path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                log::warn!("FileEventSink: create_dir_all({}) failed: {e}", parent.display());
+                log::warn!(
+                    "FileEventSink: create_dir_all({}) failed: {e}",
+                    parent.display()
+                );
             }
         }
         let writer = match std::fs::OpenOptions::new()
@@ -61,7 +64,9 @@ impl FileEventSink {
 impl EventSink for FileEventSink {
     fn emit(&mut self, effect: &HostEffect) {
         use std::io::Write;
-        let Some(writer) = self.writer.as_mut() else { return };
+        let Some(writer) = self.writer.as_mut() else {
+            return;
+        };
         match serde_json::to_string(effect) {
             Ok(mut line) => {
                 line.push('\n');
@@ -128,7 +133,9 @@ impl UreqNetService {
         let mut map: HashMap<String, Vec<String>> = HashMap::new();
         for name in resp.headers_names() {
             if let Some(value) = resp.header(&name) {
-                map.entry(name.to_lowercase()).or_default().push(value.to_string());
+                map.entry(name.to_lowercase())
+                    .or_default()
+                    .push(value.to_string());
             }
         }
         map
@@ -177,9 +184,7 @@ impl NetService for UreqNetService {
                 }
             }
             Err(ureq::Error::Transport(t)) => {
-                log::warn!(
-                    "UreqNetService: transport error for {method} {url}: {t}"
-                );
+                log::warn!("UreqNetService: transport error for {method} {url}: {t}");
                 HttpResponse {
                     status: 0,
                     body: String::new(),
@@ -207,8 +212,6 @@ impl HostServices {
             event_sink: Box::new(FileEventSink::new(effects_path)),
         }
     }
-
-
 }
 
 impl Default for HostServices {

@@ -8,8 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use std::fmt;
 use std::convert::TryFrom;
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 // ── Capability enum ───────────────────────────────────────────────────────────
@@ -263,7 +263,9 @@ impl AppPermissions {
 
 /// Parse a list of capability strings, returning an error on the first unknown
 /// entry. Manifest loaders should call this before installing an app.
-pub fn parse_capability_strings(strings: &[String]) -> Result<HashSet<Capability>, UnknownCapability> {
+pub fn parse_capability_strings(
+    strings: &[String],
+) -> Result<HashSet<Capability>, UnknownCapability> {
     strings
         .iter()
         .map(|s| Capability::try_from(s.as_str()))
@@ -321,7 +323,10 @@ pub struct PermissionStore {
 
 impl Default for PermissionStore {
     fn default() -> Self {
-        Self { data: PermissionStoreData::default(), path: PathBuf::new() }
+        Self {
+            data: PermissionStoreData::default(),
+            path: PathBuf::new(),
+        }
     }
 }
 
@@ -345,15 +350,31 @@ impl PermissionStore {
             // key format: "app_id::workspace_path::cap_str"
             // Use rsplitn to correctly handle workspace paths that contain "::".
             let mut right = key.rsplitn(2, "::");
-            let cap_str = match right.next() { Some(s) => s, None => continue };
-            let left = match right.next() { Some(s) => s, None => continue };
+            let cap_str = match right.next() {
+                Some(s) => s,
+                None => continue,
+            };
+            let left = match right.next() {
+                Some(s) => s,
+                None => continue,
+            };
             let mut left_parts = left.splitn(2, "::");
-            let app_id = match left_parts.next() { Some(s) => s, None => continue };
-            let workspace_raw = match left_parts.next() { Some(s) => s, None => continue };
+            let app_id = match left_parts.next() {
+                Some(s) => s,
+                None => continue,
+            };
+            let workspace_raw = match left_parts.next() {
+                Some(s) => s,
+                None => continue,
+            };
 
             let raw_path = Path::new(workspace_raw);
-            let Ok(canonical) = raw_path.canonicalize() else { continue };
-            if canonical.as_os_str() == raw_path.as_os_str() { continue; }
+            let Ok(canonical) = raw_path.canonicalize() else {
+                continue;
+            };
+            if canonical.as_os_str() == raw_path.as_os_str() {
+                continue;
+            }
 
             let new_key = format!("{}::{}::{}", app_id, canonical.display(), cap_str);
             if new_key != *key {
@@ -376,7 +397,10 @@ impl PermissionStore {
         let raw = match std::fs::read_to_string(&path) {
             Err(_) => {
                 // File absent — first run or already cleaned up.
-                return Self { data: PermissionStoreData::default(), path };
+                return Self {
+                    data: PermissionStoreData::default(),
+                    path,
+                };
             }
             Ok(s) => s,
         };
@@ -414,19 +438,38 @@ impl PermissionStore {
                         backup.display()
                     );
                 }
-                Self { data: PermissionStoreData::default(), path }
+                Self {
+                    data: PermissionStoreData::default(),
+                    path,
+                }
             }
         }
     }
 
     /// Get the stored state for a (app, workspace, capability) triple.
-    pub fn get(&self, app_id: &str, workspace_root: &Path, cap: Capability) -> Option<PermissionState> {
-        self.data.entries.get(&Self::entry_key(app_id, workspace_root, cap)).copied()
+    pub fn get(
+        &self,
+        app_id: &str,
+        workspace_root: &Path,
+        cap: Capability,
+    ) -> Option<PermissionState> {
+        self.data
+            .entries
+            .get(&Self::entry_key(app_id, workspace_root, cap))
+            .copied()
     }
 
     /// Set the state for a (app, workspace, capability) triple.
-    pub fn set(&mut self, app_id: &str, workspace_root: &Path, cap: Capability, state: PermissionState) {
-        self.data.entries.insert(Self::entry_key(app_id, workspace_root, cap), state);
+    pub fn set(
+        &mut self,
+        app_id: &str,
+        workspace_root: &Path,
+        cap: Capability,
+        state: PermissionState,
+    ) {
+        self.data
+            .entries
+            .insert(Self::entry_key(app_id, workspace_root, cap), state);
     }
 
     /// Atomically write to disk (temp file + rename).
@@ -437,8 +480,13 @@ impl PermissionStore {
         match toml::to_string_pretty(&self.data) {
             Ok(s) => {
                 let tmp = self.path.with_extension("toml.tmp");
-                if let Err(e) = std::fs::write(&tmp, &s).and_then(|_| std::fs::rename(&tmp, &self.path)) {
-                    log::error!("permission_store: failed to save {}: {e}", self.path.display());
+                if let Err(e) =
+                    std::fs::write(&tmp, &s).and_then(|_| std::fs::rename(&tmp, &self.path))
+                {
+                    log::error!(
+                        "permission_store: failed to save {}: {e}",
+                        self.path.display()
+                    );
                 } else {
                     log::info!("permission_store: saved {}", self.path.display());
                 }
@@ -467,18 +515,25 @@ impl PermissionStore {
         // Apply stored state to declared capabilities
         for &cap in declared {
             match self.get(app_id, workspace_root, cap) {
-                Some(PermissionState::Yellow) => {}  // will prompt on use
-                Some(PermissionState::Red) => { blocked.insert(cap); }
-                Some(PermissionState::Green) => { capabilities.insert(cap); }
+                Some(PermissionState::Yellow) => {} // will prompt on use
+                Some(PermissionState::Red) => {
+                    blocked.insert(cap);
+                }
+                Some(PermissionState::Green) => {
+                    capabilities.insert(cap);
+                }
                 None if cap.is_sensitive() => {
                     // Sensitive caps require explicit user consent on first launch.
                     // The app must send CapabilityRequest to trigger the modal.
                     log::info!(
                         "permission_store: '{}' withheld for '{}' — first-run consent required",
-                        cap, app_id
+                        cap,
+                        app_id
                     );
                 }
-                None => { capabilities.insert(cap); }
+                None => {
+                    capabilities.insert(cap);
+                }
             }
         }
 
@@ -487,16 +542,26 @@ impl PermissionStore {
         let canonical_root = Self::canonical_workspace(workspace_root);
         let prefix = format!("{}::{}::", app_id, canonical_root.display());
         for (key, &state) in &self.data.entries {
-            if !key.starts_with(&prefix) { continue; }
+            if !key.starts_with(&prefix) {
+                continue;
+            }
             let cap_str = match key.split("::").nth(2) {
                 Some(s) => s,
                 None => continue,
             };
-            let Ok(cap) = Capability::try_from(cap_str) else { continue };
-            if declared.contains(&cap) { continue; } // already handled above
+            let Ok(cap) = Capability::try_from(cap_str) else {
+                continue;
+            };
+            if declared.contains(&cap) {
+                continue;
+            } // already handled above
             match state {
-                PermissionState::Green => { capabilities.insert(cap); }
-                PermissionState::Red => { blocked.insert(cap); }
+                PermissionState::Green => {
+                    capabilities.insert(cap);
+                }
+                PermissionState::Red => {
+                    blocked.insert(cap);
+                }
                 PermissionState::Yellow => {}
             }
         }
@@ -532,14 +597,12 @@ mod tests {
     #[test]
     fn terminal_bindings_capability_recognized() {
         // v3.5 #78. The single capability that gates all 5 binding primitives.
-        let parsed = Capability::try_from("terminal.bindings")
-            .expect("terminal.bindings must parse");
+        let parsed =
+            Capability::try_from("terminal.bindings").expect("terminal.bindings must parse");
         assert_eq!(parsed, Capability::TerminalBindings);
         assert_eq!(parsed.as_str(), "terminal.bindings");
 
-        let perms = AppPermissions::from_capability_strings(&[
-            "terminal.bindings".to_string(),
-        ]);
+        let perms = AppPermissions::from_capability_strings(&["terminal.bindings".to_string()]);
         assert!(
             perms.capabilities.contains(&Capability::TerminalBindings),
             "terminal.bindings must end up in granted capabilities"
@@ -577,9 +640,15 @@ mod tests {
             check(&perms, Capability::PanesSpawn),
             PermissionCheck::Allowed
         ));
-        match check(&AppPermissions::from_capability_strings(&[]), Capability::PanesSpawn) {
+        match check(
+            &AppPermissions::from_capability_strings(&[]),
+            Capability::PanesSpawn,
+        ) {
             PermissionCheck::Denied(reason) => {
-                assert!(reason.contains("panes.spawn"), "denial must name capability: {reason}");
+                assert!(
+                    reason.contains("panes.spawn"),
+                    "denial must name capability: {reason}"
+                );
             }
             PermissionCheck::Allowed => panic!("must be denied without declaration"),
         }
@@ -590,7 +659,10 @@ mod tests {
         let perms = AppPermissions::from_capability_strings(&[]);
         match check(&perms, Capability::AiQuery) {
             PermissionCheck::Denied(reason) => {
-                assert!(reason.contains("ai.query"), "denial reason must name capability: {reason}");
+                assert!(
+                    reason.contains("ai.query"),
+                    "denial reason must name capability: {reason}"
+                );
             }
             PermissionCheck::Allowed => panic!("must be denied without manifest declaration"),
         }
@@ -601,13 +673,29 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = std::path::Path::new("/test/project");
         let mut store = PermissionStore::load_or_default(tmp.path());
-        store.set("my-app", workspace, Capability::FsRead, PermissionState::Green);
-        store.set("my-app", workspace, Capability::NetHttp, PermissionState::Red);
+        store.set(
+            "my-app",
+            workspace,
+            Capability::FsRead,
+            PermissionState::Green,
+        );
+        store.set(
+            "my-app",
+            workspace,
+            Capability::NetHttp,
+            PermissionState::Red,
+        );
         store.save();
 
         let reloaded = PermissionStore::load_or_default(tmp.path());
-        assert_eq!(reloaded.get("my-app", workspace, Capability::FsRead), Some(PermissionState::Green));
-        assert_eq!(reloaded.get("my-app", workspace, Capability::NetHttp), Some(PermissionState::Red));
+        assert_eq!(
+            reloaded.get("my-app", workspace, Capability::FsRead),
+            Some(PermissionState::Green)
+        );
+        assert_eq!(
+            reloaded.get("my-app", workspace, Capability::NetHttp),
+            Some(PermissionState::Red)
+        );
         assert_eq!(reloaded.get("my-app", workspace, Capability::FsWrite), None);
     }
 
@@ -616,10 +704,21 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = std::path::Path::new("/test/project");
         let mut store = PermissionStore::load_or_default(tmp.path());
-        store.set("my-app", workspace, Capability::NetHttp, PermissionState::Red);
-        store.set("my-app", workspace, Capability::FsWrite, PermissionState::Yellow);
+        store.set(
+            "my-app",
+            workspace,
+            Capability::NetHttp,
+            PermissionState::Red,
+        );
+        store.set(
+            "my-app",
+            workspace,
+            Capability::FsWrite,
+            PermissionState::Yellow,
+        );
 
-        let declared: HashSet<Capability> = [Capability::FsRead, Capability::NetHttp, Capability::FsWrite].into();
+        let declared: HashSet<Capability> =
+            [Capability::FsRead, Capability::NetHttp, Capability::FsWrite].into();
         let (caps, blocked) = store.build_permission_sets("my-app", workspace, &declared);
 
         // FsRead: not stored → granted
@@ -675,11 +774,20 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = std::path::Path::new("/test/project");
         let mut store = PermissionStore::load_or_default(tmp.path());
-        store.set("my-app", workspace, Capability::PanesSpawn, PermissionState::Green);
-        store.set("my-app", workspace, Capability::AiQuery, PermissionState::Green);
+        store.set(
+            "my-app",
+            workspace,
+            Capability::PanesSpawn,
+            PermissionState::Green,
+        );
+        store.set(
+            "my-app",
+            workspace,
+            Capability::AiQuery,
+            PermissionState::Green,
+        );
 
-        let declared: HashSet<Capability> =
-            [Capability::PanesSpawn, Capability::AiQuery].into();
+        let declared: HashSet<Capability> = [Capability::PanesSpawn, Capability::AiQuery].into();
         let (caps, _blocked) = store.build_permission_sets("my-app", workspace, &declared);
 
         assert!(caps.contains(&Capability::PanesSpawn));
@@ -737,16 +845,28 @@ mod tests {
         let store = PermissionStore::load_or_default(tmp.path());
 
         // Corrupt file must be renamed away — original path gone.
-        assert!(!perm_path.exists(), "corrupt permissions.toml must be renamed, not left in place");
+        assert!(
+            !perm_path.exists(),
+            "corrupt permissions.toml must be renamed, not left in place"
+        );
 
         // A .corrupt-* backup must exist.
-        let backup_exists = std::fs::read_dir(tmp.path())
-            .unwrap()
-            .any(|e| e.unwrap().file_name().to_string_lossy().starts_with("permissions.toml.corrupt-"));
-        assert!(backup_exists, "a .corrupt-<timestamp> backup must be created");
+        let backup_exists = std::fs::read_dir(tmp.path()).unwrap().any(|e| {
+            e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("permissions.toml.corrupt-")
+        });
+        assert!(
+            backup_exists,
+            "a .corrupt-<timestamp> backup must be created"
+        );
 
         // Returned store must be empty.
-        assert!(store.data.entries.is_empty(), "store must be empty after corrupt-file recovery");
+        assert!(
+            store.data.entries.is_empty(),
+            "store must be empty after corrupt-file recovery"
+        );
     }
 
     #[test]
@@ -777,7 +897,12 @@ mod tests {
 
         let mut store = PermissionStore::load_or_default(config_tmp.path());
         // Store via raw path.
-        store.set("my-app", &raw_path, Capability::FsRead, PermissionState::Green);
+        store.set(
+            "my-app",
+            &raw_path,
+            Capability::FsRead,
+            PermissionState::Green,
+        );
         // Retrieve via canonical path — must match.
         assert_eq!(
             store.get("my-app", &canonical, Capability::FsRead),
@@ -834,7 +959,12 @@ mod tests {
 
         // Grant fs.read for app in /work/project-extra.
         let mut store = PermissionStore::load_or_default(tmp.path());
-        store.set("my-app", workspace_extra, Capability::FsRead, PermissionState::Green);
+        store.set(
+            "my-app",
+            workspace_extra,
+            Capability::FsRead,
+            PermissionState::Green,
+        );
         store.save();
 
         let reloaded = PermissionStore::load_or_default(tmp.path());

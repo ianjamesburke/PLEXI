@@ -47,10 +47,7 @@ impl Anchor {
         // profile dir, and ~/  would cause the AppRegistry to load stable
         // apps instead of the active channel's apps (issue #1064).
         if is_profile_dir(path) {
-            log::info!(
-                "anchor::detect: skipping profile dir at {}",
-                path.display()
-            );
+            log::info!("anchor::detect: skipping profile dir at {}", path.display());
             return None;
         }
 
@@ -59,20 +56,17 @@ impl Anchor {
         // Try to read workspace.toml for ID and context defaults.
         // Reuse WorkspaceConfig from workspace_secrets to avoid duplicate
         // parsing structs and dead-code warnings.
-        let context_defaults =
-            match crate::workspace::secrets::WorkspaceConfig::load(path) {
-                Ok(Some(cfg)) => {
-                    cfg.context.map(|c| ContextDefaults {
-                        name: c.name,
-                        description: c.description,
-                    })
-                }
-                Ok(None) => None,
-                Err(e) => {
-                    log::warn!("anchor: workspace.toml parse error: {e}");
-                    None
-                }
-            };
+        let context_defaults = match crate::workspace::secrets::WorkspaceConfig::load(path) {
+            Ok(Some(cfg)) => cfg.context.map(|c| ContextDefaults {
+                name: c.name,
+                description: c.description,
+            }),
+            Ok(None) => None,
+            Err(e) => {
+                log::warn!("anchor: workspace.toml parse error: {e}");
+                None
+            }
+        };
 
         if let Some(ref defaults) = context_defaults {
             log::info!(
@@ -109,7 +103,6 @@ fn is_profile_dir(path: &Path) -> bool {
     false
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,7 +136,10 @@ mod tests {
         let anchor = Anchor::detect(dir.path()).unwrap();
         let defaults = anchor.context_defaults.unwrap();
         assert_eq!(defaults.name.as_deref(), Some("My Project"));
-        assert_eq!(defaults.description.as_deref(), Some("The main dev workspace"));
+        assert_eq!(
+            defaults.description.as_deref(),
+            Some("The main dev workspace")
+        );
     }
 
     #[test]
@@ -155,7 +151,8 @@ mod tests {
         std::fs::write(
             dot_plexi.join("workspace.toml"),
             "id = \"abc\"\n\n[context]\nname = \"Just Name\"\n",
-        ).unwrap();
+        )
+        .unwrap();
         let anchor = Anchor::detect(dir.path()).unwrap();
         let defaults = anchor.context_defaults.unwrap();
         assert_eq!(defaults.name.as_deref(), Some("Just Name"));

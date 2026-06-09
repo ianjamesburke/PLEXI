@@ -234,8 +234,8 @@ checksum = "sha256:deadbeef"
 
     #[test]
     fn source_spec_unknown_scheme_errors() {
-        let err = parse_source_spec("ftp://example.com/repo")
-            .expect_err("unknown scheme must error");
+        let err =
+            parse_source_spec("ftp://example.com/repo").expect_err("unknown scheme must error");
         assert!(
             err.contains("unknown source scheme"),
             "expected unknown-scheme error, got: {err}"
@@ -245,10 +245,7 @@ checksum = "sha256:deadbeef"
     #[test]
     fn source_spec_malformed_github_errors() {
         let err = parse_source_spec("github:no-slash").expect_err("malformed github must error");
-        assert!(
-            err.contains("must be 'github:owner/repo'"),
-            "got: {err}"
-        );
+        assert!(err.contains("must be 'github:owner/repo'"), "got: {err}");
     }
 
     #[test]

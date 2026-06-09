@@ -13,7 +13,10 @@ use alacritty_terminal::selection::{
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::search::{Match, RegexIter, RegexSearch};
 use alacritty_terminal::term::{
-    self, cell::{Cell, Flags as CellFlags}, test::TermSize, viewport_to_point, Term, TermMode,
+    self,
+    cell::{Cell, Flags as CellFlags},
+    test::TermSize,
+    viewport_to_point, Term, TermMode,
 };
 use alacritty_terminal::vte::ansi::{CursorShape, Rgb};
 use alacritty_terminal::{tty, Grid};
@@ -24,8 +27,8 @@ use std::cmp::min;
 use std::collections::HashMap;
 use std::io::Result;
 use std::ops::{Index, RangeInclusive};
-use std::sync::mpsc::Sender;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{mpsc, Arc, Mutex};
 
 pub type TerminalMode = TermMode;
@@ -204,10 +207,13 @@ impl TerminalBackend {
                 // a dead channel that would spin a full CPU core at shutdown.
                 while let Ok(event) = event_receiver.recv() {
                     if let Event::ColorRequest(index, formatter) = &event {
-                        if let Some(color) =
-                            resolve_dynamic_color(&event_term, &dynamic_colors, *index)
-                        {
-                            event_notifier.notify(formatter(color).into_bytes());
+                        if let Some(color) = resolve_dynamic_color(
+                            &event_term,
+                            &dynamic_colors,
+                            *index,
+                        ) {
+                            event_notifier
+                                .notify(formatter(color).into_bytes());
                         }
                         continue;
                     }
@@ -219,11 +225,13 @@ impl TerminalBackend {
                     }
                     if let Event::TextAreaSizeRequest(formatter) = &event {
                         let size = *shared_size_clone.lock().unwrap();
-                        event_notifier.notify(formatter(size.into()).into_bytes());
+                        event_notifier
+                            .notify(formatter(size.into()).into_bytes());
                         continue;
                     }
                     // If the receiver is gone (app shutting down) just exit.
-                    if pty_event_proxy_sender.send((id, event.clone())).is_err() {
+                    if pty_event_proxy_sender.send((id, event.clone())).is_err()
+                    {
                         break;
                     }
                     app_context.clone().request_repaint();
@@ -299,8 +307,12 @@ impl TerminalBackend {
         // renderer, which calls .round_to_pixels() on each cell rect. Without
         // snapping, rounding errors accumulate across columns on high-DPI
         // displays, causing selection to lag one cell behind the visual grid.
-        let snapped_w = (terminal_size.cell_width as f32 * pixels_per_point).round() / pixels_per_point;
-        let snapped_h = (terminal_size.cell_height as f32 * pixels_per_point).round() / pixels_per_point;
+        let snapped_w = (terminal_size.cell_width as f32 * pixels_per_point)
+            .round()
+            / pixels_per_point;
+        let snapped_h = (terminal_size.cell_height as f32 * pixels_per_point)
+            .round()
+            / pixels_per_point;
         let col = (x / snapped_w) as usize;
         let col = min(Column(col), Column(terminal_size.num_cols as usize - 1));
 
@@ -336,7 +348,8 @@ impl TerminalBackend {
                                 .flags
                                 .contains(CellFlags::WRAPLINE);
                             // Trim trailing spaces from the completed line
-                            let trimmed_len = result.trim_end_matches(' ').len();
+                            let trimmed_len =
+                                result.trim_end_matches(' ').len();
                             result.truncate(trimmed_len);
                             if !was_wrapped {
                                 result.push('\n');
@@ -368,7 +381,10 @@ impl TerminalBackend {
         // If we only clear on ALT_SCREEN exit, any scrollback frames that
         // accumulated *during* the session can still get exposed when the
         // user scrolls up.
-        let was_alt_screen = self.last_content.terminal_mode.contains(TermMode::ALT_SCREEN);
+        let was_alt_screen = self
+            .last_content
+            .terminal_mode
+            .contains(TermMode::ALT_SCREEN);
         let is_alt_screen = terminal.mode().contains(TermMode::ALT_SCREEN);
         if !was_alt_screen && is_alt_screen {
             // Drop any stale history and reset display offset.
@@ -381,7 +397,8 @@ impl TerminalBackend {
         self.last_content.cursor = cursor.clone();
         self.last_content.terminal_mode = *terminal.mode();
         self.last_content.terminal_size = self.size;
-        self.last_content.cursor_visible = terminal.mode().contains(TermMode::SHOW_CURSOR);
+        self.last_content.cursor_visible =
+            terminal.mode().contains(TermMode::SHOW_CURSOR);
         self.last_content.cursor_shape = terminal.cursor_style().shape;
         self.last_content()
     }
@@ -409,7 +426,8 @@ impl TerminalBackend {
         let mut state = self.capture_state.lock().unwrap();
         if total > state.0 {
             let delta = total - state.0;
-            self.lines_written.fetch_add(delta as u64, Ordering::Relaxed);
+            self.lines_written
+                .fetch_add(delta as u64, Ordering::Relaxed);
         }
         // Always update prev_total — handles terminal resize-down correctly.
         state.0 = total;
@@ -445,7 +463,8 @@ impl TerminalBackend {
         let mut result = Vec::with_capacity(take);
         for line_idx in first..=last {
             let row = &grid[Line(line_idx)];
-            let mut s: String = (0..columns).map(|col_idx| row[Column(col_idx)].c).collect();
+            let mut s: String =
+                (0..columns).map(|col_idx| row[Column(col_idx)].c).collect();
             let trimmed_len = s.trim_end().len();
             s.truncate(trimmed_len);
             result.push(s);
@@ -557,7 +576,11 @@ impl TerminalBackend {
                 }
             }
 
-            let url = url.trim_end_matches(|c| matches!(c, '.' | ',' | ')' | ';' | ':' | '!' | '?')).to_string();
+            let url = url
+                .trim_end_matches(|c| {
+                    matches!(c, '.' | ',' | ')' | ';' | ':' | '!' | '?')
+                })
+                .to_string();
             if let Err(e) = open::that(&url) {
                 log::warn!("egui_term: failed to open link {:?}: {}", url, e);
             }
@@ -677,8 +700,13 @@ impl TerminalBackend {
     ) {
         let display_offset = terminal.grid().display_offset();
         if let Some(ref mut selection) = terminal.selection {
-            let location =
-                Self::selection_point(x, y, &self.size, display_offset, pixels_per_point);
+            let location = Self::selection_point(
+                x,
+                y,
+                &self.size,
+                display_offset,
+                pixels_per_point,
+            );
             selection.update(location, self.selection_side(x));
         }
     }
@@ -785,7 +813,8 @@ impl TerminalBackend {
         // Scroll to bottom first, then up by desired_offset
         term.grid_mut().scroll_display(Scroll::Bottom);
         if desired_offset > 0 {
-            term.grid_mut().scroll_display(Scroll::Delta(desired_offset as i32));
+            term.grid_mut()
+                .scroll_display(Scroll::Delta(desired_offset as i32));
         }
         term.grid().display_offset()
     }
@@ -826,7 +855,8 @@ fn is_url_char(c: char) -> bool {
     }
     // Explicit terminators from the regex char class.
     // `{-}` in the class is the range `{`..=`}` = `{`, `|`, `}`.
-    if matches!(c, '<' | '>' | '"' | '{' | '|' | '}' | '^' | '⟨' | '⟩' | '`') {
+    if matches!(c, '<' | '>' | '"' | '{' | '|' | '}' | '^' | '⟨' | '⟩' | '`')
+    {
         return false;
     }
     // All whitespace (regex `\s`).
@@ -948,13 +978,11 @@ fn resolve_dynamic_color(
         return Some(color);
     }
 
-    dynamic_colors
-        .get(&index)
-        .map(|[r, g, b]| Rgb {
-            r: *r,
-            g: *g,
-            b: *b,
-        })
+    dynamic_colors.get(&index).map(|[r, g, b]| Rgb {
+        r: *r,
+        g: *g,
+        b: *b,
+    })
 }
 
 pub struct RenderableContent {
@@ -1010,7 +1038,11 @@ fn reap_child(pid: u32) {
     const POLLS: u32 = 8; // 8 × 25 ms = 200 ms grace period
 
     extern "C" {
-        fn waitpid(pid: libc::pid_t, status: *mut c_int, options: c_int) -> libc::pid_t;
+        fn waitpid(
+            pid: libc::pid_t,
+            status: *mut c_int,
+            options: c_int,
+        ) -> libc::pid_t;
         fn kill(pid: libc::pid_t, sig: c_int) -> c_int;
     }
 
@@ -1061,8 +1093,8 @@ mod tests {
     #[test]
     fn is_url_char_rejects_terminators_and_whitespace() {
         for c in [
-            ' ', '\t', '\n', '\r', '<', '>', '"', '{', '|', '}', '^', '⟨',
-            '⟩', '`', '\u{0000}', '\u{001F}', '\u{007F}', '\u{0085}',
+            ' ', '\t', '\n', '\r', '<', '>', '"', '{', '|', '}', '^', '⟨', '⟩',
+            '`', '\u{0000}', '\u{001F}', '\u{007F}', '\u{0085}',
         ] {
             assert!(!is_url_char(c), "expected {c:?} to NOT be a URL char");
         }

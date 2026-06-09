@@ -4,10 +4,10 @@
 //! these tools reference, using stub types that satisfy the type system
 //! without pulling in the full GUI/audio dependency tree.
 
-pub mod protocol;
 pub mod app_protocol;
 #[path = "cli/args.rs"]
 pub mod cli_args;
+pub mod protocol;
 
 // Stub modules: only the types used by app_protocol via crate:: references.
 // The real implementations live in the binary target (src/main.rs).
@@ -34,13 +34,24 @@ pub mod media {
 
     pub mod video {
         /// Video playback state. Stub for the lib target (full impl in binary target).
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+        #[derive(
+            Debug,
+            Clone,
+            Copy,
+            PartialEq,
+            Eq,
+            serde::Serialize,
+            serde::Deserialize,
+            schemars::JsonSchema,
+        )]
         #[serde(tag = "kind", rename_all = "snake_case")]
         pub enum VideoState {
             Play,
             Pause,
             /// Absolute position in milliseconds from the start of the video.
-            Seek { position_ms: u64 },
+            Seek {
+                position_ms: u64,
+            },
         }
     }
 }
@@ -59,7 +70,9 @@ pub mod host {
             pub children: Vec<ContextState>,
         }
 
-        #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+        #[derive(
+            Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+        )]
         pub enum ContextStatus {
             Idle,
             Working,
@@ -74,7 +87,9 @@ pub mod host {
             pub status: PaneSummaryStatus,
         }
 
-        #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+        #[derive(
+            Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+        )]
         pub enum PaneSummaryStatus {
             Idle,
             Active,

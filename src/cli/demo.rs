@@ -1,4 +1,4 @@
-use super::notes::{print_step_header, print_step_complete};
+use super::notes::{print_step_complete, print_step_header};
 
 pub fn demo_cli() -> i32 {
     let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
@@ -81,8 +81,12 @@ pub fn demo_cli() -> i32 {
     // a second ⌘D split cannot satisfy the round-trip without actual navigation.
     let mut saw_split_depart = false;
     let after_nav_offset = match poll_event(&events_path, after_split_offset, |kind, obj| {
-        if kind != "focus_changed" { return false; }
-        let Some(pid) = obj.get("pane_id").and_then(|v| v.as_u64()) else { return false };
+        if kind != "focus_changed" {
+            return false;
+        }
+        let Some(pid) = obj.get("pane_id").and_then(|v| v.as_u64()) else {
+            return false;
+        };
         if !saw_split_depart {
             if pid == split_pane_id {
                 saw_split_depart = true;
@@ -242,4 +246,3 @@ where
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
-

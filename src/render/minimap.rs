@@ -179,11 +179,8 @@ pub fn render_minimap(
     // Workspace name
     let name_x = panel_rect.center().x - name_w * 0.5;
     let name_y = panel_rect.min.y + padding * 0.5;
-    ui.painter().galley(
-        egui::pos2(name_x, name_y),
-        name_galley,
-        colors.text_primary,
-    );
+    ui.painter()
+        .galley(egui::pos2(name_x, name_y), name_galley, colors.text_primary);
 
     let grid_origin = egui::pos2(
         panel_min.x + (panel_w - grid_pixel_w) * 0.5,
@@ -204,7 +201,11 @@ pub fn render_minimap(
             .map(|(i, w)| (*i, w.grid_y, w.grid_x))
             .collect();
         sorted.sort_by_key(|&(_, gy, gx)| (gy, gx));
-        sorted.iter().enumerate().map(|(rank, &(i, _, _))| (i, rank)).collect()
+        sorted
+            .iter()
+            .enumerate()
+            .map(|(rank, &(i, _, _))| (i, rank))
+            .collect()
     };
 
     let mut clicked: Option<usize> = None;
@@ -214,14 +215,11 @@ pub fn render_minimap(
         let mapped_y = row_remap.get(&ctx.grid_y).copied().unwrap_or(0);
         let cell_x = grid_origin.x + ctx.grid_x as f32 * (CELL_W + CELL_GAP);
         let cell_y = grid_origin.y + mapped_y as f32 * (CELL_H + CELL_GAP);
-        let cell_rect = egui::Rect::from_min_size(
-            egui::pos2(cell_x, cell_y),
-            egui::Vec2::new(CELL_W, CELL_H),
-        );
+        let cell_rect =
+            egui::Rect::from_min_size(egui::pos2(cell_x, cell_y), egui::Vec2::new(CELL_W, CELL_H));
 
         let is_active = idx == active_window;
-        let is_trail = !is_active
-            && last_visited.get(&ctx.grid_y).copied() == Some(ctx.grid_x);
+        let is_trail = !is_active && last_visited.get(&ctx.grid_y).copied() == Some(ctx.grid_x);
 
         let fill = if is_active {
             colors.accent
@@ -229,7 +227,11 @@ pub fn render_minimap(
             colors.bg_active
         };
 
-        let border_color = if is_trail { colors.accent } else { colors.border };
+        let border_color = if is_trail {
+            colors.accent
+        } else {
+            colors.border
+        };
 
         ui.painter().rect(
             cell_rect,
@@ -245,7 +247,11 @@ pub fn render_minimap(
             egui::Align2::LEFT_BOTTOM,
             format!("{}", page_num),
             egui::FontId::proportional(9.0),
-            if is_active { colors.bg_darkest } else { colors.text_dim },
+            if is_active {
+                colors.bg_darkest
+            } else {
+                colors.text_dim
+            },
         );
 
         let cell_response = ui.interact(

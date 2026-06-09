@@ -32,8 +32,7 @@ impl PlexiApp {
         let active = self.active_window;
 
         // Resolve cwd: explicit > sender's workspace_root > home.
-        let workspace_root = self
-            .windows[active]
+        let workspace_root = self.windows[active]
             .panes
             .get(&sender_pane_id)
             .and_then(|p| p.as_app())
@@ -69,7 +68,16 @@ impl PlexiApp {
         let ctx_desc = self.context_description_for(ctx_id);
         let ctx_root = self.context_root_for(ctx_id);
         let ctx_depth = self.context_depth_for(ctx_id);
-        let settings = Self::make_backend_settings(new_id, resolved_cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc, ctx_root.as_ref(), ctx_depth);
+        let settings = Self::make_backend_settings(
+            new_id,
+            resolved_cwd,
+            &self.colors,
+            ctx_id,
+            &ctx_name,
+            &ctx_desc,
+            ctx_root.as_ref(),
+            ctx_depth,
+        );
         let Some(term) = TerminalPane::new(
             new_id,
             self.ctx.clone(),
@@ -77,9 +85,7 @@ impl PlexiApp {
             settings,
             self.default_font_size,
         ) else {
-            log::error!(
-                "RequestLinkedTerminal: failed to create TerminalPane for pane {new_id}"
-            );
+            log::error!("RequestLinkedTerminal: failed to create TerminalPane for pane {new_id}");
             self.queue_event_to_pane(
                 sender_pane_id,
                 PlexiEvent::LinkedTerminalReady {
@@ -97,13 +103,13 @@ impl PlexiApp {
         // Side-by-side (vertical=true) on the right: Canvas app left, terminal right.
         // focused_pane is deliberately NOT updated — the Canvas app retains keyboard focus
         // so the user doesn't lose input mid-flow.
-        let share = crate::host::command::ShareRatio::new(1.0, 1.0)
-            .expect("1:1 is a valid ShareRatio");
+        let share =
+            crate::host::command::ShareRatio::new(1.0, 1.0).expect("1:1 is a valid ShareRatio");
         let _new_tile = crate::pane_ops::insert_split_tile(
             &mut self.windows[active].tree,
             Some(sender_tile),
             new_id,
-            true,  // vertical = side-by-side on right
+            true, // vertical = side-by-side on right
             share,
             false, // new_pane_first = false
         );
@@ -166,9 +172,7 @@ impl PlexiApp {
             return;
         };
         let payload = format!("{command}\n");
-        log::debug!(
-            "RunInLinkedTerminal: pane {terminal_pane_id} ← {payload:?} (echo={echo})"
-        );
+        log::debug!("RunInLinkedTerminal: pane {terminal_pane_id} ← {payload:?} (echo={echo})");
         term.backend
             .process_command(BackendCommand::Write(payload.into_bytes()));
     }
@@ -213,9 +217,7 @@ impl PlexiApp {
             bytes.push(0x17);
         }
         bytes.extend(quote_for_shell(&path).into_bytes());
-        log::debug!(
-            "InsertPathToken: pane {terminal_pane_id} mode={mode:?} path={path:?}"
-        );
+        log::debug!("InsertPathToken: pane {terminal_pane_id} mode={mode:?} path={path:?}");
         term.backend.process_command(BackendCommand::Write(bytes));
     }
 
@@ -394,9 +396,9 @@ fn quote_for_shell(path: &str) -> String {
     if path.is_empty() {
         return "''".to_string();
     }
-    let safe = path.chars().all(|c| {
-        c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | ':' | '@' | '+')
-    });
+    let safe = path
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '_' | ':' | '@' | '+'));
     if safe {
         path.to_string()
     } else {
@@ -421,7 +423,10 @@ fn shell_open(path: &str, reveal: bool) {
         }
         cmd.arg(path);
         match cmd.spawn() {
-            Ok(_) => log::debug!("OpenArtifact: spawned `open{}` for {path}", if reveal { " -R" } else { "" }),
+            Ok(_) => log::debug!(
+                "OpenArtifact: spawned `open{}` for {path}",
+                if reveal { " -R" } else { "" }
+            ),
             Err(e) => log::error!("OpenArtifact: `open` failed for {path}: {e}"),
         }
     }
@@ -474,22 +479,37 @@ mod tests {
 
     #[test]
     fn normalize_path_collapses_parent_dirs() {
-        assert_eq!(normalize_path(&PathBuf::from("/a/b/../c")), PathBuf::from("/a/c"));
-        assert_eq!(normalize_path(&PathBuf::from("/a/b/c/../../d")), PathBuf::from("/a/d"));
-        assert_eq!(normalize_path(&PathBuf::from("/a/./b/../c/.")), PathBuf::from("/a/c"));
+        assert_eq!(
+            normalize_path(&PathBuf::from("/a/b/../c")),
+            PathBuf::from("/a/c")
+        );
+        assert_eq!(
+            normalize_path(&PathBuf::from("/a/b/c/../../d")),
+            PathBuf::from("/a/d")
+        );
+        assert_eq!(
+            normalize_path(&PathBuf::from("/a/./b/../c/.")),
+            PathBuf::from("/a/c")
+        );
     }
 
     #[test]
     fn normalize_path_cannot_escape_above_root() {
         // Pop at the root component is a no-op — result stays at /etc.
-        assert_eq!(normalize_path(&PathBuf::from("/../etc")), PathBuf::from("/etc"));
+        assert_eq!(
+            normalize_path(&PathBuf::from("/../etc")),
+            PathBuf::from("/etc")
+        );
     }
 
     #[test]
     fn normalize_path_traversal_is_blocked_by_workspace_check() {
         let root = PathBuf::from("/workspace");
         let escaped = normalize_path(&PathBuf::from("/workspace/../../etc/passwd"));
-        assert!(!escaped.starts_with(&root), "traversal should escape workspace: {escaped:?}");
+        assert!(
+            !escaped.starts_with(&root),
+            "traversal should escape workspace: {escaped:?}"
+        );
     }
 
     #[test]

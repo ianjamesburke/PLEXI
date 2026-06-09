@@ -90,7 +90,9 @@ pub(crate) fn render_draw_commands(
                     egui::vec2(*w, *h),
                 );
                 let color = parse_color(fill).unwrap_or(colors.bg_active);
-                ui.painter().with_clip_rect(clip).rect_filled(rect, *radius, color);
+                ui.painter()
+                    .with_clip_rect(clip)
+                    .rect_filled(rect, *radius, color);
             }
 
             RenderCommand::Text {
@@ -119,16 +121,17 @@ pub(crate) fn render_draw_commands(
                     let wrap_w = max_width
                         .filter(|w| *w > 0.0)
                         .unwrap_or((pane_rect.max.x - (origin.x + x)).max(1.0));
-                    let galley = ui.fonts(|f| {
-                        f.layout(text.clone(), font_id.clone(), color, wrap_w)
-                    });
+                    let galley =
+                        ui.fonts(|f| f.layout(text.clone(), font_id.clone(), color, wrap_w));
                     let final_text: std::borrow::Cow<str> = if galley.rows.len() > *n as usize {
                         let mut lo = 0usize;
                         let mut hi = text.chars().count();
                         while lo + 1 < hi {
                             let mid = (lo + hi) / 2;
-                            let candidate: String = text.chars().take(mid).collect::<String>() + "…";
-                            let g = ui.fonts(|f| f.layout(candidate, font_id.clone(), color, wrap_w));
+                            let candidate: String =
+                                text.chars().take(mid).collect::<String>() + "…";
+                            let g =
+                                ui.fonts(|f| f.layout(candidate, font_id.clone(), color, wrap_w));
                             if g.rows.len() <= *n as usize {
                                 lo = mid;
                             } else {
@@ -143,7 +146,9 @@ pub(crate) fn render_draw_commands(
                         f.layout(final_text.to_string(), font_id.clone(), color, wrap_w)
                     });
                     let pos = egui::pos2(origin.x + x, origin.y + y);
-                    ui.painter().with_clip_rect(clip).galley(pos, final_galley, color);
+                    ui.painter()
+                        .with_clip_rect(clip)
+                        .galley(pos, final_galley, color);
                     continue;
                 }
 
@@ -160,9 +165,8 @@ pub(crate) fn render_draw_commands(
                 // Apply max_width clipping / elision using host font metrics.
                 let display_text: std::borrow::Cow<'_, str> = if let Some(max_w) = max_width {
                     if *max_w > 0.0 {
-                        let galley = ui.fonts(|f| {
-                            f.layout_no_wrap(text.clone(), font_id.clone(), color)
-                        });
+                        let galley =
+                            ui.fonts(|f| f.layout_no_wrap(text.clone(), font_id.clone(), color));
                         if galley.size().x > *max_w {
                             // Binary-search for the longest prefix that fits.
                             let mut lo = 0usize;
@@ -174,9 +178,8 @@ pub(crate) fn render_draw_commands(
                                 } else {
                                     text.chars().take(mid).collect()
                                 };
-                                let g = ui.fonts(|f| {
-                                    f.layout_no_wrap(candidate, font_id.clone(), color)
-                                });
+                                let g = ui
+                                    .fonts(|f| f.layout_no_wrap(candidate, font_id.clone(), color));
                                 if g.size().x <= *max_w {
                                     lo = mid;
                                 } else {
@@ -215,12 +218,7 @@ pub(crate) fn render_draw_commands(
                         .filter(|w| *w > 0.0)
                         .unwrap_or((pane_rect.max.x - pos.x).max(1.0));
                     let galley = ui.fonts(|f| {
-                        f.layout(
-                            display_text.to_string(),
-                            font_id.clone(),
-                            color,
-                            wrap_width,
-                        )
+                        f.layout(display_text.to_string(), font_id.clone(), color, wrap_width)
                     });
                     let sz = galley.size();
                     // Resolve the top-left from the requested anchor + size.
@@ -290,7 +288,9 @@ pub(crate) fn render_draw_commands(
             RenderCommand::Circle { cx, cy, r, fill } => {
                 let center = egui::pos2(origin.x + cx, origin.y + cy);
                 let color = parse_color(fill).unwrap_or(colors.accent);
-                ui.painter().with_clip_rect(clip).circle_filled(center, *r, color);
+                ui.painter()
+                    .with_clip_rect(clip)
+                    .circle_filled(center, *r, color);
             }
 
             RenderCommand::Arc {
@@ -395,7 +395,10 @@ pub(crate) fn render_draw_commands(
             } => {
                 use crate::app_protocol::ListViewLeading;
 
-                log::debug!("ListView: id={id:?} items={} selected={selected} loading={loading}", items.len());
+                log::debug!(
+                    "ListView: id={id:?} items={} selected={selected} loading={loading}",
+                    items.len()
+                );
 
                 let list_w = if *w > 0.0 { *w } else { pane_rect.width() };
                 let list_h = if *h > 0.0 { *h } else { pane_rect.height() - y };
@@ -446,7 +449,9 @@ pub(crate) fn render_draw_commands(
                             item_top += h_item;
                         }
                         list_view_last_aligned_sel.insert(id.clone(), sel);
-                        log::debug!("list_view scroll-to-sel: id={id:?} sel={sel} offset={scroll_y_ref}");
+                        log::debug!(
+                            "list_view scroll-to-sel: id={id:?} sel={sel} offset={scroll_y_ref}"
+                        );
                     }
                     let max_scroll = (total_h - list_h).max(0.0);
                     *scroll_y_ref = scroll_y_ref.clamp(0.0, max_scroll);
@@ -459,19 +464,27 @@ pub(crate) fn render_draw_commands(
                 if *loading {
                     let mut sy = list_rect.min.y;
                     for _ in 0..8 {
-                        if sy > list_rect.max.y { break; }
+                        if sy > list_rect.max.y {
+                            break;
+                        }
                         let row_rect = egui::Rect::from_min_size(
                             egui::pos2(list_rect.min.x, sy),
                             egui::vec2(list_w, LVI::ROW_H_BASE),
                         );
                         painter.rect_filled(row_rect, 0.0, colors.terminal_bg);
                         let lead_rect = egui::Rect::from_min_size(
-                            egui::pos2(list_rect.min.x + PAD_X, sy + (LVI::ROW_H_BASE - 20.0) / 2.0),
+                            egui::pos2(
+                                list_rect.min.x + PAD_X,
+                                sy + (LVI::ROW_H_BASE - 20.0) / 2.0,
+                            ),
                             egui::vec2(20.0, 20.0),
                         );
                         painter.rect_filled(lead_rect, 10.0, colors.border);
                         let txt_rect = egui::Rect::from_min_size(
-                            egui::pos2(list_rect.min.x + LEADING_W, sy + (LVI::ROW_H_BASE - FONT_CAPTION) / 2.0),
+                            egui::pos2(
+                                list_rect.min.x + LEADING_W,
+                                sy + (LVI::ROW_H_BASE - FONT_CAPTION) / 2.0,
+                            ),
                             egui::vec2(list_w * 0.6, FONT_CAPTION),
                         );
                         painter.rect_filled(txt_rect, 3.0, colors.border);
@@ -574,7 +587,10 @@ pub(crate) fn render_draw_commands(
                                         // Flow title past badge's consumed rect so wide labels
                                         // (e.g. "#1792") never overlap the title. Keep at least
                                         // the fixed slot so short badges stay aligned.
-                                        (list_rect.min.x + PAD_X + badge_rect.width() + BADGE_TEXT_GAP)
+                                        (list_rect.min.x
+                                            + PAD_X
+                                            + badge_rect.width()
+                                            + BADGE_TEXT_GAP)
                                             .max(list_rect.min.x + LEADING_W)
                                     }
                                     Some(ListViewLeading::Avatar { handle }) => {
@@ -592,12 +608,19 @@ pub(crate) fn render_draw_commands(
                                                 color: egui::Color32::WHITE,
                                             });
                                             for seg_i in 0..=n_segs {
-                                                let angle = seg_i as f32 / n_segs as f32 * std::f32::consts::TAU;
+                                                let angle = seg_i as f32 / n_segs as f32
+                                                    * std::f32::consts::TAU;
                                                 let cos = angle.cos();
                                                 let sin = angle.sin();
                                                 mesh.vertices.push(egui::epaint::Vertex {
-                                                    pos: egui::pos2(center.x + cos * avatar_r, center.y + sin * avatar_r),
-                                                    uv: egui::pos2(0.5 + cos * 0.5, 0.5 + sin * 0.5),
+                                                    pos: egui::pos2(
+                                                        center.x + cos * avatar_r,
+                                                        center.y + sin * avatar_r,
+                                                    ),
+                                                    uv: egui::pos2(
+                                                        0.5 + cos * 0.5,
+                                                        0.5 + sin * 0.5,
+                                                    ),
                                                     color: egui::Color32::WHITE,
                                                 });
                                             }
@@ -606,7 +629,8 @@ pub(crate) fn render_draw_commands(
                                                 mesh.indices.push(seg_i + 1);
                                                 mesh.indices.push(seg_i + 2);
                                             }
-                                            painter.add(egui::Shape::Mesh(std::sync::Arc::new(mesh)));
+                                            painter
+                                                .add(egui::Shape::Mesh(std::sync::Arc::new(mesh)));
                                         } else {
                                             painter.circle_filled(
                                                 egui::pos2(av_cx, av_cy),
@@ -626,9 +650,7 @@ pub(crate) fn render_draw_commands(
                                         );
                                         list_rect.min.x + LEADING_W
                                     }
-                                    Some(ListViewLeading::None) | None => {
-                                        list_rect.min.x + PAD_X
-                                    }
+                                    Some(ListViewLeading::None) | None => list_rect.min.x + PAD_X,
                                 };
 
                                 // Trailing text (right-aligned)
@@ -646,19 +668,34 @@ pub(crate) fn render_draw_commands(
                                 }
 
                                 // Chips (right-aligned)
-                                let chips_reserve: f32 = row.chips.iter()
-                                    .map(|c| c.label.chars().count() as f32 * 7.0 + CHIP_PAD_X * 2.0 + CHIP_GAP)
+                                let chips_reserve: f32 = row
+                                    .chips
+                                    .iter()
+                                    .map(|c| {
+                                        c.label.chars().count() as f32 * 7.0
+                                            + CHIP_PAD_X * 2.0
+                                            + CHIP_GAP
+                                    })
                                     .sum();
-                                let mut cx = list_rect.max.x - PAD_X - trailing_reserve - chips_reserve;
+                                let mut cx =
+                                    list_rect.max.x - PAD_X - trailing_reserve - chips_reserve;
                                 for chip in &row.chips {
-                                    let chip_w = chip.label.chars().count() as f32 * 7.0 + CHIP_PAD_X * 2.0;
-                                    let chip_color = parse_color(&chip.color)
-                                        .unwrap_or(colors.accent);
+                                    let chip_w =
+                                        chip.label.chars().count() as f32 * 7.0 + CHIP_PAD_X * 2.0;
+                                    let chip_color =
+                                        parse_color(&chip.color).unwrap_or(colors.accent);
                                     let chip_rect = egui::Rect::from_min_size(
-                                        egui::pos2(cx, row_rect.min.y + (h_item - FONT_HINT - 4.0) / 2.0),
+                                        egui::pos2(
+                                            cx,
+                                            row_rect.min.y + (h_item - FONT_HINT - 4.0) / 2.0,
+                                        ),
                                         egui::vec2(chip_w, FONT_HINT + 4.0),
                                     );
-                                    painter.rect_filled(chip_rect, 3.0, chip_color.linear_multiply(0.2));
+                                    painter.rect_filled(
+                                        chip_rect,
+                                        3.0,
+                                        chip_color.linear_multiply(0.2),
+                                    );
                                     painter.text(
                                         chip_rect.center(),
                                         egui::Align2::CENTER_CENTER,
@@ -674,7 +711,11 @@ pub(crate) fn render_draw_commands(
                                 let primary_font = egui::FontId::proportional(FONT_CAPTION);
                                 let has_right = !row.chips.is_empty() || row.trailing.is_some();
                                 let text_right = if has_right {
-                                    list_rect.max.x - PAD_X - trailing_reserve - chips_reserve - BADGE_TEXT_GAP
+                                    list_rect.max.x
+                                        - PAD_X
+                                        - trailing_reserve
+                                        - chips_reserve
+                                        - BADGE_TEXT_GAP
                                 } else {
                                     list_rect.max.x - PAD_X
                                 };
@@ -693,11 +734,20 @@ pub(crate) fn render_draw_commands(
                                         while lo + 1 < hi {
                                             let mid = (lo + hi) / 2;
                                             let candidate: String =
-                                                row.primary.chars().take(mid).collect::<String>() + "…";
+                                                row.primary.chars().take(mid).collect::<String>()
+                                                    + "…";
                                             let g = ui.fonts(|f| {
-                                                f.layout_no_wrap(candidate, primary_font.clone(), colors.text_primary)
+                                                f.layout_no_wrap(
+                                                    candidate,
+                                                    primary_font.clone(),
+                                                    colors.text_primary,
+                                                )
                                             });
-                                            if g.size().x <= avail_w { lo = mid; } else { hi = mid; }
+                                            if g.size().x <= avail_w {
+                                                lo = mid;
+                                            } else {
+                                                hi = mid;
+                                            }
                                         }
                                         std::borrow::Cow::Owned(
                                             row.primary.chars().take(lo).collect::<String>() + "…",
@@ -731,32 +781,90 @@ pub(crate) fn render_draw_commands(
             }
 
             // ── Host-measured layout primitives ──────────────────────────
-
-            RenderCommand::Badge { x, y, label, fill, fg, font_size, radius } => {
-                render_badge(ui, origin, clip, *x, *y, label, fill, fg, *font_size, *radius);
+            RenderCommand::Badge {
+                x,
+                y,
+                label,
+                fill,
+                fg,
+                font_size,
+                radius,
+            } => {
+                render_badge(
+                    ui, origin, clip, *x, *y, label, fill, fg, *font_size, *radius,
+                );
             }
 
-            RenderCommand::KeyChip { x, y, label, font_size } => {
+            RenderCommand::KeyChip {
+                x,
+                y,
+                label,
+                font_size,
+            } => {
                 render_key_chip_at(ui, origin, clip, *x, *y, label, *font_size, colors);
             }
 
-            RenderCommand::KeyChipRow { x, y, keys, description, font_size } => {
-                render_key_chip_row(ui, origin, clip, *x, *y, keys, description.as_deref(), *font_size, colors);
+            RenderCommand::KeyChipRow {
+                x,
+                y,
+                keys,
+                description,
+                font_size,
+            } => {
+                render_key_chip_row(
+                    ui,
+                    origin,
+                    clip,
+                    *x,
+                    *y,
+                    keys,
+                    description.as_deref(),
+                    *font_size,
+                    colors,
+                );
             }
 
-            RenderCommand::Shortcuts { x, y, max_width, pairs, font_size } => {
-                render_shortcuts(ui, origin, clip, *x, *y, *max_width, pairs, *font_size, colors);
+            RenderCommand::Shortcuts {
+                x,
+                y,
+                max_width,
+                pairs,
+                font_size,
+            } => {
+                render_shortcuts(
+                    ui, origin, clip, *x, *y, *max_width, pairs, *font_size, colors,
+                );
             }
 
-            RenderCommand::TextRow { x, y, items, gap, align } => {
+            RenderCommand::TextRow {
+                x,
+                y,
+                items,
+                gap,
+                align,
+            } => {
                 render_text_row(ui, origin, clip, *x, *y, items, *gap, align, colors);
             }
 
-            RenderCommand::Layout { x, y, direction, children, gap } => {
+            RenderCommand::Layout {
+                x,
+                y,
+                direction,
+                children,
+                gap,
+            } => {
                 render_layout_node(
-                    ui, pane_rect, clip, *x, *y,
-                    direction, children, *gap,
-                    colors, commonmark_cache, audio_peaks,
+                    ui,
+                    pane_rect,
+                    clip,
+                    *x,
+                    *y,
+                    direction,
+                    children,
+                    *gap,
+                    colors,
+                    commonmark_cache,
+                    audio_peaks,
                 );
             }
 
@@ -766,15 +874,29 @@ pub(crate) fn render_draw_commands(
                 if let Some(tier) = select_responsive_tier(tiers, avail_w, avail_h) {
                     log::debug!(
                         "responsive: selected tier aspect={} for rect {}x{}",
-                        tier.aspect, avail_w, avail_h
+                        tier.aspect,
+                        avail_w,
+                        avail_h
                     );
                     render_layout_node(
-                        ui, pane_rect, clip, *x, *y,
-                        &tier.direction, &tier.children, tier.gap,
-                        colors, commonmark_cache, audio_peaks,
+                        ui,
+                        pane_rect,
+                        clip,
+                        *x,
+                        *y,
+                        &tier.direction,
+                        &tier.children,
+                        tier.gap,
+                        colors,
+                        commonmark_cache,
+                        audio_peaks,
                     );
                 } else {
-                    log::warn!("responsive: no matching tier for rect {}x{}", avail_w, avail_h);
+                    log::warn!(
+                        "responsive: no matching tier for rect {}x{}",
+                        avail_w,
+                        avail_h
+                    );
                 }
             }
 
@@ -828,8 +950,7 @@ pub(crate) fn render_draw_commands(
                     egui::TextStyle::Monospace,
                     egui::FontId::monospace(base_size * 0.9),
                 );
-                egui_commonmark::CommonMarkViewer::new()
-                    .show(&mut child, commonmark_cache, text);
+                egui_commonmark::CommonMarkViewer::new().show(&mut child, commonmark_cache, text);
             }
 
             // TextInput is rendered as an interactive egui widget by
@@ -838,7 +959,14 @@ pub(crate) fn render_draw_commands(
             // mutable buffer + focus tracking. See `render_text_inputs`.
             RenderCommand::TextInput { .. } => {}
 
-            RenderCommand::Image { src, x, y, w, h, fit } => {
+            RenderCommand::Image {
+                src,
+                x,
+                y,
+                w,
+                h,
+                fit,
+            } => {
                 if src.starts_with("http://") || src.starts_with("https://") {
                     image_cache.request_url(src, net_http_granted);
                 } else {
@@ -883,7 +1011,12 @@ pub(crate) fn render_draw_commands(
                 }
             }
 
-            RenderCommand::Avatar { src, cx, cy, radius } => {
+            RenderCommand::Avatar {
+                src,
+                cx,
+                cy,
+                radius,
+            } => {
                 if src.starts_with("http://") || src.starts_with("https://") {
                     image_cache.request_url(src, net_http_granted);
                 } else {
@@ -921,14 +1054,19 @@ pub(crate) fn render_draw_commands(
                     painter.add(egui::Shape::Mesh(std::sync::Arc::new(mesh)));
                 } else {
                     // Placeholder: filled circle with muted color
-                    painter.circle_filled(center, *radius, egui::Color32::from_rgb(0x3a, 0x3a, 0x4a));
+                    painter.circle_filled(
+                        center,
+                        *radius,
+                        egui::Color32::from_rgb(0x3a, 0x3a, 0x4a),
+                    );
                 }
             }
 
             RenderCommand::Skeleton { x, y, w, h, radius } => {
                 let t = ui.input(|i| i.time) as f32;
                 let alpha = 0.4 + 0.25 * (t * std::f32::consts::TAU * 0.8).sin();
-                let fill = egui::Color32::from_rgba_unmultiplied(0x45, 0x47, 0x5a, (alpha * 255.0) as u8);
+                let fill =
+                    egui::Color32::from_rgba_unmultiplied(0x45, 0x47, 0x5a, (alpha * 255.0) as u8);
                 let rect = egui::Rect::from_min_size(
                     egui::pos2(origin.x + x, origin.y + y),
                     egui::vec2(*w, *h),
@@ -939,7 +1077,8 @@ pub(crate) fn render_draw_commands(
                     fill,
                 );
                 // Drive animation — request repaint at ~20fps while skeleton is visible
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(50));
             }
 
             // AudioMeter (#341): renders a live peak-amplitude bar driven by
@@ -1011,8 +1150,13 @@ pub(crate) fn render_draw_commands(
                     "render: ComponentTree received; rendering via render_component_tree; pane_origin={:?}",
                     pane_rect.min
                 );
-                let component_events =
-                    crate::render::components::render_component_tree(ui, root, colors, text_edit_buffers, text_edit_focus_ctx);
+                let component_events = crate::render::components::render_component_tree(
+                    ui,
+                    root,
+                    colors,
+                    text_edit_buffers,
+                    text_edit_focus_ctx,
+                );
                 for evt in component_events {
                     log::info!(
                         "render: ComponentEvent node_id={} event_type={}",
@@ -1057,7 +1201,11 @@ pub(crate) fn contrast_text_hex(fill: &str) -> &'static str {
     match parse_color(fill) {
         Some(c) => {
             let lum = 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32;
-            if lum > 140.0 { "#1e1e2e" } else { "#ffffff" }
+            if lum > 140.0 {
+                "#1e1e2e"
+            } else {
+                "#ffffff"
+            }
         }
         None => "#1e1e2e",
     }
@@ -1088,10 +1236,8 @@ pub(crate) fn render_badge(
     let pill_h = text_h + style::BADGE_PAD_V * 2.0;
     let pill_x = origin.x + x;
     let pill_y = origin.y + y_center - pill_h / 2.0;
-    let pill_rect = egui::Rect::from_min_size(
-        egui::pos2(pill_x, pill_y),
-        egui::vec2(pill_w, pill_h),
-    );
+    let pill_rect =
+        egui::Rect::from_min_size(egui::pos2(pill_x, pill_y), egui::vec2(pill_w, pill_h));
     let painter = ui.painter().with_clip_rect(clip);
     painter.rect_filled(pill_rect, radius, fill_color);
     // Centre text inside the pill using measured galley dimensions.
@@ -1161,9 +1307,8 @@ pub(crate) fn render_key_chip_row(
         cursor_x += style::KEYCHIP_DESC_GAP;
         // Measure one chip height to get vertical centre of the row.
         let font_id = egui::FontId::monospace(font_size);
-        let sample = ui.fonts(|f| {
-            f.layout_no_wrap("X".to_string(), font_id.clone(), colors.text_dim)
-        });
+        let sample =
+            ui.fonts(|f| f.layout_no_wrap("X".to_string(), font_id.clone(), colors.text_dim));
         let chip_h = sample.size().y + style::KEYCHIP_PAD_V * 2.0;
         let desc_font = egui::FontId::proportional(font_size);
         ui.painter().with_clip_rect(clip).text(
@@ -1214,9 +1359,7 @@ pub(crate) fn render_shortcuts(
     let mut laid: Vec<LaidPair> = Vec::with_capacity(pairs.len());
 
     let chip_h = {
-        let g = ui.fonts(|f| {
-            f.layout_no_wrap("X".to_string(), mono_font.clone(), colors.text_dim)
-        });
+        let g = ui.fonts(|f| f.layout_no_wrap("X".to_string(), mono_font.clone(), colors.text_dim));
         g.size().y + style::KEYCHIP_PAD_V * 2.0
     };
 
@@ -1225,9 +1368,8 @@ pub(crate) fn render_shortcuts(
             .keys
             .iter()
             .map(|k| {
-                let g = ui.fonts(|f| {
-                    f.layout_no_wrap(k.clone(), mono_font.clone(), colors.text_dim)
-                });
+                let g =
+                    ui.fonts(|f| f.layout_no_wrap(k.clone(), mono_font.clone(), colors.text_dim));
                 let text_w = g.size().x;
                 (text_w + style::KEYCHIP_PAD_H * 2.0).max(style::KEYCHIP_MIN_W)
             })
@@ -1239,11 +1381,7 @@ pub(crate) fn render_shortcuts(
             0.0
         } else {
             let g = ui.fonts(|f| {
-                f.layout_no_wrap(
-                    pair.description.clone(),
-                    prop_font.clone(),
-                    colors.text_dim,
-                )
+                f.layout_no_wrap(pair.description.clone(), prop_font.clone(), colors.text_dim)
             });
             g.size().x
         };
@@ -1253,7 +1391,11 @@ pub(crate) fn render_shortcuts(
             style::KEYCHIP_DESC_GAP + desc_w
         };
         let total_w = chips_w + desc_segment;
-        laid.push(LaidPair { chip_widths, desc_w, total_w });
+        laid.push(LaidPair {
+            chip_widths,
+            desc_w,
+            total_w,
+        });
     }
 
     // Inter-pair gap when flowing on the same line. Wider than the gap
@@ -1326,9 +1468,7 @@ pub(crate) fn render_text_row(
 
         let color = parse_color(&item.color).unwrap_or(colors.text_primary);
 
-        let galley = ui.fonts(|f| {
-            f.layout_no_wrap(item.text.clone(), font_id, color)
-        });
+        let galley = ui.fonts(|f| f.layout_no_wrap(item.text.clone(), font_id, color));
 
         let text_w = galley.size().x;
 
@@ -1339,11 +1479,10 @@ pub(crate) fn render_text_row(
             _ => egui::Align2::LEFT_TOP,
         };
 
-        let rect = align2.anchor_size(
-            egui::pos2(origin.x + cursor_x, origin.y + y),
-            galley.size(),
-        );
-        ui.painter().with_clip_rect(clip).galley(rect.min, galley, color);
+        let rect = align2.anchor_size(egui::pos2(origin.x + cursor_x, origin.y + y), galley.size());
+        ui.painter()
+            .with_clip_rect(clip)
+            .galley(rect.min, galley, color);
 
         cursor_x += text_w + gap;
     }
@@ -1364,32 +1503,38 @@ fn font_family_for_text(monospace: bool) -> egui::FontFamily {
 /// Unsupported leaf types return (0.0, 0.0).
 fn measure_leaf_size(ui: &egui::Ui, cmd: &RenderCommand) -> (f32, f32) {
     match cmd {
-        RenderCommand::Badge { label, font_size, .. } => {
+        RenderCommand::Badge {
+            label, font_size, ..
+        } => {
             let font_id = egui::FontId::proportional(*font_size);
-            let galley = ui.fonts(|f| {
-                f.layout_no_wrap(label.clone(), font_id, egui::Color32::WHITE)
-            });
+            let galley =
+                ui.fonts(|f| f.layout_no_wrap(label.clone(), font_id, egui::Color32::WHITE));
             let w = (galley.size().x + crate::ui::style::BADGE_PAD_H * 2.0)
                 .max(crate::ui::style::BADGE_MIN_W);
             let h = galley.size().y + crate::ui::style::BADGE_PAD_V * 2.0;
             (w, h)
         }
-        RenderCommand::Text { text, size, monospace, .. } => {
+        RenderCommand::Text {
+            text,
+            size,
+            monospace,
+            ..
+        } => {
             let font_id = if *monospace {
                 egui::FontId::monospace(*size)
             } else {
                 egui::FontId::proportional(*size)
             };
-            let galley = ui.fonts(|f| {
-                f.layout_no_wrap(text.clone(), font_id, egui::Color32::WHITE)
-            });
+            let galley =
+                ui.fonts(|f| f.layout_no_wrap(text.clone(), font_id, egui::Color32::WHITE));
             (galley.size().x, galley.size().y)
         }
-        RenderCommand::KeyChip { label, font_size, .. } => {
+        RenderCommand::KeyChip {
+            label, font_size, ..
+        } => {
             let font_id = egui::FontId::monospace(*font_size);
-            let galley = ui.fonts(|f| {
-                f.layout_no_wrap(label.clone(), font_id, egui::Color32::WHITE)
-            });
+            let galley =
+                ui.fonts(|f| f.layout_no_wrap(label.clone(), font_id, egui::Color32::WHITE));
             let w = (galley.size().x + crate::ui::style::KEYCHIP_PAD_H * 2.0)
                 .max(crate::ui::style::KEYCHIP_MIN_W);
             let h = galley.size().y + crate::ui::style::KEYCHIP_PAD_V * 2.0;
@@ -1416,9 +1561,15 @@ fn build_taffy_node<'a>(
                 },
                 ..Default::default()
             };
-            taffy.new_leaf_with_context(style, Some(command.as_ref())).unwrap()
+            taffy
+                .new_leaf_with_context(style, Some(command.as_ref()))
+                .unwrap()
         }
-        LayoutChild::Node { direction, children, gap } => {
+        LayoutChild::Node {
+            direction,
+            children,
+            gap,
+        } => {
             match direction {
                 LayoutDirection::Stack => {
                     // Stack: all children layered at (0, 0). Container size = max of children.
@@ -1473,7 +1624,9 @@ fn build_taffy_node<'a>(
                         },
                         ..Default::default()
                     };
-                    taffy.new_with_children(container_style, &child_ids).unwrap()
+                    taffy
+                        .new_with_children(container_style, &child_ids)
+                        .unwrap()
                 }
                 LayoutDirection::Row | LayoutDirection::Column => {
                     let flex_dir = match direction {
@@ -1532,34 +1685,59 @@ fn paint_node(
         let leaf_h = layout.size.height;
         let paint_origin = egui::Pos2::ZERO;
         match cmd {
-            RenderCommand::Badge { label, fill, fg, font_size, radius, .. } => {
+            RenderCommand::Badge {
+                label,
+                fill,
+                fg,
+                font_size,
+                radius,
+                ..
+            } => {
                 render_badge(
-                    ui, paint_origin, clip,
-                    abs_screen_x, abs_screen_y + leaf_h / 2.0,
-                    label, fill, fg, *font_size, *radius,
+                    ui,
+                    paint_origin,
+                    clip,
+                    abs_screen_x,
+                    abs_screen_y + leaf_h / 2.0,
+                    label,
+                    fill,
+                    fg,
+                    *font_size,
+                    *radius,
                 );
             }
-            RenderCommand::Text { text, size, color, monospace, .. } => {
+            RenderCommand::Text {
+                text,
+                size,
+                color,
+                monospace,
+                ..
+            } => {
                 let font_id = if *monospace {
                     egui::FontId::monospace(*size)
                 } else {
                     egui::FontId::proportional(*size)
                 };
                 let text_color = parse_color(color).unwrap_or(colors.text_primary);
-                let galley = ui.fonts(|f| {
-                    f.layout_no_wrap(text.clone(), font_id, text_color)
-                });
+                let galley = ui.fonts(|f| f.layout_no_wrap(text.clone(), font_id, text_color));
                 ui.painter().with_clip_rect(clip).galley(
                     egui::pos2(abs_screen_x, abs_screen_y),
                     galley,
                     text_color,
                 );
             }
-            RenderCommand::KeyChip { label, font_size, .. } => {
+            RenderCommand::KeyChip {
+                label, font_size, ..
+            } => {
                 render_key_chip_at(
-                    ui, paint_origin, clip,
-                    abs_screen_x, abs_screen_y,
-                    label, *font_size, colors,
+                    ui,
+                    paint_origin,
+                    clip,
+                    abs_screen_x,
+                    abs_screen_y,
+                    label,
+                    *font_size,
+                    colors,
                 );
             }
             _ => {
@@ -1569,7 +1747,18 @@ fn paint_node(
     }
 
     for child in taffy.children(node).unwrap() {
-        paint_node(taffy, child, my_abs_x, my_abs_y, ui, screen_origin, pane_x, pane_y, clip, colors);
+        paint_node(
+            taffy,
+            child,
+            my_abs_x,
+            my_abs_y,
+            ui,
+            screen_origin,
+            pane_x,
+            pane_y,
+            clip,
+            colors,
+        );
     }
 }
 
@@ -1603,34 +1792,60 @@ pub(crate) fn render_layout_node(
                 let abs_screen_y = screen_origin.y + pane_y;
                 let paint_origin = egui::Pos2::ZERO;
                 match command.as_ref() {
-                    RenderCommand::Badge { label, fill, fg, font_size, radius, .. } => {
+                    RenderCommand::Badge {
+                        label,
+                        fill,
+                        fg,
+                        font_size,
+                        radius,
+                        ..
+                    } => {
                         render_badge(
-                            ui, paint_origin, clip,
-                            abs_screen_x, abs_screen_y + leaf_h / 2.0,
-                            label, fill, fg, *font_size, *radius,
+                            ui,
+                            paint_origin,
+                            clip,
+                            abs_screen_x,
+                            abs_screen_y + leaf_h / 2.0,
+                            label,
+                            fill,
+                            fg,
+                            *font_size,
+                            *radius,
                         );
                     }
-                    RenderCommand::Text { text, size, color, monospace, .. } => {
+                    RenderCommand::Text {
+                        text,
+                        size,
+                        color,
+                        monospace,
+                        ..
+                    } => {
                         let font_id = if *monospace {
                             egui::FontId::monospace(*size)
                         } else {
                             egui::FontId::proportional(*size)
                         };
                         let text_color = parse_color(color).unwrap_or(colors.text_primary);
-                        let galley = ui.fonts(|f| {
-                            f.layout_no_wrap(text.clone(), font_id, text_color)
-                        });
+                        let galley =
+                            ui.fonts(|f| f.layout_no_wrap(text.clone(), font_id, text_color));
                         ui.painter().with_clip_rect(clip).galley(
                             egui::pos2(abs_screen_x, abs_screen_y),
                             galley,
                             text_color,
                         );
                     }
-                    RenderCommand::KeyChip { label, font_size, .. } => {
+                    RenderCommand::KeyChip {
+                        label, font_size, ..
+                    } => {
                         render_key_chip_at(
-                            ui, paint_origin, clip,
-                            abs_screen_x, abs_screen_y,
-                            label, *font_size, colors,
+                            ui,
+                            paint_origin,
+                            clip,
+                            abs_screen_x,
+                            abs_screen_y,
+                            label,
+                            *font_size,
+                            colors,
                         );
                     }
                     _ => {
@@ -1682,7 +1897,18 @@ pub(crate) fn render_layout_node(
 
     // ── Phase 3: Paint leaves ─────────────────────────────────────────────────
     let screen_origin = pane_rect.min;
-    paint_node(&taffy, root, 0.0, 0.0, ui, screen_origin, pane_x, pane_y, clip, colors);
+    paint_node(
+        &taffy,
+        root,
+        0.0,
+        0.0,
+        ui,
+        screen_origin,
+        pane_x,
+        pane_y,
+        clip,
+        colors,
+    );
 
     log::debug!("render_layout_node: painted layout tree at pane ({pane_x}, {pane_y})");
 }
@@ -1711,11 +1937,7 @@ pub(crate) fn parse_color(hex: &str) -> Option<Color32> {
 /// - `"contain"` (default): scale to fit inside target, preserving aspect ratio (letterbox).
 /// - `"cover"`: fill target entirely, preserving aspect ratio (crop edges).
 /// - `"fill"`: stretch to fill target exactly (no aspect ratio preservation).
-fn fit_image(
-    target: egui::Rect,
-    tex_size: egui::Vec2,
-    fit: &str,
-) -> (egui::Rect, egui::Rect) {
+fn fit_image(target: egui::Rect, tex_size: egui::Vec2, fit: &str) -> (egui::Rect, egui::Rect) {
     let full_uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
     if tex_size.x <= 0.0 || tex_size.y <= 0.0 || target.width() <= 0.0 || target.height() <= 0.0 {
         return (target, full_uv);
@@ -1756,7 +1978,11 @@ pub(crate) fn select_responsive_tier(
     width: f32,
     height: f32,
 ) -> Option<&ResponsiveTier> {
-    let ratio = if height > 0.0 { width / height } else { f32::MAX };
+    let ratio = if height > 0.0 {
+        width / height
+    } else {
+        f32::MAX
+    };
     tiers.iter().find(|tier| match tier.aspect.as_str() {
         "landscape" => ratio > 1.2,
         "portrait" => ratio < 0.83,

@@ -48,13 +48,17 @@ use crossbeam_queue::ArrayQueue;
 /// `{"play": null}` / `{"pause": null}` / `{"seek": <ms>}` via serde's
 /// default `untagged`-friendly encoding. The PGAP wire serialises this as a
 /// nested struct under `state` in `DrawCommand::SetVideoState`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VideoState {
     Play,
     Pause,
     /// Absolute position in milliseconds from the start of the video.
-    Seek { position_ms: u64 },
+    Seek {
+        position_ms: u64,
+    },
 }
 
 /// Result of `VideoDecoder::open` on success. Reported back to the app as
@@ -178,9 +182,7 @@ impl AvfVideoDecoder {
     /// the caller passes to `NSURL::fileURLWithPath:`.
     fn resolve_path(source: &str) -> Result<String, VideoError> {
         if source.is_empty() {
-            return Err(VideoError::InvalidSource(
-                "source URL is empty".to_owned(),
-            ));
+            return Err(VideoError::InvalidSource("source URL is empty".to_owned()));
         }
         if let Some(rest) = source.strip_prefix("file://") {
             // Strip the //hostname/ prefix if present (file:///foo/bar → /foo/bar).
@@ -227,7 +229,6 @@ impl VideoDecoder for AvfVideoDecoder {
     }
 }
 
-
 #[cfg(target_os = "macos")]
 #[allow(deprecated)]
 // `AVAsset::tracksWithMediaType` is deprecated in favour of the async
@@ -241,8 +242,8 @@ mod avf_impl {
     //! the obj-c symbols and the rest of `video.rs` stays portable.
 
     use super::{
-        AvfVideoDecoder, VideoError, VideoHandle, VideoHandleGuard, VideoHandleInner,
-        VideoOpenAck, VideoState,
+        AvfVideoDecoder, VideoError, VideoHandle, VideoHandleGuard, VideoHandleInner, VideoOpenAck,
+        VideoState,
     };
     use std::sync::Arc;
 
@@ -252,10 +253,9 @@ mod avf_impl {
     };
     use objc2_core_media::{CMTime, CMTimeRange};
     use objc2_core_video::{
-        kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_32BGRA,
-        CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight,
-        CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags,
-        CVPixelBufferUnlockBaseAddress,
+        kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_32BGRA, CVPixelBufferGetBaseAddress,
+        CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight, CVPixelBufferGetWidth,
+        CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
     };
     use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
 
@@ -319,8 +319,7 @@ mod avf_impl {
         impl VideoHandleGuard for AvfGuard {}
         impl Drop for AvfGuard {
             fn drop(&mut self) {
-                self.stop
-                    .store(true, std::sync::atomic::Ordering::Release);
+                self.stop.store(true, std::sync::atomic::Ordering::Release);
                 if let Some(h) = self.join.take() {
                     let _ = h.join();
                 }
@@ -397,9 +396,7 @@ mod avf_impl {
     /// Construct `AVURLAsset` from a filesystem path. Validates the file
     /// exists; AVFoundation otherwise returns a reader that fails on
     /// `start_reading()` with a less helpful error.
-    unsafe fn build_asset(
-        path: &str,
-    ) -> Result<objc2::rc::Retained<AVURLAsset>, VideoError> {
+    unsafe fn build_asset(path: &str) -> Result<objc2::rc::Retained<AVURLAsset>, VideoError> {
         if !std::path::Path::new(path).exists() {
             return Err(VideoError::Decoder(format!("file does not exist: {path}")));
         }
@@ -419,8 +416,7 @@ mod avf_impl {
         // value, not the bit representation, so signed/unsigned NSNumber
         // boxing is interchangeable here.
         let format_value = NSNumber::new_u32(kCVPixelFormatType_32BGRA);
-        let cf_key: &objc2_core_foundation::CFString =
-            kCVPixelBufferPixelFormatTypeKey;
+        let cf_key: &objc2_core_foundation::CFString = kCVPixelBufferPixelFormatTypeKey;
         // Toll-free bridge: CFString and NSString share an ABI-compatible
         // representation. The cast is safe because both are opaque
         // `[u8; 0]`-shaped types pointing at the same Core Foundation object.
@@ -459,11 +455,10 @@ mod avf_impl {
 
         let settings = build_bgra_settings();
 
-        let track_output =
-            AVAssetReaderTrackOutput::assetReaderTrackOutputWithTrack_outputSettings(
-                &track,
-                Some(&settings),
-            );
+        let track_output = AVAssetReaderTrackOutput::assetReaderTrackOutputWithTrack_outputSettings(
+            &track,
+            Some(&settings),
+        );
 
         let reader = AVAssetReader::assetReaderWithAsset_error(&asset)
             .map_err(|e| VideoError::Decoder(format!("AVAssetReader init: {:?}", e)))?;
@@ -725,9 +720,7 @@ impl MockVideoDecoder {
     /// dimensions. Future: accept query-string fps/width/height overrides.
     fn validate_source(source: &str) -> Result<(), VideoError> {
         if source.is_empty() {
-            return Err(VideoError::InvalidSource(
-                "source URL is empty".to_owned(),
-            ));
+            return Err(VideoError::InvalidSource("source URL is empty".to_owned()));
         }
         // Mock decoder accepts only mock:// URLs. Real-file paths must be
         // routed through AvfVideoDecoder (which today returns NotImplemented).
@@ -812,8 +805,7 @@ impl VideoDecoder for MockVideoDecoder {
         impl VideoHandleGuard for MockGuard {}
         impl Drop for MockGuard {
             fn drop(&mut self) {
-                self.stop
-                    .store(true, std::sync::atomic::Ordering::Release);
+                self.stop.store(true, std::sync::atomic::Ordering::Release);
                 if let Some(h) = self.handle.take() {
                     let _ = h.join();
                 }
@@ -949,10 +941,7 @@ mod tests {
 
     /// Convenience: pull whatever the ring drained in `wait_ms` and return
     /// the count of frames + the first frame for shape checks.
-    fn drain_after(
-        ring: &Arc<ArrayQueue<Vec<u8>>>,
-        wait_ms: u64,
-    ) -> (usize, Option<Vec<u8>>) {
+    fn drain_after(ring: &Arc<ArrayQueue<Vec<u8>>>, wait_ms: u64) -> (usize, Option<Vec<u8>>) {
         std::thread::sleep(std::time::Duration::from_millis(wait_ms));
         let mut first: Option<Vec<u8>> = None;
         let mut count = 0;
@@ -1149,14 +1138,20 @@ mod tests {
         // (post-#346) on macOS, never panic anywhere.
         let dev = default_video_device();
         let ring = make_ring();
-        let res = dev.open("/tmp/definitely-does-not-exist-plexi-factory-test.mp4", ring);
+        let res = dev.open(
+            "/tmp/definitely-does-not-exist-plexi-factory-test.mp4",
+            ring,
+        );
         let ok = match &res {
             Err(VideoError::Decoder(_)) => true,
             #[cfg(not(target_os = "macos"))]
             Err(VideoError::NotImplemented) => true,
             _ => false,
         };
-        assert!(ok, "expected Decoder error (or NotImplemented off-mac), got {res:?}");
+        assert!(
+            ok,
+            "expected Decoder error (or NotImplemented off-mac), got {res:?}"
+        );
     }
 
     #[test]

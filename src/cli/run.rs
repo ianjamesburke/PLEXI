@@ -1,6 +1,5 @@
-use super::{PlexiCommands, APP_ID, list_global_scripts, is_executable, print_tip};
+use super::{is_executable, list_global_scripts, print_tip, PlexiCommands, APP_ID};
 use std::process::Command;
-
 
 /// Entry point for `plexi run <command_name>`.
 /// Returns the exit code.
@@ -93,7 +92,9 @@ pub fn run_command(command_name: &str) -> i32 {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // No workspace commands.toml — try global script from config_dir()/scripts/.
-            let script_path = crate::config::config_dir().join("scripts").join(command_name);
+            let script_path = crate::config::config_dir()
+                .join("scripts")
+                .join(command_name);
             if script_path.is_file() && is_executable(&script_path) {
                 log::info!("cli: running global script {:?}", script_path);
                 let mut child_cmd = Command::new(&script_path);
@@ -161,35 +162,47 @@ pub fn run_command(command_name: &str) -> i32 {
             // Load workspace context once — fail early if secrets are required but workspace
             // is not initialised (missing workspace.toml or secrets.toml).
             let ws_root = crate::app::registry::resolve_workspace_root(&cwd);
-            let ws_context: Option<(String, WorkspaceSecrets)> = ws_root.as_ref().and_then(|root| {
-                let cfg = match WorkspaceConfig::load(root) {
-                    Ok(Some(c)) => c,
-                    Ok(None) => {
-                        log::warn!("run_command: workspace.toml missing at {}", root.display());
-                        return None;
-                    }
-                    Err(e) => {
-                        log::warn!("run_command: failed to load workspace.toml at {}: {e}", root.display());
-                        return None;
-                    }
-                };
-                let router = match WorkspaceSecrets::load(root) {
-                    Ok(Some(r)) => r,
-                    Ok(None) => {
-                        log::warn!("run_command: secrets.toml missing at {}", root.display());
-                        return None;
-                    }
-                    Err(e) => {
-                        log::warn!("run_command: failed to load secrets.toml at {}: {e}", root.display());
-                        return None;
-                    }
-                };
-                Some((cfg.id, router))
-            });
+            let ws_context: Option<(String, WorkspaceSecrets)> =
+                ws_root.as_ref().and_then(|root| {
+                    let cfg = match WorkspaceConfig::load(root) {
+                        Ok(Some(c)) => c,
+                        Ok(None) => {
+                            log::warn!("run_command: workspace.toml missing at {}", root.display());
+                            return None;
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "run_command: failed to load workspace.toml at {}: {e}",
+                                root.display()
+                            );
+                            return None;
+                        }
+                    };
+                    let router = match WorkspaceSecrets::load(root) {
+                        Ok(Some(r)) => r,
+                        Ok(None) => {
+                            log::warn!("run_command: secrets.toml missing at {}", root.display());
+                            return None;
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "run_command: failed to load secrets.toml at {}: {e}",
+                                root.display()
+                            );
+                            return None;
+                        }
+                    };
+                    Some((cfg.id, router))
+                });
             match ws_context {
                 None => {
-                    log::warn!("run_command: secrets required but workspace context unavailable in {}", cwd.display());
-                    eprintln!("error: command requires secrets but workspace is not fully initialized.");
+                    log::warn!(
+                        "run_command: secrets required but workspace context unavailable in {}",
+                        cwd.display()
+                    );
+                    eprintln!(
+                        "error: command requires secrets but workspace is not fully initialized."
+                    );
                     eprintln!("  → plexi workspace init   (creates workspace.toml + secrets.toml)");
                     eprintln!("  → plexi secret set <NAME>  (then store the required secrets)");
                     return 1;
@@ -328,7 +341,10 @@ deploy = { run = "./deploy.sh", secrets = ["API_KEY", "DB_PASS"] }
         let parsed: PlexiCommands = toml::from_str(toml).unwrap();
         let entry = parsed.commands.get("deploy").unwrap();
         assert_eq!(entry.run(), "./deploy.sh");
-        assert_eq!(entry.secrets(), &["API_KEY".to_string(), "DB_PASS".to_string()]);
+        assert_eq!(
+            entry.secrets(),
+            &["API_KEY".to_string(), "DB_PASS".to_string()]
+        );
     }
 
     #[test]
@@ -352,7 +368,13 @@ dev = { run = "npm run dev", description = "Start dev server" }
 "#;
         let parsed: PlexiCommands = toml::from_str(toml).unwrap();
         assert_eq!(parsed.commands.len(), 2);
-        assert!(matches!(parsed.commands.get("build").unwrap(), CommandEntry::Simple(_)));
-        assert!(matches!(parsed.commands.get("dev").unwrap(), CommandEntry::Full(_)));
+        assert!(matches!(
+            parsed.commands.get("build").unwrap(),
+            CommandEntry::Simple(_)
+        ));
+        assert!(matches!(
+            parsed.commands.get("dev").unwrap(),
+            CommandEntry::Full(_)
+        ));
     }
 }

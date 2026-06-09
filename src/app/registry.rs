@@ -242,11 +242,11 @@ pub struct LaunchSection {
     pub startup_message: Option<String>,
 }
 
-
 impl AppCapabilities {
     /// Convert manifest-declared capabilities to runtime permissions.
     pub fn to_permissions(&self) -> crate::app::permissions::AppPermissions {
-        let mut perms = crate::app::permissions::AppPermissions::from_capability_strings(&self.capabilities);
+        let mut perms =
+            crate::app::permissions::AppPermissions::from_capability_strings(&self.capabilities);
         perms.allowed_hosts = self.allowed_hosts.clone();
         perms
     }
@@ -348,7 +348,11 @@ impl AppRegistry {
             }
             let local_agents = root.join(&channel_dir).join("agents");
             if local_agents.is_dir() {
-                registry.scan_dir(&local_agents, RegistrySource::LocalAgent, Some(root.clone()));
+                registry.scan_dir(
+                    &local_agents,
+                    RegistrySource::LocalAgent,
+                    Some(root.clone()),
+                );
             }
         }
 
@@ -413,7 +417,14 @@ impl AppRegistry {
                         // Plain insert — local entries override global for extension map too.
                         self.extension_map.insert(ext.to_lowercase(), id.clone());
                     }
-                    self.apps.insert(id, InstalledApp { source, workspace_root: workspace_root.clone(), ..installed });
+                    self.apps.insert(
+                        id,
+                        InstalledApp {
+                            source,
+                            workspace_root: workspace_root.clone(),
+                            ..installed
+                        },
+                    );
                 }
                 Err(e) => {
                     log::warn!("AppRegistry: skipping {:?}: {e}", entry_dir.file_name());
@@ -473,7 +484,6 @@ impl AppRegistry {
         })
     }
 
-
     /// List all installed apps.
     pub fn list(&self) -> Vec<&InstalledApp> {
         let mut apps: Vec<_> = self.apps.values().collect();
@@ -483,14 +493,18 @@ impl AppRegistry {
 
     /// Returns true if the app's process should survive pane close (`[launch].background`).
     pub fn is_background(&self, app_id: &str) -> bool {
-        self.apps.get(app_id).map(|a| a.launch.background).unwrap_or(false)
+        self.apps
+            .get(app_id)
+            .map(|a| a.launch.background)
+            .unwrap_or(false)
     }
 
     /// Get the manifest-declared pane group (`[launch].join_group`).
     pub fn group_for(&self, app_id: &str) -> Option<String> {
-        self.apps.get(app_id).and_then(|a| a.launch.join_group.clone())
+        self.apps
+            .get(app_id)
+            .and_then(|a| a.launch.join_group.clone())
     }
-
 
     /// Returns true when the app's manifest sets `[app] watch = true`.
     /// The file watcher only needs the resolved app directory — discovery
@@ -505,18 +519,12 @@ impl AppRegistry {
     /// Path to the app's installation directory (contains `manifest.toml`).
     /// Used by the file watcher; returns `None` when the app id is unknown.
     pub fn app_dir_for(&self, app_id: &str) -> Option<PathBuf> {
-        self.apps
-            .get(app_id)
-            .map(|a| a.app_dir.clone())
+        self.apps.get(app_id).map(|a| a.app_dir.clone())
     }
-
 
     /// Return the manifest-declared notification scope for an app.
     /// Defaults to `Window` when the manifest omits `[launch] notification_scope`.
-    pub fn default_notification_scope_for(
-        &self,
-        app_id: &str,
-    ) -> crate::app_protocol::NotifyScope {
+    pub fn default_notification_scope_for(&self, app_id: &str) -> crate::app_protocol::NotifyScope {
         self.apps
             .get(app_id)
             .map(|a| a.launch.notification_scope.clone().into())
@@ -525,7 +533,9 @@ impl AppRegistry {
 
     /// Return the manifest-declared startup message, if any.
     pub fn startup_message_for(&self, app_id: &str) -> Option<String> {
-        self.apps.get(app_id).and_then(|a| a.launch.startup_message.clone())
+        self.apps
+            .get(app_id)
+            .and_then(|a| a.launch.startup_message.clone())
     }
 
     /// Check whether an app's declared capabilities are satisfiable by the
@@ -603,8 +613,10 @@ impl AppRegistry {
                     log::info!(
                         "AppRegistry: '{}' has layout guards min={}×{} compact={} regular={}",
                         id,
-                        app.manifest_min_width, app.manifest_min_height,
-                        app.compact_threshold, app.regular_threshold,
+                        app.manifest_min_width,
+                        app.manifest_min_height,
+                        app.compact_threshold,
+                        app.regular_threshold,
                     );
                 }
                 log::info!(
@@ -761,7 +773,9 @@ mod tests {
         fs::write(app_dir.join("app.py"), "import plexi\n").unwrap();
 
         let registry = AppRegistry::load_with_global(workspace.path(), global.path());
-        let app = registry.get("myapp").expect("app.py entry must load without chmod+x");
+        let app = registry
+            .get("myapp")
+            .expect("app.py entry must load without chmod+x");
         assert!(app.bin_path.ends_with("app.py"));
     }
 
@@ -776,7 +790,9 @@ mod tests {
         write_app(global.path(), "global-only", "Global Only");
 
         let registry = AppRegistry::load_with_global(workspace.path(), global.path());
-        let entry = registry.get("global-only").expect("global app should appear");
+        let entry = registry
+            .get("global-only")
+            .expect("global app should appear");
         assert_eq!(entry.source, RegistrySource::Global);
     }
 
@@ -822,7 +838,10 @@ mod tests {
             Some(h) => unsafe { std::env::set_var("HOME", h) },
             None => unsafe { std::env::remove_var("HOME") },
         }
-        assert!(result.is_none(), "home dir must not be a workspace root even when .plexi exists");
+        assert!(
+            result.is_none(),
+            "home dir must not be a workspace root even when .plexi exists"
+        );
     }
 
     #[test]
@@ -971,7 +990,9 @@ watch = true
         fs::write(&entry, "#!/bin/sh\nexit 0\n").unwrap();
 
         let registry = AppRegistry::load_with_global(bare.path(), global.path());
-        let app = registry.get("watching-app").expect("manifest with watch=true should load");
+        let app = registry
+            .get("watching-app")
+            .expect("manifest with watch=true should load");
         assert_eq!(app.manifest.watch, Some(true));
     }
 
@@ -983,7 +1004,9 @@ watch = true
         write_app(global.path(), "no-watch", "No Watch");
 
         let registry = AppRegistry::load_with_global(bare.path(), global.path());
-        let app = registry.get("no-watch").expect("default manifest should load");
+        let app = registry
+            .get("no-watch")
+            .expect("default manifest should load");
         assert_eq!(app.manifest.watch, None);
         // And `watch_eligible` returns false (also exercises the absent
         // path on the public API).
@@ -1117,7 +1140,11 @@ notification_scope = \"global\"
 
         let registry = AppRegistry::load_with_global(workspace.path(), global.path());
         let entry = registry.get("tool").expect("tool must be discovered");
-        assert_eq!(entry.source, RegistrySource::LocalAgent, "agent must shadow local app");
+        assert_eq!(
+            entry.source,
+            RegistrySource::LocalAgent,
+            "agent must shadow local app"
+        );
         assert_eq!(entry.manifest.name, "Tool (agent)");
     }
 
@@ -1199,9 +1226,14 @@ startup_message = \"Starting Greeter…\"
         write_app(&local_apps, "ws-app", "Workspace App");
 
         let registry = AppRegistry::load_with_global(workspace.path(), global.path());
-        let app = registry.get("ws-app").expect("workspace app should be discovered");
+        let app = registry
+            .get("ws-app")
+            .expect("workspace app should be discovered");
         assert_eq!(app.source, RegistrySource::LocalApp);
-        let ws_root = app.workspace_root.as_ref().expect("workspace_root should be Some for local app");
+        let ws_root = app
+            .workspace_root
+            .as_ref()
+            .expect("workspace_root should be Some for local app");
         assert_eq!(
             ws_root.canonicalize().unwrap(),
             workspace.path().canonicalize().unwrap(),
@@ -1215,9 +1247,14 @@ startup_message = \"Starting Greeter…\"
         write_app(global.path(), "global-app", "Global App");
 
         let registry = AppRegistry::load_with_global(bare.path(), global.path());
-        let app = registry.get("global-app").expect("global app should be discovered");
+        let app = registry
+            .get("global-app")
+            .expect("global app should be discovered");
         assert_eq!(app.source, RegistrySource::Global);
-        assert!(app.workspace_root.is_none(), "global app must have no workspace_root");
+        assert!(
+            app.workspace_root.is_none(),
+            "global app must have no workspace_root"
+        );
     }
 
     #[test]
@@ -1229,7 +1266,10 @@ startup_message = \"Starting Greeter…\"
         fs::create_dir_all(workspace.path().join(&channel_dir)).unwrap();
 
         let registry = AppRegistry::load_with_global(workspace.path(), global.path());
-        let loaded = registry.loaded_workspace.as_ref().expect("loaded_workspace should be Some");
+        let loaded = registry
+            .loaded_workspace
+            .as_ref()
+            .expect("loaded_workspace should be Some");
         assert_eq!(
             loaded.canonicalize().unwrap(),
             workspace.path().canonicalize().unwrap(),
@@ -1242,7 +1282,10 @@ startup_message = \"Starting Greeter…\"
         let bare = tempfile::tempdir().unwrap(); // no channel dir → not a workspace
 
         let registry = AppRegistry::load_with_global(bare.path(), global.path());
-        assert!(registry.loaded_workspace.is_none(), "loaded_workspace should be None outside workspace");
+        assert!(
+            registry.loaded_workspace.is_none(),
+            "loaded_workspace should be None outside workspace"
+        );
     }
 
     // ── D1: manifest distribution fields (author, tags, repo) ────────────

@@ -18,8 +18,8 @@ use std::io::{BufRead, BufReader};
 use std::sync::mpsc;
 use std::thread;
 
-use crate::app_protocol::ModelTier;
 use super::{AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent};
+use crate::app_protocol::ModelTier;
 
 fn parse_usage_tokens(usage: &serde_json::Value) -> (Option<u32>, Option<u32>) {
     let input = usage["prompt_tokens"]
@@ -69,7 +69,9 @@ impl AiBackend for OpenRouterBackend {
             .spawn(move || {
                 stream_openrouter(api_key, model, request, tx);
             })
-            .map_err(|e| AiBackendError::Io(format!("failed to spawn OpenRouter stream thread: {e}")))?;
+            .map_err(|e| {
+                AiBackendError::Io(format!("failed to spawn OpenRouter stream thread: {e}"))
+            })?;
 
         Ok(())
     }
@@ -92,7 +94,8 @@ fn stream_openrouter(
 ) {
     if request.messages.is_empty() {
         let _ = tx.send(StreamEvent::Error(
-            "AiBackendRequest.messages is empty — backend requires at least one message".to_string(),
+            "AiBackendRequest.messages is empty — backend requires at least one message"
+                .to_string(),
         ));
         return;
     }
@@ -174,11 +177,7 @@ fn stream_openrouter(
             // Try to parse OpenRouter error shape: {"error":{"code":N,"message":"…"}}
             let msg = serde_json::from_str::<serde_json::Value>(&body)
                 .ok()
-                .and_then(|v| {
-                    v["error"]["message"]
-                        .as_str()
-                        .map(|s| s.to_string())
-                })
+                .and_then(|v| v["error"]["message"].as_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| body.clone());
             let _ = tx.send(StreamEvent::Error(format!(
                 "openrouter http error {status}: {msg}"
@@ -253,7 +252,9 @@ fn stream_openrouter(
                 .as_str()
                 .unwrap_or("unknown error")
                 .to_string();
-            let _ = tx.send(StreamEvent::Error(format!("openrouter stream error: {msg}")));
+            let _ = tx.send(StreamEvent::Error(format!(
+                "openrouter stream error: {msg}"
+            )));
             return;
         }
 
@@ -480,7 +481,11 @@ mod tests {
             }
         }
 
-        assert_eq!(deltas, vec!["before"], "[DONE] must stop parsing — 'after' must not appear");
+        assert_eq!(
+            deltas,
+            vec!["before"],
+            "[DONE] must stop parsing — 'after' must not appear"
+        );
     }
 
     /// Verify that malformed SSE data lines are skipped without panic.

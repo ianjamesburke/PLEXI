@@ -108,7 +108,9 @@ pub fn pane_list_cli(context: Option<u64>, current: bool) -> i32 {
         let raw = match std::env::var("PLEXI_CONTEXT_ID") {
             Ok(v) => v,
             Err(_) => {
-                eprintln!("error: PLEXI_CONTEXT_ID is not set — run this inside a Plexi terminal pane");
+                eprintln!(
+                    "error: PLEXI_CONTEXT_ID is not set — run this inside a Plexi terminal pane"
+                );
                 return 1;
             }
         };
@@ -137,7 +139,11 @@ pub fn pane_list_cli(context: Option<u64>, current: bool) -> i32 {
         payload["context_id"] = serde_json::json!(cid);
     }
 
-    log::info!("pane_list:cli: sending via socket context_id={:?} response_file={:?}", context_id, response_file);
+    log::info!(
+        "pane_list:cli: sending via socket context_id={:?} response_file={:?}",
+        context_id,
+        response_file
+    );
 
     let code = send_to_socket(payload);
     if code != 0 {
@@ -214,7 +220,10 @@ pub fn pane_info_cli(previous: bool) -> i32 {
         .into_owned();
 
     let payload = if previous {
-        log::info!("pane_info:cli: previous=true response_file={:?}", response_file);
+        log::info!(
+            "pane_info:cli: previous=true response_file={:?}",
+            response_file
+        );
         serde_json::json!({
             "type": "get_previous_pane_info",
             "response_file": response_file,
@@ -223,7 +232,9 @@ pub fn pane_info_cli(previous: bool) -> i32 {
         let pane_id_str = match std::env::var("PLEXI_PANE_ID") {
             Ok(v) => v,
             Err(_) => {
-                eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane");
+                eprintln!(
+                    "error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane"
+                );
                 return 1;
             }
         };
@@ -234,7 +245,10 @@ pub fn pane_info_cli(previous: bool) -> i32 {
                 return 1;
             }
         };
-        log::info!("pane_info:cli: pane_id={pane_id} response_file={:?}", response_file);
+        log::info!(
+            "pane_info:cli: pane_id={pane_id} response_file={:?}",
+            response_file
+        );
         serde_json::json!({
             "type": "get_pane_info",
             "pane_id": pane_id,
@@ -261,10 +275,13 @@ pub fn pane_info_cli(previous: bool) -> i32 {
                         }
                         let mut obj = v;
                         obj["socket"] = serde_json::Value::String(socket_path.clone());
-                        let channel = crate::config::build_channel().unwrap_or_else(|| "main".to_string());
+                        let channel =
+                            crate::config::build_channel().unwrap_or_else(|| "main".to_string());
                         obj["channel"] = serde_json::Value::String(channel);
                         match serde_json::to_string(&obj) {
-                            Ok(json_str) => { return print_json_output(&json_str); }
+                            Ok(json_str) => {
+                                return print_json_output(&json_str);
+                            }
                             Err(e) => {
                                 eprintln!("error: could not serialize response: {e}");
                                 return 1;
@@ -323,7 +340,10 @@ pub fn pane_send_cli(pane_id: u64, text: &str) -> i32 {
         .join(format!("send-to-pane-response-{id}.json"))
         .to_string_lossy()
         .into_owned();
-    log::info!("pane_send:cli: pane_id={pane_id} len={} response_file={response_file:?}", text.len());
+    log::info!(
+        "pane_send:cli: pane_id={pane_id} len={} response_file={response_file:?}",
+        text.len()
+    );
     let code = send_to_socket(serde_json::json!({
         "type": "send_to_pane",
         "pane_id": pane_id,
@@ -424,7 +444,12 @@ pub fn pane_key_cli(pane_id: u64, key: &str) -> i32 {
 /// Reads the last N lines from a pane's PTY scrollback buffer and prints a JSON array
 /// of strings to stdout. If `pane_id` is omitted, defaults to PLEXI_PANE_ID.
 /// Returns 0 on success, 1 on error.
-pub fn pane_capture_cli(pane_id: Option<u64>, lines: usize, full_output: bool, from_cursor: Option<u64>) -> i32 {
+pub fn pane_capture_cli(
+    pane_id: Option<u64>,
+    lines: usize,
+    full_output: bool,
+    from_cursor: Option<u64>,
+) -> i32 {
     let resolved_pane_id = match pane_id {
         Some(id) => id,
         None => match std::env::var("PLEXI_PANE_ID") {
@@ -566,7 +591,12 @@ pub fn pane_state_cli(pane_id: u64) -> i32 {
 ///
 /// Clones to a channel-scoped cache dir and sends a path-based spawn_pane,
 /// passing the user's workspace root so app state is scoped correctly.
-pub(super) fn open_github_ephemeral(source: &str, layout: Option<&str>, from_pane_id: Option<u64>, cwd: Option<&str>) -> i32 {
+pub(super) fn open_github_ephemeral(
+    source: &str,
+    layout: Option<&str>,
+    from_pane_id: Option<u64>,
+    cwd: Option<&str>,
+) -> i32 {
     let rest = source.strip_prefix("github:").unwrap_or(source);
     let parts: Vec<&str> = rest.splitn(2, '/').collect();
     if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
@@ -584,14 +614,20 @@ pub(super) fn open_github_ephemeral(source: &str, layout: Option<&str>, from_pan
     // Ensure the parent directory exists before cloning.
     if let Some(parent) = cache_dir.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("error: could not create cache directory {}: {e}", parent.display());
+            eprintln!(
+                "error: could not create cache directory {}: {e}",
+                parent.display()
+            );
             return 1;
         }
     }
 
     if !cache_dir.exists() {
         let url = format!("https://github.com/{owner}/{repo}.git");
-        log::info!("open_github_ephemeral: cloning {url} → {}", cache_dir.display());
+        log::info!(
+            "open_github_ephemeral: cloning {url} → {}",
+            cache_dir.display()
+        );
         eprintln!("Cloning github:{owner}/{repo}...");
         match std::process::Command::new("git")
             .arg("clone")
@@ -611,7 +647,10 @@ pub(super) fn open_github_ephemeral(source: &str, layout: Option<&str>, from_pan
             }
         }
     } else {
-        log::info!("open_github_ephemeral: reusing cache at {}", cache_dir.display());
+        log::info!(
+            "open_github_ephemeral: reusing cache at {}",
+            cache_dir.display()
+        );
     }
 
     // Resolve workspace root from the provided cwd, falling back to current_dir.

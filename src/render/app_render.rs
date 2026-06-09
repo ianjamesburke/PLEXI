@@ -2,7 +2,9 @@
 //!
 //! Used by `plexi app render <id>` to produce screenshots without a display.
 
-use crate::app_protocol::{ControlCommand, DrawCommand, PlexiEvent, Rect as ProtoRect, RenderCommand};
+use crate::app_protocol::{
+    ControlCommand, DrawCommand, PlexiEvent, Rect as ProtoRect, RenderCommand,
+};
 use crate::ui::theme::Colors;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write as IoWrite};
@@ -23,8 +25,7 @@ pub fn render_app_to_json(
     seed_state: Option<serde_json::Value>,
 ) -> Result<String, String> {
     let commands = spawn_and_collect_frame(app_id, bin_path, width, height, seed_state)?;
-    serde_json::to_string_pretty(&commands)
-        .map_err(|e| format!("failed to serialize frame: {e}"))
+    serde_json::to_string_pretty(&commands).map_err(|e| format!("failed to serialize frame: {e}"))
 }
 
 /// Spawn the app at `bin_path`, collect one frame at `width`×`height`, render to PNG bytes.
@@ -52,12 +53,19 @@ fn spawn_and_collect_frame(
     // Mirror the env setup from ProcessApp::launch so Python apps can import plexi_sdk.
     // .py entries are launched via python3 — no shebang or execute bit required (mirrors ProcessApp::launch).
     const ENV_WHITELIST: &[&str] = &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
-    let bundle_contents = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()));
-    let bundled_py_bin = bundle_contents.as_ref()
-        .map(|c| c.join("Resources").join("assets").join("python").join("bin"));
-    let bundle_sdk = bundle_contents.as_ref()
+    let bundle_contents = std::env::current_exe().ok().and_then(|exe| {
+        exe.parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf())
+    });
+    let bundled_py_bin = bundle_contents.as_ref().map(|c| {
+        c.join("Resources")
+            .join("assets")
+            .join("python")
+            .join("bin")
+    });
+    let bundle_sdk = bundle_contents
+        .as_ref()
         .map(|c| c.join("Resources").join("sdk").join("python"));
     let is_python = bin_path.extension().and_then(|e| e.to_str()) == Some("py");
     let mut cmd = if is_python {
@@ -68,7 +76,8 @@ fn spawn_and_collect_frame(
         let py = venv_python
             .map(std::ffi::OsString::from)
             .or_else(|| {
-                bundled_py_bin.as_ref()
+                bundled_py_bin
+                    .as_ref()
                     .map(|b| b.join("python3"))
                     .filter(|p| p.exists())
                     .map(std::ffi::OsString::from)
@@ -100,7 +109,8 @@ fn spawn_and_collect_frame(
     cmd.env("PYTHONPATH", &pythonpath);
     log::info!("app_render[{app_id}]: PYTHONPATH={pythonpath}");
 
-    let mut child = cmd.spawn()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| format!("failed to spawn '{app_id}' at {}: {e}", bin_path.display()))?;
 
     let mut stdin = child.stdin.take().ok_or("no stdin")?;
@@ -120,8 +130,8 @@ fn spawn_and_collect_frame(
         args: vec![],
         state: seed_state,
     };
-    let init_json = serde_json::to_string(&init)
-        .map_err(|e| format!("failed to serialize Init: {e}"))?;
+    let init_json =
+        serde_json::to_string(&init).map_err(|e| format!("failed to serialize Init: {e}"))?;
     writeln!(stdin, "{init_json}").map_err(|e| format!("failed to write Init: {e}"))?;
     log::info!("app_render[{app_id}]: sent Init");
 
@@ -130,10 +140,14 @@ fn spawn_and_collect_frame(
     loop {
         if Instant::now() > deadline {
             let _ = child.kill();
-            return Err(format!("app '{app_id}' did not send Ready within {BOOT_TIMEOUT:?}"));
+            return Err(format!(
+                "app '{app_id}' did not send Ready within {BOOT_TIMEOUT:?}"
+            ));
         }
         let mut line = String::new();
-        reader.read_line(&mut line).map_err(|e| format!("read error waiting for Ready: {e}"))?;
+        reader
+            .read_line(&mut line)
+            .map_err(|e| format!("read error waiting for Ready: {e}"))?;
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -153,10 +167,15 @@ fn spawn_and_collect_frame(
     // Send Render
     let render = PlexiEvent::Render {
         frame_id: 1,
-        rect: ProtoRect { x: 0.0, y: 0.0, w: width as f32, h: height as f32 },
+        rect: ProtoRect {
+            x: 0.0,
+            y: 0.0,
+            w: width as f32,
+            h: height as f32,
+        },
     };
-    let render_json = serde_json::to_string(&render)
-        .map_err(|e| format!("failed to serialize Render: {e}"))?;
+    let render_json =
+        serde_json::to_string(&render).map_err(|e| format!("failed to serialize Render: {e}"))?;
     writeln!(stdin, "{render_json}").map_err(|e| format!("failed to write Render: {e}"))?;
     log::info!("app_render[{app_id}]: sent Render {width}×{height}");
 
@@ -166,10 +185,14 @@ fn spawn_and_collect_frame(
     loop {
         if Instant::now() > deadline {
             let _ = child.kill();
-            return Err(format!("app '{app_id}' did not emit FrameDone within {FRAME_TIMEOUT:?}"));
+            return Err(format!(
+                "app '{app_id}' did not emit FrameDone within {FRAME_TIMEOUT:?}"
+            ));
         }
         let mut line = String::new();
-        reader.read_line(&mut line).map_err(|e| format!("read error collecting frame: {e}"))?;
+        reader
+            .read_line(&mut line)
+            .map_err(|e| format!("read error collecting frame: {e}"))?;
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -179,7 +202,10 @@ fn spawn_and_collect_frame(
                 render_commands.push(rc);
             }
             Ok(DrawCommand::Control(ControlCommand::FrameDone { .. })) => {
-                log::info!("app_render[{app_id}]: FrameDone — {} commands", render_commands.len());
+                log::info!(
+                    "app_render[{app_id}]: FrameDone — {} commands",
+                    render_commands.len()
+                );
                 break;
             }
             Ok(_) => { /* ignore host/control commands during frame collection */ }
@@ -194,15 +220,16 @@ fn spawn_and_collect_frame(
 }
 
 /// Render RenderCommands to PNG bytes via a headless egui context + wgpu offscreen surface.
-fn render_commands_to_png(commands: &[RenderCommand], width: u32, height: u32) -> Result<Vec<u8>, String> {
+fn render_commands_to_png(
+    commands: &[RenderCommand],
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, String> {
     // ── 1. Build egui shapes via a headless egui context ──────────────────
     let ctx = egui::Context::default();
     ctx.set_fonts(egui::FontDefinitions::default());
 
-    let rect = egui::Rect::from_min_size(
-        egui::Pos2::ZERO,
-        egui::vec2(width as f32, height as f32),
-    );
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width as f32, height as f32));
     let mut viewport_info = egui::ViewportInfo::default();
     viewport_info.native_pixels_per_point = Some(1.0);
     viewport_info.inner_rect = Some(rect);
@@ -228,8 +255,15 @@ fn render_commands_to_png(commands: &[RenderCommand], width: u32, height: u32) -
                 let mut te_buffers = std::collections::HashMap::new();
                 let mut te_focus_ctx = crate::render::components::TextEditFocusCtx::new();
                 crate::process_app::render::render_draw_commands(
-                    ui, rect, commands, &colors, &mut cm_cache, &peaks,
-                    &mut img_cache, &std::env::temp_dir(), false,
+                    ui,
+                    rect,
+                    commands,
+                    &colors,
+                    &mut cm_cache,
+                    &peaks,
+                    &mut img_cache,
+                    &std::env::temp_dir(),
+                    false,
                     &mut lv_offsets,
                     &mut lv_last_sel,
                     &mut Vec::new(),
@@ -269,7 +303,11 @@ fn render_commands_to_png(commands: &[RenderCommand], width: u32, height: u32) -
     let texture_format = wgpu::TextureFormat::Rgba8Unorm;
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("plexi-offscreen"),
-        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -294,7 +332,13 @@ fn render_commands_to_png(commands: &[RenderCommand], width: u32, height: u32) -
         size_in_pixels: [width, height],
         pixels_per_point,
     };
-    renderer.update_buffers(&device, &queue, &mut encoder, &clipped_primitives, &screen_descriptor);
+    renderer.update_buffers(
+        &device,
+        &queue,
+        &mut encoder,
+        &clipped_primitives,
+        &screen_descriptor,
+    );
 
     {
         let mut rpass = encoder
@@ -338,7 +382,11 @@ fn render_commands_to_png(commands: &[RenderCommand], width: u32, height: u32) -
                 rows_per_image: Some(height),
             },
         },
-        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
     );
     queue.submit([encoder.finish()]);
 
@@ -372,7 +420,10 @@ fn render_commands_to_png(commands: &[RenderCommand], width: u32, height: u32) -
             .and_then(|mut w| w.write_image_data(&pixels))
             .map_err(|e| format!("PNG encoding failed: {e}"))?;
     }
-    log::info!("app_render: encoded {} bytes for {width}×{height}", png_data.len());
+    log::info!(
+        "app_render: encoded {} bytes for {width}×{height}",
+        png_data.len()
+    );
     Ok(png_data)
 }
 

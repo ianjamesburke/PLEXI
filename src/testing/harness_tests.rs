@@ -55,7 +55,10 @@ fn ai_query_reaches_route_command_not_pending_frame() {
         "AiQuery must be deferred — got none. \
          This means it was silently dropped instead of being routed."
     );
-    assert!(has_prompt, "ai.query consent prompt must be queued after deferred AiQuery");
+    assert!(
+        has_prompt,
+        "ai.query consent prompt must be queued after deferred AiQuery"
+    );
 }
 
 // -- State snapshot -------------------------------------------------------
@@ -68,7 +71,10 @@ fn add_test_pane_appears_in_snapshot() {
     let pane = h.add_test_pane();
     let snap = h.state();
     assert!(snap.open_panes.contains(&pane));
-    assert_eq!(snap.pane_titles.get(&pane).map(|s| s.as_str()), Some("Test App"));
+    assert_eq!(
+        snap.pane_titles.get(&pane).map(|s| s.as_str()),
+        Some("Test App")
+    );
 }
 
 #[test]
@@ -106,7 +112,11 @@ fn push_nav_increments_nav_stack_depth() {
     let AppRuntime::Process(proc) = &app_pane.runtime else {
         panic!("expected Process runtime");
     };
-    assert_eq!(proc.nav_stack_depth(), 1, "push_nav should add one entry to the nav stack");
+    assert_eq!(
+        proc.nav_stack_depth(),
+        1,
+        "push_nav should add one entry to the nav stack"
+    );
 }
 
 #[test]
@@ -133,7 +143,11 @@ fn push_pop_nav_returns_to_zero() {
     let AppRuntime::Process(proc) = &app_pane.runtime else {
         panic!("expected Process runtime");
     };
-    assert_eq!(proc.nav_stack_depth(), 0, "pop_nav should empty the nav stack");
+    assert_eq!(
+        proc.nav_stack_depth(),
+        0,
+        "pop_nav should empty the nav stack"
+    );
 }
 
 // -- Status summary ───────────────────────────────────────────────────────
@@ -172,7 +186,12 @@ fn set_pane_title_unknown_pane_id_does_not_panic() {
     // Injects SetPaneTitle for a pane_id that doesn't exist.
     // Must run without panicking and log a warn — verifies the drain path is wired.
     let mut h = HostHarness::new();
-    h.ipc_tx.send(AppRequest::SetPaneTitle { pane_id: 9999, name: "ghost".into() }).unwrap();
+    h.ipc_tx
+        .send(AppRequest::SetPaneTitle {
+            pane_id: 9999,
+            name: "ghost".into(),
+        })
+        .unwrap();
     h.run_frames(1); // must not panic; logs warn "not found"
 }
 
@@ -212,7 +231,7 @@ fn palette_close_surrenders_focus_before_pane_close() {
 /// See `docs/security/shell-execution-inventory.md` for the full audit.
 #[test]
 fn stream_process_denied_without_terminal_bindings() {
-    use crate::app_protocol::{DrawCommand, AppRequest, PlexiEvent, StreamChannel};
+    use crate::app_protocol::{AppRequest, DrawCommand, PlexiEvent, StreamChannel};
 
     let mut h = HostHarness::new();
     let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
@@ -261,8 +280,8 @@ fn stream_process_denied_without_terminal_bindings() {
 /// dispatch_app_key_events are skipped while the modal is open.
 #[test]
 fn notification_modal_handle_key_returns_consumed() {
-    use crate::app::FocusLayer;
     use crate::app::app_trait::KeyDisposition;
+    use crate::app::FocusLayer;
     let mut h = HostHarness::new();
     h.app.push_focus_layer(FocusLayer::NotificationModal);
     let ctx = h.app.ctx.clone();
@@ -321,8 +340,8 @@ fn cwd_for_welcome_tab_falls_back_to_window_path_when_no_root() {
 #[test]
 fn capability_modal_escape_fires_deny_once() {
     use crate::app::FocusLayer;
-    use crate::process_app::PendingPrompt;
     use crate::host::pane::AppRuntime;
+    use crate::process_app::PendingPrompt;
 
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();
@@ -330,7 +349,9 @@ fn capability_modal_escape_fires_deny_once() {
     // Set the pane as the focused pane so sync_capability_modal_focus finds it.
     let tile_id = {
         let win = &h.app.windows[0];
-        win.tree.tiles.iter()
+        win.tree
+            .tiles
+            .iter()
             .find_map(|(id, tile)| match tile {
                 egui_tiles::Tile::Pane(p) if *p == pane => Some(id),
                 _ => None,
@@ -357,7 +378,10 @@ fn capability_modal_escape_fires_deny_once() {
     // One idle frame: sync_capability_modal_focus should push the layer.
     h.run_frames(1);
     assert!(
-        h.app.focus_stack.iter().any(|l| *l == FocusLayer::CapabilityModal),
+        h.app
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::CapabilityModal),
         "CapabilityModal must be on the focus stack when the focused pane has pending prompts"
     );
 
@@ -385,7 +409,10 @@ fn capability_modal_escape_fires_deny_once() {
     // CapabilityModal must have been popped from the focus stack since
     // sync_capability_modal_focus removes it when pending_prompts drains.
     assert!(
-        !h.app.focus_stack.iter().any(|l| *l == FocusLayer::CapabilityModal),
+        !h.app
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::CapabilityModal),
         "CapabilityModal must be removed from the focus stack after deny_once drains the queue"
     );
 }
@@ -405,7 +432,10 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
     h.app.pending_close = true;
     h.app.sync_confirm_close_focus();
     assert!(
-        h.app.focus_stack.iter().any(|l| *l == FocusLayer::ConfirmClose),
+        h.app
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::ConfirmClose),
         "ConfirmClose must be pushed when pending_close is true"
     );
 
@@ -418,7 +448,10 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
         "CommandPalette must be at the top after its source state becomes true"
     );
     assert!(
-        h.app.focus_stack.iter().any(|l| *l == FocusLayer::ConfirmClose),
+        h.app
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::ConfirmClose),
         "ConfirmClose must still be in the stack (buried beneath CommandPalette)"
     );
 
@@ -434,7 +467,10 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
 
     // The layer that was on top must still be present — we only removed ConfirmClose.
     assert!(
-        h.app.focus_stack.iter().any(|l| *l == FocusLayer::CommandPalette),
+        h.app
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::CommandPalette),
         "CommandPalette must remain in the stack after removing the buried ConfirmClose layer"
     );
 }
@@ -470,8 +506,7 @@ fn quick_note_paste_inserts_into_note_text() {
     });
 
     assert_eq!(
-        h.app.quick_note_text,
-        "hello world",
+        h.app.quick_note_text, "hello world",
         "Pasted text must appear in quick_note_text after a Paste event with QuickNote open"
     );
 }
@@ -489,7 +524,8 @@ fn quick_note_paste_consumed_from_queue() {
     // Inject paste + a non-input event that must survive.
     h.app.ctx.input_mut(|i| {
         i.events.push(egui::Event::Paste("test".into()));
-        i.events.push(egui::Event::PointerMoved(egui::pos2(50.0, 50.0)));
+        i.events
+            .push(egui::Event::PointerMoved(egui::pos2(50.0, 50.0)));
     });
 
     // Run the overlay draw directly — draw_quick_note_modal consumes key events
@@ -505,7 +541,9 @@ fn quick_note_paste_consumed_from_queue() {
         );
         // Non-input event must survive.
         assert!(
-            i.events.iter().any(|e| matches!(e, egui::Event::PointerMoved(_))),
+            i.events
+                .iter()
+                .any(|e| matches!(e, egui::Event::PointerMoved(_))),
             "Non-input events must not be drained"
         );
     });
@@ -589,7 +627,7 @@ fn edit_description_overlay_focus_wins_after_central_panel_steal() {
 /// egui focus after CentralPanel renders.
 #[test]
 fn text_input_overlay_focus_wins_after_central_panel_steal() {
-    use crate::app::{FocusLayer, TextInputOverlay, OverlayTarget};
+    use crate::app::{FocusLayer, OverlayTarget, TextInputOverlay};
     let mut h = HostHarness::new();
     h.app.text_overlay = Some((
         TextInputOverlay {
@@ -618,8 +656,8 @@ fn text_input_overlay_focus_wins_after_central_panel_steal() {
 #[test]
 fn capability_secret_overlay_focus_wins_after_central_panel_steal() {
     use crate::app::FocusLayer;
-    use crate::process_app::PendingPrompt;
     use crate::host::pane::AppRuntime;
+    use crate::process_app::PendingPrompt;
 
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();
@@ -627,7 +665,9 @@ fn capability_secret_overlay_focus_wins_after_central_panel_steal() {
     // Focus the pane so sync_capability_modal_focus can find it.
     let tile_id = {
         let win = &h.app.windows[0];
-        win.tree.tiles.iter()
+        win.tree
+            .tiles
+            .iter()
             .find_map(|(id, tile)| match tile {
                 egui_tiles::Tile::Pane(p) if *p == pane => Some(id),
                 _ => None,

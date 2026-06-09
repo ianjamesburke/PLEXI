@@ -20,32 +20,34 @@ mod tests {
 
         // Seed a ShowNotification on a fresh ProcessApp's pending_commands,
         // then insert it into background_apps with park_context_id = 42.
-        let (mut process_app, _draw_tx) =
-            ProcessApp::new_for_test(999, AppPermissions::builtin());
+        let (mut process_app, _draw_tx) = ProcessApp::new_for_test(999, AppPermissions::builtin());
 
-        process_app.pending_commands.push(AppCommand::ShowNotification {
-            notify_id: "test-notify".to_string(),
-            sender_pane_id: 0,
-            source_context_id: 0, // pre-filled stub value; drain should overwrite
-            level: "info".to_string(),
-            title: "hello from context 2".to_string(),
-            body: String::new(),
-            kind: NotifyKind::Message,
-            options: vec![],
-            input_prompt: None,
-            required: false,
-            priority: 0,
-            scope: NotifyScope::Context,
-            image_inline: None,
-            image_pipe_id: None,
-            timeout_secs: None,
-            on_dismiss: None,
-        });
+        process_app
+            .pending_commands
+            .push(AppCommand::ShowNotification {
+                notify_id: "test-notify".to_string(),
+                sender_pane_id: 0,
+                source_context_id: 0, // pre-filled stub value; drain should overwrite
+                level: "info".to_string(),
+                title: "hello from context 2".to_string(),
+                body: String::new(),
+                kind: NotifyKind::Message,
+                options: vec![],
+                input_prompt: None,
+                required: false,
+                priority: 0,
+                scope: NotifyScope::Context,
+                image_inline: None,
+                image_pipe_id: None,
+                timeout_secs: None,
+                on_dismiss: None,
+            });
 
         let park_context_id: u64 = 42;
-        h.app
-            .background_apps
-            .insert("test-app".to_string(), (park_context_id, Box::new(process_app)));
+        h.app.background_apps.insert(
+            "test-app".to_string(),
+            (park_context_id, Box::new(process_app)),
+        );
 
         let cmds = h.app.drain_all_app_commands();
 
@@ -53,7 +55,10 @@ mod tests {
             matches!(c, AppCommand::ShowNotification { notify_id, .. } if notify_id == "test-notify")
         });
 
-        let Some(AppCommand::ShowNotification { source_context_id, .. }) = notification else {
+        let Some(AppCommand::ShowNotification {
+            source_context_id, ..
+        }) = notification
+        else {
             panic!("expected ShowNotification in drained commands — not found");
         };
 
@@ -289,9 +294,7 @@ impl PlexiApp {
             // manifest.toml. Apps never set it — the host resolves it once
             // per notification here. Defaults to `Context` when the manifest
             // omits the field (safe default: don't interrupt across contexts).
-            let resolved_scope = self
-                .registry
-                .default_notification_scope_for(&type_id);
+            let resolved_scope = self.registry.default_notification_scope_for(&type_id);
             for cmd in cmds {
                 match cmd {
                     AppCommand::SpawnApp { .. }
@@ -305,7 +308,12 @@ impl PlexiApp {
                     | AppCommand::QueryContextState { .. } => deferred.push(cmd),
                     // Builtin apps emit sender_pane_id=0; rewrite to
                     // the real pane_id so the host can route the response.
-                    AppCommand::RequestLinkedTerminal { request_id, cwd, label, .. } => {
+                    AppCommand::RequestLinkedTerminal {
+                        request_id,
+                        cwd,
+                        label,
+                        ..
+                    } => {
                         deferred.push(AppCommand::RequestLinkedTerminal {
                             sender_pane_id: pane_id,
                             request_id,
@@ -313,7 +321,12 @@ impl PlexiApp {
                             label,
                         });
                     }
-                    AppCommand::RunInLinkedTerminal { terminal_pane_id, command, echo, .. } => {
+                    AppCommand::RunInLinkedTerminal {
+                        terminal_pane_id,
+                        command,
+                        echo,
+                        ..
+                    } => {
                         deferred.push(AppCommand::RunInLinkedTerminal {
                             sender_pane_id: pane_id,
                             terminal_pane_id,
@@ -322,7 +335,10 @@ impl PlexiApp {
                         });
                     }
                     AppCommand::CdRequest { cwd, .. } => {
-                        deferred.push(AppCommand::CdRequest { cwd, sender_pane_id: pane_id });
+                        deferred.push(AppCommand::CdRequest {
+                            cwd,
+                            sender_pane_id: pane_id,
+                        });
                     }
                     AppCommand::Notify(msg) => {
                         log::info!("app notify: {msg}");
@@ -373,9 +389,9 @@ impl PlexiApp {
 
 #[cfg(test)]
 mod ownership_tests {
+    use crate::app::app_trait::AppCommand;
     use crate::app::FocusLayer;
     use crate::app_protocol::{ArtifactOpenMode, NotifyKind, NotifyScope};
-    use crate::app::app_trait::AppCommand;
     use crate::host::pane::{AppRuntime, Pane};
     use crate::testing::HostHarness;
 
@@ -436,11 +452,12 @@ mod ownership_tests {
         // Rejection emits CommandPreview with empty would_run_in_cwd directly into
         // process_app.outbound_events — readable here before any frame flush.
         let events = h.effects_drain(app_pane);
-        let preview = events.iter().find(|e| {
-            matches!(e, crate::app_protocol::PlexiEvent::CommandPreview { .. })
-        });
-        let Some(crate::app_protocol::PlexiEvent::CommandPreview { would_run_in_cwd, .. }) =
-            preview
+        let preview = events
+            .iter()
+            .find(|e| matches!(e, crate::app_protocol::PlexiEvent::CommandPreview { .. }));
+        let Some(crate::app_protocol::PlexiEvent::CommandPreview {
+            would_run_in_cwd, ..
+        }) = preview
         else {
             panic!("expected CommandPreview rejection event; got: {events:?}");
         };
@@ -590,7 +607,10 @@ mod ownership_tests {
         // Dismiss the modal.
         h.app.show_notification_modal = false;
         h.app.pop_focus_layer(&FocusLayer::NotificationModal);
-        assert!(!h.app.input_captured_by_overlay(), "overlay must be inactive after pop");
+        assert!(
+            !h.app.input_captured_by_overlay(),
+            "overlay must be inactive after pop"
+        );
 
         h.run_frames(1);
 
@@ -631,7 +651,10 @@ mod ownership_tests {
         // never queues anything, so nothing gets sent.
         let effects = h.effects_drain(pane_id);
         let has_response = effects.iter().any(|e| {
-            matches!(e, crate::app_protocol::PlexiEvent::ContextStateResponse { .. })
+            matches!(
+                e,
+                crate::app_protocol::PlexiEvent::ContextStateResponse { .. }
+            )
         });
         assert!(
             !has_response,

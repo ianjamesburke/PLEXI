@@ -53,13 +53,21 @@ fn snoozed_notification_invisible_then_visible() {
         deliver_after: Some(wake_past), // already elapsed → visible
     });
 
-    assert_eq!(h.app.visible_notification_count(), 1, "past-snooze notification must be visible");
+    assert_eq!(
+        h.app.visible_notification_count(),
+        1,
+        "past-snooze notification must be visible"
+    );
 
     // Now set deliver_after to the future (active snooze).
     let wake_future = std::time::Instant::now() + std::time::Duration::from_secs(300);
     h.app.pending_notifications[0].deliver_after = Some(wake_future);
 
-    assert_eq!(h.app.visible_notification_count(), 0, "future-snooze notification must be invisible");
+    assert_eq!(
+        h.app.visible_notification_count(),
+        0,
+        "future-snooze notification must be invisible"
+    );
 }
 
 /// #840: tick_notification_timeouts must not time out a snoozed notification.
@@ -96,7 +104,8 @@ fn snoozed_notification_exempt_from_timeout() {
     h.app.tick_notification_timeouts();
 
     assert_eq!(
-        h.app.pending_notifications.len(), 1,
+        h.app.pending_notifications.len(),
+        1,
         "snoozed notification must survive tick_notification_timeouts"
     );
 }
@@ -137,9 +146,18 @@ fn persist_roundtrip() {
     assert_eq!(restored.len(), 1);
     assert_eq!(restored[0].notify_id, "test-id");
     assert_eq!(restored[0].title, "Test");
-    assert!(restored[0].tombstoned, "restored notification must be tombstoned");
-    assert!(restored[0].response_file.is_none(), "response_file must be cleared on restore");
-    assert!(restored[0].image_pipe_id.is_none(), "image_pipe_id must be cleared on restore");
+    assert!(
+        restored[0].tombstoned,
+        "restored notification must be tombstoned"
+    );
+    assert!(
+        restored[0].response_file.is_none(),
+        "response_file must be cleared on restore"
+    );
+    assert!(
+        restored[0].image_pipe_id.is_none(),
+        "image_pipe_id must be cleared on restore"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -162,7 +180,10 @@ fn persist_ttl_drops_old_notifications() {
     std::fs::write(&path, json).unwrap();
 
     let restored = load_pending_notifications_from(&path);
-    assert!(restored.is_empty(), "notification older than 7 days must be dropped");
+    assert!(
+        restored.is_empty(),
+        "notification older than 7 days must be dropped"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -203,15 +224,19 @@ fn dispatch_notify_action_pane_focus_navigates() {
     });
 
     assert_eq!(h.app.active_window, 0);
-    h.app.dispatch_notify_action_cmds(vec![AppCommand::DeliverNotifyAction {
-        pane_id: sender_id,
-        notify_id: "n1".into(),
-        action_label: "Go".into(),
-        value: None,
-        response_file: None,
-        host_action: Some("pane_focus:9903".into()),
-    }]);
-    assert_eq!(h.app.active_window, 1, "pane_focus host_action must navigate to the target window");
+    h.app
+        .dispatch_notify_action_cmds(vec![AppCommand::DeliverNotifyAction {
+            pane_id: sender_id,
+            notify_id: "n1".into(),
+            action_label: "Go".into(),
+            value: None,
+            response_file: None,
+            host_action: Some("pane_focus:9903".into()),
+        }]);
+    assert_eq!(
+        h.app.active_window, 1,
+        "pane_focus host_action must navigate to the target window"
+    );
 }
 
 /// #1774: A Window-scoped notification from a pane on window 0 must be visible
@@ -224,7 +249,9 @@ fn window_scoped_notification_visible_only_on_source_window() {
 
     // Add a second window in the same workspace so we can switch active_window.
     let win1_id = 2u64;
-    h.app.windows.push(same_workspace_window_below(win1_id, 9920));
+    h.app
+        .windows
+        .push(same_workspace_window_below(win1_id, 9920));
 
     let win0_id = h.app.windows[0].window_id;
     assert_eq!(h.app.active_window, 0);
@@ -256,15 +283,27 @@ fn window_scoped_notification_visible_only_on_source_window() {
 
     // Visible on window 0.
     assert_eq!(h.app.active_window, 0);
-    assert_eq!(h.app.visible_notification_count(), 1, "notification must be visible on source window");
+    assert_eq!(
+        h.app.visible_notification_count(),
+        1,
+        "notification must be visible on source window"
+    );
 
     // Navigate to window 1 — notification must disappear.
     h.app.active_window = 1;
-    assert_eq!(h.app.visible_notification_count(), 0, "notification must be invisible on a different window");
+    assert_eq!(
+        h.app.visible_notification_count(),
+        0,
+        "notification must be invisible on a different window"
+    );
 
     // Return to window 0 — notification reappears.
     h.app.active_window = 0;
-    assert_eq!(h.app.visible_notification_count(), 1, "notification must reappear when returning to source window");
+    assert_eq!(
+        h.app.visible_notification_count(),
+        1,
+        "notification must reappear when returning to source window"
+    );
 }
 
 // ── #1635: auto-dismiss when originating pane is focused ─────────────────────
@@ -348,7 +387,7 @@ fn auto_dismiss_spares_required_notifications() {
         kind: crate::app_protocol::NotifyKind::Message,
         options: vec![],
         input_prompt: None,
-        required: true,  // <-- required
+        required: true, // <-- required
         priority: 100,
         scope: crate::app_protocol::NotifyScope::Global,
         image_inline: None,
@@ -385,7 +424,7 @@ fn auto_dismiss_does_not_touch_other_pane_notifications() {
 
     h.app.pending_notifications.push(PendingNotification {
         notify_id: "n-other-pane".into(),
-        sender_pane_id: sender_id,  // different from focused_id
+        sender_pane_id: sender_id, // different from focused_id
         source_context_id: ctx_id,
         source_window_id: win_id,
         level: "info".into(),

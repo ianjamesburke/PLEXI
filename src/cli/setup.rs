@@ -130,7 +130,10 @@ pub fn should_prompt() -> bool {
             log::info!("cli_setup: {} installed — writing sentinel", cli_name());
             mark_prompted();
         }
-        log::info!("cli_setup: {} already installed — skipping prompt", cli_name());
+        log::info!(
+            "cli_setup: {} already installed — skipping prompt",
+            cli_name()
+        );
         return false;
     }
     if was_prompted() {

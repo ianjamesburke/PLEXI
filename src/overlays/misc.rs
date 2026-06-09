@@ -92,7 +92,10 @@ impl PlexiApp {
 
                                     crate::ui::widgets::key_combo_list(
                                         ui,
-                                        &[&["\u{2318}", "\u{21E7}", "L"], &["\u{2318}", "\u{21E7}", "H"]],
+                                        &[
+                                            &["\u{2318}", "\u{21E7}", "L"],
+                                            &["\u{2318}", "\u{21E7}", "H"],
+                                        ],
                                         None,
                                         colors,
                                     );
@@ -105,7 +108,10 @@ impl PlexiApp {
 
                                     crate::ui::widgets::key_combo_list(
                                         ui,
-                                        &[&["\u{2318}", "\u{21E7}", "K"], &["\u{2318}", "\u{21E7}", "J"]],
+                                        &[
+                                            &["\u{2318}", "\u{21E7}", "K"],
+                                            &["\u{2318}", "\u{21E7}", "J"],
+                                        ],
                                         None,
                                         colors,
                                     );
@@ -169,7 +175,9 @@ impl PlexiApp {
 
                                     crate::ui::widgets::key_combo_list(
                                         ui,
-                                        &[&["\u{2318}", "\u{2303}", "\u{2325}", "H", "J", "K", "L"]],
+                                        &[&[
+                                            "\u{2318}", "\u{2303}", "\u{2325}", "H", "J", "K", "L",
+                                        ]],
                                         None,
                                         colors,
                                     );
@@ -324,9 +332,11 @@ impl PlexiApp {
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(
-                                        RichText::new(format!("Run plexi update to upgrade to v{latest}"))
-                                            .size(style::TEXT_HINT)
-                                            .color(self.colors.accent),
+                                        RichText::new(format!(
+                                            "Run plexi update to upgrade to v{latest}"
+                                        ))
+                                        .size(style::TEXT_HINT)
+                                        .color(self.colors.accent),
                                     );
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
@@ -480,9 +490,7 @@ impl PlexiApp {
                         // One-shot focus guard.
                         if !overlay.focus_requested {
                             te.request_focus();
-                            if let Some(mut state) =
-                                egui::TextEdit::load_state(ui.ctx(), te_id)
-                            {
+                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
                                 state
                                     .cursor
                                     .set_char_range(Some(egui::text::CCursorRange::two(
@@ -664,9 +672,7 @@ impl PlexiApp {
             self.rename_pane_focus_requested = false;
         } else if commit {
             let new_name = self.rename_buffer.trim().to_string();
-            if let Some(pane) =
-                self.windows[self.active_window].panes.get_mut(&pane_id)
-            {
+            if let Some(pane) = self.windows[self.active_window].panes.get_mut(&pane_id) {
                 if let Some(t) = pane.as_terminal_mut() {
                     t.name_locked = !new_name.is_empty();
                     t.name = if new_name.is_empty() {
@@ -681,7 +687,6 @@ impl PlexiApp {
             self.rename_pane_focus_requested = false;
         }
     }
-
 
     /// Modal for naming a newly-created context when the sidebar is hidden.
     /// Mirrors the inline sidebar rename but as a centred overlay so the
@@ -729,10 +734,12 @@ impl PlexiApp {
                         if !te.has_focus() {
                             te.request_focus();
                             if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
-                                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
-                                    egui::text::CCursor::new(0),
-                                    egui::text::CCursor::new(self.rename_buffer.len()),
-                                )));
+                                state
+                                    .cursor
+                                    .set_char_range(Some(egui::text::CCursorRange::two(
+                                        egui::text::CCursor::new(0),
+                                        egui::text::CCursor::new(self.rename_buffer.len()),
+                                    )));
                                 state.store(ui.ctx(), te_id);
                             }
                         }
@@ -789,22 +796,26 @@ impl PlexiApp {
                         ui.add_space(6.0);
 
                         let te_id = egui::Id::new("edit_description_input");
-                        let te = ui.scope(|ui| {
-                            ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                            ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
-                            ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
-                            ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, self.colors.accent);
-                            ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.colors.border);
-                            ui.add(
-                                egui::TextEdit::multiline(&mut self.description_buffer)
-                                    .id(te_id)
-                                    .desired_width(MODAL_WIDTH)
-                                    .desired_rows(3)
-                                    .hint_text("What are you working on in this context?")
-                                    .font(egui::TextStyle::Body)
-                                    .margin(egui::Margin::symmetric(8, 5)),
-                            )
-                        }).inner;
+                        let te = ui
+                            .scope(|ui| {
+                                ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                                ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                                ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
+                                ui.visuals_mut().widgets.active.bg_stroke =
+                                    egui::Stroke::new(1.0, self.colors.accent);
+                                ui.visuals_mut().widgets.inactive.bg_stroke =
+                                    egui::Stroke::new(1.0, self.colors.border);
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut self.description_buffer)
+                                        .id(te_id)
+                                        .desired_width(MODAL_WIDTH)
+                                        .desired_rows(3)
+                                        .hint_text("What are you working on in this context?")
+                                        .font(egui::TextStyle::Body)
+                                        .margin(egui::Margin::symmetric(8, 5)),
+                                )
+                            })
+                            .inner;
 
                         ui.add_space(4.0);
                         ui.label(
@@ -816,10 +827,12 @@ impl PlexiApp {
                         if !self.description_focus_requested {
                             te.request_focus();
                             if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
-                                state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
-                                    egui::text::CCursor::new(0),
-                                    egui::text::CCursor::new(self.description_buffer.len()),
-                                )));
+                                state
+                                    .cursor
+                                    .set_char_range(Some(egui::text::CCursorRange::two(
+                                        egui::text::CCursor::new(0),
+                                        egui::text::CCursor::new(self.description_buffer.len()),
+                                    )));
                                 state.store(ui.ctx(), te_id);
                             }
                             self.description_focus_requested = true;
@@ -834,7 +847,11 @@ impl PlexiApp {
             self.pop_focus_layer(&crate::app::FocusLayer::ContextDescription);
         } else if commit {
             let new_desc = self.description_buffer.trim().to_string();
-            self.router.get_mut(ctx_idx).description = if new_desc.is_empty() { None } else { Some(new_desc) };
+            self.router.get_mut(ctx_idx).description = if new_desc.is_empty() {
+                None
+            } else {
+                Some(new_desc)
+            };
             self.editing_description = None;
             self.description_focus_requested = false;
             self.pop_focus_layer(&crate::app::FocusLayer::ContextDescription);

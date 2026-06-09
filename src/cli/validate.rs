@@ -38,7 +38,9 @@ pub fn validate_cli(path: &str) -> i32 {
     let app_section = toml_val.get("app");
     let required_fields = ["id", "name", "version", "entry"];
     for field in &required_fields {
-        let val = app_section.and_then(|a| a.get(field)).and_then(|v| v.as_str());
+        let val = app_section
+            .and_then(|a| a.get(field))
+            .and_then(|v| v.as_str());
         if val.is_none() || val == Some("") {
             errors.push(format!("  [app].{field} is missing or empty"));
         }
@@ -74,7 +76,10 @@ pub fn validate_cli(path: &str) -> i32 {
                 Ok(out) if out.status.success() => {}
                 Ok(out) => {
                     let stderr = String::from_utf8_lossy(&out.stderr);
-                    errors.push(format!("  Python syntax error in {entry}: {}", stderr.trim()));
+                    errors.push(format!(
+                        "  Python syntax error in {entry}: {}",
+                        stderr.trim()
+                    ));
                 }
                 Err(e) => {
                     warnings.push(format!("  python3 not found — skipping syntax check: {e}"));
@@ -89,14 +94,24 @@ pub fn validate_cli(path: &str) -> i32 {
         .and_then(|v| v.as_array())
     {
         let known: &[&str] = &[
-            "net.http", "net.dns", "fs.read", "fs.write",
-            "audio.record", "audio.play", "midi.in", "midi.out",
-            "ai.query", "panes.spawn", "video.decode",
+            "net.http",
+            "net.dns",
+            "fs.read",
+            "fs.write",
+            "audio.record",
+            "audio.play",
+            "midi.in",
+            "midi.out",
+            "ai.query",
+            "panes.spawn",
+            "video.decode",
         ];
         for cap in caps {
             if let Some(s) = cap.as_str() {
                 if !known.contains(&s) {
-                    warnings.push(format!("  unknown capability: {s:?} — check the manifest reference"));
+                    warnings.push(format!(
+                        "  unknown capability: {s:?} — check the manifest reference"
+                    ));
                 }
             }
         }
@@ -126,9 +141,18 @@ pub fn validate_cli(path: &str) -> i32 {
             println!("{w}");
         }
     }
-    log::warn!("validate: {} — {} errors, {} warnings", id, errors.len(), warnings.len());
+    log::warn!(
+        "validate: {} — {} errors, {} warnings",
+        id,
+        errors.len(),
+        warnings.len()
+    );
 
-    if errors.is_empty() { 0 } else { 1 }
+    if errors.is_empty() {
+        0
+    } else {
+        1
+    }
 }
 
 /// Resolve `path` argument (canonicalize if given, else use CWD).

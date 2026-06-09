@@ -5,8 +5,7 @@ use std::{
 };
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(86_400);
-const API_URL: &str =
-    "https://api.github.com/repos/ianjamesburke/PLEXI/releases/latest";
+const API_URL: &str = "https://api.github.com/repos/ianjamesburke/PLEXI/releases/latest";
 
 pub fn spawn_update_check(cache_dir: std::path::PathBuf, tx: mpsc::Sender<String>) {
     std::thread::Builder::new()
@@ -60,11 +59,11 @@ mod tests {
         assert!(!semver_gt("3.4.113", "3.4.113")); // equal
         assert!(!semver_gt("3.4.111", "3.4.113")); // behind
         assert!(!semver_gt("3.4.112", "3.4.113")); // one behind
-        // pre-release suffix stripping (#876)
+                                                   // pre-release suffix stripping (#876)
         assert!(!semver_gt("3.4.84", "3.4.84-alpha")); // equal after strip
-        assert!(semver_gt("3.4.85", "3.4.84-alpha"));  // newer than pre-release
+        assert!(semver_gt("3.4.85", "3.4.84-alpha")); // newer than pre-release
         assert!(!semver_gt("3.4.84-alpha", "3.4.84")); // pre-release not newer than release
-        assert!(!semver_gt("3.5.0-rc1", "3.5.0"));     // rc not newer than final
+        assert!(!semver_gt("3.5.0-rc1", "3.5.0")); // rc not newer than final
     }
 }
 
@@ -108,7 +107,10 @@ fn fetch_and_cache(cache_path: &Path) -> Option<String> {
         .as_secs();
     let cache = serde_json::json!({"checked_at": now, "latest": version});
     if let Err(e) = std::fs::write(cache_path, cache.to_string()) {
-        log::warn!("update check: failed to write cache to {}: {e}", cache_path.display());
+        log::warn!(
+            "update check: failed to write cache to {}: {e}",
+            cache_path.display()
+        );
     }
     Some(version)
 }

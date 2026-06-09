@@ -3,8 +3,8 @@
 //! Owns all widget passes (draw commands, TextInput, scroll regions) so that
 //! `ProcessApp` itself only holds persistent app lifecycle state.
 
-use std::collections::{HashMap, HashSet};
 use crate::app_protocol::{PlexiEvent, RenderCommand};
+use std::collections::{HashMap, HashSet};
 
 pub(crate) struct RenderSession {
     /// Per-input text buffers, keyed on the `id` field of `DrawCommand::TextInput`.
@@ -83,7 +83,11 @@ impl RenderSession {
         net_http_granted: bool,
         is_focused: bool,
     ) {
-        log::debug!("render_session: render pane_id={} cmds={}", pane_id, frame.len());
+        log::debug!(
+            "render_session: render pane_id={} cmds={}",
+            pane_id,
+            frame.len()
+        );
 
         // Propagate pane_just_focused into the TextEdit focus context so
         // ComponentTree TextEdit nodes auto-focus on pane switch.
@@ -171,10 +175,8 @@ impl RenderSession {
             if max_x <= min_x || max_y <= min_y {
                 continue;
             }
-            let widget_rect = egui::Rect::from_min_max(
-                egui::pos2(min_x, min_y),
-                egui::pos2(max_x, max_y),
-            );
+            let widget_rect =
+                egui::Rect::from_min_max(egui::pos2(min_x, min_y), egui::pos2(max_x, max_y));
             let actual_size = widget_rect.size();
 
             let widget_id = ui.id().with(("text_input", pane_id, id.as_str()));
@@ -189,8 +191,10 @@ impl RenderSession {
                 child.visuals_mut().text_cursor.stroke.width = 1.5;
                 child.visuals_mut().text_cursor.stroke.color = colors.accent;
                 child.visuals_mut().extreme_bg_color = colors.bg_active;
-                child.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
-                child.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+                child.visuals_mut().widgets.active.bg_stroke =
+                    egui::Stroke::new(1.0, colors.accent);
+                child.visuals_mut().widgets.inactive.bg_stroke =
+                    egui::Stroke::new(1.0, colors.border);
                 let output = if *multiline {
                     let edit = egui::TextEdit::multiline(buffer)
                         .id(widget_id)
@@ -217,13 +221,13 @@ impl RenderSession {
                 (output.response, cursor_idx)
             };
 
-            let pointer_pressed_inside = ui.input(|i| {
-                i.pointer.button_pressed(egui::PointerButton::Primary)
-            }) && ui.input(|i| {
-                i.pointer
-                    .interact_pos()
-                    .map_or(false, |pos| widget_rect.contains(pos))
-            });
+            let pointer_pressed_inside = ui
+                .input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
+                && ui.input(|i| {
+                    i.pointer
+                        .interact_pos()
+                        .map_or(false, |pos| widget_rect.contains(pos))
+                });
             if pointer_pressed_inside {
                 resp.request_focus();
             }
@@ -234,12 +238,10 @@ impl RenderSession {
 
             if *multiline {
                 if resp.has_focus() {
-                    let enter_no_shift = ui.input(|i| {
-                        i.key_pressed(egui::Key::Enter) && !i.modifiers.shift
-                    });
-                    let shift_enter = ui.input(|i| {
-                        i.key_pressed(egui::Key::Enter) && i.modifiers.shift
-                    });
+                    let enter_no_shift =
+                        ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift);
+                    let shift_enter =
+                        ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.shift);
 
                     if enter_no_shift {
                         if let Some(buf) = self.text_input_buffers.get_mut(id.as_str()) {
@@ -249,9 +251,10 @@ impl RenderSession {
                         }
                         submitted.push(id.clone());
                     } else if shift_enter {
-                        if let (Some(buf), Some(char_idx)) =
-                            (self.text_input_buffers.get_mut(id.as_str()), cursor_char_idx)
-                        {
+                        if let (Some(buf), Some(char_idx)) = (
+                            self.text_input_buffers.get_mut(id.as_str()),
+                            cursor_char_idx,
+                        ) {
                             let byte_idx = buf
                                 .char_indices()
                                 .nth(char_idx)
@@ -298,7 +301,15 @@ impl RenderSession {
         let mut scroll_regions: Vec<(&String, egui::Rect, f32)> = Vec::new();
         let origin = pane_rect.min;
         for cmd in frame {
-            if let RenderCommand::BeginScroll { id, x, y, w, h, content_height } = cmd {
+            if let RenderCommand::BeginScroll {
+                id,
+                x,
+                y,
+                w,
+                h,
+                content_height,
+            } = cmd
+            {
                 let viewport = egui::Rect::from_min_size(
                     egui::pos2(origin.x + x, origin.y + y),
                     egui::vec2(*w, *h),
@@ -363,8 +374,13 @@ impl RenderSession {
             }
         }
 
-        log::info!("render_session: forwarding wheel delta_y={} to app", scroll_delta.y);
-        self.outbound_events.push(PlexiEvent::Scroll { delta_y: scroll_delta.y });
+        log::info!(
+            "render_session: forwarding wheel delta_y={} to app",
+            scroll_delta.y
+        );
+        self.outbound_events.push(PlexiEvent::Scroll {
+            delta_y: scroll_delta.y,
+        });
     }
 
     /// Private helper: drain the buffer for `id` and push a `TextSubmitted` event
@@ -412,17 +428,34 @@ impl RenderSession {
         let live_ids: std::collections::HashSet<String> = frame
             .iter()
             .filter_map(|cmd| {
-                if let RenderCommand::ListView { id, .. } = cmd { Some(id.clone()) } else { None }
+                if let RenderCommand::ListView { id, .. } = cmd {
+                    Some(id.clone())
+                } else {
+                    None
+                }
             })
             .collect();
-        self.list_view_scroll_offsets.retain(|id, _| live_ids.contains(id));
-        self.list_view_last_aligned_sel.retain(|id, _| live_ids.contains(id));
+        self.list_view_scroll_offsets
+            .retain(|id, _| live_ids.contains(id));
+        self.list_view_last_aligned_sel
+            .retain(|id, _| live_ids.contains(id));
 
         let mut handled_nav = false;
         for cmd in frame {
             let RenderCommand::ListView {
-                id, x, y, w, h, items, selected, loading, ..
-            } = cmd else { continue };
+                id,
+                x,
+                y,
+                w,
+                h,
+                items,
+                selected,
+                loading,
+                ..
+            } = cmd
+            else {
+                continue;
+            };
 
             // This frame has a list_view — host intercepts j/k/enter
             self.list_view_intercepts_nav = true;
@@ -439,7 +472,8 @@ impl RenderSession {
             // the event first (last-registered widget wins in egui).
             if !items.is_empty() && !*loading {
                 let is_double = ui.input(|i| {
-                    i.pointer.button_double_clicked(egui::PointerButton::Primary)
+                    i.pointer
+                        .button_double_clicked(egui::PointerButton::Primary)
                 });
                 let is_click = ui.input(|i| {
                     i.pointer.button_released(egui::PointerButton::Primary)
@@ -448,7 +482,11 @@ impl RenderSession {
                 if is_double || is_click {
                     if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
                         if list_rect.contains(pos) {
-                            let scroll_y = self.list_view_scroll_offsets.get(id.as_str()).copied().unwrap_or(0.0);
+                            let scroll_y = self
+                                .list_view_scroll_offsets
+                                .get(id.as_str())
+                                .copied()
+                                .unwrap_or(0.0);
                             let mut item_top = 0.0f32;
                             for (i, item) in items.iter().enumerate() {
                                 let h = item.height();
@@ -499,7 +537,11 @@ impl RenderSession {
                     if list_rect.contains(pos) {
                         let total_h: f32 = items.iter().map(|item| item.height()).sum::<f32>();
                         let max_scroll = (total_h - list_h).max(0.0);
-                        let prev = self.list_view_scroll_offsets.get(id.as_str()).copied().unwrap_or(0.0);
+                        let prev = self
+                            .list_view_scroll_offsets
+                            .get(id.as_str())
+                            .copied()
+                            .unwrap_or(0.0);
                         let next = (prev - scroll_delta.y).clamp(0.0, max_scroll);
                         if (next - prev).abs() > 0.01 {
                             self.list_view_scroll_offsets.insert(id.clone(), next);
@@ -511,9 +553,8 @@ impl RenderSession {
 
             // j / down — only when this pane has focus; prevents routing to
             // background app while a terminal pane is focused (#1795)
-            let j_pressed = is_focused && ui.input(|i|
-                i.key_pressed(egui::Key::J) || i.key_pressed(egui::Key::ArrowDown)
-            );
+            let j_pressed = is_focused
+                && ui.input(|i| i.key_pressed(egui::Key::J) || i.key_pressed(egui::Key::ArrowDown));
             if j_pressed && sel + 1 < n {
                 let new_sel = sel + 1;
                 log::info!("ListView[{id}]: j → select {new_sel}");
@@ -526,9 +567,8 @@ impl RenderSession {
             }
 
             // k / up
-            let k_pressed = is_focused && ui.input(|i|
-                i.key_pressed(egui::Key::K) || i.key_pressed(egui::Key::ArrowUp)
-            );
+            let k_pressed = is_focused
+                && ui.input(|i| i.key_pressed(egui::Key::K) || i.key_pressed(egui::Key::ArrowUp));
             if k_pressed && sel > 0 {
                 let new_sel = sel - 1;
                 log::info!("ListView[{id}]: k → select {new_sel}");

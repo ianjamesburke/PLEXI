@@ -105,7 +105,10 @@ impl PlexiApp {
                         .get(&w.context_id)
                         .copied()
                         .and_then(|id| {
-                            self.windows.iter().enumerate().find(|(_, w2)| w2.window_id == id)
+                            self.windows
+                                .iter()
+                                .enumerate()
+                                .find(|(_, w2)| w2.window_id == id)
                         })
                         .map(|(i, w2)| (i, w2.window_id))
                         .unwrap_or((ci, w.window_id));
@@ -357,21 +360,25 @@ impl PlexiApp {
                         ui.set_width(MODAL_WIDTH);
 
                         let te_id = egui::Id::new("palette_search");
-                        let te = ui.scope(|ui| {
-                            ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                            ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
-                            ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
-                            ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, self.colors.accent);
-                            ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, self.colors.border);
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.palette_query)
-                                    .id(te_id)
-                                    .desired_width(MODAL_WIDTH)
-                                    .hint_text("Jump to context or launch app...")
-                                    .font(egui::TextStyle::Body)
-                                    .margin(egui::Margin::symmetric(8, 5)),
-                            )
-                        }).inner;
+                        let te = ui
+                            .scope(|ui| {
+                                ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                                ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                                ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
+                                ui.visuals_mut().widgets.active.bg_stroke =
+                                    egui::Stroke::new(1.0, self.colors.accent);
+                                ui.visuals_mut().widgets.inactive.bg_stroke =
+                                    egui::Stroke::new(1.0, self.colors.border);
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.palette_query)
+                                        .id(te_id)
+                                        .desired_width(MODAL_WIDTH)
+                                        .hint_text("Jump to context or launch app...")
+                                        .font(egui::TextStyle::Body)
+                                        .margin(egui::Margin::symmetric(8, 5)),
+                                )
+                            })
+                            .inner;
                         if !te.has_focus() {
                             te.request_focus();
                         }
@@ -422,17 +429,16 @@ impl PlexiApp {
                                                 colors.text_primary
                                             };
 
-                                            let (r, _) = selectable_row(
-                                                ui,
-                                                is_selected,
-                                                &colors,
-                                                |ui| {
+                                            let (r, _) =
+                                                selectable_row(ui, is_selected, &colors, |ui| {
                                                     ui.horizontal(|ui| {
                                                         if !workspace_name.is_empty() {
                                                             ui.label(
-                                                                RichText::new(workspace_name.as_str())
-                                                                    .size(10.0)
-                                                                    .color(colors.text_dim),
+                                                                RichText::new(
+                                                                    workspace_name.as_str(),
+                                                                )
+                                                                .size(10.0)
+                                                                .color(colors.text_dim),
                                                             );
                                                             ui.label(
                                                                 RichText::new("\u{203A}")
@@ -446,8 +452,7 @@ impl PlexiApp {
                                                                 .color(name_color),
                                                         );
                                                     });
-                                                },
-                                            );
+                                                });
 
                                             if is_selected && should_scroll {
                                                 r.scroll_to_me(None);
@@ -482,11 +487,8 @@ impl PlexiApp {
                                                 ui.add_space(2.0);
                                             }
 
-                                            let (r, _) = selectable_row(
-                                                ui,
-                                                is_selected,
-                                                &colors,
-                                                |ui| {
+                                            let (r, _) =
+                                                selectable_row(ui, is_selected, &colors, |ui| {
                                                     ui.horizontal(|ui| {
                                                         ui.label(
                                                             RichText::new("⬡")
@@ -523,21 +525,18 @@ impl PlexiApp {
                                                                 .color(colors.text_dim),
                                                         );
                                                     }
-                                                },
-                                            );
+                                                });
 
                                             if is_selected && should_scroll {
                                                 r.scroll_to_me(None);
                                             }
                                             if r.clicked() {
-                                                click_action =
-                                                    Some(Action::LaunchApp(id.clone()));
+                                                click_action = Some(Action::LaunchApp(id.clone()));
                                             }
                                             if r.hovered() {
                                                 hover_select = Some(i);
                                             }
                                         }
-
                                     }
                                 }
                             });
@@ -570,10 +569,7 @@ impl PlexiApp {
     /// If `pane_id` is provided, also focuses that specific pane in the window.
     fn jump_to_context(&mut self, ctx_idx: usize, win_id: u64, pane_id: Option<u64>) {
         let target_ctx_id = self.windows[ctx_idx].context_id;
-        if let Some(ctx_idx_sidebar) = self
-            .router
-            .position(|c| c.context_id == target_ctx_id)
-        {
+        if let Some(ctx_idx_sidebar) = self.router.position(|c| c.context_id == target_ctx_id) {
             if ctx_idx_sidebar != self.router.active_idx() {
                 // switch_workspace → pick_active_context_from_workspace sets
                 // active_window based on context_active_window. We override it
@@ -590,21 +586,15 @@ impl PlexiApp {
         // Focus the specific pane if requested — find its TileId in the tree.
         if let Some(pid) = pane_id {
             let win = &mut self.windows[ctx_idx];
-            if let Some(tile_id) = win
-                .tree
-                .tiles
-                .iter()
-                .find_map(|(tid, tile)| {
-                    if matches!(tile, egui_tiles::Tile::Pane(p) if *p == pid) {
-                        Some(*tid)
-                    } else {
-                        None
-                    }
-                })
-            {
+            if let Some(tile_id) = win.tree.tiles.iter().find_map(|(tid, tile)| {
+                if matches!(tile, egui_tiles::Tile::Pane(p) if *p == pid) {
+                    Some(*tid)
+                } else {
+                    None
+                }
+            }) {
                 win.focused_pane = Some(tile_id);
             }
         }
     }
-
 }

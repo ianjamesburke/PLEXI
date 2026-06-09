@@ -140,9 +140,7 @@ impl HotReloadWatcher {
         };
 
         if let Err(e) = watcher.watch(app_dir, RecursiveMode::Recursive) {
-            log::error!(
-                "hot_reload: failed to begin watching {app_dir:?} for pane {pane_id}: {e}"
-            );
+            log::error!("hot_reload: failed to begin watching {app_dir:?} for pane {pane_id}: {e}");
             return;
         }
 
@@ -215,9 +213,7 @@ fn debounce_loop(
             Err(TryRecvError::Empty) => {
                 if let Some(t) = last_event {
                     if t.elapsed() >= debounce {
-                        log::info!(
-                            "hot_reload: debounced reload for pane {pane_id} ({app_dir:?})"
-                        );
+                        log::info!("hot_reload: debounced reload for pane {pane_id} ({app_dir:?})");
                         if sender.send(ReloadRequest { pane_id }).is_err() {
                             // Host receiver dropped — nothing more to do.
                             return;

@@ -1,9 +1,210 @@
 //! Notification queue helpers — visibility, sorting, selection, and mutation.
 
-use super::PendingNotification;
 use super::PlexiApp;
 
+#[derive(Clone)]
+pub(crate) struct PendingNotification {
+    pub notify_id: String,
+    pub sender_pane_id: u64,
+    /// Stable context identity the notification originated from (stamped at drain time).
+    pub source_context_id: u64,
+    /// Stable window identity the notification originated from. Used by
+    /// `NotifyScope::Window` to restrict visibility to the originating window.
+    pub source_window_id: u64,
+    pub level: String,
+    pub title: String,
+    pub body: String,
+    pub kind: crate::app_protocol::NotifyKind,
+    pub options: Vec<crate::app_protocol::NotifyOption>,
+    pub input_prompt: Option<String>,
+    pub required: bool,
+    /// Higher = more urgent. Used to pick next after dismiss + to order
+    /// Cmd+]/Cmd+[ preview traversal. Arrival order (index in the queue
+    /// Vec) breaks ties — oldest wins.
+    pub priority: u32,
+    /// Visibility scope. Affects which contexts the notification appears in.
+    pub scope: crate::app_protocol::NotifyScope,
+    /// Optional inline image attachment (#74). Decoded lazily on first
+    /// render; oversized payloads (> 50 KB decoded) surface a placeholder
+    /// instead of decoding. The decoded texture is cached separately on
+    /// `PlexiApp::notification_images` keyed by `notify_id` — this struct
+    /// stays Clone-cheap (no GPU handles inside it).
+    pub image_inline: Option<crate::app_protocol::NotificationImage>,
+    /// Optional pipe-referenced image attachment (#74). The host drains the
+    /// matching binary ring on first render and caches the texture under
+    /// `PlexiApp::notification_images`.
+    pub image_pipe_id: Option<String>,
+    /// Path to a file the CLI polls for the chosen key. Set when the
+    /// notification was queued by `plexi notify --choice ...`. The host writes
+    /// the chosen value here when the user picks an option so the blocking CLI
+    /// process can read it and exit.
+    pub response_file: Option<String>,
+    pub timeout_secs: Option<u64>,
+    pub on_dismiss: Option<String>,
+    /// When the notification was pushed to the queue. Used for timeout tracking.
+    pub enqueued_at: std::time::Instant,
+    /// True when the originating app pane has exited. The notification stays
+    /// in the queue so the user can read it, but action buttons are hidden.
+    pub tombstoned: bool,
+    /// When `Some(t)`, the notification is invisible and exempt from timeout
+    /// until `t` has elapsed (snooze). `None` means deliver immediately.
+    pub deliver_after: Option<std::time::Instant>,
+}
+
+/// Serializable snapshot of a `PendingNotification`. Session-only handles
+/// (`image_pipe_id`, `response_file`, `deliver_after`) are dropped on save and
+/// restored as `None`; `tombstoned` is forced to `true` on load because the
+/// source pane is gone after a restart.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistedNotification {
+    notify_id: String,
+    sender_pane_id: u64,
+    source_context_id: u64,
+    #[serde(default)]
+    source_window_id: u64,
+    level: String,
+    title: String,
+    body: String,
+    kind: crate::app_protocol::NotifyKind,
+    options: Vec<crate::app_protocol::NotifyOption>,
+    #[serde(default)]
+    input_prompt: Option<String>,
+    required: bool,
+    priority: u32,
+    scope: crate::app_protocol::NotifyScope,
+    #[serde(default)]
+    image_inline: Option<crate::app_protocol::NotificationImage>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+    #[serde(default)]
+    on_dismiss: Option<String>,
+    /// Unix timestamp (seconds since UNIX_EPOCH) when the notification was enqueued.
+    enqueued_at_secs: u64,
+    tombstoned: bool,
+    // deliver_after (snooze) is session-only — not persisted.
+    // image_pipe_id and response_file are session handles — not persisted.
+}
+
+/// Write `notifications` to `path` atomically (write temp, then rename).
+/// Called at every mutation site so unread notifications survive restarts.
+pub(crate) fn save_pending_notifications_to(
+    notifications: &[PendingNotification],
+    path: &std::path::Path,
+) {
+    let now_sys = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let persisted: Vec<PersistedNotification> = notifications
+        .iter()
+        .map(|n| {
+            let age_secs = std::time::Instant::now()
+                .duration_since(n.enqueued_at)
+                .as_secs();
+            let enqueued_at_secs = now_sys.saturating_sub(age_secs);
+            PersistedNotification {
+                notify_id: n.notify_id.clone(),
+                sender_pane_id: n.sender_pane_id,
+                source_context_id: n.source_context_id,
+                source_window_id: n.source_window_id,
+                level: n.level.clone(),
+                title: n.title.clone(),
+                body: n.body.clone(),
+                kind: n.kind.clone(),
+                options: n.options.clone(),
+                input_prompt: n.input_prompt.clone(),
+                required: n.required,
+                priority: n.priority,
+                scope: n.scope,
+                image_inline: n.image_inline.clone(),
+                timeout_secs: n.timeout_secs,
+                on_dismiss: n.on_dismiss.clone(),
+                enqueued_at_secs,
+                tombstoned: n.tombstoned,
+            }
+        })
+        .collect();
+    match serde_json::to_string(&persisted) {
+        Ok(json) => {
+            let tmp = path.with_extension("json.tmp");
+            match std::fs::write(&tmp, &json).and_then(|_| std::fs::rename(&tmp, path)) {
+                Ok(_) => log::info!(
+                    "notify:persist: saved {} notification(s)",
+                    notifications.len()
+                ),
+                Err(e) => log::warn!("notify:persist: failed to write {:?}: {e}", path),
+            }
+        }
+        Err(e) => log::warn!("notify:persist: failed to serialize: {e}"),
+    }
+}
+
+/// Load persisted notifications from `path`. Drops entries older than 7 days.
+/// All restored notifications are tombstoned — their source pane is gone.
+pub(crate) fn load_pending_notifications_from(path: &std::path::Path) -> Vec<PendingNotification> {
+    let Ok(json) = std::fs::read_to_string(path) else {
+        return vec![];
+    };
+    let Ok(persisted) = serde_json::from_str::<Vec<PersistedNotification>>(&json) else {
+        log::warn!("notify:persist: failed to deserialize {:?}", path);
+        return vec![];
+    };
+    let now_sys = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    const TTL_SECS: u64 = 7 * 24 * 3600;
+    let restored: Vec<PendingNotification> = persisted
+        .into_iter()
+        .filter_map(|p| {
+            let age_secs = now_sys.saturating_sub(p.enqueued_at_secs);
+            if age_secs > TTL_SECS {
+                return None;
+            }
+            let enqueued_at = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(age_secs))
+                .unwrap_or_else(std::time::Instant::now);
+            Some(PendingNotification {
+                notify_id: p.notify_id,
+                sender_pane_id: p.sender_pane_id,
+                source_context_id: p.source_context_id,
+                source_window_id: p.source_window_id,
+                level: p.level,
+                title: p.title,
+                body: p.body,
+                kind: p.kind,
+                options: p.options,
+                input_prompt: p.input_prompt,
+                required: p.required,
+                priority: p.priority,
+                scope: p.scope,
+                image_inline: p.image_inline,
+                image_pipe_id: None, // pipe handle gone after restart
+                response_file: None, // file handle gone after restart
+                timeout_secs: p.timeout_secs,
+                on_dismiss: p.on_dismiss,
+                enqueued_at,
+                tombstoned: true,    // source pane is gone
+                deliver_after: None, // snooze is session-only
+            })
+        })
+        .collect();
+    log::info!(
+        "notify:persist: restored {} notification(s) from disk",
+        restored.len()
+    );
+    restored
+}
+
 impl PlexiApp {
+    /// Persist current pending notifications to `config_dir()/notifications.json`.
+    pub(crate) fn save_notifications(&self) {
+        save_pending_notifications_to(
+            &self.pending_notifications,
+            &crate::config::config_dir().join("notifications.json"),
+        );
+    }
+
     // ── Notification-queue helpers ──────────────────────────────────────────
     //
     // The notification modal tracks the currently-displayed entry by
@@ -26,7 +227,9 @@ impl PlexiApp {
 
     /// True when this notification should appear in the current workspace view.
     pub(crate) fn notification_is_visible(&self, n: &PendingNotification) -> bool {
-        if n.deliver_after.map_or(false, |t| t > std::time::Instant::now()) {
+        if n.deliver_after
+            .map_or(false, |t| t > std::time::Instant::now())
+        {
             return false;
         }
         match n.scope {
@@ -51,12 +254,11 @@ impl PlexiApp {
             .map(|(i, n)| (i, n.priority, n.required, n.notify_id.as_str()))
             .collect();
         // required pins to top, then priority DESC, ties broken by arrival ASC.
-        indexed.sort_by(|a, b| {
-            b.2.cmp(&a.2)
-                .then(b.1.cmp(&a.1))
-                .then(a.0.cmp(&b.0))
-        });
-        indexed.into_iter().map(|(_, _, _, id)| id.to_string()).collect()
+        indexed.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)).then(a.0.cmp(&b.0)));
+        indexed
+            .into_iter()
+            .map(|(_, _, _, id)| id.to_string())
+            .collect()
     }
 
     /// Return the id of the highest-priority *visible* notification,
@@ -142,11 +344,18 @@ impl PlexiApp {
             }
         }
         for id in &expired_ids {
-            let Some(pos) = self.pending_notifications.iter().position(|n| &n.notify_id == id) else {
+            let Some(pos) = self
+                .pending_notifications
+                .iter()
+                .position(|n| &n.notify_id == id)
+            else {
                 continue;
             };
             let n = self.pending_notifications.remove(pos);
-            let dismiss_value = n.on_dismiss.clone().unwrap_or_else(|| "timeout".to_string());
+            let dismiss_value = n
+                .on_dismiss
+                .clone()
+                .unwrap_or_else(|| "timeout".to_string());
             log::info!(
                 "notification '{}' timed out after {}s — delivering on_dismiss='{}'",
                 n.title,
@@ -182,7 +391,10 @@ impl PlexiApp {
         for n in &mut self.pending_notifications {
             if n.sender_pane_id == pane_id {
                 n.tombstoned = true;
-                log::info!("notification '{}' tombstoned (pane {pane_id} closed)", n.title);
+                log::info!(
+                    "notification '{}' tombstoned (pane {pane_id} closed)",
+                    n.title
+                );
             }
         }
         self.save_notifications();
@@ -205,8 +417,7 @@ impl PlexiApp {
                     n.scope,
                     crate::app_protocol::NotifyScope::Window
                         | crate::app_protocol::NotifyScope::Context
-                )
-                && n.source_context_id == ctx_id
+                ) && n.source_context_id == ctx_id
             })
             .count()
     }
@@ -223,21 +434,24 @@ impl PlexiApp {
         if depth > 3 {
             return 0;
         }
-        let direct = self.pending_notifications
+        let direct = self
+            .pending_notifications
             .iter()
             .filter(|n| {
                 matches!(
                     n.scope,
                     crate::app_protocol::NotifyScope::Window
                         | crate::app_protocol::NotifyScope::Context
-                )
-                && n.source_context_id == ctx_id
+                ) && n.source_context_id == ctx_id
             })
             .count();
-        direct + self.router.iter()
-            .filter(|c| c.parent_id == Some(ctx_id))
-            .map(|c| self.context_notification_count_recursive_limited(c.context_id, depth + 1))
-            .sum::<usize>()
+        direct
+            + self
+                .router
+                .iter()
+                .filter(|c| c.parent_id == Some(ctx_id))
+                .map(|c| self.context_notification_count_recursive_limited(c.context_id, depth + 1))
+                .sum::<usize>()
     }
 
     /// Count of visible notifications for the active context (context-scoped

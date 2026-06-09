@@ -18,7 +18,9 @@ pub struct ContextState {
 }
 
 /// Overall status of a context, derived from its pane summaries.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub enum ContextStatus {
     Idle,
     Working,
@@ -35,7 +37,9 @@ pub struct PaneSummary {
 }
 
 /// Status of an individual pane.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub enum PaneSummaryStatus {
     Idle,
     Active,
@@ -69,7 +73,9 @@ impl ContextState {
             for (&pid, pane) in entries {
                 let (plabel, pstatus) = match pane {
                     crate::host::pane::Pane::Terminal(t) => {
-                        let name = t.name.clone()
+                        let name = t
+                            .name
+                            .clone()
                             .or_else(|| t.pty_title.clone())
                             .unwrap_or_else(|| "Terminal".to_string());
                         let status = if t.exited {
@@ -83,11 +89,12 @@ impl ContextState {
                         (name, status)
                     }
                     crate::host::pane::Pane::App(a) => {
-                        let status_text = if let crate::host::pane::AppRuntime::Process(pa) = &a.runtime {
-                            pa.status_summary.clone()
-                        } else {
-                            None
-                        };
+                        let status_text =
+                            if let crate::host::pane::AppRuntime::Process(pa) = &a.runtime {
+                                pa.status_summary.clone()
+                            } else {
+                                None
+                            };
                         let status = match status_text.as_deref() {
                             Some(t) if t.contains("error") || t.contains("Error") => {
                                 has_error = true;
@@ -204,10 +211,7 @@ mod tests {
             make_context(1, "Root", None),
             make_context(2, "Child", Some(1)),
         ];
-        let windows = vec![
-            make_empty_window(1, 100),
-            make_empty_window(2, 101),
-        ];
+        let windows = vec![make_empty_window(1, 100), make_empty_window(2, 101)];
         // Child has no panes but we test the rollup structure.
         let state = ContextState::compute(1, &contexts, &windows);
         assert_eq!(state.children.len(), 1);

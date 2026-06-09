@@ -63,7 +63,9 @@ pub enum SavedPaneKind {
     Terminal,
     App,
     #[serde(alias = "sub_context")]
-    Portal { context_id: u64 },
+    Portal {
+        context_id: u64,
+    },
 }
 
 fn workspace_path() -> PathBuf {
@@ -104,7 +106,10 @@ impl WorkspaceFile {
             }
         };
         if ws.version != 2 {
-            log::info!("Ignoring old workspace file version {}; starting fresh", ws.version);
+            log::info!(
+                "Ignoring old workspace file version {}; starting fresh",
+                ws.version
+            );
             let backup = path.with_extension(format!(
                 "backup-v{}-{}.json",
                 ws.version,
@@ -137,8 +142,7 @@ mod tests {
                 kind: kind.clone(),
                 cwd: PathBuf::from("/tmp"),
                 name: Some("split-pane".to_string()),
-                app_id: matches!(kind, SavedPaneKind::App)
-                    .then(|| "snake".to_string()),
+                app_id: matches!(kind, SavedPaneKind::App).then(|| "snake".to_string()),
                 app_state: None,
                 hidden: false,
             };
@@ -168,7 +172,8 @@ mod tests {
 
         // Backward compat: old "sub_context" JSON still deserializes to Portal.
         let legacy_json = r#"{"id":99,"kind":{"sub_context":{"context_id":42}},"cwd":"","name":null,"app_id":null,"app_state":null}"#;
-        let legacy: SavedPane = serde_json::from_str(legacy_json).expect("deserialize legacy sub_context");
+        let legacy: SavedPane =
+            serde_json::from_str(legacy_json).expect("deserialize legacy sub_context");
         assert!(
             matches!(legacy.kind, SavedPaneKind::Portal { context_id: 42 }),
             "legacy sub_context must deserialize to Portal"
@@ -208,8 +213,8 @@ mod tests {
             "kind": "terminal",
             "cwd": "/tmp"
         }"#;
-        let restored: SavedPane = serde_json::from_str(legacy_json)
-            .expect("legacy SavedPane must deserialize");
+        let restored: SavedPane =
+            serde_json::from_str(legacy_json).expect("legacy SavedPane must deserialize");
         assert_eq!(restored.kind, SavedPaneKind::Terminal);
     }
 
@@ -244,8 +249,8 @@ mod tests {
             "path": "/tmp",
             "context_id": 7
         }"#;
-        let restored: Context = serde_json::from_str(legacy_json)
-            .expect("legacy Context must deserialize");
+        let restored: Context =
+            serde_json::from_str(legacy_json).expect("legacy Context must deserialize");
         assert_eq!(restored.name, "old-ctx");
         assert_eq!(restored.context_id, 7);
         assert_eq!(restored.parent_id, None);

@@ -99,8 +99,15 @@ impl PlexiApp {
             self.last_page_x_per_row.insert(cur_y, cur_x);
         }
 
-        let new_idx =
-            find_navigation_target(&pages, ws_id, cur_x, cur_y, dx, dy, &self.last_page_x_per_row);
+        let new_idx = find_navigation_target(
+            &pages,
+            ws_id,
+            cur_x,
+            cur_y,
+            dx,
+            dy,
+            &self.last_page_x_per_row,
+        );
 
         if let Some(idx) = new_idx {
             self.active_window = idx;
@@ -114,11 +121,7 @@ impl PlexiApp {
 
     /// After a context is deleted, find the best remaining context to focus.
     /// Returns the `active_context` index to switch to.
-    pub(crate) fn nearest_context_after_delete(
-        &self,
-        removed_x: u32,
-        removed_y: u32,
-    ) -> usize {
+    pub(crate) fn nearest_context_after_delete(&self, removed_x: u32, removed_y: u32) -> usize {
         let ws_id = self.router.active().context_id;
         let pages: Vec<(u32, u32, usize)> = self
             .windows
@@ -137,11 +140,7 @@ impl PlexiApp {
 /// 1. Same row, next column — `(removed_x + 1, removed_y)`
 /// 2. Same column, next row — `(removed_x, removed_y + 1)`
 /// 3. Nearest by Manhattan distance; tie-break: forward direction (non-negative dx and dy) wins
-fn next_context_after_delete(
-    pages: &[(u32, u32, usize)],
-    removed_x: u32,
-    removed_y: u32,
-) -> usize {
+fn next_context_after_delete(pages: &[(u32, u32, usize)], removed_x: u32, removed_y: u32) -> usize {
     // 1. Same row, next column
     if let Some(&(_, _, i)) = pages
         .iter()

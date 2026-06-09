@@ -1,5 +1,5 @@
-use egui::{Align, Color32, CornerRadius, CursorIcon, Id, Layout, Rect, Sense, Vec2};
 use crate::ui::theme::Colors;
+use egui::{Align, Color32, CornerRadius, CursorIcon, Id, Layout, Rect, Sense, Vec2};
 
 pub const ACTION_ZONE_WIDTH: f32 = 30.0;
 
@@ -16,13 +16,21 @@ static HOME_DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 fn shorten_path(path: &str) -> String {
     let home = HOME_DIR.get_or_init(|| std::env::var("HOME").unwrap_or_default());
     let shortened = if !home.is_empty() {
-        path.strip_prefix(home.as_str()).map_or_else(|| path.to_string(), |rest| format!("~{rest}"))
+        path.strip_prefix(home.as_str())
+            .map_or_else(|| path.to_string(), |rest| format!("~{rest}"))
     } else {
         path.to_string()
     };
     let char_count = shortened.chars().count();
     if char_count > 40 {
-        let tail: String = shortened.chars().rev().take(39).collect::<Vec<_>>().into_iter().rev().collect();
+        let tail: String = shortened
+            .chars()
+            .rev()
+            .take(39)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
         format!("\u{2026}{tail}")
     } else {
         shortened
@@ -62,7 +70,12 @@ pub struct ContextItem {
 }
 
 impl ContextItem {
-    pub fn draw(self, ui: &mut egui::Ui, id: Id, colors: &Colors) -> (SidebarAction, egui::Response) {
+    pub fn draw(
+        self,
+        ui: &mut egui::Ui,
+        id: Id,
+        colors: &Colors,
+    ) -> (SidebarAction, egui::Response) {
         let row_alpha = if self.is_dragging { 0.4_f32 } else { 1.0_f32 };
 
         // Reserve background shape slot before rendering content.
@@ -85,10 +98,7 @@ impl ContextItem {
         let bg_active = colors.bg_active;
         let bg_sidebar_hover = colors.bg_sidebar_hover;
 
-        let text_color = with_alpha(
-            if is_active { text_primary } else { text_dim },
-            row_alpha,
-        );
+        let text_color = with_alpha(if is_active { text_primary } else { text_dim }, row_alpha);
 
         let scope_out = ui.scope(|ui| {
             ui.set_width(ui.available_width());
@@ -108,23 +118,37 @@ impl ContextItem {
                 }
 
                 // Reserve space on the right for: action zone, badge.
-                let right_reserve = if action_enabled { ACTION_ZONE_WIDTH + 4.0 } else { 8.0 };
+                let right_reserve = if action_enabled {
+                    ACTION_ZONE_WIDTH + 4.0
+                } else {
+                    8.0
+                };
                 let badge_w = if badge_count > 0 { 26.0 } else { 0.0 };
                 let text_max = (ui.available_width() - right_reserve - badge_w).max(0.0);
 
                 ui.scope(|ui| {
                     ui.set_max_width(text_max);
                     ui.add(
-                        egui::Label::new(egui::RichText::new(&ctx_name).size(12.0).color(text_color))
-                            .selectable(false)
-                            .truncate(),
+                        egui::Label::new(
+                            egui::RichText::new(&ctx_name).size(12.0).color(text_color),
+                        )
+                        .selectable(false)
+                        .truncate(),
                     );
                 });
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add_space(if action_enabled { ACTION_ZONE_WIDTH } else { 0.0 });
+                    ui.add_space(if action_enabled {
+                        ACTION_ZONE_WIDTH
+                    } else {
+                        0.0
+                    });
                     if badge_count > 0 {
-                        let badge_text = if badge_count > 9 { "9+".to_string() } else { badge_count.to_string() };
+                        let badge_text = if badge_count > 9 {
+                            "9+".to_string()
+                        } else {
+                            badge_count.to_string()
+                        };
                         ui.label(
                             egui::RichText::new(badge_text)
                                 .size(10.0)
@@ -170,7 +194,8 @@ impl ContextItem {
                         let painter = ui.painter();
                         let cy = rect.center().y;
                         for dot_i in 0..capped {
-                            let cx = rect.min.x + (dot_i as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS;
+                            let cx =
+                                rect.min.x + (dot_i as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS;
                             let is_hidden = dots.hidden_set.contains(&dot_i);
                             let color = if dots.focused_idx == Some(dot_i) {
                                 with_alpha(accent_color, row_alpha)
@@ -179,18 +204,25 @@ impl ContextItem {
                             };
                             let center = egui::pos2(cx, cy);
                             if is_hidden {
-                                painter.circle_stroke(center, PANE_DOT_RADIUS, egui::Stroke::new(1.0, color));
+                                painter.circle_stroke(
+                                    center,
+                                    PANE_DOT_RADIUS,
+                                    egui::Stroke::new(1.0, color),
+                                );
                             } else {
                                 painter.circle_filled(center, PANE_DOT_RADIUS, color);
                             }
                         }
                         if dots.count > PANE_DOT_MAX {
-                            let overflow_x = rect.min.x + (capped as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS * 0.5;
-                            let overflow_color = if dots.focused_idx.map_or(false, |idx| idx >= PANE_DOT_MAX) {
-                                with_alpha(accent_color, row_alpha)
-                            } else {
-                                with_alpha(text_dim, 0.5)
-                            };
+                            let overflow_x = rect.min.x
+                                + (capped as f32) * PANE_DOT_SPACING
+                                + PANE_DOT_RADIUS * 0.5;
+                            let overflow_color =
+                                if dots.focused_idx.map_or(false, |idx| idx >= PANE_DOT_MAX) {
+                                    with_alpha(accent_color, row_alpha)
+                                } else {
+                                    with_alpha(text_dim, 0.5)
+                                };
                             painter.text(
                                 egui::pos2(overflow_x, cy),
                                 egui::Align2::LEFT_CENTER,
@@ -220,7 +252,10 @@ impl ContextItem {
             Color32::TRANSPARENT
         };
 
-        ui.painter().set(bg_idx, egui::Shape::rect_filled(row_rect, CornerRadius::ZERO, fill));
+        ui.painter().set(
+            bg_idx,
+            egui::Shape::rect_filled(row_rect, CornerRadius::ZERO, fill),
+        );
 
         if is_active {
             ui.painter().rect_filled(
@@ -243,10 +278,8 @@ impl ContextItem {
 
         if let Some(az) = action_zone {
             if hovered && !is_dragging {
-                let glyph_color = with_alpha(
-                    if in_action { text_primary } else { text_dim },
-                    row_alpha,
-                );
+                let glyph_color =
+                    with_alpha(if in_action { text_primary } else { text_dim }, row_alpha);
                 ui.painter().text(
                     az.center(),
                     egui::Align2::CENTER_CENTER,
@@ -274,7 +307,11 @@ impl ContextItem {
                 egui::pos2(content_max_x, row_rect.max.y),
             ));
             if in_content || is_dragging {
-                ui.ctx().set_cursor_icon(if any_dragging { CursorIcon::Grabbing } else { CursorIcon::Grab });
+                ui.ctx().set_cursor_icon(if any_dragging {
+                    CursorIcon::Grabbing
+                } else {
+                    CursorIcon::Grab
+                });
             }
         }
 
