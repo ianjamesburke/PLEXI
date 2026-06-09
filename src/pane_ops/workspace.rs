@@ -4,7 +4,9 @@
 use crate::app::PlexiApp;
 use crate::host::context::Window;
 use crate::host::shell;
+use crate::spatial::tiling::PaneId;
 use crate::workspace::WorkspaceFile;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 /// Auto-initialize a project workspace at `root` if one does not already exist.
@@ -65,6 +67,129 @@ fn persisted_next_pane_id(host_next: u64, windows: &[crate::workspace::SavedWind
         .map(|id| id.saturating_add(1))
         .unwrap_or(host_next);
     host_next.max(next_from_saved)
+}
+
+fn two_windows_mut(
+    windows: &mut [Window],
+    first: usize,
+    second: usize,
+) -> (&mut Window, &mut Window) {
+    debug_assert_ne!(first, second, "cannot borrow the same window twice");
+    if first < second {
+        let (left, right) = windows.split_at_mut(second);
+        (&mut left[first], &mut right[0])
+    } else {
+        let (left, right) = windows.split_at_mut(first);
+        (&mut right[0], &mut left[second])
+    }
+}
+
+fn clone_tile_subtree(
+    source_tiles: &egui_tiles::Tiles<PaneId>,
+    source_id: egui_tiles::TileId,
+    dest_tiles: &mut egui_tiles::Tiles<PaneId>,
+    tile_map: &mut HashMap<egui_tiles::TileId, egui_tiles::TileId>,
+) -> Option<egui_tiles::TileId> {
+    if let Some(mapped) = tile_map.get(&source_id) {
+        return Some(*mapped);
+    }
+
+    let tile = source_tiles.get(source_id)?;
+    let new_id = match tile {
+        egui_tiles::Tile::Pane(pane_id) => dest_tiles.insert_pane(*pane_id),
+        egui_tiles::Tile::Container(egui_tiles::Container::Linear(linear)) => {
+            let child_pairs: Option<Vec<_>> = linear
+                .children
+                .iter()
+                .map(|&child| {
+                    clone_tile_subtree(source_tiles, child, dest_tiles, tile_map)
+                        .map(|new_child| (child, new_child))
+                })
+                .collect();
+            let child_pairs = child_pairs?;
+            let new_children: Vec<_> = child_pairs
+                .iter()
+                .map(|(_, new_child)| *new_child)
+                .collect();
+            let mut new_linear = egui_tiles::Linear::new(linear.dir, new_children);
+            for (old_child, new_child) in child_pairs {
+                new_linear
+                    .shares
+                    .set_share(new_child, linear.shares[old_child]);
+            }
+            dest_tiles.insert_container(new_linear)
+        }
+        egui_tiles::Tile::Container(egui_tiles::Container::Tabs(tabs)) => {
+            let child_pairs: Option<Vec<_>> = tabs
+                .children
+                .iter()
+                .map(|&child| {
+                    clone_tile_subtree(source_tiles, child, dest_tiles, tile_map)
+                        .map(|new_child| (child, new_child))
+                })
+                .collect();
+            let child_pairs = child_pairs?;
+            let new_children: Vec<_> = child_pairs
+                .iter()
+                .map(|(_, new_child)| *new_child)
+                .collect();
+            let mut new_tabs = egui_tiles::Tabs::new(new_children);
+            new_tabs.active = tabs.active.and_then(|active| {
+                child_pairs
+                    .iter()
+                    .find_map(|(old_child, new_child)| (*old_child == active).then_some(*new_child))
+            });
+            dest_tiles.insert_container(new_tabs)
+        }
+        egui_tiles::Tile::Container(egui_tiles::Container::Grid(grid)) => {
+            let child_pairs: Option<Vec<_>> = grid
+                .children()
+                .copied()
+                .map(|child| {
+                    clone_tile_subtree(source_tiles, child, dest_tiles, tile_map)
+                        .map(|new_child| (child, new_child))
+                })
+                .collect();
+            let child_pairs = child_pairs?;
+            let new_children: Vec<_> = child_pairs
+                .iter()
+                .map(|(_, new_child)| *new_child)
+                .collect();
+            let mut new_grid = egui_tiles::Grid::new(new_children);
+            new_grid.layout = grid.layout.clone();
+            new_grid.col_shares = grid.col_shares.clone();
+            new_grid.row_shares = grid.row_shares.clone();
+            dest_tiles.insert_container(new_grid)
+        }
+    };
+
+    tile_map.insert(source_id, new_id);
+    Some(new_id)
+}
+
+fn map_focus_tile(
+    tile_map: &HashMap<egui_tiles::TileId, egui_tiles::TileId>,
+    source_tile: Option<egui_tiles::TileId>,
+) -> Option<egui_tiles::TileId> {
+    source_tile.and_then(|tile| tile_map.get(&tile).copied())
+}
+
+fn reserve_grid_slot(
+    occupied: &mut HashSet<(u32, u32)>,
+    preferred_x: u32,
+    preferred_y: u32,
+) -> (u32, u32) {
+    if occupied.insert((preferred_x, preferred_y)) {
+        return (preferred_x, preferred_y);
+    }
+
+    let mut x = 0;
+    loop {
+        if occupied.insert((x, preferred_y)) {
+            return (x, preferred_y);
+        }
+        x += 1;
+    }
 }
 
 impl PlexiApp {
@@ -999,17 +1124,16 @@ impl PlexiApp {
         }
     }
 
-    /// Dissolve a portal: reparent all its panes into the parent window (the active
-    /// window that contains the Portal tile), replace the Portal tile with the
-    /// adopted panes, then delete the now-empty child context.
-    ///
-    /// Only promotes one level. Nested portals inside the dissolved context remain
-    /// intact — their tiles are moved to the parent window alongside the regular panes.
+    /// Dissolve a portal: remove the context boundary while preserving the child
+    /// layout. The active child window is grafted into the Portal tile's exact
+    /// position; any remaining child windows are promoted as parent-context windows.
     pub(crate) fn dissolve_portal(&mut self, child_ctx_id: u64) {
-        use egui_tiles::{Container, Tile};
+        use egui_tiles::Tile;
 
         // Find the Portal tile in the active (parent) window.
         let parent_idx = self.active_window;
+        let parent_ctx_id = self.windows[parent_idx].context_id;
+        let parent_window_id = self.windows[parent_idx].window_id;
         let portal_pane_id = {
             let win = &self.windows[parent_idx];
             win.panes
@@ -1039,116 +1163,221 @@ impl PlexiApp {
             }
         };
 
-        // Collect panes from all child windows — extract them so we can move ownership.
-        let child_win_indices: Vec<usize> = self
+        let mut child_windows: Vec<(u64, u32, u32)> = self
             .windows
             .iter()
-            .enumerate()
-            .filter(|(_, w)| w.context_id == child_ctx_id)
-            .map(|(i, _)| i)
+            .filter(|w| w.context_id == child_ctx_id)
+            .map(|w| (w.window_id, w.grid_y, w.grid_x))
             .collect();
+        child_windows.sort_by_key(|(window_id, grid_y, grid_x)| (*grid_y, *grid_x, *window_id));
 
-        // Drain panes from child windows into a staging list (sorted by ID for deterministic order).
-        let mut adopted: Vec<(crate::spatial::tiling::PaneId, crate::host::pane::Pane)> =
-            Vec::new();
-        for &win_idx in &child_win_indices {
-            let mut pane_ids: Vec<crate::spatial::tiling::PaneId> =
-                self.windows[win_idx].panes.keys().copied().collect();
-            pane_ids.sort();
-            for pane_id in pane_ids {
-                if let Some(pane) = self.windows[win_idx].panes.remove(&pane_id) {
-                    adopted.push((pane_id, pane));
-                }
+        let Some(primary_child_window_id) = self
+            .context_active_window
+            .get(&child_ctx_id)
+            .copied()
+            .filter(|active_id| {
+                child_windows
+                    .iter()
+                    .any(|(window_id, _, _)| window_id == active_id)
+            })
+            .or_else(|| child_windows.first().map(|(window_id, _, _)| *window_id))
+        else {
+            log::warn!(
+                "dissolve_portal: ctx={child_ctx_id} has no child windows; removing portal only"
+            );
+            self.windows[parent_idx].panes.remove(&portal_pane_id);
+            self.windows[parent_idx]
+                .tree
+                .remove_recursively(portal_tile_id);
+            if let Some(idx) = self.router.position(|c| c.context_id == child_ctx_id) {
+                self.router.remove_at(idx);
             }
+            self.context_active_window.remove(&child_ctx_id);
+            self.router.retain_depth_stack(|cid| cid != child_ctx_id);
+            return;
+        };
+        let promoted_child_window_count = child_windows.len().saturating_sub(1);
+
+        let Some(primary_idx) = self
+            .windows
+            .iter()
+            .position(|w| w.window_id == primary_child_window_id && w.context_id == child_ctx_id)
+        else {
+            log::warn!(
+                "dissolve_portal: primary child window {primary_child_window_id} missing for ctx={child_ctx_id}"
+            );
+            return;
+        };
+        if primary_idx == parent_idx {
+            log::warn!(
+                "dissolve_portal: primary child window matches parent window idx={parent_idx}"
+            );
+            return;
         }
 
         log::info!(
-            "dissolve_portal: ctx={child_ctx_id} adopting {} panes into parent win={parent_idx}",
-            adopted.len()
+            "dissolve_portal: ctx={child_ctx_id} parent_ctx={parent_ctx_id} graft_primary_window={primary_child_window_id} promote_windows={}",
+            promoted_child_window_count
         );
 
-        // Insert adopted panes into the parent window.
-        // Strategy: add each new tile alongside the Portal tile.
-        // After all siblings are added, remove the Portal tile.
-        for (pane_id, pane) in adopted {
-            let new_tile = self.windows[parent_idx].tree.tiles.insert_pane(pane_id);
-            self.windows[parent_idx].panes.insert(pane_id, pane);
+        {
+            let (parent_win, primary_child_win) =
+                two_windows_mut(&mut self.windows, parent_idx, primary_idx);
+            let Some(child_root) = primary_child_win.tree.root else {
+                log::warn!(
+                    "dissolve_portal: primary child window {primary_child_window_id} has no root"
+                );
+                return;
+            };
 
-            // Add the new tile as a sibling of the Portal tile.
-            let parent_of_portal = self.windows[parent_idx]
-                .tree
-                .tiles
-                .parent_of(portal_tile_id);
-            if let Some(parent_tile) = parent_of_portal {
-                if let Some(Tile::Container(Container::Linear(lin))) =
-                    self.windows[parent_idx].tree.tiles.get_mut(parent_tile)
+            let child_focus = primary_child_win.focused_pane;
+            let child_zoom = primary_child_win.zoomed_pane;
+            let mut tile_map = HashMap::new();
+            let Some(grafted_root) = clone_tile_subtree(
+                &primary_child_win.tree.tiles,
+                child_root,
+                &mut parent_win.tree.tiles,
+                &mut tile_map,
+            ) else {
+                log::warn!("dissolve_portal: failed to clone child tree for ctx={child_ctx_id}");
+                return;
+            };
+
+            parent_win.panes.remove(&portal_pane_id);
+            parent_win
+                .panes
+                .extend(std::mem::take(&mut primary_child_win.panes));
+            if let Some(parent_tile) = parent_win.tree.tiles.parent_of(portal_tile_id) {
+                if let Some(Tile::Container(parent_container)) =
+                    parent_win.tree.tiles.get_mut(parent_tile)
                 {
-                    if let Some(pos) = lin.children.iter().position(|&c| c == portal_tile_id) {
-                        lin.children.insert(pos, new_tile);
-                    } else {
-                        lin.children.push(new_tile);
-                    }
-                } else {
-                    // Parent is Tabs or another container — append via a new horizontal split at root.
-                    let existing_root = self.windows[parent_idx].tree.root;
-                    if let Some(root) = existing_root {
-                        let new_root = self.windows[parent_idx]
-                            .tree
-                            .tiles
-                            .insert_horizontal_tile(vec![root, new_tile]);
-                        self.windows[parent_idx].tree.root = Some(new_root);
-                    } else {
-                        self.windows[parent_idx].tree.root = Some(new_tile);
-                    }
+                    crate::host::context::replace_child(
+                        parent_container,
+                        portal_tile_id,
+                        grafted_root,
+                    );
                 }
             } else {
-                // Portal tile is the root — wrap everything in a horizontal container.
-                let new_root = self.windows[parent_idx]
-                    .tree
-                    .tiles
-                    .insert_horizontal_tile(vec![new_tile, portal_tile_id]);
-                self.windows[parent_idx].tree.root = Some(new_root);
+                parent_win.tree.root = Some(grafted_root);
             }
+            parent_win.tree.tiles.remove(portal_tile_id);
+
+            parent_win.focused_pane = map_focus_tile(&tile_map, child_focus)
+                .or_else(|| parent_win.find_first_pane_in(grafted_root));
+            parent_win.zoomed_pane = map_focus_tile(&tile_map, child_zoom);
+            parent_win.reconcile_stale_tiles();
         }
 
-        // Remove the Portal tile from the parent window.
-        {
-            let win = &mut self.windows[parent_idx];
-            win.panes.remove(&portal_pane_id);
-            if let Some(parent_tile) = win.tree.tiles.parent_of(portal_tile_id) {
-                if let Some(Tile::Container(parent_container)) = win.tree.tiles.get_mut(parent_tile)
-                {
-                    parent_container.remove_child(portal_tile_id);
-                }
-            }
-            win.tree.tiles.remove(portal_tile_id);
-            win.tree.simplify(&egui_tiles::SimplificationOptions {
-                all_panes_must_have_tabs: true,
-                ..egui_tiles::SimplificationOptions::default()
-            });
-        }
-
-        // Fix up active_window index BEFORE the retain shifts indices.
-        // Count how many child windows sit before parent_idx — each removal shifts the index down by 1.
-        let removed_before = child_win_indices
+        let mut occupied: HashSet<(u32, u32)> = self
+            .windows
             .iter()
-            .filter(|&&i| i < parent_idx)
-            .count();
+            .filter(|w| w.context_id == parent_ctx_id)
+            .map(|w| (w.grid_x, w.grid_y))
+            .collect();
+        for (window_id, _grid_y, _grid_x) in child_windows
+            .iter()
+            .filter(|(window_id, _, _)| *window_id != primary_child_window_id)
+        {
+            let Some(win) = self
+                .windows
+                .iter_mut()
+                .find(|w| w.window_id == *window_id && w.context_id == child_ctx_id)
+            else {
+                continue;
+            };
+            let (grid_x, grid_y) = reserve_grid_slot(&mut occupied, win.grid_x, win.grid_y);
+            win.context_id = parent_ctx_id;
+            win.grid_x = grid_x;
+            win.grid_y = grid_y;
+            log::info!(
+                "dissolve_portal: promoted child window {} to parent ctx={} grid=({}, {})",
+                win.window_id,
+                parent_ctx_id,
+                grid_x,
+                grid_y
+            );
+        }
 
-        // Remove child context windows and router entry.
-        self.windows.retain(|w| w.context_id != child_ctx_id);
+        self.windows
+            .retain(|w| w.window_id != primary_child_window_id && w.context_id != child_ctx_id);
         if let Some(idx) = self.router.position(|c| c.context_id == child_ctx_id) {
             self.router.remove_at(idx);
         }
 
-        self.active_window = parent_idx - removed_before;
+        self.context_active_window.remove(&child_ctx_id);
+        self.context_active_window
+            .insert(parent_ctx_id, parent_window_id);
 
-        // Focus the first pane in the parent window.
-        let new_focus = self.windows[self.active_window]
-            .tree
-            .root
-            .and_then(|root| self.windows[self.active_window].find_first_pane_in(root));
-        self.windows[self.active_window].focused_pane = new_focus;
+        let before_depth = self.router.depth_stack.len();
+        self.router.retain_depth_stack(|cid| cid != child_ctx_id);
+        let cleaned_depth = before_depth - self.router.depth_stack.len();
+        if cleaned_depth > 0 {
+            log::info!(
+                "dissolve_portal: removed {cleaned_depth} stale depth_stack entries for ctx={child_ctx_id}"
+            );
+        }
+
+        for win in &mut self.windows {
+            let stale_portal_ids: Vec<_> = win
+                .panes
+                .iter()
+                .filter(|(_, pane)| pane.portal_target() == Some(child_ctx_id))
+                .map(|(pane_id, _)| *pane_id)
+                .collect();
+            for pane_id in stale_portal_ids {
+                win.panes.remove(&pane_id);
+                if let Some(tile_id) = win.tree.tiles.find_pane(&pane_id) {
+                    win.tree.remove_recursively(tile_id);
+                }
+                log::warn!(
+                    "dissolve_portal: removed stale PortalPane {pane_id} targeting dissolved ctx={child_ctx_id}"
+                );
+            }
+            win.reconcile_stale_tiles();
+        }
+
+        self.active_window = self
+            .windows
+            .iter()
+            .position(|w| w.window_id == parent_window_id && w.context_id == parent_ctx_id)
+            .unwrap_or(0);
+        if let Some(parent_ctx_idx) = self.router.position(|c| c.context_id == parent_ctx_id) {
+            self.router.set_active(parent_ctx_idx);
+        }
+
+        self.pending_notifications.retain(|n| {
+            !(matches!(n.scope, crate::app_protocol::NotifyScope::Context)
+                && n.source_context_id == child_ctx_id)
+        });
+        self.save_notifications();
+        if let Some(ref id) = self.current_notify_id.clone() {
+            let still_present = self
+                .pending_notifications
+                .iter()
+                .any(|n| &n.notify_id == id);
+            if !still_present {
+                self.current_notify_id = None;
+            }
+        }
+
+        let page_count = self
+            .windows
+            .iter()
+            .filter(|w| w.context_id == parent_ctx_id)
+            .count();
+        let restored_minimap_visible = self
+            .minimap_visible_per_context
+            .get(&parent_ctx_id)
+            .copied()
+            .unwrap_or(page_count > 1);
+        let show_promoted_windows = promoted_child_window_count > 0 && page_count > 1;
+        self.minimap.visible = restored_minimap_visible || show_promoted_windows;
+        if show_promoted_windows {
+            self.minimap_visible_per_context.insert(parent_ctx_id, true);
+            log::info!(
+                "dissolve_portal: parent ctx={parent_ctx_id} now has {page_count} windows; showing minimap"
+            );
+        }
     }
 
     pub(crate) fn save_workspace(&self) {
