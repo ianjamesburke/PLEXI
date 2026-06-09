@@ -50,13 +50,11 @@ fn rotate_and_prune(
 
             if let Some(prev_date) = prev_date {
                 if prev_date < today {
-                    let dated = config_dir
-                        .join(format!("plexi-{}.log", prev_date.format("%Y-%m-%d")));
+                    let dated =
+                        config_dir.join(format!("plexi-{}.log", prev_date.format("%Y-%m-%d")));
                     if !dated.exists() {
                         if let Err(e) = std::fs::rename(log_path, &dated) {
-                            eprintln!(
-                                "[plexi::logging] could not rotate log to {dated:?}: {e}"
-                            );
+                            eprintln!("[plexi::logging] could not rotate log to {dated:?}: {e}");
                         } else {
                             messages.push(format!(
                                 "rotated log → plexi-{}.log",
@@ -327,7 +325,10 @@ mod tests {
 
         assert!(!log_path.exists(), "plexi.log should have been removed");
         let content = fs::read_to_string(&dated).unwrap();
-        assert!(content.contains("morning session"), "original content preserved");
+        assert!(
+            content.contains("morning session"),
+            "original content preserved"
+        );
         assert!(content.contains("evening session"), "new content appended");
         assert!(msgs.iter().any(|m| m.contains("appended")));
     }

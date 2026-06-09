@@ -6,8 +6,8 @@
 //! AppRequest routing. The actual tile-tree mutation is delegated to
 //! [`PlexiApp::split_with_new_pane`] in [`super::layout`].
 
-use crate::app::PlexiApp;
 use crate::app::app_trait::App;
+use crate::app::PlexiApp;
 use crate::host::command::{HostAction, OpenPaneRequest, PaneRuntimeKind, Placement, ShareRatio};
 use crate::host::effect::HostEffect;
 use crate::host::pane::{Pane, TerminalPane};
@@ -31,11 +31,15 @@ fn builtin_factory(id: &str, args: &[String]) -> Option<Box<dyn App>> {
                 .first()
                 .map(|s| std::path::PathBuf::from(s))
                 .unwrap_or_else(|| crate::config::config_dir().join("notes").join("scratch.md"));
-            Some(Box::new(crate::app::text_editor_app::TextEditorApp::new(path)))
+            Some(Box::new(crate::app::text_editor_app::TextEditorApp::new(
+                path,
+            )))
         }
         "cli-renderer" => {
             let path = args.first().cloned().unwrap_or_default();
-            Some(Box::new(crate::render::cli_renderer_app::CliRendererApp::new(path)))
+            Some(Box::new(
+                crate::render::cli_renderer_app::CliRendererApp::new(path),
+            ))
         }
         _ => None,
     }
@@ -85,7 +89,10 @@ impl PlexiApp {
         share: ShareRatio,
     ) -> (PaneId, ShareRatio, bool, bool) {
         let new_pane_first = matches!(hint, Some("split_above") | Some("split_left"));
-        let vertical = matches!(hint, Some("split_h") | Some("split_right") | Some("split_left"));
+        let vertical = matches!(
+            hint,
+            Some("split_h") | Some("split_right") | Some("split_left")
+        );
         let placement = if vertical {
             Placement::Right
         } else {
@@ -176,7 +183,14 @@ impl PlexiApp {
             process.set_pane_id(pane_id);
             self.windows[active].panes.insert(
                 pane_id,
-                new_app_pane(pane_id, process, workspace_root, group, None, Some(Box::new(replaced_pane))),
+                new_app_pane(
+                    pane_id,
+                    process,
+                    workspace_root,
+                    group,
+                    None,
+                    Some(Box::new(replaced_pane)),
+                ),
             );
             self.set_window_focused_pane(active, focused_tile);
             log::info!("app::{app_id}: launched as overlay on pane {pane_id}");
@@ -230,7 +244,8 @@ impl PlexiApp {
             {
                 let quoted = crate::host::shell::shell_quote(&msg);
                 let cmd = format!("\x15printf '%s\\n' {quoted}\n");
-                term.backend.process_command(BackendCommand::Write(cmd.into_bytes()));
+                term.backend
+                    .process_command(BackendCommand::Write(cmd.into_bytes()));
                 log::info!("app::{app_id}: startup message written to terminal pane {term_id}");
             }
         }
@@ -256,12 +271,12 @@ impl PlexiApp {
             new_id,
             crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
                 id: new_id,
-                runtime: crate::host::pane::AppRuntime::Builtin(
-                    Box::new(crate::host::launch_failed::LaunchFailedApp {
+                runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
+                    crate::host::launch_failed::LaunchFailedApp {
                         app_id: app_id.to_string(),
                         missing,
-                    }),
-                ),
+                    },
+                )),
                 workspace_root,
                 permissions: crate::app::permissions::AppPermissions::default(),
                 manifest_id: app_id.to_string(),
@@ -314,62 +329,62 @@ impl PlexiApp {
         let workspace_root = app_pane.workspace_root.clone();
         // Preserve launch args across hot-reload so the reloaded app gets the
         // same arguments the original was opened with.
-        let saved_launch_args: Vec<String> = if let crate::host::pane::AppRuntime::Process(ref proc) = app_pane.runtime {
-            proc.launch_args.clone()
-        } else {
-            Vec::new()
-        };
+        let saved_launch_args: Vec<String> =
+            if let crate::host::pane::AppRuntime::Process(ref proc) = app_pane.runtime {
+                proc.launch_args.clone()
+            } else {
+                Vec::new()
+            };
 
-        log::info!(
-            "app::{manifest_id} reload triggered ({reason}) for pane {pane_id}"
-        );
+        log::info!("app::{manifest_id} reload triggered ({reason}) for pane {pane_id}");
 
         // Launch the replacement first — if launch fails, leave the old
         // subprocess running so the pane stays usable.
         let cwd = workspace_root.clone();
-        let new_process_opt = self.registry.launch_process(&manifest_id, &cwd, &saved_launch_args);
+        let new_process_opt = self
+            .registry
+            .launch_process(&manifest_id, &cwd, &saved_launch_args);
         // Path-launched apps (app run / app init) are never inserted into the
         // registry's in-memory map, so launch_process returns None. Fall back
         // to loading the manifest directly from workspace_root.
-        let new_process_opt = if new_process_opt.is_none()
-            && workspace_root.join("manifest.toml").exists()
-        {
-            match self.registry.load_app(&workspace_root) {
-                Ok(installed) => {
-                    let perms = installed.manifest.capabilities.to_permissions();
-                    let caps = perms.capabilities.clone();
-                    let keyboard_capture = installed.launch.keyboard_capture;
-                    match crate::process_app::ProcessApp::launch(
-                        installed.manifest.id.clone(),
-                        installed.manifest.name.clone(),
-                        &installed.bin_path,
-                        &cwd,
-                        &saved_launch_args,
-                        workspace_root.clone(),
-                        caps,
-                        keyboard_capture,
-                        installed.manifest.mcp.as_ref(),
-                    ) {
-                        Ok(mut process) => {
-                            process.permissions.allowed_hosts = perms.allowed_hosts;
-                            Some(process)
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "reload_app_pane({pane_id}): path-reload launch failed: {e}"
-                            );
-                            None
+        let new_process_opt =
+            if new_process_opt.is_none() && workspace_root.join("manifest.toml").exists() {
+                match self.registry.load_app(&workspace_root) {
+                    Ok(installed) => {
+                        let perms = installed.manifest.capabilities.to_permissions();
+                        let caps = perms.capabilities.clone();
+                        let keyboard_capture = installed.launch.keyboard_capture;
+                        match crate::process_app::ProcessApp::launch(
+                            installed.manifest.id.clone(),
+                            installed.manifest.name.clone(),
+                            &installed.bin_path,
+                            &cwd,
+                            &saved_launch_args,
+                            workspace_root.clone(),
+                            caps,
+                            keyboard_capture,
+                            installed.manifest.mcp.as_ref(),
+                        ) {
+                            Ok(mut process) => {
+                                process.permissions.allowed_hosts = perms.allowed_hosts;
+                                Some(process)
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "reload_app_pane({pane_id}): path-reload launch failed: {e}"
+                                );
+                                None
+                            }
                         }
                     }
+                    Err(e) => {
+                        log::warn!("reload_app_pane({pane_id}): path-reload load_app failed: {e}");
+                        None
+                    }
                 }
-                Err(e) => {
-                    log::warn!("reload_app_pane({pane_id}): path-reload load_app failed: {e}");
-                    None
-                }
-            }
-        } else {
-            new_process_opt
-        };
+            } else {
+                new_process_opt
+            };
         let Some(mut new_process) = new_process_opt else {
             log::warn!(
                 "reload_app_pane({pane_id}): launch_process returned None — keeping old instance"
@@ -516,7 +531,9 @@ impl PlexiApp {
             let Some(Tile::Pane(focused_pane_id)) =
                 self.windows[active].tree.tiles.get(focused_tile)
             else {
-                log::warn!("builtin::{app_name}: overlay launch skipped — focused tile is not a pane");
+                log::warn!(
+                    "builtin::{app_name}: overlay launch skipped — focused tile is not a pane"
+                );
                 return;
             };
             let pane_id = *focused_pane_id;
@@ -525,7 +542,14 @@ impl PlexiApp {
             };
             self.windows[active].panes.insert(
                 pane_id,
-                new_app_pane(pane_id, app, workspace_root, group, None, Some(Box::new(replaced_pane))),
+                new_app_pane(
+                    pane_id,
+                    app,
+                    workspace_root,
+                    group,
+                    None,
+                    Some(Box::new(replaced_pane)),
+                ),
             );
             self.set_window_focused_pane(active, focused_tile);
             log::info!("builtin::{app_name}: launched as overlay on pane {pane_id}");
@@ -538,10 +562,7 @@ impl PlexiApp {
 
         // Record which terminal we're splitting from before focus moves.
         let linked_pane_id = self.focused_terminal_id(active);
-        let share = Self::share_ratio_from_fraction(
-            &app_type_id,
-            share,
-        );
+        let share = Self::share_ratio_from_fraction(&app_type_id, share);
         let (new_id, share, vertical, new_pane_first) =
             self.open_pane_layout(&app_type_id, group.clone(), hint, share);
         self.windows[active].panes.insert(
@@ -571,14 +592,29 @@ impl PlexiApp {
     ) -> Option<(Tree<PaneId>, HashMap<PaneId, Pane>, TileId)> {
         let new_id = self.host.alloc_pane_id();
 
-        let ctx_id = self.windows.get(self.active_window).map(|w| w.context_id).unwrap_or(0);
+        let ctx_id = self
+            .windows
+            .get(self.active_window)
+            .map(|w| w.context_id)
+            .unwrap_or(0);
         let ctx_name = self.context_name_for(ctx_id);
         let ctx_desc = self.context_description_for(ctx_id);
         let ctx_root = self.context_root_for(ctx_id);
         let ctx_depth = self.context_depth_for(ctx_id);
-        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc, ctx_root.as_ref(), ctx_depth);
+        let mut settings = Self::make_backend_settings(
+            new_id,
+            cwd,
+            &self.colors,
+            ctx_id,
+            &ctx_name,
+            &ctx_desc,
+            ctx_root.as_ref(),
+            ctx_depth,
+        );
         if let Some(cmd) = initial_cmd {
-            log::info!("create_single_pane_tree: initial_cmd={cmd:?} close_on_exit={close_on_exit}");
+            log::info!(
+                "create_single_pane_tree: initial_cmd={cmd:?} close_on_exit={close_on_exit}"
+            );
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
         let mut pane = TerminalPane::new(
@@ -626,7 +662,16 @@ impl PlexiApp {
             "spawn_terminal_pane_at: win_idx={win_idx} target_tile={target_tile:?} new_id={new_id} \
              vertical={vertical} keep_focus={keep_focus} initial_cmd={initial_cmd:?}"
         );
-        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc, ctx_root.as_ref(), ctx_depth);
+        let mut settings = Self::make_backend_settings(
+            new_id,
+            cwd,
+            &self.colors,
+            ctx_id,
+            &ctx_name,
+            &ctx_desc,
+            ctx_root.as_ref(),
+            ctx_depth,
+        );
         if let Some(cmd) = initial_cmd {
             super::apply_initial_cmd(&mut settings, cmd, close_on_exit);
         }
@@ -641,10 +686,12 @@ impl PlexiApp {
             return new_id;
         };
         pane.ephemeral = close_on_exit;
-        self.windows[win_idx].panes.insert(new_id, Pane::Terminal(Box::new(pane)));
+        self.windows[win_idx]
+            .panes
+            .insert(new_id, Pane::Terminal(Box::new(pane)));
 
-        let share = crate::host::command::ShareRatio::new(1.0, 1.0)
-            .expect("1:1 is a valid ShareRatio");
+        let share =
+            crate::host::command::ShareRatio::new(1.0, 1.0).expect("1:1 is a valid ShareRatio");
         let new_tile = super::layout::insert_split_tile(
             &mut self.windows[win_idx].tree,
             Some(target_tile),
@@ -686,7 +733,9 @@ impl PlexiApp {
                 .and_then(|tile_id| ctx.get_focused_pane_cwd(tile_id))
                 .filter(|p| {
                     if p == &PathBuf::from("/") {
-                        log::debug!("open_file_browser: CWD is /, falling back to home_dir (GUI launch)");
+                        log::debug!(
+                            "open_file_browser: CWD is /, falling back to home_dir (GUI launch)"
+                        );
                         false
                     } else {
                         true
@@ -736,21 +785,35 @@ impl PlexiApp {
             let layout_str = layout.as_deref().unwrap_or("split_h");
             let vertical = matches!(layout_str, "split_v" | "split_below" | "split_above");
             let new_pane_first = matches!(layout_str, "split_above" | "split_left");
-            let initial_cmd = if args.is_empty() { None } else { Some(crate::host::shell::shell_join(args)) };
+            let initial_cmd = if args.is_empty() {
+                None
+            } else {
+                Some(crate::host::shell::shell_join(args))
+            };
             log::info!(
                 "SpawnPane: terminal layout='{layout_str}' vertical={vertical} new_pane_first={new_pane_first} initial_cmd={initial_cmd:?}"
             );
-            self.split_focused(vertical, initial_cmd.as_deref(), false, new_pane_first, None);
+            self.split_focused(
+                vertical,
+                initial_cmd.as_deref(),
+                false,
+                new_pane_first,
+                None,
+            );
             return Ok(());
         }
 
         let cwd_explicit = cwd_override.is_some();
         let cwd = cwd_override
-            .or_else(|| self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane))
+            .or_else(|| {
+                self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
+            })
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
-        log::info!("launch_app_by_id_with_layout: id={id} cwd={cwd:?} cwd_source={} context_root={:?}",
+        log::info!(
+            "launch_app_by_id_with_layout: id={id} cwd={cwd:?} cwd_source={} context_root={:?}",
             if cwd_explicit { "explicit" } else { "resolved" },
-            self.router.active().root);
+            self.router.active().root
+        );
 
         // Builtin app factory — resolved before the process registry; builtins never touch disk.
         if let Some(app) = builtin_factory(id, args) {
@@ -831,7 +894,9 @@ impl PlexiApp {
         let installed = match self.registry.load_app(&app_dir) {
             Ok(a) => a,
             Err(e) => {
-                log::warn!("launch_app_by_path_with_layout: failed to load manifest at {app_path}: {e}");
+                log::warn!(
+                    "launch_app_by_path_with_layout: failed to load manifest at {app_path}: {e}"
+                );
                 return Err(format!("failed to load app at '{app_path}': {e}"));
             }
         };
@@ -871,7 +936,13 @@ impl PlexiApp {
                     "launch_app_by_path_with_layout: launched '{app_id}' from {app_path} group={group:?}"
                 );
                 let watch_dir = app_dir.clone();
-                let new_pane_id = self.open_process_app_pane(&app_id, process, app_dir, group, layout_hint.as_deref());
+                let new_pane_id = self.open_process_app_pane(
+                    &app_id,
+                    process,
+                    app_dir,
+                    group,
+                    layout_hint.as_deref(),
+                );
                 if watch {
                     if let Some(pane_id) = new_pane_id {
                         log::info!(
@@ -990,12 +1061,7 @@ impl PlexiApp {
         let path = scratchpad_file();
         let path_str = path.display().to_string();
         log::info!("scratchpad: opening text-editor pane for {:?}", path);
-        if let Err(e) = self.launch_app_by_id_with_layout(
-            "text-editor",
-            None,
-            &[path_str],
-            None,
-        ) {
+        if let Err(e) = self.launch_app_by_id_with_layout("text-editor", None, &[path_str], None) {
             log::warn!("scratchpad: failed to launch text-editor pane: {e}");
         }
     }
@@ -1013,7 +1079,13 @@ impl PlexiApp {
         let context_root = self.router.active().root.clone();
         let context_description = self.router.active().description.clone();
         self.quick_note_text = String::new();
-        self.quick_note_ctx = crate::app::QuickNoteCtx { cwd, workspace_root, context, context_root, context_description };
+        self.quick_note_ctx = crate::app::QuickNoteCtx {
+            cwd,
+            workspace_root,
+            context,
+            context_root,
+            context_description,
+        };
         self.quick_note_children_cache.clear();
         self.quick_note_children_rx = None;
         self.push_focus_layer(crate::app::FocusLayer::QuickNote);
@@ -1048,11 +1120,11 @@ impl PlexiApp {
             let stay_alive = node.stay_alive.unwrap_or(!node.hidden);
 
             if node.hidden {
-                log::info!("QuickNote: committed via '{}' (hidden background spawn) cmd={cmd:?}", node.label);
-                if let Err(e) = std::process::Command::new("sh")
-                    .args(["-c", &cmd])
-                    .spawn()
-                {
+                log::info!(
+                    "QuickNote: committed via '{}' (hidden background spawn) cmd={cmd:?}",
+                    node.label
+                );
+                if let Err(e) = std::process::Command::new("sh").args(["-c", &cmd]).spawn() {
                     log::warn!("QuickNote: hidden spawn failed for '{}': {e}", cmd);
                 }
             } else {
@@ -1070,7 +1142,9 @@ impl PlexiApp {
                         // Default: open in a new window to the right and pull focus there.
                         let ws_id = self.router.active().context_id;
                         let active_y = self.windows[self.active_window].grid_y;
-                        let new_x = self.windows.iter()
+                        let new_x = self
+                            .windows
+                            .iter()
                             .filter(|w| w.context_id == ws_id && w.grid_y == active_y)
                             .map(|w| w.grid_x)
                             .max()
@@ -1084,9 +1158,12 @@ impl PlexiApp {
                 }
             }
             true
-        } else if node.dest_type.as_deref() == Some("backlog") ||
-                  (node.dest_type.is_none() && node.command.is_none() &&
-                   node.options.is_none() && node.children_cmd.is_none()) {
+        } else if node.dest_type.as_deref() == Some("backlog")
+            || (node.dest_type.is_none()
+                && node.command.is_none()
+                && node.options.is_none()
+                && node.children_cmd.is_none())
+        {
             // Backlog destination (type = "backlog" or bare with just path)
             let path = node.path.as_deref().unwrap_or("");
             let dir = if path.is_empty() {
@@ -1100,7 +1177,10 @@ impl PlexiApp {
             };
             Self::write_backlog_note(text, &dir, &ctx)
         } else {
-            log::warn!("QuickNote: leaf '{}' has no command or recognized dest_type", node.label);
+            log::warn!(
+                "QuickNote: leaf '{}' has no command or recognized dest_type",
+                node.label
+            );
             false
         }
     }
@@ -1122,14 +1202,26 @@ impl PlexiApp {
         let filename = format!("note-{timestamp}.md");
 
         let context_line = {
-            let ws = ctx.workspace_root.as_ref()
+            let ws = ctx
+                .workspace_root
+                .as_ref()
                 .and_then(|p| {
                     let home = dirs::home_dir()?;
-                    p.strip_prefix(&home).ok().map(|rel| format!("~/{}", rel.display()))
+                    p.strip_prefix(&home)
+                        .ok()
+                        .map(|rel| format!("~/{}", rel.display()))
                 })
-                .or_else(|| ctx.workspace_root.as_ref().map(|p| p.to_string_lossy().to_string()));
+                .or_else(|| {
+                    ctx.workspace_root
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().to_string())
+                });
             let name_and_desc = match &ctx.context_description {
-                Some(desc) if !desc.is_empty() => format!("{} — \"{}\"", ctx.context, desc.replace('\n', " ").replace('\r', "")),
+                Some(desc) if !desc.is_empty() => format!(
+                    "{} — \"{}\"",
+                    ctx.context,
+                    desc.replace('\n', " ").replace('\r', "")
+                ),
                 _ => ctx.context.clone(),
             };
             match ws {
@@ -1144,13 +1236,22 @@ impl PlexiApp {
         );
 
         if let Err(e) = std::fs::create_dir_all(dir) {
-            log::error!("QuickNote: failed to create backlog dir {}: {e}", dir.display());
+            log::error!(
+                "QuickNote: failed to create backlog dir {}: {e}",
+                dir.display()
+            );
             return false;
         }
         let path = dir.join(&filename);
         match std::fs::write(&path, &content) {
-            Ok(()) => { log::info!("QuickNote: saved to {}", path.display()); true }
-            Err(e) => { log::error!("QuickNote: save failed {}: {e}", path.display()); false }
+            Ok(()) => {
+                log::info!("QuickNote: saved to {}", path.display());
+                true
+            }
+            Err(e) => {
+                log::error!("QuickNote: save failed {}: {e}", path.display());
+                false
+            }
         }
     }
 
@@ -1161,13 +1262,14 @@ impl PlexiApp {
     ) -> String {
         let esc = |s: &str| -> String { crate::host::shell::shell_quote(s) };
         let cwd_str = ctx.cwd.to_string_lossy().to_string();
-        let context_root_str = ctx.context_root
+        let context_root_str = ctx
+            .context_root
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         cmd.replace("{note}", &esc(note))
-           .replace("{cwd}", &esc(&cwd_str))
-           .replace("{context_root}", &esc(&context_root_str))
+            .replace("{cwd}", &esc(&cwd_str))
+            .replace("{context_root}", &esc(&context_root_str))
     }
 
     /// Spawn a terminal pane as the last child of the root container.
@@ -1198,7 +1300,16 @@ impl PlexiApp {
         let ctx_desc = self.context_description_for(ctx_id);
         let ctx_root = self.context_root_for(ctx_id);
         let ctx_depth = self.context_depth_for(ctx_id);
-        let mut settings = Self::make_backend_settings(new_id, cwd, &self.colors, ctx_id, &ctx_name, &ctx_desc, ctx_root.as_ref(), ctx_depth);
+        let mut settings = Self::make_backend_settings(
+            new_id,
+            cwd,
+            &self.colors,
+            ctx_id,
+            &ctx_name,
+            &ctx_desc,
+            ctx_root.as_ref(),
+            ctx_depth,
+        );
 
         super::apply_initial_cmd(&mut settings, cmd, !stay_alive);
 
@@ -1212,7 +1323,9 @@ impl PlexiApp {
             return false;
         };
         pane.ephemeral = !stay_alive;
-        self.windows[active].panes.insert(new_id, crate::host::pane::Pane::Terminal(Box::new(pane)));
+        self.windows[active]
+            .panes
+            .insert(new_id, crate::host::pane::Pane::Terminal(Box::new(pane)));
 
         let ctx = &mut self.windows[active];
         let new_tile = ctx.tree.tiles.insert_pane(new_id);
@@ -1250,7 +1363,6 @@ impl PlexiApp {
     }
 }
 
-
 /// Returns `true` if a binary named `name` exists in any directory on `PATH`.
 /// Used to detect when an installed Plexi app shadows a same-named CLI binary.
 fn cli_binary_in_path(name: &str) -> bool {
@@ -1273,7 +1385,10 @@ mod tests {
     #[test]
     fn app_launch_in_empty_context_creates_root_pane() {
         let mut h = HostHarness::new();
-        assert!(h.state().open_panes.is_empty(), "harness should start empty");
+        assert!(
+            h.state().open_panes.is_empty(),
+            "harness should start empty"
+        );
         assert!(
             h.app.windows[0].focused_pane.is_none(),
             "no focused pane in empty context"
@@ -1313,7 +1428,10 @@ mod tests {
         let mut h = HostHarness::new();
         let _pane = h.add_test_pane();
         // add_test_pane does not set focused_pane; wire it up so split_focused can run.
-        let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        let root = h.app.windows[0]
+            .tree
+            .root
+            .expect("root tile after add_test_pane");
         h.app.windows[0].focused_pane = Some(root);
 
         h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
@@ -1354,7 +1472,10 @@ mod tests {
     fn spawn_pane_terminal_with_initial_cmd_creates_persistent_pane() {
         let mut h = HostHarness::new();
         let _pane = h.add_test_pane();
-        let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        let root = h.app.windows[0]
+            .tree
+            .root
+            .expect("root tile after add_test_pane");
         h.app.windows[0].focused_pane = Some(root);
 
         h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
@@ -1398,7 +1519,10 @@ mod tests {
     fn spawn_pane_terminal_with_null_layout_still_opens_pane() {
         let mut h = HostHarness::new();
         let _pane = h.add_test_pane();
-        let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        let root = h.app.windows[0]
+            .tree
+            .root
+            .expect("root tile after add_test_pane");
         h.app.windows[0].focused_pane = Some(root);
 
         h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
@@ -1438,7 +1562,10 @@ mod tests {
     fn spawn_pane_tab_creates_tab_not_split() {
         let mut h = HostHarness::new();
         let _pane = h.add_test_pane();
-        let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        let root = h.app.windows[0]
+            .tree
+            .root
+            .expect("root tile after add_test_pane");
         h.app.windows[0].focused_pane = Some(root);
 
         let before_panes = h.app.windows[0].panes.len();
@@ -1492,7 +1619,10 @@ mod tests {
     fn spawn_pane_new_window_creates_separate_window() {
         let mut h = HostHarness::new();
         let _pane = h.add_test_pane();
-        let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        let root = h.app.windows[0]
+            .tree
+            .root
+            .expect("root tile after add_test_pane");
         h.app.windows[0].focused_pane = Some(root);
 
         let before_windows = h.app.windows.len();
@@ -1533,7 +1663,10 @@ mod tests {
         // New window must contain exactly one Terminal pane.
         assert_eq!(new_win.panes.len(), 1, "new window must have one pane");
         assert!(
-            new_win.panes.values().any(|p| matches!(p, crate::host::pane::Pane::Terminal(_))),
+            new_win
+                .panes
+                .values()
+                .any(|p| matches!(p, crate::host::pane::Pane::Terminal(_))),
             "new window pane must be a Terminal"
         );
     }
@@ -1567,7 +1700,11 @@ mod tests {
             h.run_frames(2);
         }
 
-        assert_eq!(h.app.windows.len(), 3, "two new_window spawns must create two windows");
+        assert_eq!(
+            h.app.windows.len(),
+            3,
+            "two new_window spawns must create two windows"
+        );
         let xs: Vec<u32> = h.app.windows.iter().map(|w| w.grid_x).collect();
         assert!(xs.contains(&0), "original at grid_x=0");
         assert!(xs.contains(&1), "first new_window at grid_x=1");
@@ -1577,10 +1714,7 @@ mod tests {
     #[test]
     fn cli_binary_in_path_finds_real_binary() {
         // `/bin/sh` is guaranteed to exist on macOS/Linux.
-        assert!(
-            cli_binary_in_path("sh"),
-            "expected to find `sh` on PATH"
-        );
+        assert!(cli_binary_in_path("sh"), "expected to find `sh` on PATH");
     }
 
     #[test]
@@ -1597,7 +1731,10 @@ mod tests {
     fn app_launch_clears_zoom() {
         let mut h = HostHarness::new();
         let _pane = h.add_test_pane();
-        let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        let root = h.app.windows[0]
+            .tree
+            .root
+            .expect("root tile after add_test_pane");
         h.app.windows[0].focused_pane = Some(root);
         h.app.windows[0].zoomed_pane = Some(root);
 
@@ -1622,7 +1759,10 @@ mod tests {
     fn overlay_app_launch_preserves_zoom() {
         let mut h = HostHarness::new();
         let _pane = h.add_test_pane();
-        let root = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        let root = h.app.windows[0]
+            .tree
+            .root
+            .expect("root tile after add_test_pane");
         h.app.windows[0].focused_pane = Some(root);
         h.app.windows[0].zoomed_pane = Some(root);
 
@@ -1659,7 +1799,10 @@ mod tests {
             None,
             None,
         );
-        assert!(result.is_some(), "open_process_app_pane must return Some(pane_id) on success");
+        assert!(
+            result.is_some(),
+            "open_process_app_pane must return Some(pane_id) on success"
+        );
     }
 
     /// Regression guard for issue #1706: overlay launch returns the pane ID of the
@@ -1687,7 +1830,10 @@ mod tests {
     #[test]
     fn open_process_app_pane_overlay_no_focused_pane_returns_none() {
         let mut h = HostHarness::new();
-        assert!(h.app.windows[0].focused_pane.is_none(), "no focused pane in empty context");
+        assert!(
+            h.app.windows[0].focused_pane.is_none(),
+            "no focused pane in empty context"
+        );
 
         let (process, _tx) = ProcessApp::new_for_test(3, AppPermissions::builtin());
         let result = h.app.open_process_app_pane(
@@ -1697,7 +1843,10 @@ mod tests {
             None,
             Some("overlay"),
         );
-        assert!(result.is_none(), "overlay with no focused pane must return None");
+        assert!(
+            result.is_none(),
+            "overlay with no focused pane must return None"
+        );
     }
 }
 
@@ -1739,7 +1888,10 @@ mod quick_note_tests {
             "it's a note \"with quotes\"",
             &ctx("/tmp/test dir"),
         );
-        assert!(!result.contains("it's"), "unescaped single quote found: {result}");
+        assert!(
+            !result.contains("it's"),
+            "unescaped single quote found: {result}"
+        );
         assert!(result.contains("it"), "note text missing from: {result}");
     }
 
@@ -1767,7 +1919,10 @@ mod quick_note_tests {
         let note = "'; printf INJECTED; printf '";
         let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {note}", note, &ctx("/tmp"));
         let out = sh(&cmd);
-        assert_eq!(out, note, "single-quote break injection executed: got {out:?}");
+        assert_eq!(
+            out, note,
+            "single-quote break injection executed: got {out:?}"
+        );
     }
 
     /// Backslash in a note is passed through as a literal character.
@@ -1812,7 +1967,10 @@ mod quick_note_tests {
         c.context_root = Some(std::path::PathBuf::from("/projects/it's a dir"));
         let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {context_root}", "note", &c);
         let out = sh(&cmd);
-        assert_eq!(out, "/projects/it's a dir", "context_root apostrophe mangled: got {out:?}");
+        assert_eq!(
+            out, "/projects/it's a dir",
+            "context_root apostrophe mangled: got {out:?}"
+        );
     }
 
     #[test]
@@ -1820,7 +1978,10 @@ mod quick_note_tests {
         let c = ctx("/tmp");
         let result = PlexiApp::substitute_note_tokens_static("echo {context_root}", "note", &c);
         // When context_root is None, {context_root} substitutes to shell_quote("") = ''
-        assert!(result.contains("''") || result.ends_with("echo "), "unexpected result: {result}");
+        assert!(
+            result.contains("''") || result.ends_with("echo "),
+            "unexpected result: {result}"
+        );
     }
 
     // ── Agent context spawning tests (#1518) ─────────────────────────────────
@@ -1836,9 +1997,10 @@ mod quick_note_tests {
         let mut h = HostHarness::new();
         let pane = h.add_test_pane();
 
-        h.inject(pane, DrawCommand::Host(
-            AppRequest::QueryContextState { context_id: 1 },
-        ));
+        h.inject(
+            pane,
+            DrawCommand::Host(AppRequest::QueryContextState { context_id: 1 }),
+        );
         // Drain the draw channel via background_tick.
         {
             let win = &mut h.app.windows[0];
@@ -1883,8 +2045,9 @@ mod quick_note_tests {
         // Spawn into a non-existent context via the PGAP draw channel
         // (inject, not inject_ipc) so it routes through ProcessApp ->
         // pending_commands -> deferred dispatch with target_context validation.
-        h.inject(pane, crate::app_protocol::DrawCommand::Host(
-            crate::app_protocol::AppRequest::SpawnPane {
+        h.inject(
+            pane,
+            crate::app_protocol::DrawCommand::Host(crate::app_protocol::AppRequest::SpawnPane {
                 type_id: "terminal".to_string(),
                 layout: Some("split_v".to_string()),
                 args: vec![],
@@ -1899,14 +2062,15 @@ mod quick_note_tests {
                 workspace_root: None,
                 target_context: Some(999),
                 name: None,
-            },
-        ));
+            }),
+        );
         h.run_frames(1);
 
         // The pane count should NOT have increased (spawn was rejected).
         let snap = h.state();
         assert_eq!(
-            snap.open_panes.len(), 1,
+            snap.open_panes.len(),
+            1,
             "SpawnPane with invalid target_context must not create a pane"
         );
     }
@@ -1918,7 +2082,10 @@ mod quick_note_tests {
         use crate::testing::HostHarness;
         let mut h = HostHarness::new();
         let pane_a = h.add_test_pane();
-        let root_a = h.app.windows[0].tree.root.expect("root tile after add_test_pane");
+        let root_a = h.app.windows[0]
+            .tree
+            .root
+            .expect("root tile after add_test_pane");
         h.app.windows[0].focused_pane = Some(root_a);
 
         // Add pane B: split from A so focus moves to B.
@@ -1940,7 +2107,9 @@ mod quick_note_tests {
         });
         h.run_frames(2);
 
-        let pane_b_tile = h.app.windows[0].focused_pane.expect("focused pane B after split");
+        let pane_b_tile = h.app.windows[0]
+            .focused_pane
+            .expect("focused pane B after split");
 
         // Spawn pane C via IPC with from_pane_id=pane_a while UI focus is on pane B.
         h.inject_ipc(crate::app_protocol::AppRequest::SpawnPane {
@@ -1969,8 +2138,7 @@ mod quick_note_tests {
         );
         // keep_focus=true when from_pane_id is set: focus must not jump to the new pane.
         assert_ne!(
-            h.app.windows[0].focused_pane,
-            None,
+            h.app.windows[0].focused_pane, None,
             "focused_pane must not be None after from_pane_id spawn",
         );
         assert_eq!(
@@ -1995,5 +2163,3 @@ fn scratchpad_file() -> PathBuf {
     let ts = Local::now().format("note-%Y%m%d-%H%M%S.md").to_string();
     dir.join(ts)
 }
-
-

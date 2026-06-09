@@ -60,7 +60,9 @@ pub fn notify_cli(
 
     log::info!(
         "notify:cli: sending via socket choices={} scope={:?} response_file={:?}",
-        choices.len(), scope, response_file_str
+        choices.len(),
+        scope,
+        response_file_str
     );
 
     use std::io::Write;
@@ -152,8 +154,7 @@ mod notify_tests {
 
     #[test]
     fn parse_choice_four_segment_key_label_action() {
-        let (key, label, action) =
-            parse_notify_choice("c:Talk to Claude:pane_focus:188").unwrap();
+        let (key, label, action) = parse_notify_choice("c:Talk to Claude:pane_focus:188").unwrap();
         assert_eq!(key, "c");
         assert_eq!(label, "Talk to Claude");
         assert_eq!(action.as_deref(), Some("pane_focus:188"));
@@ -162,13 +163,19 @@ mod notify_tests {
     #[test]
     fn parse_choice_five_segment_is_error() {
         let err = parse_notify_choice("a:b:c:d:e").unwrap_err();
-        assert!(err.contains("5"), "error should mention segment count: {err}");
+        assert!(
+            err.contains("5"),
+            "error should mention segment count: {err}"
+        );
     }
 
     #[test]
     fn parse_choice_one_segment_is_error() {
         let err = parse_notify_choice("nocolon").unwrap_err();
-        assert!(err.contains("1"), "error should mention segment count: {err}");
+        assert!(
+            err.contains("1"),
+            "error should mention segment count: {err}"
+        );
     }
 
     /// --host-action merges into a clean key:Label choice.
@@ -211,8 +218,7 @@ mod notify_tests {
     /// #840: three-segment form also works for snooze.
     #[test]
     fn parse_choice_snooze_three_segment() {
-        let (key, label, action) =
-            parse_notify_choice("Snooze 5min:snooze:300").unwrap();
+        let (key, label, action) = parse_notify_choice("Snooze 5min:snooze:300").unwrap();
         assert_eq!(key, "Snooze 5min");
         assert_eq!(label, "Snooze 5min");
         assert_eq!(action.as_deref(), Some("snooze:300"));

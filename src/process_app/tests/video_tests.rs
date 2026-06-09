@@ -73,8 +73,7 @@ fn denied_app_gets_capability_denied_response() {
 
     // The denial path must not produce a VideoOpenAck.
     assert!(
-        !app
-            .outbound_events
+        !app.outbound_events
             .iter()
             .any(|e| matches!(e, PlexiEvent::VideoOpenAck { .. })),
         "denied path must not produce a VideoOpenAck"

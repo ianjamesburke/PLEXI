@@ -38,24 +38,17 @@ pub fn start(config_path: PathBuf) -> Option<(ConfigWatcher, Receiver<()>)> {
     let (raw_tx, raw_rx) = mpsc::channel::<()>();
 
     let filter_name = target_name.clone();
-    let mut watcher = match notify::recommended_watcher(move |res: notify::Result<Event>| {
-        match res {
-            Ok(ev) => {
-                if matches!(
-                    ev.kind,
-                    EventKind::Modify(_) | EventKind::Create(_)
-                ) {
-                    let dominated = ev
-                        .paths
-                        .iter()
-                        .any(|p| p.file_name() == Some(&filter_name));
-                    if dominated {
-                        let _ = raw_tx.send(());
-                    }
+    let mut watcher = match notify::recommended_watcher(move |res: notify::Result<Event>| match res
+    {
+        Ok(ev) => {
+            if matches!(ev.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                let dominated = ev.paths.iter().any(|p| p.file_name() == Some(&filter_name));
+                if dominated {
+                    let _ = raw_tx.send(());
                 }
             }
-            Err(e) => log::warn!("config_watcher: watcher error: {e}"),
         }
+        Err(e) => log::warn!("config_watcher: watcher error: {e}"),
     }) {
         Ok(w) => w,
         Err(e) => {
@@ -88,11 +81,7 @@ pub fn start(config_path: PathBuf) -> Option<(ConfigWatcher, Receiver<()>)> {
     ))
 }
 
-fn debounce_loop(
-    rx: Receiver<()>,
-    sender: Sender<()>,
-    cancel: Arc<Mutex<bool>>,
-) {
+fn debounce_loop(rx: Receiver<()>, sender: Sender<()>, cancel: Arc<Mutex<bool>>) {
     let mut last_event: Option<Instant> = None;
     let debounce = Duration::from_millis(DEBOUNCE_MS);
     let poll = Duration::from_millis(50);

@@ -1,7 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-
 /// On-the-wire shape of one MIDI port. Mirrors `midi::MidiPortInfo` but lives
 /// on the protocol surface so SDKs in other languages can map it without
 /// depending on the midi module.
@@ -110,7 +109,6 @@ pub enum LayoutDirection {
     Stack,
 }
 
-
 /// Output channel selector for `DrawCommand::StreamProcess`.
 /// v1: `structured` emits the same bytes as `stdout`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +120,9 @@ pub enum StreamChannel {
     Structured,
 }
 
-
-pub fn default_compact_threshold() -> f32 { 280.0 }
-pub fn default_regular_threshold() -> f32 { 480.0 }
+pub fn default_compact_threshold() -> f32 {
+    280.0
+}
+pub fn default_regular_threshold() -> f32 {
+    480.0
+}

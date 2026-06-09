@@ -13,7 +13,10 @@ pub struct ShareRatio {
 impl ShareRatio {
     pub fn new(numerator: f32, denominator: f32) -> Option<Self> {
         if numerator > 0.0 && denominator > 0.0 {
-            Some(Self { numerator, denominator })
+            Some(Self {
+                numerator,
+                denominator,
+            })
         } else {
             None
         }
@@ -46,7 +49,6 @@ pub struct OpenPaneRequest {
     /// Capabilities declared in the app's manifest.toml.
     pub declared_capabilities: Vec<Capability>,
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HostAction {

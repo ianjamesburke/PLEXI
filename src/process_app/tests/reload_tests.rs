@@ -143,11 +143,19 @@ fn render_events_coalesced_non_render_events_preserved() {
         return;
     };
 
-    let rect = crate::app_protocol::Rect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 };
+    let rect = crate::app_protocol::Rect {
+        x: 0.0,
+        y: 0.0,
+        w: 800.0,
+        h: 600.0,
+    };
 
     // Send 5 Render events back-to-back.
     for frame_id in 1u64..=5 {
-        app.send_event(&PlexiEvent::Render { frame_id, rect: rect.clone() });
+        app.send_event(&PlexiEvent::Render {
+            frame_id,
+            rect: rect.clone(),
+        });
     }
 
     // After the burst, exactly one FlushRender token must be in the channel.

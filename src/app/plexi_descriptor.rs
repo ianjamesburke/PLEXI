@@ -283,7 +283,8 @@ mod serde_path_to_error_lite {
                 // missing/unknown fields ("missing field `name`",
                 // "unknown field `xyz`, expected ..."). We surface the raw
                 // message and a best-effort path.
-                let path = guess_path_from_message(&e.to_string()).unwrap_or_else(|| "<root>".into());
+                let path =
+                    guess_path_from_message(&e.to_string()).unwrap_or_else(|| "<root>".into());
                 Err(PathError {
                     path,
                     message: e.to_string(),

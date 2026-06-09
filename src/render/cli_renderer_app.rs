@@ -78,7 +78,8 @@ impl CliRendererApp {
                 Ok(d) => {
                     log::info!(
                         "CliRendererApp: loaded descriptor for '{}' v{}",
-                        d.name, d.version
+                        d.name,
+                        d.version
                     );
                     (Some(d), View::Loading)
                 }
@@ -89,7 +90,10 @@ impl CliRendererApp {
             },
             Err(e) => {
                 log::warn!("CliRendererApp: cannot read {descriptor_path}: {e}");
-                (None, View::Error(format!("Cannot read {descriptor_path}: {e}")))
+                (
+                    None,
+                    View::Error(format!("Cannot read {descriptor_path}: {e}")),
+                )
             }
         };
 
@@ -252,13 +256,12 @@ impl CliRendererApp {
             return;
         }
         self.last_run = cmd.clone();
-        self.pending_commands
-            .push(AppCommand::RunInLinkedTerminal {
-                sender_pane_id: 0, // host fills this
-                terminal_pane_id: self.terminal_pane_id,
-                command: cmd.clone(),
-                echo: true,
-            });
+        self.pending_commands.push(AppCommand::RunInLinkedTerminal {
+            sender_pane_id: 0, // host fills this
+            terminal_pane_id: self.terminal_pane_id,
+            command: cmd.clone(),
+            echo: true,
+        });
         log::info!("CliRendererApp: queued run '{cmd}'");
     }
 
@@ -359,10 +362,11 @@ impl CliRendererApp {
         // Back button if navigated deep
         if has_path {
             let resp = ui.allocate_ui(Vec2::new(ui.available_width(), 32.0), |ui| {
-                let (rect, _) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), 32.0), egui::Sense::click());
-                ui.painter()
-                    .rect_filled(rect, 0.0, Color32::TRANSPARENT);
+                let (rect, _) = ui.allocate_exact_size(
+                    Vec2::new(ui.available_width(), 32.0),
+                    egui::Sense::click(),
+                );
+                ui.painter().rect_filled(rect, 0.0, Color32::TRANSPARENT);
                 let text_pos = rect.left_center() + Vec2::new(style::SPACE_MD, 0.0);
                 ui.painter().text(
                     text_pos,
@@ -394,7 +398,11 @@ impl CliRendererApp {
                     row.name.clone()
                 };
 
-                let row_height = if row.description.is_some() { 44.0 } else { 32.0 };
+                let row_height = if row.description.is_some() {
+                    44.0
+                } else {
+                    32.0
+                };
 
                 let resp = ui.allocate_ui(Vec2::new(ui.available_width(), row_height), |ui| {
                     let (rect, _) = ui.allocate_exact_size(
@@ -618,7 +626,12 @@ impl CliRendererApp {
         });
     }
 
-    fn render_field(&mut self, ui: &mut egui::Ui, colors: &crate::ui::theme::Colors, arg: &ArgSpec) {
+    fn render_field(
+        &mut self,
+        ui: &mut egui::Ui,
+        colors: &crate::ui::theme::Colors,
+        arg: &ArgSpec,
+    ) {
         ui.horizontal(|ui| {
             ui.add_space(style::SPACE_MD);
             ui.vertical(|ui| {
@@ -646,10 +659,7 @@ impl CliRendererApp {
                 }
 
                 // Input
-                let val = self
-                    .field_values
-                    .entry(arg.name.clone())
-                    .or_default();
+                let val = self.field_values.entry(arg.name.clone()).or_default();
 
                 match arg.ty {
                     ArgType::Bool => {
@@ -678,10 +688,7 @@ impl CliRendererApp {
                         }
                     }
                     _ => {
-                        let placeholder = arg
-                            .placeholder
-                            .as_deref()
-                            .unwrap_or("");
+                        let placeholder = arg.placeholder.as_deref().unwrap_or("");
                         ui.add(
                             egui::TextEdit::singleline(val)
                                 .desired_width(ui.available_width() - style::SPACE_MD)

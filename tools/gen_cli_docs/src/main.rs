@@ -7,9 +7,7 @@ use plexi::cli_args::Cli;
 fn main() {
     let cmd = Cli::command();
     // Use the version from the plexi package, not gen_cli_docs
-    let version = cmd
-        .get_version()
-        .unwrap_or(env!("CARGO_PKG_VERSION"));
+    let version = cmd.get_version().unwrap_or(env!("CARGO_PKG_VERSION"));
 
     print!(
         r#"---
@@ -72,7 +70,9 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
         println!(r#"command   = "./scripts/sync.sh""#);
         println!(r#"schedule  = "daily at 09:00""#);
         println!(r#"context   = "work"   # optional: only fires when this context is active"#);
-        println!(r#"ephemeral = true     # optional: close the spawned pane when the command exits"#);
+        println!(
+            r#"ephemeral = true     # optional: close the spawned pane when the command exits"#
+        );
         println!("```");
         println!();
         println!("### Schedule formats");
@@ -89,10 +89,7 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
         println!();
     }
 
-    let subs: Vec<&Command> = cmd
-        .get_subcommands()
-        .filter(|s| !s.is_hide_set())
-        .collect();
+    let subs: Vec<&Command> = cmd.get_subcommands().filter(|s| !s.is_hide_set()).collect();
 
     let args: Vec<&Arg> = cmd
         .get_arguments()
@@ -103,10 +100,7 @@ fn emit_subcommand(cmd: &Command, parent_path: &str, depth: usize) {
         println!("| Subcommand | Description |");
         println!("|---|---|");
         for sub in &subs {
-            let desc = sub
-                .get_about()
-                .map(|s| s.to_string())
-                .unwrap_or_default();
+            let desc = sub.get_about().map(|s| s.to_string()).unwrap_or_default();
             println!("| `{}` | {} |", sub.get_name(), desc);
         }
         println!();
@@ -165,7 +159,11 @@ fn emit_arg_row(arg: &Arg) {
         .and_then(|v| {
             let s = v.to_string_lossy();
             // Skip empty string defaults — they're noise
-            if s.is_empty() { None } else { Some(format!(" Default: `{s}`.")) }
+            if s.is_empty() {
+                None
+            } else {
+                Some(format!(" Default: `{s}`."))
+            }
         })
         .unwrap_or_default();
 

@@ -22,17 +22,19 @@ mod routing;
 pub(crate) use lifecycle::{LifecycleState, LifecycleTracker};
 use render_session::RenderSession;
 
-use crate::app::permissions::{AppPermissions, Capability};
-use crate::app_protocol::{AiMessage, AiTool, ControlCommand, DrawCommand, Modifiers, ModelTier, PlexiEvent, RenderCommand};
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
+use crate::app::permissions::{AppPermissions, Capability};
+use crate::app_protocol::{
+    AiMessage, AiTool, ControlCommand, DrawCommand, ModelTier, Modifiers, PlexiEvent, RenderCommand,
+};
+use crate::host::event_log::{self, HostEvent};
+use crate::host::runs::RunRegistry;
+use crate::host::services::{NetService, UreqNetService};
+use crate::host::typed_pipes::TypedPipeRegistry;
 use crate::media::audio::{AudioDevice, CaptureSession};
 use crate::media::midi::{MidiDevice, MidiInputSession, MidiOutputHandle};
 use crate::media::video::{VideoDecoder, VideoHandle};
-use crate::host::event_log::{self, HostEvent};
-use crate::host::services::{NetService, UreqNetService};
 use crate::plexi_ai::broker::{AiBroker, LiveAiBroker};
-use crate::host::runs::RunRegistry;
-use crate::host::typed_pipes::TypedPipeRegistry;
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -302,7 +304,8 @@ pub struct ProcessApp {
     mcp_server: Option<mcp_server::McpServerHandle>,
     /// Pending MCP tool call responses awaiting `AppRequest::McpToolResult`.
     /// Key = call_id, value = channel to the blocked HTTP handler thread.
-    pub(crate) mcp_pending: std::collections::HashMap<String, std::sync::mpsc::SyncSender<mcp_server::McpToolResponse>>,
+    pub(crate) mcp_pending:
+        std::collections::HashMap<String, std::sync::mpsc::SyncSender<mcp_server::McpToolResponse>>,
     /// Set to true when the app emits ControlCommand::CloseSelf. The host
     /// checks wants_close() each frame and calls close_pane gracefully,
     /// avoiding the crash-restart path that sys.exit() would trigger.
@@ -380,11 +383,17 @@ impl ProcessApp {
 
         // Resolve the bundled Python interpreter path — used both to build the
         // python3 command for .py entries and to prepend to PATH for PYTHONPATH setup.
-        let bundle_contents = std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()));
-        let bundled_py_bin = bundle_contents.as_ref()
-            .map(|c| c.join("Resources").join("assets").join("python").join("bin"));
+        let bundle_contents = std::env::current_exe().ok().and_then(|exe| {
+            exe.parent()
+                .and_then(|p| p.parent())
+                .map(|p| p.to_path_buf())
+        });
+        let bundled_py_bin = bundle_contents.as_ref().map(|c| {
+            c.join("Resources")
+                .join("assets")
+                .join("python")
+                .join("bin")
+        });
 
         // .py entries are launched via python3 directly — no shebang or executable bit required.
         let is_python = bin_path.extension().and_then(|e| e.to_str()) == Some("py");
@@ -395,13 +404,17 @@ impl ProcessApp {
                 .map(|app_dir| app_dir.join(".venv").join("bin").join("python"))
                 .filter(|p| p.exists());
             if let Some(ref vp) = venv_python {
-                log::info!("ProcessApp[{type_id}]: using per-app venv Python at {}", vp.display());
+                log::info!(
+                    "ProcessApp[{type_id}]: using per-app venv Python at {}",
+                    vp.display()
+                );
             }
             Some(
                 venv_python
                     .map(std::ffi::OsString::from)
                     .or_else(|| {
-                        bundled_py_bin.as_ref()
+                        bundled_py_bin
+                            .as_ref()
                             .map(|b| b.join("python3"))
                             .filter(|p| p.exists())
                             .map(std::ffi::OsString::from)
@@ -443,19 +456,21 @@ impl ProcessApp {
         cmd.env("PLEXI_SOCKET", &socket_path);
 
         // Start the MCP server when the manifest declares [app.mcp].
-        let mcp_server_handle = mcp.map(|section| {
-            match mcp_server::start_mcp_server(section.tools.clone()) {
-                Ok(handle) => {
-                    cmd.env("PLEXI_MCP_PORT", handle.port.to_string());
-                    cmd.env("PLEXI_MCP_TOKEN", &handle.token);
-                    Some(handle)
-                }
-                Err(e) => {
-                    log::error!("ProcessApp[{type_id}]: failed to start MCP server: {e}");
-                    None
-                }
-            }
-        }).flatten();
+        let mcp_server_handle = mcp
+            .map(
+                |section| match mcp_server::start_mcp_server(section.tools.clone()) {
+                    Ok(handle) => {
+                        cmd.env("PLEXI_MCP_PORT", handle.port.to_string());
+                        cmd.env("PLEXI_MCP_TOKEN", &handle.token);
+                        Some(handle)
+                    }
+                    Err(e) => {
+                        log::error!("ProcessApp[{type_id}]: failed to start MCP server: {e}");
+                        None
+                    }
+                },
+            )
+            .flatten();
         // Prepend the bundled Python interpreter's bin/ dir to PATH so that
         // dev-mode .py entries without the bundle still resolve python3 correctly.
         // Falls back silently to host PATH if the bundle runtime isn't present.
@@ -563,26 +578,27 @@ impl ProcessApp {
         thread::Builder::new()
             .name(format!("app-stderr-{stderr_type_id}"))
             .spawn(move || {
-            const STDERR_RING_CAP: usize = 32;
-            let reader = std::io::BufReader::new(stderr);
-            for line in std::io::BufRead::lines(reader) {
-                match line {
-                    Ok(l) if !l.trim().is_empty() => {
-                        let target = format!("app::{stderr_type_id}");
-                        log::warn!(target: &target, "stderr: {l}");
-                        lifecycle_stderr.observe_stderr_line(&l);
-                        if let Ok(mut buf) = recent_stderr_thread.lock() {
-                            if buf.len() >= STDERR_RING_CAP {
-                                buf.pop_front();
+                const STDERR_RING_CAP: usize = 32;
+                let reader = std::io::BufReader::new(stderr);
+                for line in std::io::BufRead::lines(reader) {
+                    match line {
+                        Ok(l) if !l.trim().is_empty() => {
+                            let target = format!("app::{stderr_type_id}");
+                            log::warn!(target: &target, "stderr: {l}");
+                            lifecycle_stderr.observe_stderr_line(&l);
+                            if let Ok(mut buf) = recent_stderr_thread.lock() {
+                                if buf.len() >= STDERR_RING_CAP {
+                                    buf.pop_front();
+                                }
+                                buf.push_back(l);
                             }
-                            buf.push_back(l);
                         }
+                        Err(_) => break,
+                        _ => {}
                     }
-                    Err(_) => break,
-                    _ => {}
                 }
-            }
-        }).expect("failed to spawn app-stderr thread");
+            })
+            .expect("failed to spawn app-stderr thread");
 
         // Background thread: read draw commands line-by-line and forward via channel.
         // Also feeds the lifecycle tracker:
@@ -656,11 +672,8 @@ impl ProcessApp {
 
         let config_dir = crate::config::config_dir();
         let store = crate::app::permissions::PermissionStore::load_or_default(&config_dir);
-        let (granted_caps, blocked_caps) = store.build_permission_sets(
-            &type_id,
-            &workspace_root,
-            &capabilities,
-        );
+        let (granted_caps, blocked_caps) =
+            store.build_permission_sets(&type_id, &workspace_root, &capabilities);
         let permissions = AppPermissions {
             capabilities: granted_caps,
             blocked: blocked_caps,
@@ -696,7 +709,10 @@ impl ProcessApp {
             sdk: None,
             features_used: Vec::new(),
             workspace_root,
-            app_dir: bin_path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::env::temp_dir()),
+            app_dir: bin_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| std::env::temp_dir()),
             permissions,
             permission_store: store,
             pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new(
@@ -762,7 +778,8 @@ impl ProcessApp {
             self.frame = old.frame.clone();
             log::info!(
                 "ProcessApp[{}]: transferred {} draw commands from previous instance",
-                self.type_id, self.frame.len()
+                self.type_id,
+                self.frame.len()
             );
         }
     }
@@ -791,7 +808,10 @@ impl ProcessApp {
     /// calls directly into `drain_draw_commands()` so the full `route_command`
     /// path executes without a real Python app.
     #[cfg(test)]
-    pub fn new_for_test(pane_id: u64, permissions: crate::app::permissions::AppPermissions) -> (Self, Sender<DrawCommand>) {
+    pub fn new_for_test(
+        pane_id: u64,
+        permissions: crate::app::permissions::AppPermissions,
+    ) -> (Self, Sender<DrawCommand>) {
         use crate::media::audio::MockAudioDevice;
         use crate::media::midi::MockMidiDevice;
         use crate::media::video::{MockVideoDecoder, MockVideoDecoderConfig};
@@ -927,10 +947,16 @@ impl ProcessApp {
     }
 
     fn effective_min_size(&self) -> (f32, f32) {
-        self.live_min_size.unwrap_or((self.manifest_min_width, self.manifest_min_height))
+        self.live_min_size
+            .unwrap_or((self.manifest_min_width, self.manifest_min_height))
     }
 
-    fn render_too_small_placeholder(&self, ui: &mut egui::Ui, pane_rect: egui::Rect, ctx: &AppRenderContext<'_>) {
+    fn render_too_small_placeholder(
+        &self,
+        ui: &mut egui::Ui,
+        pane_rect: egui::Rect,
+        ctx: &AppRenderContext<'_>,
+    ) {
         let painter = ui.painter();
         let cx = pane_rect.center();
         let name_font = egui::FontId::proportional(crate::ui::style::TEXT_CAPTION);
@@ -966,7 +992,10 @@ impl ProcessApp {
                         if !self.render_in_queue.swap(true, Ordering::Relaxed) {
                             if let Some(tx) = &self.event_tx {
                                 if tx.send(StdinItem::FlushRender).is_err() {
-                                    log::debug!("ProcessApp[{}]: stdin writer thread exited", self.type_id);
+                                    log::debug!(
+                                        "ProcessApp[{}]: stdin writer thread exited",
+                                        self.type_id
+                                    );
                                     self.event_tx = None;
                                 }
                             }
@@ -975,7 +1004,10 @@ impl ProcessApp {
                     _ => {
                         if let Some(tx) = &self.event_tx {
                             if tx.send(StdinItem::Event(line)).is_err() {
-                                log::debug!("ProcessApp[{}]: stdin writer thread exited", self.type_id);
+                                log::debug!(
+                                    "ProcessApp[{}]: stdin writer thread exited",
+                                    self.type_id
+                                );
                                 self.event_tx = None;
                             }
                         }
@@ -1014,11 +1046,9 @@ impl ProcessApp {
     pub(crate) fn make_app_event_sender(
         &self,
     ) -> Option<crate::plexi_ai::tool_dispatch::AppEventSender> {
-        self.event_tx.as_ref().map(|tx| {
-            crate::plexi_ai::tool_dispatch::AppEventSender {
-                tx: tx.clone(),
-            }
-        })
+        self.event_tx
+            .as_ref()
+            .map(|tx| crate::plexi_ai::tool_dispatch::AppEventSender { tx: tx.clone() })
     }
 
     fn flush_outbound_events(&mut self) {
@@ -1081,10 +1111,12 @@ impl ProcessApp {
         let radius = crate::ui::style::RADIUS_BADGE;
         let inset = 8.0;
         let font_id = egui::FontId::proportional(font_size);
-        let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, egui::Color32::BLACK));
+        let galley =
+            ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, egui::Color32::BLACK));
         let text_w = galley.size().x;
         let text_h = galley.size().y;
-        let pill_w = (text_w + crate::ui::style::BADGE_PAD_H * 2.0).max(crate::ui::style::BADGE_MIN_W);
+        let pill_w =
+            (text_w + crate::ui::style::BADGE_PAD_H * 2.0).max(crate::ui::style::BADGE_MIN_W);
         let pill_h = text_h + crate::ui::style::BADGE_PAD_V * 2.0;
         let pill_x_abs = pane_rect.max.x - inset - pill_w;
         let pill_y_center_abs = pane_rect.min.y + inset + pill_h / 2.0;
@@ -1131,7 +1163,11 @@ impl ProcessApp {
         count: usize,
         colors: &crate::ui::theme::Colors,
     ) {
-        let label = if count > 9 { "9+".to_string() } else { count.to_string() };
+        let label = if count > 9 {
+            "9+".to_string()
+        } else {
+            count.to_string()
+        };
         let font_size = 11.0;
         let radius = crate::ui::style::RADIUS_BADGE;
         let inset = 8.0;
@@ -1140,7 +1176,8 @@ impl ProcessApp {
         let galley = ui.fonts(|f| f.layout_no_wrap(label.clone(), font_id, fg_color));
         let text_w = galley.size().x;
         let text_h = galley.size().y;
-        let pill_w = (text_w + crate::ui::style::BADGE_PAD_H * 2.0).max(crate::ui::style::BADGE_MIN_W);
+        let pill_w =
+            (text_w + crate::ui::style::BADGE_PAD_H * 2.0).max(crate::ui::style::BADGE_MIN_W);
         let pill_h = text_h + crate::ui::style::BADGE_PAD_V * 2.0;
         let pill_rect = egui::Rect::from_min_size(
             egui::pos2(pane_rect.min.x + inset, pane_rect.min.y + inset),
@@ -1192,13 +1229,13 @@ impl ProcessApp {
                     let target = format!("app::{}", self.type_id);
                     match level.as_str() {
                         "error" => log::error!(target: &target, "{message}"),
-                        "warn"  => log::warn!(target: &target, "{message}"),
+                        "warn" => log::warn!(target: &target, "{message}"),
                         "debug" => log::debug!(target: &target, "{message}"),
-                        _       => log::info!(target: &target, "{message}"),
+                        _ => log::info!(target: &target, "{message}"),
                     }
                 }
                 DrawCommand::Control(_) => {} // Ready/FrameDone/etc. irrelevant without a pane
-                DrawCommand::Render(_) => {} // No pane to render into
+                DrawCommand::Render(_) => {}  // No pane to render into
             }
         }
     }
@@ -1206,12 +1243,7 @@ impl ProcessApp {
     /// Dispatch a `ControlCommand` that arrived during `ui()`. Called inline
     /// from the `ui()` dispatch loop; has access to `egui::Ui` for operations
     /// that require UI-thread context (font metrics, clipboard, repaint).
-    fn handle_control_command(
-        &mut self,
-        ui: &mut egui::Ui,
-        frame_id: u64,
-        cmd: ControlCommand,
-    ) {
+    fn handle_control_command(&mut self, ui: &mut egui::Ui, frame_id: u64, cmd: ControlCommand) {
         match cmd {
             ControlCommand::Ready { sdk, features_used } => {
                 self.sdk = Some(sdk);
@@ -1234,15 +1266,14 @@ impl ProcessApp {
                 let target = format!("app::{}", self.type_id);
                 match level.as_str() {
                     "error" => log::error!(target: &target, "{message}"),
-                    "warn"  => log::warn!(target: &target, "{message}"),
+                    "warn" => log::warn!(target: &target, "{message}"),
                     "debug" => log::debug!(target: &target, "{message}"),
-                    _       => log::info!(target: &target, "{message}"),
+                    _ => log::info!(target: &target, "{message}"),
                 }
             }
             ControlCommand::ScheduleRender { after_ms } => {
-                ui.ctx().request_repaint_after(
-                    std::time::Duration::from_millis(after_ms as u64),
-                );
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(after_ms as u64));
             }
             // CopyToClipboard is handled here (not in routing.rs) because
             // `egui::Context::copy_text` is a UI-context method. The host
@@ -1267,9 +1298,7 @@ impl ProcessApp {
                     egui::FontFamily::Proportional
                 };
                 let font_id = egui::FontId::new(font_size, family);
-                let galley = ui.fonts(|f| {
-                    f.layout_no_wrap(text, font_id, egui::Color32::WHITE)
-                });
+                let galley = ui.fonts(|f| f.layout_no_wrap(text, font_id, egui::Color32::WHITE));
                 let sz = galley.size();
                 self.outbound_events
                     .push_back(crate::app_protocol::PlexiEvent::TextMeasured {
@@ -1286,9 +1315,8 @@ impl ProcessApp {
                 max_lines,
             } => {
                 let font_id = egui::FontId::proportional(font_size);
-                let galley = ui.fonts(|f| {
-                    f.layout(text.clone(), font_id, egui::Color32::WHITE, max_width)
-                });
+                let galley =
+                    ui.fonts(|f| f.layout(text.clone(), font_id, egui::Color32::WHITE, max_width));
                 let n_rows = max_lines
                     .map(|n| (n as usize).min(galley.rows.len()))
                     .unwrap_or(galley.rows.len());
@@ -1301,21 +1329,27 @@ impl ProcessApp {
                     "ProcessApp[{}]: MeasureTextWrapped request_id={} max_width={:.1} max_lines={:?} rows={} height={:.1}",
                     self.type_id, request_id, max_width, max_lines, n_rows, height
                 );
-                self.outbound_events
-                    .push_back(crate::app_protocol::PlexiEvent::TextWrappedMeasured {
+                self.outbound_events.push_back(
+                    crate::app_protocol::PlexiEvent::TextWrappedMeasured {
                         request_id: request_id.clone(),
                         height,
-                    });
+                    },
+                );
             }
             ControlCommand::SetMinSize { width, height } => {
                 self.live_min_size = Some((width, height));
                 log::info!(
                     "ProcessApp[{}]: live min size set to {:.0}×{:.0}",
-                    self.type_id, width, height
+                    self.type_id,
+                    width,
+                    height
                 );
             }
             ControlCommand::CloseSelf => {
-                log::info!("ProcessApp[{}]: CloseSelf — pane will close on next frame", self.type_id);
+                log::info!(
+                    "ProcessApp[{}]: CloseSelf — pane will close on next frame",
+                    self.type_id
+                );
                 self.wants_close_self = true;
             }
         }
@@ -1375,7 +1409,11 @@ impl App for ProcessApp {
                 .iter()
                 .map(|c| c.to_string())
                 .collect();
-            log::info!("ProcessApp[{}]: sending Init with {} launch arg(s)", self.type_id, self.launch_args.len());
+            log::info!(
+                "ProcessApp[{}]: sending Init with {} launch arg(s)",
+                self.type_id,
+                self.launch_args.len()
+            );
             self.send_event(&PlexiEvent::Init {
                 protocol: "pgap/3".to_string(),
                 app_id: self.type_id.clone(),
@@ -1390,8 +1428,12 @@ impl App for ProcessApp {
             });
             // Inject persisted state before first render so on_inject runs with data.
             let state = load_app_state(&self.type_id, &self.workspace_root);
-            self.outbound_events.push_back(PlexiEvent::InjectState { payload: state });
-            log::info!("ProcessApp[{}]: injected persisted state at startup", self.type_id);
+            self.outbound_events
+                .push_back(PlexiEvent::InjectState { payload: state });
+            log::info!(
+                "ProcessApp[{}]: injected persisted state at startup",
+                self.type_id
+            );
         }
 
         if (size - self.last_size).length() > 1.0 {
@@ -1411,18 +1453,25 @@ impl App for ProcessApp {
             if now_too_small {
                 log::info!(
                     "ProcessApp[{}]: pane too small ({:.0}×{:.0} < {:.0}×{:.0}) — placeholder",
-                    self.type_id, size.x, size.y, eff_min_w, eff_min_h
+                    self.type_id,
+                    size.x,
+                    size.y,
+                    eff_min_w,
+                    eff_min_h
                 );
             } else {
                 log::info!(
                     "ProcessApp[{}]: pane restored ({:.0}×{:.0}) — resuming",
-                    self.type_id, size.x, size.y
+                    self.type_id,
+                    size.x,
+                    size.y
                 );
             }
         }
         if now_too_small {
             let pane_rect = ui.available_rect_before_wrap();
-            ui.painter().rect_filled(pane_rect, 0.0, ctx.colors.terminal_bg);
+            ui.painter()
+                .rect_filled(pane_rect, 0.0, ctx.colors.terminal_bg);
             self.render_too_small_placeholder(ui, pane_rect, ctx);
             return;
         }
@@ -1477,10 +1526,11 @@ impl App for ProcessApp {
             if let Ok(mut m) = self.audio_peak_meters.lock() {
                 m.remove(&pipe_id);
             }
-            self.outbound_events.push_back(PlexiEvent::AudioCaptureError {
-                pipe_id,
-                error: "pipe drain failed (broken pipe)".to_owned(),
-            });
+            self.outbound_events
+                .push_back(PlexiEvent::AudioCaptureError {
+                    pipe_id,
+                    error: "pipe drain failed (broken pipe)".to_owned(),
+                });
         }
 
         let new_cmds = self.drain_draw_commands();
@@ -1508,7 +1558,8 @@ impl App for ProcessApp {
         // ui.min_rect(), caller used available_rect_before_wrap()) was a
         // silent disagreement that clipped every draw to an empty rect.
         let pane_rect = ui.available_rect_before_wrap();
-        ui.painter().rect_filled(pane_rect, 0.0, ctx.colors.terminal_bg);
+        ui.painter()
+            .rect_filled(pane_rect, 0.0, ctx.colors.terminal_bg);
         let audio_peaks: HashMap<String, f32> = self
             .audio_peak_meters
             .lock()
@@ -1519,12 +1570,29 @@ impl App for ProcessApp {
                 Ok(()) => ("ok".to_string(), None),
                 Err(e) => ("error".to_string(), Some(e)),
             };
-            self.outbound_events.push_back(PlexiEvent::ImageLoaded { handle, status, message });
+            self.outbound_events.push_back(PlexiEvent::ImageLoaded {
+                handle,
+                status,
+                message,
+            });
         }
         let net_http_granted = self.permissions.is_builtin
             || self.permissions.capabilities.contains(&Capability::NetHttp);
-        self.render_session.render(ui, pane_rect, &self.frame, ctx.colors, &mut self.commonmark_cache, &audio_peaks, self.pane_id, &mut self.image_cache, &self.app_dir, net_http_granted, ctx.is_focused);
-        self.outbound_events.extend(self.render_session.drain_events());
+        self.render_session.render(
+            ui,
+            pane_rect,
+            &self.frame,
+            ctx.colors,
+            &mut self.commonmark_cache,
+            &audio_peaks,
+            self.pane_id,
+            &mut self.image_cache,
+            &self.app_dir,
+            net_http_granted,
+            ctx.is_focused,
+        );
+        self.outbound_events
+            .extend(self.render_session.drain_events());
 
         // ── Error fallback ──────────────────────────────────────────────────
         // Surface recent stderr in the pane when:
@@ -1535,7 +1603,10 @@ impl App for ProcessApp {
         //      mid-run shows the failure rather than a frozen last frame.
         //   3. The user clicked the lifecycle pill (show_stderr_overlay).
         let lifecycle_state = self.lifecycle.state();
-        if matches!(lifecycle_state, LifecycleState::Crashed | LifecycleState::Hung | LifecycleState::ProtocolError) {
+        if matches!(
+            lifecycle_state,
+            LifecycleState::Crashed | LifecycleState::Hung | LifecycleState::ProtocolError
+        ) {
             if self.crashed_at.is_none() {
                 self.crashed_at = Some(std::time::SystemTime::now());
             }
@@ -1558,7 +1629,9 @@ impl App for ProcessApp {
                 let painter = ui.painter();
                 let title_pos = pane_rect.min + egui::vec2(16.0, 16.0);
                 let header = match lifecycle_state {
-                    LifecycleState::Crashed => format!("⚠  {} crashed — recent stderr:", self.type_id),
+                    LifecycleState::Crashed => {
+                        format!("⚠  {} crashed — recent stderr:", self.type_id)
+                    }
                     LifecycleState::Hung => format!("⚠  {} hung — recent stderr:", self.type_id),
                     LifecycleState::ProtocolError => {
                         format!("⚠  {} protocol error — recent stderr:", self.type_id)
@@ -1593,7 +1666,11 @@ impl App for ProcessApp {
                     };
 
                     let galley = ui.ctx().fonts(|f| f.layout_job(layout_job));
-                    painter.galley(egui::pos2(title_pos.x, y), galley.clone(), ctx.colors.text_dim);
+                    painter.galley(
+                        egui::pos2(title_pos.x, y),
+                        galley.clone(),
+                        ctx.colors.text_dim,
+                    );
 
                     let line_height = galley.rows.len() as f32 * 14.0;
                     y += line_height;
@@ -1667,7 +1744,12 @@ impl App for ProcessApp {
                 self.type_id,
                 self.pending_notification_count
             );
-            self.draw_notification_indicator(ui, pane_rect, self.pending_notification_count, ctx.colors);
+            self.draw_notification_indicator(
+                ui,
+                pane_rect,
+                self.pending_notification_count,
+                ctx.colors,
+            );
         }
 
         let pill_response = self.draw_lifecycle_pill(ui, pane_rect, lifecycle_state);
@@ -1698,7 +1780,12 @@ impl App for ProcessApp {
             // this frame so each event carries the same consistent snapshot.
             let frame_mods = ui.input(|i| {
                 let m = i.modifiers;
-                Modifiers { shift: m.shift, ctrl: m.ctrl, alt: m.alt, cmd: m.command }
+                Modifiers {
+                    shift: m.shift,
+                    ctrl: m.ctrl,
+                    alt: m.alt,
+                    cmd: m.command,
+                }
             });
 
             // MouseDown — fires on the frame the primary or secondary button goes down.
@@ -1714,8 +1801,11 @@ impl App for ProcessApp {
                 if is_primary_down {
                     log::info!(
                         "app::{}: mouse_down primary ({:.0},{:.0}) shift={} cmd={}",
-                        self.type_id, pos.x - origin.x, pos.y - origin.y,
-                        frame_mods.shift, frame_mods.cmd
+                        self.type_id,
+                        pos.x - origin.x,
+                        pos.y - origin.y,
+                        frame_mods.shift,
+                        frame_mods.cmd
                     );
                     self.send_event(&PlexiEvent::MouseDown {
                         x: pos.x - origin.x,
@@ -1743,8 +1833,7 @@ impl App for ProcessApp {
             if let Some(pos) = mouse_response.interact_pointer_pos() {
                 let x = pos.x - origin.x;
                 let y = pos.y - origin.y;
-                let primary_up = mouse_response.clicked()
-                    || mouse_response.drag_stopped();
+                let primary_up = mouse_response.clicked() || mouse_response.drag_stopped();
                 let secondary_up = mouse_response.secondary_clicked()
                     || mouse_response.drag_stopped_by(egui::PointerButton::Secondary);
                 if primary_up {
@@ -1784,9 +1873,8 @@ impl App for ProcessApp {
             if self.mouse_tracking_enabled {
                 let pointer_state = ui.input(|i| i.pointer.clone());
                 if let Some(pos) = pointer_state.latest_pos() {
-                    let is_dragging =
-                        pointer_state.button_down(egui::PointerButton::Primary)
-                            || pointer_state.button_down(egui::PointerButton::Secondary);
+                    let is_dragging = pointer_state.button_down(egui::PointerButton::Primary)
+                        || pointer_state.button_down(egui::PointerButton::Secondary);
                     let is_moving = pointer_state.is_moving();
                     if (pane_rect.contains(pos) || is_dragging) && is_moving {
                         let mut buttons = Vec::new();
@@ -1976,15 +2064,18 @@ impl App for ProcessApp {
                     // matches frame boundaries — `flush_outbound_events`
                     // drains on the next `ui()` tick and writes the
                     // Paste line ahead of the Render that follows.
-                    self.outbound_events.push_back(PlexiEvent::Paste {
-                        text: text.clone(),
-                    });
+                    self.outbound_events
+                        .push_back(PlexiEvent::Paste { text: text.clone() });
                     consumed = true;
                 }
                 _ => {}
             }
         }
-        if consumed { KeyDisposition::Consumed } else { KeyDisposition::Passthrough }
+        if consumed {
+            KeyDisposition::Consumed
+        } else {
+            KeyDisposition::Passthrough
+        }
     }
 
     fn take_pending_commands(&mut self) -> Vec<AppCommand> {
@@ -2084,14 +2175,23 @@ fn load_app_state(type_id: &str, workspace_root: &std::path::Path) -> serde_json
     if workspace_path.exists() {
         match std::fs::read(&workspace_path) {
             Err(e) => {
-                log::warn!("load_app_state[{type_id}]: could not read workspace state {}: {e}", workspace_path.display());
+                log::warn!(
+                    "load_app_state[{type_id}]: could not read workspace state {}: {e}",
+                    workspace_path.display()
+                );
             }
             Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
                 Err(e) => {
-                    log::warn!("load_app_state[{type_id}]: could not parse workspace state {}: {e}", workspace_path.display());
+                    log::warn!(
+                        "load_app_state[{type_id}]: could not parse workspace state {}: {e}",
+                        workspace_path.display()
+                    );
                 }
                 Ok(val) => {
-                    log::info!("load_app_state[{type_id}]: loaded workspace state from {}", workspace_path.display());
+                    log::info!(
+                        "load_app_state[{type_id}]: loaded workspace state from {}",
+                        workspace_path.display()
+                    );
                     return val;
                 }
             },
@@ -2099,17 +2199,25 @@ fn load_app_state(type_id: &str, workspace_root: &std::path::Path) -> serde_json
     } else if workspace_path_legacy.exists() {
         match std::fs::read(&workspace_path_legacy) {
             Err(e) => {
-                log::warn!("load_app_state[{type_id}]: could not read legacy workspace state {}: {e}", workspace_path_legacy.display());
+                log::warn!(
+                    "load_app_state[{type_id}]: could not read legacy workspace state {}: {e}",
+                    workspace_path_legacy.display()
+                );
             }
-            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
-                Err(e) => {
-                    log::warn!("load_app_state[{type_id}]: could not parse legacy workspace state {}: {e}", workspace_path_legacy.display());
+            Ok(bytes) => {
+                match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    Err(e) => {
+                        log::warn!("load_app_state[{type_id}]: could not parse legacy workspace state {}: {e}", workspace_path_legacy.display());
+                    }
+                    Ok(val) => {
+                        log::info!(
+                            "load_app_state[{type_id}]: loaded workspace state from legacy path {}",
+                            workspace_path_legacy.display()
+                        );
+                        return val;
+                    }
                 }
-                Ok(val) => {
-                    log::info!("load_app_state[{type_id}]: loaded workspace state from legacy path {}", workspace_path_legacy.display());
-                    return val;
-                }
-            },
+            }
         }
     }
 
@@ -2124,14 +2232,23 @@ fn load_app_state(type_id: &str, workspace_root: &std::path::Path) -> serde_json
     if global_path.exists() {
         match std::fs::read(&global_path) {
             Err(e) => {
-                log::warn!("load_app_state[{type_id}]: could not read global state {}: {e}", global_path.display());
+                log::warn!(
+                    "load_app_state[{type_id}]: could not read global state {}: {e}",
+                    global_path.display()
+                );
             }
             Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
                 Err(e) => {
-                    log::warn!("load_app_state[{type_id}]: could not parse global state {}: {e}", global_path.display());
+                    log::warn!(
+                        "load_app_state[{type_id}]: could not parse global state {}: {e}",
+                        global_path.display()
+                    );
                 }
                 Ok(val) => {
-                    log::info!("load_app_state[{type_id}]: loaded global state from {}", global_path.display());
+                    log::info!(
+                        "load_app_state[{type_id}]: loaded global state from {}",
+                        global_path.display()
+                    );
                     return val;
                 }
             },
@@ -2139,17 +2256,25 @@ fn load_app_state(type_id: &str, workspace_root: &std::path::Path) -> serde_json
     } else if global_path_legacy.exists() {
         match std::fs::read(&global_path_legacy) {
             Err(e) => {
-                log::warn!("load_app_state[{type_id}]: could not read legacy global state {}: {e}", global_path_legacy.display());
+                log::warn!(
+                    "load_app_state[{type_id}]: could not read legacy global state {}: {e}",
+                    global_path_legacy.display()
+                );
             }
-            Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
-                Err(e) => {
-                    log::warn!("load_app_state[{type_id}]: could not parse legacy global state {}: {e}", global_path_legacy.display());
+            Ok(bytes) => {
+                match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    Err(e) => {
+                        log::warn!("load_app_state[{type_id}]: could not parse legacy global state {}: {e}", global_path_legacy.display());
+                    }
+                    Ok(val) => {
+                        log::info!(
+                            "load_app_state[{type_id}]: loaded global state from legacy path {}",
+                            global_path_legacy.display()
+                        );
+                        return val;
+                    }
                 }
-                Ok(val) => {
-                    log::info!("load_app_state[{type_id}]: loaded global state from legacy path {}", global_path_legacy.display());
-                    return val;
-                }
-            },
+            }
         }
     }
     log::debug!("load_app_state[{type_id}]: no usable state file found, starting empty");
@@ -2195,9 +2320,8 @@ pub(crate) fn static_capability_check(
 
     log::info!("ProcessApp[{type_id}]: running static capability check");
 
-    const INTROSPECT_ENV_WHITELIST: &[&str] = &[
-        "HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL",
-    ];
+    const INTROSPECT_ENV_WHITELIST: &[&str] =
+        &["HOME", "PATH", "LANG", "LC_ALL", "TERM", "USER", "SHELL"];
     let mut cmd = std::process::Command::new(py_exe);
     cmd.arg(bin_path)
         .arg("--plexi-introspect")
@@ -2216,7 +2340,9 @@ pub(crate) fn static_capability_check(
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            log::warn!("ProcessApp[{type_id}]: static capability check spawn failed: {e} — skipping");
+            log::warn!(
+                "ProcessApp[{type_id}]: static capability check spawn failed: {e} — skipping"
+            );
             return Ok(());
         }
     };
@@ -2235,7 +2361,9 @@ pub(crate) fn static_capability_check(
         }
         Err(_) => {
             log::warn!("ProcessApp[{type_id}]: static capability check timed out (pid {pid}) — killing and skipping");
-            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL); }
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
             return Ok(());
         }
     };
@@ -2267,7 +2395,11 @@ pub(crate) fn static_capability_check(
     let required_caps: Vec<String> = json
         .get("required_capabilities")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
 
     log::info!(
@@ -2275,8 +2407,10 @@ pub(crate) fn static_capability_check(
         required_caps
     );
 
-    let declared_strs: std::collections::HashSet<&str> = declared.iter().map(|c| c.as_str()).collect();
-    let required_set: std::collections::HashSet<&str> = required_caps.iter().map(|s| s.as_str()).collect();
+    let declared_strs: std::collections::HashSet<&str> =
+        declared.iter().map(|c| c.as_str()).collect();
+    let required_set: std::collections::HashSet<&str> =
+        required_caps.iter().map(|s| s.as_str()).collect();
 
     for cap in declared {
         if !required_set.contains(cap.as_str()) {
@@ -2287,7 +2421,8 @@ pub(crate) fn static_capability_check(
         }
     }
 
-    let missing: Vec<&str> = required_caps.iter()
+    let missing: Vec<&str> = required_caps
+        .iter()
         .map(|s| s.as_str())
         .filter(|s| !declared_strs.contains(s))
         .collect();
@@ -2323,7 +2458,9 @@ impl Drop for ProcessApp {
                 self.type_id,
                 handle.pid
             );
-            handle.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            handle
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             unsafe {
                 libc::kill(handle.pid as libc::pid_t, libc::SIGTERM);
             }
@@ -2363,8 +2500,7 @@ impl Drop for ProcessApp {
             // through a 2-second hang on a normal close (clean exits land
             // within tens of ms).
             const POLL_MS: u64 = 25;
-            let shutdown_deadline = std::time::Instant::now()
-                + std::time::Duration::from_secs(2);
+            let shutdown_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             let mut exited = false;
             while std::time::Instant::now() < shutdown_deadline {
                 match child.try_wait() {
@@ -2396,8 +2532,7 @@ impl Drop for ProcessApp {
                     self.type_id
                 );
                 let _ = child.kill();
-                let kill_deadline = std::time::Instant::now()
-                    + std::time::Duration::from_secs(1);
+                let kill_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
                 while std::time::Instant::now() < kill_deadline {
                     match child.try_wait() {
                         Ok(Some(_)) => break,

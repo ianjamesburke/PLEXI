@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 
-use crate::host::command::{
-    Direction, HostAction, OpenPaneRequest, Placement, PaneRuntimeKind,
-};
+use crate::host::command::{Direction, HostAction, OpenPaneRequest, PaneRuntimeKind, Placement};
 use crate::host::effect::{HostEffect, HostEvent};
 use crate::host::services::HostServices;
 use crate::spatial::tiling::PaneId;
@@ -51,10 +49,7 @@ impl HostModel {
             active_context: 0,
             next_pane_id: 1,
         };
-        let initial = HostPane {
-            id: 0,
-            group: None,
-        };
+        let initial = HostPane { id: 0, group: None };
         model.context_mut().panes.push(initial);
         model.context_mut().focused_pane = Some(0);
         model
@@ -102,7 +97,9 @@ impl HostModel {
                 share: req.share,
                 placement: req.placement,
             },
-            HostEffect::FocusChanged { pane_id: Some(new_id) },
+            HostEffect::FocusChanged {
+                pane_id: Some(new_id),
+            },
             HostEffect::EventEmitted(HostEvent::PaneOpened { pane_id: new_id }),
         ]
     }
@@ -150,7 +147,9 @@ impl HostModel {
         };
         let next_id = panes[next_idx].id;
         self.context_mut().focused_pane = Some(next_id);
-        vec![HostEffect::FocusChanged { pane_id: Some(next_id) }]
+        vec![HostEffect::FocusChanged {
+            pane_id: Some(next_id),
+        }]
     }
 
     fn split(&mut self, placement: Placement) -> Vec<HostEffect> {
@@ -167,7 +166,9 @@ impl HostModel {
                 kind: PaneRuntimeKind::Terminal,
                 placement,
             },
-            HostEffect::FocusChanged { pane_id: Some(new_id) },
+            HostEffect::FocusChanged {
+                pane_id: Some(new_id),
+            },
         ]
     }
 
@@ -237,7 +238,10 @@ impl HostModel {
         let mut current = context_id;
         // Guard against cycles with a max depth.
         for _ in 0..16 {
-            let parent = self.contexts.iter().find(|c| c.context_id == current)
+            let parent = self
+                .contexts
+                .iter()
+                .find(|c| c.context_id == current)
                 .and_then(|c| c.parent_id);
             match parent {
                 Some(pid) => {

@@ -10,8 +10,8 @@
 //! any stale terminal glyphs underneath.
 
 use crate::host::pane::TerminalPane;
-use crate::ui::theme::{self, Colors};
 use crate::spatial::tiling::{paint_tab_dots, PaneId, DOT_RADIUS, TAB_DOT_RESERVED_HEIGHT};
+use crate::ui::theme::{self, Colors};
 use egui::Vec2;
 use egui_term::{TerminalTheme, TerminalView};
 use egui_tiles::TileId;
@@ -151,8 +151,9 @@ fn render_name_bar_and_dots(
             let label = "↗ outside workspace";
             let amber = egui::Color32::from_rgb(0xff, 0xb8, 0x6b);
             let font = egui::FontId::proportional(10.0);
-            let galley =
-                ui.painter().layout_no_wrap(label.to_string(), font.clone(), amber);
+            let galley = ui
+                .painter()
+                .layout_no_wrap(label.to_string(), font.clone(), amber);
             let pad_x = 6.0;
             let badge_w = galley.size().x + pad_x * 2.0;
             let badge_h = 14.0;
@@ -200,7 +201,9 @@ fn is_terminal_outside_workspace(
     if terminal.outside_workspace_root.as_deref() == Some(root)
         && terminal
             .outside_workspace_checked_at
-            .map_or(false, |checked_at| checked_at.elapsed() < OUTSIDE_WORKSPACE_CHECK_INTERVAL)
+            .map_or(false, |checked_at| {
+                checked_at.elapsed() < OUTSIDE_WORKSPACE_CHECK_INTERVAL
+            })
     {
         return terminal.outside_workspace_cached;
     }

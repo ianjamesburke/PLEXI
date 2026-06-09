@@ -1,23 +1,91 @@
 //! Focus, navigation, and configuration methods for PlexiApp.
 
-use super::ContextCloseState;
-use super::ContextCloseItem;
-use super::FocusLayer;
 use super::PendingNotification;
 use super::PlexiApp;
+
+/// Which layer currently owns keyboard input.
+///
+/// The top of `PlexiApp.focus_stack` is the active layer. When a non-`Pane`
+/// layer is on top, keyboard `Event::Key` and `Event::Text` events are drained
+/// from `ctx.input` each frame *after* the owning overlay has rendered, so
+/// panes and other passive readers see an empty event buffer. Global
+/// keybinds (Cmd+Q, Cmd+W, Cmd+Shift+A) are handled in `keys::poll_actions`
+/// which runs before the drain and is always live.
+///
+/// New overlays should push their layer on open and pop on close to inherit
+/// input capture. All keyboard-owning overlays live here: notification modal,
+/// confirm-close, command palette, run palette, and rename-pane.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum FocusLayer {
+    NotificationModal,
+    ConfirmClose,
+    CommandPalette,
+    RenamePane,
+    /// Context naming modal shown when a new context is created while the
+    /// sidebar is hidden. Mirrors the inline sidebar rename but as a centred
+    /// overlay so the terminal is immediately usable after dismissal.
+    ContextRename,
+    /// Context description editor overlay.
+    ContextDescription,
+    /// Quick note compose modal (text input phase).
+    QuickNote,
+    /// Quick note destination picker.
+    QuickNoteDestination,
+    /// Quick note sub-destination picker. Inner Vec<u8> = key path from root to current node.
+    /// E.g. vec![3] = inside destination 3's children; vec![3,2] = destination 3 -> child 2.
+    QuickNoteSubDestination(Vec<u8>),
+    /// First-launch CLI setup prompt. No text input — intercepts keys so they
+    /// don't fall through to the active terminal while the modal is visible.
+    CliSetupPrompt,
+    /// Shared text-input overlay (context root, future: context rename).
+    TextInput,
+    /// Close-context confirmation dialog with pane inventory and dissolve option.
+    ContextCloseConfirm,
+    /// Capability / secret consent modal for a focused ProcessApp pane.
+    /// Promoted to the focus stack when the focused pane has pending prompts,
+    /// so the modal renders in step 2 of `update()` with exclusive keyboard
+    /// ownership — before `dispatch_app_key_events` can steal Escape.
+    CapabilityModal,
+    /// Notes picker overlay: lists workspace notes sorted by mtime, opens selected in focused text-editor.
+    NotesPicker,
+}
+
+/// A single pane entry shown in the context-close confirmation dialog.
+#[derive(Clone, Debug)]
+pub(crate) struct ContextCloseItem {
+    pub kind: &'static str,
+    pub name: String,
+}
+
+/// State for the context-close confirmation dialog.
+#[derive(Clone, Debug)]
+pub(crate) struct ContextCloseState {
+    pub context_id: u64,
+    pub context_name: String,
+    pub items: Vec<ContextCloseItem>,
+}
 
 impl PlexiApp {
     /// Collect metadata for the pane at `tile_id` in the window identified by
     /// stable `window_id` and emit a `FocusChanged` event. Called when the
     /// focused pane changes and on shutdown.
-    pub(super) fn emit_focus_changed_for_tile(&self, window_id: u64, tile_id: egui_tiles::TileId, duration_secs: u64) {
+    pub(super) fn emit_focus_changed_for_tile(
+        &self,
+        window_id: u64,
+        tile_id: egui_tiles::TileId,
+        duration_secs: u64,
+    ) {
         use egui_tiles::Tile;
-        let Some(win) = self.windows.iter().find(|w| w.window_id == window_id) else { return };
+        let Some(win) = self.windows.iter().find(|w| w.window_id == window_id) else {
+            return;
+        };
         let pane_id = match win.tree.tiles.get(tile_id) {
             Some(Tile::Pane(id)) => *id,
             _ => return,
         };
-        let Some(pane) = win.panes.get(&pane_id) else { return };
+        let Some(pane) = win.panes.get(&pane_id) else {
+            return;
+        };
         let context_name = self.context_name_for(win.context_id);
         let context_description = self.context_description_for(win.context_id);
 
@@ -32,9 +100,7 @@ impl PlexiApp {
                 let type_id = Some(a.manifest_id.clone());
                 (cwd, None, None, type_id)
             }
-            crate::host::pane::Pane::Portal(_) => {
-                (None, None, None, None)
-            }
+            crate::host::pane::Pane::Portal(_) => (None, None, None, None),
         };
 
         log::info!(
@@ -74,12 +140,14 @@ impl PlexiApp {
             Some(FocusLayer::NotificationModal) => {
                 log::info!("quick_note: dismissing NotificationModal to open QuickNote");
                 self.show_notification_modal = false;
-                self.focus_stack.retain(|l| *l != FocusLayer::NotificationModal);
+                self.focus_stack
+                    .retain(|l| *l != FocusLayer::NotificationModal);
             }
             Some(FocusLayer::CommandPalette) => {
                 log::info!("quick_note: dismissing CommandPalette to open QuickNote");
                 self.show_command_palette = false;
-                self.focus_stack.retain(|l| *l != FocusLayer::CommandPalette);
+                self.focus_stack
+                    .retain(|l| *l != FocusLayer::CommandPalette);
                 self.ctx.memory_mut(|m| {
                     let palette_id = egui::Id::new("palette_search");
                     if m.focused() == Some(palette_id) {
@@ -174,9 +242,8 @@ impl PlexiApp {
         if let Some((pane_id, view_id)) = nav_result {
             if let Some(pane) = self.windows[active].panes.get_mut(&pane_id) {
                 if let Some(app) = pane.as_app_mut() {
-                    app.runtime.queue_outbound_event(
-                        crate::app_protocol::PlexiEvent::NavBack { view_id },
-                    );
+                    app.runtime
+                        .queue_outbound_event(crate::app_protocol::PlexiEvent::NavBack { view_id });
                 }
             }
             true
@@ -185,7 +252,11 @@ impl PlexiApp {
         }
     }
 
-    pub(crate) fn push_focus_history(&mut self, window_id: u64, old_focus: Option<egui_tiles::TileId>) {
+    pub(crate) fn push_focus_history(
+        &mut self,
+        window_id: u64,
+        old_focus: Option<egui_tiles::TileId>,
+    ) {
         if self.navigating_history {
             return;
         }
@@ -195,7 +266,10 @@ impl PlexiApp {
             self.pane_focus_history.remove(0);
         }
         self.pane_focus_future.clear();
-        log::info!("focus_history: recorded window={window_id} tile={tile_id:?} history_len={}", self.pane_focus_history.len());
+        log::info!(
+            "focus_history: recorded window={window_id} tile={tile_id:?} history_len={}",
+            self.pane_focus_history.len()
+        );
     }
 
     /// Step backward through pane focus history (Cmd+[).
@@ -220,7 +294,8 @@ impl PlexiApp {
             // Save current focus to future stack before navigating.
             let current_window_id = self.windows[self.active_window].window_id;
             if let Some(current_tile) = self.windows[self.active_window].focused_pane {
-                self.pane_focus_future.push((current_window_id, current_tile));
+                self.pane_focus_future
+                    .push((current_window_id, current_tile));
                 if self.pane_focus_future.len() > self.focus_history_depth {
                     self.pane_focus_future.remove(0);
                 }
@@ -260,7 +335,8 @@ impl PlexiApp {
             // Save current focus to history stack before navigating.
             let current_window_id = self.windows[self.active_window].window_id;
             if let Some(current_tile) = self.windows[self.active_window].focused_pane {
-                self.pane_focus_history.push((current_window_id, current_tile));
+                self.pane_focus_history
+                    .push((current_window_id, current_tile));
                 if self.pane_focus_history.len() > self.focus_history_depth {
                     self.pane_focus_history.remove(0);
                 }
@@ -286,7 +362,9 @@ impl PlexiApp {
 
         let mut all_diags = crate::config::validate_from_path(&crate::config::config_path());
         if let Some(root) = active_workspace.as_ref() {
-            let project_path = root.join(crate::config::workspace_channel_dir()).join("config.toml");
+            let project_path = root
+                .join(crate::config::workspace_channel_dir())
+                .join("config.toml");
             all_diags.extend(crate::config::validate_from_path(&project_path));
         }
 
@@ -294,7 +372,11 @@ impl PlexiApp {
 
         let warnings: Vec<_> = all_diags.iter().filter(|d| !d.is_error()).collect();
         if !warnings.is_empty() {
-            let body = warnings.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("\n");
+            let body = warnings
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
             log::warn!("config: unknown keys found:\n{body}");
         }
 
@@ -353,10 +435,16 @@ impl PlexiApp {
         let new_colors = crate::ui::theme::Colors::from_config(&theme_cfg);
         if self.colors != new_colors {
             self.colors = new_colors.clone();
-            let dark_mode = !crate::ui::theme::is_light_preset(fresh.theme_preset.as_deref().unwrap_or(""));
+            let dark_mode =
+                !crate::ui::theme::is_light_preset(fresh.theme_preset.as_deref().unwrap_or(""));
             crate::ui::theme::setup_style(&self.ctx, &new_colors, dark_mode);
-            let window_theme = if dark_mode { egui::SystemTheme::Dark } else { egui::SystemTheme::Light };
-            self.ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(window_theme));
+            let window_theme = if dark_mode {
+                egui::SystemTheme::Dark
+            } else {
+                egui::SystemTheme::Light
+            };
+            self.ctx
+                .send_viewport_cmd(egui::ViewportCommand::SetTheme(window_theme));
             log::info!("theme: set_window_theme dark_mode={dark_mode} (config reload)");
             self.broadcast_theme_event();
         }
@@ -438,8 +526,13 @@ impl PlexiApp {
                 self.colors = new_colors.clone();
                 let dark_mode = !crate::ui::theme::is_light_preset(new_preset);
                 crate::ui::theme::setup_style(&self.ctx, &new_colors, dark_mode);
-                let window_theme = if dark_mode { egui::SystemTheme::Dark } else { egui::SystemTheme::Light };
-                self.ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(window_theme));
+                let window_theme = if dark_mode {
+                    egui::SystemTheme::Dark
+                } else {
+                    egui::SystemTheme::Light
+                };
+                self.ctx
+                    .send_viewport_cmd(egui::ViewportCommand::SetTheme(window_theme));
                 self.theme = crate::ui::theme::terminal_theme(&theme_cfg);
                 self.broadcast_theme_event();
             }
@@ -496,7 +589,8 @@ impl PlexiApp {
             self.push_focus_layer(FocusLayer::ContextCloseConfirm);
         } else if !should_own && has_layer {
             log::info!("focus: ContextCloseConfirm layer removed by sync (retain)");
-            self.focus_stack.retain(|l| *l != FocusLayer::ContextCloseConfirm);
+            self.focus_stack
+                .retain(|l| *l != FocusLayer::ContextCloseConfirm);
         }
     }
 
@@ -530,13 +624,21 @@ impl PlexiApp {
             for (_, pane) in pane_entries {
                 match pane {
                     crate::host::pane::Pane::Terminal(t) => {
-                        let name = t.name.clone()
+                        let name = t
+                            .name
+                            .clone()
                             .or_else(|| t.pty_title.clone())
                             .unwrap_or_else(|| "Terminal".to_string());
-                        items.push(ContextCloseItem { kind: "Terminal", name });
+                        items.push(ContextCloseItem {
+                            kind: "Terminal",
+                            name,
+                        });
                     }
                     crate::host::pane::Pane::App(a) => {
-                        items.push(ContextCloseItem { kind: "App", name: a.name.clone() });
+                        items.push(ContextCloseItem {
+                            kind: "App",
+                            name: a.name.clone(),
+                        });
                     }
                     crate::host::pane::Pane::Portal(p) => {
                         let name = self
@@ -545,13 +647,20 @@ impl PlexiApp {
                             .find(|c| c.context_id == p.target_context_id)
                             .map(|c| c.name.clone())
                             .unwrap_or_else(|| "Portal".to_string());
-                        items.push(ContextCloseItem { kind: "Context", name });
+                        items.push(ContextCloseItem {
+                            kind: "Context",
+                            name,
+                        });
                     }
                 }
             }
         }
 
-        ContextCloseState { context_id, context_name, items }
+        ContextCloseState {
+            context_id,
+            context_name,
+            items,
+        }
     }
 
     pub(crate) fn sync_notification_modal_focus(&mut self) {
@@ -564,7 +673,8 @@ impl PlexiApp {
             self.push_focus_layer(FocusLayer::NotificationModal);
         } else if !should_own && has_layer {
             log::info!("focus: NotificationModal layer removed by sync (retain)");
-            self.focus_stack.retain(|l| *l != FocusLayer::NotificationModal);
+            self.focus_stack
+                .retain(|l| *l != FocusLayer::NotificationModal);
         }
     }
 
@@ -581,7 +691,8 @@ impl PlexiApp {
             log::info!("cli_setup: CliSetupPrompt focus layer released");
             // Use retain rather than pop_focus_layer so stale entries are removed
             // even if another layer was pushed on top (e.g. via rapid state change).
-            self.focus_stack.retain(|l| *l != FocusLayer::CliSetupPrompt);
+            self.focus_stack
+                .retain(|l| *l != FocusLayer::CliSetupPrompt);
         }
     }
 
@@ -598,7 +709,8 @@ impl PlexiApp {
             self.push_focus_layer(FocusLayer::CommandPalette);
         } else if !should_own && has_layer {
             log::info!("focus: CommandPalette layer removed by sync (retain)");
-            self.focus_stack.retain(|l| *l != FocusLayer::CommandPalette);
+            self.focus_stack
+                .retain(|l| *l != FocusLayer::CommandPalette);
             // Explicitly surrender egui focus from palette_search so AccessKit
             // doesn't hold a stale focused node ID after the widget is gone.
             self.ctx.memory_mut(|m| {
@@ -618,7 +730,10 @@ impl PlexiApp {
         // Using iter() instead of iter_mut() so self.windows borrow ends before we call
         // push_focus_history (which needs &mut self).
         let found_read = self.windows.iter().enumerate().find_map(|(idx, win)| {
-            win.tree.tiles.find_pane(&pane_id).map(|tile_id| (idx, tile_id, win.context_id))
+            win.tree
+                .tiles
+                .find_pane(&pane_id)
+                .map(|tile_id| (idx, tile_id, win.context_id))
         });
         let Some((idx, tile_id, ctx_id)) = found_read else {
             log::warn!("notify:action: pane_navigate pane_id={pane_id} not found");
@@ -687,10 +802,7 @@ impl PlexiApp {
     /// Reconcile the text-input overlay focus layer with `text_overlay`.
     pub(crate) fn sync_text_input_focus(&mut self) {
         let should_own = self.text_overlay.is_some();
-        let has_layer = self
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::TextInput);
+        let has_layer = self.focus_stack.iter().any(|l| *l == FocusLayer::TextInput);
         if should_own && !has_layer {
             self.push_focus_layer(FocusLayer::TextInput);
         } else if !should_own && has_layer {
@@ -712,12 +824,14 @@ impl PlexiApp {
         let is_top = matches!(self.focus_stack.last(), Some(FocusLayer::CapabilityModal));
         if should_own && !is_top {
             // Push to top (re-promoting from buried position if already in stack).
-            self.focus_stack.retain(|l| *l != FocusLayer::CapabilityModal);
+            self.focus_stack
+                .retain(|l| *l != FocusLayer::CapabilityModal);
             log::info!("capability_modal: focus captured — pending prompts on focused pane");
             self.push_focus_layer(FocusLayer::CapabilityModal);
         } else if !should_own && has_layer {
             log::info!("capability_modal: focus released — prompt queue drained");
-            self.focus_stack.retain(|l| *l != FocusLayer::CapabilityModal);
+            self.focus_stack
+                .retain(|l| *l != FocusLayer::CapabilityModal);
         }
     }
 
@@ -738,12 +852,10 @@ impl PlexiApp {
             None => return false,
         };
         match win.panes.get(&pane_id) {
-            Some(crate::host::pane::Pane::App(app_pane)) => {
-                match &app_pane.runtime {
-                    crate::host::pane::AppRuntime::Process(proc) => !proc.pending_prompts.is_empty(),
-                    crate::host::pane::AppRuntime::Builtin(_) => false,
-                }
-            }
+            Some(crate::host::pane::Pane::App(app_pane)) => match &app_pane.runtime {
+                crate::host::pane::AppRuntime::Process(proc) => !proc.pending_prompts.is_empty(),
+                crate::host::pane::AppRuntime::Builtin(_) => false,
+            },
             _ => false,
         }
     }
@@ -767,10 +879,21 @@ impl PlexiApp {
     /// Route `DeliverNotifyAction` commands back to the originating app pane as
     /// `NotifyAction` events. Shared by the modal and the sidebar panel so both
     /// surfaces dispatch identically.
-    pub(crate) fn dispatch_notify_action_cmds(&mut self, cmds: Vec<crate::app::app_trait::AppCommand>) {
+    pub(crate) fn dispatch_notify_action_cmds(
+        &mut self,
+        cmds: Vec<crate::app::app_trait::AppCommand>,
+    ) {
         use crate::app::app_trait::AppCommand;
         for cmd in cmds {
-            if let AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value, response_file, host_action } = cmd {
+            if let AppCommand::DeliverNotifyAction {
+                pane_id,
+                notify_id,
+                action_label,
+                value,
+                response_file,
+                host_action,
+            } = cmd
+            {
                 log::info!(
                     "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
                 );
@@ -792,12 +915,17 @@ impl PlexiApp {
                     let tmp = format!("{rf}.tmp");
                     match std::fs::write(&tmp, content).and_then(|_| std::fs::rename(&tmp, rf)) {
                         Ok(_) => log::info!("notify:action: wrote {:?} to {:?}", content, rf),
-                        Err(e) => log::warn!("notify:action: failed to write response file {:?}: {e}", rf),
+                        Err(e) => {
+                            log::warn!("notify:action: failed to write response file {:?}: {e}", rf)
+                        }
                     }
                 }
                 // Search all windows for the sender pane — it may not be in the
                 // active context (cross-context notification path).
-                let window_idx = self.windows.iter().position(|w| w.panes.contains_key(&pane_id));
+                let window_idx = self
+                    .windows
+                    .iter()
+                    .position(|w| w.panes.contains_key(&pane_id));
                 if let Some(win_idx) = window_idx {
                     if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
                         if let Some(app) = pane.as_app_mut() {
@@ -850,7 +978,5 @@ impl PlexiApp {
                     ctx.request_repaint_after(std::time::Duration::from_millis(16));
                 });
         }
-
     }
-
 }

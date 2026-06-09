@@ -21,7 +21,11 @@ impl ManagedSecret {
             scope_part.to_string()
         };
         let name = name.to_string();
-        Some(Self { account, name, scope })
+        Some(Self {
+            account,
+            name,
+            scope,
+        })
     }
 }
 
@@ -95,7 +99,10 @@ impl SecretsApp {
     fn refresh(&mut self) {
         self.entries = load_entries();
         self.selected = self.selected.min(self.entries.len().saturating_sub(1));
-        log::info!("secrets_manager: refreshed — {} entries", self.entries.len());
+        log::info!(
+            "secrets_manager: refreshed — {} entries",
+            self.entries.len()
+        );
     }
 
     fn begin_add(&mut self) {
@@ -127,8 +134,8 @@ impl SecretsApp {
             };
 
             // Resolve scope: workspace-scoped if cwd is inside an initialized workspace.
-            let workspace = crate::app::registry::resolve_workspace_root(&self.cwd)
-                .and_then(|root| {
+            let workspace =
+                crate::app::registry::resolve_workspace_root(&self.cwd).and_then(|root| {
                     WorkspaceConfig::load(&root)
                         .ok()
                         .flatten()
@@ -262,8 +269,9 @@ impl App for SecretsApp {
             } else if let Some(entry) = self.entries.get(self.selected) {
                 self.pending_delete = true;
                 let name = entry.name.clone();
-                self.status_msg =
-                    Some(format!("Delete '{name}'? Press d/y to confirm, Esc to cancel."));
+                self.status_msg = Some(format!(
+                    "Delete '{name}'? Press d/y to confirm, Esc to cancel."
+                ));
             }
             consumed = true;
         }
@@ -278,7 +286,11 @@ impl App for SecretsApp {
             consumed = true;
         }
 
-        if consumed { KeyDisposition::Consumed } else { KeyDisposition::Passthrough }
+        if consumed {
+            KeyDisposition::Consumed
+        } else {
+            KeyDisposition::Passthrough
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
@@ -318,7 +330,8 @@ impl App for SecretsApp {
 
         // ── Header ──────────────────────────────────────────────────────────
         let header_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), HEADER_H));
-        ui.painter().rect_filled(header_rect, 0.0, colors.bg_sidebar);
+        ui.painter()
+            .rect_filled(header_rect, 0.0, colors.bg_sidebar);
         ui.painter().line_segment(
             [
                 egui::pos2(header_rect.left(), header_rect.bottom()),
@@ -328,8 +341,7 @@ impl App for SecretsApp {
         );
 
         let mut header_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(header_rect.shrink2(egui::vec2(style::SPACE_MD, 0.0))),
+            egui::UiBuilder::new().max_rect(header_rect.shrink2(egui::vec2(style::SPACE_MD, 0.0))),
         );
         header_ui.horizontal_centered(|ui| {
             ui.label(
@@ -476,8 +488,7 @@ impl App for SecretsApp {
                         self.form_focus = FormField::Value;
                     }
                     if val_resp.has_focus()
-                        && ui
-                            .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+                        && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
                     {
                         self.commit_add();
                     }

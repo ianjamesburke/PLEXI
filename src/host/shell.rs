@@ -70,15 +70,34 @@ pub fn install_login_shell_env() {
     // System/terminal vars that are either already correct in the GUI context
     // or that build_env() sets explicitly later. Never adopt these from the shell.
     const SKIP: &[&str] = &[
-        "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR",
-        "TERM", "TERM_PROGRAM", "TERM_PROGRAM_VERSION", "COLORTERM", "TERMINFO",
-        "SHLVL", "OLDPWD", "PWD", "_", "PS1", "PS2",
-        "XPC_FLAGS", "XPC_SERVICE_NAME",
-        "APPLE_SECURITY_ASSESSMENT", "COMMAND_MODE",
-        "SECURITYSESSIONID", "SSH_AUTH_SOCK",
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "TMPDIR",
+        "TERM",
+        "TERM_PROGRAM",
+        "TERM_PROGRAM_VERSION",
+        "COLORTERM",
+        "TERMINFO",
+        "SHLVL",
+        "OLDPWD",
+        "PWD",
+        "_",
+        "PS1",
+        "PS2",
+        "XPC_FLAGS",
+        "XPC_SERVICE_NAME",
+        "APPLE_SECURITY_ASSESSMENT",
+        "COMMAND_MODE",
+        "SECURITYSESSIONID",
+        "SSH_AUTH_SOCK",
     ];
 
-    let Some(vars) = probe_login_shell_env() else { return };
+    let Some(vars) = probe_login_shell_env() else {
+        return;
+    };
     let mut adopted_keys: Vec<&str> = Vec::new();
     for (k, v) in &vars {
         if SKIP.contains(&k.as_str()) {
@@ -86,7 +105,9 @@ pub fn install_login_shell_env() {
         }
         if std::env::var(k).is_err() {
             // SAFETY: called once, early in main(), before any threads read env.
-            unsafe { std::env::set_var(k, v); }
+            unsafe {
+                std::env::set_var(k, v);
+            }
             adopted_keys.push(k.as_str());
         }
     }
@@ -156,7 +177,12 @@ fn fallback_path_with_homebrew() -> Option<String> {
         return None;
     }
     let current = std::env::var("PATH").unwrap_or_default();
-    let extras = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin"];
+    let extras = [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+    ];
     let missing: Vec<&str> = extras
         .into_iter()
         .filter(|p| !current.split(':').any(|seg| seg == *p))
@@ -200,8 +226,13 @@ pub fn build_env() -> HashMap<String, String> {
     // Inject user-flagged secrets as env vars
     for entry in crate::secrets::list_inject_secrets() {
         #[cfg(target_os = "macos")]
-        if let Some(value) = crate::secrets::retrieve_secret(&entry.key, &entry.app_id, &entry.directory) {
-            log::info!("shell::build_env: injecting secret '{}' into pane env", entry.key);
+        if let Some(value) =
+            crate::secrets::retrieve_secret(&entry.key, &entry.app_id, &entry.directory)
+        {
+            log::info!(
+                "shell::build_env: injecting secret '{}' into pane env",
+                entry.key
+            );
             env.insert(entry.key.clone(), value.to_string());
         }
     }
@@ -225,7 +256,6 @@ pub fn build_env() -> HashMap<String, String> {
 
     env
 }
-
 
 static CWD_CACHE: LazyLock<Mutex<HashMap<u32, (PathBuf, Instant)>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -319,7 +349,10 @@ precmd_functions+=(__plexi_precmd)
 /// any arg containing whitespace or shell metacharacters in single quotes,
 /// with inner `'` escaped as `'\''`.
 pub fn shell_join(args: &[String]) -> String {
-    args.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" ")
+    args.iter()
+        .map(|a| shell_quote(a))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub(crate) fn shell_quote(s: &str) -> String {
@@ -396,4 +429,3 @@ mod tests {
         assert_eq!(shell_join(&args), "echo '$HOME'");
     }
 }
-

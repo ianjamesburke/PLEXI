@@ -16,7 +16,9 @@
 
 use std::sync::mpsc;
 
-use crate::plexi_ai::backend::{AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent};
+use crate::plexi_ai::backend::{
+    AiBackend, AiBackendError, AiBackendRequest, RawToolCall, StreamEvent,
+};
 
 /// Outcome of a completed turn.
 pub struct TurnResult {

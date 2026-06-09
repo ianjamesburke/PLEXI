@@ -94,10 +94,7 @@ pub fn agent_update(name: &str) -> i32 {
     let content = match std::fs::read_to_string(&global_agent_md) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!(
-                "error: could not read {}: {e}",
-                global_agent_md.display()
-            );
+            eprintln!("error: could not read {}: {e}", global_agent_md.display());
             return 1;
         }
     };
@@ -202,13 +199,11 @@ fn install_agent(global_agent_md: &Path, ws_agent_dir: &Path) -> Result<(), Stri
         .map_err(|e| format!("read {}: {e}", global_agent_md.display()))?;
 
     let dest = ws_agent_dir.join("AGENT.md");
-    std::fs::write(&dest, &content)
-        .map_err(|e| format!("write {}: {e}", dest.display()))?;
+    std::fs::write(&dest, &content).map_err(|e| format!("write {}: {e}", dest.display()))?;
 
     for subdir in &["memory", "logs"] {
         let path = ws_agent_dir.join(subdir);
-        std::fs::create_dir_all(&path)
-            .map_err(|e| format!("create {}: {e}", path.display()))?;
+        std::fs::create_dir_all(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
     }
 
     Ok(())

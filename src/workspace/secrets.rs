@@ -244,14 +244,10 @@ pub fn migrate_legacy_global_secrets(store: &dyn SecretStore) -> usize {
         };
         let new_account = keychain_user_name(&entry.key);
         if let Err(e) = store.set(&new_account, &value) {
-            log::warn!(
-                "workspace_secrets::migrate: failed to write {new_account}: {e}"
-            );
+            log::warn!("workspace_secrets::migrate: failed to write {new_account}: {e}");
             continue;
         }
-        log::info!(
-            "workspace_secrets::migrate: {legacy_account} → {new_account}"
-        );
+        log::info!("workspace_secrets::migrate: {legacy_account} → {new_account}");
         migrated += 1;
     }
     migrated
@@ -319,7 +315,10 @@ impl SecretStore for InMemoryKeychain {
             Ok(g) => g,
             Err(_) => return Vec::new(),
         };
-        g.keys().filter(|k| k.starts_with(prefix)).cloned().collect()
+        g.keys()
+            .filter(|k| k.starts_with(prefix))
+            .cloned()
+            .collect()
     }
 }
 
@@ -346,7 +345,9 @@ impl WorkspaceConfig {
     /// Read `<root>/<channel_dir>/workspace.toml`. Returns `None` if the file does
     /// not exist; returns `Err` only on a present-but-invalid file.
     pub fn load(workspace_root: &Path) -> Result<Option<Self>, String> {
-        let path = workspace_root.join(crate::config::workspace_channel_dir()).join("workspace.toml");
+        let path = workspace_root
+            .join(crate::config::workspace_channel_dir())
+            .join("workspace.toml");
         let raw = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -358,7 +359,6 @@ impl WorkspaceConfig {
             .map(Some)
             .map_err(|e| format!("parse {}: {e}", path.display()))
     }
-
 }
 
 // ── secrets.toml (router) ────────────────────────────────────────────────────
@@ -384,7 +384,9 @@ impl WorkspaceSecrets {
     /// not exist; returns `Err` if it exists but is malformed (incl. missing
     /// `fallback`).
     pub fn load(workspace_root: &Path) -> Result<Option<Self>, String> {
-        let path = workspace_root.join(crate::config::workspace_channel_dir()).join("secrets.toml");
+        let path = workspace_root
+            .join(crate::config::workspace_channel_dir())
+            .join("secrets.toml");
         let raw = match std::fs::read_to_string(&path) {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -483,8 +485,7 @@ pub fn init_workspace(workspace_root: &Path, channel_dir: &str) -> Result<Worksp
     } else {
         // Create the channel dir and write a fresh workspace.toml
         let dir = workspace_root.join(channel_dir);
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         let id = uuid::Uuid::new_v4().to_string();
         std::fs::write(&ws_path, format!("id = \"{id}\"\n"))
             .map_err(|e| format!("write {}: {e}", ws_path.display()))?;
@@ -590,12 +591,13 @@ pub fn write_default_route(
     canonical: &str,
     friendly: &str,
 ) -> Result<(), String> {
-    let secrets_path = workspace_root.join(crate::config::workspace_channel_dir()).join("secrets.toml");
+    let secrets_path = workspace_root
+        .join(crate::config::workspace_channel_dir())
+        .join("secrets.toml");
 
     if !secrets_path.exists() {
         let dir = workspace_root.join(crate::config::workspace_channel_dir());
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| format!("create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         let content = format!("fallback = true\n\n[default]\n{canonical} = \"{friendly}\"\n");
         return std::fs::write(&secrets_path, content)
             .map_err(|e| format!("write {}: {e}", secrets_path.display()));
@@ -628,8 +630,7 @@ fn upsert_default_route_line(raw: &str, canonical: &str, friendly: &str) -> Stri
 
     if let Some(start) = lines.iter().position(|l| {
         let t = l.trim();
-        t == "[default]"
-            || (t.starts_with("[default]") && t[9..].trim_start().starts_with('#'))
+        t == "[default]" || (t.starts_with("[default]") && t[9..].trim_start().starts_with('#'))
     }) {
         // End of section: next uncommented table header, or EOF.
         let end = lines[start + 1..]
@@ -692,7 +693,10 @@ mod tests {
             keychain_workspace_name("abc-123", "openai_prod"),
             "plexi:abc-123:openai_prod"
         );
-        assert_eq!(keychain_user_name("github_token"), "plexi:user:github_token");
+        assert_eq!(
+            keychain_user_name("github_token"),
+            "plexi:user:github_token"
+        );
     }
 
     #[test]
@@ -708,12 +712,8 @@ mod tests {
     #[test]
     fn layer_1_app_route_returns_workspace_namespaced_value() {
         let store = InMemoryKeychain::new();
-        store
-            .set("plexi:ws-1:openai_prod", "sk-abc")
-            .unwrap();
-        let r = router(
-            "fallback = false\n[apps.claude-code]\nOPENAI_API_KEY = \"openai_prod\"\n",
-        );
+        store.set("plexi:ws-1:openai_prod", "sk-abc").unwrap();
+        let r = router("fallback = false\n[apps.claude-code]\nOPENAI_API_KEY = \"openai_prod\"\n");
         match resolve("ws-1", "claude-code", "OPENAI_API_KEY", &r, &store) {
             ResolveOutcome::Found(v) => assert_eq!(v.as_str(), "sk-abc"),
             other => panic!("expected Found, got {other:?}"),
@@ -765,12 +765,10 @@ mod tests {
         store
             .set("plexi:personal:openai_personal", "sk-personal")
             .unwrap();
-        let work_router = router(
-            "fallback = false\n[apps.claude-code]\nOPENAI_API_KEY = \"openai_prod\"\n",
-        );
-        let personal_router = router(
-            "fallback = false\n[apps.claude-code]\nOPENAI_API_KEY = \"openai_personal\"\n",
-        );
+        let work_router =
+            router("fallback = false\n[apps.claude-code]\nOPENAI_API_KEY = \"openai_prod\"\n");
+        let personal_router =
+            router("fallback = false\n[apps.claude-code]\nOPENAI_API_KEY = \"openai_personal\"\n");
         let work = match resolve(
             "work",
             "claude-code",
@@ -800,9 +798,7 @@ mod tests {
     fn route_declared_but_keychain_empty_prompts_user() {
         let store = InMemoryKeychain::new();
         // Router points at a friendly name but no Keychain entry was set.
-        let r = router(
-            "fallback = true\n[apps.claude-code]\nOPENAI_API_KEY = \"openai_prod\"\n",
-        );
+        let r = router("fallback = true\n[apps.claude-code]\nOPENAI_API_KEY = \"openai_prod\"\n");
         match resolve("ws-1", "claude-code", "OPENAI_API_KEY", &r, &store) {
             ResolveOutcome::PromptUser => {}
             other => panic!("expected PromptUser, got {other:?}"),
@@ -843,7 +839,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let channel_dir = crate::config::workspace_channel_dir();
         init_workspace(tmp.path(), &channel_dir).expect("init_workspace");
-        assert!(tmp.path().join(&channel_dir).join("workspace.toml").is_file());
+        assert!(tmp
+            .path()
+            .join(&channel_dir)
+            .join("workspace.toml")
+            .is_file());
         let secrets_raw =
             std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
         // Generated secrets.toml must parse cleanly with the required field.
@@ -896,7 +896,8 @@ mod tests {
         let channel_dir = crate::config::workspace_channel_dir();
         std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
         write_default_route(tmp.path(), "AGE", "AGE").expect("should succeed");
-        let raw = std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
+        let raw =
+            std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
         assert!(raw.contains("fallback = true"), "missing fallback: {raw}");
         assert!(raw.contains("[default]"), "missing section: {raw}");
         assert!(raw.contains("AGE = \"AGE\""), "missing route: {raw}");
@@ -911,9 +912,14 @@ mod tests {
         let initial = "fallback = true\n\n[default]\nAGE = \"AGE\"\n";
         std::fs::write(tmp.path().join(&channel_dir).join("secrets.toml"), initial).unwrap();
         write_default_route(tmp.path(), "AGE", "AGE").expect("should succeed");
-        let raw = std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
+        let raw =
+            std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
         // Content must not grow — no duplicate entries.
-        assert_eq!(raw.matches("AGE = \"AGE\"").count(), 1, "duplicate entry: {raw}");
+        assert_eq!(
+            raw.matches("AGE = \"AGE\"").count(),
+            1,
+            "duplicate entry: {raw}"
+        );
     }
 
     #[test]
@@ -924,8 +930,12 @@ mod tests {
         let initial = "fallback = true\n\n[default]\nGITHUB_TOKEN = \"gh_personal\"\n";
         std::fs::write(tmp.path().join(&channel_dir).join("secrets.toml"), initial).unwrap();
         write_default_route(tmp.path(), "AGE", "AGE").expect("should succeed");
-        let raw = std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
-        assert!(raw.contains("GITHUB_TOKEN = \"gh_personal\""), "existing entry lost: {raw}");
+        let raw =
+            std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
+        assert!(
+            raw.contains("GITHUB_TOKEN = \"gh_personal\""),
+            "existing entry lost: {raw}"
+        );
         assert!(raw.contains("AGE = \"AGE\""), "new entry missing: {raw}");
         WorkspaceSecrets::parse(&raw).expect("file must still parse");
     }
@@ -938,7 +948,8 @@ mod tests {
         let initial = "fallback = true\n\n# [default]\n# GITHUB_TOKEN = \"gh\"\n";
         std::fs::write(tmp.path().join(&channel_dir).join("secrets.toml"), initial).unwrap();
         write_default_route(tmp.path(), "AGE", "AGE").expect("should succeed");
-        let raw = std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
+        let raw =
+            std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
         assert!(raw.contains("[default]"), "section missing: {raw}");
         assert!(raw.contains("AGE = \"AGE\""), "entry missing: {raw}");
         WorkspaceSecrets::parse(&raw).expect("file must parse");
@@ -951,8 +962,12 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
         write_default_route(tmp.path(), "OPENAI_API_KEY", "openai_personal")
             .expect("should succeed");
-        let raw = std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
-        assert!(raw.contains("OPENAI_API_KEY = \"openai_personal\""), "route wrong: {raw}");
+        let raw =
+            std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
+        assert!(
+            raw.contains("OPENAI_API_KEY = \"openai_personal\""),
+            "route wrong: {raw}"
+        );
     }
 
     #[test]
@@ -963,8 +978,12 @@ mod tests {
         let initial = "fallback = true\n\n[default]\nOPENAI_API_KEY = \"old_alias\"\n";
         std::fs::write(tmp.path().join(&channel_dir).join("secrets.toml"), initial).unwrap();
         write_default_route(tmp.path(), "OPENAI_API_KEY", "new_alias").expect("should succeed");
-        let raw = std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
-        assert!(raw.contains("OPENAI_API_KEY = \"new_alias\""), "updated entry missing: {raw}");
+        let raw =
+            std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
+        assert!(
+            raw.contains("OPENAI_API_KEY = \"new_alias\""),
+            "updated entry missing: {raw}"
+        );
         assert!(!raw.contains("old_alias"), "stale entry not removed: {raw}");
         WorkspaceSecrets::parse(&raw).expect("must parse");
     }
@@ -986,7 +1005,10 @@ mod tests {
         let default_pos = out.find("[default]").unwrap();
         let apps_pos = out.find("[apps.foo]").unwrap();
         let c_pos = out.find("C = \"c\"").unwrap();
-        assert!(c_pos > default_pos && c_pos < apps_pos, "C not in [default]: {out}");
+        assert!(
+            c_pos > default_pos && c_pos < apps_pos,
+            "C not in [default]: {out}"
+        );
         WorkspaceSecrets::parse(&out).expect("must parse");
     }
 
@@ -995,7 +1017,10 @@ mod tests {
         let raw = "fallback = true\n\n[default] # route table\nA = \"a\"\n";
         let out = upsert_default_route_line(raw, "B", "b_alias");
         assert!(out.contains("B = \"b_alias\""), "entry missing: {out}");
-        assert!(out.contains("[default] # route table"), "header modified: {out}");
+        assert!(
+            out.contains("[default] # route table"),
+            "header modified: {out}"
+        );
         WorkspaceSecrets::parse(&out).expect("must parse");
     }
 
@@ -1004,7 +1029,10 @@ mod tests {
         let raw = "fallback = true\n\n[default]\nFOO = \"old\"\nBAR = \"bar\"\n";
         let out = upsert_default_route_line(raw, "FOO", "new");
         assert!(out.contains("FOO = \"new\""), "replacement missing: {out}");
-        assert!(!out.contains("FOO = \"old\""), "old entry not removed: {out}");
+        assert!(
+            !out.contains("FOO = \"old\""),
+            "old entry not removed: {out}"
+        );
         assert!(out.contains("BAR = \"bar\""), "sibling entry lost: {out}");
         WorkspaceSecrets::parse(&out).expect("must parse");
     }

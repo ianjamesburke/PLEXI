@@ -48,7 +48,10 @@ impl Colors {
             bg_toolbar: parse_hex_or(&cfg.bg_toolbar, Color32::from_rgb(0x18, 0x18, 0x25)),
             terminal_bg: parse_hex_or(&cfg.terminal_bg, Color32::from_rgb(0x29, 0x2a, 0x44)),
             bg_hover: parse_hex_or(&cfg.bg_hover, Color32::from_rgb(0x2a, 0x2a, 0x3c)),
-            bg_sidebar_hover: parse_hex_or(&cfg.bg_sidebar_hover, Color32::from_rgb(0x2e, 0x2e, 0x48)),
+            bg_sidebar_hover: parse_hex_or(
+                &cfg.bg_sidebar_hover,
+                Color32::from_rgb(0x2e, 0x2e, 0x48),
+            ),
             bg_active: parse_hex_or(&cfg.bg_active, Color32::from_rgb(0x31, 0x31, 0x44)),
             text_primary: parse_hex_or(&cfg.text_primary, Color32::from_rgb(0xcd, 0xd6, 0xf4)),
             text_dim: parse_hex_or(&cfg.text_dim, Color32::from_rgb(0x6c, 0x70, 0x86)),
@@ -152,7 +155,10 @@ fn canonical_preset_name(name: &str) -> Option<&'static str> {
 pub fn is_light_preset(name: &str) -> bool {
     matches!(
         canonical_preset_name(name),
-        Some("catppuccin-latte") | Some("solarized-light") | Some("gruvbox-light") | Some("tokyo-day")
+        Some("catppuccin-latte")
+            | Some("solarized-light")
+            | Some("gruvbox-light")
+            | Some("tokyo-day")
     )
 }
 
@@ -576,7 +582,11 @@ pub fn apply_preset(preset: &ThemeConfig, user: &ThemeConfig) -> ThemeConfig {
 pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     log::info!("theme: setup_style dark_mode={dark_mode}");
     let mut style = (*ctx.style()).clone();
-    style.visuals = if dark_mode { egui::Visuals::dark() } else { egui::Visuals::light() };
+    style.visuals = if dark_mode {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
     style.visuals.panel_fill = colors.bg_darkest;
     style.visuals.window_fill = colors.bg_sidebar;
     style.visuals.override_text_color = Some(colors.text_primary);

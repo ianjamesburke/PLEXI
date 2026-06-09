@@ -18,27 +18,37 @@ fn auto_init_workspace(root: &std::path::Path) {
     // Guard: never init at home dir, filesystem root, or inside a Plexi profile dir.
     let home = dirs::home_dir();
     let root_str = root.to_string_lossy();
-    let is_home_or_root = root == std::path::Path::new("/")
-        || home.as_ref().map(|h| root == *h).unwrap_or(false);
-    let is_inside_profile = home.as_ref().map(|h| {
-        let prefix = format!("{}/.plexi", h.to_string_lossy());
-        root_str.starts_with(&prefix)
-    }).unwrap_or(false);
+    let is_home_or_root =
+        root == std::path::Path::new("/") || home.as_ref().map(|h| root == *h).unwrap_or(false);
+    let is_inside_profile = home
+        .as_ref()
+        .map(|h| {
+            let prefix = format!("{}/.plexi", h.to_string_lossy());
+            root_str.starts_with(&prefix)
+        })
+        .unwrap_or(false);
     if is_home_or_root || is_inside_profile {
-        log::info!("auto_init_workspace: skipping home/root/profile path {}", root.display());
+        log::info!(
+            "auto_init_workspace: skipping home/root/profile path {}",
+            root.display()
+        );
         return;
     }
 
     let channel_dir = crate::config::workspace_channel_dir();
     let channel_path = root.join(&channel_dir);
     if channel_path.exists() {
-        log::info!("auto_init_workspace: already initialized at {}", root.display());
+        log::info!(
+            "auto_init_workspace: already initialized at {}",
+            root.display()
+        );
         return;
     }
     match crate::workspace::secrets::init_workspace(root, &channel_dir) {
         Ok(cfg) => log::info!(
             "auto_init_workspace: created {}/{channel_dir} workspace_id={}",
-            root.display(), cfg.id
+            root.display(),
+            cfg.id
         ),
         Err(e) => log::warn!(
             "auto_init_workspace: could not create {}/{channel_dir}: {e}",
@@ -61,8 +71,14 @@ impl PlexiApp {
     /// Create a child context nested inside `parent_name`. Always creates a fresh
     /// terminal in the child (portal model — no pane adoption). Inserts a Portal
     /// tile into the parent window as a sibling of the focused tile. No depth cap.
-    pub(crate) fn new_child_context(&mut self, parent_name: &str, path: PathBuf) -> Result<(), String> {
-        let parent_idx = self.router.position(|c| c.name.eq_ignore_ascii_case(parent_name))
+    pub(crate) fn new_child_context(
+        &mut self,
+        parent_name: &str,
+        path: PathBuf,
+    ) -> Result<(), String> {
+        let parent_idx = self
+            .router
+            .position(|c| c.name.eq_ignore_ascii_case(parent_name))
             .ok_or_else(|| format!("no context named '{parent_name}'"))?;
         let parent_id = self.router.get(parent_idx).context_id;
         let parent_depth = self.router.get(parent_idx).depth;
@@ -75,23 +91,24 @@ impl PlexiApp {
 
         // Check for anchor defaults from .plexi/workspace.toml [context] section.
         let anchor = crate::host::anchor::Anchor::detect(&path);
-        let (ctx_name, ctx_description) = match anchor.as_ref().and_then(|a| a.context_defaults.as_ref()) {
-            Some(defaults) => {
-                let name = defaults.name.clone().unwrap_or_else(|| {
-                    path.file_name()
+        let (ctx_name, ctx_description) =
+            match anchor.as_ref().and_then(|a| a.context_defaults.as_ref()) {
+                Some(defaults) => {
+                    let name = defaults.name.clone().unwrap_or_else(|| {
+                        path.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1))
+                    });
+                    (name, defaults.description.clone())
+                }
+                None => {
+                    let name = path
+                        .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1))
-                });
-                (name, defaults.description.clone())
-            }
-            None => {
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1));
-                (name, None)
-            }
-        };
+                        .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1));
+                    (name, None)
+                }
+            };
 
         log::info!(
             "new_child_context: parent_id={parent_id} parent_depth={parent_depth} \
@@ -111,7 +128,11 @@ impl PlexiApp {
         let parent_win_idx = {
             let preferred = self.context_active_window.get(&parent_id).copied();
             preferred
-                .and_then(|wid| self.windows.iter().position(|w| w.window_id == wid && w.context_id == parent_id))
+                .and_then(|wid| {
+                    self.windows
+                        .iter()
+                        .position(|w| w.window_id == wid && w.context_id == parent_id)
+                })
                 .or_else(|| self.windows.iter().position(|w| w.context_id == parent_id))
         };
         let sub_ctx_pane_id = self.host.alloc_pane_id();
@@ -122,7 +143,10 @@ impl PlexiApp {
                 split_target,
                 sub_ctx_pane_id,
                 true, // vertical = side-by-side
-                crate::host::command::ShareRatio { numerator: 1.0, denominator: 1.0 },
+                crate::host::command::ShareRatio {
+                    numerator: 1.0,
+                    denominator: 1.0,
+                },
                 false,
             );
             self.windows[parent_win_idx].panes.insert(
@@ -185,7 +209,8 @@ impl PlexiApp {
         match self.new_child_context(&parent_name, parent_path) {
             Ok(()) => {
                 let new_ctx_idx = self.router.len() - 1;
-                self.router.push_depth(parent_ctx_id, current_win_id, current_focused);
+                self.router
+                    .push_depth(parent_ctx_id, current_win_id, current_focused);
                 self.switch_workspace(new_ctx_idx);
                 log::info!(
                     "new_child_context_from_keyboard: zoomed into child ctx_id={}",
@@ -201,7 +226,9 @@ impl PlexiApp {
     pub(crate) fn push_pane_to_subcontext(&mut self, name: Option<String>) {
         let parent_win_idx = self.active_window;
         let parent_ctx_id = self.windows[parent_win_idx].context_id;
-        let parent_depth = self.router.iter()
+        let parent_depth = self
+            .router
+            .iter()
             .find(|c| c.context_id == parent_ctx_id)
             .map(|c| c.depth)
             .unwrap_or(0);
@@ -219,7 +246,9 @@ impl PlexiApp {
             }
         };
 
-        if self.windows[parent_win_idx].panes.get(&pane_id)
+        if self.windows[parent_win_idx]
+            .panes
+            .get(&pane_id)
             .map(|p| p.as_portal().is_some())
             .unwrap_or(false)
         {
@@ -227,15 +256,21 @@ impl PlexiApp {
             return;
         }
 
-        let pane_name = self.windows[parent_win_idx].panes.get(&pane_id).and_then(|p| {
-            p.as_terminal().and_then(|t| t.name.clone())
-                .or_else(|| p.as_app().map(|a| a.name.clone()))
-        });
+        let pane_name = self.windows[parent_win_idx]
+            .panes
+            .get(&pane_id)
+            .and_then(|p| {
+                p.as_terminal()
+                    .and_then(|t| t.name.clone())
+                    .or_else(|| p.as_app().map(|a| a.name.clone()))
+            });
         let ctx_name = name
             .or(pane_name)
             .unwrap_or_else(|| format!("Sub-context {}", self.router.len() + 1));
 
-        let (parent_path, parent_root) = self.router.iter()
+        let (parent_path, parent_root) = self
+            .router
+            .iter()
             .find(|c| c.context_id == parent_ctx_id)
             .map(|c| (c.path.clone(), c.root.clone()))
             .unwrap_or_else(|| {
@@ -263,7 +298,11 @@ impl PlexiApp {
         };
 
         let portal_pane_id = self.host.alloc_pane_id();
-        if let Some(egui_tiles::Tile::Pane(slot)) = self.windows[parent_win_idx].tree.tiles.get_mut(focused_tile) {
+        if let Some(egui_tiles::Tile::Pane(slot)) = self.windows[parent_win_idx]
+            .tree
+            .tiles
+            .get_mut(focused_tile)
+        {
             *slot = portal_pane_id;
         }
         self.windows[parent_win_idx].panes.insert(
@@ -308,7 +347,8 @@ impl PlexiApp {
         self.context_active_window.insert(ctx_id, win_id);
 
         let current_win_id = self.windows[parent_win_idx].window_id;
-        self.router.push_depth(parent_ctx_id, current_win_id, Some(focused_tile));
+        self.router
+            .push_depth(parent_ctx_id, current_win_id, Some(focused_tile));
         let new_ctx_idx = self.router.len() - 1;
         self.switch_workspace(new_ctx_idx);
 
@@ -386,9 +426,13 @@ impl PlexiApp {
     /// `[context]` defaults. Callers must call `save_workspace()` afterward.
     pub(crate) fn new_context_at_path(&mut self, path: PathBuf) {
         log::info!("new_context_at_path: path={}", path.display());
-        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(path.clone()), None, false)
+        let Some((tree, panes, root_tile)) =
+            self.create_single_pane_tree(Some(path.clone()), None, false)
         else {
-            log::error!("new_context_at_path: failed to create terminal for {}", path.display());
+            log::error!(
+                "new_context_at_path: failed to create terminal for {}",
+                path.display()
+            );
             return;
         };
 
@@ -399,27 +443,29 @@ impl PlexiApp {
 
         // Check for anchor defaults from .plexi/workspace.toml [context] section.
         let anchor = crate::host::anchor::Anchor::detect(&path);
-        let (ctx_name, ctx_description) = match anchor.as_ref().and_then(|a| a.context_defaults.as_ref()) {
-            Some(defaults) => {
-                let name = defaults.name.clone().unwrap_or_else(|| {
-                    path.file_name()
+        let (ctx_name, ctx_description) =
+            match anchor.as_ref().and_then(|a| a.context_defaults.as_ref()) {
+                Some(defaults) => {
+                    let name = defaults.name.clone().unwrap_or_else(|| {
+                        path.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| format!("Context {}", self.router.len() + 1))
+                    });
+                    log::info!(
+                        "new_context_at_path: applying anchor defaults name={:?} description={:?}",
+                        name,
+                        defaults.description
+                    );
+                    (name, defaults.description.clone())
+                }
+                None => {
+                    let name = path
+                        .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_else(|| format!("Context {}", self.router.len() + 1))
-                });
-                log::info!(
-                    "new_context_at_path: applying anchor defaults name={:?} description={:?}",
-                    name, defaults.description
-                );
-                (name, defaults.description.clone())
-            }
-            None => {
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| format!("Context {}", self.router.len() + 1));
-                (name, None)
-            }
-        };
+                        .unwrap_or_else(|| format!("Context {}", self.router.len() + 1));
+                    (name, None)
+                }
+            };
 
         self.router.push(crate::host::context::Context {
             name: ctx_name,
@@ -455,7 +501,9 @@ impl PlexiApp {
     pub(crate) fn new_page_right(&mut self) {
         let ws_id = self.router.active().context_id;
         let active_y = self.windows[self.active_window].grid_y;
-        let max_x = self.windows.iter()
+        let max_x = self
+            .windows
+            .iter()
             .filter(|c| c.context_id == ws_id && c.grid_y == active_y)
             .map(|c| c.grid_x)
             .max();
@@ -468,15 +516,23 @@ impl PlexiApp {
 
     /// Shared creation helper: create a single-pane context at `(grid_x, grid_y)`
     /// and make it the active context.
-    pub(crate) fn create_page_at(&mut self, grid_x: u32, grid_y: u32, initial_cmd: Option<&str>, close_on_exit: bool) {
+    pub(crate) fn create_page_at(
+        &mut self,
+        grid_x: u32,
+        grid_y: u32,
+        initial_cmd: Option<&str>,
+        close_on_exit: bool,
+    ) {
         let old_window_id = self.windows[self.active_window].window_id;
         let old_focus = self.windows[self.active_window].focused_pane;
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let cwd = self.resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
+        let cwd = self
+            .resolve_new_pane_cwd(None, self.windows[self.active_window].focused_pane)
             .filter(|p| p != &PathBuf::from("/"))
             .unwrap_or(home);
         log::info!("create_page_at({grid_x},{grid_y}): cwd={} context_root={:?} initial_cmd={initial_cmd:?} close_on_exit={close_on_exit}", cwd.display(), self.router.active().root);
-        let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd.clone()), initial_cmd, close_on_exit)
+        let Some((tree, panes, root_tile)) =
+            self.create_single_pane_tree(Some(cwd.clone()), initial_cmd, close_on_exit)
         else {
             log::error!("Failed to create terminal for new page at ({grid_x}, {grid_y})");
             return;
@@ -505,7 +561,11 @@ impl PlexiApp {
 
     pub(crate) fn reset_active_context(&mut self) {
         let cwd = self.cwd_for_welcome_tab();
-        log::info!("reset_active_context: cwd={} context_root={:?}", cwd.display(), self.router.active().root);
+        log::info!(
+            "reset_active_context: cwd={} context_root={:?}",
+            cwd.display(),
+            self.router.active().root
+        );
         let Some((tree, panes, root_tile)) = self.create_single_pane_tree(Some(cwd), None, false)
         else {
             log::error!("Failed to create terminal for reset context");
@@ -538,7 +598,8 @@ impl PlexiApp {
         }
         log::info!(
             "delete_context: cascading delete of ctx_id={target_ctx_id} + {} descendants ({:?})",
-            deleted.len() - 1, &deleted[1..]
+            deleted.len() - 1,
+            &deleted[1..]
         );
 
         // 3. Remove all windows belonging to any deleted context.
@@ -546,8 +607,14 @@ impl PlexiApp {
 
         // 4. Remove Portal tiles in surviving windows that point to any deleted ctx.
         for win in &mut self.windows {
-            let portal_pane_ids: Vec<crate::spatial::tiling::PaneId> = win.panes.iter()
-                .filter(|(_, p)| p.portal_target().map(|cid| deleted.contains(&cid)).unwrap_or(false))
+            let portal_pane_ids: Vec<crate::spatial::tiling::PaneId> = win
+                .panes
+                .iter()
+                .filter(|(_, p)| {
+                    p.portal_target()
+                        .map(|cid| deleted.contains(&cid))
+                        .unwrap_or(false)
+                })
                 .map(|(id, _)| *id)
                 .collect();
             for pane_id in portal_pane_ids {
@@ -562,9 +629,16 @@ impl PlexiApp {
         //     but only if a non-empty sibling window exists for the same context. This
         //     preserves the invariant that every context retains at least one window.
         {
-            let mut empty_indices: Vec<usize> = self.windows.iter().enumerate()
+            let mut empty_indices: Vec<usize> = self
+                .windows
+                .iter()
+                .enumerate()
                 .filter(|(_, w)| w.panes.is_empty())
-                .filter(|(_, w)| self.windows.iter().any(|o| o.context_id == w.context_id && !o.panes.is_empty()))
+                .filter(|(_, w)| {
+                    self.windows
+                        .iter()
+                        .any(|o| o.context_id == w.context_id && !o.panes.is_empty())
+                })
                 .map(|(i, _)| i)
                 .collect();
             empty_indices.sort_unstable_by(|a, b| b.cmp(a)); // reverse order
@@ -580,8 +654,7 @@ impl PlexiApp {
         for win in &mut self.windows {
             if let Some(fp) = win.focused_pane {
                 if win.tree.tiles.get(fp).is_none() {
-                    win.focused_pane = win.tree.root
-                        .and_then(|root| win.find_first_pane_in(root));
+                    win.focused_pane = win.tree.root.and_then(|root| win.find_first_pane_in(root));
                     log::info!(
                         "delete_context: stale focused_pane reset for window ctx_id={}",
                         win.context_id
@@ -594,14 +667,17 @@ impl PlexiApp {
         loop {
             let next = self.router.position(|c| deleted.contains(&c.context_id));
             match next {
-                Some(idx) => { self.router.remove_at(idx); }
+                Some(idx) => {
+                    self.router.remove_at(idx);
+                }
                 None => break,
             }
         }
 
         // 6. Clean depth_stack: drop entries pointing to any deleted context.
         let before = self.router.depth_stack.len();
-        self.router.retain_depth_stack(|cid| !deleted.contains(&cid));
+        self.router
+            .retain_depth_stack(|cid| !deleted.contains(&cid));
         let cleaned = before - self.router.depth_stack.len();
         if cleaned > 0 {
             log::info!("delete_context: removed {cleaned} stale depth_stack entries");
@@ -617,7 +693,10 @@ impl PlexiApp {
         });
         self.save_notifications();
         if let Some(ref id) = self.current_notify_id.clone() {
-            let still_present = self.pending_notifications.iter().any(|n| &n.notify_id == id);
+            let still_present = self
+                .pending_notifications
+                .iter()
+                .any(|n| &n.notify_id == id);
             if !still_present {
                 self.current_notify_id = None;
             }
@@ -625,7 +704,11 @@ impl PlexiApp {
 
         // 9. Restore minimap state for the context we landed on.
         let new_ws_id = self.router.active().context_id;
-        let page_count = self.windows.iter().filter(|c| c.context_id == new_ws_id).count();
+        let page_count = self
+            .windows
+            .iter()
+            .filter(|c| c.context_id == new_ws_id)
+            .count();
         self.minimap.visible = self
             .minimap_visible_per_context
             .get(&new_ws_id)
@@ -654,7 +737,8 @@ impl PlexiApp {
         // navigate to a ghost window_id.
         if self.context_active_window.get(&removed_ws_id) == Some(&removed_win_id) {
             if let Some(replacement) = self.windows.iter().find(|w| w.context_id == removed_ws_id) {
-                self.context_active_window.insert(removed_ws_id, replacement.window_id);
+                self.context_active_window
+                    .insert(removed_ws_id, replacement.window_id);
             } else {
                 self.context_active_window.remove(&removed_ws_id);
             }
@@ -674,7 +758,8 @@ impl PlexiApp {
             let new_ctx_id = self.windows[self.active_window].context_id;
             if let Some(ctx_idx) = self.router.position(|w| w.context_id == new_ctx_id) {
                 self.router.set_active(ctx_idx);
-                self.context_active_window.insert(new_ctx_id, self.windows[self.active_window].window_id);
+                self.context_active_window
+                    .insert(new_ctx_id, self.windows[self.active_window].window_id);
             }
         } else if self.active_window >= self.windows.len() {
             self.active_window = self.windows.len() - 1;
@@ -699,7 +784,11 @@ impl PlexiApp {
         // the saved state for the new context.
         let ws_id = self.router.active().context_id;
         if ws_id != removed_ws_id {
-            let page_count = self.windows.iter().filter(|c| c.context_id == ws_id).count();
+            let page_count = self
+                .windows
+                .iter()
+                .filter(|c| c.context_id == ws_id)
+                .count();
             self.minimap.visible = self
                 .minimap_visible_per_context
                 .get(&ws_id)
@@ -713,13 +802,16 @@ impl PlexiApp {
     /// deleting the left-most window in a row causes the rest to slide over.
     fn compact_workspace_grid(&mut self, ctx_id: u64) {
         // Collect positions: (window_id, grid_y, grid_x) for windows in the given context.
-        let entries: Vec<(u64, u32, u32)> = self.windows.iter()
+        let entries: Vec<(u64, u32, u32)> = self
+            .windows
+            .iter()
             .filter(|w| w.context_id == ctx_id)
             .map(|w| (w.window_id, w.grid_y, w.grid_x))
             .collect();
 
         // Group by row (grid_y)
-        let mut by_row: std::collections::HashMap<u32, Vec<(u64, u32)>> = std::collections::HashMap::new();
+        let mut by_row: std::collections::HashMap<u32, Vec<(u64, u32)>> =
+            std::collections::HashMap::new();
         for (win_id, y, x) in entries {
             by_row.entry(y).or_default().push((win_id, x));
         }
@@ -796,7 +888,11 @@ impl PlexiApp {
         let ctx_id = self.router.active().context_id;
         let preferred = self.context_active_window.get(&ctx_id).copied();
         if let Some(win_id) = preferred {
-            if let Some(idx) = self.windows.iter().position(|w| w.window_id == win_id && w.context_id == ctx_id) {
+            if let Some(idx) = self
+                .windows
+                .iter()
+                .position(|w| w.window_id == win_id && w.context_id == ctx_id)
+            {
                 self.active_window = idx;
                 self.record_context_visit(win_id);
                 return;
@@ -820,7 +916,10 @@ impl PlexiApp {
         if is_parked {
             // Unpark
             self.router.get_mut(idx).parked = false;
-            log::info!("context: unparked '{}' (idx={idx})", self.router.get(idx).name);
+            log::info!(
+                "context: unparked '{}' (idx={idx})",
+                self.router.get(idx).name
+            );
             self.save_workspace();
             return;
         }
@@ -848,7 +947,10 @@ impl PlexiApp {
     /// Unpark a specific context by index and switch focus to it.
     pub(crate) fn unpark_context(&mut self, idx: usize) {
         self.router.get_mut(idx).parked = false;
-        log::info!("context: unparked '{}' (idx={idx})", self.router.get(idx).name);
+        log::info!(
+            "context: unparked '{}' (idx={idx})",
+            self.router.get(idx).name
+        );
         self.switch_workspace(idx);
         self.save_workspace();
     }
@@ -874,15 +976,10 @@ impl PlexiApp {
     ///   2. Restart the app_registry_watcher on the new root's watch dirs.
     ///   3. Palette scope follows implicitly — the palette reads `self.registry` directly.
     pub(crate) fn apply_context_transition_effects(&mut self) {
-        let root = self
-            .router
-            .active()
-            .root
-            .clone()
-            .unwrap_or_else(|| {
-                std::env::current_dir()
-                    .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
-            });
+        let root = self.router.active().root.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+        });
         log::info!(
             "transition_context: ctx_id={} root={} — rescanning registry + restarting watcher",
             self.router.active().context_id,
@@ -915,19 +1012,25 @@ impl PlexiApp {
         let parent_idx = self.active_window;
         let portal_pane_id = {
             let win = &self.windows[parent_idx];
-            win.panes.iter()
+            win.panes
+                .iter()
                 .find(|(_, p)| p.portal_target() == Some(child_ctx_id))
                 .map(|(id, _)| *id)
         };
         let portal_pane_id = match portal_pane_id {
             Some(id) => id,
             None => {
-                log::warn!("dissolve_portal: no Portal tile for ctx={child_ctx_id} in active window");
+                log::warn!(
+                    "dissolve_portal: no Portal tile for ctx={child_ctx_id} in active window"
+                );
                 return;
             }
         };
 
-        let portal_tile_id = self.windows[parent_idx].tree.tiles.find_pane(&portal_pane_id);
+        let portal_tile_id = self.windows[parent_idx]
+            .tree
+            .tiles
+            .find_pane(&portal_pane_id);
         let portal_tile_id = match portal_tile_id {
             Some(id) => id,
             None => {
@@ -937,15 +1040,20 @@ impl PlexiApp {
         };
 
         // Collect panes from all child windows — extract them so we can move ownership.
-        let child_win_indices: Vec<usize> = self.windows.iter().enumerate()
+        let child_win_indices: Vec<usize> = self
+            .windows
+            .iter()
+            .enumerate()
             .filter(|(_, w)| w.context_id == child_ctx_id)
             .map(|(i, _)| i)
             .collect();
 
         // Drain panes from child windows into a staging list (sorted by ID for deterministic order).
-        let mut adopted: Vec<(crate::spatial::tiling::PaneId, crate::host::pane::Pane)> = Vec::new();
+        let mut adopted: Vec<(crate::spatial::tiling::PaneId, crate::host::pane::Pane)> =
+            Vec::new();
         for &win_idx in &child_win_indices {
-            let mut pane_ids: Vec<crate::spatial::tiling::PaneId> = self.windows[win_idx].panes.keys().copied().collect();
+            let mut pane_ids: Vec<crate::spatial::tiling::PaneId> =
+                self.windows[win_idx].panes.keys().copied().collect();
             pane_ids.sort();
             for pane_id in pane_ids {
                 if let Some(pane) = self.windows[win_idx].panes.remove(&pane_id) {
@@ -954,7 +1062,10 @@ impl PlexiApp {
             }
         }
 
-        log::info!("dissolve_portal: ctx={child_ctx_id} adopting {} panes into parent win={parent_idx}", adopted.len());
+        log::info!(
+            "dissolve_portal: ctx={child_ctx_id} adopting {} panes into parent win={parent_idx}",
+            adopted.len()
+        );
 
         // Insert adopted panes into the parent window.
         // Strategy: add each new tile alongside the Portal tile.
@@ -964,7 +1075,10 @@ impl PlexiApp {
             self.windows[parent_idx].panes.insert(pane_id, pane);
 
             // Add the new tile as a sibling of the Portal tile.
-            let parent_of_portal = self.windows[parent_idx].tree.tiles.parent_of(portal_tile_id);
+            let parent_of_portal = self.windows[parent_idx]
+                .tree
+                .tiles
+                .parent_of(portal_tile_id);
             if let Some(parent_tile) = parent_of_portal {
                 if let Some(Tile::Container(Container::Linear(lin))) =
                     self.windows[parent_idx].tree.tiles.get_mut(parent_tile)
@@ -978,7 +1092,10 @@ impl PlexiApp {
                     // Parent is Tabs or another container — append via a new horizontal split at root.
                     let existing_root = self.windows[parent_idx].tree.root;
                     if let Some(root) = existing_root {
-                        let new_root = self.windows[parent_idx].tree.tiles.insert_horizontal_tile(vec![root, new_tile]);
+                        let new_root = self.windows[parent_idx]
+                            .tree
+                            .tiles
+                            .insert_horizontal_tile(vec![root, new_tile]);
                         self.windows[parent_idx].tree.root = Some(new_root);
                     } else {
                         self.windows[parent_idx].tree.root = Some(new_tile);
@@ -986,7 +1103,10 @@ impl PlexiApp {
                 }
             } else {
                 // Portal tile is the root — wrap everything in a horizontal container.
-                let new_root = self.windows[parent_idx].tree.tiles.insert_horizontal_tile(vec![new_tile, portal_tile_id]);
+                let new_root = self.windows[parent_idx]
+                    .tree
+                    .tiles
+                    .insert_horizontal_tile(vec![new_tile, portal_tile_id]);
                 self.windows[parent_idx].tree.root = Some(new_root);
             }
         }
@@ -996,7 +1116,8 @@ impl PlexiApp {
             let win = &mut self.windows[parent_idx];
             win.panes.remove(&portal_pane_id);
             if let Some(parent_tile) = win.tree.tiles.parent_of(portal_tile_id) {
-                if let Some(Tile::Container(parent_container)) = win.tree.tiles.get_mut(parent_tile) {
+                if let Some(Tile::Container(parent_container)) = win.tree.tiles.get_mut(parent_tile)
+                {
                     parent_container.remove_child(portal_tile_id);
                 }
             }
@@ -1009,7 +1130,10 @@ impl PlexiApp {
 
         // Fix up active_window index BEFORE the retain shifts indices.
         // Count how many child windows sit before parent_idx — each removal shifts the index down by 1.
-        let removed_before = child_win_indices.iter().filter(|&&i| i < parent_idx).count();
+        let removed_before = child_win_indices
+            .iter()
+            .filter(|&&i| i < parent_idx)
+            .count();
 
         // Remove child context windows and router entry.
         self.windows.retain(|w| w.context_id != child_ctx_id);
@@ -1020,7 +1144,9 @@ impl PlexiApp {
         self.active_window = parent_idx - removed_before;
 
         // Focus the first pane in the parent window.
-        let new_focus = self.windows[self.active_window].tree.root
+        let new_focus = self.windows[self.active_window]
+            .tree
+            .root
             .and_then(|root| self.windows[self.active_window].find_first_pane_in(root));
         self.windows[self.active_window].focused_pane = new_focus;
     }
@@ -1063,7 +1189,9 @@ impl PlexiApp {
                 } else if let Some(child_ctx_id) = pane.portal_target() {
                     saved_panes.push(crate::workspace::SavedPane {
                         id,
-                        kind: crate::workspace::SavedPaneKind::Portal { context_id: child_ctx_id },
+                        kind: crate::workspace::SavedPaneKind::Portal {
+                            context_id: child_ctx_id,
+                        },
                         cwd: std::path::PathBuf::new(),
                         name: None,
                         app_id: None,

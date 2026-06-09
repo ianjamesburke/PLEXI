@@ -15,8 +15,8 @@
 //! `include_str!`. Sources are `local:<app-name>` — the installer copies
 //! from the embedded `apps/` tree.
 
-use crate::app::registry::{AppManifest, MANIFEST_SCHEMA_VERSION};
 use crate::app::packs::{parse_source_spec, Pack, PackApp, SourceSpec};
+use crate::app::registry::{AppManifest, MANIFEST_SCHEMA_VERSION};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -30,8 +30,7 @@ pub const EXAMPLES_PACK_TOML: &str = include_str!("../../packs/examples.toml");
 // `local:` source-spec installs look up by name in EMBEDDED_APPS.
 // apps/dev/ apps are not referenced by any pack entry, so they are never
 // auto-installed — they are only rsync'd to the profile dir by install.sh.
-static EMBEDDED_APPS: include_dir::Dir<'_> =
-    include_dir::include_dir!("$CARGO_MANIFEST_DIR/apps");
+static EMBEDDED_APPS: include_dir::Dir<'_> = include_dir::include_dir!("$CARGO_MANIFEST_DIR/apps");
 
 /// Result of installing or updating one app entry. Aggregated for pack apply.
 #[derive(Debug, Clone)]
@@ -287,8 +286,7 @@ fn install_one_local(name: &str, target_root: &Path) -> Result<InstallOutcome, S
     // we embedded `apps/`). Calling `extract(target_root)` therefore
     // writes `target_root/<name>/manifest.toml`, etc. We just need to ensure
     // `dest` exists first; `extract` panics otherwise on macOS tempdirs.
-    std::fs::create_dir_all(&dest)
-        .map_err(|e| format!("create {}: {e}", dest.display()))?;
+    std::fs::create_dir_all(&dest).map_err(|e| format!("create {}: {e}", dest.display()))?;
     example
         .extract(target_root)
         .map_err(|e| format!("extract local '{name}' → {}: {e}", target_root.display()))?;
@@ -396,7 +394,12 @@ fn provision_venv(app_id: &str, app_dir: &Path, manifest: &AppManifest) {
 
     // Check uv is available.
     let uv_check = Command::new("uv").arg("--version").output();
-    if uv_check.is_err() || !uv_check.as_ref().map(|o| o.status.success()).unwrap_or(false) {
+    if uv_check.is_err()
+        || !uv_check
+            .as_ref()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    {
         log::warn!(
             "install[{app_id}]: `uv` not found on PATH — skipping venv creation. \
              Install uv (https://docs.astral.sh/uv/getting-started/installation/) to enable \
@@ -445,10 +448,7 @@ fn provision_venv(app_id: &str, app_dir: &Path, manifest: &AppManifest) {
         _ => {}
     }
 
-    log::info!(
-        "install[{app_id}]: created venv at {}",
-        venv_path.display()
-    );
+    log::info!("install[{app_id}]: created venv at {}", venv_path.display());
 
     if !manifest.app.dependencies.is_empty() {
         install_deps_into_venv(app_id, &venv_path, &manifest.app.dependencies);
@@ -482,11 +482,7 @@ fn install_deps_into_venv(app_id: &str, venv_path: &Path, deps: &[String]) {
 /// aggregated per app so one bad entry doesn't abort the whole apply.
 /// Idempotent: an entry whose id is already installed at the same version is
 /// reported as `AlreadyAtVersion`.
-pub fn apply_pack(
-    cloner: &dyn Cloner,
-    pack: &Pack,
-    target_root: &Path,
-) -> Vec<InstallOutcome> {
+pub fn apply_pack(cloner: &dyn Cloner, pack: &Pack, target_root: &Path) -> Vec<InstallOutcome> {
     let mut outcomes = Vec::with_capacity(pack.apps.len());
     let installed = installed_versions(target_root);
     for entry in &pack.apps {
@@ -602,10 +598,7 @@ pub fn export_pack(target_root: &Path, dest_path: &Path) -> Result<usize, String
     let entries = match std::fs::read_dir(target_root) {
         Ok(d) => d,
         Err(e) => {
-            return Err(format!(
-                "read apps dir {}: {e}",
-                target_root.display()
-            ));
+            return Err(format!("read apps dir {}: {e}", target_root.display()));
         }
     };
 
@@ -679,8 +672,7 @@ pub fn infer_source_and_version(app_dir: &Path, manifest: &AppManifest) -> (Stri
     if app_dir.join(".git").exists() {
         let url = git_remote_origin_url(app_dir).unwrap_or_else(|| String::from("git+unknown"));
         let source = format_git_source_spec(&url);
-        let version = git_current_ref(app_dir)
-            .unwrap_or_else(|| manifest.app.version.clone());
+        let version = git_current_ref(app_dir).unwrap_or_else(|| manifest.app.version.clone());
         return (source, version);
     }
     let id = &manifest.app.id;
@@ -808,7 +800,10 @@ pub fn apply_examples_pack_if_empty(
     let is_empty = match std::fs::read_dir(target_root) {
         Ok(d) => d.flatten().next().is_none(),
         Err(e) => {
-            log::warn!("examples pack: cannot read apps dir {}: {e}", target_root.display());
+            log::warn!(
+                "examples pack: cannot read apps dir {}: {e}",
+                target_root.display()
+            );
             true
         }
     };
@@ -858,8 +853,12 @@ pub fn apply_workspace_pack(
     }
     let pack = Pack::from_path(&apps_toml)?;
     let workspace_apps = crate::app::registry::workspace_apps_dir(workspace_root);
-    std::fs::create_dir_all(&workspace_apps)
-        .map_err(|e| format!("create workspace apps dir {}: {e}", workspace_apps.display()))?;
+    std::fs::create_dir_all(&workspace_apps).map_err(|e| {
+        format!(
+            "create workspace apps dir {}: {e}",
+            workspace_apps.display()
+        )
+    })?;
     log::info!(
         "install: workspace pack {} → {} ({} apps)",
         apps_toml.display(),
@@ -951,7 +950,9 @@ pub(crate) mod test_support {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let mut p = std::fs::metadata(&entry).map_err(|e| e.to_string())?.permissions();
+                let mut p = std::fs::metadata(&entry)
+                    .map_err(|e| e.to_string())?
+                    .permissions();
                 p.set_mode(0o755);
                 std::fs::set_permissions(&entry, p).map_err(|e| e.to_string())?;
             }
@@ -1034,8 +1035,7 @@ mod install_tests {
             "schema_version = {}\n\n[app]\nid = \"future\"\ntype = \"app\"\nname = \"Future\"\nversion = \"0.1.0\"\nentry = \"run.sh\"\n",
             MANIFEST_SCHEMA_VERSION + 1
         );
-        let cloner =
-            MockCloner::new().with_manifest("https://example.com/future.git", &manifest);
+        let cloner = MockCloner::new().with_manifest("https://example.com/future.git", &manifest);
         let err = install_one(
             &cloner,
             &SourceSpec::Git("https://example.com/future.git".into()),
@@ -1043,10 +1043,7 @@ mod install_tests {
             target.path(),
         )
         .expect_err("future schema must refuse");
-        assert!(
-            err.contains("newer than this Plexi build"),
-            "got: {err}"
-        );
+        assert!(err.contains("newer than this Plexi build"), "got: {err}");
         assert!(
             !target.path().join("future").exists(),
             "failed install must not leave a partial dir"
@@ -1078,26 +1075,41 @@ mod install_tests {
         assert_eq!(venv, std::path::PathBuf::from("/tmp/apps/my-app/.venv"));
         // Verify the expected python binary path within the venv.
         let py = venv.join("bin").join("python");
-        assert_eq!(py, std::path::PathBuf::from("/tmp/apps/my-app/.venv/bin/python"));
+        assert_eq!(
+            py,
+            std::path::PathBuf::from("/tmp/apps/my-app/.venv/bin/python")
+        );
     }
 
     #[test]
     fn python_entry_detected_by_extension() {
         // .py entry → is_python = true
         let py_entry = "main.py";
-        assert!(py_entry.ends_with(".py"), "main.py should be detected as Python");
+        assert!(
+            py_entry.ends_with(".py"),
+            "main.py should be detected as Python"
+        );
 
         // .sh entry → is_python = false
         let sh_entry = "run.sh";
-        assert!(!sh_entry.ends_with(".py"), "run.sh must not be detected as Python");
+        assert!(
+            !sh_entry.ends_with(".py"),
+            "run.sh must not be detected as Python"
+        );
 
         // entry with no extension → is_python = false
         let no_ext = "myapp";
-        assert!(!no_ext.ends_with(".py"), "entry with no extension must not be detected as Python");
+        assert!(
+            !no_ext.ends_with(".py"),
+            "entry with no extension must not be detected as Python"
+        );
 
         // entry that happens to end in .py in a longer name
         let py_in_name = "app.py";
-        assert!(py_in_name.ends_with(".py"), "app.py should be detected as Python");
+        assert!(
+            py_in_name.ends_with(".py"),
+            "app.py should be detected as Python"
+        );
     }
 }
 
@@ -1154,7 +1166,10 @@ mod pack_tests {
             .iter()
             .filter(|o| matches!(o.status, InstallStatus::Installed(_)))
             .count();
-        assert_eq!(n_failed, 1, "exactly one failure expected, got {outcomes:?}");
+        assert_eq!(
+            n_failed, 1,
+            "exactly one failure expected, got {outcomes:?}"
+        );
         assert_eq!(n_ok, 1, "exactly one install expected, got {outcomes:?}");
     }
 
@@ -1162,10 +1177,7 @@ mod pack_tests {
     fn pack_apply_records_unknown_source_scheme_per_entry() {
         let target = tempfile::tempdir().unwrap();
         let cloner = MockCloner::new();
-        let pack = pack_with(&[
-            ("ok", "github:owner/ok", "v1"),
-            ("bad", "ftp://nope", "v1"),
-        ]);
+        let pack = pack_with(&[("ok", "github:owner/ok", "v1"), ("bad", "ftp://nope", "v1")]);
         let outcomes = apply_pack(&cloner, &pack, target.path());
         let bad = outcomes.iter().find(|o| o.id == "bad").unwrap();
         match &bad.status {
@@ -1327,7 +1339,10 @@ mod core_pack_tests {
     fn core_pack_parses() {
         let pack = Pack::from_toml_str(CORE_PACK_TOML)
             .expect("bundled core pack must parse against the current schema");
-        assert!(!pack.apps.is_empty(), "core pack should list at least one app");
+        assert!(
+            !pack.apps.is_empty(),
+            "core pack should list at least one app"
+        );
         for entry in &pack.apps {
             assert!(
                 parse_source_spec(&entry.source).is_ok(),
@@ -1407,7 +1422,10 @@ mod workspace_pack_tests {
 
         let workspace_apps = crate::app::registry::workspace_apps_dir(ws.path());
         assert!(
-            workspace_apps.join("my-tool").join("manifest.toml").exists(),
+            workspace_apps
+                .join("my-tool")
+                .join("manifest.toml")
+                .exists(),
             "app should be present in workspace apps dir at {}",
             workspace_apps.display()
         );

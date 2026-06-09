@@ -42,9 +42,7 @@ pub struct RealRunner;
 
 impl HelpRunner for RealRunner {
     fn run_help(&self, cli: &str) -> std::io::Result<(bool, String)> {
-        let out = std::process::Command::new(cli)
-            .arg("--help")
-            .output()?;
+        let out = std::process::Command::new(cli).arg("--help").output()?;
         let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
         // Many CLIs print help to stderr and exit 0; combine both to maximise
         // parseable content but prefer stdout.
@@ -82,7 +80,13 @@ pub(crate) fn crawl_with_runner(
 ) -> Result<CrawlResult, CrawlError> {
     let safe_name: String = cli_name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let cache_file = cache_dir.join(format!("{safe_name}.json"));
 
@@ -118,12 +122,13 @@ pub(crate) fn crawl_with_runner(
     // Cache miss — run --help.
     log::info!("cli_crawl: crawling `{cli_name} --help`");
 
-    let (success, help_text) = runner
-        .run_help(cli_name)
-        .map_err(|source| CrawlError::SpawnFailed {
-            cli: cli_name.to_string(),
-            source,
-        })?;
+    let (success, help_text) =
+        runner
+            .run_help(cli_name)
+            .map_err(|source| CrawlError::SpawnFailed {
+                cli: cli_name.to_string(),
+                source,
+            })?;
 
     if !success && help_text.trim().is_empty() {
         return Err(CrawlError::NonZeroExit {
@@ -132,7 +137,9 @@ pub(crate) fn crawl_with_runner(
     }
 
     let version_line = runner.run_version(cli_name);
-    let detected_version = version_line.as_deref().map(|s| extract_version(cli_name, s));
+    let detected_version = version_line
+        .as_deref()
+        .map(|s| extract_version(cli_name, s));
 
     let descriptor = parse_help(cli_name, &help_text, detected_version);
 
@@ -580,8 +587,7 @@ COMMANDS
             .to_string(),
             version: Some("mock-cli 1.2.3".to_string()),
         };
-        let result =
-            crawl_with_runner("mock-cli", &runner, &tmp.path().join("cache")).unwrap();
+        let result = crawl_with_runner("mock-cli", &runner, &tmp.path().join("cache")).unwrap();
         assert!(!result.from_cache);
         assert_eq!(result.descriptor.name, "mock-cli");
         assert!(result.descriptor.commands.len() >= 2);
@@ -632,7 +638,11 @@ COMMANDS
             capabilities: vec![],
         };
         let cache_file = cache_dir.join("version-cli.json");
-        std::fs::write(&cache_file, serde_json::to_string(&stale_descriptor).unwrap()).unwrap();
+        std::fs::write(
+            &cache_file,
+            serde_json::to_string(&stale_descriptor).unwrap(),
+        )
+        .unwrap();
 
         // Runner reports version "1.0.0" and help with commands so crawl succeeds.
         let runner = MockRunner {
@@ -641,7 +651,10 @@ COMMANDS
         };
 
         let result = crawl_with_runner("version-cli", &runner, &cache_dir).unwrap();
-        assert!(!result.from_cache, "stale cache should have been invalidated");
+        assert!(
+            !result.from_cache,
+            "stale cache should have been invalidated"
+        );
         assert_eq!(result.descriptor.version, "1.0.0");
     }
 
@@ -661,7 +674,10 @@ COMMANDS
             .expect("crawl should succeed even with traversal input");
 
         let expected = cache_dir.join("______evil.json");
-        assert!(expected.exists(), "sanitized cache file should exist at {expected:?}");
+        assert!(
+            expected.exists(),
+            "sanitized cache file should exist at {expected:?}"
+        );
         assert!(
             expected.starts_with(&cache_dir),
             "cache file escaped cache_dir: {expected:?}"
@@ -669,6 +685,9 @@ COMMANDS
 
         // No file created outside the cache dir.
         let parent = tmp.path().parent().unwrap();
-        assert!(!parent.join("evil.json").exists(), "path traversal wrote outside cache_dir");
+        assert!(
+            !parent.join("evil.json").exists(),
+            "path traversal wrote outside cache_dir"
+        );
     }
 }

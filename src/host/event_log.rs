@@ -143,10 +143,7 @@ pub enum HostEvent {
         timestamp: String,
     },
     /// A pane was closed.
-    PaneClosed {
-        pane_id: u64,
-        timestamp: String,
-    },
+    PaneClosed { pane_id: u64, timestamp: String },
     /// A new context was created.
     ContextCreated {
         context_id: u64,
@@ -267,8 +264,10 @@ fn append_line(file: &mut std::fs::File, line: &str) {
 /// [`crate::app::registry::resolve_workspace_root`] so workspace detection
 /// is consistent across registry, secrets, and event logging.
 pub fn find_workspace_events_path(start: &std::path::Path) -> Option<PathBuf> {
-    crate::app::registry::resolve_workspace_root(start)
-        .map(|root| root.join(crate::config::workspace_channel_dir()).join("events.jsonl"))
+    crate::app::registry::resolve_workspace_root(start).map(|root| {
+        root.join(crate::config::workspace_channel_dir())
+            .join("events.jsonl")
+    })
 }
 
 /// Returns the current UTC timestamp as an RFC 3339 string.
@@ -340,6 +339,3 @@ pub fn emit_pipe_opened(
         timestamp: now_timestamp(),
     });
 }
-
-
-

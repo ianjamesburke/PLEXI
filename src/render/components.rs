@@ -88,8 +88,12 @@ pub(crate) fn render_component_tree(
 
     match node {
         // ── L0 primitives ────────────────────────────────────────────────
-
-        UiNode::Stack { direction, children, gap, padding } => {
+        UiNode::Stack {
+            direction,
+            children,
+            gap,
+            padding,
+        } => {
             egui::Frame::new()
                 .inner_margin(egui::Margin {
                     left: padding.left as i8,
@@ -98,7 +102,15 @@ pub(crate) fn render_component_tree(
                     bottom: padding.bottom as i8,
                 })
                 .show(ui, |ui| {
-                    events.extend(render_stack(ui, direction, children, *gap, colors, text_edit_buffers, focus_ctx));
+                    events.extend(render_stack(
+                        ui,
+                        direction,
+                        children,
+                        *gap,
+                        colors,
+                        text_edit_buffers,
+                        focus_ctx,
+                    ));
                 });
         }
 
@@ -109,18 +121,36 @@ pub(crate) fn render_component_tree(
                 egui::ScrollArea::vertical()
             };
             scroll.show(ui, |ui| {
-                events.extend(render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx));
+                events.extend(render_component_tree(
+                    ui,
+                    child,
+                    colors,
+                    text_edit_buffers,
+                    focus_ctx,
+                ));
             });
         }
 
         UiNode::Layer { children } => {
             // V1: sequential rendering (true Z-stacking is a future improvement).
             for child in children {
-                events.extend(render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx));
+                events.extend(render_component_tree(
+                    ui,
+                    child,
+                    colors,
+                    text_edit_buffers,
+                    focus_ctx,
+                ));
             }
         }
 
-        UiNode::Text { text, size, color, bold, monospace } => {
+        UiNode::Text {
+            text,
+            size,
+            color,
+            bold,
+            monospace,
+        } => {
             let mut rich = egui::RichText::new(text.as_str());
             if *size > 0.0 {
                 rich = rich.size(*size);
@@ -139,11 +169,17 @@ pub(crate) fn render_component_tree(
             ui.add(egui::Label::new(rich).selectable(true));
         }
 
-        UiNode::Interactive { node_id, child, on_click, on_hover } => {
+        UiNode::Interactive {
+            node_id,
+            child,
+            on_click,
+            on_hover,
+        } => {
             // Render the child inside an interact-sense scope so we get a
             // Response covering the child's bounding rect.
             let child_response = ui.scope(|ui| {
-                let child_evts = render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx);
+                let child_evts =
+                    render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx);
                 // Bubble child events up.
                 (child_evts, ui.min_rect())
             });
@@ -158,9 +194,7 @@ pub(crate) fn render_component_tree(
             );
 
             if *on_click && response.clicked() {
-                log::info!(
-                    "render_components: Interactive click node_id={node_id}"
-                );
+                log::info!("render_components: Interactive click node_id={node_id}");
                 events.push(ComponentEventPayload {
                     node_id: node_id.clone(),
                     event_type: "click".into(),
@@ -179,8 +213,17 @@ pub(crate) fn render_component_tree(
         UiNode::Pinned { edge, child } => {
             // Bottom-pinned nodes are handled by render_stack's partition pass.
             // When Pinned appears outside a vertical Stack (e.g. at tree root), render inline.
-            log::trace!("render_components: Pinned {:?} rendered inline (no enclosing vertical Stack)", edge);
-            events.extend(render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx));
+            log::trace!(
+                "render_components: Pinned {:?} rendered inline (no enclosing vertical Stack)",
+                edge
+            );
+            events.extend(render_component_tree(
+                ui,
+                child,
+                colors,
+                text_edit_buffers,
+                focus_ctx,
+            ));
         }
 
         UiNode::Raw { command } => {
@@ -217,7 +260,11 @@ pub(crate) fn render_component_tree(
                     payload,
                 } = evt
                 {
-                    events.push(ComponentEventPayload { node_id, event_type, payload });
+                    events.push(ComponentEventPayload {
+                        node_id,
+                        event_type,
+                        payload,
+                    });
                 }
             }
         }
@@ -228,14 +275,17 @@ pub(crate) fn render_component_tree(
         }
 
         // ── L1 sugar ─────────────────────────────────────────────────────────
-
-        UiNode::Button { node_id, label, disabled, .. } => {
+        UiNode::Button {
+            node_id,
+            label,
+            disabled,
+            ..
+        } => {
             const BTN_PAD_V: f32 = 5.0;
             let font_id = egui::FontId::proportional(crate::ui::style::TEXT_BODY);
             // Layout with placeholder color; painter.galley() overrides per-state below.
-            let galley = ui.fonts(|f| {
-                f.layout_no_wrap(label.clone(), font_id, egui::Color32::WHITE)
-            });
+            let galley =
+                ui.fonts(|f| f.layout_no_wrap(label.clone(), font_id, egui::Color32::WHITE));
             let text_w = galley.size().x;
             let text_h = galley.size().y;
             let btn_w = (text_w + crate::ui::style::SPACE_SM * 2.0).max(48.0);
@@ -252,10 +302,18 @@ pub(crate) fn render_component_tree(
             let is_just_pressed =
                 is_hovered && ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
             let painter = ui.painter();
-            let fill = if is_down { colors.accent } else { colors.bg_active };
+            let fill = if is_down {
+                colors.accent
+            } else {
+                colors.bg_active
+            };
             painter.rect_filled(rect, crate::ui::style::RADIUS_MD, fill);
             if !*disabled {
-                let stroke_color = if is_hovered { colors.accent } else { colors.border };
+                let stroke_color = if is_hovered {
+                    colors.accent
+                } else {
+                    colors.border
+                };
                 painter.rect_stroke(
                     rect,
                     crate::ui::style::RADIUS_MD,
@@ -266,10 +324,17 @@ pub(crate) fn render_component_tree(
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
             }
-            let text_color =
-                if *disabled { colors.text_dim } else if is_down { colors.bg_active } else { colors.text_primary };
-            let text_pos =
-                egui::pos2(rect.center().x - text_w / 2.0, rect.center().y - text_h / 2.0);
+            let text_color = if *disabled {
+                colors.text_dim
+            } else if is_down {
+                colors.bg_active
+            } else {
+                colors.text_primary
+            };
+            let text_pos = egui::pos2(
+                rect.center().x - text_w / 2.0,
+                rect.center().y - text_h / 2.0,
+            );
             painter.galley(text_pos, galley, text_color);
             if is_just_pressed {
                 log::info!("render_components: Button press node_id={node_id}");
@@ -281,7 +346,12 @@ pub(crate) fn render_component_tree(
             }
         }
 
-        UiNode::Input { node_id, value, placeholder, .. } => {
+        UiNode::Input {
+            node_id,
+            value,
+            placeholder,
+            ..
+        } => {
             let mut val_buf = value.clone();
             let response = crate::ui::widgets::styled_text_input(
                 ui,
@@ -291,21 +361,15 @@ pub(crate) fn render_component_tree(
                 colors,
             );
             if response.changed() {
-                log::debug!(
-                    "render_components: Input change node_id={node_id} value={val_buf:?}"
-                );
+                log::debug!("render_components: Input change node_id={node_id} value={val_buf:?}");
                 events.push(ComponentEventPayload {
                     node_id: node_id.clone(),
                     event_type: "change".into(),
                     payload: Some(serde_json::json!({ "value": val_buf })),
                 });
             }
-            if response.lost_focus()
-                && ui.input(|i| i.key_pressed(egui::Key::Enter))
-            {
-                log::info!(
-                    "render_components: Input submit node_id={node_id} value={val_buf:?}"
-                );
+            if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                log::info!("render_components: Input submit node_id={node_id} value={val_buf:?}");
                 events.push(ComponentEventPayload {
                     node_id: node_id.clone(),
                     event_type: "submit".into(),
@@ -314,7 +378,14 @@ pub(crate) fn render_component_tree(
             }
         }
 
-        UiNode::TextEdit { node_id, placeholder, value, multiline, max_length, .. } => {
+        UiNode::TextEdit {
+            node_id,
+            placeholder,
+            value,
+            multiline,
+            max_length,
+            ..
+        } => {
             // Seed the buffer from the app's value when this node_id first appears.
             let buffer = text_edit_buffers
                 .entry(node_id.clone())
@@ -334,47 +405,48 @@ pub(crate) fn render_component_tree(
 
             // Styling matches QuickNote overlay: frameless, monospace, accent cursor,
             // dim hint text. See src/overlays/quick_note.rs lines 138-154.
-            let response = ui.scope(|ui| {
-                ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                ui.visuals_mut().text_cursor.stroke.color = colors.accent;
+            let response = ui
+                .scope(|ui| {
+                    ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                    ui.visuals_mut().text_cursor.stroke.color = colors.accent;
 
-                if *multiline {
-                    let hint = egui::RichText::new(placeholder.as_str())
-                        .color(colors.text_dim.linear_multiply(0.3))
-                        .size(style::TEXT_BODY);
-                    let mut edit = egui::TextEdit::multiline(buffer)
-                        .id(widget_id)
-                        .font(egui::FontId::monospace(style::TEXT_BODY))
-                        .text_color(colors.text_primary)
-                        .desired_width(f32::INFINITY)
-                        .frame(false)
-                        .hint_text(hint);
-                    if *max_length > 0 {
-                        edit = edit.char_limit(*max_length);
+                    if *multiline {
+                        let hint = egui::RichText::new(placeholder.as_str())
+                            .color(colors.text_dim.linear_multiply(0.3))
+                            .size(style::TEXT_BODY);
+                        let mut edit = egui::TextEdit::multiline(buffer)
+                            .id(widget_id)
+                            .font(egui::FontId::monospace(style::TEXT_BODY))
+                            .text_color(colors.text_primary)
+                            .desired_width(f32::INFINITY)
+                            .frame(false)
+                            .hint_text(hint);
+                        if *max_length > 0 {
+                            edit = edit.char_limit(*max_length);
+                        }
+                        ui.add(edit)
+                    } else {
+                        let hint = egui::RichText::new(placeholder.as_str())
+                            .color(colors.text_dim.linear_multiply(0.3))
+                            .size(style::TEXT_BODY);
+                        let mut edit = egui::TextEdit::singleline(buffer)
+                            .id(widget_id)
+                            .font(egui::FontId::monospace(style::TEXT_BODY))
+                            .text_color(colors.text_primary)
+                            .desired_width(f32::INFINITY)
+                            .frame(false)
+                            .hint_text(hint);
+                        if *max_length > 0 {
+                            edit = edit.char_limit(*max_length);
+                        }
+                        ui.add(edit)
                     }
-                    ui.add(edit)
-                } else {
-                    let hint = egui::RichText::new(placeholder.as_str())
-                        .color(colors.text_dim.linear_multiply(0.3))
-                        .size(style::TEXT_BODY);
-                    let mut edit = egui::TextEdit::singleline(buffer)
-                        .id(widget_id)
-                        .font(egui::FontId::monospace(style::TEXT_BODY))
-                        .text_color(colors.text_primary)
-                        .desired_width(f32::INFINITY)
-                        .frame(false)
-                        .hint_text(hint);
-                    if *max_length > 0 {
-                        edit = edit.char_limit(*max_length);
-                    }
-                    ui.add(edit)
-                }
-            }).inner;
+                })
+                .inner;
 
             // Auto-focus: first newly-visible TextEdit, or first TextEdit when
             // the pane just gained keyboard focus.
-            if (newly_visible || focus_ctx.pane_just_focused)
-                && !focus_ctx.focus_granted_this_frame
+            if (newly_visible || focus_ctx.pane_just_focused) && !focus_ctx.focus_granted_this_frame
             {
                 response.request_focus();
                 focus_ctx.focus_granted_this_frame = true;
@@ -388,9 +460,7 @@ pub(crate) fn render_component_tree(
             // request focus so the cursor appears and typing works.
             if response.clicked() {
                 response.request_focus();
-                log::debug!(
-                    "render_components: TextEdit click-focus node_id={node_id}"
-                );
+                log::debug!("render_components: TextEdit click-focus node_id={node_id}");
             }
 
             // Track focus for key suppression.
@@ -414,12 +484,9 @@ pub(crate) fn render_component_tree(
             // Submit: Enter for single-line, Cmd+Enter for multiline.
             let should_submit = if *multiline {
                 response.has_focus()
-                    && ui.input(|i| {
-                        i.key_pressed(egui::Key::Enter) && i.modifiers.command
-                    })
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command)
             } else {
-                response.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
             };
 
             if should_submit {
@@ -435,7 +502,9 @@ pub(crate) fn render_component_tree(
             }
         }
 
-        UiNode::Badge { label, fill, fg, .. } => {
+        UiNode::Badge {
+            label, fill, fg, ..
+        } => {
             let fill_color = if fill.is_empty() {
                 colors.accent
             } else {
@@ -449,7 +518,9 @@ pub(crate) fn render_component_tree(
             egui::Frame::new()
                 .fill(fill_color)
                 .stroke(egui::Stroke::new(1.0, colors.border))
-                .corner_radius(egui::CornerRadius::same(crate::ui::style::RADIUS_BADGE as u8))
+                .corner_radius(egui::CornerRadius::same(
+                    crate::ui::style::RADIUS_BADGE as u8,
+                ))
                 .inner_margin(egui::Margin::symmetric(
                     crate::ui::style::BADGE_PAD_H as i8,
                     crate::ui::style::BADGE_PAD_V as i8,
@@ -470,16 +541,19 @@ pub(crate) fn render_component_tree(
             } else {
                 parse_color(color).unwrap_or(colors.accent)
             };
-            let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(dot_size, dot_size),
-                egui::Sense::hover(),
-            );
-            ui.painter().circle_filled(rect.center(), dot_size / 2.0, fill);
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(dot_size, dot_size), egui::Sense::hover());
+            ui.painter()
+                .circle_filled(rect.center(), dot_size / 2.0, fill);
         }
 
         // ── L1 layout components ────────────────────────────────────────
-
-        UiNode::Column { children, gap, padding_top, padding } => {
+        UiNode::Column {
+            children,
+            gap,
+            padding_top,
+            padding,
+        } => {
             log::info!(
                 "render_components: Column {} children gap={gap} padding_top={padding_top} padding={padding}",
                 children.len()
@@ -501,17 +575,29 @@ pub(crate) fn render_component_tree(
                     // sticky-footer partition can see the full remaining pane height.
                     let h = ui.available_height();
                     ui.set_min_height(h);
-                    events.extend(render_stack(ui, &StackDirection::Vertical, children, *gap, colors, text_edit_buffers, focus_ctx));
+                    events.extend(render_stack(
+                        ui,
+                        &StackDirection::Vertical,
+                        children,
+                        *gap,
+                        colors,
+                        text_edit_buffers,
+                        focus_ctx,
+                    ));
                 });
         }
 
-        UiNode::AppBar { title, subtitle, .. } => {
+        UiNode::AppBar {
+            title, subtitle, ..
+        } => {
             const TITLE_SIZE: f32 = 16.0;
             let has_subtitle = !subtitle.is_empty();
             let band_h = if has_subtitle { 48.0 } else { 34.0 };
             let total_h = band_h + 1.0;
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(ui.available_width(), total_h), egui::Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), total_h),
+                egui::Sense::hover(),
+            );
             let painter = ui.painter();
             // Full-bleed: expand to clip rect width so AppBar spans the pane edge-to-edge
             let clip = ui.clip_rect();
@@ -526,21 +612,41 @@ pub(crate) fn render_component_tree(
             if has_subtitle {
                 let sub_y = title_y + TITLE_SIZE + style::SPACE_XS;
                 let title_galley = ui.fonts(|f| {
-                    f.layout(title.clone(), egui::FontId::proportional(TITLE_SIZE),
-                             colors.text_primary, max_w)
+                    f.layout(
+                        title.clone(),
+                        egui::FontId::proportional(TITLE_SIZE),
+                        colors.text_primary,
+                        max_w,
+                    )
                 });
-                painter.galley(egui::pos2(text_x, title_y), title_galley, colors.text_primary);
+                painter.galley(
+                    egui::pos2(text_x, title_y),
+                    title_galley,
+                    colors.text_primary,
+                );
                 let sub_galley = ui.fonts(|f| {
-                    f.layout(subtitle.clone(), egui::FontId::proportional(style::TEXT_HINT),
-                             colors.text_dim, max_w)
+                    f.layout(
+                        subtitle.clone(),
+                        egui::FontId::proportional(style::TEXT_HINT),
+                        colors.text_dim,
+                        max_w,
+                    )
                 });
                 painter.galley(egui::pos2(text_x, sub_y), sub_galley, colors.text_dim);
             } else {
                 let title_galley = ui.fonts(|f| {
-                    f.layout(title.clone(), egui::FontId::proportional(TITLE_SIZE),
-                             colors.text_primary, max_w)
+                    f.layout(
+                        title.clone(),
+                        egui::FontId::proportional(TITLE_SIZE),
+                        colors.text_primary,
+                        max_w,
+                    )
                 });
-                painter.galley(egui::pos2(text_x, title_y), title_galley, colors.text_primary);
+                painter.galley(
+                    egui::pos2(text_x, title_y),
+                    title_galley,
+                    colors.text_primary,
+                );
             }
             painter.rect_filled(
                 egui::Rect::from_min_size(
@@ -552,7 +658,9 @@ pub(crate) fn render_component_tree(
             );
         }
 
-        UiNode::FooterKeys { entries, divider, .. } => {
+        UiNode::FooterKeys {
+            entries, divider, ..
+        } => {
             let chip_h = style::TEXT_HINT + 4.0;
             let chip_row_h = style::TEXT_HINT + 6.0;
             let total_h = if *divider {
@@ -560,8 +668,10 @@ pub(crate) fn render_component_tree(
             } else {
                 style::SPACE_SM + chip_row_h + style::SPACE_SM
             };
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(ui.available_width(), total_h), egui::Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), total_h),
+                egui::Sense::hover(),
+            );
 
             // Full-bleed: expand to clip rect width so footer spans the pane edge-to-edge
             let clip = ui.clip_rect();
@@ -573,7 +683,10 @@ pub(crate) fn render_component_tree(
 
             if *divider {
                 ui.painter().rect_filled(
-                    egui::Rect::from_min_size(egui::pos2(full_rect.min.x, full_rect.min.y), egui::vec2(full_rect.width(), 1.0)),
+                    egui::Rect::from_min_size(
+                        egui::pos2(full_rect.min.x, full_rect.min.y),
+                        egui::vec2(full_rect.width(), 1.0),
+                    ),
                     0.0,
                     colors.border,
                 );
@@ -585,15 +698,25 @@ pub(crate) fn render_component_tree(
             let mut content_w: f32 = 0.0;
             for (ei, entry) in entries.iter().enumerate() {
                 for (ki, key) in entry.keys.iter().enumerate() {
-                    if ki > 0 { content_w += 2.0; }
+                    if ki > 0 {
+                        content_w += 2.0;
+                    }
                     let tw = ui.fonts(|f| {
-                        f.layout_no_wrap(key.clone(), chip_font.clone(), colors.text_primary).size().x
+                        f.layout_no_wrap(key.clone(), chip_font.clone(), colors.text_primary)
+                            .size()
+                            .x
                     });
                     content_w += (tw + 8.0).max(chip_h);
                 }
                 content_w += 4.0;
                 content_w += ui.fonts(|f| {
-                    f.layout_no_wrap(entry.description.clone(), desc_font.clone(), colors.text_dim).size().x
+                    f.layout_no_wrap(
+                        entry.description.clone(),
+                        desc_font.clone(),
+                        colors.text_dim,
+                    )
+                    .size()
+                    .x
                 });
                 if ei + 1 < entries.len() {
                     content_w += style::SPACE_MD;
@@ -601,48 +724,50 @@ pub(crate) fn render_component_tree(
             }
 
             // Center the content group inside the full-bleed band; clamp left edge.
-            let left = (full_rect.center().x - content_w / 2.0)
-                .max(full_rect.min.x + style::SPACE_MD);
+            let left =
+                (full_rect.center().x - content_w / 2.0).max(full_rect.min.x + style::SPACE_MD);
             let content_rect = egui::Rect::from_min_size(
                 egui::pos2(left, full_rect.center().y - chip_h / 2.0),
                 egui::vec2(content_w, chip_h),
             );
 
             ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
-                ui.with_layout(
-                    egui::Layout::left_to_right(egui::Align::Center),
-                    |ui| {
-                        ui.spacing_mut().item_spacing.x = 0.0;
-                        for (ei, entry) in entries.iter().enumerate() {
-                            for (ki, key) in entry.keys.iter().enumerate() {
-                                if ki > 0 {
-                                    ui.add_space(2.0);
-                                }
-                                crate::ui::widgets::key_chip(ui, key, colors, chip_font.clone());
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    for (ei, entry) in entries.iter().enumerate() {
+                        for (ki, key) in entry.keys.iter().enumerate() {
+                            if ki > 0 {
+                                ui.add_space(2.0);
                             }
-                            ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new(entry.description.clone())
-                                    .size(style::TEXT_HINT)
-                                    .color(colors.text_dim),
-                            );
-                            if ei + 1 < entries.len() {
-                                ui.add_space(style::SPACE_MD);
-                            }
+                            crate::ui::widgets::key_chip(ui, key, colors, chip_font.clone());
                         }
-                    },
-                );
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(entry.description.clone())
+                                .size(style::TEXT_HINT)
+                                .color(colors.text_dim),
+                        );
+                        if ei + 1 < entries.len() {
+                            ui.add_space(style::SPACE_MD);
+                        }
+                    }
+                });
             });
         }
 
         UiNode::Footer { text, color, .. } => {
             let line_h = style::TEXT_CAPTION + 5.0;
             let total_h = style::SPACE_MD + 1.0 + style::SPACE_MD + line_h;
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(ui.available_width(), total_h), egui::Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), total_h),
+                egui::Sense::hover(),
+            );
             let line_y = rect.min.y + style::SPACE_MD;
             ui.painter().rect_filled(
-                egui::Rect::from_min_size(egui::pos2(rect.min.x, line_y), egui::vec2(rect.width(), 1.0)),
+                egui::Rect::from_min_size(
+                    egui::pos2(rect.min.x, line_y),
+                    egui::vec2(rect.width(), 1.0),
+                ),
                 0.0,
                 colors.border,
             );
@@ -672,9 +797,12 @@ pub(crate) fn render_component_tree(
         }
 
         UiNode::Section { title, .. } => {
-            let total_h = style::SPACE_SM + style::TEXT_HINT + style::SPACE_XS + 1.0 + style::SPACE_XS;
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(ui.available_width(), total_h), egui::Sense::hover());
+            let total_h =
+                style::SPACE_SM + style::TEXT_HINT + style::SPACE_XS + 1.0 + style::SPACE_XS;
+            let (rect, _) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), total_h),
+                egui::Sense::hover(),
+            );
             let painter = ui.painter();
             let label_y = rect.min.y + style::SPACE_SM;
             let galley = ui.fonts(|f| {
@@ -696,14 +824,25 @@ pub(crate) fn render_component_tree(
             );
         }
 
-        UiNode::Label { text, size, color, tone, bold, monospace, max_lines, .. } => {
+        UiNode::Label {
+            text,
+            size,
+            color,
+            tone,
+            bold,
+            monospace,
+            max_lines,
+            ..
+        } => {
             let font_size = if *size > 0.0 { *size } else { style::TEXT_BODY };
             let text_color = if !color.is_empty() {
                 parse_color(color).unwrap_or(colors.text_primary)
             } else {
                 resolve_tone(tone, colors)
             };
-            let mut rich = egui::RichText::new(text.as_str()).size(font_size).color(text_color);
+            let mut rich = egui::RichText::new(text.as_str())
+                .size(font_size)
+                .color(text_color);
             if *bold {
                 rich = rich.strong();
             }
@@ -732,7 +871,9 @@ pub(crate) fn render_component_tree(
             }
         }
 
-        UiNode::Divider { color: div_color, .. } => {
+        UiNode::Divider {
+            color: div_color, ..
+        } => {
             let fill = if div_color.is_empty() {
                 colors.border
             } else {
@@ -743,8 +884,14 @@ pub(crate) fn render_component_tree(
             ui.painter().rect_filled(rect, 0.0, fill);
         }
 
-        UiNode::Card { children, padding, .. } => {
-            let pad = if *padding > 0.0 { *padding } else { style::SPACE_MD };
+        UiNode::Card {
+            children, padding, ..
+        } => {
+            let pad = if *padding > 0.0 {
+                *padding
+            } else {
+                style::SPACE_MD
+            };
             egui::Frame::new()
                 .fill(colors.bg_sidebar)
                 .stroke(egui::Stroke::new(1.0, colors.border))
@@ -752,12 +899,22 @@ pub(crate) fn render_component_tree(
                 .inner_margin(egui::Margin::same(pad as i8))
                 .show(ui, |ui| {
                     for child in children {
-                        events.extend(render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx));
+                        events.extend(render_component_tree(
+                            ui,
+                            child,
+                            colors,
+                            text_edit_buffers,
+                            focus_ctx,
+                        ));
                     }
                 });
         }
 
-        UiNode::SelectList { items, selected_idx, .. } => {
+        UiNode::SelectList {
+            items,
+            selected_idx,
+            ..
+        } => {
             if items.is_empty() {
                 ui.label(
                     egui::RichText::new("No items")
@@ -771,16 +928,30 @@ pub(crate) fn render_component_tree(
                     .show(ui, |ui| {
                         for (i, item) in items.iter().enumerate() {
                             let selected = i == *selected_idx;
-                            let bg = if selected { colors.bg_active } else { colors.bg_sidebar };
+                            let bg = if selected {
+                                colors.bg_active
+                            } else {
+                                colors.bg_sidebar
+                            };
                             let (rect, _) = ui.allocate_exact_size(
-                                egui::vec2(avail.x, if item.description.is_empty() { 36.0 } else { 52.0 }),
+                                egui::vec2(
+                                    avail.x,
+                                    if item.description.is_empty() {
+                                        36.0
+                                    } else {
+                                        52.0
+                                    },
+                                ),
                                 egui::Sense::hover(),
                             );
                             let painter = ui.painter();
                             painter.rect_filled(rect, 0.0, bg);
                             if selected {
                                 painter.rect_filled(
-                                    egui::Rect::from_min_size(rect.min, egui::vec2(3.0, rect.height())),
+                                    egui::Rect::from_min_size(
+                                        rect.min,
+                                        egui::vec2(3.0, rect.height()),
+                                    ),
                                     0.0,
                                     colors.accent,
                                 );
@@ -790,30 +961,56 @@ pub(crate) fn render_component_tree(
                             if item.description.is_empty() {
                                 let title_y = rect.center().y - style::TEXT_BODY / 2.0;
                                 let galley = ui.fonts(|f| {
-                                    f.layout(item.name.clone(), egui::FontId::proportional(style::TEXT_BODY),
-                                             colors.text_primary, max_w)
+                                    f.layout(
+                                        item.name.clone(),
+                                        egui::FontId::proportional(style::TEXT_BODY),
+                                        colors.text_primary,
+                                        max_w,
+                                    )
                                 });
-                                painter.galley(egui::pos2(text_x, title_y), galley, colors.text_primary);
+                                painter.galley(
+                                    egui::pos2(text_x, title_y),
+                                    galley,
+                                    colors.text_primary,
+                                );
                             } else {
                                 let block_h = style::TEXT_BODY + 2.0 + style::TEXT_HINT;
                                 let title_y = rect.center().y - block_h / 2.0;
                                 let desc_y = title_y + style::TEXT_BODY + 2.0;
                                 let galley = ui.fonts(|f| {
-                                    f.layout(item.name.clone(), egui::FontId::proportional(style::TEXT_BODY),
-                                             colors.text_primary, max_w)
+                                    f.layout(
+                                        item.name.clone(),
+                                        egui::FontId::proportional(style::TEXT_BODY),
+                                        colors.text_primary,
+                                        max_w,
+                                    )
                                 });
-                                painter.galley(egui::pos2(text_x, title_y), galley, colors.text_primary);
+                                painter.galley(
+                                    egui::pos2(text_x, title_y),
+                                    galley,
+                                    colors.text_primary,
+                                );
                                 let desc_galley = ui.fonts(|f| {
-                                    f.layout(item.description.clone(), egui::FontId::proportional(style::TEXT_HINT),
-                                             colors.text_dim, max_w)
+                                    f.layout(
+                                        item.description.clone(),
+                                        egui::FontId::proportional(style::TEXT_HINT),
+                                        colors.text_dim,
+                                        max_w,
+                                    )
                                 });
-                                painter.galley(egui::pos2(text_x, desc_y), desc_galley, colors.text_dim);
+                                painter.galley(
+                                    egui::pos2(text_x, desc_y),
+                                    desc_galley,
+                                    colors.text_dim,
+                                );
                             }
                             if !item.trailing.is_empty() {
                                 let tr_galley = ui.fonts(|f| {
-                                    f.layout_no_wrap(item.trailing.clone(),
-                                                     egui::FontId::proportional(style::TEXT_HINT),
-                                                     colors.text_dim)
+                                    f.layout_no_wrap(
+                                        item.trailing.clone(),
+                                        egui::FontId::proportional(style::TEXT_HINT),
+                                        colors.text_dim,
+                                    )
                                 });
                                 let tr_x = rect.max.x - style::SPACE_MD - tr_galley.size().x;
                                 let tr_y = rect.center().y - tr_galley.size().y / 2.0;
@@ -866,7 +1063,13 @@ fn render_stack(
                     if i > 0 && gap > 0.0 {
                         ui.add_space(gap);
                     }
-                    events.extend(render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx));
+                    events.extend(render_component_tree(
+                        ui,
+                        child,
+                        colors,
+                        text_edit_buffers,
+                        focus_ctx,
+                    ));
                 }
             });
         }
@@ -883,7 +1086,11 @@ fn render_stack(
             let mut body_children: Vec<&UiNode> = Vec::new();
 
             for child in children {
-                if let UiNode::Pinned { edge: PinnedEdge::Bottom, child: inner } = child {
+                if let UiNode::Pinned {
+                    edge: PinnedEdge::Bottom,
+                    child: inner,
+                } = child
+                {
                     if let Some(h) = bottom_pin_height(inner) {
                         pinned_bottom.push((h, inner.as_ref()));
                         continue;
@@ -920,11 +1127,23 @@ fn render_stack(
                         if i > 0 && gap > 0.0 {
                             ui.add_space(gap);
                         }
-                        events.extend(render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx));
+                        events.extend(render_component_tree(
+                            ui,
+                            child,
+                            colors,
+                            text_edit_buffers,
+                            focus_ctx,
+                        ));
                     }
                 });
                 for (_, inner) in &pinned_bottom {
-                    events.extend(render_component_tree(ui, inner, colors, text_edit_buffers, focus_ctx));
+                    events.extend(render_component_tree(
+                        ui,
+                        inner,
+                        colors,
+                        text_edit_buffers,
+                        focus_ctx,
+                    ));
                 }
                 log::info!(
                     "render_components: render_stack vertical pinned body_h={body_h:.0} footer_h={total_pinned_h:.0}"
@@ -935,7 +1154,13 @@ fn render_stack(
                         if i > 0 && gap > 0.0 {
                             ui.add_space(gap);
                         }
-                        events.extend(render_component_tree(ui, child, colors, text_edit_buffers, focus_ctx));
+                        events.extend(render_component_tree(
+                            ui,
+                            child,
+                            colors,
+                            text_edit_buffers,
+                            focus_ctx,
+                        ));
                     }
                 });
             }
@@ -1034,7 +1259,9 @@ mod render_component_tree_tests {
     /// Surface node variant is handled — just verify it compiles and matches.
     #[test]
     fn surface_node_variant_exists() {
-        let node = UiNode::Surface { id: "canvas".into() };
+        let node = UiNode::Surface {
+            id: "canvas".into(),
+        };
         if let UiNode::Surface { id } = &node {
             assert_eq!(id, "canvas");
         } else {
@@ -1082,7 +1309,13 @@ mod render_component_tree_tests {
             label: "Click me".into(),
             disabled: false,
         };
-        if let UiNode::Button { node_id, label, disabled, .. } = &node {
+        if let UiNode::Button {
+            node_id,
+            label,
+            disabled,
+            ..
+        } = &node
+        {
             assert_eq!(node_id, "btn1");
             assert_eq!(label, "Click me");
             assert!(!disabled);
@@ -1115,7 +1348,13 @@ mod render_component_tree_tests {
             on_click: true,
             on_hover: false,
         };
-        if let UiNode::Interactive { node_id, on_click, on_hover, .. } = &node {
+        if let UiNode::Interactive {
+            node_id,
+            on_click,
+            on_hover,
+            ..
+        } = &node
+        {
             assert_eq!(node_id, "wrap1");
             assert!(*on_click);
             assert!(!*on_hover);
@@ -1142,7 +1381,15 @@ mod render_component_tree_tests {
             multiline: true,
             max_length: 100,
         };
-        if let UiNode::TextEdit { node_id, placeholder, value, multiline, max_length, .. } = &node {
+        if let UiNode::TextEdit {
+            node_id,
+            placeholder,
+            value,
+            multiline,
+            max_length,
+            ..
+        } = &node
+        {
             assert_eq!(node_id, "editor1");
             assert_eq!(placeholder, "Type here...");
             assert_eq!(value, "hello");
@@ -1157,8 +1404,17 @@ mod render_component_tree_tests {
     #[test]
     fn pinned_node_constructable() {
         use crate::app_protocol::PinnedEdge;
-        let inner = UiNode::Text { text: "footer".into(), size: 12.0, color: String::new(), bold: false, monospace: false };
-        let node = UiNode::Pinned { edge: PinnedEdge::Bottom, child: Box::new(inner) };
+        let inner = UiNode::Text {
+            text: "footer".into(),
+            size: 12.0,
+            color: String::new(),
+            bold: false,
+            monospace: false,
+        };
+        let node = UiNode::Pinned {
+            edge: PinnedEdge::Bottom,
+            child: Box::new(inner),
+        };
         if let UiNode::Pinned { edge, .. } = &node {
             assert_eq!(*edge, PinnedEdge::Bottom);
         } else {
@@ -1170,9 +1426,13 @@ mod render_component_tree_tests {
     #[test]
     fn column_node_constructable() {
         let node = UiNode::Column {
-            children: vec![
-                UiNode::Text { text: "body".into(), size: 14.0, color: String::new(), bold: false, monospace: false },
-            ],
+            children: vec![UiNode::Text {
+                text: "body".into(),
+                size: 14.0,
+                color: String::new(),
+                bold: false,
+                monospace: false,
+            }],
             gap: 8.0,
             padding_top: 0.0,
             padding: crate::ui::style::SPACE_XL,
@@ -1191,7 +1451,10 @@ mod render_component_tree_tests {
         use crate::app_protocol::PinnedEdge;
         let node = UiNode::Pinned {
             edge: PinnedEdge::Bottom,
-            child: Box::new(UiNode::Footer { text: "status".into(), color: String::new() }),
+            child: Box::new(UiNode::Footer {
+                text: "status".into(),
+                color: String::new(),
+            }),
         };
         let json = serde_json::to_string(&node).unwrap();
         assert!(json.contains("\"type\":\"pinned\""), "json={json}");
@@ -1204,7 +1467,10 @@ mod render_component_tree_tests {
     #[test]
     fn column_serde_roundtrip() {
         let node = UiNode::Column {
-            children: vec![UiNode::AppBar { title: "T".into(), subtitle: String::new() }],
+            children: vec![UiNode::AppBar {
+                title: "T".into(),
+                subtitle: String::new(),
+            }],
             gap: 4.0,
             padding_top: 8.0,
             padding: 0.0,
@@ -1220,10 +1486,27 @@ mod render_component_tree_tests {
     fn bottom_pin_height_known_nodes() {
         use super::bottom_pin_height;
         use crate::ui::style;
-        let fk_with_div = UiNode::FooterKeys { entries: vec![], divider: true };
-        let fk_no_div = UiNode::FooterKeys { entries: vec![], divider: false };
-        let footer = UiNode::Footer { text: "s".into(), color: String::new() };
-        let label = UiNode::Label { text: "x".into(), size: 0.0, color: String::new(), tone: String::new(), bold: false, monospace: false, max_lines: 0 };
+        let fk_with_div = UiNode::FooterKeys {
+            entries: vec![],
+            divider: true,
+        };
+        let fk_no_div = UiNode::FooterKeys {
+            entries: vec![],
+            divider: false,
+        };
+        let footer = UiNode::Footer {
+            text: "s".into(),
+            color: String::new(),
+        };
+        let label = UiNode::Label {
+            text: "x".into(),
+            size: 0.0,
+            color: String::new(),
+            tone: String::new(),
+            bold: false,
+            monospace: false,
+            max_lines: 0,
+        };
 
         let chip_row_h = style::TEXT_HINT + 6.0;
         let expected_with_div = 1.0 + style::SPACE_SM + chip_row_h + style::SPACE_SM;

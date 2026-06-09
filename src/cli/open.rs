@@ -1,5 +1,5 @@
-use super::{send_to_socket};
 use super::pane::open_github_ephemeral;
+use super::send_to_socket;
 use std::io;
 
 /// Poll a response file until it appears (or timeout). Shared by all spawn paths.
@@ -67,8 +67,17 @@ pub fn pane_new_cli(
                 let path = tmp.to_string_lossy().to_string();
                 // Recurse as an app open with cli-renderer
                 return pane_new_cli(
-                    None, name, layout, from_pane_id, cwd,
-                    ephemeral, no_focus, Some("cli-renderer"), &[], None, &[path],
+                    None,
+                    name,
+                    layout,
+                    from_pane_id,
+                    cwd,
+                    ephemeral,
+                    no_focus,
+                    Some("cli-renderer"),
+                    &[],
+                    None,
+                    &[path],
                 );
             }
             Err(e) => {
@@ -197,7 +206,9 @@ pub fn pane_new_cli(
 ///   `["uvx", "mcp-server-fetch"]`                               → `"mcp: fetch"`
 ///   `["npx", "@scope/server-git"]`                              → `"mcp: git"`
 pub fn mcp_pane_title(args: &[String]) -> String {
-    const RUNNERS: &[&str] = &["npx", "node", "uvx", "bunx", "python", "python3", "deno", "bun"];
+    const RUNNERS: &[&str] = &[
+        "npx", "node", "uvx", "bunx", "python", "python3", "deno", "bun",
+    ];
     let name = args
         .iter()
         .find(|a| !RUNNERS.contains(&a.as_str()) && !a.starts_with('-'))
@@ -276,8 +287,17 @@ pub fn open_cli_by_name(
             let path = tmp.to_string_lossy().to_string();
             let layout_str = layout.unwrap_or("split_h");
             return pane_new_cli(
-                None, Some(name), layout_str, from_pane_id, cwd,
-                false, false, Some("cli-renderer"), &[], None, &[path],
+                None,
+                Some(name),
+                layout_str,
+                from_pane_id,
+                cwd,
+                false,
+                false,
+                Some("cli-renderer"),
+                &[],
+                None,
+                &[path],
             );
         }
         Err(crate::cli::registry::RegistryError::NotFound { .. }) => {
@@ -293,7 +313,11 @@ pub fn open_cli_by_name(
     log::info!("open:prefix: cli:{name} not in registry, falling back to crawl");
     match crate::cli::crawl::crawl(name) {
         Ok(result) => {
-            let tag = if result.from_cache { "cached" } else { "fresh crawl" };
+            let tag = if result.from_cache {
+                "cached"
+            } else {
+                "fresh crawl"
+            };
             log::info!("open:prefix: cli:{name} resolved via {tag}");
             let json = match serde_json::to_string_pretty(&result.descriptor) {
                 Ok(j) => j,
@@ -311,8 +335,17 @@ pub fn open_cli_by_name(
             let path = tmp.to_string_lossy().to_string();
             let layout_str = layout.unwrap_or("split_h");
             pane_new_cli(
-                None, Some(name), layout_str, from_pane_id, cwd,
-                false, false, Some("cli-renderer"), &[], None, &[path],
+                None,
+                Some(name),
+                layout_str,
+                from_pane_id,
+                cwd,
+                false,
+                false,
+                Some("cli-renderer"),
+                &[],
+                None,
+                &[path],
             )
         }
         Err(e) => {
@@ -336,7 +369,12 @@ pub fn open_mcp_by_name(
 
     match crate::cli::registry::lookup_mcp(name) {
         Some(entry) => {
-            log::info!("open:prefix: mcp:{} ({}) resolved, command={:?}", entry.name, entry.description, entry.command);
+            log::info!(
+                "open:prefix: mcp:{} ({}) resolved, command={:?}",
+                entry.name,
+                entry.description,
+                entry.command
+            );
             let title = mcp_pane_title(&entry.command);
             let layout_str = layout.unwrap_or("split_h");
             pane_new_cli(
@@ -362,14 +400,22 @@ pub fn open_mcp_by_name(
 }
 
 /// Thin wrapper preserving the existing `plexi app open` call site.
-pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_id: Option<u64>, cwd: Option<&str>) -> i32 {
+pub fn open_cli(
+    type_id: &str,
+    args: &[String],
+    layout: Option<&str>,
+    from_pane_id: Option<u64>,
+    cwd: Option<&str>,
+) -> i32 {
     // Intercept github: prefix for ephemeral open-without-install.
     if type_id.starts_with("github:") {
         return open_github_ephemeral(type_id, layout, from_pane_id, cwd);
     }
 
     if type_id == "terminal" {
-        log::warn!("open:cli: 'plexi app open terminal' is deprecated, use 'plexi terminal' instead");
+        log::warn!(
+            "open:cli: 'plexi app open terminal' is deprecated, use 'plexi terminal' instead"
+        );
         eprintln!("warning: 'plexi app open terminal' is deprecated, use 'plexi terminal' instead");
     }
 
@@ -387,7 +433,19 @@ pub fn open_cli(type_id: &str, args: &[String], layout: Option<&str>, from_pane_
     }
 
     let layout_str = layout.unwrap_or("split_h");
-    pane_new_cli(None, None, layout_str, from_pane_id, cwd, false, false, Some(type_id), &[], None, args)
+    pane_new_cli(
+        None,
+        None,
+        layout_str,
+        from_pane_id,
+        cwd,
+        false,
+        false,
+        Some(type_id),
+        &[],
+        None,
+        args,
+    )
 }
 
 /// Open an app from a local directory path (replaces the old `app run` command).
@@ -413,7 +471,9 @@ fn open_app_by_path(abs_path: &str, layout: Option<&str>, from_pane_id: Option<u
         }
         log::info!("open_app_by_path: sending via socket path={abs_path} layout={layout_str} from_pane_id={from_pane_id:?}");
         let code = send_to_socket(payload);
-        if code != 0 { return code; }
+        if code != 0 {
+            return code;
+        }
         return wait_for_response(&response_file);
     }
 
@@ -443,9 +503,28 @@ fn open_app_by_path(abs_path: &str, layout: Option<&str>, from_pane_id: Option<u
 }
 
 /// Thin wrapper preserving the existing `plexi terminal` call site.
-pub fn terminal_cli(cmd: Option<&str>, ephemeral: bool, layout: Option<&str>, from_pane_id: Option<u64>, cwd: Option<&str>, no_focus: bool) -> i32 {
+pub fn terminal_cli(
+    cmd: Option<&str>,
+    ephemeral: bool,
+    layout: Option<&str>,
+    from_pane_id: Option<u64>,
+    cwd: Option<&str>,
+    no_focus: bool,
+) -> i32 {
     let layout_str = layout.unwrap_or("split_h");
-    pane_new_cli(cmd, None, layout_str, from_pane_id, cwd, ephemeral, no_focus, None, &[], None, &[])
+    pane_new_cli(
+        cmd,
+        None,
+        layout_str,
+        from_pane_id,
+        cwd,
+        ephemeral,
+        no_focus,
+        None,
+        &[],
+        None,
+        &[],
+    )
 }
 
 /// Read a line from stdin with echo disabled (for password-style input).
@@ -524,7 +603,11 @@ mod tests {
     #[test]
     fn mcp_title_npx_scoped_server() {
         assert_eq!(
-            mcp_pane_title(&args(&["npx", "@modelcontextprotocol/server-filesystem", "/tmp"])),
+            mcp_pane_title(&args(&[
+                "npx",
+                "@modelcontextprotocol/server-filesystem",
+                "/tmp"
+            ])),
             "mcp: filesystem"
         );
     }
@@ -547,10 +630,7 @@ mod tests {
 
     #[test]
     fn mcp_title_bare_binary() {
-        assert_eq!(
-            mcp_pane_title(&args(&["my-mcp-tool"])),
-            "mcp: my-mcp-tool"
-        );
+        assert_eq!(mcp_pane_title(&args(&["my-mcp-tool"])), "mcp: my-mcp-tool");
     }
 
     #[test]

@@ -1,5 +1,5 @@
-use super::{print_tip, send_to_socket};
 use super::validate::resolve_path;
+use super::{print_tip, send_to_socket};
 
 pub fn context_new_cli(name: Option<&str>, path: Option<&str>, parent: Option<&str>) -> i32 {
     // Only resolve root when the user explicitly passed a path argument.
@@ -7,7 +7,10 @@ pub fn context_new_cli(name: Option<&str>, path: Option<&str>, parent: Option<&s
     let explicit_root = match path {
         Some(_) => match resolve_path(path) {
             Ok(p) => Some(p),
-            Err(e) => { eprintln!("{e}"); return 1; }
+            Err(e) => {
+                eprintln!("{e}");
+                return 1;
+            }
         },
         None => None,
     };
@@ -21,7 +24,9 @@ pub fn context_new_cli(name: Option<&str>, path: Option<&str>, parent: Option<&s
     log::info!(
         "context_new_cli: name={:?} root={:?} parent={:?}",
         name,
-        explicit_root.as_ref().map(|p: &std::path::PathBuf| p.display().to_string()),
+        explicit_root
+            .as_ref()
+            .map(|p: &std::path::PathBuf| p.display().to_string()),
         explicit_parent.as_deref()
     );
     let mut payload = serde_json::json!({ "type": "create_context" });
@@ -62,7 +67,10 @@ pub fn context_zoom_out_cli() -> i32 {
 pub fn context_open_cli(path: Option<&str>) -> i32 {
     let root = match resolve_path(path) {
         Ok(p) => p,
-        Err(e) => { eprintln!("{e}"); return 1; }
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
     };
     send_to_socket(serde_json::json!({
         "type": "focus_context",
@@ -76,14 +84,19 @@ pub fn context_open_cli(path: Option<&str>) -> i32 {
 pub fn context_set_root_cli(path: Option<&str>) -> i32 {
     let root = match resolve_path(path) {
         Ok(p) => p,
-        Err(e) => { eprintln!("{e}"); return 1; }
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
     };
     let rc = send_to_socket(serde_json::json!({
         "type": "set_context_root",
         "root": root,
     }));
     if rc == 0 {
-        print_tip("you can also press \u{21E7}\u{2318}I to set the context root from the focused pane");
+        print_tip(
+            "you can also press \u{21E7}\u{2318}I to set the context root from the focused pane",
+        );
     }
     rc
 }
@@ -163,7 +176,10 @@ pub fn context_list_cli() -> i32 {
         "response_file": response_file,
     });
 
-    log::info!("context_list:cli: sending via socket response_file={:?}", response_file);
+    log::info!(
+        "context_list:cli: sending via socket response_file={:?}",
+        response_file
+    );
 
     let code = send_to_socket(payload);
     if code != 0 {
@@ -213,7 +229,9 @@ fn print_json_output(json_str: &str) -> i32 {
             Ok(mut child) => {
                 if let Some(mut stdin) = child.stdin.take() {
                     if let Err(e) = stdin.write_all(json_str.as_bytes()) {
-                        log::warn!("context_list:print_json_output: failed writing to jq stdin ({e})");
+                        log::warn!(
+                            "context_list:print_json_output: failed writing to jq stdin ({e})"
+                        );
                     }
                 }
                 match child.wait() {
@@ -230,7 +248,9 @@ fn print_json_output(json_str: &str) -> i32 {
                 }
             }
             Err(e) => {
-                log::warn!("context_list:print_json_output: jq spawn failed ({e}), falling back to serde");
+                log::warn!(
+                    "context_list:print_json_output: jq spawn failed ({e}), falling back to serde"
+                );
             }
         }
     }

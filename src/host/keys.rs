@@ -202,78 +202,97 @@ pub struct KeyBindings {
     pub open_notes_picker: (egui::Modifiers, egui::Key),
 }
 
-fn cmd() -> egui::Modifiers { egui::Modifiers::COMMAND }
+fn cmd() -> egui::Modifiers {
+    egui::Modifiers::COMMAND
+}
 fn cmd_shift() -> egui::Modifiers {
-    egui::Modifiers { shift: true, ..egui::Modifiers::COMMAND }
+    egui::Modifiers {
+        shift: true,
+        ..egui::Modifiers::COMMAND
+    }
 }
 fn cmd_ctrl() -> egui::Modifiers {
-    egui::Modifiers { ctrl: true, ..egui::Modifiers::COMMAND }
+    egui::Modifiers {
+        ctrl: true,
+        ..egui::Modifiers::COMMAND
+    }
 }
 fn cmd_alt() -> egui::Modifiers {
-    egui::Modifiers { alt: true, ..egui::Modifiers::COMMAND }
+    egui::Modifiers {
+        alt: true,
+        ..egui::Modifiers::COMMAND
+    }
 }
 fn cmd_shift_alt() -> egui::Modifiers {
-    egui::Modifiers { shift: true, alt: true, ..egui::Modifiers::COMMAND }
+    egui::Modifiers {
+        shift: true,
+        alt: true,
+        ..egui::Modifiers::COMMAND
+    }
 }
 fn cmd_ctrl_alt() -> egui::Modifiers {
-    egui::Modifiers { ctrl: true, alt: true, ..egui::Modifiers::COMMAND }
+    egui::Modifiers {
+        ctrl: true,
+        alt: true,
+        ..egui::Modifiers::COMMAND
+    }
 }
 impl Default for KeyBindings {
     fn default() -> Self {
         Self {
-            quit:                      (cmd(),       egui::Key::Q),
-            close_pane:                (cmd(),       egui::Key::W),
-            toggle_command_palette:    (cmd(),       egui::Key::P),
-            split_horizontal:          (cmd(),       egui::Key::D),
-            split_vertical:            (cmd_shift(), egui::Key::D),
-            split_right:               (cmd(),       egui::Key::Backslash),
-            split_down:                (cmd_shift(), egui::Key::Backslash),
-            swap_pane_left:            (cmd_ctrl(),     egui::Key::H),
-            swap_pane_down:            (cmd_ctrl(),     egui::Key::J),
-            swap_pane_up:              (cmd_ctrl(),     egui::Key::K),
-            swap_pane_right:           (cmd_ctrl(),     egui::Key::L),
-            send_pane_left:            (cmd_ctrl_alt(), egui::Key::H),
-            send_pane_down:            (cmd_ctrl_alt(), egui::Key::J),
-            send_pane_up:              (cmd_ctrl_alt(), egui::Key::K),
-            send_pane_right:           (cmd_ctrl_alt(), egui::Key::L),
-            navigate_left:             (cmd(),       egui::Key::H),
-            navigate_down:             (cmd(),       egui::Key::J),
-            navigate_up:               (cmd(),       egui::Key::K),
-            navigate_right:            (cmd(),       egui::Key::L),
-            new_tab:                   (cmd(),       egui::Key::T),
-            next_tab:                  (cmd_shift(), egui::Key::L),
-            prev_tab:                  (cmd_shift(), egui::Key::H),
-            first_tab:                 (cmd_shift(), egui::Key::K),
-            last_tab:                  (cmd_shift(), egui::Key::J),
-            nav_back:                  (cmd(),       egui::Key::OpenBracket),
-            focus_history_forward:     (cmd(),       egui::Key::CloseBracket),
-            toggle_sidebar:            (cmd(),       egui::Key::B),
-            toggle_zoom:               (cmd(),       egui::Key::Enter),
-            toggle_shortcuts:          (cmd(),       egui::Key::Slash),
-            rename_context:            (cmd_shift(), egui::Key::R),
-            rename_pane:               (cmd(),       egui::Key::R),
-            new_context:               (cmd_shift(), egui::Key::N),
-            new_page_right:            (cmd(),       egui::Key::N),
-            toggle_minimap:            (cmd_shift(), egui::Key::M),
-            scroll_up:                 (cmd(),       egui::Key::ArrowUp),
-            scroll_down:               (cmd(),       egui::Key::ArrowDown),
-            increase_font_size:        (cmd(),       egui::Key::Equals),
-            decrease_font_size:        (cmd(),       egui::Key::Minus),
-            open_file_browser:         (cmd(),       egui::Key::E),
-            open_quick_note:           (cmd(),       egui::Key::Num0),
-            open_config:               (cmd(),       egui::Key::Comma),
-            reload_config:             (cmd_shift(), egui::Key::Comma),
-            open_secrets_manager:      (cmd_shift(), egui::Key::S),
-            force_reload_app:          (cmd_alt(),   egui::Key::R),
+            quit: (cmd(), egui::Key::Q),
+            close_pane: (cmd(), egui::Key::W),
+            toggle_command_palette: (cmd(), egui::Key::P),
+            split_horizontal: (cmd(), egui::Key::D),
+            split_vertical: (cmd_shift(), egui::Key::D),
+            split_right: (cmd(), egui::Key::Backslash),
+            split_down: (cmd_shift(), egui::Key::Backslash),
+            swap_pane_left: (cmd_ctrl(), egui::Key::H),
+            swap_pane_down: (cmd_ctrl(), egui::Key::J),
+            swap_pane_up: (cmd_ctrl(), egui::Key::K),
+            swap_pane_right: (cmd_ctrl(), egui::Key::L),
+            send_pane_left: (cmd_ctrl_alt(), egui::Key::H),
+            send_pane_down: (cmd_ctrl_alt(), egui::Key::J),
+            send_pane_up: (cmd_ctrl_alt(), egui::Key::K),
+            send_pane_right: (cmd_ctrl_alt(), egui::Key::L),
+            navigate_left: (cmd(), egui::Key::H),
+            navigate_down: (cmd(), egui::Key::J),
+            navigate_up: (cmd(), egui::Key::K),
+            navigate_right: (cmd(), egui::Key::L),
+            new_tab: (cmd(), egui::Key::T),
+            next_tab: (cmd_shift(), egui::Key::L),
+            prev_tab: (cmd_shift(), egui::Key::H),
+            first_tab: (cmd_shift(), egui::Key::K),
+            last_tab: (cmd_shift(), egui::Key::J),
+            nav_back: (cmd(), egui::Key::OpenBracket),
+            focus_history_forward: (cmd(), egui::Key::CloseBracket),
+            toggle_sidebar: (cmd(), egui::Key::B),
+            toggle_zoom: (cmd(), egui::Key::Enter),
+            toggle_shortcuts: (cmd(), egui::Key::Slash),
+            rename_context: (cmd_shift(), egui::Key::R),
+            rename_pane: (cmd(), egui::Key::R),
+            new_context: (cmd_shift(), egui::Key::N),
+            new_page_right: (cmd(), egui::Key::N),
+            toggle_minimap: (cmd_shift(), egui::Key::M),
+            scroll_up: (cmd(), egui::Key::ArrowUp),
+            scroll_down: (cmd(), egui::Key::ArrowDown),
+            increase_font_size: (cmd(), egui::Key::Equals),
+            decrease_font_size: (cmd(), egui::Key::Minus),
+            open_file_browser: (cmd(), egui::Key::E),
+            open_quick_note: (cmd(), egui::Key::Num0),
+            open_config: (cmd(), egui::Key::Comma),
+            reload_config: (cmd_shift(), egui::Key::Comma),
+            open_secrets_manager: (cmd_shift(), egui::Key::S),
+            force_reload_app: (cmd_alt(), egui::Key::R),
             toggle_notification_modal: (cmd_shift(), egui::Key::A),
-            open_scratchpad:           (cmd_shift(), egui::Key::Space),
-            context_zoom_out:          (cmd(),       egui::Key::Escape),
-            push_to_subcontext:        (cmd_alt(),       egui::Key::N),
-            new_child_context:         (cmd_shift_alt(), egui::Key::N),
-            set_context_root_from_cwd: (cmd_shift(),     egui::Key::I),
-            hide_pane:                 (cmd(),           egui::Key::U),
-            park_context:              (cmd_shift(),     egui::Key::U),
-            open_notes_picker:             (cmd(),           egui::Key::O),
+            open_scratchpad: (cmd_shift(), egui::Key::Space),
+            context_zoom_out: (cmd(), egui::Key::Escape),
+            push_to_subcontext: (cmd_alt(), egui::Key::N),
+            new_child_context: (cmd_shift_alt(), egui::Key::N),
+            set_context_root_from_cwd: (cmd_shift(), egui::Key::I),
+            hide_pane: (cmd(), egui::Key::U),
+            park_context: (cmd_shift(), egui::Key::U),
+            open_notes_picker: (cmd(), egui::Key::O),
         }
     }
 }
@@ -303,15 +322,32 @@ fn parse_key_combo(s: &str) -> Option<(egui::Modifiers, egui::Key)> {
     }
 
     let key = match key_str.as_str() {
-        "a" => egui::Key::A, "b" => egui::Key::B, "c" => egui::Key::C,
-        "d" => egui::Key::D, "e" => egui::Key::E, "f" => egui::Key::F,
-        "g" => egui::Key::G, "h" => egui::Key::H, "i" => egui::Key::I,
-        "j" => egui::Key::J, "k" => egui::Key::K, "l" => egui::Key::L,
-        "m" => egui::Key::M, "n" => egui::Key::N, "o" => egui::Key::O,
-        "p" => egui::Key::P, "q" => egui::Key::Q, "r" => egui::Key::R,
-        "s" => egui::Key::S, "t" => egui::Key::T, "u" => egui::Key::U,
-        "v" => egui::Key::V, "w" => egui::Key::W, "x" => egui::Key::X,
-        "y" => egui::Key::Y, "z" => egui::Key::Z,
+        "a" => egui::Key::A,
+        "b" => egui::Key::B,
+        "c" => egui::Key::C,
+        "d" => egui::Key::D,
+        "e" => egui::Key::E,
+        "f" => egui::Key::F,
+        "g" => egui::Key::G,
+        "h" => egui::Key::H,
+        "i" => egui::Key::I,
+        "j" => egui::Key::J,
+        "k" => egui::Key::K,
+        "l" => egui::Key::L,
+        "m" => egui::Key::M,
+        "n" => egui::Key::N,
+        "o" => egui::Key::O,
+        "p" => egui::Key::P,
+        "q" => egui::Key::Q,
+        "r" => egui::Key::R,
+        "s" => egui::Key::S,
+        "t" => egui::Key::T,
+        "u" => egui::Key::U,
+        "v" => egui::Key::V,
+        "w" => egui::Key::W,
+        "x" => egui::Key::X,
+        "y" => egui::Key::Y,
+        "z" => egui::Key::Z,
         "0" | "num0" => egui::Key::Num0,
         "1" | "num1" => egui::Key::Num1,
         "2" | "num2" => egui::Key::Num2,
@@ -374,7 +410,11 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
                     bindings.$field = combo;
                     override_count += 1;
                 } else {
-                    log::warn!("keybindings: invalid combo '{}' for '{}' — keeping default", s, $name);
+                    log::warn!(
+                        "keybindings: invalid combo '{}' for '{}' — keeping default",
+                        s,
+                        $name
+                    );
                 }
             }
         };
@@ -435,69 +475,82 @@ pub fn build_key_bindings(overrides: Option<&KeybindingsConfig>) -> KeyBindings 
 
     // Conflict detection
     let named: &[(&str, (egui::Modifiers, egui::Key))] = &[
-        ("quit",                      bindings.quit),
-        ("close_pane",                bindings.close_pane),
-        ("toggle_command_palette",    bindings.toggle_command_palette),
-        ("split_horizontal",          bindings.split_horizontal),
-        ("split_vertical",            bindings.split_vertical),
-        ("split_right",               bindings.split_right),
-        ("split_down",                bindings.split_down),
-        ("swap_pane_left",            bindings.swap_pane_left),
-        ("swap_pane_down",            bindings.swap_pane_down),
-        ("swap_pane_up",              bindings.swap_pane_up),
-        ("swap_pane_right",           bindings.swap_pane_right),
-        ("send_pane_left",            bindings.send_pane_left),
-        ("send_pane_down",            bindings.send_pane_down),
-        ("send_pane_up",              bindings.send_pane_up),
-        ("send_pane_right",           bindings.send_pane_right),
-        ("navigate_left",             bindings.navigate_left),
-        ("navigate_down",             bindings.navigate_down),
-        ("navigate_up",               bindings.navigate_up),
-        ("navigate_right",            bindings.navigate_right),
-        ("new_tab",                   bindings.new_tab),
-        ("next_tab",                  bindings.next_tab),
-        ("prev_tab",                  bindings.prev_tab),
-        ("first_tab",                 bindings.first_tab),
-        ("last_tab",                  bindings.last_tab),
-        ("nav_back",                  bindings.nav_back),
-        ("focus_history_forward",     bindings.focus_history_forward),
-        ("toggle_sidebar",            bindings.toggle_sidebar),
-        ("toggle_zoom",               bindings.toggle_zoom),
-        ("toggle_shortcuts",          bindings.toggle_shortcuts),
-        ("rename_context",            bindings.rename_context),
-        ("rename_pane",               bindings.rename_pane),
-        ("new_context",               bindings.new_context),
-        ("new_page_right",            bindings.new_page_right),
-        ("toggle_minimap",            bindings.toggle_minimap),
-        ("scroll_up",                 bindings.scroll_up),
-        ("scroll_down",               bindings.scroll_down),
-        ("increase_font_size",        bindings.increase_font_size),
-        ("decrease_font_size",        bindings.decrease_font_size),
-        ("open_file_browser",         bindings.open_file_browser),
-        ("open_quick_note",           bindings.open_quick_note),
-        ("open_config",               bindings.open_config),
-        ("reload_config",             bindings.reload_config),
-        ("open_secrets_manager",      bindings.open_secrets_manager),
-        ("force_reload_app",          bindings.force_reload_app),
-        ("toggle_notification_modal", bindings.toggle_notification_modal),
-        ("open_scratchpad",           bindings.open_scratchpad),
-        ("push_to_subcontext",        bindings.push_to_subcontext),
-        ("new_child_context",         bindings.new_child_context),
-        ("set_context_root_from_cwd", bindings.set_context_root_from_cwd),
-        ("hide_pane",                 bindings.hide_pane),
-        ("park_context",             bindings.park_context),
-        ("open_notes_picker",         bindings.open_notes_picker),
+        ("quit", bindings.quit),
+        ("close_pane", bindings.close_pane),
+        ("toggle_command_palette", bindings.toggle_command_palette),
+        ("split_horizontal", bindings.split_horizontal),
+        ("split_vertical", bindings.split_vertical),
+        ("split_right", bindings.split_right),
+        ("split_down", bindings.split_down),
+        ("swap_pane_left", bindings.swap_pane_left),
+        ("swap_pane_down", bindings.swap_pane_down),
+        ("swap_pane_up", bindings.swap_pane_up),
+        ("swap_pane_right", bindings.swap_pane_right),
+        ("send_pane_left", bindings.send_pane_left),
+        ("send_pane_down", bindings.send_pane_down),
+        ("send_pane_up", bindings.send_pane_up),
+        ("send_pane_right", bindings.send_pane_right),
+        ("navigate_left", bindings.navigate_left),
+        ("navigate_down", bindings.navigate_down),
+        ("navigate_up", bindings.navigate_up),
+        ("navigate_right", bindings.navigate_right),
+        ("new_tab", bindings.new_tab),
+        ("next_tab", bindings.next_tab),
+        ("prev_tab", bindings.prev_tab),
+        ("first_tab", bindings.first_tab),
+        ("last_tab", bindings.last_tab),
+        ("nav_back", bindings.nav_back),
+        ("focus_history_forward", bindings.focus_history_forward),
+        ("toggle_sidebar", bindings.toggle_sidebar),
+        ("toggle_zoom", bindings.toggle_zoom),
+        ("toggle_shortcuts", bindings.toggle_shortcuts),
+        ("rename_context", bindings.rename_context),
+        ("rename_pane", bindings.rename_pane),
+        ("new_context", bindings.new_context),
+        ("new_page_right", bindings.new_page_right),
+        ("toggle_minimap", bindings.toggle_minimap),
+        ("scroll_up", bindings.scroll_up),
+        ("scroll_down", bindings.scroll_down),
+        ("increase_font_size", bindings.increase_font_size),
+        ("decrease_font_size", bindings.decrease_font_size),
+        ("open_file_browser", bindings.open_file_browser),
+        ("open_quick_note", bindings.open_quick_note),
+        ("open_config", bindings.open_config),
+        ("reload_config", bindings.reload_config),
+        ("open_secrets_manager", bindings.open_secrets_manager),
+        ("force_reload_app", bindings.force_reload_app),
+        (
+            "toggle_notification_modal",
+            bindings.toggle_notification_modal,
+        ),
+        ("open_scratchpad", bindings.open_scratchpad),
+        ("push_to_subcontext", bindings.push_to_subcontext),
+        ("new_child_context", bindings.new_child_context),
+        (
+            "set_context_root_from_cwd",
+            bindings.set_context_root_from_cwd,
+        ),
+        ("hide_pane", bindings.hide_pane),
+        ("park_context", bindings.park_context),
+        ("open_notes_picker", bindings.open_notes_picker),
     ];
 
     let mut seen: std::collections::HashMap<u64, &str> = std::collections::HashMap::new();
     for (name, (mods, key)) in named {
         let id = binding_id(*mods, *key);
         if let Some(other) = seen.insert(id, name) {
-            log::error!("keybindings: conflict — '{}' and '{}' share the same key combo", other, name);
+            log::error!(
+                "keybindings: conflict — '{}' and '{}' share the same key combo",
+                other,
+                name
+            );
         }
     }
 
-    log::info!("keybindings: {} override(s) applied from config", override_count);
+    log::info!(
+        "keybindings: {} override(s) applied from config",
+        override_count
+    );
 
     bindings
 }
@@ -548,70 +601,398 @@ fn modifiers_match_exact(actual: &egui::Modifiers, pattern: &egui::Modifiers) ->
 pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
     let mut entries: Vec<BindingEntry> = vec![
         // ── Global bindings (always active) ──────────────────────────────────
-        BindingEntry { modifiers: b.quit.0,                     key: b.quit.1,                     exact: false, context: BindingContext::Global, action: Action::Quit },
-        BindingEntry { modifiers: b.close_pane.0,               key: b.close_pane.1,               exact: false, context: BindingContext::Global, action: Action::ClosePane },
-        BindingEntry { modifiers: b.toggle_command_palette.0,   key: b.toggle_command_palette.1,   exact: false, context: BindingContext::Global, action: Action::ToggleCommandPalette },
-        BindingEntry { modifiers: b.open_quick_note.0,          key: b.open_quick_note.1,          exact: false, context: BindingContext::Global, action: Action::OpenQuickNote },
+        BindingEntry {
+            modifiers: b.quit.0,
+            key: b.quit.1,
+            exact: false,
+            context: BindingContext::Global,
+            action: Action::Quit,
+        },
+        BindingEntry {
+            modifiers: b.close_pane.0,
+            key: b.close_pane.1,
+            exact: false,
+            context: BindingContext::Global,
+            action: Action::ClosePane,
+        },
+        BindingEntry {
+            modifiers: b.toggle_command_palette.0,
+            key: b.toggle_command_palette.1,
+            exact: false,
+            context: BindingContext::Global,
+            action: Action::ToggleCommandPalette,
+        },
+        BindingEntry {
+            modifiers: b.open_quick_note.0,
+            key: b.open_quick_note.1,
+            exact: false,
+            context: BindingContext::Global,
+            action: Action::OpenQuickNote,
+        },
         // toggle_notification_modal is Cmd+Shift+A; exact=true so plain Cmd+A (select-all)
         // is not consumed by the subset match.
-        BindingEntry { modifiers: b.toggle_notification_modal.0, key: b.toggle_notification_modal.1, exact: true, context: BindingContext::Global, action: Action::ToggleNotificationModal },
-
+        BindingEntry {
+            modifiers: b.toggle_notification_modal.0,
+            key: b.toggle_notification_modal.1,
+            exact: true,
+            context: BindingContext::Global,
+            action: Action::ToggleNotificationModal,
+        },
         // ── Normal bindings (suppressed when overlay/capture active) ─────────
-        BindingEntry { modifiers: b.split_vertical.0,           key: b.split_vertical.1,           exact: false, context: BindingContext::Normal, action: Action::SplitVertical },
-        BindingEntry { modifiers: b.split_horizontal.0,         key: b.split_horizontal.1,         exact: true,  context: BindingContext::Normal, action: Action::SplitHorizontal },
-        BindingEntry { modifiers: b.swap_pane_left.0,           key: b.swap_pane_left.1,           exact: true,  context: BindingContext::Normal, action: Action::SwapPane(Direction::Left) },
-        BindingEntry { modifiers: b.swap_pane_down.0,           key: b.swap_pane_down.1,           exact: true,  context: BindingContext::Normal, action: Action::SwapPane(Direction::Down) },
-        BindingEntry { modifiers: b.swap_pane_up.0,             key: b.swap_pane_up.1,             exact: true,  context: BindingContext::Normal, action: Action::SwapPane(Direction::Up) },
-        BindingEntry { modifiers: b.swap_pane_right.0,          key: b.swap_pane_right.1,          exact: true,  context: BindingContext::Normal, action: Action::SwapPane(Direction::Right) },
-        BindingEntry { modifiers: b.send_pane_left.0,           key: b.send_pane_left.1,           exact: false, context: BindingContext::Normal, action: Action::SendPane(Direction::Left) },
-        BindingEntry { modifiers: b.send_pane_down.0,           key: b.send_pane_down.1,           exact: false, context: BindingContext::Normal, action: Action::SendPane(Direction::Down) },
-        BindingEntry { modifiers: b.send_pane_up.0,             key: b.send_pane_up.1,             exact: false, context: BindingContext::Normal, action: Action::SendPane(Direction::Up) },
-        BindingEntry { modifiers: b.send_pane_right.0,          key: b.send_pane_right.1,          exact: false, context: BindingContext::Normal, action: Action::SendPane(Direction::Right) },
-        BindingEntry { modifiers: b.new_tab.0,                  key: b.new_tab.1,                  exact: false, context: BindingContext::Normal, action: Action::NewTab },
-        BindingEntry { modifiers: b.next_tab.0,                 key: b.next_tab.1,                 exact: false, context: BindingContext::Normal, action: Action::NextTab },
-        BindingEntry { modifiers: b.prev_tab.0,                 key: b.prev_tab.1,                 exact: false, context: BindingContext::Normal, action: Action::PrevTab },
-        BindingEntry { modifiers: b.first_tab.0,                key: b.first_tab.1,                exact: false, context: BindingContext::Normal, action: Action::FirstTab },
-        BindingEntry { modifiers: b.last_tab.0,                 key: b.last_tab.1,                 exact: false, context: BindingContext::Normal, action: Action::LastTab },
-        BindingEntry { modifiers: b.navigate_left.0,            key: b.navigate_left.1,            exact: true,  context: BindingContext::Normal, action: Action::Navigate(Direction::Left) },
-        BindingEntry { modifiers: b.navigate_down.0,            key: b.navigate_down.1,            exact: true,  context: BindingContext::Normal, action: Action::Navigate(Direction::Down) },
-        BindingEntry { modifiers: b.navigate_up.0,              key: b.navigate_up.1,              exact: true,  context: BindingContext::Normal, action: Action::Navigate(Direction::Up) },
-        BindingEntry { modifiers: b.navigate_right.0,           key: b.navigate_right.1,           exact: true,  context: BindingContext::Normal, action: Action::Navigate(Direction::Right) },
-        BindingEntry { modifiers: b.nav_back.0,                 key: b.nav_back.1,                 exact: false, context: BindingContext::Normal, action: Action::NavBackApp },
-        BindingEntry { modifiers: b.focus_history_forward.0,    key: b.focus_history_forward.1,    exact: false, context: BindingContext::Normal, action: Action::FocusHistoryForward },
-        BindingEntry { modifiers: b.toggle_sidebar.0,           key: b.toggle_sidebar.1,           exact: false, context: BindingContext::Normal, action: Action::ToggleSidebar },
-        BindingEntry { modifiers: b.toggle_zoom.0,              key: b.toggle_zoom.1,              exact: false, context: BindingContext::Normal, action: Action::ToggleZoom },
-        BindingEntry { modifiers: b.toggle_shortcuts.0,         key: b.toggle_shortcuts.1,         exact: false, context: BindingContext::Normal, action: Action::ToggleShortcuts },
-        BindingEntry { modifiers: b.rename_context.0,           key: b.rename_context.1,           exact: false, context: BindingContext::Normal, action: Action::RenameContext },
-        BindingEntry { modifiers: b.rename_pane.0,              key: b.rename_pane.1,              exact: true,  context: BindingContext::Normal, action: Action::RenamePane },
-        BindingEntry { modifiers: b.split_down.0,               key: b.split_down.1,               exact: false, context: BindingContext::Normal, action: Action::SplitDown },
-        BindingEntry { modifiers: b.split_right.0,              key: b.split_right.1,              exact: true,  context: BindingContext::Normal, action: Action::SplitRight },
-        BindingEntry { modifiers: b.push_to_subcontext.0,       key: b.push_to_subcontext.1,       exact: false, context: BindingContext::Normal, action: Action::PushPaneToSubcontext },
-        BindingEntry { modifiers: b.new_child_context.0,        key: b.new_child_context.1,        exact: false, context: BindingContext::Normal, action: Action::NewChildContext },
-        BindingEntry { modifiers: b.new_context.0,              key: b.new_context.1,              exact: false, context: BindingContext::Normal, action: Action::NewContext },
-        BindingEntry { modifiers: b.new_page_right.0,           key: b.new_page_right.1,           exact: true,  context: BindingContext::Normal, action: Action::NewPageRight },
-        BindingEntry { modifiers: b.toggle_minimap.0,           key: b.toggle_minimap.1,           exact: false, context: BindingContext::Normal, action: Action::ToggleMinimap },
-        BindingEntry { modifiers: b.scroll_up.0,                key: b.scroll_up.1,                exact: false, context: BindingContext::Normal, action: Action::ScrollUp },
-        BindingEntry { modifiers: b.scroll_down.0,              key: b.scroll_down.1,              exact: false, context: BindingContext::Normal, action: Action::ScrollDown },
-        BindingEntry { modifiers: b.increase_font_size.0,       key: b.increase_font_size.1,       exact: false, context: BindingContext::Normal, action: Action::IncreasePaneFontSize },
-        BindingEntry { modifiers: b.decrease_font_size.0,       key: b.decrease_font_size.1,       exact: false, context: BindingContext::Normal, action: Action::DecreasePaneFontSize },
-        BindingEntry { modifiers: b.open_file_browser.0,        key: b.open_file_browser.1,        exact: false, context: BindingContext::Normal, action: Action::OpenFileBrowser },
-        BindingEntry { modifiers: b.open_config.0,              key: b.open_config.1,              exact: false, context: BindingContext::Normal, action: Action::OpenConfig },
-        BindingEntry { modifiers: b.reload_config.0,            key: b.reload_config.1,            exact: false, context: BindingContext::Normal, action: Action::ReloadConfig },
-        BindingEntry { modifiers: b.open_secrets_manager.0,     key: b.open_secrets_manager.1,     exact: false, context: BindingContext::Normal, action: Action::OpenSecretsManager },
-        BindingEntry { modifiers: b.force_reload_app.0,         key: b.force_reload_app.1,         exact: false, context: BindingContext::Normal, action: Action::ForceReloadApp },
-        BindingEntry { modifiers: b.set_context_root_from_cwd.0, key: b.set_context_root_from_cwd.1, exact: false, context: BindingContext::Normal, action: Action::SetContextRootFromCwd },
-        BindingEntry { modifiers: b.hide_pane.0,                key: b.hide_pane.1,                exact: false, context: BindingContext::Normal, action: Action::HidePane },
-        BindingEntry { modifiers: b.park_context.0,              key: b.park_context.1,              exact: false, context: BindingContext::Normal, action: Action::ParkContext },
-        BindingEntry { modifiers: b.open_scratchpad.0,          key: b.open_scratchpad.1,          exact: false, context: BindingContext::Normal, action: Action::OpenScratchpad },
+        BindingEntry {
+            modifiers: b.split_vertical.0,
+            key: b.split_vertical.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::SplitVertical,
+        },
+        BindingEntry {
+            modifiers: b.split_horizontal.0,
+            key: b.split_horizontal.1,
+            exact: true,
+            context: BindingContext::Normal,
+            action: Action::SplitHorizontal,
+        },
+        BindingEntry {
+            modifiers: b.swap_pane_left.0,
+            key: b.swap_pane_left.1,
+            exact: true,
+            context: BindingContext::Normal,
+            action: Action::SwapPane(Direction::Left),
+        },
+        BindingEntry {
+            modifiers: b.swap_pane_down.0,
+            key: b.swap_pane_down.1,
+            exact: true,
+            context: BindingContext::Normal,
+            action: Action::SwapPane(Direction::Down),
+        },
+        BindingEntry {
+            modifiers: b.swap_pane_up.0,
+            key: b.swap_pane_up.1,
+            exact: true,
+            context: BindingContext::Normal,
+            action: Action::SwapPane(Direction::Up),
+        },
+        BindingEntry {
+            modifiers: b.swap_pane_right.0,
+            key: b.swap_pane_right.1,
+            exact: true,
+            context: BindingContext::Normal,
+            action: Action::SwapPane(Direction::Right),
+        },
+        BindingEntry {
+            modifiers: b.send_pane_left.0,
+            key: b.send_pane_left.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::SendPane(Direction::Left),
+        },
+        BindingEntry {
+            modifiers: b.send_pane_down.0,
+            key: b.send_pane_down.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::SendPane(Direction::Down),
+        },
+        BindingEntry {
+            modifiers: b.send_pane_up.0,
+            key: b.send_pane_up.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::SendPane(Direction::Up),
+        },
+        BindingEntry {
+            modifiers: b.send_pane_right.0,
+            key: b.send_pane_right.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::SendPane(Direction::Right),
+        },
+        BindingEntry {
+            modifiers: b.new_tab.0,
+            key: b.new_tab.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::NewTab,
+        },
+        BindingEntry {
+            modifiers: b.next_tab.0,
+            key: b.next_tab.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::NextTab,
+        },
+        BindingEntry {
+            modifiers: b.prev_tab.0,
+            key: b.prev_tab.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::PrevTab,
+        },
+        BindingEntry {
+            modifiers: b.first_tab.0,
+            key: b.first_tab.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::FirstTab,
+        },
+        BindingEntry {
+            modifiers: b.last_tab.0,
+            key: b.last_tab.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::LastTab,
+        },
+        BindingEntry {
+            modifiers: b.navigate_left.0,
+            key: b.navigate_left.1,
+            exact: true,
+            context: BindingContext::Normal,
+            action: Action::Navigate(Direction::Left),
+        },
+        BindingEntry {
+            modifiers: b.navigate_down.0,
+            key: b.navigate_down.1,
+            exact: true,
+            context: BindingContext::Normal,
+            action: Action::Navigate(Direction::Down),
+        },
+        BindingEntry {
+            modifiers: b.navigate_up.0,
+            key: b.navigate_up.1,
+            exact: true,
+            context: BindingContext::Normal,
+            action: Action::Navigate(Direction::Up),
+        },
+        BindingEntry {
+            modifiers: b.navigate_right.0,
+            key: b.navigate_right.1,
+            exact: true,
+            context: BindingContext::Normal,
+            action: Action::Navigate(Direction::Right),
+        },
+        BindingEntry {
+            modifiers: b.nav_back.0,
+            key: b.nav_back.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::NavBackApp,
+        },
+        BindingEntry {
+            modifiers: b.focus_history_forward.0,
+            key: b.focus_history_forward.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::FocusHistoryForward,
+        },
+        BindingEntry {
+            modifiers: b.toggle_sidebar.0,
+            key: b.toggle_sidebar.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::ToggleSidebar,
+        },
+        BindingEntry {
+            modifiers: b.toggle_zoom.0,
+            key: b.toggle_zoom.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::ToggleZoom,
+        },
+        BindingEntry {
+            modifiers: b.toggle_shortcuts.0,
+            key: b.toggle_shortcuts.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::ToggleShortcuts,
+        },
+        BindingEntry {
+            modifiers: b.rename_context.0,
+            key: b.rename_context.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::RenameContext,
+        },
+        BindingEntry {
+            modifiers: b.rename_pane.0,
+            key: b.rename_pane.1,
+            exact: true,
+            context: BindingContext::Normal,
+            action: Action::RenamePane,
+        },
+        BindingEntry {
+            modifiers: b.split_down.0,
+            key: b.split_down.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::SplitDown,
+        },
+        BindingEntry {
+            modifiers: b.split_right.0,
+            key: b.split_right.1,
+            exact: true,
+            context: BindingContext::Normal,
+            action: Action::SplitRight,
+        },
+        BindingEntry {
+            modifiers: b.push_to_subcontext.0,
+            key: b.push_to_subcontext.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::PushPaneToSubcontext,
+        },
+        BindingEntry {
+            modifiers: b.new_child_context.0,
+            key: b.new_child_context.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::NewChildContext,
+        },
+        BindingEntry {
+            modifiers: b.new_context.0,
+            key: b.new_context.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::NewContext,
+        },
+        BindingEntry {
+            modifiers: b.new_page_right.0,
+            key: b.new_page_right.1,
+            exact: true,
+            context: BindingContext::Normal,
+            action: Action::NewPageRight,
+        },
+        BindingEntry {
+            modifiers: b.toggle_minimap.0,
+            key: b.toggle_minimap.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::ToggleMinimap,
+        },
+        BindingEntry {
+            modifiers: b.scroll_up.0,
+            key: b.scroll_up.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::ScrollUp,
+        },
+        BindingEntry {
+            modifiers: b.scroll_down.0,
+            key: b.scroll_down.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::ScrollDown,
+        },
+        BindingEntry {
+            modifiers: b.increase_font_size.0,
+            key: b.increase_font_size.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::IncreasePaneFontSize,
+        },
+        BindingEntry {
+            modifiers: b.decrease_font_size.0,
+            key: b.decrease_font_size.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::DecreasePaneFontSize,
+        },
+        BindingEntry {
+            modifiers: b.open_file_browser.0,
+            key: b.open_file_browser.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::OpenFileBrowser,
+        },
+        BindingEntry {
+            modifiers: b.open_config.0,
+            key: b.open_config.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::OpenConfig,
+        },
+        BindingEntry {
+            modifiers: b.reload_config.0,
+            key: b.reload_config.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::ReloadConfig,
+        },
+        BindingEntry {
+            modifiers: b.open_secrets_manager.0,
+            key: b.open_secrets_manager.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::OpenSecretsManager,
+        },
+        BindingEntry {
+            modifiers: b.force_reload_app.0,
+            key: b.force_reload_app.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::ForceReloadApp,
+        },
+        BindingEntry {
+            modifiers: b.set_context_root_from_cwd.0,
+            key: b.set_context_root_from_cwd.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::SetContextRootFromCwd,
+        },
+        BindingEntry {
+            modifiers: b.hide_pane.0,
+            key: b.hide_pane.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::HidePane,
+        },
+        BindingEntry {
+            modifiers: b.park_context.0,
+            key: b.park_context.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::ParkContext,
+        },
+        BindingEntry {
+            modifiers: b.open_scratchpad.0,
+            key: b.open_scratchpad.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::OpenScratchpad,
+        },
         // context_zoom_out is Cmd+Escape — not exact because plain Escape is AppActive only,
         // so there is no subset conflict on this key.
-        BindingEntry { modifiers: b.context_zoom_out.0,         key: b.context_zoom_out.1,         exact: false, context: BindingContext::Normal, action: Action::ContextZoomOut },
-
+        BindingEntry {
+            modifiers: b.context_zoom_out.0,
+            key: b.context_zoom_out.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::ContextZoomOut,
+        },
         // ── AppActive bindings (only when app surface focused) ───────────────
         // CloseApp (Escape) — also suppressed when shortcuts overlay is open.
-        BindingEntry { modifiers: egui::Modifiers::NONE, key: egui::Key::Escape, exact: false, context: BindingContext::AppActive, action: Action::CloseApp },
-        BindingEntry { modifiers: egui::Modifiers::NONE, key: egui::Key::Tab,    exact: false, context: BindingContext::AppActive, action: Action::ToggleAppFocus },
-        BindingEntry { modifiers: b.open_notes_picker.0, key: b.open_notes_picker.1, exact: false, context: BindingContext::AppActive, action: Action::OpenNotesPicker },
+        BindingEntry {
+            modifiers: egui::Modifiers::NONE,
+            key: egui::Key::Escape,
+            exact: false,
+            context: BindingContext::AppActive,
+            action: Action::CloseApp,
+        },
+        BindingEntry {
+            modifiers: egui::Modifiers::NONE,
+            key: egui::Key::Tab,
+            exact: false,
+            context: BindingContext::AppActive,
+            action: Action::ToggleAppFocus,
+        },
+        BindingEntry {
+            modifiers: b.open_notes_picker.0,
+            key: b.open_notes_picker.1,
+            exact: false,
+            context: BindingContext::AppActive,
+            action: Action::OpenNotesPicker,
+        },
     ];
 
     // Sort: exact before non-exact; within each group, higher modifier count first.
@@ -619,7 +1000,8 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
     // more-specific vs. less-specific placement.
     entries.sort_by(|a, b| {
         // exact=true sorts before exact=false
-        b.exact.cmp(&a.exact)
+        b.exact
+            .cmp(&a.exact)
             .then_with(|| modifier_count(&b.modifiers).cmp(&modifier_count(&a.modifiers)))
     });
 
@@ -681,9 +1063,15 @@ pub fn poll_actions(
         // Switch context (Cmd+1 through Cmd+9) — hardcoded loop; not individual table entries.
         if !(keyboard_capture_active || overlay_open) {
             let num_keys = [
-                egui::Key::Num1, egui::Key::Num2, egui::Key::Num3,
-                egui::Key::Num4, egui::Key::Num5, egui::Key::Num6,
-                egui::Key::Num7, egui::Key::Num8, egui::Key::Num9,
+                egui::Key::Num1,
+                egui::Key::Num2,
+                egui::Key::Num3,
+                egui::Key::Num4,
+                egui::Key::Num5,
+                egui::Key::Num6,
+                egui::Key::Num7,
+                egui::Key::Num8,
+                egui::Key::Num9,
             ];
             for (i, key) in num_keys.into_iter().enumerate() {
                 if input.consume_key(egui::Modifiers::COMMAND, key) {

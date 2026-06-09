@@ -201,9 +201,7 @@ impl CoreMidiDevice {
         if is_source {
             for (i, src) in coremidi::Sources.into_iter().enumerate() {
                 let id = src.unique_id().unwrap_or(0);
-                let name = src
-                    .display_name()
-                    .unwrap_or_else(|| format!("source-{i}"));
+                let name = src.display_name().unwrap_or_else(|| format!("source-{i}"));
                 out.push(MidiPortInfo {
                     id: id.to_string(),
                     name,
@@ -296,9 +294,7 @@ impl MidiDevice for CoreMidiDevice {
             fn drop(&mut self) {
                 if let Some(mut port) = self.port.take() {
                     if let Err(status) = port.disconnect_source(&self.source) {
-                        log::warn!(
-                            "CoreMidiDevice: disconnect_source failed (OSStatus={status})"
-                        );
+                        log::warn!("CoreMidiDevice: disconnect_source failed (OSStatus={status})");
                     }
                 }
             }
@@ -340,8 +336,8 @@ impl MidiDevice for CoreMidiDevice {
         impl MidiOutputHandleInner for CoreOutput {
             fn send(&mut self, bytes: &[u8]) -> Result<(), MidiError> {
                 let word = pack_bytes_to_ump_word(bytes)?;
-                let buffer = coremidi::EventBuffer::new(coremidi::Protocol::Midi10)
-                    .with_packet(0, &[word]);
+                let buffer =
+                    coremidi::EventBuffer::new(coremidi::Protocol::Midi10).with_packet(0, &[word]);
                 self.port
                     .send(&self.destination, &buffer)
                     .map_err(|status| {
@@ -427,10 +423,7 @@ fn pack_bytes_to_ump_word(bytes: &[u8]) -> Result<u32, MidiError> {
         let d1 = bytes.get(1).copied().unwrap_or(0);
         let d2 = bytes.get(2).copied().unwrap_or(0);
         // 0x20000000 | (status << 16) | (d1 << 8) | d2. Group 0.
-        return Ok(0x2000_0000
-            | ((status as u32) << 16)
-            | ((d1 as u32) << 8)
-            | (d2 as u32));
+        return Ok(0x2000_0000 | ((status as u32) << 16) | ((d1 as u32) << 8) | (d2 as u32));
     }
 
     // System common (0xF0..=0xF7) — SysEx start, MTC, song position, etc.
@@ -534,7 +527,10 @@ impl MockMidiDevice {
     /// Test helper: deliver a fake MIDI packet to whatever sink is currently
     /// open on `port_id`. Returns `false` if no input is open on that port.
     pub fn inject(&self, port_id: &str, bytes: &[u8]) -> bool {
-        let guard = self.injected_sinks.lock().expect("mock midi sinks poisoned");
+        let guard = self
+            .injected_sinks
+            .lock()
+            .expect("mock midi sinks poisoned");
         match guard.get(port_id) {
             Some(sink) => {
                 let _ = sink(bytes);

@@ -23,7 +23,11 @@ pub fn config_check() -> i32 {
         }
     }
 
-    if has_errors { 1 } else { 0 }
+    if has_errors {
+        1
+    } else {
+        0
+    }
 }
 
 pub fn config_edit() -> i32 {
@@ -37,10 +41,17 @@ pub fn config_edit() -> i32 {
             let mut parts = editor_env.split_whitespace();
             if let Some(editor_bin) = parts.next() {
                 let args: Vec<&str> = parts.collect();
-                match std::process::Command::new(editor_bin).args(&args).arg(&path).status() {
+                match std::process::Command::new(editor_bin)
+                    .args(&args)
+                    .arg(&path)
+                    .status()
+                {
                     Ok(status) if status.success() => return 0,
                     Ok(status) => {
-                        eprintln!("error: editor {editor_bin:?} exited with status {}", status.code().unwrap_or(1));
+                        eprintln!(
+                            "error: editor {editor_bin:?} exited with status {}",
+                            status.code().unwrap_or(1)
+                        );
                         return status.code().unwrap_or(1);
                     }
                     Err(e) => {
@@ -73,13 +84,15 @@ pub fn config_get(key: &str) -> i32 {
             );
             let agents = config.agents.as_ref();
             let value = match key {
-                "agents.low" => {
-                    agents.map(|a| a.effective_low()).unwrap_or(crate::config::DEFAULT_AGENT_LOW)
-                }
-                "agents.medium" => {
-                    agents.map(|a| a.effective_medium()).unwrap_or(crate::config::DEFAULT_AGENT_MEDIUM)
-                }
-                _ => agents.map(|a| a.effective_high()).unwrap_or(crate::config::DEFAULT_AGENT_HIGH),
+                "agents.low" => agents
+                    .map(|a| a.effective_low())
+                    .unwrap_or(crate::config::DEFAULT_AGENT_LOW),
+                "agents.medium" => agents
+                    .map(|a| a.effective_medium())
+                    .unwrap_or(crate::config::DEFAULT_AGENT_MEDIUM),
+                _ => agents
+                    .map(|a| a.effective_high())
+                    .unwrap_or(crate::config::DEFAULT_AGENT_HIGH),
             };
             println!("{value}");
             return 0;
@@ -98,7 +111,9 @@ pub fn config_get(key: &str) -> i32 {
                 return 1;
             }
         },
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => toml::Value::Table(toml::map::Map::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            toml::Value::Table(toml::map::Map::new())
+        }
         Err(e) => {
             eprintln!("error: could not read {}: {e}", global_path.display());
             return 1;
@@ -119,17 +134,15 @@ pub fn config_get(key: &str) -> i32 {
     let mut current = &root;
     for segment in key.split('.') {
         match current {
-            toml::Value::Table(table) => {
-                match table.get(segment) {
-                    Some(v) => current = v,
-                    None => {
-                        eprintln!(
+            toml::Value::Table(table) => match table.get(segment) {
+                Some(v) => current = v,
+                None => {
+                    eprintln!(
                             "error: config key {key:?} not set (no value at {segment:?} in the current config)"
                         );
-                        return 1;
-                    }
+                    return 1;
                 }
-            }
+            },
             _ => {
                 eprintln!("error: config key {key:?} not found (path traverses a non-table value)");
                 return 1;
@@ -147,7 +160,9 @@ fn toml_merge(dst: &mut toml::Value, src: toml::Value) {
     match (dst, src) {
         (toml::Value::Table(dst_table), toml::Value::Table(src_table)) => {
             for (k, v) in src_table {
-                let entry = dst_table.entry(k).or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+                let entry = dst_table
+                    .entry(k)
+                    .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
                 toml_merge(entry, v);
             }
         }
@@ -172,7 +187,10 @@ pub fn config_reset() -> i32 {
     log::info!("config_reset: writing default config to {}", path.display());
     if let Some(parent) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("error: could not create config dir {}: {e}", parent.display());
+            eprintln!(
+                "error: could not create config dir {}: {e}",
+                parent.display()
+            );
             return 1;
         }
     }

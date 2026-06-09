@@ -5,7 +5,10 @@ pub fn routine_list() -> i32 {
     log::info!("cli: routine list");
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
-        Err(e) => { eprintln!("error: could not determine current directory: {e}"); return 1; }
+        Err(e) => {
+            eprintln!("error: could not determine current directory: {e}");
+            return 1;
+        }
     };
     let rf = routines_file();
     let config_path = cwd.join(&rf);
@@ -22,11 +25,17 @@ pub fn routine_list() -> i32 {
             println!("  context = \"work\"");
             return 0;
         }
-        Err(e) => { eprintln!("error: could not read {}: {e}", config_path.display()); return 1; }
+        Err(e) => {
+            eprintln!("error: could not read {}: {e}", config_path.display());
+            return 1;
+        }
     };
     let config: RoutinesCliConfig = match toml::from_str(&contents) {
         Ok(c) => c,
-        Err(e) => { eprintln!("error: failed to parse {rf}: {e}"); return 1; }
+        Err(e) => {
+            eprintln!("error: failed to parse {rf}: {e}");
+            return 1;
+        }
     };
     if config.routine.is_empty() {
         println!("No routines defined in {rf}.");
@@ -38,10 +47,16 @@ pub fn routine_list() -> i32 {
             Some(s) => crate::host::scheduler::next_fire_description(&s, None),
             None => "invalid schedule".to_string(),
         };
-        let ctx_label = if r.context.is_empty() { "(active context)".to_string() } else { r.context.clone() };
+        let ctx_label = if r.context.is_empty() {
+            "(active context)".to_string()
+        } else {
+            r.context.clone()
+        };
         let ephemeral_label = if r.ephemeral { " [ephemeral]" } else { "" };
-        println!("  {:20} {:<30} next: {}  context: {}{}",
-            r.name, r.schedule, next, ctx_label, ephemeral_label);
+        println!(
+            "  {:20} {:<30} next: {}  context: {}{}",
+            r.name, r.schedule, next, ctx_label, ephemeral_label
+        );
     }
     0
 }
@@ -51,7 +66,10 @@ pub fn routine_run(name: &str) -> i32 {
     log::info!("cli: routine run '{name}'");
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
-        Err(e) => { eprintln!("error: could not determine current directory: {e}"); return 1; }
+        Err(e) => {
+            eprintln!("error: could not determine current directory: {e}");
+            return 1;
+        }
     };
     let rf = routines_file();
     let config_path = cwd.join(&rf);
@@ -61,11 +79,17 @@ pub fn routine_run(name: &str) -> i32 {
             eprintln!("error: no {rf} found in {}", cwd.display());
             return 1;
         }
-        Err(e) => { eprintln!("error: could not read {}: {e}", config_path.display()); return 1; }
+        Err(e) => {
+            eprintln!("error: could not read {}: {e}", config_path.display());
+            return 1;
+        }
     };
     let config: RoutinesCliConfig = match toml::from_str(&contents) {
         Ok(c) => c,
-        Err(e) => { eprintln!("error: failed to parse {rf}: {e}"); return 1; }
+        Err(e) => {
+            eprintln!("error: failed to parse {rf}: {e}");
+            return 1;
+        }
     };
     let routine = match config.routine.iter().find(|r| r.name == name) {
         Some(r) => r,
@@ -81,7 +105,10 @@ pub fn routine_run(name: &str) -> i32 {
 
     // Spawn via socket (when inside a Plexi pane) with spawn-queue fallback.
     // pane_new_cli implements the socket-first pattern used by all other spawn paths.
-    log::info!("cli: routine run '{name}' — dispatching command: {}", routine.command);
+    log::info!(
+        "cli: routine run '{name}' — dispatching command: {}",
+        routine.command
+    );
     pane_new_cli(
         Some(&routine.command),
         Some(name),

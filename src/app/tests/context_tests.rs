@@ -21,19 +21,30 @@ fn new_child_context_does_not_adopt_focused_pane() {
     app.new_child_context(&parent_name, std::path::PathBuf::from("/tmp/no_adopt"))
         .expect("child create should succeed");
 
-    let parent_win = app.windows.iter().find(|w| w.context_id == parent_id)
+    let parent_win = app
+        .windows
+        .iter()
+        .find(|w| w.context_id == parent_id)
         .expect("parent window must still exist");
 
     // Original pane is still present.
-    assert!(parent_win.panes.contains_key(&orig_pane_id),
-        "original focused pane must NOT be adopted away");
+    assert!(
+        parent_win.panes.contains_key(&orig_pane_id),
+        "original focused pane must NOT be adopted away"
+    );
 
     // Pane count grew by exactly 1 (the new Portal tile).
-    assert_eq!(parent_win.panes.len(), orig_count + 1,
-        "parent should have orig_count + 1 panes after new_child_context");
+    assert_eq!(
+        parent_win.panes.len(),
+        orig_count + 1,
+        "parent should have orig_count + 1 panes after new_child_context"
+    );
 
     // The new pane is a Portal.
-    let has_sub_ctx = parent_win.panes.values().any(|p| p.portal_target().is_some());
+    let has_sub_ctx = parent_win
+        .panes
+        .values()
+        .any(|p| p.portal_target().is_some());
     assert!(has_sub_ctx, "parent must contain a Portal tile");
 }
 
@@ -55,19 +66,35 @@ fn new_child_context_no_focused_pane_inserts_sub_ctx() {
     let result = app.new_child_context("Test", std::path::PathBuf::from("/tmp/child2"));
 
     // Whether success or failure, the parent's focused_pane must remain None.
-    assert_eq!(app.windows[0].focused_pane, None, "parent focused_pane untouched");
+    assert_eq!(
+        app.windows[0].focused_pane, None,
+        "parent focused_pane untouched"
+    );
 
     if result.is_ok() {
         // Parent gained exactly 1 Portal pane.
-        let parent_win = app.windows.iter().find(|w| w.context_id == parent_id).unwrap();
-        assert_eq!(parent_win.panes.len(), parent_pane_count_before + 1,
-            "parent pane count grew by 1");
-        let has_sub_ctx = parent_win.panes.values().any(|p| p.portal_target().is_some());
+        let parent_win = app
+            .windows
+            .iter()
+            .find(|w| w.context_id == parent_id)
+            .unwrap();
+        assert_eq!(
+            parent_win.panes.len(),
+            parent_pane_count_before + 1,
+            "parent pane count grew by 1"
+        );
+        let has_sub_ctx = parent_win
+            .panes
+            .values()
+            .any(|p| p.portal_target().is_some());
         assert!(has_sub_ctx, "parent has a Portal tile");
     } else {
         // PTY failed in test env — parent panes unchanged.
-        assert_eq!(app.windows[0].panes.len(), parent_pane_count_before,
-            "parent panes unchanged on failed terminal create");
+        assert_eq!(
+            app.windows[0].panes.len(),
+            parent_pane_count_before,
+            "parent panes unchanged on failed terminal create"
+        );
     }
 }
 
@@ -113,14 +140,20 @@ fn create_child_context_auto_zooms() {
 
     if result.is_err() {
         // PTY unavailable in test env — verify caller-side depth push still works.
-        app.router.push_depth(parent_ctx_id, current_win_id, current_focused);
-        assert_eq!(app.router.current_depth(), 1, "depth stack grows even on Err");
+        app.router
+            .push_depth(parent_ctx_id, current_win_id, current_focused);
+        assert_eq!(
+            app.router.current_depth(),
+            1,
+            "depth stack grows even on Err"
+        );
         return;
     }
 
     let new_ctx_idx = app.router.len() - 1;
     let new_ctx_id = app.router.get(new_ctx_idx).context_id;
-    app.router.push_depth(parent_ctx_id, current_win_id, current_focused);
+    app.router
+        .push_depth(parent_ctx_id, current_win_id, current_focused);
     app.switch_workspace(new_ctx_idx);
 
     // Active context must now be the child.
@@ -152,20 +185,38 @@ fn new_child_context_from_keyboard_zooms_into_child() {
 
     if app.router.len() == initial_ctx_count {
         // PTY unavailable — no child created, state unchanged.
-        assert_eq!(app.router.current_depth(), initial_depth,
-            "depth stack must be unchanged when child creation fails");
-        assert_eq!(app.router.active().context_id, parent_ctx_id,
-            "active context must not change when child creation fails");
+        assert_eq!(
+            app.router.current_depth(),
+            initial_depth,
+            "depth stack must be unchanged when child creation fails"
+        );
+        assert_eq!(
+            app.router.active().context_id,
+            parent_ctx_id,
+            "active context must not change when child creation fails"
+        );
     } else {
         // Child was created and we zoomed in.
-        assert_eq!(app.router.len(), initial_ctx_count + 1,
-            "exactly one new context added");
-        assert_ne!(app.router.active().context_id, parent_ctx_id,
-            "active context must switch to the new child");
-        assert_eq!(app.router.active().parent_id, Some(parent_ctx_id),
-            "child's parent_id must be the original context");
-        assert_eq!(app.router.current_depth(), initial_depth + 1,
-            "depth stack must grow by one after auto-zoom");
+        assert_eq!(
+            app.router.len(),
+            initial_ctx_count + 1,
+            "exactly one new context added"
+        );
+        assert_ne!(
+            app.router.active().context_id,
+            parent_ctx_id,
+            "active context must switch to the new child"
+        );
+        assert_eq!(
+            app.router.active().parent_id,
+            Some(parent_ctx_id),
+            "child's parent_id must be the original context"
+        );
+        assert_eq!(
+            app.router.current_depth(),
+            initial_depth + 1,
+            "depth stack must grow by one after auto-zoom"
+        );
     }
 }
 
@@ -205,16 +256,24 @@ fn depth_four_chain_has_portal_tiles() {
     // Verify depth metadata for whatever was created.
     for (level, &cid) in chain_ids.iter().enumerate() {
         let c = app.router.iter().find(|c| c.context_id == cid).unwrap();
-        assert_eq!(c.depth as usize, level, "context at chain[{level}] should have depth {level}");
+        assert_eq!(
+            c.depth as usize, level,
+            "context at chain[{level}] should have depth {level}"
+        );
     }
 
     // Verify each parent's window has a Portal tile pointing at its child.
     for i in 0..chain_ids.len().saturating_sub(1) {
         let parent_id = chain_ids[i];
         let child_id = chain_ids[i + 1];
-        let parent_win = app.windows.iter().find(|w| w.context_id == parent_id)
+        let parent_win = app
+            .windows
+            .iter()
+            .find(|w| w.context_id == parent_id)
             .expect("parent window must exist");
-        let found = parent_win.panes.values()
+        let found = parent_win
+            .panes
+            .values()
             .any(|p| p.portal_target() == Some(child_id));
         assert!(
             found,
@@ -291,7 +350,11 @@ fn delete_context_portal_resets_stale_focused_pane() {
     app.delete_context(child_idx);
 
     // focused_pane must NOT still point to the now-deleted Portal tile.
-    let root_win = app.windows.iter().find(|w| w.context_id == root_id).unwrap();
+    let root_win = app
+        .windows
+        .iter()
+        .find(|w| w.context_id == root_id)
+        .unwrap();
     assert_ne!(
         root_win.focused_pane,
         Some(portal_tile),
@@ -391,16 +454,30 @@ fn delete_context_cascades_and_cleans_depth_stack() {
     app.delete_context(a_idx_now);
 
     // A and B should both be gone from the router.
-    assert!(app.router.iter().find(|c| c.context_id == a_id).is_none(),
-        "A should be deleted");
-    assert!(app.router.iter().find(|c| c.context_id == b_id).is_none(),
-        "B should be cascade-deleted");
+    assert!(
+        app.router.iter().find(|c| c.context_id == a_id).is_none(),
+        "A should be deleted"
+    );
+    assert!(
+        app.router.iter().find(|c| c.context_id == b_id).is_none(),
+        "B should be cascade-deleted"
+    );
 
     // Depth stack should no longer contain A or B.
-    assert!(app.router.depth_stack.iter().all(|(cid, _, _)| *cid != a_id),
-        "depth_stack must not contain deleted ctx_id={a_id}");
-    assert!(app.router.depth_stack.iter().all(|(cid, _, _)| *cid != b_id),
-        "depth_stack must not contain deleted ctx_id={b_id}");
+    assert!(
+        app.router
+            .depth_stack
+            .iter()
+            .all(|(cid, _, _)| *cid != a_id),
+        "depth_stack must not contain deleted ctx_id={a_id}"
+    );
+    assert!(
+        app.router
+            .depth_stack
+            .iter()
+            .all(|(cid, _, _)| *cid != b_id),
+        "depth_stack must not contain deleted ctx_id={b_id}"
+    );
 
     // No Portal tile pointing to A or B should remain in any window.
     for win in &app.windows {
@@ -450,12 +527,20 @@ fn context_transition_rescans_registry() {
 
     let apps_a = crate::app::registry::workspace_apps_dir(&dir_a);
     std::fs::create_dir_all(apps_a.join("test-1801-app-a")).unwrap();
-    std::fs::write(apps_a.join("test-1801-app-a").join("manifest.toml"), manifest_a).unwrap();
+    std::fs::write(
+        apps_a.join("test-1801-app-a").join("manifest.toml"),
+        manifest_a,
+    )
+    .unwrap();
     std::fs::write(apps_a.join("test-1801-app-a").join("app.py"), b"").unwrap();
 
     let apps_b = crate::app::registry::workspace_apps_dir(&dir_b);
     std::fs::create_dir_all(apps_b.join("test-1801-app-b")).unwrap();
-    std::fs::write(apps_b.join("test-1801-app-b").join("manifest.toml"), manifest_b).unwrap();
+    std::fs::write(
+        apps_b.join("test-1801-app-b").join("manifest.toml"),
+        manifest_b,
+    )
+    .unwrap();
     std::fs::write(apps_b.join("test-1801-app-b").join("app.py"), b"").unwrap();
 
     // Switch context 0 to root A and verify registry picks up app-a.
@@ -463,11 +548,20 @@ fn context_transition_rescans_registry() {
     app.router.get_mut(idx0).root = Some(dir_a.clone());
     app.apply_context_transition_effects();
 
-    let ids: Vec<String> = app.registry.list().into_iter().map(|a| a.manifest.id.clone()).collect();
-    assert!(ids.contains(&"test-1801-app-a".to_string()),
-        "registry should contain test-1801-app-a after setting root A, got: {ids:?}");
-    assert!(!ids.contains(&"test-1801-app-b".to_string()),
-        "registry should not contain test-1801-app-b while on root A, got: {ids:?}");
+    let ids: Vec<String> = app
+        .registry
+        .list()
+        .into_iter()
+        .map(|a| a.manifest.id.clone())
+        .collect();
+    assert!(
+        ids.contains(&"test-1801-app-a".to_string()),
+        "registry should contain test-1801-app-a after setting root A, got: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"test-1801-app-b".to_string()),
+        "registry should not contain test-1801-app-b while on root A, got: {ids:?}"
+    );
 
     // Add a second context pointing at root B and switch to it.
     let ctx_b_id = app.next_window_id;
@@ -499,11 +593,20 @@ fn context_transition_rescans_registry() {
     let ctx_b_idx = app.router.len() - 1;
     app.switch_workspace(ctx_b_idx);
 
-    let ids: Vec<String> = app.registry.list().into_iter().map(|a| a.manifest.id.clone()).collect();
-    assert!(ids.contains(&"test-1801-app-b".to_string()),
-        "registry should contain test-1801-app-b after switching to root B, got: {ids:?}");
-    assert!(!ids.contains(&"test-1801-app-a".to_string()),
-        "registry should not contain test-1801-app-a while on root B, got: {ids:?}");
+    let ids: Vec<String> = app
+        .registry
+        .list()
+        .into_iter()
+        .map(|a| a.manifest.id.clone())
+        .collect();
+    assert!(
+        ids.contains(&"test-1801-app-b".to_string()),
+        "registry should contain test-1801-app-b after switching to root B, got: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"test-1801-app-a".to_string()),
+        "registry should not contain test-1801-app-a while on root B, got: {ids:?}"
+    );
 
     let _ = std::fs::remove_dir_all(&dir_a);
     let _ = std::fs::remove_dir_all(&dir_b);
@@ -522,7 +625,11 @@ fn new_context_creates_top_level_empty_context() {
     app.windows[0].focused_pane = Some(_tile_id);
 
     assert_eq!(app.router.len(), 1, "setup: 1 context before new_context");
-    assert_eq!(app.windows[0].panes.len(), 1, "setup: 1 pane before new_context");
+    assert_eq!(
+        app.windows[0].panes.len(),
+        1,
+        "setup: 1 pane before new_context"
+    );
 
     app.new_context();
 
@@ -534,7 +641,10 @@ fn new_context_creates_top_level_empty_context() {
     assert_eq!(app.router.len(), 2, "new top-level context registered");
 
     let new_ctx_id = app.router.active().context_id;
-    assert_ne!(new_ctx_id, original_ctx_id, "active context switched to new one");
+    assert_ne!(
+        new_ctx_id, original_ctx_id,
+        "active context switched to new one"
+    );
 
     // No depth change -- new context is top-level, not a child.
     assert_eq!(app.router.current_depth(), 0, "depth stack unchanged");
@@ -545,10 +655,20 @@ fn new_context_creates_top_level_empty_context() {
     assert!(new_ctx.parent_id.is_none(), "new context has no parent");
 
     // Original context's panes are untouched.
-    let orig_win_idx = app.windows.iter().position(|w| w.context_id == original_ctx_id)
+    let orig_win_idx = app
+        .windows
+        .iter()
+        .position(|w| w.context_id == original_ctx_id)
         .expect("original context still has a window");
-    assert_eq!(app.windows[orig_win_idx].panes.len(), 1, "original panes untouched");
-    assert!(app.windows[orig_win_idx].panes.contains_key(&_pane_id), "original pane still present");
+    assert_eq!(
+        app.windows[orig_win_idx].panes.len(),
+        1,
+        "original panes untouched"
+    );
+    assert!(
+        app.windows[orig_win_idx].panes.contains_key(&_pane_id),
+        "original pane still present"
+    );
 
     // Inline rename was opened for the new context.
     assert_eq!(
@@ -628,7 +748,11 @@ fn delete_context_collapses_empty_portal_window() {
     let portal_pane_id = 77720u64;
     {
         // Replace the placeholder pane map entry with the portal.
-        let win2 = app.windows.iter_mut().find(|w| w.window_id == win2_id).unwrap();
+        let win2 = app
+            .windows
+            .iter_mut()
+            .find(|w| w.window_id == win2_id)
+            .unwrap();
         // Clear the placeholder from the pane map (tree already has the tile; pane map is separate).
         // Insert the portal pane.
         let portal_tile = win2.tree.tiles.insert_pane(portal_pane_id);
@@ -647,21 +771,36 @@ fn delete_context_collapses_empty_portal_window() {
     }
 
     // Preconditions.
-    assert_eq!(app.windows.iter().filter(|w| w.context_id == root_id).count(), 2,
-        "setup: root context has 2 windows");
+    assert_eq!(
+        app.windows
+            .iter()
+            .filter(|w| w.context_id == root_id)
+            .count(),
+        2,
+        "setup: root context has 2 windows"
+    );
 
     // Delete the child context (removes the portal from win2, leaving it empty).
     let child_idx = app.router.position(|c| c.context_id == child_id).unwrap();
     app.delete_context(child_idx);
 
     // win2 must be gone — root context now has exactly 1 window.
-    let root_windows: Vec<_> = app.windows.iter().filter(|w| w.context_id == root_id).collect();
-    assert_eq!(root_windows.len(), 1,
-        "empty portal window must be deleted after delete_context");
+    let root_windows: Vec<_> = app
+        .windows
+        .iter()
+        .filter(|w| w.context_id == root_id)
+        .collect();
+    assert_eq!(
+        root_windows.len(),
+        1,
+        "empty portal window must be deleted after delete_context"
+    );
 
     // The surviving window still has its pane.
-    assert!(root_windows[0].panes.contains_key(&_root_pane_id),
-        "original root pane must survive");
+    assert!(
+        root_windows[0].panes.contains_key(&_root_pane_id),
+        "original root pane must survive"
+    );
 }
 
 /// Issue #2029 (edge case): when ALL windows in a context each contain only a portal
@@ -729,7 +868,11 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
 
     // Insert a portal into window 0 (initially has no panes) and window 1 — both portal-only.
     for (win_id, portal_pane_id) in [(app.windows[0].window_id, 88820u64), (win2_id, 88821u64)] {
-        let win = app.windows.iter_mut().find(|w| w.window_id == win_id).unwrap();
+        let win = app
+            .windows
+            .iter_mut()
+            .find(|w| w.window_id == win_id)
+            .unwrap();
         let portal_tile = win.tree.tiles.insert_pane(portal_pane_id);
         win.tree.root = Some(portal_tile);
         win.panes.clear();
@@ -744,18 +887,32 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
         );
     }
 
-    assert_eq!(app.windows.iter().filter(|w| w.context_id == root_id).count(), 2,
-        "setup: 2 windows in root context, both portal-only");
+    assert_eq!(
+        app.windows
+            .iter()
+            .filter(|w| w.context_id == root_id)
+            .count(),
+        2,
+        "setup: 2 windows in root context, both portal-only"
+    );
 
     let child_idx = app.router.position(|c| c.context_id == child_id).unwrap();
     app.delete_context(child_idx);
 
     // Both windows became empty but neither had a non-empty sibling — both must survive.
     // The root context must still have windows (invariant: context always has >= 1 window).
-    let root_windows = app.windows.iter().filter(|w| w.context_id == root_id).count();
-    assert!(root_windows >= 1,
-        "root context must retain at least 1 window; got {root_windows}");
+    let root_windows = app
+        .windows
+        .iter()
+        .filter(|w| w.context_id == root_id)
+        .count();
+    assert!(
+        root_windows >= 1,
+        "root context must retain at least 1 window; got {root_windows}"
+    );
     // Specifically: neither empty window had a non-empty sibling, so both are kept.
-    assert_eq!(root_windows, 2,
-        "both portal-only windows must survive when no non-empty sibling exists");
+    assert_eq!(
+        root_windows, 2,
+        "both portal-only windows must survive when no non-empty sibling exists"
+    );
 }

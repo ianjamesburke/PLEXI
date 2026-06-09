@@ -51,10 +51,14 @@ const UPPER_ONE_EIGHTH: [RectFraction; 1] =
     [RectFraction::new(0.0, 1.0, 0.0, ONE_EIGHTH)];
 const RIGHT_ONE_EIGHTH: [RectFraction; 1] =
     [RectFraction::new(1.0 - ONE_EIGHTH, 1.0, 0.0, 1.0)];
-const QUADRANT_BL: [RectFraction; 1] = [RectFraction::new(0.0, HALF, HALF, 1.0)];
-const QUADRANT_BR: [RectFraction; 1] = [RectFraction::new(HALF, 1.0, HALF, 1.0)];
-const QUADRANT_TL: [RectFraction; 1] = [RectFraction::new(0.0, HALF, 0.0, HALF)];
-const QUADRANT_TR: [RectFraction; 1] = [RectFraction::new(HALF, 1.0, 0.0, HALF)];
+const QUADRANT_BL: [RectFraction; 1] =
+    [RectFraction::new(0.0, HALF, HALF, 1.0)];
+const QUADRANT_BR: [RectFraction; 1] =
+    [RectFraction::new(HALF, 1.0, HALF, 1.0)];
+const QUADRANT_TL: [RectFraction; 1] =
+    [RectFraction::new(0.0, HALF, 0.0, HALF)];
+const QUADRANT_TR: [RectFraction; 1] =
+    [RectFraction::new(HALF, 1.0, 0.0, HALF)];
 const QUADRANT_TL_BL_BR: [RectFraction; 3] = [
     RectFraction::new(0.0, HALF, 0.0, HALF),
     RectFraction::new(0.0, HALF, HALF, 1.0),
@@ -105,7 +109,8 @@ fn corner_shapes(c: char, cell_rect: Rect, fg: Color32) -> Option<Vec<Shape>> {
     // Each arm goes from the cell center to the midpoint of an edge.
     // Names: U=up (center→top), D=down (center→bottom), L=left, R=right.
     let seg_u = || Shape::line_segment([pos2(cx, cy), pos2(cx, top)], stroke);
-    let seg_d = || Shape::line_segment([pos2(cx, cy), pos2(cx, bottom)], stroke);
+    let seg_d =
+        || Shape::line_segment([pos2(cx, cy), pos2(cx, bottom)], stroke);
     let seg_l = || Shape::line_segment([pos2(cx, cy), pos2(left, cy)], stroke);
     let seg_r = || Shape::line_segment([pos2(cx, cy), pos2(right, cy)], stroke);
 
@@ -140,35 +145,35 @@ fn circle_shape(c: char, cell_rect: Rect, fg: Color32) -> Option<Shape> {
         '\u{25CF}' => {
             let radius = half_w * 0.72;
             Some(Shape::Circle(CircleShape::filled(center, radius, fg)))
-        }
+        },
         // ○ WHITE CIRCLE — outline variant
         '\u{25CB}' => {
             let radius = half_w * 0.72;
             let stroke = Stroke::new(1.0, fg);
             Some(Shape::Circle(CircleShape::stroke(center, radius, stroke)))
-        }
+        },
         // ◉ FISHEYE — filled circle with smaller inner circle
         '\u{25C9}' => {
             let radius = half_w * 0.72;
             let stroke = Stroke::new(1.0, fg);
             Some(Shape::Circle(CircleShape::stroke(center, radius, stroke)))
-        }
+        },
         // ⏺ BLACK CIRCLE FOR RECORD
         '\u{23FA}' => {
             let radius = half_w * 0.72;
             Some(Shape::Circle(CircleShape::filled(center, radius, fg)))
-        }
+        },
         // • BULLET (smaller dot)
         '\u{2022}' => {
             let radius = half_w * 0.38;
             Some(Shape::Circle(CircleShape::filled(center, radius, fg)))
-        }
+        },
         // ◦ WHITE BULLET (smaller outline dot)
         '\u{25E6}' => {
             let radius = half_w * 0.38;
             let stroke = Stroke::new(1.0, fg);
             Some(Shape::Circle(CircleShape::stroke(center, radius, stroke)))
-        }
+        },
         _ => None,
     }
 }
@@ -190,7 +195,8 @@ pub(crate) fn maybe_push_graphics_element(
         return true;
     }
 
-    let Some(rects) = block_element_rects(c, cell_rect, pixels_per_point) else {
+    let Some(rects) = block_element_rects(c, cell_rect, pixels_per_point)
+    else {
         return false;
     };
 
@@ -246,7 +252,9 @@ fn block_element_rects(
     Some(
         fractions
             .iter()
-            .filter_map(|fraction| fraction.to_rect(cell_rect, pixels_per_point))
+            .filter_map(|fraction| {
+                fraction.to_rect(cell_rect, pixels_per_point)
+            })
             .collect(),
     )
 }

@@ -15,8 +15,8 @@ mod create;
 mod layout;
 mod workspace;
 
-pub(crate) use layout::SwapResult;
 pub(crate) use layout::insert_split_tile;
+pub(crate) use layout::SwapResult;
 
 /// Apply `initial_cmd` to `settings`, using the same shell-suffix injection
 /// logic as `split_focused`. Call before `TerminalPane::new`.
@@ -41,7 +41,12 @@ pub(super) fn apply_initial_cmd(
         cmd.to_string()
     };
     settings.args = match shell_name {
-        "zsh" | "bash" => vec!["-i".to_string(), "-l".to_string(), "-c".to_string(), effective_cmd],
+        "zsh" | "bash" => vec![
+            "-i".to_string(),
+            "-l".to_string(),
+            "-c".to_string(),
+            effective_cmd,
+        ],
         "fish" => vec!["--login".to_string(), "-c".to_string(), effective_cmd],
         _ => vec!["-l".to_string(), "-c".to_string(), effective_cmd],
     };

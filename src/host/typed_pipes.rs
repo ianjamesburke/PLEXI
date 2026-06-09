@@ -128,11 +128,8 @@ impl TypedPipeRegistry {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(
-                &self.pipes_dir,
-                std::fs::Permissions::from_mode(0o700),
-            )
-            .map_err(|e| PipeError::BindFailed(format!("secure pipes dir: {e}")))?;
+            std::fs::set_permissions(&self.pipes_dir, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| PipeError::BindFailed(format!("secure pipes dir: {e}")))?;
         }
         let socket_name = format!("{}.sock", uuid::Uuid::new_v4());
         let socket_path = self
@@ -308,7 +305,6 @@ impl TypedPipeRegistry {
             None => false,
         }
     }
-
 }
 
 impl Drop for TypedPipeRegistry {
@@ -450,7 +446,8 @@ mod tests {
         // helper has to handle gracefully when the target pane has
         // independently opened the pipe (treats AlreadyOpen as success).
         let (mut reg, _dir) = test_registry();
-        reg.open_json("dup".to_string(), PipeDirection::Duplex).unwrap();
+        reg.open_json("dup".to_string(), PipeDirection::Duplex)
+            .unwrap();
         let err = reg
             .open_json("dup".to_string(), PipeDirection::Duplex)
             .unwrap_err();
@@ -497,9 +494,7 @@ mod tests {
             .open_binary("normal-id".to_string(), PipeDirection::In)
             .expect("open_binary");
         assert!(
-            alloc
-                .socket_path
-                .starts_with(dir.path().to_str().unwrap()),
+            alloc.socket_path.starts_with(dir.path().to_str().unwrap()),
             "socket must be inside pipes_dir, not in /tmp or elsewhere: got {}",
             alloc.socket_path
         );

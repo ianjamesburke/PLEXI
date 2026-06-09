@@ -93,7 +93,12 @@ pub struct AiBrokerResponse {
 }
 
 impl AiBrokerResponse {
-    pub fn ok_with_deltas(content: String, tokens_in: u32, tokens_out: u32, stream_deltas: Vec<String>) -> Self {
+    pub fn ok_with_deltas(
+        content: String,
+        tokens_in: u32,
+        tokens_out: u32,
+        stream_deltas: Vec<String>,
+    ) -> Self {
         Self {
             content: Some(content),
             tokens_in,
@@ -157,7 +162,10 @@ impl AiBroker for LiveAiBroker {
 
         // Budget gate — fail open on ledger I/O errors (today_spend returns 0 on error).
         if let Err(reason) = ledger::check_budget(&request.app_id, ai_config) {
-            log::warn!("ai_broker[{}]: request denied by budget gate — {reason}", request.app_id);
+            log::warn!(
+                "ai_broker[{}]: request denied by budget gate — {reason}",
+                request.app_id
+            );
             return AiBrokerResponse::err(format!("budget_exceeded: {reason}"));
         }
 
@@ -194,7 +202,10 @@ fn dispatch_openrouter(request: AiBrokerRequest, ai_config: &AiConfig) -> AiBrok
         }
     };
 
-    let api_key_env = or_config.api_key_env.as_deref().unwrap_or("OPENROUTER_API_KEY");
+    let api_key_env = or_config
+        .api_key_env
+        .as_deref()
+        .unwrap_or("OPENROUTER_API_KEY");
     let api_key = match std::env::var(api_key_env) {
         Ok(k) if !k.is_empty() => k,
         _ => {
@@ -241,23 +252,30 @@ fn dispatch_ollama(request: AiBrokerRequest, ai_config: &AiConfig) -> AiBrokerRe
         }
     };
 
-    let host = ollama_config.host.as_deref().unwrap_or("http://localhost:11434").to_string();
+    let host = ollama_config
+        .host
+        .as_deref()
+        .unwrap_or("http://localhost:11434")
+        .to_string();
 
     let backend = OllamaBackend {
         host,
         model: model_id.clone(),
     };
 
-    run_turn_and_respond(request, &backend, BillingModel::Subscription, model_id, String::new())
+    run_turn_and_respond(
+        request,
+        &backend,
+        BillingModel::Subscription,
+        model_id,
+        String::new(),
+    )
 }
 
 /// Build a compact host context block to prepend to the system prompt.
 /// Budget: ≤2000 tokens (~8000 chars). Skipped when the system prompt
 /// starts with `# no-host-context`.
-fn build_context_prefix(
-    workspace_root: &std::path::Path,
-    open_panes: &[PaneContext],
-) -> String {
+fn build_context_prefix(workspace_root: &std::path::Path, open_panes: &[PaneContext]) -> String {
     let mut out = String::new();
     out.push_str("# Host context\n");
     out.push_str(&format!("workspace: {}\n", workspace_root.display()));
@@ -316,10 +334,7 @@ fn run_turn_and_respond(
     api_key: String,
 ) -> AiBrokerResponse {
     // Build effective system prompt (optionally prepend host context).
-    let system = if request
-        .system
-        .starts_with("# no-host-context")
-    {
+    let system = if request.system.starts_with("# no-host-context") {
         request.system.clone()
     } else if let Some(root) = &request.workspace_root {
         let prefix = build_context_prefix(root, &request.open_panes);
@@ -458,11 +473,8 @@ fn run_turn_and_respond(
                         request.app_id,
                         tc.name,
                     );
-                    let tool_result = dispatcher.dispatch_call(
-                        call_id.clone(),
-                        &tc.name,
-                        tc.arguments.clone(),
-                    );
+                    let tool_result =
+                        dispatcher.dispatch_call(call_id.clone(), &tc.name, tc.arguments.clone());
                     let content = if let Some(out) = tool_result.output_json {
                         out
                     } else {
@@ -503,8 +515,7 @@ fn run_turn_and_respond(
                 request.app_id,
                 gen_id
             );
-            let (metrics_tx, metrics_rx) =
-                std::sync::mpsc::channel::<Option<GenerationMetrics>>();
+            let (metrics_tx, metrics_rx) = std::sync::mpsc::channel::<Option<GenerationMetrics>>();
             let spawn_result = std::thread::Builder::new()
                 .name("plexi-ai-metrics".to_string())
                 .spawn(move || {
@@ -555,7 +566,12 @@ fn run_turn_and_respond(
                         cost_cents,
                         timestamp: finish_ts,
                     });
-                    return AiBrokerResponse::ok_with_deltas(final_text, tokens_in, tokens_out, stream_deltas);
+                    return AiBrokerResponse::ok_with_deltas(
+                        final_text,
+                        tokens_in,
+                        tokens_out,
+                        stream_deltas,
+                    );
                 }
                 Err(e) => {
                     // Thread spawn failed — fall through to synchronous path so
@@ -692,7 +708,9 @@ fn fetch_generation_metrics(gen_id: &str, api_key: &str) -> Option<GenerationMet
         let data = match body.get("data") {
             Some(d) if !d.is_null() => d,
             _ => {
-                log::debug!("ai_broker: generation response missing 'data' field — body={body_str}");
+                log::debug!(
+                    "ai_broker: generation response missing 'data' field — body={body_str}"
+                );
                 return None;
             }
         };
@@ -832,7 +850,10 @@ mod tests {
         assert_eq!(resp.content.as_deref(), Some("response"));
         let seen = broker.seen.lock().unwrap();
         assert_eq!(seen.len(), 1, "broker should have seen exactly one request");
-        assert_eq!(seen[0].messages, messages, "messages must round-trip unchanged");
+        assert_eq!(
+            seen[0].messages, messages,
+            "messages must round-trip unchanged"
+        );
         assert_eq!(seen[0].system, "be helpful");
     }
 
@@ -862,7 +883,10 @@ mod tests {
 
         assert!(resp.error.is_some());
         assert!(
-            resp.error.as_deref().unwrap_or("").contains("api_key_missing"),
+            resp.error
+                .as_deref()
+                .unwrap_or("")
+                .contains("api_key_missing"),
             "missing-key error must surface the api_key_missing tag"
         );
     }
@@ -885,7 +909,10 @@ mod tests {
         });
         assert!(resp.error.is_some());
         assert!(
-            resp.error.as_deref().unwrap_or("").contains("ai_config_missing"),
+            resp.error
+                .as_deref()
+                .unwrap_or("")
+                .contains("ai_config_missing"),
             "missing config error must surface the ai_config_missing tag"
         );
     }
@@ -924,9 +951,11 @@ mod tests {
     #[test]
     fn fetch_generation_cost_parses_total_cost_string() {
         let parse_cost = |v: &serde_json::Value| -> Option<f64> {
-            v["data"]["total_cost"]
-                .as_f64()
-                .or_else(|| v["data"]["total_cost"].as_str().and_then(|s| s.parse().ok()))
+            v["data"]["total_cost"].as_f64().or_else(|| {
+                v["data"]["total_cost"]
+                    .as_str()
+                    .and_then(|s| s.parse().ok())
+            })
         };
 
         let string_response = serde_json::json!({

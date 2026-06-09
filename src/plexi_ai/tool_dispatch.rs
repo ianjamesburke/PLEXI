@@ -45,9 +45,7 @@ impl AppEventSender {
     pub(crate) fn send_event(&self, event: &PlexiEvent) {
         if let Ok(mut json) = serde_json::to_string(event) {
             json.push('\n');
-            let _ = self
-                .tx
-                .send(crate::process_app::StdinItem::Event(json));
+            let _ = self.tx.send(crate::process_app::StdinItem::Event(json));
         }
     }
 }
@@ -110,7 +108,11 @@ impl ToolRegistry {
         let mut pane_ids: Vec<u64> = self
             .entries
             .iter()
-            .filter(|(_, e)| e.workspace_root.components().eq(caller_workspace.components()))
+            .filter(|(_, e)| {
+                e.workspace_root
+                    .components()
+                    .eq(caller_workspace.components())
+            })
             .map(|(&id, _)| id)
             .collect();
         pane_ids.sort_unstable();
@@ -185,10 +187,12 @@ pub struct ToolCallResult {
 
 /// Map from `call_id` → sender that will receive the `ToolCallResult` once
 /// `DrawCommand::ToolResult` arrives.
-static PENDING_CALLS: OnceLock<Arc<Mutex<HashMap<String, std::sync::mpsc::SyncSender<ToolCallResult>>>>> =
-    OnceLock::new();
+static PENDING_CALLS: OnceLock<
+    Arc<Mutex<HashMap<String, std::sync::mpsc::SyncSender<ToolCallResult>>>>,
+> = OnceLock::new();
 
-fn pending_calls() -> &'static Arc<Mutex<HashMap<String, std::sync::mpsc::SyncSender<ToolCallResult>>>> {
+fn pending_calls(
+) -> &'static Arc<Mutex<HashMap<String, std::sync::mpsc::SyncSender<ToolCallResult>>>> {
     PENDING_CALLS.get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
 }
 
@@ -255,12 +259,7 @@ impl ToolDispatcher {
     }
 
     /// Dispatch a single tool call. Blocks until the app responds or times out.
-    pub fn dispatch_call(
-        &self,
-        call_id: String,
-        name: &str,
-        input_json: String,
-    ) -> ToolCallResult {
+    pub fn dispatch_call(&self, call_id: String, name: &str, input_json: String) -> ToolCallResult {
         let (pane_id, tool) = match self.tools.get(name) {
             Some(entry) => entry,
             None => {
@@ -270,7 +269,9 @@ impl ToolDispatcher {
                 );
                 return ToolCallResult {
                     output_json: None,
-                    error: Some(format!("tool_not_found: no tool named {name:?} in registry")),
+                    error: Some(format!(
+                        "tool_not_found: no tool named {name:?} in registry"
+                    )),
                 };
             }
         };
@@ -323,7 +324,11 @@ impl ToolDispatcher {
             Ok(result) => {
                 log::info!(
                     "tool_dispatch: tool={name:?} call_id={call_id:?} result={}",
-                    if result.error.is_none() { "ok" } else { "error" }
+                    if result.error.is_none() {
+                        "ok"
+                    } else {
+                        "error"
+                    }
                 );
                 result
             }
@@ -371,14 +376,15 @@ mod tests {
         reg.register(
             1,
             vec![make_tool("search")],
-            AppEventSender {
-                tx: tx.clone(),
-            },
+            AppEventSender { tx: tx.clone() },
             ws.clone(),
         );
 
         let snap = reg.snapshot_for_caller(&ws);
-        assert!(snap.contains_key("search"), "same-workspace tool must be visible");
+        assert!(
+            snap.contains_key("search"),
+            "same-workspace tool must be visible"
+        );
         assert_eq!(snap["search"].0, 1, "provider pane id must be 1");
     }
 
@@ -421,7 +427,12 @@ mod tests {
         let mut reg = ToolRegistry::new();
         let ws = PathBuf::from("/workspace/x");
         let (tx, _rx) = std::sync::mpsc::channel();
-        reg.register(5, vec![make_tool("tool_a")], AppEventSender { tx }, ws.clone());
+        reg.register(
+            5,
+            vec![make_tool("tool_a")],
+            AppEventSender { tx },
+            ws.clone(),
+        );
 
         assert!(reg.snapshot_for_caller(&ws).contains_key("tool_a"));
         reg.unregister(5);
@@ -456,11 +467,8 @@ mod tests {
         );
 
         // Build a dispatcher for a caller in workspace A.
-        let dispatcher = ToolDispatcher::from_registry(
-            1,
-            "app_a".to_string(),
-            PathBuf::from("/workspace/a"),
-        );
+        let dispatcher =
+            ToolDispatcher::from_registry(1, "app_a".to_string(), PathBuf::from("/workspace/a"));
 
         // The tool must not appear in the visible set.
         let visible: Vec<String> = dispatcher.all_tools().into_iter().map(|t| t.name).collect();
@@ -470,11 +478,17 @@ mod tests {
         );
 
         // A direct dispatch attempt must return tool_not_found.
-        let result = dispatcher.dispatch_call("call-x".to_string(), "secret_tool", "{}".to_string());
+        let result =
+            dispatcher.dispatch_call("call-x".to_string(), "secret_tool", "{}".to_string());
         assert!(result.error.is_some());
         assert!(
-            result.error.as_deref().unwrap_or("").contains("tool_not_found"),
-            "unauthorized call must return tool_not_found: {:?}", result.error
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("tool_not_found"),
+            "unauthorized call must return tool_not_found: {:?}",
+            result.error
         );
 
         // Clean up global registry.

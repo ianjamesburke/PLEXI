@@ -1,5 +1,5 @@
-use crate::app::permissions::AppPermissions;
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
+use crate::app::permissions::AppPermissions;
 use crate::spatial::tiling::PaneId;
 use egui_term::{BackendSettings, PtyEvent, TerminalBackend};
 use std::path::PathBuf;
@@ -181,7 +181,10 @@ impl AppRuntime {
         }
     }
 
-    pub fn handle_key(&mut self, input: &egui::InputState) -> crate::app::app_trait::KeyDisposition {
+    pub fn handle_key(
+        &mut self,
+        input: &egui::InputState,
+    ) -> crate::app::app_trait::KeyDisposition {
         match self {
             AppRuntime::Process(app) => app.handle_key(input),
             AppRuntime::Builtin(app) => app.handle_key(input),
@@ -314,4 +317,3 @@ pub struct AppPane {
     /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
     pub hidden: bool,
 }
-

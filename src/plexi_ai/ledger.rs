@@ -166,11 +166,20 @@ pub fn today_spend() -> DailySpend {
         Ok(d) => d,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // No ledger yet — zero spend.
-            return DailySpend { global_usd: 0.0, per_app: HashMap::new() };
+            return DailySpend {
+                global_usd: 0.0,
+                per_app: HashMap::new(),
+            };
         }
         Err(e) => {
-            log::warn!("plexi_ai ledger: failed to read {} for budget check: {e}", path.display());
-            return DailySpend { global_usd: 0.0, per_app: HashMap::new() };
+            log::warn!(
+                "plexi_ai ledger: failed to read {} for budget check: {e}",
+                path.display()
+            );
+            return DailySpend {
+                global_usd: 0.0,
+                per_app: HashMap::new(),
+            };
         }
     };
 
@@ -201,7 +210,10 @@ pub fn today_spend() -> DailySpend {
         }
     }
 
-    DailySpend { global_usd, per_app }
+    DailySpend {
+        global_usd,
+        per_app,
+    }
 }
 
 /// Check if an `ai.query` from `app_id` would exceed budget limits.
@@ -293,7 +305,10 @@ mod ledger_tests {
             None,
         );
         assert_eq!(row.cost_cents, 0, "missing cost must produce cost_cents=0");
-        assert!(row.cost_usd.is_none(), "missing cost must produce null cost_usd");
+        assert!(
+            row.cost_usd.is_none(),
+            "missing cost must produce null cost_usd"
+        );
     }
 
     #[test]
@@ -340,7 +355,10 @@ mod ledger_tests {
         // a test environment with no real ledger, today_spend() returns zero —
         // this call must succeed.
         let result = check_budget("app1", &config);
-        assert!(result.is_ok(), "should pass when spend is under limit: {result:?}");
+        assert!(
+            result.is_ok(),
+            "should pass when spend is under limit: {result:?}"
+        );
     }
 
     #[test]
@@ -382,10 +400,7 @@ mod ledger_tests {
         let result = check_budget("app1", &config);
         assert!(result.is_err(), "should block when per-app spend >= cap");
         let msg = result.unwrap_err();
-        assert!(
-            msg.contains("app1"),
-            "error must mention the app_id: {msg}"
-        );
+        assert!(msg.contains("app1"), "error must mention the app_id: {msg}");
         assert!(
             msg.contains("per-app daily"),
             "error must mention 'per-app daily': {msg}"

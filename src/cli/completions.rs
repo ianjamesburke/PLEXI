@@ -55,7 +55,8 @@ pub fn complete_open_cli(prefix: &str) -> i32 {
                 }
             }
             // CLI names
-            let mut cli_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            let mut cli_names: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
             for name in crate::cli::registry::list_clis() {
                 cli_names.insert(name);
             }
@@ -81,7 +82,11 @@ pub fn completions_cli(shell: &str, binary_name: &str) -> i32 {
         eprintln!("error: unsupported shell {shell:?} — supported: bash, zsh, fish");
         return 1;
     };
-    log::info!("completions: generating {:?} completions for binary {:?}", shell, binary_name);
+    log::info!(
+        "completions: generating {:?} completions for binary {:?}",
+        shell,
+        binary_name
+    );
     let mut cmd = crate::cli::args::Cli::command();
     if shell_variant == Shell::Zsh {
         // Generate to a buffer so we can post-process the zsh script.
@@ -195,7 +200,10 @@ mod completions_tests {
     #[test]
     fn zsh_fix_removes_line2_references() {
         let raw = generated_zsh();
-        assert!(raw.contains("$line[2]"), "raw script should use line[2] for outer dispatch");
+        assert!(
+            raw.contains("$line[2]"),
+            "raw script should use line[2] for outer dispatch"
+        );
         let fixed = fix_zsh_workspace_path_conflict(&raw);
         assert!(
             !fixed.contains("$line[2]"),

@@ -65,8 +65,7 @@ pub fn start_mcp_server(tools: Vec<McpTool>) -> std::io::Result<McpServerHandle>
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let token = uuid::Uuid::new_v4().to_string();
-    let call_queue: Arc<Mutex<VecDeque<McpCallRequest>>> =
-        Arc::new(Mutex::new(VecDeque::new()));
+    let call_queue: Arc<Mutex<VecDeque<McpCallRequest>>> = Arc::new(Mutex::new(VecDeque::new()));
     let queue_clone = Arc::clone(&call_queue);
     let tools = Arc::new(tools);
     let token_arc: Arc<String> = Arc::new(token.clone());
@@ -99,7 +98,11 @@ pub fn start_mcp_server(tools: Vec<McpTool>) -> std::io::Result<McpServerHandle>
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
     log::info!("mcp_server: started on 127.0.0.1:{port}");
-    Ok(McpServerHandle { port, token, call_queue })
+    Ok(McpServerHandle {
+        port,
+        token,
+        call_queue,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -112,7 +115,10 @@ fn handle_connection(
     queue: &Arc<Mutex<VecDeque<McpCallRequest>>>,
     token: &str,
 ) -> std::io::Result<()> {
-    let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".to_string());
+    let peer = stream
+        .peer_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut write_stream = stream;
 
@@ -160,7 +166,11 @@ fn handle_connection(
     }
 
     if !is_post_mcp || content_length == 0 {
-        write_http_response(&mut write_stream, 405, b"{\"error\":\"method not allowed\"}")?;
+        write_http_response(
+            &mut write_stream,
+            405,
+            b"{\"error\":\"method not allowed\"}",
+        )?;
         return Ok(());
     }
 
@@ -238,8 +248,7 @@ fn handle_connection(
                 .unwrap_or(serde_json::Value::Object(Default::default()));
 
             let call_id = generate_call_id();
-            let (response_tx, response_rx) =
-                std::sync::mpsc::sync_channel::<McpToolResponse>(1);
+            let (response_tx, response_rx) = std::sync::mpsc::sync_channel::<McpToolResponse>(1);
 
             {
                 let mut q = queue.lock().unwrap();
@@ -291,17 +300,12 @@ fn handle_connection(
         }
     };
 
-    let body_bytes = serde_json::to_vec(&response_body)
-        .unwrap_or_else(|_| b"{}".to_vec());
+    let body_bytes = serde_json::to_vec(&response_body).unwrap_or_else(|_| b"{}".to_vec());
     write_http_response(&mut write_stream, 200, &body_bytes)?;
     Ok(())
 }
 
-fn write_http_response(
-    stream: &mut impl Write,
-    status: u16,
-    body: &[u8],
-) -> std::io::Result<()> {
+fn write_http_response(stream: &mut impl Write, status: u16, body: &[u8]) -> std::io::Result<()> {
     let status_text = match status {
         200 => "OK",
         400 => "Bad Request",
@@ -356,7 +360,10 @@ mod tests {
             .and_then(|l| l.split_whitespace().nth(1))
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        let body_start = response_str.find("\r\n\r\n").map(|i| i + 4).unwrap_or(response.len());
+        let body_start = response_str
+            .find("\r\n\r\n")
+            .map(|i| i + 4)
+            .unwrap_or(response.len());
         (status, response[body_start..].to_vec())
     }
 

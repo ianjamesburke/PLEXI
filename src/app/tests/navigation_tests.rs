@@ -88,8 +88,14 @@ fn pane_navigate_cross_window_updates_active_window() {
 
     assert_eq!(h.app.active_window, 0);
     assert!(h.app.pane_navigate(9901));
-    assert_eq!(h.app.active_window, 1, "active_window must switch to window 1");
-    assert!(h.app.windows[1].focused_pane.is_some(), "focused_pane must be set on target window");
+    assert_eq!(
+        h.app.active_window, 1,
+        "active_window must switch to window 1"
+    );
+    assert!(
+        h.app.windows[1].focused_pane.is_some(),
+        "focused_pane must be set on target window"
+    );
 }
 
 /// Regression guard for #823: pane_navigate must also sync router.active_idx
@@ -112,7 +118,11 @@ fn pane_navigate_cross_window_syncs_router() {
 
     assert_eq!(h.app.router.active_idx(), 0);
     assert!(h.app.pane_navigate(9902));
-    assert_eq!(h.app.router.active_idx(), 1, "router must reflect new active context after pane_navigate");
+    assert_eq!(
+        h.app.router.active_idx(),
+        1,
+        "router must reflect new active context after pane_navigate"
+    );
 }
 
 /// Regression guard for #878: `SendToPane` must search all windows, not just
@@ -132,9 +142,9 @@ fn send_to_pane_searches_all_windows() {
     let mut win1 = second_window(2, 2, cross_window_pane_id);
     // Insert an App pane (not Terminal) so we can confirm lookup reaches it.
     let app_pane = {
+        use crate::app::permissions::AppPermissions;
         use crate::host::pane::{AppPane, AppRuntime};
         use crate::process_app::ProcessApp;
-        use crate::app::permissions::AppPermissions;
         let (process_app, _draw_tx) =
             ProcessApp::new_for_test(cross_window_pane_id, AppPermissions::builtin());
         AppPane {
@@ -150,7 +160,10 @@ fn send_to_pane_searches_all_windows() {
             hidden: false,
         }
     };
-    win1.panes.insert(cross_window_pane_id, crate::host::pane::Pane::App(Box::new(app_pane)));
+    win1.panes.insert(
+        cross_window_pane_id,
+        crate::host::pane::Pane::App(Box::new(app_pane)),
+    );
     h.app.windows.push(win1);
     h.app.router.push(crate::host::context::Context {
         name: "Context B".into(),
@@ -202,8 +215,10 @@ fn pane_list_excludes_orphaned_panes_and_navigate_succeeds() {
     // a corresponding tile in the tree. This simulates corrupted restore state
     // or any create-path bug that leaves win.panes ahead of the tile tree.
     let orphan_id: PaneId = 99991;
-    let (orphan_process, _tx) =
-        crate::process_app::ProcessApp::new_for_test(orphan_id, crate::app::permissions::AppPermissions::builtin());
+    let (orphan_process, _tx) = crate::process_app::ProcessApp::new_for_test(
+        orphan_id,
+        crate::app::permissions::AppPermissions::builtin(),
+    );
     let orphan_pane = crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
         id: orphan_id,
         runtime: crate::host::pane::AppRuntime::Process(Box::new(orphan_process)),
@@ -217,7 +232,10 @@ fn pane_list_excludes_orphaned_panes_and_navigate_succeeds() {
         hidden: false,
     }));
     h.app.windows[0].panes.insert(orphan_id, orphan_pane);
-    assert!(h.app.windows[0].tree.tiles.find_pane(&orphan_id).is_none(), "orphan has no tile");
+    assert!(
+        h.app.windows[0].tree.tiles.find_pane(&orphan_id).is_none(),
+        "orphan has no tile"
+    );
 
     let resp_file = std::env::temp_dir().join("plexi_test_pane_list_996.json");
     h.inject_ipc(crate::app_protocol::AppRequest::ListPanes {
@@ -230,8 +248,14 @@ fn pane_list_excludes_orphaned_panes_and_navigate_succeeds() {
     let panes: Vec<serde_json::Value> = serde_json::from_str(&json).expect("valid JSON");
     let ids: Vec<u64> = panes.iter().filter_map(|p| p["id"].as_u64()).collect();
 
-    assert!(ids.contains(&real_pane_id), "real pane must appear in pane_list");
-    assert!(!ids.contains(&orphan_id), "orphaned pane (no tile) must NOT appear in pane_list");
+    assert!(
+        ids.contains(&real_pane_id),
+        "real pane must appear in pane_list"
+    );
+    assert!(
+        !ids.contains(&orphan_id),
+        "orphaned pane (no tile) must NOT appear in pane_list"
+    );
 
     for id in &ids {
         assert!(
@@ -250,15 +274,21 @@ fn navigate_down_at_vertical_boundary_jumps_to_last_window() {
     let mut h = HostHarness::new();
     let pane_a = h.add_test_pane();
     // Three windows: grid_y 0 (window 0), 1 (window 1), 2 (window 2).
-    h.app.windows.push(same_workspace_window_below(2, 9910));  // grid_y=1
+    h.app.windows.push(same_workspace_window_below(2, 9910)); // grid_y=1
     h.app.windows.push(same_workspace_window_bottom(3, 9911)); // grid_y=2
 
-    assert!(h.app.pane_navigate(pane_a), "pane_navigate must succeed to set up focus");
+    assert!(
+        h.app.pane_navigate(pane_a),
+        "pane_navigate must succeed to set up focus"
+    );
     assert_eq!(h.app.active_window, 0);
 
     // Down from window 0 must jump directly to the LAST window (grid_y=2), not step to grid_y=1.
     h.app.navigate(crate::host::keys::Direction::Down);
-    assert_eq!(h.app.active_window, 2, "navigate(Down) at vertical boundary must jump to last window");
+    assert_eq!(
+        h.app.active_window, 2,
+        "navigate(Down) at vertical boundary must jump to last window"
+    );
 }
 
 /// #1074: navigate(Up) at the vertical pane boundary jumps to the FIRST
@@ -267,7 +297,7 @@ fn navigate_down_at_vertical_boundary_jumps_to_last_window() {
 fn navigate_up_at_vertical_boundary_jumps_to_first_window() {
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane();
-    h.app.windows.push(same_workspace_window_below(2, 9910));  // grid_y=1
+    h.app.windows.push(same_workspace_window_below(2, 9910)); // grid_y=1
     h.app.windows.push(same_workspace_window_bottom(3, 9911)); // grid_y=2
 
     // Start from the middle window.
@@ -276,7 +306,10 @@ fn navigate_up_at_vertical_boundary_jumps_to_first_window() {
 
     // Up from window 1 must jump to the FIRST window (grid_y=0).
     h.app.navigate(crate::host::keys::Direction::Up);
-    assert_eq!(h.app.active_window, 0, "navigate(Up) at vertical boundary must jump to first window");
+    assert_eq!(
+        h.app.active_window, 0,
+        "navigate(Up) at vertical boundary must jump to first window"
+    );
 }
 
 /// Single-window workspace: navigate(Down) at boundary is a no-op —
@@ -288,7 +321,10 @@ fn navigate_down_single_window_is_noop() {
     assert!(h.app.pane_navigate(pane_a), "pane_navigate must succeed");
     assert_eq!(h.app.active_window, 0);
     h.app.navigate(crate::host::keys::Direction::Down);
-    assert_eq!(h.app.active_window, 0, "navigate(Down) in single-window workspace must not change active_window");
+    assert_eq!(
+        h.app.active_window, 0,
+        "navigate(Down) in single-window workspace must not change active_window"
+    );
 }
 
 /// Horizontal boundary (Left/Right) still falls through to page navigation unchanged.
@@ -300,7 +336,10 @@ fn navigate_left_at_horizontal_boundary_still_page_navigates() {
     assert_eq!(h.app.active_window, 0);
     // No window to the left of (0,0) → Left is a no-op (not wrapped).
     h.app.navigate(crate::host::keys::Direction::Left);
-    assert_eq!(h.app.active_window, 0, "Left at boundary must not change active_window");
+    assert_eq!(
+        h.app.active_window, 0,
+        "Left at boundary must not change active_window"
+    );
 }
 
 /// GetPreviousPaneInfo returns the last live entry from pane_focus_history.
@@ -311,7 +350,11 @@ fn get_previous_pane_info_returns_previous_pane() {
     let pane_b = h.add_test_pane();
 
     // Simulate: user was in pane_a, moved to pane_b (pushes pane_a's tile into history).
-    let tile_a = h.app.windows[0].tree.tiles.find_pane(&pane_a).expect("tile_a must exist");
+    let tile_a = h.app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&pane_a)
+        .expect("tile_a must exist");
     let window_id = h.app.windows[0].window_id;
     h.app.pane_focus_history.push((window_id, tile_a));
 
@@ -326,7 +369,11 @@ fn get_previous_pane_info_returns_previous_pane() {
     let json = std::fs::read_to_string(&resp_file).expect("response file must be written");
     let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
     assert!(v.get("error").is_none(), "unexpected error: {json}");
-    assert_eq!(v["id"].as_u64(), Some(pane_a), "previous pane must be pane_a, not pane_b; got: {json}");
+    assert_eq!(
+        v["id"].as_u64(),
+        Some(pane_a),
+        "previous pane must be pane_a, not pane_b; got: {json}"
+    );
     let _ = std::fs::remove_file(&resp_file);
     let _ = pane_b;
 }
@@ -341,8 +388,12 @@ fn get_previous_pane_info_skips_stale_tile() {
 
     // Push a stale (nonexistent) tile first, then a valid one.
     let stale_tile = egui_tiles::TileId::from_u64(99999);
-    let tile_a = h.app.windows[0].tree.tiles.find_pane(&pane_a).expect("tile_a must exist");
-    h.app.pane_focus_history.push((window_id, tile_a));    // older: pane_a
+    let tile_a = h.app.windows[0]
+        .tree
+        .tiles
+        .find_pane(&pane_a)
+        .expect("tile_a must exist");
+    h.app.pane_focus_history.push((window_id, tile_a)); // older: pane_a
     h.app.pane_focus_history.push((window_id, stale_tile)); // newer (but stale)
 
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_stale.json");
@@ -355,8 +406,15 @@ fn get_previous_pane_info_skips_stale_tile() {
 
     let json = std::fs::read_to_string(&resp_file).expect("response file must be written");
     let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-    assert!(v.get("error").is_none(), "unexpected error after stale skip: {json}");
-    assert_eq!(v["id"].as_u64(), Some(pane_a), "must fall through to pane_a after skipping stale tile; got: {json}");
+    assert!(
+        v.get("error").is_none(),
+        "unexpected error after stale skip: {json}"
+    );
+    assert_eq!(
+        v["id"].as_u64(),
+        Some(pane_a),
+        "must fall through to pane_a after skipping stale tile; got: {json}"
+    );
     let _ = std::fs::remove_file(&resp_file);
 }
 
@@ -365,7 +423,10 @@ fn get_previous_pane_info_skips_stale_tile() {
 fn get_previous_pane_info_empty_history_returns_error() {
     let mut h = HostHarness::new();
     let _pane_a = h.add_test_pane();
-    assert!(h.app.pane_focus_history.is_empty(), "history must start empty");
+    assert!(
+        h.app.pane_focus_history.is_empty(),
+        "history must start empty"
+    );
 
     let resp_file = std::env::temp_dir().join("plexi_test_prev_pane_empty.json");
     let _ = std::fs::remove_file(&resp_file);
@@ -375,8 +436,12 @@ fn get_previous_pane_info_empty_history_returns_error() {
     });
     h.app.drain_pane_cmd_channel();
 
-    let json = std::fs::read_to_string(&resp_file).expect("response file must be written even on error");
+    let json =
+        std::fs::read_to_string(&resp_file).expect("response file must be written even on error");
     let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-    assert!(v.get("error").is_some(), "expected error field in response; got: {json}");
+    assert!(
+        v.get("error").is_some(),
+        "expected error field in response; got: {json}"
+    );
     let _ = std::fs::remove_file(&resp_file);
 }

@@ -1,8 +1,8 @@
 //! CWD synchronization + global pane context snapshot.
 
 use super::PlexiApp;
-use crate::plexi_ai::broker::PaneContext;
 use crate::host::shell;
+use crate::plexi_ai::broker::PaneContext;
 
 impl PlexiApp {
     /// Synchronize app panes that join the `cwd` pane group with any terminal's
@@ -92,5 +92,4 @@ impl PlexiApp {
         }
         crate::plexi_ai::broker::update_pane_snapshot(panes);
     }
-
 }

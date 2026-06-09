@@ -1,5 +1,7 @@
-use super::{print_tip};
-use super::app::{is_bare_id, resolve_registry_id, is_github_shorthand, app_is_python, ensure_plexi_sdk};
+use super::app::{
+    app_is_python, ensure_plexi_sdk, is_bare_id, is_github_shorthand, resolve_registry_id,
+};
+use super::print_tip;
 use std::io::{self, Write};
 
 pub fn install_cli(spec: &str) -> i32 {
@@ -28,14 +30,18 @@ pub fn install_cli(spec: &str) -> i32 {
     };
     let target_root = crate::app::registry::apps_dir();
     let cloner = crate::cli::install_host::GitCloner;
-    match crate::cli::install_host::install_one(&cloner, &source, git_ref.as_deref(), &target_root) {
+    match crate::cli::install_host::install_one(&cloner, &source, git_ref.as_deref(), &target_root)
+    {
         Ok(outcome) => match outcome.status {
             crate::cli::install_host::InstallStatus::Installed(path) => {
                 println!("installed '{}' at {}", outcome.id, path.display());
                 if app_is_python(&path) {
                     ensure_plexi_sdk();
                 }
-                print_tip(&format!("open your app with `plexi app open {}`.", outcome.id));
+                print_tip(&format!(
+                    "open your app with `plexi app open {}`.",
+                    outcome.id
+                ));
                 0
             }
             crate::cli::install_host::InstallStatus::AlreadyAtVersion => {
@@ -131,7 +137,10 @@ pub fn install_workspace_pack_cli() -> i32 {
     log::info!("cli: install_workspace_pack (no-args flow)");
     let cwd = match std::env::current_dir() {
         Ok(d) => d,
-        Err(e) => { eprintln!("error: {e}"); return 1; }
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
     };
 
     let channel_dir = crate::config::workspace_channel_dir();
@@ -162,7 +171,9 @@ pub fn install_workspace_pack_cli() -> i32 {
     };
 
     let Some(root) = workspace_root else {
-        eprintln!("Usage: plexi app install <source-spec>[@ref] | plexi app install --pack <path|core>");
+        eprintln!(
+            "Usage: plexi app install <source-spec>[@ref] | plexi app install --pack <path|core>"
+        );
         eprintln!("  In a workspace (directory with {channel_dir}/), `plexi app install` applies the manifest.");
         eprintln!("  Run `plexi workspace init` to initialize a workspace here.");
         return 1;
@@ -170,19 +181,30 @@ pub fn install_workspace_pack_cli() -> i32 {
 
     let apps_toml = root.join(&channel_dir).join("apps.toml");
     if !apps_toml.exists() {
-        eprintln!("no {channel_dir}/apps.toml found in workspace at {}", root.display());
+        eprintln!(
+            "no {channel_dir}/apps.toml found in workspace at {}",
+            root.display()
+        );
         eprintln!("  Declare app dependencies there, then re-run `plexi app install`.");
-        eprintln!("  Usage: plexi app install <source-spec>[@ref] | plexi app install --pack <path|core>");
+        eprintln!(
+            "  Usage: plexi app install <source-spec>[@ref] | plexi app install --pack <path|core>"
+        );
         return 1;
     }
 
-    log::info!("install_workspace_pack:cli: applying {}", apps_toml.display());
+    log::info!(
+        "install_workspace_pack:cli: applying {}",
+        apps_toml.display()
+    );
     println!("Applying workspace manifest {}...", apps_toml.display());
 
     let cloner = crate::cli::install_host::GitCloner;
     let outcomes = match crate::cli::install_host::apply_workspace_pack(&root, &cloner) {
         Ok(o) => o,
-        Err(e) => { eprintln!("error: {e}"); return 1; }
+        Err(e) => {
+            eprintln!("error: {e}");
+            return 1;
+        }
     };
 
     if outcomes.is_empty() {
@@ -199,8 +221,14 @@ pub fn install_workspace_pack_cli() -> i32 {
             crate::cli::install_host::InstallStatus::AlreadyAtVersion => {
                 println!("  up-to-date {:30}", o.id);
             }
-            crate::cli::install_host::InstallStatus::SkippedOtherVersion { installed, requested } => {
-                println!("  skipped    {:30} (installed {installed}, requested {requested})", o.id);
+            crate::cli::install_host::InstallStatus::SkippedOtherVersion {
+                installed,
+                requested,
+            } => {
+                println!(
+                    "  skipped    {:30} (installed {installed}, requested {requested})",
+                    o.id
+                );
             }
             crate::cli::install_host::InstallStatus::Failed(msg) => {
                 eprintln!("  FAILED     {:30} {msg}", o.id);
@@ -208,14 +236,22 @@ pub fn install_workspace_pack_cli() -> i32 {
             }
         }
     }
-    if any_failed { 1 } else { 0 }
+    if any_failed {
+        1
+    } else {
+        0
+    }
 }
 
 /// `plexi uninstall [--keep-data] [--yes]` — remove Plexi itself from the Mac.
 pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
     // Detect channel suffix from binary name (e.g. "plexi-alpha" → "-alpha", "plexi" → "")
     let exe = std::env::current_exe().unwrap_or_default();
-    let binary_name = exe.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let binary_name = exe
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
     let suffix = if binary_name == "plexi" {
         String::new()
     } else {
@@ -226,20 +262,23 @@ pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
     } else {
         match suffix.as_str() {
             "-alpha" => " Alpha".to_string(),
-            "-beta"  => " Beta".to_string(),
-            _        => String::new(),
+            "-beta" => " Beta".to_string(),
+            _ => String::new(),
         }
     };
     let cap = cap_owned.as_str();
 
     let profile_dir = dirs::home_dir().unwrap().join(format!(".plexi{suffix}"));
-    let app_bundle  = std::path::PathBuf::from(format!("/Applications/Plexi{cap}.app"));
-    let cli_binary  = std::path::PathBuf::from(format!("/usr/local/bin/plexi{suffix}"));
+    let app_bundle = std::path::PathBuf::from(format!("/Applications/Plexi{cap}.app"));
+    let cli_binary = std::path::PathBuf::from(format!("/usr/local/bin/plexi{suffix}"));
 
     // Single confirmation prompt: keep data or remove everything?
     // Resolved before the banner so the preview accurately reflects the outcome.
     let keep_data = if keep_data || !profile_dir.exists() {
-        log::info!("uninstall: keep_data=flag({keep_data}) profile_exists={}", profile_dir.exists());
+        log::info!(
+            "uninstall: keep_data=flag({keep_data}) profile_exists={}",
+            profile_dir.exists()
+        );
         keep_data
     } else if assume_yes {
         log::info!("uninstall: keep_data=false (assume_yes, no --keep-data)");
@@ -273,10 +312,17 @@ pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
 
     // Print what will be removed (after keep_data is resolved so the preview is accurate)
     println!("This will remove:");
-    if app_bundle.exists()  { println!("  \u{2022} {}", app_bundle.display()); }
-    if cli_binary.exists()  { println!("  \u{2022} {}", cli_binary.display()); }
+    if app_bundle.exists() {
+        println!("  \u{2022} {}", app_bundle.display());
+    }
+    if cli_binary.exists() {
+        println!("  \u{2022} {}", cli_binary.display());
+    }
     if !keep_data && profile_dir.exists() {
-        println!("  \u{2022} {}  (settings, secrets, app configs)", profile_dir.display());
+        println!(
+            "  \u{2022} {}  (settings, secrets, app configs)",
+            profile_dir.display()
+        );
     } else if profile_dir.exists() {
         println!("  \u{2022} {} will be kept", profile_dir.display());
     }
@@ -291,9 +337,9 @@ pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            let archive = dirs::home_dir().unwrap().join(format!(
-                "plexi-backlog-archive/plexi{suffix}-backlog-{ts}"
-            ));
+            let archive = dirs::home_dir()
+                .unwrap()
+                .join(format!("plexi-backlog-archive/plexi{suffix}-backlog-{ts}"));
             if let Some(parent) = archive.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -306,7 +352,10 @@ pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
     // Remove app bundle
     if app_bundle.exists() {
         match std::fs::remove_dir_all(&app_bundle) {
-            Ok(()) => { println!("Removed {}", app_bundle.display()); removed = true; }
+            Ok(()) => {
+                println!("Removed {}", app_bundle.display());
+                removed = true;
+            }
             Err(e) => eprintln!("warning: could not remove {}: {e}", app_bundle.display()),
         }
     }
@@ -314,7 +363,10 @@ pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
     // Remove CLI binary
     if cli_binary.exists() || cli_binary.is_symlink() {
         match std::fs::remove_file(&cli_binary) {
-            Ok(()) => { println!("Removed {}", cli_binary.display()); removed = true; }
+            Ok(()) => {
+                println!("Removed {}", cli_binary.display());
+                removed = true;
+            }
             Err(e) => eprintln!("warning: could not remove {}: {e}", cli_binary.display()),
         }
     }
@@ -339,13 +391,19 @@ pub fn plexi_uninstall_cli(keep_data: bool, assume_yes: bool) -> i32 {
     // Remove profile dir
     if !keep_data && profile_dir.exists() {
         match std::fs::remove_dir_all(&profile_dir) {
-            Ok(()) => { println!("Removed {}", profile_dir.display()); removed = true; }
+            Ok(()) => {
+                println!("Removed {}", profile_dir.display());
+                removed = true;
+            }
             Err(e) => eprintln!("warning: could not remove {}: {e}", profile_dir.display()),
         }
     }
 
     if removed {
-        println!("\nDone. Plexi{} has been removed.", if cap.is_empty() { "" } else { cap });
+        println!(
+            "\nDone. Plexi{} has been removed.",
+            if cap.is_empty() { "" } else { cap }
+        );
     } else {
         println!("\nNothing found to remove.");
     }
@@ -418,8 +476,8 @@ pub fn self_update_cli() -> i32 {
     } else {
         match suffix.as_str() {
             "-alpha" => " Alpha".to_string(),
-            "-beta"  => " Beta".to_string(),
-            _         => String::new(),
+            "-beta" => " Beta".to_string(),
+            _ => String::new(),
         }
     };
     let display = format!("Plexi{cap}");
@@ -496,9 +554,7 @@ pub fn self_update_cli() -> i32 {
         Some(url) => url.to_string(),
         None => {
             eprintln!("error: no asset named {asset_name} in release {tag_name}");
-            eprintln!(
-                "Check: https://github.com/ianjamesburke/PLEXI/releases/tag/{tag_name}"
-            );
+            eprintln!("Check: https://github.com/ianjamesburke/PLEXI/releases/tag/{tag_name}");
             return 1;
         }
     };
@@ -581,7 +637,10 @@ pub fn self_update_cli() -> i32 {
     match unzip_out {
         Ok(out) if out.status.success() => {}
         Ok(out) => {
-            eprintln!("error: unzip failed: {}", String::from_utf8_lossy(&out.stderr));
+            eprintln!(
+                "error: unzip failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             return 1;
         }
         Err(e) => {
@@ -598,7 +657,9 @@ pub fn self_update_cli() -> i32 {
 
     // Replace the installed app bundle. Write to a temp path first so that
     // if cp fails we still have the old bundle to fall back to.
-    let app_parent = app_bundle.parent().unwrap_or_else(|| std::path::Path::new("/Applications"));
+    let app_parent = app_bundle
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("/Applications"));
     let staging = app_parent.join("Plexi.app.update-staging");
     let _ = std::fs::remove_dir_all(&staging);
     let cp_stage = std::process::Command::new("cp")
@@ -630,7 +691,10 @@ pub fn self_update_cli() -> i32 {
         log::info!("cli: self-update patching bundle for channel={channel}");
         let plist = staging.join("Contents/Info.plist");
         if !plist.exists() {
-            eprintln!("error: Info.plist not found in staged bundle at {}", plist.display());
+            eprintln!(
+                "error: Info.plist not found in staged bundle at {}",
+                plist.display()
+            );
             let _ = std::fs::remove_dir_all(&staging);
             let _ = std::fs::remove_dir_all(&tmp_dir);
             return 1;
@@ -648,8 +712,10 @@ pub fn self_update_cli() -> i32 {
             match plutil_out {
                 Ok(out) if out.status.success() => {}
                 Ok(out) => {
-                    eprintln!("error: plutil -replace {key} failed: {}",
-                        String::from_utf8_lossy(&out.stderr));
+                    eprintln!(
+                        "error: plutil -replace {key} failed: {}",
+                        String::from_utf8_lossy(&out.stderr)
+                    );
                     let _ = std::fs::remove_dir_all(&staging);
                     let _ = std::fs::remove_dir_all(&tmp_dir);
                     return 1;
@@ -703,10 +769,7 @@ pub fn self_update_cli() -> i32 {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(
-                &script_path,
-                std::fs::Permissions::from_mode(0o755),
-            );
+            let _ = std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755));
         }
         match std::process::Command::new("nohup")
             .arg("bash")

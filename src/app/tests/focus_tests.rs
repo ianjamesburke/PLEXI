@@ -92,7 +92,8 @@ fn focus_history_skips_stale_tile() {
 
     app.windows[0].focused_pane = Some(tile_b);
     // Push a stale tile_id that doesn't exist in the tree.
-    app.pane_focus_history.push((window_id, egui_tiles::TileId::from_u64(9999)));
+    app.pane_focus_history
+        .push((window_id, egui_tiles::TileId::from_u64(9999)));
     app.pane_focus_history.push((window_id, tile_a));
 
     app.step_focus_history_back();
@@ -115,7 +116,8 @@ fn focus_changed_detected_on_pane_switch() {
     app.focus_started_at = None;
 
     // Mirrors the frame-end detection in update()
-    let current_focus = app.windows
+    let current_focus = app
+        .windows
         .get(app.active_window)
         .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)));
     assert_ne!(current_focus, app.last_logged_focus);
@@ -127,7 +129,8 @@ fn focus_changed_detected_on_pane_switch() {
     // Switch to tile_b
     app.windows[0].focused_pane = Some(tile_b);
 
-    let current_focus = app.windows
+    let current_focus = app
+        .windows
         .get(app.active_window)
         .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)));
     assert_ne!(current_focus, app.last_logged_focus);
@@ -150,7 +153,8 @@ fn focus_changed_not_emitted_for_same_pane() {
     app.last_logged_focus = Some((win_id, tile_a));
 
     // Same focus — current_focus == last_logged_focus, no emission expected.
-    let current_focus = app.windows
+    let current_focus = app
+        .windows
         .get(app.active_window)
         .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)));
     assert_eq!(current_focus, app.last_logged_focus);
@@ -174,7 +178,11 @@ fn focus_history_depth_caps_at_configured_limit() {
 
     app.windows[0].focused_pane = Some(tile_b);
     app.push_focus_history(win_id, Some(tile_b));
-    assert_eq!(app.pane_focus_history.len(), 1, "history should stay capped at depth 1");
+    assert_eq!(
+        app.pane_focus_history.len(),
+        1,
+        "history should stay capped at depth 1"
+    );
 
     app.windows[0].focused_pane = Some(tile_c);
     app.push_focus_history(win_id, Some(tile_c));
@@ -204,7 +212,10 @@ fn focus_future_caps_at_configured_depth() {
     app.step_focus_history_back();
     app.step_focus_history_back();
     app.step_focus_history_back();
-    assert!(app.pane_focus_future.len() <= 2, "future stack should be capped at depth");
+    assert!(
+        app.pane_focus_future.len() <= 2,
+        "future stack should be capped at depth"
+    );
 }
 
 #[test]
@@ -218,7 +229,10 @@ fn split_with_new_pane_pushes_focus_history() {
 
     // Split — this should record tile_a in focus history before moving focus.
     let new_pane_id = 50000;
-    let share = crate::host::command::ShareRatio { numerator: 1.0, denominator: 1.0 };
+    let share = crate::host::command::ShareRatio {
+        numerator: 1.0,
+        denominator: 1.0,
+    };
     let new_tile = app.split_with_new_pane(new_pane_id, true, share, false, false);
     assert!(new_tile.is_some(), "split_with_new_pane should succeed");
 
@@ -226,7 +240,10 @@ fn split_with_new_pane_pushes_focus_history() {
     assert_eq!(app.windows[0].focused_pane, new_tile);
 
     // History should contain tile_a so Cmd+[ works.
-    assert!(!app.pane_focus_history.is_empty(), "focus history should be non-empty after split");
+    assert!(
+        !app.pane_focus_history.is_empty(),
+        "focus history should be non-empty after split"
+    );
     assert_eq!(app.pane_focus_history.last().unwrap().1, tile_a);
 
     // Step back should restore focus to tile_a.
@@ -313,14 +330,19 @@ fn switch_workspace_pushes_focus_history() {
         "focus history must be non-empty after switch_workspace"
     );
     let (recorded_win, recorded_tile) = app.pane_focus_history.last().unwrap();
-    assert_eq!(*recorded_win, win_a_id, "recorded window must be context A's window");
-    assert_eq!(*recorded_tile, tile_a, "recorded tile must be the pane focused in context A");
+    assert_eq!(
+        *recorded_win, win_a_id,
+        "recorded window must be context A's window"
+    );
+    assert_eq!(
+        *recorded_tile, tile_a,
+        "recorded tile must be the pane focused in context A"
+    );
 
     // Cmd+[ (step_focus_history_back) must restore focus to context A's window and tile.
     app.step_focus_history_back();
     assert_eq!(
-        app.windows[app.active_window].window_id,
-        win_a_id,
+        app.windows[app.active_window].window_id, win_a_id,
         "active window must return to context A after step_focus_history_back"
     );
     assert_eq!(
@@ -418,7 +440,11 @@ fn navigate_to_activates_ancestor_tabs() {
     // The Tabs container must have tile_b as active.
     let ctx = &app.windows[0];
     if let Some(Tile::Container(Container::Tabs(tabs))) = ctx.tree.tiles.get(tab_tile) {
-        assert_eq!(tabs.active, Some(tile_b), "Tabs must activate tile_b after navigate_to");
+        assert_eq!(
+            tabs.active,
+            Some(tile_b),
+            "Tabs must activate tile_b after navigate_to"
+        );
     } else {
         panic!("Expected Tabs container at tab_tile");
     }

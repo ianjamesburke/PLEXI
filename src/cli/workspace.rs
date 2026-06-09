@@ -1,5 +1,5 @@
-use super::{print_tip};
 use super::open::read_secret_from_stdin;
+use super::print_tip;
 use std::io::{self, Write};
 
 pub fn workspace_init() -> i32 {
@@ -15,14 +15,20 @@ pub fn workspace_init() -> i32 {
     {
         let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
         let cwd_str = cwd.to_string_lossy();
-        let is_home_or_root = cwd == std::path::Path::new("/")
-            || home.as_ref().map(|h| cwd == *h).unwrap_or(false);
-        let is_inside_profile = home.as_ref().map(|h| {
-            let prefix = format!("{}/.plexi", h.to_string_lossy());
-            cwd_str.starts_with(&prefix)
-        }).unwrap_or(false);
+        let is_home_or_root =
+            cwd == std::path::Path::new("/") || home.as_ref().map(|h| cwd == *h).unwrap_or(false);
+        let is_inside_profile = home
+            .as_ref()
+            .map(|h| {
+                let prefix = format!("{}/.plexi", h.to_string_lossy());
+                cwd_str.starts_with(&prefix)
+            })
+            .unwrap_or(false);
         if is_home_or_root || is_inside_profile {
-            log::warn!("workspace_init:cli: rejected — home/root/profile dir guard: {}", cwd.display());
+            log::warn!(
+                "workspace_init:cli: rejected — home/root/profile dir guard: {}",
+                cwd.display()
+            );
             eprintln!("error: cannot initialize a workspace in your home or root directory.");
             eprintln!("  This would conflict with your Plexi profile (~/.plexi/).");
             eprintln!("  cd into a project directory first.");
@@ -32,7 +38,12 @@ pub fn workspace_init() -> i32 {
     let channel_dir = crate::config::workspace_channel_dir();
     match crate::workspace::secrets::init_workspace(&cwd, &channel_dir) {
         Ok(cfg) => {
-            log::info!("workspace_init:cli: initialized workspace_id={} at {} channel_dir={}", cfg.id, cwd.display(), channel_dir);
+            log::info!(
+                "workspace_init:cli: initialized workspace_id={} at {} channel_dir={}",
+                cfg.id,
+                cwd.display(),
+                channel_dir
+            );
             println!("Initialized workspace at {}", cwd.display());
             println!("  workspace id: {}", cfg.id);
             println!("  channel dir:  {channel_dir}/");
@@ -54,8 +65,13 @@ pub fn workspace_init() -> i32 {
 
 /// Resolve the current workspace and config. Errors out with a helpful
 /// message if the user has not run `plexi workspace init`.
-fn require_workspace(
-) -> Result<(std::path::PathBuf, crate::workspace::secrets::WorkspaceConfig), String> {
+fn require_workspace() -> Result<
+    (
+        std::path::PathBuf,
+        crate::workspace::secrets::WorkspaceConfig,
+    ),
+    String,
+> {
     let cwd = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
     let channel_dir = crate::config::workspace_channel_dir();
     let root = match crate::app::registry::resolve_workspace_root(&cwd) {
@@ -92,7 +108,12 @@ fn require_workspace(
 /// Scope:
 ///   --global     store under `plexi:user:<name>` (cross-workspace)
 ///   default      walk up to nearest .plexi/ workspace, store workspace-scoped
-pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool, alias: Option<&str>) -> i32 {
+pub fn workspace_secret_set(
+    friendly: &str,
+    from_env: bool,
+    global: bool,
+    alias: Option<&str>,
+) -> i32 {
     // `--alias` is incompatible with `--global`: global secrets are resolved via
     // `plexi:user:<canonical>` and there is no secrets.toml to hold an alias route.
     if global && alias.is_some() {
@@ -185,7 +206,11 @@ pub fn workspace_secret_set(friendly: &str, from_env: bool, global: bool, alias:
                     cfg.id
                 );
                 // Auto-write the canonical→friendly route to secrets.toml.
-                match crate::workspace::secrets::write_default_route(&root, friendly, effective_friendly) {
+                match crate::workspace::secrets::write_default_route(
+                    &root,
+                    friendly,
+                    effective_friendly,
+                ) {
                     Ok(()) => {
                         log::info!(
                             "secret_set:cli: wrote default route {friendly} → {effective_friendly} in secrets.toml"
@@ -285,7 +310,9 @@ pub fn workspace_secret_get(friendly: &str, global: bool) -> i32 {
 
     #[cfg(target_os = "macos")]
     {
-        use crate::workspace::secrets::{keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore};
+        use crate::workspace::secrets::{
+            keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore,
+        };
         let store = MacKeychain::new();
 
         if global {
@@ -350,7 +377,9 @@ pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
     log::info!("secret_delete:cli: friendly={friendly} global={global}");
     #[cfg(target_os = "macos")]
     {
-        use crate::workspace::secrets::{keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore};
+        use crate::workspace::secrets::{
+            keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore,
+        };
         let store = MacKeychain::new();
 
         if global {
@@ -362,7 +391,9 @@ pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
                     0
                 }
                 Err(e) => {
-                    log::warn!("secret_delete:cli: not found or failed friendly={friendly} err={e}");
+                    log::warn!(
+                        "secret_delete:cli: not found or failed friendly={friendly} err={e}"
+                    );
                     eprintln!("error: keychain delete failed: {e}");
                     1
                 }
@@ -379,7 +410,10 @@ pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
         let account = keychain_workspace_name(&cfg.id, friendly);
         match store.delete(&account) {
             Ok(()) => {
-                log::info!("secret_delete:cli: deleted workspace_id={} account={account}", cfg.id);
+                log::info!(
+                    "secret_delete:cli: deleted workspace_id={} account={account}",
+                    cfg.id
+                );
                 println!("Deleted '{friendly}' from workspace {}", cfg.id);
                 0
             }
@@ -416,12 +450,15 @@ mod secret_set_tests {
     fn init_guard_rejects(cwd: &std::path::Path) -> bool {
         let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
         let cwd_str = cwd.to_string_lossy();
-        let is_home_or_root = cwd == std::path::Path::new("/")
-            || home.as_ref().map(|h| cwd == *h).unwrap_or(false);
-        let is_inside_profile = home.as_ref().map(|h| {
-            let prefix = format!("{}/.plexi", h.to_string_lossy());
-            cwd_str.starts_with(&prefix)
-        }).unwrap_or(false);
+        let is_home_or_root =
+            cwd == std::path::Path::new("/") || home.as_ref().map(|h| cwd == *h).unwrap_or(false);
+        let is_inside_profile = home
+            .as_ref()
+            .map(|h| {
+                let prefix = format!("{}/.plexi", h.to_string_lossy());
+                cwd_str.starts_with(&prefix)
+            })
+            .unwrap_or(false);
         is_home_or_root || is_inside_profile
     }
 

@@ -147,17 +147,22 @@ fn withheld_app_defers_ai_query_and_queues_consent_prompt() {
 
     // No immediate AiResponse — query is deferred.
     assert!(
-        !app.outbound_events.iter().any(|e| matches!(e, PlexiEvent::AiResponse { .. })),
+        !app.outbound_events
+            .iter()
+            .any(|e| matches!(e, PlexiEvent::AiResponse { .. })),
         "withheld path must not produce immediate AiResponse"
     );
     // Query stored in deferred queue.
     assert_eq!(app.deferred_ai_queries.len(), 1);
     assert_eq!(app.deferred_ai_queries[0].request_id, "req-withheld");
     // Consent prompt queued.
-    let has_ai_prompt = app.pending_prompts.iter().any(|p| {
-        matches!(p, PendingPrompt::Capability { capability, .. } if capability == "ai.query")
-    });
-    assert!(has_ai_prompt, "withheld path must push ai.query consent prompt");
+    let has_ai_prompt = app.pending_prompts.iter().any(
+        |p| matches!(p, PendingPrompt::Capability { capability, .. } if capability == "ai.query"),
+    );
+    assert!(
+        has_ai_prompt,
+        "withheld path must push ai.query consent prompt"
+    );
 
     // Second query while prompt is already pending must NOT push a duplicate prompt.
     app.route_command(AppRequest::AiQuery {
@@ -167,7 +172,11 @@ fn withheld_app_defers_ai_query_and_queues_consent_prompt() {
         messages: vec![],
         tools: vec![],
     });
-    assert_eq!(app.deferred_ai_queries.len(), 2, "second deferred query must be stored");
+    assert_eq!(
+        app.deferred_ai_queries.len(),
+        2,
+        "second deferred query must be stored"
+    );
     let prompt_count = app.pending_prompts.iter().filter(|p| {
         matches!(p, PendingPrompt::Capability { capability, .. } if capability == "ai.query")
     }).count();

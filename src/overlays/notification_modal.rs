@@ -17,8 +17,7 @@ fn option_button(
 ) -> egui::Response {
     let width = ui.available_width();
     let height = style::BUTTON_H_LG;
-    let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
 
     let (bg, fg, hint_color) = if focused {
         (
@@ -52,10 +51,7 @@ fn option_button(
 
     // Right-gutter shortcut hint.
     if !shortcut_hint.is_empty() {
-        let hint_pos = egui::pos2(
-            rect.right() - 18.0,
-            rect.center().y,
-        );
+        let hint_pos = egui::pos2(rect.right() - 18.0, rect.center().y);
         painter.text(
             hint_pos,
             Align2::RIGHT_CENTER,
@@ -74,15 +70,9 @@ fn option_button(
 
 /// Primary action button — used for the message-kind Acknowledge. Fixed width,
 /// center-aligned label, accent fill. Keyboard dispatch is handled separately.
-fn primary_button(
-    ui: &mut egui::Ui,
-    label: &str,
-    colors: &Colors,
-    width: f32,
-) -> egui::Response {
+fn primary_button(ui: &mut egui::Ui, label: &str, colors: &Colors, width: f32) -> egui::Response {
     let height = style::BUTTON_H_MD;
-    let (rect, resp) =
-        ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
 
     let bg = if resp.hovered() {
         colors.accent.gamma_multiply(1.15)
@@ -134,10 +124,8 @@ fn draw_notification_image(
             // but couldn't be rendered. Keeps the modal layout stable.
             let badge_w = 220.0;
             let badge_h = 36.0;
-            let (rect, _) = ui.allocate_exact_size(
-                Vec2::new(badge_w, badge_h),
-                egui::Sense::hover(),
-            );
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(badge_w, badge_h), egui::Sense::hover());
             ui.painter()
                 .rect_filled(rect, style::RADIUS_MD, colors.bg_hover);
             ui.painter().text(
@@ -153,10 +141,8 @@ fn draw_notification_image(
             // when the texture arrives. "loading" is the user-visible label.
             let badge_w = 160.0;
             let badge_h = 36.0;
-            let (rect, _) = ui.allocate_exact_size(
-                Vec2::new(badge_w, badge_h),
-                egui::Sense::hover(),
-            );
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(badge_w, badge_h), egui::Sense::hover());
             ui.painter()
                 .rect_filled(rect, style::RADIUS_MD, colors.bg_hover);
             ui.painter().text(
@@ -172,8 +158,8 @@ fn draw_notification_image(
 
 impl PlexiApp {
     pub(crate) fn draw_notification_modal(&mut self, ctx: &egui::Context) -> Vec<AppCommand> {
-        use crate::app_protocol::NotifyKind;
         use crate::app::notification_image;
+        use crate::app_protocol::NotifyKind;
 
         let mut cmds: Vec<AppCommand> = Vec::new();
 
@@ -189,10 +175,8 @@ impl PlexiApp {
                 .fixed_pos(screen_rect.min)
                 .interactable(true)
                 .show(ctx, |ui| {
-                    let (rect, _) = ui.allocate_exact_size(
-                        screen_rect.size(),
-                        egui::Sense::click(),
-                    );
+                    let (rect, _) =
+                        ui.allocate_exact_size(screen_rect.size(), egui::Sense::click());
                     ui.painter().rect_filled(
                         rect,
                         CornerRadius::ZERO,
@@ -233,7 +217,12 @@ impl PlexiApp {
         if self
             .current_notify_id
             .as_ref()
-            .map(|id| !self.pending_notifications.iter().any(|n| &n.notify_id == id))
+            .map(|id| {
+                !self
+                    .pending_notifications
+                    .iter()
+                    .any(|n| &n.notify_id == id)
+            })
             .unwrap_or(true)
         {
             self.current_notify_id = self.select_highest_priority();
@@ -282,10 +271,7 @@ impl PlexiApp {
             .fixed_pos(screen_rect.min)
             .interactable(true)
             .show(ctx, |ui| {
-                let (rect, _) = ui.allocate_exact_size(
-                    screen_rect.size(),
-                    egui::Sense::click(),
-                );
+                let (rect, _) = ui.allocate_exact_size(screen_rect.size(), egui::Sense::click());
                 ui.painter().rect_filled(
                     rect,
                     CornerRadius::ZERO,
@@ -317,9 +303,8 @@ impl PlexiApp {
         // widget-local action. Bare Enter deliberately flows through to
         // TextEdit for the input kind (it inserts a newline) and to our own
         // read for message/choice kinds (it confirms).
-        let cmd_enter_pressed = ctx.input_mut(|i| {
-            i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
-        });
+        let cmd_enter_pressed =
+            ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter));
 
         // For NotifyKind::Input, bare Enter must reach the TextEdit (newline).
         // For all other kinds, consume it so it cannot bleed into panes behind.
@@ -364,9 +349,15 @@ impl PlexiApp {
             };
             let mut digit: Option<usize> = None;
             for (n, key) in [
-                (1, egui::Key::Num1), (2, egui::Key::Num2), (3, egui::Key::Num3),
-                (4, egui::Key::Num4), (5, egui::Key::Num5), (6, egui::Key::Num6),
-                (7, egui::Key::Num7), (8, egui::Key::Num8), (9, egui::Key::Num9),
+                (1, egui::Key::Num1),
+                (2, egui::Key::Num2),
+                (3, egui::Key::Num3),
+                (4, egui::Key::Num4),
+                (5, egui::Key::Num5),
+                (6, egui::Key::Num6),
+                (7, egui::Key::Num7),
+                (8, egui::Key::Num8),
+                (9, egui::Key::Num9),
             ] {
                 if i.consume_key(egui::Modifiers::NONE, key) {
                     digit = Some(n - 1);
@@ -376,7 +367,13 @@ impl PlexiApp {
             // Collect typed characters for per-option shortcut matching.
             let mut shortcut: Option<char> = None;
             for ev in &i.events {
-                if let egui::Event::Key { key, pressed: true, modifiers, .. } = ev {
+                if let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } = ev
+                {
                     if modifiers.is_none() {
                         if let Some(name) = key.name().chars().next() {
                             let c = name.to_ascii_lowercase();
@@ -942,17 +939,28 @@ impl PlexiApp {
             // deliver_after in place — the notification stays but becomes
             // invisible and no DeliverNotifyAction is sent to the app (the
             // CLI stays blocked until the user picks a non-snooze choice).
-            let is_snooze = if let AppCommand::DeliverNotifyAction { ref host_action, .. } = cmd {
-                if let Some(delay_secs) = host_action.as_deref()
+            let is_snooze = if let AppCommand::DeliverNotifyAction {
+                ref host_action, ..
+            } = cmd
+            {
+                if let Some(delay_secs) = host_action
+                    .as_deref()
                     .and_then(|a| a.strip_prefix("snooze:"))
                     .and_then(|s| s.parse::<u64>().ok())
                 {
-                    let wake = std::time::Instant::now() + std::time::Duration::from_secs(delay_secs);
-                    if let Some(n) = self.pending_notifications.iter_mut()
+                    let wake =
+                        std::time::Instant::now() + std::time::Duration::from_secs(delay_secs);
+                    if let Some(n) = self
+                        .pending_notifications
+                        .iter_mut()
                         .find(|n| n.notify_id == current_id)
                     {
                         n.deliver_after = Some(wake);
-                        log::info!("notify:snooze: notify_id={} delay={}s", current_id, delay_secs);
+                        log::info!(
+                            "notify:snooze: notify_id={} delay={}s",
+                            current_id,
+                            delay_secs
+                        );
                     }
                     true
                 } else {
@@ -968,7 +976,8 @@ impl PlexiApp {
 
             if !is_snooze {
                 // Real answer: remove from queue and deliver NotifyAction to app.
-                self.pending_notifications.retain(|n| n.notify_id != current_id);
+                self.pending_notifications
+                    .retain(|n| n.notify_id != current_id);
                 self.save_notifications();
                 cmds.push(cmd);
             }
@@ -993,7 +1002,11 @@ impl PlexiApp {
         let shortcuts_blocked = self
             .current_notify_id
             .as_ref()
-            .and_then(|id| self.pending_notifications.iter().find(|n| n.notify_id == *id))
+            .and_then(|id| {
+                self.pending_notifications
+                    .iter()
+                    .find(|n| n.notify_id == *id)
+            })
             .map(|n| matches!(n.kind, NotifyKind::Input))
             .unwrap_or(true);
 

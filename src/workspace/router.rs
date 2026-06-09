@@ -19,8 +19,15 @@ pub(crate) struct WorkspaceRouter {
 
 impl WorkspaceRouter {
     pub(crate) fn new(contexts: Vec<Context>, active: usize) -> Self {
-        debug_assert!(contexts.is_empty() || active < contexts.len(), "Active index out of bounds");
-        Self { active, contexts, depth_stack: Vec::new() }
+        debug_assert!(
+            contexts.is_empty() || active < contexts.len(),
+            "Active index out of bounds"
+        );
+        Self {
+            active,
+            contexts,
+            depth_stack: Vec::new(),
+        }
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
@@ -83,7 +90,10 @@ impl WorkspaceRouter {
     /// and post-delete sync when the exact target index is known.
     /// Never call from action handlers; call `PlexiApp::switch_workspace` instead.
     pub(crate) fn set_active(&mut self, idx: usize) {
-        debug_assert!(idx < self.contexts.len(), "Target active index out of bounds");
+        debug_assert!(
+            idx < self.contexts.len(),
+            "Target active index out of bounds"
+        );
         self.active = idx;
     }
 
@@ -135,7 +145,12 @@ impl WorkspaceRouter {
 
     // ── Depth stack (fractal zoom navigation) ───────────────────────────────
 
-    pub(crate) fn push_depth(&mut self, context_id: u64, window_id: u64, focused_tile: Option<TileId>) {
+    pub(crate) fn push_depth(
+        &mut self,
+        context_id: u64,
+        window_id: u64,
+        focused_tile: Option<TileId>,
+    ) {
         self.depth_stack.push((context_id, window_id, focused_tile));
     }
 

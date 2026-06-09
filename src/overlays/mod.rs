@@ -1,17 +1,17 @@
 use crate::app::app_trait::AppCommand;
+use crate::spatial::tiling::PaneId;
 use crate::ui::style;
 use crate::ui::theme::Colors;
-use crate::spatial::tiling::PaneId;
 use egui::{Align, Align2, Color32, CornerRadius, Layout, RichText, Stroke, Vec2};
 
-pub(crate) mod toolbar;
-pub(crate) mod misc;
-pub(crate) mod quick_note;
-pub(crate) mod confirmations;
-pub(crate) mod notification_modal;
-pub(crate) mod setup;
 pub(crate) mod command_palette;
+pub(crate) mod confirmations;
+pub(crate) mod misc;
 pub(crate) mod notes_picker;
+pub(crate) mod notification_modal;
+pub(crate) mod quick_note;
+pub(crate) mod setup;
+pub(crate) mod toolbar;
 
 /// Consume the first digit key (0–9) pressed this frame; return its value.
 pub(crate) fn consume_digit_key(ctx: &egui::Context) -> Option<u8> {
@@ -96,16 +96,20 @@ pub(crate) fn modal_shell<R>(
 /// Show a native macOS folder picker using rfd's async API.
 /// Blocks the calling (background) thread; must NOT be called on the main thread.
 pub(crate) fn pick_folder() -> Option<std::path::PathBuf> {
+    use std::pin::pin;
     use std::sync::{Arc, Condvar, Mutex};
     use std::task::{Context, Poll, Wake, Waker};
-    use std::pin::pin;
 
     fn block_on<F: std::future::Future>(f: F) -> F::Output {
         let signal = Arc::new((Mutex::new(false), Condvar::new()));
         struct Signal(Arc<(Mutex<bool>, Condvar)>);
         impl Wake for Signal {
-            fn wake(self: Arc<Self>) { self.signal(); }
-            fn wake_by_ref(self: &Arc<Self>) { self.signal(); }
+            fn wake(self: Arc<Self>) {
+                self.signal();
+            }
+            fn wake_by_ref(self: &Arc<Self>) {
+                self.signal();
+            }
         }
         impl Signal {
             fn signal(&self) {
@@ -123,7 +127,9 @@ pub(crate) fn pick_folder() -> Option<std::path::PathBuf> {
                 Poll::Pending => {
                     let (lock, cvar) = &*signal;
                     let mut ready = lock.lock().unwrap();
-                    while !*ready { ready = cvar.wait(ready).unwrap(); }
+                    while !*ready {
+                        ready = cvar.wait(ready).unwrap();
+                    }
                     *ready = false;
                 }
             }
@@ -138,11 +144,9 @@ pub(crate) fn pick_folder() -> Option<std::path::PathBuf> {
 pub(crate) fn draw_contact_footer(ui: &mut egui::Ui, colors: &Colors) {
     ui.vertical_centered(|ui| {
         ui.label(
-            RichText::new(
-                "If you have any ideas, want to help, or just want to say what's up...",
-            )
-            .size(style::TEXT_CAPTION)
-            .color(colors.text_dim),
+            RichText::new("If you have any ideas, want to help, or just want to say what's up...")
+                .size(style::TEXT_CAPTION)
+                .color(colors.text_dim),
         );
         ui.add_space(style::SPACE_SM / 2.0);
         {

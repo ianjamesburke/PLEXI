@@ -1,6 +1,6 @@
 use super::pane::pane_send_cli;
 
-use super::{binary_in_path};
+use super::binary_in_path;
 
 pub fn notes_list_cli() -> i32 {
     let notes_base = crate::config::config_dir().join("notes");
@@ -67,7 +67,13 @@ pub fn notes_open_cli() -> i32 {
 
     let has_notes = notes_dir.is_dir()
         && std::fs::read_dir(&notes_dir)
-            .map(|d| d.filter_map(|e| e.ok()).any(|e| std::path::Path::new(&e.file_name()).extension().map_or(false, |x| x == "md")))
+            .map(|d| {
+                d.filter_map(|e| e.ok()).any(|e| {
+                    std::path::Path::new(&e.file_name())
+                        .extension()
+                        .map_or(false, |x| x == "md")
+                })
+            })
             .unwrap_or(false);
     if !has_notes {
         eprintln!("No notes yet. Create one with \u{2318}+Shift+Space.");
@@ -89,7 +95,13 @@ pub fn notes_open_cli() -> i32 {
         }
     };
 
-    let editor = if binary_in_path("micro") { "micro" } else if binary_in_path("nano") { "nano" } else { "vim" };
+    let editor = if binary_in_path("micro") {
+        "micro"
+    } else if binary_in_path("nano") {
+        "nano"
+    } else {
+        "vim"
+    };
     let cmd = format!(
         "selected=$(ls -t {notes_dir_str}/*.md 2>/dev/null | fzf --header='Select note'); [ -n \"$selected\" ] && {editor} \"$selected\"\r"
     );
@@ -112,4 +124,3 @@ pub(super) fn print_step_complete(step: u8, total: u8) {
     eprintln!("  \x1b[1;32m\u{2713} {}/{}\x1b[0m", step, total);
     eprintln!();
 }
-

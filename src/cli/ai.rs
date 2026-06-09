@@ -38,10 +38,8 @@ struct AiDoctorReport {
 
 fn detect_hardware() -> HardwareReport {
     let cpu_name = run_sysctl("machdep.cpu.brand_string");
-    let cpu_cores = run_sysctl("hw.ncpu")
-        .and_then(|s| s.trim().parse::<u32>().ok());
-    let ram_bytes = run_sysctl("hw.memsize")
-        .and_then(|s| s.trim().parse::<u64>().ok());
+    let cpu_cores = run_sysctl("hw.ncpu").and_then(|s| s.trim().parse::<u32>().ok());
+    let ram_bytes = run_sysctl("hw.memsize").and_then(|s| s.trim().parse::<u64>().ok());
     let ram_gb = ram_bytes.map(|b| b as f64 / (1024.0 * 1024.0 * 1024.0));
 
     // Apple Silicon: arm64 CPU brand string contains "Apple"
@@ -73,7 +71,11 @@ fn run_sysctl(key: &str) -> Option<String> {
         .ok()?;
     if out.status.success() {
         let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if s.is_empty() { None } else { Some(s) }
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
     } else {
         None
     }
@@ -118,9 +120,7 @@ fn detect_gpu(is_apple_silicon: bool, ram_gb: Option<f64>) -> (Option<String>, O
 /// The JSON shape is: {"SPDisplaysDataType": [{"sppci_model": "Apple M3 Pro", ...}]}
 fn parse_gpu_name_from_profiler(json: &str) -> Option<String> {
     let val: serde_json::Value = serde_json::from_str(json).ok()?;
-    val["SPDisplaysDataType"]
-        .as_array()?
-        .first()?["sppci_model"]
+    val["SPDisplaysDataType"].as_array()?.first()?["sppci_model"]
         .as_str()
         .map(|s| s.to_string())
 }
@@ -129,10 +129,7 @@ fn parse_gpu_name_from_profiler(json: &str) -> Option<String> {
 /// Field is "spdisplays_vram" — value like "8192 MB" or "16 GB".
 fn parse_vram_from_profiler(json: &str) -> Option<f64> {
     let val: serde_json::Value = serde_json::from_str(json).ok()?;
-    let vram_str = val["SPDisplaysDataType"]
-        .as_array()?
-        .first()?["spdisplays_vram"]
-        .as_str()?;
+    let vram_str = val["SPDisplaysDataType"].as_array()?.first()?["spdisplays_vram"].as_str()?;
 
     // Parse "8192 MB" or "16 GB"
     let vram_str = vram_str.trim();
@@ -314,17 +311,35 @@ fn print_report(hw: &HardwareReport, integrations: &IntegrationReport, rec: &Mod
         println!("  Cores:     {cores}");
     }
     if let Some(ram) = hw.ram_gb {
-        println!("  RAM:       {:.1} GB{}", ram, if hw.is_apple_silicon { " (unified)" } else { "" });
+        println!(
+            "  RAM:       {:.1} GB{}",
+            ram,
+            if hw.is_apple_silicon {
+                " (unified)"
+            } else {
+                ""
+            }
+        );
     }
     if let Some(ref gpu) = hw.gpu_name {
         println!("  GPU:       {gpu}");
     }
     if let Some(vram) = hw.vram_gb {
-        let label = if hw.is_apple_silicon { "VRAM (unified):" } else { "VRAM:          " };
+        let label = if hw.is_apple_silicon {
+            "VRAM (unified):"
+        } else {
+            "VRAM:          "
+        };
         println!("  {label} {vram:.1} GB");
     }
     if let Some(disk) = hw.disk_free_gb {
-        let disk_color = if disk >= 20.0 { green } else if disk >= 5.0 { yellow } else { red };
+        let disk_color = if disk >= 20.0 {
+            green
+        } else if disk >= 5.0 {
+            yellow
+        } else {
+            red
+        };
         println!("  Disk free: {disk_color}{disk:.1} GB{reset}");
     }
 
@@ -444,12 +459,12 @@ pub fn ai_setup_cli() -> i32 {
     log::info!("cli:ai:setup: starting local model wizard");
 
     let no_color = std::env::var_os("NO_COLOR").is_some();
-    let green  = if no_color { "" } else { "\x1b[32m" };
+    let green = if no_color { "" } else { "\x1b[32m" };
     let yellow = if no_color { "" } else { "\x1b[33m" };
-    let red    = if no_color { "" } else { "\x1b[31m" };
-    let bold   = if no_color { "" } else { "\x1b[1m" };
-    let dim    = if no_color { "" } else { "\x1b[2m" };
-    let reset  = if no_color { "" } else { "\x1b[0m" };
+    let red = if no_color { "" } else { "\x1b[31m" };
+    let bold = if no_color { "" } else { "\x1b[1m" };
+    let dim = if no_color { "" } else { "\x1b[2m" };
+    let reset = if no_color { "" } else { "\x1b[0m" };
 
     println!("{bold}plexi ai setup{reset} — local model wizard");
     println!();
@@ -460,7 +475,9 @@ pub fn ai_setup_cli() -> i32 {
     let rec = recommend_models(&hw);
     log::info!(
         "cli:ai:setup: hardware -- ram_gb={:?} is_apple_silicon={} tier={}",
-        hw.ram_gb, hw.is_apple_silicon, rec.tier
+        hw.ram_gb,
+        hw.is_apple_silicon,
+        rec.tier
     );
 
     if rec.tier == "cloud-recommended" {
@@ -469,16 +486,28 @@ pub fn ai_setup_cli() -> i32 {
         println!();
         println!("To configure cloud AI instead, run:");
         println!("  {dim}plexi secret set openrouter-api-key --global{reset}");
-        crate::cli::print_tip("Use `plexi ai doctor` to see your full hardware and integration report.");
+        crate::cli::print_tip(
+            "Use `plexi ai doctor` to see your full hardware and integration report.",
+        );
         return 0;
     }
 
     let recommended_model = rec.models.first().copied().unwrap_or("llama3.2:3b");
     log::info!("cli:ai:setup: recommended model={recommended_model}");
 
-    println!("Hardware: {}", hw.cpu_name.as_deref().unwrap_or("unknown CPU"));
+    println!(
+        "Hardware: {}",
+        hw.cpu_name.as_deref().unwrap_or("unknown CPU")
+    );
     if let Some(ram) = hw.ram_gb {
-        println!("RAM:      {ram:.1} GB{}", if hw.is_apple_silicon { " (unified)" } else { "" });
+        println!(
+            "RAM:      {ram:.1} GB{}",
+            if hw.is_apple_silicon {
+                " (unified)"
+            } else {
+                ""
+            }
+        );
     }
     println!("Recommended model: {green}{recommended_model}{reset}");
     println!("  {dim}{}{reset}", rec.note);
@@ -563,7 +592,9 @@ pub fn ai_setup_cli() -> i32 {
             Ok(s) => {
                 let code = s.code().unwrap_or(1);
                 log::warn!("cli:ai:setup: ollama pull failed with exit code {code}");
-                eprintln!("{red}error:{reset} `ollama pull {recommended_model}` exited with code {code}");
+                eprintln!(
+                    "{red}error:{reset} `ollama pull {recommended_model}` exited with code {code}"
+                );
                 eprintln!("Run it manually and then re-run `plexi ai setup`.");
                 return 1;
             }
@@ -578,16 +609,28 @@ pub fn ai_setup_cli() -> i32 {
 
     // ── Step 5: write config.toml ─────────────────────────────────────────────
     let config_path = crate::config::config_path();
-    log::info!("cli:ai:setup: writing ollama config to {}", config_path.display());
+    log::info!(
+        "cli:ai:setup: writing ollama config to {}",
+        config_path.display()
+    );
 
     match write_ollama_config(recommended_model) {
         Ok(()) => {
-            println!("{green}\u{2713}{reset} Config updated: {}", config_path.display());
+            println!(
+                "{green}\u{2713}{reset} Config updated: {}",
+                config_path.display()
+            );
         }
         Err(e) => {
             log::warn!("cli:ai:setup: failed to write config: {e}");
-            eprintln!("{red}error:{reset} could not write config to {}: {e}", config_path.display());
-            eprintln!("You can configure it manually — add this to {}:", config_path.display());
+            eprintln!(
+                "{red}error:{reset} could not write config to {}: {e}",
+                config_path.display()
+            );
+            eprintln!(
+                "You can configure it manually — add this to {}:",
+                config_path.display()
+            );
             eprintln!();
             eprintln!("[ai]");
             eprintln!("backend = \"ollama\"");
@@ -609,7 +652,9 @@ pub fn ai_setup_cli() -> i32 {
     println!("  {dim}plexi ai doctor{reset}    — verify your full AI configuration");
     println!("  {dim}plexi config edit{reset}  — tune model tiers or spending caps");
 
-    crate::cli::print_tip("Use `plexi ai doctor` at any time to see your hardware and integration status.");
+    crate::cli::print_tip(
+        "Use `plexi ai doctor` at any time to see your hardware and integration status.",
+    );
 
     0
 }

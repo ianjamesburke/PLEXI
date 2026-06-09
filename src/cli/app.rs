@@ -14,7 +14,9 @@ pub(super) fn ensure_plexi_sdk() -> bool {
         }
         Err(e) => {
             log::warn!("ensure_plexi_sdk: python3 not found: {e}");
-            eprintln!("warning: python3 not found — install plexi-sdk manually: pip install plexi-sdk");
+            eprintln!(
+                "warning: python3 not found — install plexi-sdk manually: pip install plexi-sdk"
+            );
             return false;
         }
         Ok(_) => {}
@@ -38,14 +40,19 @@ pub(super) fn ensure_plexi_sdk() -> bool {
     }
 
     // Fallback: python3 -m pip to guarantee the same environment that python3 checked.
-    match std::process::Command::new("python3").args(["-m", "pip", "install", "plexi-sdk"]).status() {
+    match std::process::Command::new("python3")
+        .args(["-m", "pip", "install", "plexi-sdk"])
+        .status()
+    {
         Ok(s) if s.success() => {
             println!("Installed plexi-sdk (via pip).");
             log::info!("ensure_plexi_sdk: installed via python3 -m pip");
             true
         }
         Ok(_) => {
-            eprintln!("warning: could not install plexi-sdk — install manually: pip install plexi-sdk");
+            eprintln!(
+                "warning: could not install plexi-sdk — install manually: pip install plexi-sdk"
+            );
             log::warn!("ensure_plexi_sdk: python3 -m pip install failed");
             false
         }
@@ -59,8 +66,12 @@ pub(super) fn ensure_plexi_sdk() -> bool {
 
 /// Returns true if the app at `app_dir` has a Python entry point (entry ending in `.py`).
 pub(super) fn app_is_python(app_dir: &std::path::Path) -> bool {
-    let Ok(s) = std::fs::read_to_string(app_dir.join("manifest.toml")) else { return false; };
-    let Ok(manifest) = toml::from_str::<toml::Value>(&s) else { return false; };
+    let Ok(s) = std::fs::read_to_string(app_dir.join("manifest.toml")) else {
+        return false;
+    };
+    let Ok(manifest) = toml::from_str::<toml::Value>(&s) else {
+        return false;
+    };
     let entry = manifest
         .get("app")
         .and_then(|a| a.get("entry"))
@@ -88,7 +99,13 @@ pub(super) fn app_init_config_dir() -> String {
 /// (`~/.plexi-<channel>/apps/<name>/`).
 ///
 /// Auto-opens the app in a split-right pane unless `--no-open` is passed.
-pub fn app_init(name: &str, lang: &str, global: bool, no_open: bool, from_pane_id: Option<u64>) -> i32 {
+pub fn app_init(
+    name: &str,
+    lang: &str,
+    global: bool,
+    no_open: bool,
+    from_pane_id: Option<u64>,
+) -> i32 {
     if name.is_empty() {
         eprintln!("Usage: plexi app init [--lang python|rust] [--global] [--no-open] <name>");
         return 1;
@@ -118,22 +135,32 @@ pub fn app_init(name: &str, lang: &str, global: bool, no_open: bool, from_pane_i
             let mut found: Option<std::path::PathBuf> = None;
             loop {
                 if let Some(ref h) = home {
-                    if current == *h { break; }
+                    if current == *h {
+                        break;
+                    }
                 }
-                if current == std::path::Path::new("/") { break; }
+                if current == std::path::Path::new("/") {
+                    break;
+                }
                 if current.join(&channel_dir).is_dir() {
                     found = Some(current);
                     break;
                 }
-                if !current.pop() { break; }
+                if !current.pop() {
+                    break;
+                }
             }
             found
         };
         match workspace_root {
             Some(root) => root.join(&channel_dir).join("apps").join(name),
             None => {
-                eprintln!("error: no workspace found (no {channel_dir}/ directory in any ancestor).");
-                eprintln!("  Use --global to create a global app, or cd into a project with a workspace.");
+                eprintln!(
+                    "error: no workspace found (no {channel_dir}/ directory in any ancestor)."
+                );
+                eprintln!(
+                    "  Use --global to create a global app, or cd into a project with a workspace."
+                );
                 return 1;
             }
         }
@@ -171,9 +198,12 @@ pub fn app_init(name: &str, lang: &str, global: bool, no_open: bool, from_pane_i
                 if !no_open {
                     let path_str = app_dir.to_string_lossy().to_string();
                     log::info!("app_init: auto-opening '{name}' split-right path={path_str} from_pane_id={from_pane_id:?}");
-                    let exit_code = super::open_cli(&path_str, &[], Some("split_h"), from_pane_id, None);
+                    let exit_code =
+                        super::open_cli(&path_str, &[], Some("split_h"), from_pane_id, None);
                     if exit_code != 0 {
-                        eprintln!("warning: app created but could not auto-open (exit {exit_code})");
+                        eprintln!(
+                            "warning: app created but could not auto-open (exit {exit_code})"
+                        );
                         eprintln!("  Open with: plexi app open {}", app_dir.display());
                     }
                 } else {
@@ -239,7 +269,10 @@ fn scaffold_agent_python_app(app_dir: &std::path::Path, name: &str) -> io::Resul
     perms.set_mode(perms.mode() | 0o111);
     std::fs::set_permissions(&main_path, perms)?;
 
-    log::info!("scaffold_agent_python_app: created agent scaffold at {}", app_dir.display());
+    log::info!(
+        "scaffold_agent_python_app: created agent scaffold at {}",
+        app_dir.display()
+    );
     Ok(())
 }
 
@@ -285,7 +318,10 @@ pub fn app_uninstall(id: &str, assume_yes: bool) -> i32 {
             return 1;
         }
     };
-    log::info!("app_uninstall: resolving '{id}' via registry → {:?}", app_dir);
+    log::info!(
+        "app_uninstall: resolving '{id}' via registry → {:?}",
+        app_dir
+    );
     let core_ids = crate::cli::install_host::core_pack_ids();
     if core_ids.contains(id) {
         eprintln!("note: '{id}' is a core app — it will be re-installed on the next Plexi launch");
@@ -304,8 +340,14 @@ pub fn app_uninstall(id: &str, assume_yes: bool) -> i32 {
         }
     }
     match crate::cli::install_host::uninstall_one(id, &target_root) {
-        Ok(()) => { println!("Uninstalled '{id}'."); 0 }
-        Err(e) => { eprintln!("error: {e}"); 1 }
+        Ok(()) => {
+            println!("Uninstalled '{id}'.");
+            0
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            1
+        }
     }
 }
 
@@ -313,9 +355,15 @@ pub fn app_uninstall(id: &str, assume_yes: bool) -> i32 {
 pub(super) fn write_installed_version(app_dir: &std::path::Path, version: &str) {
     let path = app_dir.join("installed_version.txt");
     if let Err(e) = std::fs::write(&path, version) {
-        log::warn!("version_pin: could not write installed_version.txt for {}: {e}", app_dir.display());
+        log::warn!(
+            "version_pin: could not write installed_version.txt for {}: {e}",
+            app_dir.display()
+        );
     } else {
-        log::info!("version_pin: wrote installed_version.txt={version} for {}", app_dir.display());
+        log::info!(
+            "version_pin: wrote installed_version.txt={version} for {}",
+            app_dir.display()
+        );
     }
 }
 
@@ -323,9 +371,15 @@ pub(super) fn write_installed_version(app_dir: &std::path::Path, version: &str) 
 pub(super) fn write_pinned_version(app_dir: &std::path::Path, version: &str) {
     let path = app_dir.join("pinned_version.txt");
     if let Err(e) = std::fs::write(&path, version) {
-        log::warn!("version_pin: could not write pinned_version.txt for {}: {e}", app_dir.display());
+        log::warn!(
+            "version_pin: could not write pinned_version.txt for {}: {e}",
+            app_dir.display()
+        );
     } else {
-        log::info!("version_pin: wrote pinned_version.txt={version} for {}", app_dir.display());
+        log::info!(
+            "version_pin: wrote pinned_version.txt={version} for {}",
+            app_dir.display()
+        );
     }
 }
 
@@ -350,14 +404,23 @@ pub fn app_install_with_pin(path: &str, pin: Option<&str>) -> i32 {
     }
     let manifest_str = match std::fs::read_to_string(&manifest_path) {
         Ok(s) => s,
-        Err(e) => { eprintln!("error: could not read manifest.toml: {e}"); return 1; }
+        Err(e) => {
+            eprintln!("error: could not read manifest.toml: {e}");
+            return 1;
+        }
     };
     let manifest: toml::Value = match toml::from_str(&manifest_str) {
         Ok(v) => v,
-        Err(e) => { eprintln!("error: manifest.toml parse failed: {e}"); return 1; }
+        Err(e) => {
+            eprintln!("error: manifest.toml parse failed: {e}");
+            return 1;
+        }
     };
 
-    let schema_version = manifest.get("schema_version").and_then(|v| v.as_integer()).unwrap_or(0);
+    let schema_version = manifest
+        .get("schema_version")
+        .and_then(|v| v.as_integer())
+        .unwrap_or(0);
     if schema_version > crate::app::registry::MANIFEST_SCHEMA_VERSION as i64 {
         eprintln!(
             "error: manifest.toml schema_version {schema_version} is newer than supported (max {})",
@@ -368,10 +431,18 @@ pub fn app_install_with_pin(path: &str, pin: Option<&str>) -> i32 {
 
     let app_section = match manifest.get("app") {
         Some(a) => a,
-        None => { eprintln!("error: manifest.toml is missing [app] section"); return 1; }
+        None => {
+            eprintln!("error: manifest.toml is missing [app] section");
+            return 1;
+        }
     };
     let app_id = match app_section.get("id").and_then(|v| v.as_str()) {
-        Some(id) if !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') => {
+        Some(id)
+            if !id.is_empty()
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') =>
+        {
             id.to_string()
         }
         _ => {
@@ -380,20 +451,30 @@ pub fn app_install_with_pin(path: &str, pin: Option<&str>) -> i32 {
             return 1;
         }
     };
-    let app_version = app_section.get("version").and_then(|v| v.as_str()).unwrap_or("?");
+    let app_version = app_section
+        .get("version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("?");
 
     let dest = crate::app::registry::apps_dir().join(&app_id);
 
     // Remove existing install (idempotent overwrite).
     if dest.exists() {
         if let Err(e) = std::fs::remove_dir_all(&dest) {
-            eprintln!("error: could not remove existing install at {}: {e}", dest.display());
+            eprintln!(
+                "error: could not remove existing install at {}: {e}",
+                dest.display()
+            );
             return 1;
         }
     }
 
     if let Err(e) = copy_dir_all(&src, &dest) {
-        eprintln!("error: could not copy {} to {}: {e}", src.display(), dest.display());
+        eprintln!(
+            "error: could not copy {} to {}: {e}",
+            src.display(),
+            dest.display()
+        );
         return 1;
     }
 
@@ -408,8 +489,14 @@ pub fn app_install_with_pin(path: &str, pin: Option<&str>) -> i32 {
         write_pinned_version(&dest, pin);
     }
 
-    log::info!("app::install: installed {app_id} v{app_version} from {}", src.display());
-    println!("Installed '{app_id}' v{app_version} from {}.", src.display());
+    log::info!(
+        "app::install: installed {app_id} v{app_version} from {}",
+        src.display()
+    );
+    println!(
+        "Installed '{app_id}' v{app_version} from {}.",
+        src.display()
+    );
     if app_is_python(&dest) {
         ensure_plexi_sdk();
     }
@@ -467,12 +554,17 @@ pub fn app_info(id: &str) -> i32 {
                 tool_names.join(", ")
             }
         );
-        println!("mcp_url:     http://localhost:${{PLEXI_MCP_PORT}}/mcp  (port assigned at runtime)");
+        println!(
+            "mcp_url:     http://localhost:${{PLEXI_MCP_PORT}}/mcp  (port assigned at runtime)"
+        );
         println!();
         println!("Claude Desktop config:");
         println!("  {{");
         println!("    \"mcpServers\": {{");
-        println!("      \"{}\": {{ \"url\": \"http://localhost:${{PLEXI_MCP_PORT}}/mcp\" }}", m.id);
+        println!(
+            "      \"{}\": {{ \"url\": \"http://localhost:${{PLEXI_MCP_PORT}}/mcp\" }}",
+            m.id
+        );
         println!("    }}");
         println!("  }}");
     }
@@ -488,7 +580,13 @@ pub fn app_list() -> i32 {
 /// `plexi app render <app> --size WxH [--state state.json] [--output path] [--png]`
 /// Renders an app headlessly. `app` may be an installed app ID or a local directory path.
 /// Default output: JSON frame tree. With --png: PNG image.
-pub fn app_render(app: &str, size: &str, state: Option<&str>, output: Option<&str>, png: bool) -> i32 {
+pub fn app_render(
+    app: &str,
+    size: &str,
+    state: Option<&str>,
+    output: Option<&str>,
+    png: bool,
+) -> i32 {
     // Parse WxH
     let (width, height) = match parse_render_size(size) {
         Some(v) => v,
@@ -524,7 +622,9 @@ pub fn app_render(app: &str, size: &str, state: Option<&str>, output: Option<&st
     // A path is detected by prefix (./  ../  /) or by existing as a directory.
     // Path: more than one component (./foo, ../foo, /abs/path) OR an existing directory.
     // Using components() instead of prefix checks is portable across platforms.
-    let (app_id, app_bin) = if std::path::Path::new(app).components().count() > 1 || std::path::Path::new(app).is_dir() {
+    let (app_id, app_bin) = if std::path::Path::new(app).components().count() > 1
+        || std::path::Path::new(app).is_dir()
+    {
         let app_dir = match std::path::Path::new(app).canonicalize() {
             Ok(p) => p,
             Err(e) => {
@@ -543,14 +643,19 @@ pub fn app_render(app: &str, size: &str, state: Option<&str>, output: Option<&st
             Err(e) => {
                 log::warn!("app_render: no manifest.toml in {}: {e}", app_dir.display());
                 eprintln!("error: no manifest.toml in {}: {e}", app_dir.display());
-                eprintln!("  Is this a Plexi app directory? Run `plexi app init <name>` to scaffold one.");
+                eprintln!(
+                    "  Is this a Plexi app directory? Run `plexi app init <name>` to scaffold one."
+                );
                 return 1;
             }
         };
         let manifest: crate::app::registry::AppManifest = match toml::from_str(&manifest_str) {
             Ok(m) => m,
             Err(e) => {
-                log::warn!("app_render: invalid manifest.toml in {}: {e}", app_dir.display());
+                log::warn!(
+                    "app_render: invalid manifest.toml in {}: {e}",
+                    app_dir.display()
+                );
                 eprintln!("error: invalid manifest.toml: {e}");
                 return 1;
             }
@@ -565,7 +670,11 @@ pub fn app_render(app: &str, size: &str, state: Option<&str>, output: Option<&st
         }
         let entry = app_dir.join(&manifest.app.entry);
         if !entry.exists() {
-            eprintln!("error: app entry '{}' not found in {}", manifest.app.entry, app_dir.display());
+            eprintln!(
+                "error: app entry '{}' not found in {}",
+                manifest.app.entry,
+                app_dir.display()
+            );
             return 1;
         }
         log::info!("app_render[{}]: loaded from path '{app}'", manifest.app.id);
@@ -577,7 +686,9 @@ pub fn app_render(app: &str, size: &str, state: Option<&str>, output: Option<&st
         match registry.list().into_iter().find(|a| a.manifest.id == app) {
             Some(a) => (a.manifest.id.clone(), a.bin_path.clone()),
             None => {
-                eprintln!("error: app '{app}' not found — run `plexi app list` to see installed apps");
+                eprintln!(
+                    "error: app '{app}' not found — run `plexi app list` to see installed apps"
+                );
                 return 1;
             }
         }
@@ -585,7 +696,9 @@ pub fn app_render(app: &str, size: &str, state: Option<&str>, output: Option<&st
 
     if png {
         // PNG mode: rasterize and write binary
-        let png_bytes = match crate::render::app_render::render_app_to_png(&app_id, &app_bin, width, height, seed_state) {
+        let png_bytes = match crate::render::app_render::render_app_to_png(
+            &app_id, &app_bin, width, height, seed_state,
+        ) {
             Ok(b) => b,
             Err(e) => {
                 eprintln!("error: render failed: {e}");
@@ -615,7 +728,9 @@ pub fn app_render(app: &str, size: &str, state: Option<&str>, output: Option<&st
         }
     } else {
         // JSON mode (default): return raw frame commands
-        let json = match crate::render::app_render::render_app_to_json(&app_id, &app_bin, width, height, seed_state) {
+        let json = match crate::render::app_render::render_app_to_json(
+            &app_id, &app_bin, width, height, seed_state,
+        ) {
             Ok(j) => j,
             Err(e) => {
                 eprintln!("error: render failed: {e}");
@@ -782,25 +897,23 @@ pub fn app_update_cli(id: Option<&str>) -> i32 {
             }
             vec![dir]
         }
-        None => {
-            match std::fs::read_dir(&apps_dir) {
-                Ok(rd) => rd
-                    .flatten()
-                    .filter(|e| e.path().is_dir())
-                    .filter(|e| {
-                        e.path()
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|n| !n.starts_with('.'))
-                    })
-                    .map(|e| e.path())
-                    .collect(),
-                Err(_) => {
-                    println!("no apps installed");
-                    return 0;
-                }
+        None => match std::fs::read_dir(&apps_dir) {
+            Ok(rd) => rd
+                .flatten()
+                .filter(|e| e.path().is_dir())
+                .filter(|e| {
+                    e.path()
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| !n.starts_with('.'))
+                })
+                .map(|e| e.path())
+                .collect(),
+            Err(_) => {
+                println!("no apps installed");
+                return 0;
             }
-        }
+        },
     };
 
     if dirs.is_empty() {
@@ -809,10 +922,7 @@ pub fn app_update_cli(id: Option<&str>) -> i32 {
     }
 
     for app_dir in &dirs {
-        let dir_name = app_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?");
+        let dir_name = app_dir.file_name().and_then(|n| n.to_str()).unwrap_or("?");
 
         // Read manifest version.
         let manifest_version = {
@@ -964,7 +1074,10 @@ mod app_install_workspace_tests {
         let dest = crate::app::registry::apps_dir().join(app_id);
         let _ = std::fs::remove_dir_all(&dest);
 
-        assert_eq!(code, 0, "install from path must succeed without a workspace");
+        assert_eq!(
+            code, 0,
+            "install from path must succeed without a workspace"
+        );
     }
 
     #[test]
@@ -976,7 +1089,6 @@ mod app_install_workspace_tests {
         assert_eq!(code, 1, "missing manifest must return 1");
     }
 }
-
 
 #[cfg(test)]
 mod app_publish_tests {
@@ -1046,7 +1158,10 @@ mod version_pin_tests {
             .unwrap();
         assert_eq!(installed, "0.1.0");
         assert_eq!(manifest_ver, "0.1.0");
-        assert_eq!(installed, manifest_ver, "up-to-date: installed matches manifest");
+        assert_eq!(
+            installed, manifest_ver,
+            "up-to-date: installed matches manifest"
+        );
         // No pinned_version.txt → no pin.
         assert!(!dir.path().join("pinned_version.txt").exists());
     }

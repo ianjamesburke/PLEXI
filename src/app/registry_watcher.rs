@@ -49,18 +49,17 @@ pub fn start(dirs: Vec<PathBuf>) -> Option<(AppRegistryWatcher, Receiver<()>)> {
     let (reload_tx, reload_rx) = mpsc::channel::<()>();
     let (raw_tx, raw_rx) = mpsc::channel::<()>();
 
-    let mut watcher = match notify::recommended_watcher(move |res: notify::Result<Event>| {
-        match res {
-            Ok(ev) => {
-                if matches!(
-                    ev.kind,
-                    EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
-                ) {
-                    let _ = raw_tx.send(());
-                }
+    let mut watcher = match notify::recommended_watcher(move |res: notify::Result<Event>| match res
+    {
+        Ok(ev) => {
+            if matches!(
+                ev.kind,
+                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+            ) {
+                let _ = raw_tx.send(());
             }
-            Err(e) => log::warn!("app_registry_watcher: watcher error: {e}"),
         }
+        Err(e) => log::warn!("app_registry_watcher: watcher error: {e}"),
     }) {
         Ok(w) => w,
         Err(e) => {
@@ -83,7 +82,14 @@ pub fn start(dirs: Vec<PathBuf>) -> Option<(AppRegistryWatcher, Receiver<()>)> {
         debounce_loop(raw_rx, reload_tx, cancel_thread);
     });
 
-    Some((AppRegistryWatcher { _watcher: watcher, cancel, thread: Some(thread) }, reload_rx))
+    Some((
+        AppRegistryWatcher {
+            _watcher: watcher,
+            cancel,
+            thread: Some(thread),
+        },
+        reload_rx,
+    ))
 }
 
 fn debounce_loop(rx: Receiver<()>, sender: Sender<()>, cancel: Arc<Mutex<bool>>) {

@@ -1,21 +1,26 @@
+pub mod app_trait;
 mod canvas_bindings;
 mod dispatch;
 mod focus;
 mod lifecycle;
-mod notifications;
 pub(crate) mod notification_image;
-mod render;
-mod sync;
+mod notifications;
+pub mod packs;
 pub mod permissions;
+pub mod plexi_descriptor;
 pub mod registry;
 pub mod registry_watcher;
-pub mod app_trait;
-pub mod packs;
-pub mod plexi_descriptor;
-pub mod text_editor_app;
+mod render;
 pub mod secrets_app;
+mod sync;
+pub mod text_editor_app;
 
-/// Returns true for old auto-generated window names ("Page 3,1", "Context 2")
+pub(crate) use focus::{ContextCloseState, FocusLayer};
+pub(crate) use notification_image::NotificationImageState;
+#[cfg(test)]
+pub(crate) use notifications::save_pending_notifications_to;
+pub(crate) use notifications::{load_pending_notifications_from, PendingNotification};
+
 /// Build a shell command string from an args list for passing to `zsh -c <cmd>`.
 /// A single arg is used as-is (it's already a shell expression — CLI path).
 /// Multiple args are joined with shell quoting so word-splitting is preserved.
@@ -60,73 +65,11 @@ pub(crate) struct QuickNoteCtx {
     pub context_description: Option<String>,
 }
 
-/// Which layer currently owns keyboard input.
-///
-/// The top of `PlexiApp.focus_stack` is the active layer. When a non-`Pane`
-/// layer is on top, keyboard `Event::Key` and `Event::Text` events are drained
-/// from `ctx.input` each frame *after* the owning overlay has rendered, so
-/// panes and other passive readers see an empty event buffer. Global
-/// keybinds (Cmd+Q, Cmd+W, Cmd+Shift+A) are handled in `keys::poll_actions`
-/// which runs before the drain and is always live.
-///
-/// New overlays should push their layer on open and pop on close to inherit
-/// input capture. All keyboard-owning overlays live here: notification modal,
-/// confirm-close, command palette, run palette, and rename-pane.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum FocusLayer {
-    NotificationModal,
-    ConfirmClose,
-    CommandPalette,
-    RenamePane,
-    /// Context naming modal shown when a new context is created while the
-    /// sidebar is hidden. Mirrors the inline sidebar rename but as a centred
-    /// overlay so the terminal is immediately usable after dismissal.
-    ContextRename,
-    /// Context description editor overlay.
-    ContextDescription,
-    /// Quick note compose modal (text input phase).
-    QuickNote,
-    /// Quick note destination picker.
-    QuickNoteDestination,
-    /// Quick note sub-destination picker. Inner Vec<u8> = key path from root to current node.
-    /// E.g. vec![3] = inside destination 3's children; vec![3,2] = destination 3 → child 2.
-    QuickNoteSubDestination(Vec<u8>),
-    /// First-launch CLI setup prompt. No text input — intercepts keys so they
-    /// don't fall through to the active terminal while the modal is visible.
-    CliSetupPrompt,
-    /// Shared text-input overlay (context root, future: context rename).
-    TextInput,
-    /// Close-context confirmation dialog with pane inventory and dissolve option.
-    ContextCloseConfirm,
-    /// Capability / secret consent modal for a focused ProcessApp pane.
-    /// Promoted to the focus stack when the focused pane has pending prompts,
-    /// so the modal renders in step 2 of `update()` with exclusive keyboard
-    /// ownership — before `dispatch_app_key_events` can steal Escape.
-    CapabilityModal,
-    /// Notes picker overlay: lists workspace notes sorted by mtime, opens selected in focused text-editor.
-    NotesPicker,
-}
-
 /// What a `TextInputOverlay` commit should do.
 #[derive(Clone, Debug)]
 pub(crate) enum OverlayTarget {
     /// Set (or clear) the root directory on the context at `idx`.
     ContextRoot(usize),
-}
-
-/// A single pane entry shown in the context-close confirmation dialog.
-#[derive(Clone, Debug)]
-pub(crate) struct ContextCloseItem {
-    pub kind: &'static str,
-    pub name: String,
-}
-
-/// State for the context-close confirmation dialog.
-#[derive(Clone, Debug)]
-pub(crate) struct ContextCloseState {
-    pub context_id: u64,
-    pub context_name: String,
-    pub items: Vec<ContextCloseItem>,
 }
 
 /// Shared text-input overlay state. One instance per open modal.
@@ -139,111 +82,14 @@ pub(crate) struct TextInputOverlay {
     pub focus_requested: bool,
 }
 
-#[derive(Clone)]
-pub(crate) struct PendingNotification {
-    pub notify_id: String,
-    pub sender_pane_id: u64,
-    /// Stable context identity the notification originated from (stamped at drain time).
-    pub source_context_id: u64,
-    /// Stable window identity the notification originated from. Used by
-    /// `NotifyScope::Window` to restrict visibility to the originating window.
-    pub source_window_id: u64,
-    pub level: String,
-    pub title: String,
-    pub body: String,
-    pub kind: crate::app_protocol::NotifyKind,
-    pub options: Vec<crate::app_protocol::NotifyOption>,
-    pub input_prompt: Option<String>,
-    pub required: bool,
-    /// Higher = more urgent. Used to pick next after dismiss + to order
-    /// Cmd+]/Cmd+[ preview traversal. Arrival order (index in the queue
-    /// Vec) breaks ties — oldest wins.
-    pub priority: u32,
-    /// Visibility scope. Affects which contexts the notification appears in.
-    pub scope: crate::app_protocol::NotifyScope,
-    /// Optional inline image attachment (#74). Decoded lazily on first
-    /// render; oversized payloads (> 50 KB decoded) surface a placeholder
-    /// instead of decoding. The decoded texture is cached separately on
-    /// `PlexiApp::notification_images` keyed by `notify_id` — this struct
-    /// stays Clone-cheap (no GPU handles inside it).
-    pub image_inline: Option<crate::app_protocol::NotificationImage>,
-    /// Optional pipe-referenced image attachment (#74). The host drains the
-    /// matching binary ring on first render and caches the texture under
-    /// `PlexiApp::notification_images`.
-    pub image_pipe_id: Option<String>,
-    /// Path to a file the CLI polls for the chosen key. Set when the
-    /// notification was queued by `plexi notify --choice …`. The host writes
-    /// the chosen value here when the user picks an option so the blocking CLI
-    /// process can read it and exit.
-    pub response_file: Option<String>,
-    pub timeout_secs: Option<u64>,
-    pub on_dismiss: Option<String>,
-    /// When the notification was pushed to the queue. Used for timeout tracking.
-    pub enqueued_at: std::time::Instant,
-    /// True when the originating app pane has exited. The notification stays
-    /// in the queue so the user can read it, but action buttons are hidden.
-    pub tombstoned: bool,
-    /// When `Some(t)`, the notification is invisible and exempt from timeout
-    /// until `t` has elapsed (snooze). `None` means deliver immediately.
-    pub deliver_after: Option<std::time::Instant>,
-}
-
-/// Serializable snapshot of a `PendingNotification`. Session-only handles
-/// (`image_pipe_id`, `response_file`, `deliver_after`) are dropped on save and
-/// restored as `None`; `tombstoned` is forced to `true` on load because the
-/// source pane is gone after a restart.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct PersistedNotification {
-    notify_id: String,
-    sender_pane_id: u64,
-    source_context_id: u64,
-    #[serde(default)]
-    source_window_id: u64,
-    level: String,
-    title: String,
-    body: String,
-    kind: crate::app_protocol::NotifyKind,
-    options: Vec<crate::app_protocol::NotifyOption>,
-    #[serde(default)]
-    input_prompt: Option<String>,
-    required: bool,
-    priority: u32,
-    scope: crate::app_protocol::NotifyScope,
-    #[serde(default)]
-    image_inline: Option<crate::app_protocol::NotificationImage>,
-    #[serde(default)]
-    timeout_secs: Option<u64>,
-    #[serde(default)]
-    on_dismiss: Option<String>,
-    /// Unix timestamp (seconds since UNIX_EPOCH) when the notification was enqueued.
-    enqueued_at_secs: u64,
-    tombstoned: bool,
-    // deliver_after (snooze) is session-only — not persisted.
-    // image_pipe_id and response_file are session handles — not persisted.
-}
-
-/// Render state for a notification's image attachment. Computed once and
-/// cached on `PlexiApp::notification_images` keyed by `notify_id`.
-#[derive(Clone)]
-pub(crate) enum NotificationImageState {
-    /// Image is ready to draw. `(handle, w, h)`.
-    Ready(egui::TextureHandle, u32, u32),
-    /// Decoded payload exceeded the 50 KB cap, or decoding failed; render a
-    /// placeholder badge with the explanation in `reason`.
-    Placeholder { reason: String },
-    /// Pipe pending — no frame yet drained from the binary ring. Render
-    /// nothing this frame; retry next frame.
-    Pending,
-}
-
 use crate::app::registry::AppRegistry;
 use crate::config;
 use crate::host::context::Window;
 use crate::host::keys::{self, Action};
 use crate::host::pane::{Pane, TerminalPane};
 use crate::host::shell;
-use crate::ui::theme::{self, Colors};
 use crate::spatial::tiling::PaneId;
+use crate::ui::theme::{self, Colors};
 use crate::workspace::WorkspaceFile;
 use egui_term::{BackendSettings, PtyEvent, TerminalTheme};
 use egui_tiles::{Tile, Tree};
@@ -364,7 +210,10 @@ pub struct PlexiApp {
     /// Cache of dynamically loaded children, keyed by full key path. Cleared on modal open.
     pub(crate) quick_note_children_cache: HashMap<Vec<u8>, Vec<crate::config::QuickNoteNode>>,
     /// Pending children_cmd receiver: (key_path, receiver).
-    pub(crate) quick_note_children_rx: Option<(Vec<u8>, std::sync::mpsc::Receiver<Result<Vec<crate::config::QuickNoteNode>, String>>)>,
+    pub(crate) quick_note_children_rx: Option<(
+        Vec<u8>,
+        std::sync::mpsc::Receiver<Result<Vec<crate::config::QuickNoteNode>, String>>,
+    )>,
     /// notify_id of the notification the modal currently has state for. Used to
     /// detect a front-of-queue change and reset focus/input buffer.
     pub(crate) modal_state_notify_id: String,
@@ -486,9 +335,7 @@ fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
     theme::setup_style(ctx, colors, true);
 }
 
-fn spawn_socket_listener(
-    tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
-) {
+fn spawn_socket_listener(tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>) {
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
 
@@ -528,133 +375,11 @@ fn spawn_socket_listener(
     });
 }
 
-// ---------------------------------------------------------------------------
-// Notification persistence helpers
-// ---------------------------------------------------------------------------
-
-/// Write `notifications` to `path` atomically (write temp, then rename).
-/// Called at every mutation site so unread notifications survive restarts.
-pub(crate) fn save_pending_notifications_to(
-    notifications: &[PendingNotification],
-    path: &std::path::Path,
-) {
-    let now_sys = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let persisted: Vec<PersistedNotification> = notifications
-        .iter()
-        .map(|n| {
-            let age_secs = std::time::Instant::now()
-                .duration_since(n.enqueued_at)
-                .as_secs();
-            let enqueued_at_secs = now_sys.saturating_sub(age_secs);
-            PersistedNotification {
-                notify_id: n.notify_id.clone(),
-                sender_pane_id: n.sender_pane_id,
-                source_context_id: n.source_context_id,
-                source_window_id: n.source_window_id,
-                level: n.level.clone(),
-                title: n.title.clone(),
-                body: n.body.clone(),
-                kind: n.kind.clone(),
-                options: n.options.clone(),
-                input_prompt: n.input_prompt.clone(),
-                required: n.required,
-                priority: n.priority,
-                scope: n.scope,
-                image_inline: n.image_inline.clone(),
-                timeout_secs: n.timeout_secs,
-                on_dismiss: n.on_dismiss.clone(),
-                enqueued_at_secs,
-                tombstoned: n.tombstoned,
-            }
-        })
-        .collect();
-    match serde_json::to_string(&persisted) {
-        Ok(json) => {
-            let tmp = path.with_extension("json.tmp");
-            match std::fs::write(&tmp, &json).and_then(|_| std::fs::rename(&tmp, path)) {
-                Ok(_) => log::info!(
-                    "notify:persist: saved {} notification(s)",
-                    notifications.len()
-                ),
-                Err(e) => log::warn!("notify:persist: failed to write {:?}: {e}", path),
-            }
-        }
-        Err(e) => log::warn!("notify:persist: failed to serialize: {e}"),
-    }
-}
-
-/// Load persisted notifications from `path`. Drops entries older than 7 days.
-/// All restored notifications are tombstoned — their source pane is gone.
-pub(crate) fn load_pending_notifications_from(
-    path: &std::path::Path,
-) -> Vec<PendingNotification> {
-    let Ok(json) = std::fs::read_to_string(path) else {
-        return vec![];
-    };
-    let Ok(persisted) = serde_json::from_str::<Vec<PersistedNotification>>(&json) else {
-        log::warn!("notify:persist: failed to deserialize {:?}", path);
-        return vec![];
-    };
-    let now_sys = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    const TTL_SECS: u64 = 7 * 24 * 3600;
-    let restored: Vec<PendingNotification> = persisted
-        .into_iter()
-        .filter_map(|p| {
-            let age_secs = now_sys.saturating_sub(p.enqueued_at_secs);
-            if age_secs > TTL_SECS {
-                return None;
-            }
-            let enqueued_at = std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_secs(age_secs))
-                .unwrap_or_else(std::time::Instant::now);
-            Some(PendingNotification {
-                notify_id: p.notify_id,
-                sender_pane_id: p.sender_pane_id,
-                source_context_id: p.source_context_id,
-                source_window_id: p.source_window_id,
-                level: p.level,
-                title: p.title,
-                body: p.body,
-                kind: p.kind,
-                options: p.options,
-                input_prompt: p.input_prompt,
-                required: p.required,
-                priority: p.priority,
-                scope: p.scope,
-                image_inline: p.image_inline,
-                image_pipe_id: None,   // pipe handle gone after restart
-                response_file: None,   // file handle gone after restart
-                timeout_secs: p.timeout_secs,
-                on_dismiss: p.on_dismiss,
-                enqueued_at,
-                tombstoned: true,      // source pane is gone
-                deliver_after: None,   // snooze is session-only
-            })
-        })
-        .collect();
-    log::info!(
-        "notify:persist: restored {} notification(s) from disk",
-        restored.len()
-    );
-    restored
-}
-
 impl PlexiApp {
-    /// Persist current pending notifications to `config_dir()/notifications.json`.
-    pub(crate) fn save_notifications(&self) {
-        save_pending_notifications_to(
-            &self.pending_notifications,
-            &crate::config::config_dir().join("notifications.json"),
-        );
-    }
-
-    pub fn new(cc: &eframe::CreationContext<'_>, frame_tick: crate::platform::logging::FrameTick) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        frame_tick: crate::platform::logging::FrameTick,
+    ) -> Self {
         #[cfg(target_os = "macos")]
         crate::platform::macos_menu::customize_app_menu();
         #[cfg(target_os = "macos")]
@@ -710,8 +435,13 @@ impl PlexiApp {
         let colors = Colors::from_config(&theme_cfg);
         let dark_mode = !theme::is_light_preset(config.theme_preset.as_deref().unwrap_or(""));
         theme::setup_style(&cc.egui_ctx, &colors, dark_mode);
-        let window_theme = if dark_mode { egui::SystemTheme::Dark } else { egui::SystemTheme::Light };
-        cc.egui_ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(window_theme));
+        let window_theme = if dark_mode {
+            egui::SystemTheme::Dark
+        } else {
+            egui::SystemTheme::Light
+        };
+        cc.egui_ctx
+            .send_viewport_cmd(egui::ViewportCommand::SetTheme(window_theme));
         log::info!("theme: set_window_theme dark_mode={dark_mode}");
 
         let (tx, rx) = mpsc::channel();
@@ -738,7 +468,8 @@ impl PlexiApp {
         let (update_tx, update_rx) = std::sync::mpsc::channel::<String>();
         crate::cli::updater::spawn_update_check(crate::config::config_dir(), update_tx);
 
-        let (pane_ipc_tx, pane_ipc_rx) = std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
+        let (pane_ipc_tx, pane_ipc_rx) =
+            std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
         spawn_socket_listener(pane_ipc_tx);
 
         // One-time migration: remove the legacy file-queue directory if it
@@ -749,16 +480,24 @@ impl PlexiApp {
         // Try to load saved workspace
         if let Some(ws) = WorkspaceFile::load() {
             let mut windows = Vec::new();
-            let ctx_name_map: std::collections::HashMap<u64, String> = ws.contexts.iter()
+            let ctx_name_map: std::collections::HashMap<u64, String> = ws
+                .contexts
+                .iter()
                 .map(|c| (c.context_id, c.name.clone()))
                 .collect();
-            let ctx_desc_map: std::collections::HashMap<u64, String> = ws.contexts.iter()
+            let ctx_desc_map: std::collections::HashMap<u64, String> = ws
+                .contexts
+                .iter()
                 .filter_map(|c| c.description.as_ref().map(|d| (c.context_id, d.clone())))
                 .collect();
-            let ctx_root_map: std::collections::HashMap<u64, PathBuf> = ws.contexts.iter()
+            let ctx_root_map: std::collections::HashMap<u64, PathBuf> = ws
+                .contexts
+                .iter()
                 .filter_map(|c| c.root.as_ref().map(|r| (c.context_id, r.clone())))
                 .collect();
-            let ctx_depth_map: std::collections::HashMap<u64, u32> = ws.contexts.iter()
+            let ctx_depth_map: std::collections::HashMap<u64, u32> = ws
+                .contexts
+                .iter()
                 .map(|c| (c.context_id, c.depth))
                 .collect();
             for saved_win in ws.windows {
@@ -786,78 +525,110 @@ impl PlexiApp {
                                     use crate::app::app_trait::App;
                                     app.restore_state(state);
                                 }
-                                pane_entry = Some(Pane::App(Box::new(crate::host::pane::AppPane {
-                                    id: saved_pane.id,
-                                    runtime: crate::host::pane::AppRuntime::Builtin(Box::new(app)),
-                                    workspace_root: app_cwd,
-                                    permissions: builtin_perms,
-                                    manifest_id: "file_browser".to_string(),
-                                    name: "File Browser".to_string(),
-                                    pane_group: Some("cwd".to_string()),
-                                    linked_pane_id: None,
-                                    overlay_replaced: None,
-                                    hidden: false,
-                                })));
-                            }
-                            "secrets_manager" => {
-                                let mut app = crate::app::secrets_app::SecretsApp::new(app_cwd.clone());
-                                if let Some(state) = &saved_pane.app_state {
-                                    use crate::app::app_trait::App;
-                                    app.restore_state(state);
-                                }
-                                pane_entry = Some(Pane::App(Box::new(crate::host::pane::AppPane {
-                                    id: saved_pane.id,
-                                    runtime: crate::host::pane::AppRuntime::Builtin(Box::new(app)),
-                                    workspace_root: app_cwd,
-                                    permissions: builtin_perms,
-                                    manifest_id: "secrets_manager".to_string(),
-                                    name: "Secrets Manager".to_string(),
-                                    pane_group: None,
-                                    linked_pane_id: None,
-                                    overlay_replaced: None,
-                                    hidden: false,
-                                })));
-                            }
-                            other => {
-                                if let Some(process) = registry.launch_process(other, &app_cwd, &[])
-                                {
-                                    pane_entry = Some(Pane::App(Box::new(crate::host::pane::AppPane {
+                                pane_entry =
+                                    Some(Pane::App(Box::new(crate::host::pane::AppPane {
                                         id: saved_pane.id,
-                                        permissions: process.permissions.clone(),
-                                        runtime: crate::host::pane::AppRuntime::Process(Box::new(
-                                            process,
+                                        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
+                                            app,
                                         )),
                                         workspace_root: app_cwd,
-                                        manifest_id: other.to_string(),
-                                        name: other.to_string(),
-                                        pane_group: registry.group_for(other),
+                                        permissions: builtin_perms,
+                                        manifest_id: "file_browser".to_string(),
+                                        name: "File Browser".to_string(),
+                                        pane_group: Some("cwd".to_string()),
                                         linked_pane_id: None,
                                         overlay_replaced: None,
                                         hidden: false,
                                     })));
+                            }
+                            "secrets_manager" => {
+                                let mut app =
+                                    crate::app::secrets_app::SecretsApp::new(app_cwd.clone());
+                                if let Some(state) = &saved_pane.app_state {
+                                    use crate::app::app_trait::App;
+                                    app.restore_state(state);
+                                }
+                                pane_entry =
+                                    Some(Pane::App(Box::new(crate::host::pane::AppPane {
+                                        id: saved_pane.id,
+                                        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
+                                            app,
+                                        )),
+                                        workspace_root: app_cwd,
+                                        permissions: builtin_perms,
+                                        manifest_id: "secrets_manager".to_string(),
+                                        name: "Secrets Manager".to_string(),
+                                        pane_group: None,
+                                        linked_pane_id: None,
+                                        overlay_replaced: None,
+                                        hidden: false,
+                                    })));
+                            }
+                            other => {
+                                if let Some(process) = registry.launch_process(other, &app_cwd, &[])
+                                {
+                                    pane_entry =
+                                        Some(Pane::App(Box::new(crate::host::pane::AppPane {
+                                            id: saved_pane.id,
+                                            permissions: process.permissions.clone(),
+                                            runtime: crate::host::pane::AppRuntime::Process(
+                                                Box::new(process),
+                                            ),
+                                            workspace_root: app_cwd,
+                                            manifest_id: other.to_string(),
+                                            name: other.to_string(),
+                                            pane_group: registry.group_for(other),
+                                            linked_pane_id: None,
+                                            overlay_replaced: None,
+                                            hidden: false,
+                                        })));
                                 }
                             }
                         }
                     }
 
                     // Portal panes — restore the tile reference, no process to start.
-                    if matches!(saved_pane.kind, crate::workspace::SavedPaneKind::Portal { .. }) {
-                        if let crate::workspace::SavedPaneKind::Portal { context_id } = &saved_pane.kind {
-                            pane_entry = Some(Pane::Portal(Box::new(crate::host::pane::PortalPane {
-                                pane_id: saved_pane.id,
-                                target_context_id: *context_id,
-                                context_state: None,
-                                hidden: false,
-                            })));
+                    if matches!(
+                        saved_pane.kind,
+                        crate::workspace::SavedPaneKind::Portal { .. }
+                    ) {
+                        if let crate::workspace::SavedPaneKind::Portal { context_id } =
+                            &saved_pane.kind
+                        {
+                            pane_entry =
+                                Some(Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                                    pane_id: saved_pane.id,
+                                    target_context_id: *context_id,
+                                    context_state: None,
+                                    hidden: false,
+                                })));
                         }
                     }
 
                     if pane_entry.is_none() {
-                        let ctx_name = ctx_name_map.get(&saved_win.context_id).cloned().unwrap_or_default();
-                        let ctx_desc = ctx_desc_map.get(&saved_win.context_id).cloned().unwrap_or_default();
+                        let ctx_name = ctx_name_map
+                            .get(&saved_win.context_id)
+                            .cloned()
+                            .unwrap_or_default();
+                        let ctx_desc = ctx_desc_map
+                            .get(&saved_win.context_id)
+                            .cloned()
+                            .unwrap_or_default();
                         let ctx_root = ctx_root_map.get(&saved_win.context_id);
-                        let ctx_depth = ctx_depth_map.get(&saved_win.context_id).copied().unwrap_or(0);
-                        let settings = Self::make_backend_settings(saved_pane.id, cwd, &colors, saved_win.context_id, &ctx_name, &ctx_desc, ctx_root, ctx_depth);
+                        let ctx_depth = ctx_depth_map
+                            .get(&saved_win.context_id)
+                            .copied()
+                            .unwrap_or(0);
+                        let settings = Self::make_backend_settings(
+                            saved_pane.id,
+                            cwd,
+                            &colors,
+                            saved_win.context_id,
+                            &ctx_name,
+                            &ctx_desc,
+                            ctx_root,
+                            ctx_depth,
+                        );
                         if let Some(mut pane) = TerminalPane::new(
                             saved_pane.id,
                             cc.egui_ctx.clone(),
@@ -918,10 +689,15 @@ impl PlexiApp {
                 let contexts = ws.contexts;
                 let active_ctx = ws.active_context.min(contexts.len().saturating_sub(1));
                 let active_ctx_id = contexts[active_ctx].context_id;
-                let active = ws.context_active_window.get(&active_ctx_id)
+                let active = ws
+                    .context_active_window
+                    .get(&active_ctx_id)
                     .and_then(|win_id| windows.iter().position(|w| w.window_id == *win_id))
                     .unwrap_or(0);
-                let window_count = windows.iter().filter(|w| w.context_id == active_ctx_id).count();
+                let window_count = windows
+                    .iter()
+                    .filter(|w| w.context_id == active_ctx_id)
+                    .count();
                 let mut host = crate::host::model::HostModel::new();
                 host.seed_next_pane_id(ws.next_pane_id);
                 let mut app = Self {
@@ -969,7 +745,9 @@ impl PlexiApp {
                     text_overlay_browse_rx: None,
                     registry,
                     features: features.clone(),
-                    pending_notifications: load_pending_notifications_from(&crate::config::config_dir().join("notifications.json")),
+                    pending_notifications: load_pending_notifications_from(
+                        &crate::config::config_dir().join("notifications.json"),
+                    ),
                     show_notification_modal: false,
                     current_notify_id: None,
                     modal_focused_option: 0,
@@ -1021,7 +799,6 @@ impl PlexiApp {
                     focus_started_at: None,
                     last_system_theme: None,
                     overlay_held_cmds: Vec::new(),
-
                 };
                 app.apply_context_transition_effects();
                 return app;
@@ -1050,17 +827,17 @@ impl PlexiApp {
         let (default_name, default_description, default_root) = match anchor.as_ref() {
             Some(a) => {
                 let defaults = a.context_defaults.as_ref();
-                let name = defaults
-                    .and_then(|d| d.name.clone())
-                    .unwrap_or_else(|| {
-                        path.file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "Default".to_string())
-                    });
+                let name = defaults.and_then(|d| d.name.clone()).unwrap_or_else(|| {
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "Default".to_string())
+                });
                 let desc = defaults.and_then(|d| d.description.clone());
                 log::info!(
                     "anchor detected at CWD: name={:?} description={:?} root={}",
-                    name, desc, a.root.display()
+                    name,
+                    desc,
+                    a.root.display()
                 );
                 (name, desc, Some(a.root.clone()))
             }
@@ -1070,9 +847,9 @@ impl PlexiApp {
         let default_cwd = std::env::current_dir().unwrap_or_default();
         let default_registry = AppRegistry::load(&default_cwd);
         let (mut default_reg_watcher, mut default_reg_reload_rx) =
-            match crate::app::registry_watcher::start(
-                crate::app::registry::registry_watch_dirs(&default_cwd),
-            ) {
+            match crate::app::registry_watcher::start(crate::app::registry::registry_watch_dirs(
+                &default_cwd,
+            )) {
                 Some((w, rx)) => (Some(w), Some(rx)),
                 None => (None, None),
             };
@@ -1145,7 +922,9 @@ impl PlexiApp {
             text_overlay_browse_rx: None,
             registry: default_registry,
             features,
-            pending_notifications: load_pending_notifications_from(&crate::config::config_dir().join("notifications.json")),
+            pending_notifications: load_pending_notifications_from(
+                &crate::config::config_dir().join("notifications.json"),
+            ),
             show_notification_modal: false,
             current_notify_id: None,
             modal_focused_option: 0,
@@ -1204,10 +983,14 @@ impl PlexiApp {
 
     /// Search ALL windows (not just the active one) for a pane by ID.
     /// Returns (window_index, tile_id). O(n*m) but n is typically 1-3.
-    pub(crate) fn find_pane_in_any_window(&self, pane_id: crate::spatial::tiling::PaneId) -> Option<(usize, egui_tiles::TileId)> {
-        self.windows.iter().enumerate().find_map(|(idx, win)| {
-            win.tree.tiles.find_pane(&pane_id).map(|tile| (idx, tile))
-        })
+    pub(crate) fn find_pane_in_any_window(
+        &self,
+        pane_id: crate::spatial::tiling::PaneId,
+    ) -> Option<(usize, egui_tiles::TileId)> {
+        self.windows
+            .iter()
+            .enumerate()
+            .find_map(|(idx, win)| win.tree.tiles.find_pane(&pane_id).map(|tile| (idx, tile)))
     }
 
     /// Set focused pane in a specific window.
@@ -1217,13 +1000,21 @@ impl PlexiApp {
         self.windows[win_idx].navigate_to(tile);
         let window_id = self.windows[win_idx].window_id;
         log::info!("focus: flash set — win={window_id} tile={tile:?}");
-        self.click_flash = Some(ClickFlash { window_id, tile, started_at: std::time::Instant::now() });
+        self.click_flash = Some(ClickFlash {
+            window_id,
+            tile,
+            started_at: std::time::Instant::now(),
+        });
     }
 
     /// Restore focused pane in a specific window from a saved `Option<TileId>`.
     /// Use instead of `self.windows[i].focused_pane = saved_opt` so the grep
     /// pattern `windows[active].focused_pane = ` has zero matches outside tests.
-    pub(crate) fn restore_window_focused_pane(&mut self, win_idx: usize, saved: Option<egui_tiles::TileId>) {
+    pub(crate) fn restore_window_focused_pane(
+        &mut self,
+        win_idx: usize,
+        saved: Option<egui_tiles::TileId>,
+    ) {
         self.windows[win_idx].focused_pane = saved;
     }
 
@@ -1235,7 +1026,10 @@ impl PlexiApp {
     pub fn new_for_test(
         ctx: egui::Context,
         frame_tick: crate::platform::logging::FrameTick,
-    ) -> (Self, std::sync::mpsc::Sender<crate::app_protocol::AppRequest>) {
+    ) -> (
+        Self,
+        std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
+    ) {
         let config = config::PlexiConfig::default();
         let key_bindings = crate::host::keys::build_key_bindings(config.keybindings.as_ref());
         let theme_cfg = Self::resolve_theme_config(&config);
@@ -1245,131 +1039,132 @@ impl PlexiApp {
         let (hr_watcher, hr_rx) = crate::host::hot_reload::HotReloadWatcher::new();
         let path = std::env::temp_dir();
         let features = crate::features::FeatureFlags::from_config(&config);
-        let (pane_ipc_tx, pane_ipc_rx) = std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
-        (Self {
-            pty_event_rx: rx,
-            pty_event_tx: tx,
-            last_notify_poll: std::time::Instant::now(),
-            scheduler: crate::host::scheduler::Scheduler::new(),
-            theme: theme::terminal_theme(&theme_cfg),
-            colors,
-            default_font_size: theme::FONT_SIZE,
-            ctx: ctx.clone(),
-            router: crate::workspace::router::WorkspaceRouter::new(
-                vec![crate::host::context::Context {
+        let (pane_ipc_tx, pane_ipc_rx) =
+            std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
+        (
+            Self {
+                pty_event_rx: rx,
+                pty_event_tx: tx,
+                last_notify_poll: std::time::Instant::now(),
+                scheduler: crate::host::scheduler::Scheduler::new(),
+                theme: theme::terminal_theme(&theme_cfg),
+                colors,
+                default_font_size: theme::FONT_SIZE,
+                ctx: ctx.clone(),
+                router: crate::workspace::router::WorkspaceRouter::new(
+                    vec![crate::host::context::Context {
+                        name: "Test".into(),
+                        path: path.clone(),
+                        root: None,
+                        description: None,
+                        context_id: 1,
+                        parent_id: None,
+                        depth: 0,
+                        parked: false,
+                    }],
+                    0,
+                ),
+                windows: vec![Window {
                     name: "Test".into(),
                     path: path.clone(),
-                    root: None,
-                    description: None,
+                    tree: egui_tiles::Tree::empty("test_tree"),
+                    panes: HashMap::new(),
+                    focused_pane: None,
+                    zoomed_pane: None,
+                    grid_x: 0,
+                    grid_y: 0,
+                    window_id: 1,
                     context_id: 1,
-                    parent_id: None,
-                    depth: 0,
-                    parked: false,
                 }],
-                0,
-            ),
-            windows: vec![Window {
-                name: "Test".into(),
-                path: path.clone(),
-                tree: egui_tiles::Tree::empty("test_tree"),
-                panes: HashMap::new(),
-                focused_pane: None,
-                zoomed_pane: None,
-                grid_x: 0,
-                grid_y: 0,
-                window_id: 1,
-                context_id: 1,
-            }],
-            active_window: 0,
-            sidebar_visible: false,
-            show_shortcuts: false,
-            show_changelog: false,
-            quitting: false,
-            quit_press_count: 0,
-            quit_last_press: None,
-            welcome_delete_press_count: 0,
-            welcome_delete_last_press: None,
-            config,
-            binding_table: crate::host::keys::build_binding_table(&key_bindings),
-            key_bindings,
-            pending_close: false,
-            pending_context_close: None,
-            frame_tick,
-            renaming_window: None,
-            rename_buffer: String::new(),
-            editing_description: None,
-            description_buffer: String::new(),
-            description_focus_requested: false,
-            drag_context: None,
-            parked_section_expanded: false,
-            show_command_palette: false,
-            palette_query: String::new(),
-            palette_selected: 0,
-            palette_workspace_root: None,
-            context_visit_history: Vec::new(),
-            renaming_pane: None,
-            rename_pane_focus_requested: false,
-            text_overlay: None,
-            text_overlay_browse_rx: None,
-            registry: AppRegistry::load_with_global(
-                &path,
-                &path.join("nonexistent-apps-dir"),
-            ),
-            features,
-            pending_notifications: Vec::new(),
-            show_notification_modal: false,
-            current_notify_id: None,
-            modal_focused_option: 0,
-            modal_input_buffer: String::new(),
-            quick_note_text: String::new(),
-            quick_note_ctx: QuickNoteCtx::default(),
-            notes_picker_entries: Vec::new(),
-            notes_picker_selected: 0,
-            quick_note_dest_cursor: 0,
-            quick_note_sub_cursor: 0,
-            quick_note_children_cache: HashMap::new(),
-            quick_note_children_rx: None,
-            modal_state_notify_id: String::new(),
-            notification_images: HashMap::new(),
-            notifications_enabled: false,
-            notifications_focus_mode: false,
-            notifications_interrupt_threshold: 100,
-            focus_stack: Vec::new(),
-            focus_history_depth: 100,
-            pane_focus_history: Vec::new(),
-            pane_focus_future: Vec::new(),
-            navigating_history: false,
-            host: crate::host::model::HostModel::new(),
-            host_services: crate::host::services::HostServices::new(),
-            background_apps: HashMap::new(),
-            directed_pipes: HashMap::new(),
-            hot_reload: hr_watcher,
-            hot_reload_rx: hr_rx,
-            _config_watcher: None,
-            config_reload_rx: None,
-            _registry_watcher: None,
-            registry_reload_rx: None,
-            pending_crash_restarts: HashMap::new(),
-            minimap: crate::render::minimap::MinimapState::new(),
-            last_page_x_per_row: HashMap::new(),
-            context_active_window: HashMap::new(),
-            minimap_visible_per_context: HashMap::new(),
-            next_window_id: 2,
-            pane_snapshot_len: 0,
-            pane_anims: Vec::new(),
-            edge_pulse: None,
-            click_flash: None,
-            show_cli_setup_prompt: false,
-            cli_setup_check_result: None,
-            show_completions_banner: false,
-            update_rx: None,
-            update_available: None,
-            pane_ipc_rx,
-            last_logged_focus: None,
-            focus_started_at: None,
-            last_system_theme: None,
-            overlay_held_cmds: Vec::new(),
-        }, pane_ipc_tx)
+                active_window: 0,
+                sidebar_visible: false,
+                show_shortcuts: false,
+                show_changelog: false,
+                quitting: false,
+                quit_press_count: 0,
+                quit_last_press: None,
+                welcome_delete_press_count: 0,
+                welcome_delete_last_press: None,
+                config,
+                binding_table: crate::host::keys::build_binding_table(&key_bindings),
+                key_bindings,
+                pending_close: false,
+                pending_context_close: None,
+                frame_tick,
+                renaming_window: None,
+                rename_buffer: String::new(),
+                editing_description: None,
+                description_buffer: String::new(),
+                description_focus_requested: false,
+                drag_context: None,
+                parked_section_expanded: false,
+                show_command_palette: false,
+                palette_query: String::new(),
+                palette_selected: 0,
+                palette_workspace_root: None,
+                context_visit_history: Vec::new(),
+                renaming_pane: None,
+                rename_pane_focus_requested: false,
+                text_overlay: None,
+                text_overlay_browse_rx: None,
+                registry: AppRegistry::load_with_global(&path, &path.join("nonexistent-apps-dir")),
+                features,
+                pending_notifications: Vec::new(),
+                show_notification_modal: false,
+                current_notify_id: None,
+                modal_focused_option: 0,
+                modal_input_buffer: String::new(),
+                quick_note_text: String::new(),
+                quick_note_ctx: QuickNoteCtx::default(),
+                notes_picker_entries: Vec::new(),
+                notes_picker_selected: 0,
+                quick_note_dest_cursor: 0,
+                quick_note_sub_cursor: 0,
+                quick_note_children_cache: HashMap::new(),
+                quick_note_children_rx: None,
+                modal_state_notify_id: String::new(),
+                notification_images: HashMap::new(),
+                notifications_enabled: false,
+                notifications_focus_mode: false,
+                notifications_interrupt_threshold: 100,
+                focus_stack: Vec::new(),
+                focus_history_depth: 100,
+                pane_focus_history: Vec::new(),
+                pane_focus_future: Vec::new(),
+                navigating_history: false,
+                host: crate::host::model::HostModel::new(),
+                host_services: crate::host::services::HostServices::new(),
+                background_apps: HashMap::new(),
+                directed_pipes: HashMap::new(),
+                hot_reload: hr_watcher,
+                hot_reload_rx: hr_rx,
+                _config_watcher: None,
+                config_reload_rx: None,
+                _registry_watcher: None,
+                registry_reload_rx: None,
+                pending_crash_restarts: HashMap::new(),
+                minimap: crate::render::minimap::MinimapState::new(),
+                last_page_x_per_row: HashMap::new(),
+                context_active_window: HashMap::new(),
+                minimap_visible_per_context: HashMap::new(),
+                next_window_id: 2,
+                pane_snapshot_len: 0,
+                pane_anims: Vec::new(),
+                edge_pulse: None,
+                click_flash: None,
+                show_cli_setup_prompt: false,
+                cli_setup_check_result: None,
+                show_completions_banner: false,
+                update_rx: None,
+                update_available: None,
+                pane_ipc_rx,
+                last_logged_focus: None,
+                focus_started_at: None,
+                last_system_theme: None,
+                overlay_held_cmds: Vec::new(),
+            },
+            pane_ipc_tx,
+        )
     }
 
     /// Add a minimal `ProcessApp` pane directly to window 0 for unit tests.
@@ -1377,11 +1172,12 @@ impl PlexiApp {
     #[cfg(test)]
     pub(crate) fn add_test_pane(&mut self) -> (egui_tiles::TileId, u64) {
         use crate::app::permissions::AppPermissions;
-        use crate::process_app::ProcessApp;
         use crate::host::pane::{AppPane, AppRuntime};
+        use crate::process_app::ProcessApp;
 
         // Use a simple incrementing id; start high to avoid collisions with HostHarness ids.
-        static NEXT_PANE_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(10000);
+        static NEXT_PANE_ID: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(10000);
         let pane_id = NEXT_PANE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let (process_app, _draw_tx) = ProcessApp::new_for_test(pane_id, AppPermissions::builtin());
@@ -1399,7 +1195,8 @@ impl PlexiApp {
         };
 
         let win = &mut self.windows[0];
-        win.panes.insert(pane_id, crate::host::pane::Pane::App(Box::new(app_pane)));
+        win.panes
+            .insert(pane_id, crate::host::pane::Pane::App(Box::new(app_pane)));
         let tile_id = win.tree.tiles.insert_pane(pane_id);
         if win.tree.root.is_none() {
             win.tree.root = Some(tile_id);
@@ -1442,9 +1239,15 @@ impl PlexiApp {
         env.insert("PLEXI_SOCKET".into(), socket);
         env.insert("PLEXI_CONTEXT_ID".into(), context_id.to_string());
         env.insert("PLEXI_CONTEXT_NAME".into(), context_name.to_string());
-        env.insert("PLEXI_CONTEXT_DESCRIPTION".into(), context_description.to_string());
+        env.insert(
+            "PLEXI_CONTEXT_DESCRIPTION".into(),
+            context_description.to_string(),
+        );
         if let Some(root) = context_root {
-            env.insert("PLEXI_CONTEXT_ROOT".into(), root.to_string_lossy().into_owned());
+            env.insert(
+                "PLEXI_CONTEXT_ROOT".into(),
+                root.to_string_lossy().into_owned(),
+            );
         }
         env.insert("PLEXI_CONTEXT_DEPTH".into(), context_depth.to_string());
         BackendSettings {
@@ -1457,27 +1260,31 @@ impl PlexiApp {
     }
 
     pub(crate) fn context_name_for(&self, context_id: u64) -> String {
-        self.router.iter()
+        self.router
+            .iter()
             .find(|c| c.context_id == context_id)
             .map(|c| c.name.clone())
             .unwrap_or_default()
     }
 
     pub(crate) fn context_description_for(&self, context_id: u64) -> String {
-        self.router.iter()
+        self.router
+            .iter()
             .find(|c| c.context_id == context_id)
             .and_then(|c| c.description.clone())
             .unwrap_or_default()
     }
 
     pub(crate) fn context_root_for(&self, context_id: u64) -> Option<PathBuf> {
-        self.router.iter()
+        self.router
+            .iter()
             .find(|c| c.context_id == context_id)
             .and_then(|c| c.root.clone())
     }
 
     pub(crate) fn context_depth_for(&self, context_id: u64) -> u32 {
-        self.router.iter()
+        self.router
+            .iter()
             .find(|c| c.context_id == context_id)
             .map(|c| c.depth)
             .unwrap_or(0)
@@ -1497,9 +1304,10 @@ fn is_overlay_unsafe_cmd(cmd: &crate::app::app_trait::AppCommand) -> bool {
         | AppCommand::RunInLinkedTerminal { .. }
         | AppCommand::InsertPathToken { .. }
         | AppCommand::OpenArtifact { .. } => true,
-        AppCommand::DeliverNotifyAction { host_action, .. } => {
-            host_action.as_deref().map(|a| a.starts_with("pane_focus:")).unwrap_or(false)
-        }
+        AppCommand::DeliverNotifyAction { host_action, .. } => host_action
+            .as_deref()
+            .map(|a| a.starts_with("pane_focus:"))
+            .unwrap_or(false),
         _ => false,
     }
 }
@@ -1520,7 +1328,8 @@ fn overlay_unsafe_cmd_name(cmd: &crate::app::app_trait::AppCommand) -> &'static 
 
 impl eframe::App for PlexiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.frame_tick.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.frame_tick
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let _frame_start = std::time::Instant::now();
         self.update_preamble(ctx);
 
@@ -1547,89 +1356,97 @@ impl eframe::App for PlexiApp {
                 log::info!("quick_note: opened by preempting non-critical modal");
                 crate::app::app_trait::KeyDisposition::Consumed
             } else {
-            // Step 1: run the overlay's handle_key (consumes its owned key events).
-            let disposition = match self.focus_stack.last() {
-                Some(FocusLayer::NotificationModal) => self.notification_modal_handle_key(ctx),
-                Some(FocusLayer::ConfirmClose) => self.confirm_close_handle_key(ctx),
-                Some(FocusLayer::CommandPalette) => self.command_palette_handle_key(ctx),
-                Some(FocusLayer::RenamePane) => self.rename_pane_handle_key(ctx),
-                Some(FocusLayer::ContextRename) => self.context_rename_handle_key(ctx),
-                Some(FocusLayer::ContextDescription) => self.context_description_handle_key(ctx),
-                Some(FocusLayer::QuickNote) => self.quick_note_handle_key(ctx),
-                Some(FocusLayer::QuickNoteDestination) => self.quick_note_destination_handle_key(ctx),
-                Some(FocusLayer::QuickNoteSubDestination(_)) => self.quick_note_sub_destination_handle_key(ctx),
-                Some(FocusLayer::CliSetupPrompt) => self.cli_setup_prompt_handle_key(ctx),
-                Some(FocusLayer::TextInput) => self.text_input_handle_key(ctx),
-                Some(FocusLayer::ContextCloseConfirm) => self.context_close_confirm_handle_key(ctx),
-                Some(FocusLayer::CapabilityModal) => self.capability_modal_handle_key(ctx),
-                Some(FocusLayer::NotesPicker) => {
-                    self.notes_picker_handle_key(ctx);
-                    crate::app::app_trait::KeyDisposition::Passthrough
+                // Step 1: run the overlay's handle_key (consumes its owned key events).
+                let disposition = match self.focus_stack.last() {
+                    Some(FocusLayer::NotificationModal) => self.notification_modal_handle_key(ctx),
+                    Some(FocusLayer::ConfirmClose) => self.confirm_close_handle_key(ctx),
+                    Some(FocusLayer::CommandPalette) => self.command_palette_handle_key(ctx),
+                    Some(FocusLayer::RenamePane) => self.rename_pane_handle_key(ctx),
+                    Some(FocusLayer::ContextRename) => self.context_rename_handle_key(ctx),
+                    Some(FocusLayer::ContextDescription) => {
+                        self.context_description_handle_key(ctx)
+                    }
+                    Some(FocusLayer::QuickNote) => self.quick_note_handle_key(ctx),
+                    Some(FocusLayer::QuickNoteDestination) => {
+                        self.quick_note_destination_handle_key(ctx)
+                    }
+                    Some(FocusLayer::QuickNoteSubDestination(_)) => {
+                        self.quick_note_sub_destination_handle_key(ctx)
+                    }
+                    Some(FocusLayer::CliSetupPrompt) => self.cli_setup_prompt_handle_key(ctx),
+                    Some(FocusLayer::TextInput) => self.text_input_handle_key(ctx),
+                    Some(FocusLayer::ContextCloseConfirm) => {
+                        self.context_close_confirm_handle_key(ctx)
+                    }
+                    Some(FocusLayer::CapabilityModal) => self.capability_modal_handle_key(ctx),
+                    Some(FocusLayer::NotesPicker) => {
+                        self.notes_picker_handle_key(ctx);
+                        crate::app::app_trait::KeyDisposition::Passthrough
+                    }
+                    None => crate::app::app_trait::KeyDisposition::Passthrough,
+                };
+                // Step 2: render the overlay (visual only — key reads already done above).
+                // .cloned() is required: the QuickNoteSubDestination arm borrows `path` from
+                // focus_stack while calling draw_quick_note_menu which needs &mut self.
+                match self.focus_stack.last().cloned() {
+                    Some(FocusLayer::NotificationModal) => {
+                        early_modal_cmds = self.draw_notification_modal(ctx);
+                    }
+                    Some(FocusLayer::ConfirmClose) => {
+                        self.draw_confirm_close(ctx);
+                    }
+                    Some(FocusLayer::CommandPalette) => {
+                        self.draw_command_palette(ctx);
+                    }
+                    Some(FocusLayer::RenamePane) => {
+                        self.draw_rename_pane_overlay(ctx);
+                    }
+                    Some(FocusLayer::ContextRename) => {
+                        self.draw_rename_context_overlay(ctx);
+                    }
+                    Some(FocusLayer::ContextDescription) => {
+                        self.draw_edit_description_overlay(ctx);
+                    }
+                    Some(FocusLayer::QuickNote) => {
+                        self.draw_quick_note_modal(ctx);
+                    }
+                    Some(FocusLayer::QuickNoteDestination) => {
+                        self.draw_quick_note_destination(ctx);
+                    }
+                    Some(FocusLayer::QuickNoteSubDestination(path)) => {
+                        self.draw_quick_note_menu(ctx, &path);
+                    }
+                    Some(FocusLayer::CliSetupPrompt) => {
+                        self.draw_cli_setup_modal(ctx);
+                    }
+                    Some(FocusLayer::TextInput) => {
+                        self.draw_text_input_overlay(ctx);
+                    }
+                    Some(FocusLayer::ContextCloseConfirm) => {
+                        self.draw_context_close_confirm(ctx);
+                    }
+                    Some(FocusLayer::CapabilityModal) => {
+                        self.draw_capability_modal(ctx);
+                    }
+                    Some(FocusLayer::NotesPicker) => {
+                        self.draw_notes_picker(ctx);
+                    }
+                    None => {}
                 }
-                None => crate::app::app_trait::KeyDisposition::Passthrough,
-            };
-            // Step 2: render the overlay (visual only — key reads already done above).
-            // .cloned() is required: the QuickNoteSubDestination arm borrows `path` from
-            // focus_stack while calling draw_quick_note_menu which needs &mut self.
-            match self.focus_stack.last().cloned() {
-                Some(FocusLayer::NotificationModal) => {
-                    early_modal_cmds = self.draw_notification_modal(ctx);
-                }
-                Some(FocusLayer::ConfirmClose) => {
-                    self.draw_confirm_close(ctx);
-                }
-                Some(FocusLayer::CommandPalette) => {
-                    self.draw_command_palette(ctx);
-                }
-                Some(FocusLayer::RenamePane) => {
-                    self.draw_rename_pane_overlay(ctx);
-                }
-                Some(FocusLayer::ContextRename) => {
-                    self.draw_rename_context_overlay(ctx);
-                }
-                Some(FocusLayer::ContextDescription) => {
-                    self.draw_edit_description_overlay(ctx);
-                }
-                Some(FocusLayer::QuickNote) => {
-                    self.draw_quick_note_modal(ctx);
-                }
-                Some(FocusLayer::QuickNoteDestination) => {
-                    self.draw_quick_note_destination(ctx);
-                }
-                Some(FocusLayer::QuickNoteSubDestination(path)) => {
-                    self.draw_quick_note_menu(ctx, &path);
-                }
-                Some(FocusLayer::CliSetupPrompt) => {
-                    self.draw_cli_setup_modal(ctx);
-                }
-                Some(FocusLayer::TextInput) => {
-                    self.draw_text_input_overlay(ctx);
-                }
-                Some(FocusLayer::ContextCloseConfirm) => {
-                    self.draw_context_close_confirm(ctx);
-                }
-                Some(FocusLayer::CapabilityModal) => {
-                    self.draw_capability_modal(ctx);
-                }
-                Some(FocusLayer::NotesPicker) => {
-                    self.draw_notes_picker(ctx);
-                }
-                None => {}
-            }
-            // The overlay may have self-closed (notification queue drained,
-            // confirm-close confirmed/cancelled, palette picked an entry,
-            // rename committed). Re-sync so the layer is accurate for the
-            // rest of this frame.
-            self.sync_notification_modal_focus();
-            self.sync_confirm_close_focus();
-            self.sync_context_close_focus();
-            self.sync_command_palette_focus();
-            self.sync_rename_pane_focus();
-            self.sync_context_rename_focus();
-            self.sync_cli_setup_prompt_focus();
-            self.sync_text_input_focus();
-            self.sync_capability_modal_focus();
-            disposition
+                // The overlay may have self-closed (notification queue drained,
+                // confirm-close confirmed/cancelled, palette picked an entry,
+                // rename committed). Re-sync so the layer is accurate for the
+                // rest of this frame.
+                self.sync_notification_modal_focus();
+                self.sync_confirm_close_focus();
+                self.sync_context_close_focus();
+                self.sync_command_palette_focus();
+                self.sync_rename_pane_focus();
+                self.sync_context_rename_focus();
+                self.sync_cli_setup_prompt_focus();
+                self.sync_text_input_focus();
+                self.sync_capability_modal_focus();
+                disposition
             } // end else (non-preempted path)
         } else {
             crate::app::app_trait::KeyDisposition::Passthrough
@@ -1652,15 +1469,19 @@ impl eframe::App for PlexiApp {
         let fresh_cmds = self.drain_all_app_commands();
         // When the overlay releases, prepend any held unsafe commands so they
         // execute before new commands this frame (FIFO order preserved).
-        let deferred_app_cmds: Vec<_> = if !self.input_captured_by_overlay() && !self.overlay_held_cmds.is_empty() {
-            let released = std::mem::take(&mut self.overlay_held_cmds);
-            log::info!("app_cmd: releasing {} held command(s) — overlay released", released.len());
-            let mut all = released;
-            all.extend(fresh_cmds);
-            all
-        } else {
-            fresh_cmds
-        };
+        let deferred_app_cmds: Vec<_> =
+            if !self.input_captured_by_overlay() && !self.overlay_held_cmds.is_empty() {
+                let released = std::mem::take(&mut self.overlay_held_cmds);
+                log::info!(
+                    "app_cmd: releasing {} held command(s) — overlay released",
+                    released.len()
+                );
+                let mut all = released;
+                all.extend(fresh_cmds);
+                all
+            } else {
+                fresh_cmds
+            };
         self.sync_app_cwd();
 
         // Dispatch any DeliverNotifyAction commands the early modal render
@@ -1746,7 +1567,8 @@ impl eframe::App for PlexiApp {
                                 if let Some(a) = pane.as_app_mut() {
                                     a.runtime.queue_outbound_event(
                                         crate::app_protocol::PlexiEvent::PaneSpawnError {
-                                            reason: "layout 'background' not yet implemented".to_string(),
+                                            reason: "layout 'background' not yet implemented"
+                                                .to_string(),
                                             request_id: request_id.clone(),
                                         },
                                     );
@@ -1771,10 +1593,16 @@ impl eframe::App for PlexiApp {
                     let original_active_window = self.active_window;
                     if let Some(target_ctx_id) = target_context {
                         let requester_context_id = self.windows[self.active_window].context_id;
-                        let target_exists = self.router.iter().any(|c| c.context_id == target_ctx_id);
-                        let is_descendant = self.host.ancestors_of(target_ctx_id).contains(&requester_context_id);
+                        let target_exists =
+                            self.router.iter().any(|c| c.context_id == target_ctx_id);
+                        let is_descendant = self
+                            .host
+                            .ancestors_of(target_ctx_id)
+                            .contains(&requester_context_id);
 
-                        if !target_exists || (!is_descendant && requester_context_id != target_ctx_id) {
+                        if !target_exists
+                            || (!is_descendant && requester_context_id != target_ctx_id)
+                        {
                             log::warn!(
                                 "SpawnPane: target_context={target_ctx_id} invalid or not a descendant of requester context {requester_context_id}"
                             );
@@ -1784,10 +1612,15 @@ impl eframe::App for PlexiApp {
                                 .focused_pane
                                 .and_then(|tile| self.windows[active].tree.tiles.get(tile))
                                 .and_then(|tile| {
-                                    if let egui_tiles::Tile::Pane(pid) = tile { Some(*pid) } else { None }
+                                    if let egui_tiles::Tile::Pane(pid) = tile {
+                                        Some(*pid)
+                                    } else {
+                                        None
+                                    }
                                 });
                             if let Some(req_pane_id) = requesting_pane_id {
-                                if let Some(pane) = self.windows[active].panes.get_mut(&req_pane_id) {
+                                if let Some(pane) = self.windows[active].panes.get_mut(&req_pane_id)
+                                {
                                     if let Some(a) = pane.as_app_mut() {
                                         a.runtime.queue_outbound_event(
                                             crate::app_protocol::PlexiEvent::PaneSpawnError {
@@ -1804,7 +1637,11 @@ impl eframe::App for PlexiApp {
                         }
 
                         // Switch to a window in the target context for the spawn.
-                        if let Some(win_idx) = self.windows.iter().position(|w| w.context_id == target_ctx_id) {
+                        if let Some(win_idx) = self
+                            .windows
+                            .iter()
+                            .position(|w| w.context_id == target_ctx_id)
+                        {
                             log::info!(
                                 "SpawnPane: target_context={target_ctx_id} — switching to window index {win_idx}"
                             );
@@ -1836,22 +1673,30 @@ impl eframe::App for PlexiApp {
                         // "terminal" is a builtin pane type, not in the app registry.
                         // Resolve target window+tile from from_pane_id (cross-window search)
                         // or fall back to the active window's focused pane.
-                        let vertical = matches!(layout.as_str(), "split_h" | "split_right" | "split_left");
-                        let new_pane_first = matches!(layout.as_str(), "split_above" | "split_left");
+                        let vertical =
+                            matches!(layout.as_str(), "split_h" | "split_right" | "split_left");
+                        let new_pane_first =
+                            matches!(layout.as_str(), "split_above" | "split_left");
                         let initial_cmd = cmd_from_args(&effective_args);
                         let close_on_exit = initial_cmd.is_some();
                         let (target_win, target_tile) = if let Some(from_id) = from_pane_id {
                             match self.find_pane_in_any_window(from_id) {
                                 Some(loc) => {
-                                    log::info!("SpawnPane: targeting from_pane_id={from_id} in win_idx={}", loc.0);
+                                    log::info!(
+                                        "SpawnPane: targeting from_pane_id={from_id} in win_idx={}",
+                                        loc.0
+                                    );
                                     loc
                                 }
                                 None => {
                                     log::warn!("SpawnPane: from_pane_id={from_id} not found in any window, using focused pane");
-                                    let Some(tile) = self.windows[active].focused_pane
+                                    let Some(tile) = self.windows[active]
+                                        .focused_pane
                                         .or(self.windows[active].tree.root)
                                     else {
-                                        log::warn!("SpawnPane: no target tile — window is empty, skipping");
+                                        log::warn!(
+                                            "SpawnPane: no target tile — window is empty, skipping"
+                                        );
                                         self.active_window = original_active_window;
                                         continue;
                                     };
@@ -1875,8 +1720,14 @@ impl eframe::App for PlexiApp {
                         // CLI terminal uses the ephemeral flag exclusively — cmd alone does not close.
                         // keep_focus=true: coordinator app always retains focus after spawning a terminal.
                         let _ = self.spawn_terminal_pane_at(
-                            target_win, target_tile, vertical, new_pane_first,
-                            initial_cmd.as_deref(), close_on_exit, None, true,
+                            target_win,
+                            target_tile,
+                            vertical,
+                            new_pane_first,
+                            initial_cmd.as_deref(),
+                            close_on_exit,
+                            None,
+                            true,
                         );
                     } else {
                         if let Some(from_id) = from_pane_id {
@@ -1884,7 +1735,11 @@ impl eframe::App for PlexiApp {
                             // resolution to that window so it cannot override target_context.
                             let tile_opt = if target_context.is_some() {
                                 let ctx_win = self.active_window;
-                                self.windows[ctx_win].tree.tiles.find_pane(&from_id).map(|ft| (ctx_win, ft))
+                                self.windows[ctx_win]
+                                    .tree
+                                    .tiles
+                                    .find_pane(&from_id)
+                                    .map(|ft| (ctx_win, ft))
                             } else {
                                 self.find_pane_in_any_window(from_id)
                             };
@@ -1899,7 +1754,12 @@ impl eframe::App for PlexiApp {
                                 }
                             }
                         }
-                        let _ = self.launch_app_by_id_with_layout(&type_id, Some(layout), &effective_args, None);
+                        let _ = self.launch_app_by_id_with_layout(
+                            &type_id,
+                            Some(layout),
+                            &effective_args,
+                            None,
+                        );
                         log::info!("SpawnPane: launched '{type_id}' pane_id={new_pane_id}");
                     }
 
@@ -1909,7 +1769,10 @@ impl eframe::App for PlexiApp {
                     // Send PaneSpawned back to the requesting pane (may be
                     // in a different window than where the spawn landed).
                     if let Some(req_pane_id) = requesting_pane_id {
-                        let win_idx = self.windows.iter().position(|w| w.panes.contains_key(&req_pane_id));
+                        let win_idx = self
+                            .windows
+                            .iter()
+                            .position(|w| w.panes.contains_key(&req_pane_id));
                         if let Some(wi) = win_idx {
                             if let Some(pane) = self.windows[wi].panes.get_mut(&req_pane_id) {
                                 if let Some(a) = pane.as_app_mut() {
@@ -1924,7 +1787,10 @@ impl eframe::App for PlexiApp {
                         }
                     }
                 }
-                AppCommand::CdRequest { cwd, sender_pane_id } => {
+                AppCommand::CdRequest {
+                    cwd,
+                    sender_pane_id,
+                } => {
                     let active = self.active_window;
                     let escaped = cwd.replace('\'', "'\\''");
                     let cd_cmd = format!("\x15cd '{}'\n", escaped);
@@ -2055,7 +1921,14 @@ impl eframe::App for PlexiApp {
                         self.current_notify_id = Some(new_id);
                     }
                 }
-                AppCommand::DeliverNotifyAction { pane_id, notify_id, action_label, value, response_file, host_action } => {
+                AppCommand::DeliverNotifyAction {
+                    pane_id,
+                    notify_id,
+                    action_label,
+                    value,
+                    response_file,
+                    host_action,
+                } => {
                     log::info!(
                         "notify:action: pane_id={pane_id} notify_id={notify_id:?} value={value:?} host_action={host_action:?}"
                     );
@@ -2066,7 +1939,10 @@ impl eframe::App for PlexiApp {
                             if let Ok(pane_id_target) = id_str.parse::<u64>() {
                                 self.pane_navigate(pane_id_target);
                             } else {
-                                log::warn!("notify:action: pane_focus: invalid pane_id {:?}", id_str);
+                                log::warn!(
+                                    "notify:action: pane_focus: invalid pane_id {:?}",
+                                    id_str
+                                );
                             }
                         } else {
                             log::warn!("notify:action: unknown host_action {:?}", action);
@@ -2075,14 +1951,21 @@ impl eframe::App for PlexiApp {
                     if let Some(rf) = &response_file {
                         let content = value.as_deref().unwrap_or("");
                         let tmp = format!("{rf}.tmp");
-                        match std::fs::write(&tmp, content).and_then(|_| std::fs::rename(&tmp, rf)) {
+                        match std::fs::write(&tmp, content).and_then(|_| std::fs::rename(&tmp, rf))
+                        {
                             Ok(_) => log::info!("notify:action: wrote {:?} to {:?}", content, rf),
-                            Err(e) => log::warn!("notify:action: failed to write response file {:?}: {e}", rf),
+                            Err(e) => log::warn!(
+                                "notify:action: failed to write response file {:?}: {e}",
+                                rf
+                            ),
                         }
                     }
                     // Search all windows for the sender pane — it may not be in the
                     // active context (cross-context notification path).
-                    let window_idx = self.windows.iter().position(|w| w.panes.contains_key(&pane_id));
+                    let window_idx = self
+                        .windows
+                        .iter()
+                        .position(|w| w.panes.contains_key(&pane_id));
                     if let Some(win_idx) = window_idx {
                         if let Some(pane) = self.windows[win_idx].panes.get_mut(&pane_id) {
                             if let Some(app) = pane.as_app_mut() {
@@ -2097,7 +1980,11 @@ impl eframe::App for PlexiApp {
                         }
                     }
                 }
-                AppCommand::DeliverPipeMessage { sender_pane_id, pipe_id, payload } => {
+                AppCommand::DeliverPipeMessage {
+                    sender_pane_id,
+                    pipe_id,
+                    payload,
+                } => {
                     let active = self.active_window;
                     // Directed pipe (#286) — only the non-sender member of
                     // the pair receives. Falls through to the legacy peer
@@ -2170,14 +2057,15 @@ impl eframe::App for PlexiApp {
                     // it on the target so its `has_reader` returns true and
                     // its SDK has a Pipe handle if it sends in reverse.
                     let active = self.active_window;
-                    let target_kind = self.windows[active]
-                        .panes
-                        .get(&target_pane_id)
-                        .map(|p| match p {
-                            crate::host::pane::Pane::App(_) => "app",
-                            crate::host::pane::Pane::Terminal(_) => "terminal",
-                            crate::host::pane::Pane::Portal(_) => "portal",
-                        });
+                    let target_kind =
+                        self.windows[active]
+                            .panes
+                            .get(&target_pane_id)
+                            .map(|p| match p {
+                                crate::host::pane::Pane::App(_) => "app",
+                                crate::host::pane::Pane::Terminal(_) => "terminal",
+                                crate::host::pane::Pane::Portal(_) => "portal",
+                            });
                     match target_kind {
                         Some("app") => {
                             // Register pipe on target's registry so it can
@@ -2251,20 +2139,31 @@ impl eframe::App for PlexiApp {
                         command,
                     );
                 }
-                AppCommand::OpenArtifact { sender_pane_id, path, mode } => {
+                AppCommand::OpenArtifact {
+                    sender_pane_id,
+                    path,
+                    mode,
+                } => {
                     self.dispatch_open_artifact(sender_pane_id, path, mode);
                 }
-                AppCommand::QueryContextState { sender_pane_id, context_id } => {
+                AppCommand::QueryContextState {
+                    sender_pane_id,
+                    context_id,
+                } => {
                     // Visibility check: the requesting pane must be in the
                     // queried context itself or in an ancestor of it.
-                    let requester_context_id = self.windows.iter()
+                    let requester_context_id = self
+                        .windows
+                        .iter()
                         .find(|w| w.panes.contains_key(&sender_pane_id))
                         .map(|w| w.context_id)
                         .unwrap_or(0);
 
                     let is_self = requester_context_id == context_id;
                     let is_ancestor = if !is_self {
-                        self.host.ancestors_of(context_id).contains(&requester_context_id)
+                        self.host
+                            .ancestors_of(context_id)
+                            .contains(&requester_context_id)
                     } else {
                         false
                     };
@@ -2290,7 +2189,10 @@ impl eframe::App for PlexiApp {
                     );
 
                     // Send response back to the requesting pane.
-                    let window_idx = self.windows.iter().position(|w| w.panes.contains_key(&sender_pane_id));
+                    let window_idx = self
+                        .windows
+                        .iter()
+                        .position(|w| w.panes.contains_key(&sender_pane_id));
                     if let Some(win_idx) = window_idx {
                         if let Some(pane) = self.windows[win_idx].panes.get_mut(&sender_pane_id) {
                             if let Some(app) = pane.as_app_mut() {
@@ -2301,7 +2203,10 @@ impl eframe::App for PlexiApp {
                         }
                     }
                 }
-                AppCommand::DeliverRunUpdate { originator_type_id, event } => {
+                AppCommand::DeliverRunUpdate {
+                    originator_type_id,
+                    event,
+                } => {
                     let active = self.active_window;
                     let pane_ids: Vec<_> = self.windows[active].panes.keys().copied().collect();
                     let mut delivered = false;
@@ -2383,7 +2288,11 @@ impl eframe::App for PlexiApp {
                 });
             let ws = self.router.active();
             let ws_id = ws.context_id;
-            let window_count = self.windows.iter().filter(|c| c.context_id == ws_id).count();
+            let window_count = self
+                .windows
+                .iter()
+                .filter(|c| c.context_id == ws_id)
+                .count();
             let context_label = if window_count > 1 {
                 format!("{} ({},{})", ws.name, context.grid_x, context.grid_y)
             } else {
@@ -2425,29 +2334,52 @@ impl eframe::App for PlexiApp {
         // fire; all other shortcuts are suppressed when an overlay holds focus via
         // the early-return guard in `keys::poll_actions`.
         let modal_open = self.input_captured_by_overlay();
-        for action in keys::poll_actions(ctx, &self.binding_table, app_active, keyboard_capture_active, modal_open, self.show_shortcuts) {
+        for action in keys::poll_actions(
+            ctx,
+            &self.binding_table,
+            app_active,
+            keyboard_capture_active,
+            modal_open,
+            self.show_shortcuts,
+        ) {
             match action {
                 Action::SplitHorizontal => {
                     self.windows[self.active_window].clear_zoom();
-                    self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
+                    self.ctx.memory_mut(|m| {
+                        if let Some(id) = m.focused() {
+                            m.surrender_focus(id);
+                        }
+                    });
                     self.split_focused(false, None, false, false, None);
                     self.save_workspace();
                 }
                 Action::SplitVertical => {
                     self.windows[self.active_window].clear_zoom();
-                    self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
+                    self.ctx.memory_mut(|m| {
+                        if let Some(id) = m.focused() {
+                            m.surrender_focus(id);
+                        }
+                    });
                     self.split_focused(true, None, false, false, None);
                     self.save_workspace();
                 }
                 Action::SplitRight => {
                     self.windows[self.active_window].clear_zoom();
-                    self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
+                    self.ctx.memory_mut(|m| {
+                        if let Some(id) = m.focused() {
+                            m.surrender_focus(id);
+                        }
+                    });
                     self.split_focused_mirror(crate::host::command::Placement::Right);
                     self.save_workspace();
                 }
                 Action::SplitDown => {
                     self.windows[self.active_window].clear_zoom();
-                    self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
+                    self.ctx.memory_mut(|m| {
+                        if let Some(id) = m.focused() {
+                            m.surrender_focus(id);
+                        }
+                    });
                     self.split_focused_mirror(crate::host::command::Placement::Below);
                     self.save_workspace();
                 }
@@ -2474,54 +2406,62 @@ impl eframe::App for PlexiApp {
                         self.push_focus_history(old_window_id, old_focus);
                     }
                 }
-                Action::SwapPane(dir) => {
-                    match self.swap_pane(dir) {
-                        crate::pane_ops::SwapResult::Swapped {
-                            rect_a, rect_b, ..
-
-                        } => {
-                            let now = std::time::Instant::now();
-                            self.pane_anims = vec![
-                                PaneSwapAnim { from: rect_a, to: rect_b, started_at: now },
-                                PaneSwapAnim { from: rect_b, to: rect_a, started_at: now },
-                            ];
+                Action::SwapPane(dir) => match self.swap_pane(dir) {
+                    crate::pane_ops::SwapResult::Swapped { rect_a, rect_b, .. } => {
+                        let now = std::time::Instant::now();
+                        self.pane_anims = vec![
+                            PaneSwapAnim {
+                                from: rect_a,
+                                to: rect_b,
+                                started_at: now,
+                            },
+                            PaneSwapAnim {
+                                from: rect_b,
+                                to: rect_a,
+                                started_at: now,
+                            },
+                        ];
+                        self.ctx.request_repaint();
+                    }
+                    crate::pane_ops::SwapResult::AtBoundary => {
+                        let moved = match dir {
+                            crate::host::keys::Direction::Down => {
+                                self.move_focused_pane_to_row_boundary(true)
+                            }
+                            crate::host::keys::Direction::Up => {
+                                self.move_focused_pane_to_row_boundary(false)
+                            }
+                            _ => self.move_focused_pane_to_adjacent_window(dir),
+                        };
+                        if moved {
+                            self.ctx.request_repaint();
+                        } else if let Some(focused) = self.windows[self.active_window].focused_pane
+                        {
+                            self.edge_pulse = Some(EdgePulse {
+                                tile: focused,
+                                dir,
+                                started_at: std::time::Instant::now(),
+                            });
                             self.ctx.request_repaint();
                         }
-                        crate::pane_ops::SwapResult::AtBoundary => {
-                            let moved = match dir {
-                                crate::host::keys::Direction::Down => {
-                                    self.move_focused_pane_to_row_boundary(true)
-                                }
-                                crate::host::keys::Direction::Up => {
-                                    self.move_focused_pane_to_row_boundary(false)
-                                }
-                                _ => self.move_focused_pane_to_adjacent_window(dir),
-                            };
-                            if moved {
-                                self.ctx.request_repaint();
-                            } else if let Some(focused) =
-                                self.windows[self.active_window].focused_pane
-                            {
-                                self.edge_pulse = Some(EdgePulse {
-                                    tile: focused,
-                                    dir,
-                                    started_at: std::time::Instant::now(),
-                                });
-                                self.ctx.request_repaint();
-                            }
-                        }
-                        crate::pane_ops::SwapResult::NoFocus => {}
                     }
-                }
+                    crate::pane_ops::SwapResult::NoFocus => {}
+                },
                 Action::SendPane(dir) => {
                     match self.send_pane(dir) {
-                        crate::pane_ops::SwapResult::Swapped {
-                            rect_a, rect_b, ..
-                        } => {
+                        crate::pane_ops::SwapResult::Swapped { rect_a, rect_b, .. } => {
                             let now = std::time::Instant::now();
                             self.pane_anims = vec![
-                                PaneSwapAnim { from: rect_a, to: rect_b, started_at: now },
-                                PaneSwapAnim { from: rect_b, to: rect_a, started_at: now },
+                                PaneSwapAnim {
+                                    from: rect_a,
+                                    to: rect_b,
+                                    started_at: now,
+                                },
+                                PaneSwapAnim {
+                                    from: rect_b,
+                                    to: rect_a,
+                                    started_at: now,
+                                },
                             ];
                             self.ctx.request_repaint();
                         }
@@ -2558,7 +2498,10 @@ impl eframe::App for PlexiApp {
                             let state = self.build_context_close_state(child_ctx_id);
                             if state.items.is_empty() {
                                 // Empty context — close immediately, no dialog needed.
-                                let idx = self.router.iter().position(|c| c.context_id == child_ctx_id);
+                                let idx = self
+                                    .router
+                                    .iter()
+                                    .position(|c| c.context_id == child_ctx_id);
                                 if let Some(i) = idx {
                                     log::info!("context_close: empty ctx={child_ctx_id} — closing immediately");
                                     self.delete_context(i);
@@ -2596,7 +2539,13 @@ impl eframe::App for PlexiApp {
                         let tile = win.focused_pane;
                         let target = tile
                             .and_then(|tile_id| win.tree.tiles.get(tile_id))
-                            .and_then(|t| if let egui_tiles::Tile::Pane(p) = t { Some(*p) } else { None })
+                            .and_then(|t| {
+                                if let egui_tiles::Tile::Pane(p) = t {
+                                    Some(*p)
+                                } else {
+                                    None
+                                }
+                            })
                             .and_then(|pane_id| win.panes.get(&pane_id))
                             .and_then(|p| p.portal_target());
                         (tile, target)
@@ -2605,11 +2554,16 @@ impl eframe::App for PlexiApp {
                         // Focused pane is a Portal tile → zoom into its sub-context.
                         // Verify target context exists BEFORE pushing depth state;
                         // push_depth must not fire if there is nothing to switch to.
-                        if let Some(ctx_idx) = self.router.position(|c| c.context_id == child_ctx_id) {
-                            log::info!("ToggleZoom on Portal: zooming into context_id={child_ctx_id}");
+                        if let Some(ctx_idx) =
+                            self.router.position(|c| c.context_id == child_ctx_id)
+                        {
+                            log::info!(
+                                "ToggleZoom on Portal: zooming into context_id={child_ctx_id}"
+                            );
                             let current_ctx_id = self.router.active().context_id;
                             let current_win_id = self.windows[self.active_window].window_id;
-                            self.router.push_depth(current_ctx_id, current_win_id, focused_tile);
+                            self.router
+                                .push_depth(current_ctx_id, current_win_id, focused_tile);
                             self.switch_workspace(ctx_idx);
                         } else {
                             log::warn!("ToggleZoom on Portal: target context_id={child_ctx_id} not found in router");
@@ -2663,7 +2617,11 @@ impl eframe::App for PlexiApp {
                 Action::ToggleCommandPalette => {
                     self.show_command_palette = !self.show_command_palette;
                     if self.show_command_palette {
-                        self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
+                        self.ctx.memory_mut(|m| {
+                            if let Some(id) = m.focused() {
+                                m.surrender_focus(id);
+                            }
+                        });
                         self.palette_query.clear();
                         self.palette_selected = 0;
                         // Resolve focused pane workspace once at open-time — not per draw-frame —
@@ -2682,7 +2640,11 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::RenamePane => {
-                    self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
+                    self.ctx.memory_mut(|m| {
+                        if let Some(id) = m.focused() {
+                            m.surrender_focus(id);
+                        }
+                    });
                     let active_ctx = &self.windows[self.active_window];
                     if let Some(focused_tile) = active_ctx.focused_pane {
                         if let Some(Tile::Pane(pane_id)) = active_ctx.tree.tiles.get(focused_tile) {
@@ -2717,7 +2679,9 @@ impl eframe::App for PlexiApp {
                                     Pane::App(a) => a.name.clone(),
                                     Pane::Portal(_) => String::new(),
                                 };
-                                log::info!("pane_hide: pane={pane_id} name={name:?} hidden={new_val}");
+                                log::info!(
+                                    "pane_hide: pane={pane_id} name={name:?} hidden={new_val}"
+                                );
                                 self.save_workspace();
                             }
                         }
@@ -2744,7 +2708,8 @@ impl eframe::App for PlexiApp {
                             display_order.push(i);
                         }
                     }
-                    let active_order: Vec<usize> = display_order.into_iter()
+                    let active_order: Vec<usize> = display_order
+                        .into_iter()
                         .filter(|&i| !self.router.get(i).parked)
                         .collect();
                     if let Some(&router_idx) = active_order.get(n) {
@@ -2753,9 +2718,14 @@ impl eframe::App for PlexiApp {
                         if target_parent == Some(current_ctx_id) {
                             let current_win_id = self.windows[self.active_window].window_id;
                             let focused_tile = self.windows[self.active_window].focused_pane;
-                            self.router.push_depth(current_ctx_id, current_win_id, focused_tile);
+                            self.router
+                                .push_depth(current_ctx_id, current_win_id, focused_tile);
                         }
-                        log::info!("SwitchContext: display_pos={} → router_idx={}", n + 1, router_idx);
+                        log::info!(
+                            "SwitchContext: display_pos={} → router_idx={}",
+                            n + 1,
+                            router_idx
+                        );
                         self.switch_workspace(router_idx);
                     }
                 }
@@ -2896,11 +2866,22 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::ContextZoomOut => {
-                    log::info!("ContextZoomOut: popping depth stack (depth={})", self.router.current_depth());
-                    if let Some((parent_ctx_id, parent_win_id, focused_tile)) = self.router.pop_depth() {
-                        if let Some(ctx_idx) = self.router.position(|c| c.context_id == parent_ctx_id) {
+                    log::info!(
+                        "ContextZoomOut: popping depth stack (depth={})",
+                        self.router.current_depth()
+                    );
+                    if let Some((parent_ctx_id, parent_win_id, focused_tile)) =
+                        self.router.pop_depth()
+                    {
+                        if let Some(ctx_idx) =
+                            self.router.position(|c| c.context_id == parent_ctx_id)
+                        {
                             self.switch_workspace(ctx_idx);
-                            if let Some(win_idx) = self.windows.iter().position(|w| w.window_id == parent_win_id) {
+                            if let Some(win_idx) = self
+                                .windows
+                                .iter()
+                                .position(|w| w.window_id == parent_win_id)
+                            {
                                 self.active_window = win_idx;
                                 self.windows[win_idx].focused_pane = focused_tile;
                             }
@@ -2928,16 +2909,13 @@ impl eframe::App for PlexiApp {
         }
 
         // Config hot-reload (#1115): drain filesystem watcher signals.
-        let config_changed = self
-            .config_reload_rx
-            .as_ref()
-            .map_or(false, |rx| {
-                let hit = rx.try_recv().is_ok();
-                if hit {
-                    while rx.try_recv().is_ok() {}
-                }
-                hit
-            });
+        let config_changed = self.config_reload_rx.as_ref().map_or(false, |rx| {
+            let hit = rx.try_recv().is_ok();
+            if hit {
+                while rx.try_recv().is_ok() {}
+            }
+            hit
+        });
         if config_changed {
             self.reload_config();
         }
@@ -2952,27 +2930,22 @@ impl eframe::App for PlexiApp {
         }
 
         // App registry hot-reload (#1712): drain filesystem watcher signals.
-        let registry_changed = self
-            .registry_reload_rx
-            .as_ref()
-            .map_or(false, |rx| {
-                let hit = rx.try_recv().is_ok();
-                if hit {
-                    while rx.try_recv().is_ok() {}
-                }
-                hit
-            });
+        let registry_changed = self.registry_reload_rx.as_ref().map_or(false, |rx| {
+            let hit = rx.try_recv().is_ok();
+            if hit {
+                while rx.try_recv().is_ok() {}
+            }
+            hit
+        });
         if registry_changed {
-            let root = self
-                .router
-                .active()
-                .root
-                .clone()
-                .unwrap_or_else(|| {
-                    std::env::current_dir()
-                        .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
-                });
-            log::info!("app_registry_watcher: rescanning registry for root={}", root.display());
+            let root = self.router.active().root.clone().unwrap_or_else(|| {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")))
+            });
+            log::info!(
+                "app_registry_watcher: rescanning registry for root={}",
+                root.display()
+            );
             self.registry = crate::app::registry::AppRegistry::load(&root);
         }
 
@@ -3015,12 +2988,14 @@ impl eframe::App for PlexiApp {
         // Comparing at frame-end means temporary save/restore patterns in
         // canvas_bindings are invisible — focused_pane holds the settled value here.
         // Uses stable window_id (not the vector index) so the key survives window removal.
-        let current_focus = self.windows
+        let current_focus = self
+            .windows
             .get(self.active_window)
             .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)));
         if current_focus != self.last_logged_focus {
             if let Some((window_id, tile_id)) = self.last_logged_focus {
-                let duration_secs = self.focus_started_at
+                let duration_secs = self
+                    .focus_started_at
                     .map(|t| t.elapsed().as_secs())
                     .unwrap_or(0);
                 self.emit_focus_changed_for_tile(window_id, tile_id, duration_secs);
@@ -3037,14 +3012,16 @@ impl eframe::App for PlexiApp {
 
     fn on_exit(&mut self) {
         if let Some((window_id, tile_id)) = self.last_logged_focus {
-            let duration_secs = self.focus_started_at
+            let duration_secs = self
+                .focus_started_at
                 .map(|t| t.elapsed().as_secs())
                 .unwrap_or(0);
-            log::info!("focus_changed: shutdown — banking final session duration_secs={duration_secs}");
+            log::info!(
+                "focus_changed: shutdown — banking final session duration_secs={duration_secs}"
+            );
             self.emit_focus_changed_for_tile(window_id, tile_id, duration_secs);
         }
     }
-
 }
 
 impl PlexiApp {
@@ -3082,16 +3059,23 @@ impl PlexiApp {
             log::info!("notes_picker: no notes in {:?}", notes_dir);
             return;
         }
-        log::info!("notes_picker: {} notes found in {:?}", entries.len(), notes_dir);
+        log::info!(
+            "notes_picker: {} notes found in {:?}",
+            entries.len(),
+            notes_dir
+        );
         self.notes_picker_entries = entries;
         self.notes_picker_selected = 0;
         self.push_focus_layer(FocusLayer::NotesPicker);
         // Surrender egui keyboard focus from the active TextEdit so the picker
         // receives j/k and other navigation keys immediately on the first frame.
-        self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
+        self.ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
     }
 }
-
 
 // ── Directed pipe helpers (#286) ─────────────────────────────────────────────
 

@@ -18,7 +18,8 @@ fn make_app() -> Option<ProcessApp> {
         HashSet::new(),
         false,
         None,
-    ).ok()
+    )
+    .ok()
 }
 
 #[test]
@@ -27,7 +28,9 @@ fn render_session_submit_produces_event() {
         eprintln!("skipping: no /bin/sh available");
         return;
     };
-    app.render_session.text_input_buffers.insert("x".to_string(), "hello".to_string());
+    app.render_session
+        .text_input_buffers
+        .insert("x".to_string(), "hello".to_string());
     app.submit_text_input("x");
     let evt = app.outbound_events.pop_back().expect("event queued");
     match evt {
@@ -44,7 +47,11 @@ fn render_session_process_app_has_no_text_input_fields() {
     // Compile-time proof: ProcessApp::render_session owns the state.
     // This test just exercises the field path — if mod.rs still had
     // text_input_buffers directly on ProcessApp this wouldn't compile.
-    let Some(mut app) = make_app() else { return; };
-    app.render_session.text_input_buffers.insert("k".to_string(), "v".to_string());
+    let Some(mut app) = make_app() else {
+        return;
+    };
+    app.render_session
+        .text_input_buffers
+        .insert("k".to_string(), "v".to_string());
     assert!(app.render_session.text_input_buffers.contains_key("k"));
 }

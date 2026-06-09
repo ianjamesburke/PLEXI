@@ -38,12 +38,9 @@ impl PlexiApp {
                                 } else {
                                     self.colors.bg_active
                                 };
-                                let (rect, _) = ui.allocate_exact_size(
-                                    Vec2::new(8.0, 8.0),
-                                    egui::Sense::hover(),
-                                );
-                                ui.painter()
-                                    .circle_filled(rect.center(), 4.0, color);
+                                let (rect, _) = ui
+                                    .allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
+                                ui.painter().circle_filled(rect.center(), 4.0, color);
                             }
                         });
                     });
@@ -128,14 +125,24 @@ impl PlexiApp {
                         k = true;
                     }
                     ui.add_space(12.0);
-                    crate::ui::widgets::key_chip(ui, "Enter", &self.colors, egui::FontId::monospace(style::TEXT_CAPTION));
+                    crate::ui::widgets::key_chip(
+                        ui,
+                        "Enter",
+                        &self.colors,
+                        egui::FontId::monospace(style::TEXT_CAPTION),
+                    );
                     ui.label(
                         RichText::new("confirm")
                             .size(style::TEXT_HINT)
                             .color(self.colors.text_dim),
                     );
                     ui.add_space(style::SPACE_SM);
-                    crate::ui::widgets::key_chip(ui, "Esc", &self.colors, egui::FontId::monospace(style::TEXT_CAPTION));
+                    crate::ui::widgets::key_chip(
+                        ui,
+                        "Esc",
+                        &self.colors,
+                        egui::FontId::monospace(style::TEXT_CAPTION),
+                    );
                     ui.label(
                         RichText::new("cancel")
                             .size(style::TEXT_HINT)
@@ -185,14 +192,26 @@ impl PlexiApp {
 
         // Take fields out of the ProcessApp, call the modal, put them back.
         // Two separate borrows so Rust doesn't see a conflict.
-        let (mut pending_prompts, mut outbound_events, mut permissions,
-             mut secret_input_buf, mut permission_store, mut deferred_ai_queries,
-             type_id, workspace_root, ai_broker, http_tx, proc_pane_id) = {
+        let (
+            mut pending_prompts,
+            mut outbound_events,
+            mut permissions,
+            mut secret_input_buf,
+            mut permission_store,
+            mut deferred_ai_queries,
+            type_id,
+            workspace_root,
+            ai_broker,
+            http_tx,
+            proc_pane_id,
+        ) = {
             let pane = match self.windows[active].panes.get_mut(&pane_id) {
                 Some(crate::host::pane::Pane::App(a)) => a,
                 _ => return,
             };
-            let crate::host::pane::AppRuntime::Process(ref mut proc) = pane.runtime else { return };
+            let crate::host::pane::AppRuntime::Process(ref mut proc) = pane.runtime else {
+                return;
+            };
             if proc.pending_prompts.is_empty() {
                 return;
             }
@@ -234,7 +253,9 @@ impl PlexiApp {
             Some(crate::host::pane::Pane::App(a)) => a,
             _ => return,
         };
-        let crate::host::pane::AppRuntime::Process(ref mut proc) = pane.runtime else { return };
+        let crate::host::pane::AppRuntime::Process(ref mut proc) = pane.runtime else {
+            return;
+        };
         proc.pending_prompts = pending_prompts;
         proc.outbound_events = outbound_events;
         proc.permissions = permissions;
@@ -321,9 +342,7 @@ impl PlexiApp {
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("Dissolve")
-                                    .size(12.0)
-                                    .color(colors.text_dim),
+                                RichText::new("Dissolve").size(12.0).color(colors.text_dim),
                             )
                             .fill(colors.bg_active),
                         )
@@ -336,9 +355,7 @@ impl PlexiApp {
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("Cancel")
-                                    .size(12.0)
-                                    .color(colors.text_dim),
+                                RichText::new("Cancel").size(12.0).color(colors.text_dim),
                             )
                             .fill(colors.bg_active),
                         )
@@ -351,21 +368,36 @@ impl PlexiApp {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    crate::ui::widgets::key_chip(ui, "Enter", &colors, egui::FontId::monospace(style::TEXT_CAPTION));
+                    crate::ui::widgets::key_chip(
+                        ui,
+                        "Enter",
+                        &colors,
+                        egui::FontId::monospace(style::TEXT_CAPTION),
+                    );
                     ui.label(
                         RichText::new("close all")
                             .size(style::TEXT_HINT)
                             .color(colors.text_dim),
                     );
                     ui.add_space(style::SPACE_SM);
-                    crate::ui::widgets::key_chip(ui, "D", &colors, egui::FontId::monospace(style::TEXT_CAPTION));
+                    crate::ui::widgets::key_chip(
+                        ui,
+                        "D",
+                        &colors,
+                        egui::FontId::monospace(style::TEXT_CAPTION),
+                    );
                     ui.label(
                         RichText::new("dissolve")
                             .size(style::TEXT_HINT)
                             .color(colors.text_dim),
                     );
                     ui.add_space(style::SPACE_SM);
-                    crate::ui::widgets::key_chip(ui, "Esc", &colors, egui::FontId::monospace(style::TEXT_CAPTION));
+                    crate::ui::widgets::key_chip(
+                        ui,
+                        "Esc",
+                        &colors,
+                        egui::FontId::monospace(style::TEXT_CAPTION),
+                    );
                     ui.label(
                         RichText::new("cancel")
                             .size(style::TEXT_HINT)
@@ -381,16 +413,30 @@ impl PlexiApp {
         cancelled |= scrim_cancelled | btn_cancelled;
 
         if close_all {
-            let idx = self.router.iter().position(|c| c.context_id == state.context_id);
+            let idx = self
+                .router
+                .iter()
+                .position(|c| c.context_id == state.context_id);
             if let Some(i) = idx {
-                log::info!("context_close: close_all ctx={} name={:?}", state.context_id, state.context_name);
+                log::info!(
+                    "context_close: close_all ctx={} name={:?}",
+                    state.context_id,
+                    state.context_name
+                );
                 self.delete_context(i);
                 self.save_workspace();
             } else {
-                log::warn!("context_close: close_all ctx={} not found in router", state.context_id);
+                log::warn!(
+                    "context_close: close_all ctx={} not found in router",
+                    state.context_id
+                );
             }
         } else if dissolve {
-            log::info!("context_close: dissolve ctx={} name={:?}", state.context_id, state.context_name);
+            log::info!(
+                "context_close: dissolve ctx={} name={:?}",
+                state.context_id,
+                state.context_name
+            );
             self.dissolve_portal(state.context_id);
             self.save_workspace();
         } else if cancelled {
@@ -475,10 +521,8 @@ impl PlexiApp {
                                 } else {
                                     self.colors.bg_active
                                 };
-                                let (rect, _) = ui.allocate_exact_size(
-                                    Vec2::new(8.0, 8.0),
-                                    egui::Sense::hover(),
-                                );
+                                let (rect, _) = ui
+                                    .allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
                                 ui.painter().circle_filled(rect.center(), 4.0, color);
                             }
                         });

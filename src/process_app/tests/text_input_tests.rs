@@ -52,19 +52,27 @@ fn text_input_buffer_persists_across_frames() {
     // Simulate two frames where the user has typed "hel" then "hello"
     // by directly manipulating the buffer the way egui's TextEdit
     // would across two ui() ticks.
-    app.render_session.text_input_buffers
+    app.render_session
+        .text_input_buffers
         .insert("note".to_string(), "hel".to_string());
     // ... another frame happens (no submit) ...
     // Buffer must still be there.
     assert_eq!(
-        app.render_session.text_input_buffers.get("note").map(String::as_str),
+        app.render_session
+            .text_input_buffers
+            .get("note")
+            .map(String::as_str),
         Some("hel"),
         "buffer should survive between frames"
     );
-    app.render_session.text_input_buffers
+    app.render_session
+        .text_input_buffers
         .insert("note".to_string(), "hello".to_string());
     assert_eq!(
-        app.render_session.text_input_buffers.get("note").map(String::as_str),
+        app.render_session
+            .text_input_buffers
+            .get("note")
+            .map(String::as_str),
         Some("hello")
     );
 }
@@ -75,7 +83,8 @@ fn enter_emits_text_submitted_with_buffered_value() {
         eprintln!("skipping: no /bin/sh available");
         return;
     };
-    app.render_session.text_input_buffers
+    app.render_session
+        .text_input_buffers
         .insert("note".to_string(), "hello world".to_string());
 
     app.submit_text_input("note");
@@ -96,7 +105,8 @@ fn submit_clears_buffer() {
         eprintln!("skipping: no /bin/sh available");
         return;
     };
-    app.render_session.text_input_buffers
+    app.render_session
+        .text_input_buffers
         .insert("note".to_string(), "draft".to_string());
     app.submit_text_input("note");
     assert!(
@@ -134,13 +144,17 @@ fn text_input_buffer_survives_pane_resize() {
     // owned by `render_session.text_input_buffers` and never touched by resize
     // logic. Simulate the resize bookkeeping and assert the buffer
     // is untouched.
-    app.render_session.text_input_buffers
+    app.render_session
+        .text_input_buffers
         .insert("note".to_string(), "midway".to_string());
     // Resize bookkeeping (mirrors what `ui()` does on size delta).
     app.last_size = egui::vec2(800.0, 600.0);
     // No buffer mutation should happen here — just last_size changes.
     assert_eq!(
-        app.render_session.text_input_buffers.get("note").map(String::as_str),
+        app.render_session
+            .text_input_buffers
+            .get("note")
+            .map(String::as_str),
         Some("midway"),
         "resize must not wipe the host-owned text buffer"
     );
@@ -152,13 +166,18 @@ fn distinct_ids_keep_independent_buffers() {
         eprintln!("skipping: no /bin/sh available");
         return;
     };
-    app.render_session.text_input_buffers
+    app.render_session
+        .text_input_buffers
         .insert("a".to_string(), "alpha".to_string());
-    app.render_session.text_input_buffers
+    app.render_session
+        .text_input_buffers
         .insert("b".to_string(), "beta".to_string());
     app.submit_text_input("a");
     assert_eq!(
-        app.render_session.text_input_buffers.get("b").map(String::as_str),
+        app.render_session
+            .text_input_buffers
+            .get("b")
+            .map(String::as_str),
         Some("beta"),
         "submitting one input must not affect another id"
     );

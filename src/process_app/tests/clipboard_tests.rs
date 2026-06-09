@@ -116,8 +116,8 @@ fn copy_to_clipboard_drawcommand_calls_egui_copy() {
 
 #[test]
 fn crash_overlay_c_key_copies_report() {
-    use crate::testing::HostHarness;
     use crate::host::pane::{AppRuntime, Pane};
+    use crate::testing::HostHarness;
 
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();

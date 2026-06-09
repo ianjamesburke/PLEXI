@@ -90,8 +90,6 @@ impl Window {
         }
     }
 
-
-
     pub(crate) fn find_logical_parent(&self, tile_id: TileId) -> Option<(TileId, TileId)> {
         let mut current = tile_id;
         loop {
@@ -312,8 +310,7 @@ where
         }
 
         let (has_overlap, primary_dist, secondary_dist) = if is_horizontal {
-            let overlap =
-                from_rect.top() < rect.bottom() && rect.top() < from_rect.bottom();
+            let overlap = from_rect.top() < rect.bottom() && rect.top() < from_rect.bottom();
             // Distance from source center to candidate's nearest vertical edge.
             let nearest_edge_x = match dir {
                 Direction::Left => rect.right(),
@@ -324,8 +321,7 @@ where
             let secondary = (rect.center().y - center.y).abs();
             (overlap, primary, secondary)
         } else {
-            let overlap =
-                from_rect.left() < rect.right() && rect.left() < from_rect.right();
+            let overlap = from_rect.left() < rect.right() && rect.left() < from_rect.right();
             let nearest_edge_y = match dir {
                 Direction::Up => rect.bottom(),
                 Direction::Down => rect.top(),
@@ -420,9 +416,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
 
-        let go = |dir: Direction| {
-            find_in_direction_geometric(from, candidates(5).into_iter(), dir)
-        };
+        let go = |dir: Direction| find_in_direction_geometric(from, candidates(5).into_iter(), dir);
 
         assert_eq!(go(Direction::Left), Some(4), "left of 5 should be 4");
         assert_eq!(go(Direction::Right), Some(6), "right of 5 should be 6");
@@ -439,11 +433,7 @@ mod tests {
         let panes = grid_2x3();
         // Source = pane 1 (top-left corner).
         let from = panes[0].1;
-        let candidates: Vec<_> = panes
-            .iter()
-            .copied()
-            .filter(|(id, _)| *id != 1)
-            .collect();
+        let candidates: Vec<_> = panes.iter().copied().filter(|(id, _)| *id != 1).collect();
 
         // No pane to the left of 1, no pane above 1.
         assert_eq!(
@@ -484,11 +474,7 @@ mod tests {
         // Despite `b` having a smaller x-distance, `a` wins because it overlaps
         // the source's vertical range (tier 0 beats tier 1).
         assert_eq!(
-            find_in_direction_geometric(
-                from,
-                vec![a, b].into_iter(),
-                Direction::Right
-            ),
+            find_in_direction_geometric(from, vec![a, b].into_iter(), Direction::Right),
             Some("overlap")
         );
     }
@@ -508,11 +494,7 @@ mod tests {
         );
 
         assert_eq!(
-            find_in_direction_geometric(
-                from,
-                vec![near, far].into_iter(),
-                Direction::Right
-            ),
+            find_in_direction_geometric(from, vec![near, far].into_iter(), Direction::Right),
             Some("near")
         );
     }

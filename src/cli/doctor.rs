@@ -74,7 +74,9 @@ fn check_openrouter() -> OpenRouterReport {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        log::info!("cli:doctor: openrouter check skipped -- keychain not available on this platform");
+        log::info!(
+            "cli:doctor: openrouter check skipped -- keychain not available on this platform"
+        );
         OpenRouterReport {
             configured: false,
             model_count: None,
@@ -120,9 +122,7 @@ fn probe_openrouter_key(api_key: &str) -> Option<usize> {
     };
 
     // OpenRouter /v1/models returns {"data":[{"id":"..."},...]}
-    body["data"]
-        .as_array()
-        .map(|arr| arr.len())
+    body["data"].as_array().map(|arr| arr.len())
 }
 
 /// Probe a single LLM server endpoint.
@@ -281,7 +281,9 @@ pub fn doctor_cli(json: bool) -> i32 {
         } else {
             let ok_count = total - sick_count;
             if ok_count > 0 {
-                println!("  {green}\u{2713}{reset} {ok_count} app(s) -- all capabilities satisfied");
+                println!(
+                    "  {green}\u{2713}{reset} {ok_count} app(s) -- all capabilities satisfied"
+                );
             }
             for app in &sick_apps {
                 let first = &app.missing[0];
@@ -302,7 +304,11 @@ pub fn doctor_cli(json: bool) -> i32 {
 
     log::info!("cli:doctor: audit complete -- {total} app(s), {sick_count} unhealthy");
 
-    if healthy { 0 } else { 1 }
+    if healthy {
+        0
+    } else {
+        1
+    }
 }
 
 /// Print the OpenRouter section to stdout.

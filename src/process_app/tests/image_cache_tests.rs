@@ -10,7 +10,10 @@ fn image_cache_handle_capability_denied() {
     let completions = cache.poll(&egui::Context::default());
     assert_eq!(completions.len(), 1);
     assert_eq!(completions[0].0, handle);
-    assert!(completions[0].1.is_err(), "expected error for denied capability");
+    assert!(
+        completions[0].1.is_err(),
+        "expected error for denied capability"
+    );
     assert!(matches!(
         cache.state(handle),
         Some(image_cache::CachedImage::Error(_))

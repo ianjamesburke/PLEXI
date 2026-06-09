@@ -7,9 +7,19 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub enum ConfigDiagnostic {
-    ReadError { path: String, error: String },
-    ParseError { path: String, error: String },
-    UnknownKey { path: String, table: String, key: String },
+    ReadError {
+        path: String,
+        error: String,
+    },
+    ParseError {
+        path: String,
+        error: String,
+    },
+    UnknownKey {
+        path: String,
+        table: String,
+        key: String,
+    },
 }
 
 impl ConfigDiagnostic {
@@ -35,44 +45,123 @@ impl std::fmt::Display for ConfigDiagnostic {
 }
 
 const KNOWN_TOP_LEVEL: &[&str] = &[
-    "config_version", "font_size", "theme_preset", "theme", "beta", "log",
-    "notifications", "ai", "confirm_quit", "confirm_close",
-    "keybindings", "quick_note", "focus_history_depth", "agents", "cli",
-    "pane_gap", "pane_title_font_size",
+    "config_version",
+    "font_size",
+    "theme_preset",
+    "theme",
+    "beta",
+    "log",
+    "notifications",
+    "ai",
+    "confirm_quit",
+    "confirm_close",
+    "keybindings",
+    "quick_note",
+    "focus_history_depth",
+    "agents",
+    "cli",
+    "pane_gap",
+    "pane_title_font_size",
 ];
 const KNOWN_AGENTS: &[&str] = &["low", "medium", "high"];
 const KNOWN_CLI: &[&str] = &["tips"];
 const KNOWN_THEME: &[&str] = &[
-    "bg_darkest", "bg_sidebar", "bg_toolbar", "terminal_bg", "bg_hover",
-    "bg_sidebar_hover", "bg_active", "text_primary", "text_dim",
-    "text_section", "accent", "border", "foreground", "background",
-    "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
-    "bright_black", "bright_red", "bright_green", "bright_yellow",
-    "bright_blue", "bright_magenta", "bright_cyan", "bright_white",
+    "bg_darkest",
+    "bg_sidebar",
+    "bg_toolbar",
+    "terminal_bg",
+    "bg_hover",
+    "bg_sidebar_hover",
+    "bg_active",
+    "text_primary",
+    "text_dim",
+    "text_section",
+    "accent",
+    "border",
+    "foreground",
+    "background",
+    "black",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "white",
+    "bright_black",
+    "bright_red",
+    "bright_green",
+    "bright_yellow",
+    "bright_blue",
+    "bright_magenta",
+    "bright_cyan",
+    "bright_white",
     "bright_foreground",
 ];
 const KNOWN_BETA: &[&str] = &["crt", "ghost", "ghost_opacity", "osc_pane_title"];
 const KNOWN_LOG: &[&str] = &["level", "retention_days"];
 const KNOWN_NOTIFICATIONS: &[&str] = &["enabled", "focus_mode", "interrupt_threshold"];
-const KNOWN_AI: &[&str] = &["backend", "openrouter", "ollama", "per_app_daily_usd", "global_daily_usd"];
+const KNOWN_AI: &[&str] = &[
+    "backend",
+    "openrouter",
+    "ollama",
+    "per_app_daily_usd",
+    "global_daily_usd",
+];
 const KNOWN_AI_OPENROUTER: &[&str] = &["api_key_env", "model_low", "model_medium", "model_high"];
 const KNOWN_AI_OLLAMA: &[&str] = &["host", "model_low", "model_medium", "model_high"];
 const KNOWN_KEYBINDINGS: &[&str] = &[
-    "quit", "close_pane", "toggle_command_palette", "split_horizontal",
-    "split_vertical", "split_right", "split_down", "swap_pane_left",
-    "swap_pane_down", "swap_pane_up", "swap_pane_right",
-    "send_pane_left", "send_pane_down", "send_pane_up", "send_pane_right",
+    "quit",
+    "close_pane",
+    "toggle_command_palette",
+    "split_horizontal",
+    "split_vertical",
+    "split_right",
+    "split_down",
+    "swap_pane_left",
+    "swap_pane_down",
+    "swap_pane_up",
+    "swap_pane_right",
+    "send_pane_left",
+    "send_pane_down",
+    "send_pane_up",
+    "send_pane_right",
     "navigate_left",
-    "navigate_down", "navigate_up", "navigate_right", "new_tab", "next_tab",
-    "prev_tab", "first_tab", "last_tab", "nav_back", "focus_history_forward",
-    "toggle_sidebar", "toggle_zoom", "toggle_shortcuts", "rename_context",
-    "rename_pane", "new_context", "new_page_right", "toggle_minimap",
-    "scroll_up", "scroll_down", "increase_font_size", "decrease_font_size",
-    "open_file_browser", "open_quick_note", "open_config", "reload_config",
-    "open_secrets_manager", "force_reload_app", "toggle_notification_modal",
-    "open_scratchpad", "set_context_root_from_cwd",
-    "push_to_subcontext", "new_child_context",
-    "hide_pane", "park_context",
+    "navigate_down",
+    "navigate_up",
+    "navigate_right",
+    "new_tab",
+    "next_tab",
+    "prev_tab",
+    "first_tab",
+    "last_tab",
+    "nav_back",
+    "focus_history_forward",
+    "toggle_sidebar",
+    "toggle_zoom",
+    "toggle_shortcuts",
+    "rename_context",
+    "rename_pane",
+    "new_context",
+    "new_page_right",
+    "toggle_minimap",
+    "scroll_up",
+    "scroll_down",
+    "increase_font_size",
+    "decrease_font_size",
+    "open_file_browser",
+    "open_quick_note",
+    "open_config",
+    "reload_config",
+    "open_secrets_manager",
+    "force_reload_app",
+    "toggle_notification_modal",
+    "open_scratchpad",
+    "set_context_root_from_cwd",
+    "push_to_subcontext",
+    "new_child_context",
+    "hide_pane",
+    "park_context",
     "open_notes_picker",
 ];
 
@@ -114,12 +203,24 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
                 check_unknown_keys(t, "log", KNOWN_LOG, &path_str, &mut diags);
             }
             if let Some(toml::Value::Table(t)) = table.get("notifications") {
-                check_unknown_keys(t, "notifications", KNOWN_NOTIFICATIONS, &path_str, &mut diags);
+                check_unknown_keys(
+                    t,
+                    "notifications",
+                    KNOWN_NOTIFICATIONS,
+                    &path_str,
+                    &mut diags,
+                );
             }
             if let Some(toml::Value::Table(t)) = table.get("ai") {
                 check_unknown_keys(t, "ai", KNOWN_AI, &path_str, &mut diags);
                 if let Some(toml::Value::Table(or)) = t.get("openrouter") {
-                    check_unknown_keys(or, "ai.openrouter", KNOWN_AI_OPENROUTER, &path_str, &mut diags);
+                    check_unknown_keys(
+                        or,
+                        "ai.openrouter",
+                        KNOWN_AI_OPENROUTER,
+                        &path_str,
+                        &mut diags,
+                    );
                 }
                 if let Some(toml::Value::Table(ol)) = t.get("ollama") {
                     check_unknown_keys(ol, "ai.ollama", KNOWN_AI_OLLAMA, &path_str, &mut diags);
@@ -442,8 +543,10 @@ impl OllamaBackendConfig {
     }
 }
 
-pub const DEFAULT_AGENT_LOW: &str = "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'";
-pub const DEFAULT_AGENT_MEDIUM: &str = "claude --model claude-sonnet-4-6 --dangerously-skip-permissions '{cmd}'";
+pub const DEFAULT_AGENT_LOW: &str =
+    "claude --model claude-haiku-4-5 --dangerously-skip-permissions '{cmd}'";
+pub const DEFAULT_AGENT_MEDIUM: &str =
+    "claude --model claude-sonnet-4-6 --dangerously-skip-permissions '{cmd}'";
 pub const DEFAULT_AGENT_HIGH: &str = "claude --dangerously-skip-permissions '{cmd}'";
 
 /// Coding agent command templates for dispatch. Each field is a shell command template
@@ -469,9 +572,15 @@ impl AgentsConfig {
         self.high.as_deref().unwrap_or(DEFAULT_AGENT_HIGH)
     }
     fn overlay(&mut self, other: Self) {
-        if other.low.is_some() { self.low = other.low; }
-        if other.medium.is_some() { self.medium = other.medium; }
-        if other.high.is_some() { self.high = other.high; }
+        if other.low.is_some() {
+            self.low = other.low;
+        }
+        if other.medium.is_some() {
+            self.medium = other.medium;
+        }
+        if other.high.is_some() {
+            self.high = other.high;
+        }
     }
 }
 
@@ -671,13 +780,15 @@ pub fn workspace_channel_dir() -> String {
         return format!(".plexi-{profile}");
     }
     static CHANNEL_DIR: OnceLock<String> = OnceLock::new();
-    CHANNEL_DIR.get_or_init(|| {
-        let basename = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| "plexi".to_string());
-        channel_suffix_from_basename(&basename)
-    }).clone()
+    CHANNEL_DIR
+        .get_or_init(|| {
+            let basename = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "plexi".to_string());
+            channel_suffix_from_basename(&basename)
+        })
+        .clone()
 }
 
 /// Returns the config directory name based on the running binary basename.
@@ -845,7 +956,10 @@ pub fn open_config_file() {
     }
 
     if !open_file_with_fallback(&path) {
-        log::error!("open_config_file: could not open {} with any available editor", path.display());
+        log::error!(
+            "open_config_file: could not open {} with any available editor",
+            path.display()
+        );
     }
 }
 
@@ -853,11 +967,7 @@ pub fn open_config_file() {
 /// Returns `true` if any opener succeeded.
 #[cfg(target_os = "macos")]
 pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
-    let candidates: &[&[&str]] = &[
-        &["-a", "Visual Studio Code"],
-        &["-t"],
-        &["-a", "TextEdit"],
-    ];
+    let candidates: &[&[&str]] = &[&["-a", "Visual Studio Code"], &["-t"], &["-a", "TextEdit"]];
     for args in candidates {
         let ok = std::process::Command::new("open")
             .args(*args)
@@ -866,18 +976,33 @@ pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
             .map(|s| s.success())
             .unwrap_or(false);
         if ok {
-            log::info!("open_file_with_fallback: opened {} (args: {:?})", path.display(), args);
+            log::info!(
+                "open_file_with_fallback: opened {} (args: {:?})",
+                path.display(),
+                args
+            );
             return true;
         }
-        let opener_desc = if args.is_empty() { "system default".to_string() } else { format!("{:?}", args) };
-        log::warn!("open_file_with_fallback: opener {} failed for {}, trying next", opener_desc, path.display());
+        let opener_desc = if args.is_empty() {
+            "system default".to_string()
+        } else {
+            format!("{:?}", args)
+        };
+        log::warn!(
+            "open_file_with_fallback: opener {} failed for {}, trying next",
+            opener_desc,
+            path.display()
+        );
     }
     false
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
-    log::warn!("open_file_with_fallback: no platform implementation for {}", path.display());
+    log::warn!(
+        "open_file_with_fallback: no platform implementation for {}",
+        path.display()
+    );
     false
 }
 
@@ -1217,7 +1342,10 @@ pub fn set_adopted_context_path(path: PathBuf) {
 
 /// Consume the adopted context path. Returns `Some` at most once.
 pub fn take_adopted_context_path() -> Option<PathBuf> {
-    ADOPTED_CONTEXT_PATH.lock().ok().and_then(|mut guard| guard.take())
+    ADOPTED_CONTEXT_PATH
+        .lock()
+        .ok()
+        .and_then(|mut guard| guard.take())
 }
 
 /// Convenience: the active workspace root for this process. Returns the
@@ -1254,7 +1382,10 @@ mod tests {
 
     #[test]
     fn config_dir_name_pr() {
-        assert_eq!(channel_suffix_from_basename("plexi-pr-817"), ".plexi-pr-817");
+        assert_eq!(
+            channel_suffix_from_basename("plexi-pr-817"),
+            ".plexi-pr-817"
+        );
     }
 
     #[test]
@@ -1476,7 +1607,10 @@ mod tests {
         fs::write(&path, content).unwrap();
         migrate_config(&path);
         let result = fs::read_to_string(&path).unwrap();
-        assert_eq!(result, content, "should not modify an already-current config");
+        assert_eq!(
+            result, content,
+            "should not modify an already-current config"
+        );
     }
 
     #[test]
@@ -1487,8 +1621,13 @@ mod tests {
         fs::write(&path, content).unwrap();
         migrate_config(&path);
         let result = fs::read_to_string(&path).unwrap();
-        assert!(result.contains("# My comment"), "comments should be preserved: {result}");
-        assert!(result.contains("config_version = 1"), "version should be added: {result}");
+        assert!(
+            result.contains("# My comment"),
+            "comments should be preserved: {result}"
+        );
+        assert!(
+            result.contains("config_version = 1"),
+            "version should be added: {result}"
+        );
     }
-
 }

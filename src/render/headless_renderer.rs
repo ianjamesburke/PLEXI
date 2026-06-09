@@ -42,9 +42,7 @@ impl HeadlessRenderer {
     fn draw(&self, pixmap: &mut Pixmap, prim: &CanvasPrimitive) {
         match prim {
             CanvasPrimitive::Rect { rect, fill, radius } => {
-                let Some(path) =
-                    rounded_rect_path(rect.x, rect.y, rect.w, rect.h, *radius)
-                else {
+                let Some(path) = rounded_rect_path(rect.x, rect.y, rect.w, rect.h, *radius) else {
                     return;
                 };
                 let paint = solid_paint(fill);
@@ -66,7 +64,10 @@ impl HeadlessRenderer {
                 pb.move_to(from.x, from.y);
                 pb.line_to(to.x, to.y);
                 let Some(path) = pb.finish() else { return };
-                let stroke_style = Stroke { width: stroke.width, ..Stroke::default() };
+                let stroke_style = Stroke {
+                    width: stroke.width,
+                    ..Stroke::default()
+                };
                 pixmap.stroke_path(
                     &path,
                     &solid_paint(&stroke.color),
@@ -113,8 +114,7 @@ impl HeadlessRenderer {
                     if px < 0 || py < 0 || px >= w || py >= h {
                         continue;
                     }
-                    let alpha =
-                        (coverage as u16 * style.color.a as u16 / 255) as u8;
+                    let alpha = (coverage as u16 * style.color.a as u16 / 255) as u8;
                     let pr = (style.color.r as u16 * alpha as u16 / 255) as u8;
                     let pg = (style.color.g as u16 * alpha as u16 / 255) as u8;
                     let pb = (style.color.b as u16 * alpha as u16 / 255) as u8;
@@ -155,13 +155,20 @@ fn rounded_rect_path(x: f32, y: f32, w: f32, h: f32, r: f32) -> Option<tiny_skia
     let mut pb = PathBuilder::new();
     pb.move_to(x + r, y);
     pb.line_to(x + w - r, y);
-    pb.cubic_to(x + w - r + kr, y,        x + w,        y + r - kr,  x + w,     y + r);
+    pb.cubic_to(x + w - r + kr, y, x + w, y + r - kr, x + w, y + r);
     pb.line_to(x + w, y + h - r);
-    pb.cubic_to(x + w,        y + h - r + kr, x + w - r + kr, y + h,       x + w - r, y + h);
+    pb.cubic_to(
+        x + w,
+        y + h - r + kr,
+        x + w - r + kr,
+        y + h,
+        x + w - r,
+        y + h,
+    );
     pb.line_to(x + r, y + h);
-    pb.cubic_to(x + r - kr,   y + h,       x,            y + h - r + kr, x,         y + h - r);
+    pb.cubic_to(x + r - kr, y + h, x, y + h - r + kr, x, y + h - r);
     pb.line_to(x, y + r);
-    pb.cubic_to(x,             y + r - kr,  x + r - kr,   y,             x + r,     y);
+    pb.cubic_to(x, y + r - kr, x + r - kr, y, x + r, y);
     pb.close();
     pb.finish()
 }
@@ -213,7 +220,9 @@ impl HeadlessRenderer {
                 _ => {}
             }
         }
-        pixmap.encode_png().expect("PNG encoding never fails on a valid Pixmap")
+        pixmap
+            .encode_png()
+            .expect("PNG encoding never fails on a valid Pixmap")
     }
 
     // ── Layout command support ──────────────────────────────────────────────
@@ -300,7 +309,8 @@ impl HeadlessRenderer {
                         },
                         ..Default::default()
                     };
-                    tree.new_leaf_with_context(style, Some(command.clone())).unwrap()
+                    tree.new_leaf_with_context(style, Some(command.clone()))
+                        .unwrap()
                 }
                 "node" => {
                     let dir = child["direction"].as_str().unwrap_or("row");
@@ -315,9 +325,15 @@ impl HeadlessRenderer {
                         .map(|a| a.iter().map(|c| build_node(tree, c, renderer)).collect())
                         .unwrap_or_default();
                     let gap_size = if dir == "column" {
-                        taffy::geometry::Size { width: length(0.0), height: length(g) }
+                        taffy::geometry::Size {
+                            width: length(0.0),
+                            height: length(g),
+                        }
                     } else {
-                        taffy::geometry::Size { width: length(g), height: length(0.0) }
+                        taffy::geometry::Size {
+                            width: length(g),
+                            height: length(0.0),
+                        }
                     };
                     let style = taffy::style::Style {
                         display: taffy::style::Display::Flex,
@@ -337,9 +353,15 @@ impl HeadlessRenderer {
             taffy::style::FlexDirection::Row
         };
         let gap_size = if direction == "column" {
-            taffy::geometry::Size { width: length(0.0), height: length(gap) }
+            taffy::geometry::Size {
+                width: length(0.0),
+                height: length(gap),
+            }
         } else {
-            taffy::geometry::Size { width: length(gap), height: length(0.0) }
+            taffy::geometry::Size {
+                width: length(gap),
+                height: length(0.0),
+            }
         };
 
         let child_ids: Vec<taffy::NodeId> = children
@@ -456,7 +478,9 @@ impl HeadlessRenderer {
         let radius = cmd["radius"].as_f64().unwrap_or(0.0) as f32;
         let color_str = cmd["fill"].as_str().unwrap_or("#000000");
         let color = parse_hex_color(color_str);
-        let Some(path) = rounded_rect_path(x, y, w, h, radius) else { return };
+        let Some(path) = rounded_rect_path(x, y, w, h, radius) else {
+            return;
+        };
         pixmap.fill_path(
             &path,
             &solid_paint(&color),
@@ -474,7 +498,12 @@ impl HeadlessRenderer {
         let color_str = cmd["color"].as_str().unwrap_or("#ffffff");
         let color = parse_hex_color(color_str);
         let bold = cmd["bold"].as_bool().unwrap_or(false);
-        let style = TextStyle { size, color, bold, italic: false };
+        let style = TextStyle {
+            size,
+            color,
+            bold,
+            italic: false,
+        };
         let pos = Point { x, y };
         self.blit_text(pixmap, &pos, text, &style);
     }
@@ -492,8 +521,17 @@ impl HeadlessRenderer {
         pb.move_to(x1, y1);
         pb.line_to(x2, y2);
         let Some(path) = pb.finish() else { return };
-        let stroke = Stroke { width, ..Stroke::default() };
-        pixmap.stroke_path(&path, &solid_paint(&color), &stroke, Transform::identity(), None);
+        let stroke = Stroke {
+            width,
+            ..Stroke::default()
+        };
+        pixmap.stroke_path(
+            &path,
+            &solid_paint(&color),
+            &stroke,
+            Transform::identity(),
+            None,
+        );
     }
 
     fn pgap_list(&self, pixmap: &mut Pixmap, cmd: &Value, frame_width: u32) {
@@ -531,8 +569,21 @@ impl HeadlessRenderer {
                 }
             }
             let color = if is_sel { fg } else { muted };
-            let style = TextStyle { size: 15.0, color, bold: false, italic: false };
-            self.blit_text(pixmap, &Point { x: x + 24.0, y: y + 12.0 }, label, &style);
+            let style = TextStyle {
+                size: 15.0,
+                color,
+                bold: false,
+                italic: false,
+            };
+            self.blit_text(
+                pixmap,
+                &Point {
+                    x: x + 24.0,
+                    y: y + 12.0,
+                },
+                label,
+                &style,
+            );
             y += item_h;
         }
     }

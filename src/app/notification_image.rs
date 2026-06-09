@@ -28,10 +28,24 @@
 //! egui's `TextureHandle` drop already releases the GPU resource and the
 //! steady-state count of concurrent visible notifications is small.
 
-use crate::app::{NotificationImageState, PendingNotification, PlexiApp};
+use crate::app::{PendingNotification, PlexiApp};
 use crate::app_protocol::NotificationImage;
 use base64::Engine;
 use egui::{ColorImage, Context, TextureOptions};
+
+/// Render state for a notification's image attachment. Computed once and
+/// cached on `PlexiApp::notification_images` keyed by `notify_id`.
+#[derive(Clone)]
+pub(crate) enum NotificationImageState {
+    /// Image is ready to draw. `(handle, w, h)`.
+    Ready(egui::TextureHandle, u32, u32),
+    /// Decoded payload exceeded the 50 KB cap, or decoding failed; render a
+    /// placeholder badge with the explanation in `reason`.
+    Placeholder { reason: String },
+    /// Pipe pending — no frame yet drained from the binary ring. Render
+    /// nothing this frame; retry next frame.
+    Pending,
+}
 
 /// Decoded inline-image payload limit. Anything strictly larger renders a
 /// placeholder. The cap is on **decoded bytes** so a tiny base64 payload
@@ -93,9 +107,7 @@ fn decode_inline(
     let bytes = match engine.decode(inline.base64.as_bytes()) {
         Ok(b) => b,
         Err(e) => {
-            log::warn!(
-                "notification image '{notify_id}' base64 decode failed: {e}"
-            );
+            log::warn!("notification image '{notify_id}' base64 decode failed: {e}");
             return NotificationImageState::Placeholder {
                 reason: "image decode failed".into(),
             };
@@ -126,9 +138,7 @@ fn decode_inline(
     let img = match image::load_from_memory_with_format(&bytes, format) {
         Ok(i) => i.to_rgba8(),
         Err(e) => {
-            log::warn!(
-                "notification image '{notify_id}' image-crate decode failed: {e}"
-            );
+            log::warn!("notification image '{notify_id}' image-crate decode failed: {e}");
             return NotificationImageState::Placeholder {
                 reason: "image decode failed".into(),
             };
@@ -136,22 +146,14 @@ fn decode_inline(
     };
     let (w, h) = img.dimensions();
     let color = ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
-    let handle = egui_ctx.load_texture(
-        format!("notif:{notify_id}"),
-        color,
-        TextureOptions::LINEAR,
-    );
+    let handle = egui_ctx.load_texture(format!("notif:{notify_id}"), color, TextureOptions::LINEAR);
     NotificationImageState::Ready(handle, w, h)
 }
 
 /// Drain the most recent RGBA frame from the sender pane's binary pipe
 /// ring, if any. Returns `None` when no frame has been pushed yet (caller
 /// should keep the notification in `Pending` and retry next render).
-fn drain_pipe_frame(
-    app: &PlexiApp,
-    sender_pane_id: u64,
-    pipe_id: &str,
-) -> Option<Vec<u8>> {
+fn drain_pipe_frame(app: &PlexiApp, sender_pane_id: u64, pipe_id: &str) -> Option<Vec<u8>> {
     // Walk every context's panes — the sender pane id is unique across the
     // workspace, so a linear scan is fine for the small N (single-digit
     // contexts × low-double-digit panes).
@@ -214,11 +216,7 @@ fn decode_pipe_frame(
     }
     let rgba = &frame[PIPE_HEADER_LEN..];
     let color = ColorImage::from_rgba_unmultiplied([w as usize, h as usize], rgba);
-    let handle = egui_ctx.load_texture(
-        format!("notif:{notify_id}"),
-        color,
-        TextureOptions::LINEAR,
-    );
+    let handle = egui_ctx.load_texture(format!("notif:{notify_id}"), color, TextureOptions::LINEAR);
     NotificationImageState::Ready(handle, w, h)
 }
 

@@ -1,8 +1,6 @@
 use super::super::*;
 use crate::app::permissions::AppPermissions;
-use crate::app_protocol::{
-    ArtifactOpenMode, AppRequest, PathTokenMode, PlexiEvent,
-};
+use crate::app_protocol::{AppRequest, ArtifactOpenMode, PathTokenMode, PlexiEvent};
 use std::collections::HashSet;
 
 fn make_app(capabilities: HashSet<Capability>) -> Option<ProcessApp> {
@@ -52,10 +50,9 @@ fn denied_app_request_linked_terminal_emits_sentinel_event() {
     }
     // Must NOT have queued an AppCommand for the host to act on.
     assert!(
-        !app.pending_commands.iter().any(|c| matches!(
-            c,
-            AppCommand::RequestLinkedTerminal { .. }
-        )),
+        !app.pending_commands
+            .iter()
+            .any(|c| matches!(c, AppCommand::RequestLinkedTerminal { .. })),
         "denied path must not enqueue RequestLinkedTerminal"
     );
 }
@@ -74,10 +71,9 @@ fn denied_app_run_in_linked_terminal_drops_silently() {
     // No event — fire-and-forget verb has no response shape.
     // Must NOT enqueue the AppCommand.
     assert!(
-        !app.pending_commands.iter().any(|c| matches!(
-            c,
-            AppCommand::RunInLinkedTerminal { .. }
-        )),
+        !app.pending_commands
+            .iter()
+            .any(|c| matches!(c, AppCommand::RunInLinkedTerminal { .. })),
         "denied path must drop RunInLinkedTerminal without dispatch"
     );
 }
@@ -149,7 +145,12 @@ fn granted_app_dispatches_request_linked_terminal() {
                 label,
             } = c
             {
-                Some((*sender_pane_id, request_id.clone(), cwd.clone(), label.clone()))
+                Some((
+                    *sender_pane_id,
+                    request_id.clone(),
+                    cwd.clone(),
+                    label.clone(),
+                ))
             } else {
                 None
             }

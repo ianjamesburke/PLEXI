@@ -9,7 +9,8 @@ pub fn list_cli() -> i32 {
     }
     // Read versions directly from the global apps dir for the source-of-truth
     // version field — the registry only carries `manifest.version` at load time.
-    let global_versions = crate::cli::install_host::installed_versions(&crate::app::registry::apps_dir());
+    let global_versions =
+        crate::cli::install_host::installed_versions(&crate::app::registry::apps_dir());
     let workspace_root = crate::app::registry::resolve_workspace_root(&cwd);
     let core_ids = crate::cli::install_host::core_pack_ids();
     let example_ids = crate::cli::install_host::examples_pack_ids();
@@ -33,7 +34,12 @@ pub fn list_cli() -> i32 {
         } else {
             ""
         };
-        let row = (app.manifest.id.clone(), app.manifest.name.clone(), version, badge);
+        let row = (
+            app.manifest.id.clone(),
+            app.manifest.name.clone(),
+            version,
+            badge,
+        );
         match app.source {
             crate::app::registry::RegistrySource::Global => globals.push(row),
             crate::app::registry::RegistrySource::LocalApp
@@ -41,7 +47,10 @@ pub fn list_cli() -> i32 {
         }
     }
     if !globals.is_empty() {
-        println!("Global apps ({})", crate::app::registry::apps_dir().display());
+        println!(
+            "Global apps ({})",
+            crate::app::registry::apps_dir().display()
+        );
         for (id, name, version, badge) in &globals {
             if badge.is_empty() {
                 println!("  {:30} {:30} {}", id, name, version);
@@ -105,7 +114,11 @@ pub fn parse_notify_choice(raw: &str) -> Result<(String, String, Option<String>)
         )),
         [label, action_type, action_arg] => {
             let label_str = label.to_string();
-            Ok((label_str.clone(), label_str, Some(format!("{action_type}:{action_arg}"))))
+            Ok((
+                label_str.clone(),
+                label_str,
+                Some(format!("{action_type}:{action_arg}")),
+            ))
         }
         [key, label] => Ok((key.to_string(), label.to_string(), None)),
         _ => Err(format!(

@@ -19,9 +19,9 @@
 //! `lookup("gh", Some("2.40.0"))` → `gh/2.40.0.json`.
 
 use crate::app::plexi_descriptor::{self, DescriptorError, PlexiDescriptor};
-use std::path::PathBuf;
 #[cfg(test)]
 use std::path::Path;
+use std::path::PathBuf;
 
 /// Compile-time-embedded registry rooted at `registry/` in the repo.
 static EMBEDDED_REGISTRY: include_dir::Dir<'_> =
@@ -309,7 +309,11 @@ fn parse_all_embedded() -> Result<usize, RegistryError> {
     let mut count = 0;
     for entry in EMBEDDED_REGISTRY.entries() {
         if let Some(dir) = entry.as_dir() {
-            let dir_name = dir.path().file_name().and_then(|s| s.to_str()).unwrap_or("?");
+            let dir_name = dir
+                .path()
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("?");
             if dir_name == "mcp" {
                 continue;
             }
@@ -422,8 +426,8 @@ mod tests {
             r#"{ "this": "is not a descriptor" }"#,
         );
         let backend = FilesystemBackend::new(tmp.path().to_path_buf());
-        let err = lookup_with_backends(&[&backend], "fake", None)
-            .expect_err("malformed JSON must error");
+        let err =
+            lookup_with_backends(&[&backend], "fake", None).expect_err("malformed JSON must error");
         match err {
             RegistryError::Malformed { cli, path, .. } => {
                 assert_eq!(cli, "fake");
@@ -437,20 +441,27 @@ mod tests {
     fn embedded_registry_round_trips_through_parser() {
         // Guard against hand-edit drift: every shipped descriptor must parse.
         let n = parse_all_embedded().expect("all embedded descriptors must parse");
-        assert!(n >= 6, "expected ≥6 descriptors (3 CLIs × 2 files), got {n}");
+        assert!(
+            n >= 6,
+            "expected ≥6 descriptors (3 CLIs × 2 files), got {n}"
+        );
     }
 
     #[test]
     fn list_clis_returns_seeded_three() {
         let names = list_clis();
         for cli in &["gh", "cargo", "npm"] {
-            assert!(names.iter().any(|n| n == cli), "expected {cli} in {names:?}");
+            assert!(
+                names.iter().any(|n| n == cli),
+                "expected {cli} in {names:?}"
+            );
         }
     }
 
     #[test]
     fn lookup_mcp_returns_embedded_entry() {
-        let entry = lookup_mcp("filesystem").expect("filesystem should exist in embedded MCP registry");
+        let entry =
+            lookup_mcp("filesystem").expect("filesystem should exist in embedded MCP registry");
         assert_eq!(entry.name, "filesystem");
         assert!(!entry.command.is_empty());
     }
@@ -464,7 +475,10 @@ mod tests {
     fn list_mcp_names_returns_seeded_entries() {
         let names = list_mcp_names();
         for name in &["filesystem", "git", "github"] {
-            assert!(names.iter().any(|n| n == name), "expected {name} in {names:?}");
+            assert!(
+                names.iter().any(|n| n == name),
+                "expected {name} in {names:?}"
+            );
         }
     }
 }

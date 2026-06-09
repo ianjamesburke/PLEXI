@@ -100,7 +100,13 @@ impl PlexiApp {
         if self.sidebar_visible {
             ctx.input(|i| {
                 for e in &i.events {
-                    if let egui::Event::Key { key: egui::Key::A, pressed: true, modifiers: m, .. } = e {
+                    if let egui::Event::Key {
+                        key: egui::Key::A,
+                        pressed: true,
+                        modifiers: m,
+                        ..
+                    } = e
+                    {
                         log::info!("[diag-pre-sidebar] Key::A alive: cmd={}", m.command);
                     }
                 }
@@ -120,7 +126,13 @@ impl PlexiApp {
                 });
             ctx.input(|i| {
                 for e in &i.events {
-                    if let egui::Event::Key { key: egui::Key::A, pressed: true, modifiers: m, .. } = e {
+                    if let egui::Event::Key {
+                        key: egui::Key::A,
+                        pressed: true,
+                        modifiers: m,
+                        ..
+                    } = e
+                    {
                         log::info!("[diag-post-sidebar] Key::A alive: cmd={}", m.command);
                     }
                 }
@@ -845,7 +857,11 @@ impl PlexiApp {
 
         // Minimap overlay — auto-hidden when current workspace has <2 windows.
         let ws_id = self.router.active().context_id;
-        let window_count = self.windows.iter().filter(|c| c.context_id == ws_id).count();
+        let window_count = self
+            .windows
+            .iter()
+            .filter(|c| c.context_id == ws_id)
+            .count();
         if window_count >= 2 {
             self.draw_minimap_overlay(ctx);
         } else {

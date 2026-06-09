@@ -24,7 +24,11 @@ impl CliInspector for RealInspector {
             return None;
         }
         let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if path.is_empty() { None } else { Some(path) }
+        if path.is_empty() {
+            None
+        } else {
+            Some(path)
+        }
     }
     fn version(&self, name: &str) -> Option<String> {
         let out = Command::new(name).arg("--version").output().ok()?;
@@ -53,9 +57,17 @@ impl CliInspector for RealInspector {
 #[derive(Debug, PartialEq, Eq)]
 pub enum WatchStatus {
     NotInstalled,
-    UpToDate { version: String },
-    Stale { installed: String, registered: String },
-    DescriptorDrift { added: Vec<String>, removed: Vec<String> },
+    UpToDate {
+        version: String,
+    },
+    Stale {
+        installed: String,
+        registered: String,
+    },
+    DescriptorDrift {
+        added: Vec<String>,
+        removed: Vec<String>,
+    },
     RegistryError(String),
 }
 
@@ -167,12 +179,18 @@ fn print_report(report: &WatchReport) {
             );
         }
         WatchStatus::DescriptorDrift { added, removed } => {
-            println!("  [DRIFT] {}  --help shows commands not in registry:", report.cli);
+            println!(
+                "  [DRIFT] {}  --help shows commands not in registry:",
+                report.cli
+            );
             if !added.is_empty() {
                 println!("    + {}", added.join(", "));
             }
             if !removed.is_empty() {
-                println!("    - {} (in registry but not in --help)", removed.join(", "));
+                println!(
+                    "    - {} (in registry but not in --help)",
+                    removed.join(", ")
+                );
             }
         }
         WatchStatus::RegistryError(msg) => {
@@ -187,7 +205,11 @@ fn print_report(report: &WatchReport) {
 fn extract_version(raw: &str) -> String {
     for token in raw.split_whitespace() {
         if token.chars().any(|c| c == '.')
-            && token.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
+            && token
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
         {
             // Strip trailing punctuation/build-metadata.
             let cleaned: String = token
@@ -227,8 +249,7 @@ fn parse_top_level_commands(help: &str) -> BTreeSet<String> {
         }
         // Any other column-0 header that doesn't mention "command" exits
         // the section (e.g. OPTIONS, FLAGS, EXAMPLES, ENVIRONMENT).
-        if in_commands && !line.starts_with(' ') && !line.starts_with('\t') && !trimmed.is_empty()
-        {
+        if in_commands && !line.starts_with(' ') && !line.starts_with('\t') && !trimmed.is_empty() {
             in_commands = false;
             continue;
         }
@@ -244,7 +265,10 @@ fn parse_top_level_commands(help: &str) -> BTreeSet<String> {
                 if name.is_empty() || name.starts_with('-') {
                     continue;
                 }
-                if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                if name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
                     out.insert(name.to_string());
                 }
             }
@@ -329,7 +353,10 @@ mod registry_watch_tests {
         };
         let report = watch_one(&inspector, "gh");
         match report.status {
-            WatchStatus::Stale { installed, registered } => {
+            WatchStatus::Stale {
+                installed,
+                registered,
+            } => {
                 assert_eq!(installed, "2.99.0");
                 assert_eq!(registered, "2.40.0");
             }

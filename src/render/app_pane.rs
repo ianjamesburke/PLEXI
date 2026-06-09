@@ -5,8 +5,8 @@
 //! rendered above the app content showing the current view title and a back
 //! arrow (‹). Clicking the back arrow emits `PlexiEvent::NavBack` to the app.
 
-use crate::app_protocol::PlexiEvent;
 use crate::app::app_trait::AppRenderContext;
+use crate::app_protocol::PlexiEvent;
 use crate::host::pane::AppPane;
 use crate::ui::style;
 use crate::ui::theme::Colors;
@@ -51,7 +51,12 @@ pub fn render(ui: &mut egui::Ui, app_pane: &mut AppPane, colors: &Colors, is_foc
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(NAV_BAR_PAD);
-                    crate::ui::widgets::key_chip(ui, "Esc", colors, egui::FontId::monospace(crate::ui::style::TEXT_CAPTION));
+                    crate::ui::widgets::key_chip(
+                        ui,
+                        "Esc",
+                        colors,
+                        egui::FontId::monospace(crate::ui::style::TEXT_CAPTION),
+                    );
                     ui.label(
                         RichText::new("return")
                             .size(style::TEXT_HINT)
@@ -63,10 +68,7 @@ pub fn render(ui: &mut egui::Ui, app_pane: &mut AppPane, colors: &Colors, is_foc
     }
 
     // Check if we need a nav bar (non-empty stack).
-    let nav_title: Option<String> = app_pane
-        .runtime
-        .nav_top_title()
-        .map(|t| t.to_owned());
+    let nav_title: Option<String> = app_pane.runtime.nav_top_title().map(|t| t.to_owned());
 
     if let Some(title) = nav_title {
         // Render nav bar at the top, then app content below.
@@ -95,9 +97,9 @@ pub fn render(ui: &mut egui::Ui, app_pane: &mut AppPane, colors: &Colors, is_foc
                         .frame(false),
                     );
                     if back_btn.clicked() {
-                        app_pane.runtime.queue_outbound_event(
-                            PlexiEvent::NavBack { view_id: nav_back_view_id },
-                        );
+                        app_pane.runtime.queue_outbound_event(PlexiEvent::NavBack {
+                            view_id: nav_back_view_id,
+                        });
                     }
 
                     ui.add_space(4.0);

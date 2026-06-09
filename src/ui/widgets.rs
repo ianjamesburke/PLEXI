@@ -92,16 +92,12 @@ pub(crate) fn key_chip(
     colors: &Colors,
     font_id: egui::FontId,
 ) -> egui::Response {
-    let galley = ui
-        .fonts(|f| f.layout_no_wrap(label.to_string(), font_id, colors.text_primary));
+    let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, colors.text_primary));
     let text_w = galley.size().x;
     let text_h = galley.size().y;
     let chip_h = text_h + KEYCAP_PAD_V * 2.0;
     let chip_w = (text_w + KEYCAP_PAD_H * 2.0).max(chip_h);
-    let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(chip_w, chip_h),
-        egui::Sense::hover(),
-    );
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(chip_w, chip_h), egui::Sense::hover());
     let painter = ui.painter();
     painter.rect_filled(rect, CornerRadius::same(3), colors.bg_active);
     painter.rect_stroke(
@@ -110,10 +106,7 @@ pub(crate) fn key_chip(
         Stroke::new(1.0, colors.border),
         StrokeKind::Inside,
     );
-    let text_pos = Pos2::new(
-        rect.center().x - text_w / 2.0,
-        rect.min.y + KEYCAP_PAD_V,
-    );
+    let text_pos = Pos2::new(rect.center().x - text_w / 2.0, rect.min.y + KEYCAP_PAD_V);
     painter.galley(text_pos, galley, colors.text_primary);
     response
 }
@@ -138,7 +131,12 @@ pub(crate) fn key_combo(ui: &mut egui::Ui, keys: &[&str], colors: &Colors) {
                         .color(colors.text_dim),
                 );
             }
-            key_chip(ui, key, colors, egui::FontId::monospace(style::TEXT_CAPTION));
+            key_chip(
+                ui,
+                key,
+                colors,
+                egui::FontId::monospace(style::TEXT_CAPTION),
+            );
         }
     });
 }
@@ -163,7 +161,12 @@ pub(crate) fn key_combo_list(
                 if j > 0 {
                     ui.add_space(INTRA_COMBO_GAP);
                 }
-                key_chip(ui, key, colors, egui::FontId::monospace(style::TEXT_CAPTION));
+                key_chip(
+                    ui,
+                    key,
+                    colors,
+                    egui::FontId::monospace(style::TEXT_CAPTION),
+                );
             }
         }
         if let Some(text) = trailing {
@@ -215,10 +218,7 @@ pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::
     let just_copied = copied_at.map_or(false, |t| now - t < 2.0);
     let icon = if just_copied { "✓" } else { "📋" };
     let resp = ui
-        .add(
-            egui::Button::new(RichText::new(icon).size(style::TEXT_CAPTION))
-                .frame(false),
-        )
+        .add(egui::Button::new(RichText::new(icon).size(style::TEXT_CAPTION)).frame(false))
         .on_hover_cursor(egui::CursorIcon::PointingHand)
         .on_hover_text(format!("Copy `{text}`"));
     if resp.clicked() && !just_copied {

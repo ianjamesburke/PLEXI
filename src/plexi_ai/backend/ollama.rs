@@ -38,7 +38,9 @@ impl AiBackend for OllamaBackend {
             .spawn(move || {
                 stream_ollama(host, model, request, tx);
             })
-            .map_err(|e| AiBackendError::Io(format!("failed to spawn Ollama stream thread: {e}")))?;
+            .map_err(|e| {
+                AiBackendError::Io(format!("failed to spawn Ollama stream thread: {e}"))
+            })?;
 
         Ok(())
     }
@@ -53,7 +55,8 @@ fn stream_ollama(
 ) {
     if request.messages.is_empty() {
         let _ = tx.send(StreamEvent::Error(
-            "AiBackendRequest.messages is empty — backend requires at least one message".to_string(),
+            "AiBackendRequest.messages is empty — backend requires at least one message"
+                .to_string(),
         ));
         return;
     }
@@ -283,9 +286,16 @@ mod tests {
                 _ => continue, // skip — mirrors production code
             };
             let arguments = serde_json::to_string(&tc["function"]["arguments"]).unwrap_or_default();
-            calls.push(RawToolCall { id: String::new(), name, arguments });
+            calls.push(RawToolCall {
+                id: String::new(),
+                name,
+                arguments,
+            });
         }
-        assert!(calls.is_empty(), "malformed tool call (no name) must be skipped");
+        assert!(
+            calls.is_empty(),
+            "malformed tool call (no name) must be skipped"
+        );
     }
 
     /// Verify that a `done: true` NDJSON line with token counts is parsed correctly.

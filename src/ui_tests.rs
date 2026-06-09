@@ -29,8 +29,8 @@
 //! `split_focused` and `new_context` spawn real terminal panes. Pass on macOS
 //! local dev; tag `#[ignore]` for headless CI without PTY support.
 
-use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
 use crate::app::PlexiApp;
 
@@ -121,8 +121,8 @@ impl PlexiUiHarness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{FocusLayer, PlexiApp};
     use crate::app::permissions::AppPermissions;
+    use crate::app::{FocusLayer, PlexiApp};
     use crate::host::pane::{AppPane, AppRuntime, Pane};
     use crate::process_app::ProcessApp;
 
@@ -160,7 +160,8 @@ mod tests {
     fn screenshot_init() {
         let mut h = PlexiUiHarness::new();
         h.step();
-        h.save_screenshot("/tmp/plexi_init.png").expect("render failed");
+        h.save_screenshot("/tmp/plexi_init.png")
+            .expect("render failed");
         println!("Screenshot saved to /tmp/plexi_init.png");
     }
 
@@ -171,7 +172,8 @@ mod tests {
         h.step();
         add_focused_pane(&mut h);
         h.step();
-        h.save_screenshot("/tmp/plexi_with_pane.png").expect("render failed");
+        h.save_screenshot("/tmp/plexi_with_pane.png")
+            .expect("render failed");
         println!("Screenshot saved to /tmp/plexi_with_pane.png");
     }
 
@@ -241,11 +243,13 @@ mod tests {
         h.harness().press_key(egui::Key::Enter);
         h.step();
 
-        let (name, still_renaming) = h.with_app(|app| {
-            (app.router.active().name.clone(), app.renaming_window)
-        });
+        let (name, still_renaming) =
+            h.with_app(|app| (app.router.active().name.clone(), app.renaming_window));
         assert_eq!(name, "My Project");
-        assert!(still_renaming.is_none(), "renaming_window must be cleared after commit");
+        assert!(
+            still_renaming.is_none(),
+            "renaming_window must be cleared after commit"
+        );
     }
 
     /// Escape discards the rename buffer; the context name must be unchanged.
@@ -266,11 +270,13 @@ mod tests {
         h.harness().press_key(egui::Key::Escape);
         h.step();
 
-        let (name, still_renaming) = h.with_app(|app| {
-            (app.router.active().name.clone(), app.renaming_window)
-        });
+        let (name, still_renaming) =
+            h.with_app(|app| (app.router.active().name.clone(), app.renaming_window));
         assert_eq!(name, original_name, "name must be unchanged after Escape");
-        assert!(still_renaming.is_none(), "renaming_window must be cleared after Escape");
+        assert!(
+            still_renaming.is_none(),
+            "renaming_window must be cleared after Escape"
+        );
     }
 
     /// Empty rename buffer must not overwrite the existing name.
@@ -292,6 +298,9 @@ mod tests {
         h.step();
 
         let name = h.with_app(|app| app.router.active().name.clone());
-        assert_eq!(name, original_name, "whitespace-only rename must be discarded");
+        assert_eq!(
+            name, original_name,
+            "whitespace-only rename must be discarded"
+        );
     }
 }

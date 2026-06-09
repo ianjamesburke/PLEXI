@@ -1,8 +1,7 @@
+use super::primitives::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use super::primitives::*;
-
 
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -57,13 +56,28 @@ pub enum PlexiEvent {
     /// Mouse click at logical coordinates within the app surface.
     Click { x: f32, y: f32, button: MouseButton },
     /// Pointer button pressed (fires on the frame the button goes down).
-    MouseDown { x: f32, y: f32, button: MouseButton, modifiers: Modifiers },
+    MouseDown {
+        x: f32,
+        y: f32,
+        button: MouseButton,
+        modifiers: Modifiers,
+    },
     /// Pointer button released (fires on the frame the button goes up).
-    MouseUp { x: f32, y: f32, button: MouseButton, modifiers: Modifiers },
+    MouseUp {
+        x: f32,
+        y: f32,
+        button: MouseButton,
+        modifiers: Modifiers,
+    },
     /// Pointer moved over the app surface. Only fires when the app has opted in
     /// via `DrawCommand::SetMouseTracking { enabled: true }`. Pane-local
     /// coordinates; `buttons` lists which buttons are currently held.
-    MouseMove { x: f32, y: f32, buttons: Vec<MouseButton>, modifiers: Modifiers },
+    MouseMove {
+        x: f32,
+        y: f32,
+        buttons: Vec<MouseButton>,
+        modifiers: Modifiers,
+    },
     /// User submitted a command via the command bar.
     Command { text: String },
     /// Semantic action dispatched by `plexi app action <pane_id> <action> [args...]`.
@@ -189,10 +203,7 @@ pub enum PlexiEvent {
     /// Response to a `ControlCommand::MeasureTextWrapped` request.
     /// `height` is the pixel height of the text when wrapped at the requested width,
     /// clamped to `max_lines` rows if specified.
-    TextWrappedMeasured {
-        request_id: String,
-        height: f32,
-    },
+    TextWrappedMeasured { request_id: String, height: f32 },
     /// User pressed Enter inside a `DrawCommand::TextInput` field.
     ///
     /// `id` matches the `id` the app supplied on the `TextInput` command.
@@ -276,10 +287,7 @@ pub enum PlexiEvent {
     },
     /// Sent when a `DrawCommand::AudioCapture` could not be honoured —
     /// permission denied, bad device id, no devices, cpal failure.
-    AudioCaptureError {
-        pipe_id: String,
-        error: String,
-    },
+    AudioCaptureError { pipe_id: String, error: String },
     /// Response to a `DrawCommand::ListMidiDevices` request (#320).
     /// Both vectors are always present — empty when CoreMIDI finds no
     /// endpoints of that direction. `error` is set only when MIDI subsystem
@@ -302,16 +310,10 @@ pub enum PlexiEvent {
     },
     /// Sent when `DrawCommand::OpenMidiInput` could not be honoured —
     /// permission denied, port not found, CoreMIDI failure.
-    MidiInputError {
-        pipe_id: String,
-        error: String,
-    },
+    MidiInputError { pipe_id: String, error: String },
     /// Sent when `DrawCommand::SendMidi` could not be honoured. Successful
     /// sends produce no event (fire-and-forget); only failures surface.
-    MidiSendError {
-        port_id: String,
-        error: String,
-    },
+    MidiSendError { port_id: String, error: String },
     /// Sent when a `DrawCommand::OpenVideo` succeeded (#345). The host has
     /// allocated the binary pipe (look for the preceding `PipeOpened`),
     /// started the decoder, and is now pumping RGBA8 frames into the pipe.
@@ -328,10 +330,7 @@ pub enum PlexiEvent {
     /// Sent when `DrawCommand::OpenVideo` could not be honoured (#345) —
     /// capability denied, source not found, decoder error, or the
     /// production stub's `NotImplemented` (until #346 ships).
-    VideoOpenError {
-        request_id: String,
-        error: String,
-    },
+    VideoOpenError { request_id: String, error: String },
     /// Response to `DrawCommand::RequestLinkedTerminal` (#78). Carries the
     /// pane id of the freshly-opened terminal so subsequent
     /// `RunInLinkedTerminal` / `InsertPathToken` / etc. calls can reference
@@ -363,7 +362,10 @@ pub enum PlexiEvent {
 
     /// Response to `DrawCommand::OpenFilePicker`. At least one file was selected.
     /// `paths` contains the absolute paths chosen by the user.
-    FilePicked { request_id: String, paths: Vec<String> },
+    FilePicked {
+        request_id: String,
+        paths: Vec<String>,
+    },
 
     /// Response to `DrawCommand::OpenFilePicker` when the user cancelled the
     /// dialog without selecting a file, or the app lacks `fs.pick` capability.
@@ -380,7 +382,10 @@ pub enum PlexiEvent {
     /// Terminal event for a `DrawCommand::StreamProcess` child. Sent when the
     /// child exits, on `CancelProcess`, or on capability denial. The SDK
     /// iterator unblocks after this event.
-    StreamEnd { correlation_id: String, exit_code: i32 },
+    StreamEnd {
+        correlation_id: String,
+        exit_code: i32,
+    },
 
     /// Emitted by the host when the scroll offset for a `BeginScroll` region
     /// changes (mouse wheel, drag). The app should re-render using `offset_y`
@@ -418,4 +423,3 @@ pub enum PlexiEvent {
         payload: Option<serde_json::Value>,
     },
 }
-
