@@ -174,10 +174,15 @@ impl HostModel {
 
     // ── helpers ─────────────────────────────────────────────────────────────
 
-    /// Allocate a new pane ID. `HostModel` is the single source of truth —
-    /// `PlexiApp` and `pane_ops` call this directly for any pane creation that
-    /// does not already flow through `handle_command` (e.g. the egui-tiles
-    /// bookkeeping in `new_tab` / `create_single_pane_tree`).
+    /// Allocate a new pane ID. `HostModel` is the sole ID allocator — every
+    /// pane ID in `PlexiApp.windows.panes` must be obtained here, either
+    /// directly or via `handle_command` (which calls this internally).
+    ///
+    /// The full pane *registry* (the `Pane` structs) lives in
+    /// `PlexiApp.windows.panes`, not in `HostModel`. `HostModel.context().panes`
+    /// tracks only panes opened through `handle_command`; callers that use
+    /// `alloc_pane_id()` directly (e.g. `create_single_pane_tree`,
+    /// `spawn_terminal_pane_at`) skip that registration intentionally.
     pub fn alloc_pane_id(&mut self) -> PaneId {
         let id = self.next_pane_id;
         self.next_pane_id += 1;
@@ -203,6 +208,25 @@ impl HostModel {
             return;
         }
         self.next_pane_id = id;
+    }
+
+    /// IDs of all panes registered in the active context via `handle_command`.
+    /// Does not include panes created with `alloc_pane_id()` directly.
+    #[cfg(test)]
+    pub fn test_pane_ids(&self) -> Vec<PaneId> {
+        self.context().panes.iter().map(|p| p.id).collect()
+    }
+
+    /// Focused pane as tracked by `HostModel` (updated by `handle_command`).
+    #[cfg(test)]
+    pub fn test_focused_pane(&self) -> Option<PaneId> {
+        self.context().focused_pane
+    }
+
+    /// Next ID that `alloc_pane_id()` will return (peek, does not advance counter).
+    #[cfg(test)]
+    pub fn test_next_pane_id(&self) -> PaneId {
+        self.next_pane_id
     }
 
     #[cfg(test)]
@@ -260,6 +284,7 @@ impl HostModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::command::ShareRatio;
     use crate::host::services::{EventSink, HostServices};
 
     /// Test sink that drops every effect — no audit trail required for unit tests.
@@ -356,5 +381,155 @@ mod tests {
         assert!(ancestors_of_root.is_empty());
 
         assert!(model.ancestors_of(99).is_empty());
+    }
+
+    // ── HostModel pane invariant tests ────────────────────────────────────────
+
+    #[test]
+    fn new_model_has_one_bootstrap_pane_registered() {
+        let model = HostModel::new();
+        let ids = model.test_pane_ids();
+        assert_eq!(ids, vec![0], "HostModel::new() registers bootstrap pane id=0");
+        assert_eq!(model.test_focused_pane(), Some(0));
+        assert_eq!(model.test_next_pane_id(), 1);
+    }
+
+    #[test]
+    fn alloc_pane_id_is_monotone_and_advances_counter() {
+        let mut model = HostModel::new();
+        let a = model.alloc_pane_id();
+        let b = model.alloc_pane_id();
+        let c = model.alloc_pane_id();
+        assert!(a < b && b < c, "alloc_pane_id must return strictly increasing IDs");
+        assert_eq!(model.test_next_pane_id(), c + 1);
+    }
+
+    #[test]
+    fn open_pane_registers_id_in_model_and_sets_focus() {
+        let mut model = HostModel::new();
+        let mut svc = services();
+        let req = crate::host::command::OpenPaneRequest {
+            runtime: PaneRuntimeKind::Terminal,
+            placement: Placement::Right,
+            share: crate::host::command::ShareRatio::new(1.0, 1.0).unwrap(),
+            group: None,
+            declared_capabilities: vec![],
+        };
+        let pre_next = model.test_next_pane_id();
+        let effects = model.handle_command(HostAction::OpenPane(req), &mut svc);
+
+        let opened_id = effects
+            .iter()
+            .find_map(|e| match e {
+                HostEffect::PaneOpened { pane_id, .. } => Some(*pane_id),
+                _ => None,
+            })
+            .expect("OpenPane must emit PaneOpened");
+
+        assert_eq!(opened_id, pre_next, "PaneOpened id must equal pre-call next_pane_id");
+        assert!(
+            model.test_pane_ids().contains(&opened_id),
+            "opened pane must be registered in model"
+        );
+        assert_eq!(
+            model.test_focused_pane(),
+            Some(opened_id),
+            "model focus must update to the newly opened pane"
+        );
+        assert_eq!(model.test_next_pane_id(), pre_next + 1);
+    }
+
+    #[test]
+    fn close_focused_pane_removes_from_model_registry() {
+        let mut model = HostModel::new();
+        let mut svc = services();
+        let req = crate::host::command::OpenPaneRequest {
+            runtime: PaneRuntimeKind::Terminal,
+            placement: Placement::Right,
+            share: crate::host::command::ShareRatio::new(1.0, 1.0).unwrap(),
+            group: None,
+            declared_capabilities: vec![],
+        };
+        let effects = model.handle_command(HostAction::OpenPane(req), &mut svc);
+        let opened_id = effects
+            .iter()
+            .find_map(|e| match e {
+                HostEffect::PaneOpened { pane_id, .. } => Some(*pane_id),
+                _ => None,
+            })
+            .unwrap();
+
+        let close_effects = model.handle_command(HostAction::CloseFocusedPane, &mut svc);
+        let closed_id = close_effects
+            .iter()
+            .find_map(|e| match e {
+                HostEffect::PaneClosed { pane_id } => Some(*pane_id),
+                _ => None,
+            })
+            .expect("CloseFocusedPane must emit PaneClosed");
+
+        assert_eq!(closed_id, opened_id);
+        assert!(
+            !model.test_pane_ids().contains(&opened_id),
+            "closed pane must be removed from model registry"
+        );
+    }
+
+    #[test]
+    fn split_allocates_next_id_and_registers_in_model() {
+        let mut model = HostModel::new();
+        let mut svc = services();
+        let pre_next = model.test_next_pane_id();
+        let effects = model.handle_command(HostAction::SplitVertical, &mut svc);
+
+        let split_id = effects
+            .iter()
+            .find_map(|e| match e {
+                HostEffect::SplitOpened { pane_id, .. } => Some(*pane_id),
+                _ => None,
+            })
+            .expect("SplitVertical must emit SplitOpened");
+
+        assert_eq!(split_id, pre_next, "split pane id must equal pre-call next_pane_id");
+        assert!(
+            model.test_pane_ids().contains(&split_id),
+            "split pane must be registered in model"
+        );
+        assert_eq!(
+            model.test_focused_pane(),
+            Some(split_id),
+            "model focus must move to split pane"
+        );
+    }
+
+    #[test]
+    fn seed_next_pane_id_positions_allocations_above_restored_ids() {
+        let mut model = HostModel::new();
+        let max_restored = 99u64;
+        model.seed_next_pane_id(max_restored + 1);
+        assert_eq!(model.test_next_pane_id(), max_restored + 1);
+        for _ in 0..5 {
+            let id = model.alloc_pane_id();
+            assert!(
+                id > max_restored,
+                "post-seed allocation id={id} must exceed max restored id={max_restored}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_alloc_pane_id_does_not_register_in_model_panes() {
+        // Documents the intentional design split: alloc_pane_id() advances the
+        // counter (so IDs are unique) but does NOT add an entry to context().panes.
+        // Callers like create_single_pane_tree use alloc_pane_id() directly and
+        // manage pane registration themselves in PlexiApp.windows.panes.
+        let mut model = HostModel::new();
+        let pre_count = model.test_pane_ids().len();
+        let _id = model.alloc_pane_id();
+        assert_eq!(
+            model.test_pane_ids().len(),
+            pre_count,
+            "alloc_pane_id() must not add to model panes list"
+        );
     }
 }
