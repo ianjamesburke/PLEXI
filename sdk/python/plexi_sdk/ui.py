@@ -1181,12 +1181,20 @@ class TextEdit(Component):
     max_length: int = 0
     height: float = 48.0
 
+    _submitted: Optional[str] = field(default=None, init=False, repr=False)
+
     def measure(self, _avail_w: float) -> float:
         return self.height
 
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
-        ctx.text_input(self.node_id, x=x, y=y, w=w, placeholder=self.placeholder,
-                       h=h, multiline=self.multiline)
+        self._submitted = ctx.text_input(self.node_id, x=x, y=y, w=w,
+                                         placeholder=self.placeholder,
+                                         h=h, multiline=self.multiline)
+
+    @property
+    def submitted(self) -> Optional[str]:
+        """Text submitted this frame (user pressed Enter) during L0 fallback, else None."""
+        return self._submitted
 
     def to_node(self) -> dict:
         return {
