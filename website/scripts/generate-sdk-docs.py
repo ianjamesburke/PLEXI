@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-VERIFIED_VERSION = "0.0.496"
+VERIFIED_VERSION = "0.0.669"
 
 # Methods removed from the public API — excluded from generated docs.
 EXCLUDED_METHODS: set[str] = {"on_app_spawned"}
@@ -153,77 +153,12 @@ def generate_sdk_overview(sdk_source: Path) -> str:
 
     return f'''---
 title: "SDK Overview"
-description: "Python SDK for building Plexi pane apps"
+description: "Python SDK v2 for building Plexi pane apps"
 verified_version: "{VERIFIED_VERSION}"
 ---
 
 {module_doc}
 '''
-
-
-def generate_app_docs(sdk_source: Path) -> str:
-    extractor = DocExtractor(sdk_source / "_app.py")
-    classes = extractor.extract_classes()
-    app_class = next((c for c in classes if c["name"] == "App"), None)
-    if not app_class:
-        return _empty_page("App", "No App class found.")
-
-    docstring = app_class["docstring"] or ""
-
-    return f'''---
-title: "App"
-description: "Base class for Plexi pane apps with lifecycle hooks"
-verified_version: "{VERIFIED_VERSION}"
----
-
-# App
-
-{docstring}
-
-## Methods
-
-{fmt_methods(app_class["methods"])}'''
-
-
-def generate_render_context_docs(sdk_source: Path) -> str:
-    extractor = DocExtractor(sdk_source / "_render_context.py")
-    classes = extractor.extract_classes()
-    ctx_class = next((c for c in classes if c["name"] == "RenderContext"), None)
-    if not ctx_class:
-        return _empty_page("RenderContext", "No RenderContext class found.")
-
-    docstring = ctx_class["docstring"] or ""
-
-    return f'''---
-title: "RenderContext"
-description: "Drawing API for rendering pane content"
-verified_version: "{VERIFIED_VERSION}"
----
-
-# RenderContext
-
-{docstring}
-
-## Properties
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `x` | `float` | Pane origin x (usually 0) |
-| `y` | `float` | Pane origin y (usually 0) |
-| `w` | `float` | Pane width in logical pixels |
-| `h` | `float` | Pane height in logical pixels |
-| `width` | `float` | Alias for `w` |
-| `height` | `float` | Alias for `h` |
-| `frame_id` | `int` | Monotonically increasing render counter |
-| `elapsed` | `float` | Seconds since previous on_render (0.0 on first frame) |
-| `workspace_root` | `str` | Absolute path to the workspace root |
-| `capabilities` | `list[str]` | Granted capability strings |
-| `feature_flags` | `list[str]` | Enabled feature flag strings |
-| `emit` | `Emitter` | Emitter instance for out-of-frame commands |
-
-## Methods
-
-{fmt_methods(ctx_class["methods"])}'''
 
 
 def generate_emitter_docs(sdk_source: Path) -> str:
@@ -245,74 +180,11 @@ verified_version: "{VERIFIED_VERSION}"
 
 {docstring}
 
-Available as `self.emit` on App or `ctx.emit` on RenderContext. All methods are thread-safe.
+Available as `self.emit` on `App`. All methods are thread-safe.
 
 ## Methods
 
 {fmt_methods(emitter_class["methods"])}'''
-
-
-def generate_widgets_docs(sdk_source: Path) -> str:
-    widgets_dir = sdk_source / "widgets"
-    widget_files = [
-        ("Button & ButtonStyle", "button.py"),
-        ("KeyMap", "keymap.py"),
-        ("ListView", "list_view.py"),
-        ("ScrollState", "scroll.py"),
-        ("TextArea & TextAreaTheme", "text_area.py"),
-        ("TextBuffer, Cursor & Selection", "text_buffer.py"),
-    ]
-
-    sections = ""
-    for _, filename in widget_files:
-        filepath = widgets_dir / filename
-        if not filepath.exists():
-            continue
-        extractor = DocExtractor(filepath)
-        classes = extractor.extract_classes()
-        for cls in classes:
-            sections += f"## {cls['name']}\n\n"
-            if cls["docstring"]:
-                sections += f"{_clean_docstring(cls['docstring'])}\n\n"
-            if cls["methods"]:
-                sections += fmt_methods(cls["methods"])
-
-    return f'''---
-title: "Widgets"
-description: "Reusable UI components for Plexi apps"
-verified_version: "{VERIFIED_VERSION}"
----
-
-# Widgets
-
-Import widgets from `plexi_sdk.widgets`:
-
-```python
-from plexi_sdk.widgets import (
-    Button, ButtonStyle,
-    KeyMap,
-    ListView,
-    ScrollState,
-    TextArea, TextAreaTheme,
-    TextBuffer, Cursor, Selection,
-    emit_text_input,
-)
-```
-
-{sections}'''
-
-
-def _empty_page(title: str, msg: str) -> str:
-    return f'''---
-title: "{title}"
-description: ""
-verified_version: "{VERIFIED_VERSION}"
----
-
-# {title}
-
-{msg}
-'''
 
 
 def main() -> None:
@@ -326,10 +198,7 @@ def main() -> None:
 
     pages = {
         "sdk.md": generate_sdk_overview(sdk_source),
-        "sdk-app.md": generate_app_docs(sdk_source),
-        "sdk-render-context.md": generate_render_context_docs(sdk_source),
         "sdk-emitter.md": generate_emitter_docs(sdk_source),
-        "sdk-widgets.md": generate_widgets_docs(sdk_source),
     }
 
     for filename, content in pages.items():

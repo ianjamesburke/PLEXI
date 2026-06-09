@@ -10,7 +10,7 @@ class KeyMap:
         km.bind("s", mod="cmd", action="save")
         km.bind("q", action="quit")
 
-        def on_key(self, ctx, key, mods):
+        def on_key(self, key, mods):
             action = km.handle(key, mods)
             if action == "save":
                 save()

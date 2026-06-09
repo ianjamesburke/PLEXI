@@ -1,14 +1,14 @@
 ---
 title: "Emitter"
 description: "Host commands, notifications, HTTP, secrets, and device APIs"
-verified_version: "0.0.505"
+verified_version: "0.0.669"
 ---
 
 # Emitter
 
 Emit out-of-frame commands to Plexi. Thread-safe.
 
-Available as `self.emit` on App or `ctx.emit` on RenderContext. All methods are thread-safe.
+Available as `self.emit` on `App`. All methods are thread-safe.
 
 ## Methods
 
@@ -101,12 +101,12 @@ def schedule_task(coro: 'Any') -> Any
 
 Schedule a coroutine as a background asyncio task from any context.
 
-Safe to call from sync hooks (on_render, on_key, etc.) or background
+Safe to call from sync hooks (view, on_key, etc.) or background
 threads. Returns immediately without blocking. The coroutine runs in
 the background; use this when you don't need the return value:
 
-    def on_render(self, ctx: RenderContext) -> None:
-        if self._btn.render(ctx):
+    def on_key(self, key, mods) -> None:
+        if key == "s":
             self.emit.schedule_task(self._do_query())
 
 Raises ``RuntimeError`` if the event loop hasn't started yet.
@@ -505,7 +505,7 @@ def schedule_render(after_ms: int = 16) -> None
 ```
 
 Ask the host to send a new Render event after `after_ms` milliseconds.
-Call at the end of on_render to sustain a game/animation loop.
+Call from a canvas app's on_render(ctx) to sustain a game or animation loop.
 16 ms ≈ 60 fps.  32 ms ≈ 30 fps.
 
 ---

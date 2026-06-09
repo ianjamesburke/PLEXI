@@ -1,45 +1,71 @@
 # SDK Quickstart: Your First Plexi App
 
-**Audience:** a coding agent building its first PGAP app.
-**Goal:** running counter app in 50 lines of Python.
-**Deeper reference:** [`docs/PGAP_REFERENCE.md`](PGAP_REFERENCE.md)
+Audience: a coding agent building its first PGAP app.
+Goal: a running counter app using SDK v2.
+Deeper reference: [`docs/sdk-v2.md`](sdk-v2.md) and [`docs/PGAP_REFERENCE.md`](PGAP_REFERENCE.md).
 
----
+## 1. Create The App
 
-## 1. Prerequisites
-
-```
-plexi-alpha app list   # confirms Plexi Alpha is running
-```
-
-The SDK is pure stdlib — no pip install needed. It ships alongside the host
-at `sdk/python/plexi_sdk/`.
-
----
-
-## 2. Scaffold the app
+Run this inside a Plexi workspace:
 
 ```bash
-cd ~/my-apps
 plexi app init counter
-cd counter
 ```
 
-`plexi app init` creates:
+If you are outside a workspace, use `--global`:
+
+```bash
+plexi app init --global counter
 ```
-counter/
-  manifest.toml   # app identity and launch config
-  counter.py      # entry point (empty shell)
+
+The scaffold creates an app directory with `manifest.toml` and `main.py`. Do not hand-write the manifest for a new app. Start from the scaffold and edit only the fields you need.
+
+## 2. The App Pattern
+
+Normal apps use `view()` and return a component tree. The SDK sends that tree to the host, and the host handles layout, spacing, theme colors, hit testing, and rendering.
+
+```python
+#!/usr/bin/env python3
+from plexi_sdk import App
+from plexi_sdk.ui import AppBar, Column, FooterKeys, Label, Spacer
+
+
+class CounterApp(App):
+    def on_init(self) -> None:
+        self.count = self.state.get("count", 0)
+
+    def view(self):
+        return Column([
+            AppBar("Counter"),
+            Spacer(grow=True),
+            Label(str(self.count), bold=True),
+            Spacer(grow=True),
+            FooterKeys([
+                ("+", "increment"),
+                ("-", "decrement"),
+                ("r", "reset"),
+            ]),
+        ])
+
+    def on_key(self, key: str, mods: dict) -> None:
+        if key in ("plus", "equals"):
+            self.count += 1
+        elif key == "minus":
+            self.count -= 1
+        elif key == "r":
+            self.count = 0
+        self.state.save({"count": self.count})
+        self.emit.schedule_render()
+
+
+CounterApp().run()
 ```
 
-**Never hand-write `manifest.toml`.** `plexi app init` produces the correct
-`schema_version` and required fields. Edit only what you need to change.
+Use `on_render(ctx)` only for games, animations, realtime visualizations, or other pixel-control apps. Never override both `view()` and `on_render(ctx)`.
 
----
+## 3. Manifest
 
-## 3. manifest.toml
-
-The generated manifest looks like this:
+The generated manifest has the required fields:
 
 ```toml
 schema_version = 1
@@ -48,9 +74,10 @@ schema_version = 1
 id = "counter"
 type = "app"
 name = "Counter"
+entry = "main.py"
 version = "0.1.0"
-description = "A simple counter demo."
-entry = "counter.py"
+description = "A Plexi app"
+watch = true
 
 [app.capabilities]
 capabilities = []
@@ -58,139 +85,30 @@ capabilities = []
 [launch]
 ```
 
-Fields:
-- `id` — stable slug; used for the log target (`app::counter`), install dir, pack refs.
-- `entry` — path to the Python entry point, relative to the manifest.
-- `capabilities` — list capabilities you need (e.g. `["net.http"]`). Leave empty if none.
-- `[launch]` — optional. Add `notification_scope = "global"` for always-visible notifications.
+Add capabilities only when the app needs host-brokered powers such as `net.http`, `fs.read`, `fs.write`, `secrets.get`, `ai.query`, `panes.spawn`, or `terminal.bindings`.
 
----
+Python apps are native subprocesses. Capabilities gate PGAP host APIs; they are not a Python process sandbox.
 
-## 4. Write the app (counter.py)
-
-```python
-#!/usr/bin/env python3
-import os, sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../sdk/python'))
-
-from plexi_sdk import App, RenderContext, BODY, CAPTION, PAD
-
-class CounterApp(App):
-    def on_init(self, ctx: RenderContext) -> None:
-        self.count = 0
-        ctx.info("CounterApp ready")
-
-    def on_render(self, ctx: RenderContext) -> None:
-        ctx.clear(ctx.theme.bg)
-        # Card background
-        ctx.rect(PAD, PAD, ctx.w - PAD * 2, 80, ctx.theme.surface, radius=8.0)
-        # Count value
-        ctx.text(PAD * 2, PAD + 12, f"Count: {self.count}", size=BODY, color=ctx.theme.fg)
-        # Hint row
-        ctx.text(PAD * 2, PAD + 44, "+ / -  change   q  quit",
-                 size=CAPTION, color=ctx.theme.muted)
-
-    def on_key(self, ctx: RenderContext, key: str, mods: dict) -> None:
-        if key == "+" or (key == "=" and mods.get("shift")):
-            self.count += 1
-        elif key == "-":
-            self.count -= 1
-        # q is handled by the host — apps cannot self-exit
-
-CounterApp().run()
-```
-
-That's 37 lines including imports.
-
----
-
-## 5. Open the app in Plexi
+## 4. Open And Test
 
 ```bash
-plexi app open ~/my-apps/counter
+plexi app open ./counter
+plexi app render ./counter --state '{"count": 5}'
 ```
 
-The app opens in a new pane. Plexi calls `on_render` whenever the pane needs
-repainting and `on_key` for every keypress.
+For a live app pane, agents can drive the UI with:
 
----
-
-## 6. Key concepts
-
-### on_render
-
-Called on every frame. Must be fast and free of I/O. Reads state written by
-other handlers; never fetches data inline.
-
-```python
-def on_render(self, ctx: RenderContext) -> None:
-    ctx.clear(ctx.theme.bg)          # fill background
-    ctx.rect(x, y, w, h, fill, radius=0.0)   # filled rectangle
-    ctx.text(x, y, "label", size=BODY, color=ctx.theme.fg)
-    ctx.line(x1, y1, x2, y2, color, width=1.0)
-    ctx.circle(cx, cy, r, fill)
+```bash
+plexi pane state <pane_id>
+plexi pane key <pane_id> plus
+plexi pane key <pane_id> minus
 ```
 
-`ctx.w` and `ctx.h` are the current pane dimensions. Use them for
-responsive layout: `ctx.w - PAD * 2` gives full-width minus margins.
+The loop is: render, inspect the UiNode tree, send an action or key, inspect again.
 
-### Theme colors
+## 5. Next Steps
 
-Always use theme colors — never hardcode hex values for semantic roles.
-
-| Token | Use |
-|---|---|
-| `ctx.theme.bg` | pane background |
-| `ctx.theme.surface` | card / panel fill |
-| `ctx.theme.fg` | primary text |
-| `ctx.theme.muted` | secondary / hint text |
-| `ctx.theme.accent` | interactive highlight |
-| `ctx.theme.danger` | error / destructive |
-| `ctx.theme.success` | confirmation |
-| `ctx.theme.border` | dividers, outlines |
-
-`ctx.theme.is_dark` is `True` on dark themes. For app-defined palettes that
-auto-switch, use `AppPalette` (see `docs/PGAP_REFERENCE.md`).
-
-### Font size constants
-
-```python
-from plexi_sdk import TITLE, HEADING, BODY, CAPTION, HINT, MONO_BODY
-# 22.0   18.0     15.0  13.0    12.0  14.0
-```
-
-### Keyboard handling
-
-```python
-def on_key(self, ctx, key: str, mods: dict) -> None:
-    # key: "a"-"z", "up", "down", "left", "right",
-    #      "return", "escape", "backspace", "tab", "space", "f1"…"f12"
-    # mods: {"shift": bool, "ctrl": bool, "alt": bool, "meta": bool}
-```
-
-### Logging
-
-```python
-ctx.info("message")    # inside a handler
-self.emit.info("msg")  # outside a handler / from threads
-```
-
-Logs appear in `~/.plexi-alpha/plexi.log` tagged `app::counter`.
-
-### Notifications
-
-```python
-ctx.notify("Done", priority=50, body="Counter reset")
-```
-
-Use the named priority constants: `PRIORITY_LOW=0`, `PRIORITY_NORMAL=50`,
-`PRIORITY_HIGH=100`, `PRIORITY_CRITICAL=200`.
-
----
-
-## 7. Next steps
-
-- **UI tree layout** (Column, Card, Header, Footer): `docs/sdk-ui-guide.md`
-- **Full draw command reference**: `docs/PGAP_REFERENCE.md` § DrawCommand
-- **Capabilities** (HTTP, secrets, AI queries): `docs/PGAP_REFERENCE.md` § Capabilities
-- **Example apps**: `apps/calc/`, `apps/backlog/`, `apps/todo/`
+- SDK v2 reference: [`docs/sdk-v2.md`](sdk-v2.md)
+- PGAP wire reference: [`docs/PGAP_REFERENCE.md`](PGAP_REFERENCE.md)
+- Security model: [`docs/SECURITY_MODEL.md`](SECURITY_MODEL.md)
+- App framework roadmap: [`docs/prm/app-framework-marketplace.md`](prm/app-framework-marketplace.md)

@@ -112,7 +112,7 @@ class AppPalette:
     Declare a palette once at module level, then call ``resolve(ctx.theme)``
     each frame to get the correct set of colors for the active host theme.
 
-    Usage::
+    Manual drawing usage::
 
         from plexi_sdk import AppPalette
 

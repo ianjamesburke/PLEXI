@@ -1,11 +1,11 @@
 ---
 title: PGAP
 description: The Plexi Generic App Protocol — how apps communicate with the host.
-verified_version: "0.0.505"
+verified_version: "0.0.669"
 order: 3
 ---
 
-PGAP (Plexi Generic App Protocol) is the communication layer between sandboxed apps and the Plexi host. It runs as newline-delimited JSON over a child process's stdin/stdout — every Plexi app is a separate process with no direct access to host state, other panes, or the filesystem beyond what it's granted.
+PGAP (Plexi Generic App Protocol) is the communication layer between app processes and the Plexi host. It runs as newline-delimited JSON over a child process's stdin/stdout. PGAP is the host API boundary; native Python apps are not process-sandboxed.
 
 ## How It Works
 
@@ -31,25 +31,28 @@ Every app declares its capabilities in `manifest.toml`. The host enforces these 
 
 ```toml
 [app.capabilities]
-capabilities = ["secrets.read", "net.http"]
+capabilities = ["secrets.get", "net.http"]
 ```
 
-An app that didn't declare `secrets.read` cannot read any secret, even if it requests one.
+Capabilities gate PGAP host APIs; they do not restrict what a native Python process can do outside PGAP.
 
 ## The Python SDK
 
 The recommended way to write a Plexi app is with the Python SDK. It's bundled with Plexi — no separate install needed.
 
-The SDK wraps PGAP into idiomatic Python. Subclass `App` and override `on_render`; the SDK handles the message loop.
+The SDK wraps PGAP into idiomatic Python. Subclass `App`, implement `view()`, and return a component tree.
 
 ```python
-from plexi_sdk import App, RenderContext
+from plexi_sdk import App
+from plexi_sdk.ui import AppBar, Column, Label
 
 
 class MyApp(App):
-    def on_render(self, ctx: RenderContext) -> None:
-        ctx.text("Hello from PGAP")
-        self.emit.info("render called")
+    def view(self):
+        return Column([
+            AppBar("PGAP App"),
+            Label("Hello from PGAP"),
+        ])
 
 
 MyApp().run()

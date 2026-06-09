@@ -1,7 +1,7 @@
 # PGAP — Plexi General App Protocol
 
 **Version:** pgap/3  
-**Ground truth:** `src/app_protocol.rs`, `src/app_permissions.rs`
+**Ground truth:** `src/protocol/`, `src/app/permissions.rs`
 
 ---
 
@@ -297,6 +297,7 @@ Apps that need video rendering should either:
 
 - [NORTH_STAR.md](NORTH_STAR.md) — product direction
 - [GLOSSARY.md](GLOSSARY.md) — shared vocabulary (pane, context, PGAP, capability, secret)
-- [docs/sdk-ui-guide.md](docs/sdk-ui-guide.md) — SDK UI patterns and draw command cookbook
-- `src/app_protocol.rs` — ground truth for all wire types
-- `src/app_permissions.rs` — capability enum and enforcement
+- [docs/sdk-v2.md](docs/sdk-v2.md) — canonical Python SDK authoring path
+- [docs/SDK_QUICKSTART.md](docs/SDK_QUICKSTART.md) — first app quickstart
+- `src/protocol/` — ground truth for wire types
+- `src/app/permissions.rs` — capability enum and enforcement

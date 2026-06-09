@@ -31,7 +31,7 @@ class Arg:
             limit: Arg[int] = Arg("--limit", type=int, default=100)
             count: Arg[int] = Arg(positional=True, type=int, default=10)
 
-            async def on_init(self, ctx):
+            async def on_init(self):
                 print(self.repo_dir)  # already resolved
     """
 

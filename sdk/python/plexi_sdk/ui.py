@@ -11,20 +11,24 @@ Design goals:
     `ctx.text` from the lower-level API.
 
 Usage:
-    from plexi_sdk import App, RenderContext
+    from plexi_sdk import App
     from plexi_sdk.ui import Column, Header, Card, KeyRow, Section, Spacer, Footer
 
-    def on_render(self, ctx: RenderContext) -> None:
-        ctx.render(Column([
-            Header("My App", "Short subtitle"),
-            Card([
-                KeyRow("m", "Message"),
-                KeyRow("c", "Choice"),
-            ]),
-            Section("Events"),
-            Spacer(grow=True),
-            Footer("Status line"),
-        ]))
+    class MyApp(App):
+        def view(self):
+            return Column([
+                Header("My App", "Short subtitle"),
+                Card([
+                    KeyRow("m", "Message"),
+                    KeyRow("c", "Choice"),
+                ]),
+                Section("Events"),
+                Spacer(grow=True),
+                Footer("Status line"),
+            ])
+
+Canvas, games, and visualizations can still override ``on_render(ctx)`` and
+use lower-level draw calls.
 
 ## Component measurement
 
@@ -1120,8 +1124,9 @@ class Card(Component):
 class TextInput(Component):
     """Layout-aware text input. Place inside a Column like any other child.
 
-    After ``ctx.render(column)``, read ``.submitted`` to get the text the user
-    submitted (pressed Enter), or ``None`` if nothing was submitted this frame.
+    Return it from ``view()`` inside a component tree. After the render pass,
+    read ``.submitted`` to get the text the user submitted (pressed Enter), or
+    ``None`` if nothing was submitted this frame.
 
     Create once (in ``on_init``) and update ``placeholder`` as needed — the
     instance is stable across renders so the host can track focus state.
@@ -1421,8 +1426,8 @@ class SelectList(Component):
 class FormField(Component):
     """Label + TextInput row. Create in on_init (stable across renders).
 
-    Read .submitted after ctx.render() — it contains the text entered
-    by the user when they pressed Enter, or None if no submission this frame.
+    Read .submitted after the render pass; it contains the text entered by the
+    user when they pressed Enter, or None if no submission this frame.
     """
     id: str
     label: str
@@ -1645,17 +1650,18 @@ class InfoTable(Component):
 class ButtonRow(Component):
     """A clickable button rendered as a component in the declarative tree.
 
-    Delegates to ``ctx.button()`` for host-managed hover/click state.
-    After ``ctx.render(column)``, check ``.clicked`` to see if the button
-    was pressed this frame.
+    Use this from ``view()``. Button presses arrive through
+    ``on_component_event(node_id, event_type, payload)``.
 
     Example::
 
         self._btn = ButtonRow("action", "Click me")
 
-        def on_render(self, ctx):
-            ctx.render(Column([self._btn]))
-            if self._btn.clicked:
+        def view(self):
+            return Column([self._btn])
+
+        def on_component_event(self, node_id, event_type, payload):
+            if node_id == "action" and event_type == "click":
                 handle_click()
     """
     id: str

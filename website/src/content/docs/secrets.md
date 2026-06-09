@@ -1,11 +1,11 @@
 ---
 title: Secrets
 description: Store and access secrets inside Plexi apps.
-verified_version: "0.0.505"
+verified_version: "0.0.669"
 order: 6
 ---
 
-Plexi has a built-in secrets store scoped to each workspace. Secrets are encrypted at rest via your system keychain and can be injected into apps that declare the `secrets.read` capability.
+Plexi has a built-in secrets store scoped to each workspace. Secrets are stored through the system keychain and are available to apps through the host-brokered `secrets.get` capability.
 
 ## Set a Secret
 
@@ -51,34 +51,40 @@ To update a secret, run `plexi secret set` again with the new value. The old val
 
 ## Using Secrets in an App
 
-Declare `secrets.read` in your app's `manifest.toml`:
+Declare `secrets.get` in your app's `manifest.toml`:
 
 ```toml
 [app.capabilities]
-capabilities = ["secrets.read"]
+capabilities = ["secrets.get"]
 ```
 
-Then read secrets from `on_init` via the emitter:
+Then read secrets from an async hook via the emitter:
 
 ```python
-from plexi_sdk import App, RenderContext
+from plexi_sdk import App
+from plexi_sdk.ui import AppBar, Column, Label
 
 
 class MyApp(App):
-    async def on_init(self, ctx: RenderContext) -> None:
-        self.api_key = await self.emit.get_secret("MY_API_KEY")
+    def on_init(self) -> None:
+        self.api_key = None
 
-    def on_render(self, ctx: RenderContext) -> None:
-        if self.api_key is None:
-            ctx.text("Secret not set", color="#f59e0b")
-            return
-        # use self.api_key...
+    async def on_key(self, key, mods):
+        if key == "s":
+            self.api_key = await self.emit.secret_get("MY_API_KEY")
+            self.emit.schedule_render()
+
+    def view(self):
+        return Column([
+            AppBar("Secrets"),
+            Label("Secret loaded" if self.api_key else "Press s to request secret"),
+        ])
 
 
 MyApp().run()
 ```
 
-If the secret doesn't exist or the app lacks the capability, `get_secret()` returns `None`.
+If the secret does not exist or the app lacks the capability, `secret_get()` returns `None`.
 
 ## Workspace Scoping
 
