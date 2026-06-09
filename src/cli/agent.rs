@@ -317,7 +317,7 @@ pub fn agent_status_cli(blocked: bool, working: bool, idle: bool) -> i32 {
     0
 }
 
-/// `plexi agent hook install --claude-code` — patch ~/.claude/settings.json.
+/// `plexi agent hook install --claude-code` — write hook script + patch ~/.claude/settings.json.
 pub fn agent_hook_install_cli(claude_code: bool) -> i32 {
     if !claude_code {
         eprintln!("error: specify --claude-code");
@@ -325,33 +325,78 @@ pub fn agent_hook_install_cli(claude_code: bool) -> i32 {
     }
     log::info!("agent_hook_install:cli: claude-code");
 
-    // Locate the binary to build the hook command.
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.to_str().map(|s| s.to_string()))
         .unwrap_or_else(|| "plexi".to_string());
 
+    // Write a dynamic hook script that reads event name + session_id from stdin.
+    // Static per-event commands can't surface session_id; the script approach can.
+    let hooks_dir = crate::config::config_dir().join("hooks");
+    if let Err(e) = std::fs::create_dir_all(&hooks_dir) {
+        eprintln!("error: could not create hooks dir: {e}");
+        return 1;
+    }
+    let script_path = hooks_dir.join("claude-code-agent-state.sh");
+    let script_content = format!(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [ -z "${{PLEXI_SOCKET:-}}" ] || [ -z "${{PLEXI_PANE_ID:-}}" ]; then
+    exit 0
+fi
+INPUT=$(cat)
+EVENT=$(jq -r '.hook_event_name // empty' <<< "$INPUT" 2>/dev/null || true)
+case "$EVENT" in
+    SessionStart|UserPromptSubmit) STATE="working" ;;
+    PermissionRequest)             STATE="blocked" ;;
+    Stop|StopFailure|SessionEnd)   STATE="idle" ;;
+    SubagentStop)                  exit 0 ;;
+    *)                             exit 0 ;;
+esac
+SESSION_ID=$(jq -r '.session_id // empty' <<< "$INPUT" 2>/dev/null || true)
+ARGS=(agent report --state "$STATE" --agent claude-code)
+[ -n "$SESSION_ID" ] && ARGS+=(--session-id "$SESSION_ID")
+"{binary}" "${{ARGS[@]}}" >/dev/null 2>&1 || true
+exit 0
+"#
+    );
+    if let Err(e) = std::fs::write(&script_path, &script_content) {
+        eprintln!("error: could not write hook script: {e}");
+        return 1;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) =
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+        {
+            eprintln!("error: could not chmod hook script: {e}");
+            return 1;
+        }
+    }
+    let script_str = script_path.to_string_lossy().to_string();
+    log::info!("agent_hook_install: wrote hook script to {script_str}");
+
     let settings_path = claude_settings_path();
     let mut settings = read_claude_settings(&settings_path);
-
-    // Each event maps to a specific state.
-    let event_state_map: &[(&str, &str)] = &[
-        ("SessionStart", "working"),
-        ("UserPromptSubmit", "working"),
-        ("PermissionRequest", "blocked"),
-        ("Stop", "idle"),
-        ("StopFailure", "idle"),
-        ("SessionEnd", "idle"),
-    ];
 
     if settings.get("hooks").is_none() {
         settings["hooks"] = serde_json::json!({});
     }
 
-    for (event, state) in event_state_map {
+    let events = [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PermissionRequest",
+        "Stop",
+        "StopFailure",
+        "SessionEnd",
+    ];
+
+    for event in &events {
         let event_hooks = settings["hooks"][*event].as_array().cloned().unwrap_or_default();
 
-        // Idempotency: skip if already registered.
+        // Idempotency: skip if this script or any PLEXI agent-report command is already registered.
         let already_registered = event_hooks.iter().any(|h| {
             h.get("hooks")
                 .and_then(|arr| arr.as_array())
@@ -360,7 +405,10 @@ pub fn agent_hook_install_cli(claude_code: bool) -> i32 {
                         entry
                             .get("command")
                             .and_then(|c| c.as_str())
-                            .map(|c| c.contains("plexi agent report"))
+                            .map(|c| {
+                                c.contains("claude-code-agent-state.sh")
+                                    || c.contains("plexi agent report")
+                            })
                             .unwrap_or(false)
                     })
                 })
@@ -370,10 +418,9 @@ pub fn agent_hook_install_cli(claude_code: bool) -> i32 {
             continue;
         }
 
-        let cmd = format!("{binary} agent report --state {state} --agent claude-code");
         let new_entry = serde_json::json!({
             "matcher": "",
-            "hooks": [{"type": "command", "command": cmd}]
+            "hooks": [{"type": "command", "command": script_str}]
         });
         match settings["hooks"][*event].as_array_mut() {
             Some(a) => {
@@ -387,7 +434,8 @@ pub fn agent_hook_install_cli(claude_code: bool) -> i32 {
 
     let code = write_claude_settings(&settings_path, &settings);
     if code == 0 {
-        println!("Installed Claude Code hooks into {}.", settings_path.display());
+        println!("Hook script: {script_str}");
+        println!("Registered in {} for 6 lifecycle events.", settings_path.display());
     }
     code
 }
@@ -430,7 +478,10 @@ pub fn agent_hook_uninstall_cli(claude_code: bool) -> i32 {
                             arr.iter().any(|h| {
                                 h.get("command")
                                     .and_then(|c| c.as_str())
-                                    .map(|c| c.contains("plexi agent report"))
+                                    .map(|c| {
+                                        c.contains("claude-code-agent-state.sh")
+                                            || c.contains("plexi agent report")
+                                    })
                                     .unwrap_or(false)
                             })
                         })
