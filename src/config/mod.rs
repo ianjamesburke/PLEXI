@@ -779,6 +779,10 @@ pub fn workspace_channel_dir() -> String {
     if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
         return format!(".plexi-{profile}");
     }
+    if let Some(channel) = std::env::var("PLEXI_CHANNEL").ok().filter(|c| !c.is_empty()) {
+        log::info!("workspace_channel_dir: using PLEXI_CHANNEL={channel}");
+        return format!(".plexi-{channel}");
+    }
     static CHANNEL_DIR: OnceLock<String> = OnceLock::new();
     CHANNEL_DIR
         .get_or_init(|| {
@@ -795,6 +799,10 @@ pub fn workspace_channel_dir() -> String {
 fn config_dir_name() -> String {
     if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
         return format!(".plexi-{profile}");
+    }
+    if let Some(channel) = std::env::var("PLEXI_CHANNEL").ok().filter(|c| !c.is_empty()) {
+        log::info!("config_dir_name: using PLEXI_CHANNEL={channel}");
+        return format!(".plexi-{channel}");
     }
     let basename = std::env::current_exe()
         .ok()
@@ -1393,6 +1401,30 @@ mod tests {
         // A binary at /Users/alpha/bin/plexi must NOT resolve to .plexi-alpha.
         // The extractor must use basename only, not the full path.
         assert_eq!(channel_suffix_from_basename("plexi"), ".plexi");
+    }
+
+    #[test]
+    fn config_dir_name_respects_plexi_channel_env() {
+        let prev = std::env::var("PLEXI_CHANNEL").ok();
+        unsafe { std::env::set_var("PLEXI_CHANNEL", "pr-999") };
+        let result = config_dir_name();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PLEXI_CHANNEL", v) },
+            None => unsafe { std::env::remove_var("PLEXI_CHANNEL") },
+        }
+        assert_eq!(result, ".plexi-pr-999");
+    }
+
+    #[test]
+    fn workspace_channel_dir_respects_plexi_channel_env() {
+        let prev = std::env::var("PLEXI_CHANNEL").ok();
+        unsafe { std::env::set_var("PLEXI_CHANNEL", "pr-999") };
+        let result = workspace_channel_dir();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PLEXI_CHANNEL", v) },
+            None => unsafe { std::env::remove_var("PLEXI_CHANNEL") },
+        }
+        assert_eq!(result, ".plexi-pr-999");
     }
 
     fn write(path: &Path, contents: &str) {
