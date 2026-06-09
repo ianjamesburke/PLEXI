@@ -1,7 +1,5 @@
 use super::super::*;
-use crate::app::app_trait::AppCommand;
 use crate::host::context::Window;
-use crate::testing::HostHarness;
 
 /// Issue #1392: creating a child context must NOT remove or replace the parent's
 /// focused pane (adoption branch was removed). The parent should have:
@@ -914,5 +912,433 @@ fn delete_context_keeps_all_empty_windows_when_no_nonempty_sibling() {
     assert_eq!(
         root_windows, 2,
         "both portal-only windows must survive when no non-empty sibling exists"
+    );
+}
+
+fn test_app_pane(pane_id: u64) -> crate::host::pane::Pane {
+    use crate::app::permissions::AppPermissions;
+    use crate::host::pane::{AppPane, AppRuntime};
+    use crate::process_app::ProcessApp;
+
+    let permissions = AppPermissions::builtin();
+    let (process_app, _draw_tx) = ProcessApp::new_for_test(pane_id, permissions.clone());
+    crate::host::pane::Pane::App(Box::new(AppPane {
+        id: pane_id,
+        runtime: AppRuntime::Process(Box::new(process_app)),
+        workspace_root: std::env::temp_dir(),
+        permissions,
+        manifest_id: format!("test-{pane_id}"),
+        name: format!("Test App {pane_id}"),
+        pane_group: None,
+        linked_pane_id: None,
+        overlay_replaced: None,
+        hidden: false,
+    }))
+}
+
+fn test_context(id: u64, parent_id: u64, name: &str) -> crate::host::context::Context {
+    crate::host::context::Context {
+        name: name.to_string(),
+        path: std::path::PathBuf::from(format!("/tmp/{name}")),
+        root: None,
+        description: None,
+        context_id: id,
+        parent_id: Some(parent_id),
+        depth: 1,
+        parked: false,
+    }
+}
+
+/// Issue #2108: dissolving a one-window sub-context should graft that child's
+/// tile tree into the exact Portal slot instead of flattening child panes into
+/// the parent container.
+#[test]
+fn dissolve_portal_grafts_single_child_window_tree_in_place() {
+    use egui_tiles::{Container, LinearDir, Tile};
+    use std::collections::HashMap;
+
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let parent_ctx_id = app.router.active().context_id;
+    let parent_win_id = app.windows[0].window_id;
+    let child_ctx_id = 210810u64;
+    let child_win_id = 210811u64;
+
+    let parent_left = 210801u64;
+    let parent_top_right = 210802u64;
+    let portal_pane_id = 210803u64;
+    let child_left = 210804u64;
+    let child_right = 210805u64;
+
+    let mut parent_tiles = egui_tiles::Tiles::default();
+    let parent_left_tile = parent_tiles.insert_pane(parent_left);
+    let parent_top_right_tile = parent_tiles.insert_pane(parent_top_right);
+    let portal_tile = parent_tiles.insert_pane(portal_pane_id);
+    let right_col = parent_tiles.insert_vertical_tile(vec![parent_top_right_tile, portal_tile]);
+    let parent_root = parent_tiles.insert_horizontal_tile(vec![parent_left_tile, right_col]);
+    let mut parent_panes = HashMap::new();
+    parent_panes.insert(parent_left, test_app_pane(parent_left));
+    parent_panes.insert(parent_top_right, test_app_pane(parent_top_right));
+    parent_panes.insert(
+        portal_pane_id,
+        crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+            pane_id: portal_pane_id,
+            target_context_id: child_ctx_id,
+            context_state: None,
+            hidden: false,
+        })),
+    );
+    app.windows[0].tree =
+        egui_tiles::Tree::new("dissolve_single_parent", parent_root, parent_tiles);
+    app.windows[0].panes = parent_panes;
+    app.windows[0].focused_pane = Some(portal_tile);
+    app.windows[0].zoomed_pane = Some(portal_tile);
+
+    app.router.push(test_context(
+        child_ctx_id,
+        parent_ctx_id,
+        "dissolve_single_child",
+    ));
+    app.context_active_window.insert(child_ctx_id, child_win_id);
+
+    let mut child_tiles = egui_tiles::Tiles::default();
+    let child_left_tile = child_tiles.insert_pane(child_left);
+    let child_right_tile = child_tiles.insert_pane(child_right);
+    let child_root = child_tiles.insert_horizontal_tile(vec![child_left_tile, child_right_tile]);
+    let mut child_panes = HashMap::new();
+    child_panes.insert(child_left, test_app_pane(child_left));
+    child_panes.insert(child_right, test_app_pane(child_right));
+    app.windows.push(Window {
+        name: "child".to_string(),
+        path: std::path::PathBuf::from("/tmp/dissolve_single_child"),
+        tree: egui_tiles::Tree::new("dissolve_single_child", child_root, child_tiles),
+        panes: child_panes,
+        focused_pane: Some(child_right_tile),
+        zoomed_pane: Some(child_right_tile),
+        grid_x: 0,
+        grid_y: 0,
+        window_id: child_win_id,
+        context_id: child_ctx_id,
+    });
+    app.router
+        .push_depth(child_ctx_id, child_win_id, Some(child_right_tile));
+
+    app.dissolve_portal(child_ctx_id);
+
+    assert!(
+        app.router.iter().all(|ctx| ctx.context_id != child_ctx_id),
+        "dissolved child context must be removed from router"
+    );
+    assert!(
+        !app.context_active_window.contains_key(&child_ctx_id),
+        "dissolved child context must not keep an active-window entry"
+    );
+    assert!(
+        app.router
+            .depth_stack
+            .iter()
+            .all(|(ctx_id, _, _)| *ctx_id != child_ctx_id),
+        "dissolved child context must be removed from depth stack"
+    );
+    assert!(
+        app.windows.iter().all(|w| w.context_id != child_ctx_id),
+        "no window should still belong to the dissolved child context"
+    );
+
+    let parent = app
+        .windows
+        .iter()
+        .find(|w| w.window_id == parent_win_id)
+        .expect("parent window should survive");
+    assert!(parent.panes.contains_key(&parent_left));
+    assert!(parent.panes.contains_key(&parent_top_right));
+    assert!(parent.panes.contains_key(&child_left));
+    assert!(parent.panes.contains_key(&child_right));
+    assert!(
+        !parent.panes.contains_key(&portal_pane_id),
+        "Portal pane must be removed after dissolve"
+    );
+    assert!(
+        parent
+            .panes
+            .values()
+            .all(|pane| pane.portal_target() != Some(child_ctx_id)),
+        "no surviving PortalPane may point at the dissolved context"
+    );
+
+    let grafted_tile = match parent.tree.tiles.get(right_col) {
+        Some(Tile::Container(Container::Linear(linear))) => {
+            assert_eq!(
+                linear.dir,
+                LinearDir::Vertical,
+                "portal lived in the lower half of the right column"
+            );
+            assert_eq!(
+                linear.children.len(),
+                2,
+                "child split should replace the portal slot, not become extra siblings"
+            );
+            linear.children[1]
+        }
+        other => panic!("expected right column linear container, got {other:?}"),
+    };
+
+    match parent.tree.tiles.get(grafted_tile) {
+        Some(Tile::Container(Container::Linear(linear))) => {
+            assert_eq!(linear.dir, LinearDir::Horizontal);
+            let grafted_panes: Vec<_> = linear
+                .children
+                .iter()
+                .map(|tile| match parent.tree.tiles.get(*tile) {
+                    Some(Tile::Pane(pane_id)) => *pane_id,
+                    other => panic!("expected child pane tile, got {other:?}"),
+                })
+                .collect();
+            assert_eq!(
+                grafted_panes,
+                vec![child_left, child_right],
+                "grafted tile must preserve the child split order"
+            );
+        }
+        other => panic!("expected child split grafted into portal slot, got {other:?}"),
+    }
+
+    let mapped_child_focus = parent
+        .tree
+        .tiles
+        .find_pane(&child_right)
+        .expect("focused child pane should be present in graft");
+    assert_eq!(
+        parent.focused_pane,
+        Some(mapped_child_focus),
+        "child focus should map to the grafted tile"
+    );
+    assert_eq!(
+        parent.zoomed_pane,
+        Some(mapped_child_focus),
+        "child zoom should map to the grafted tile"
+    );
+}
+
+/// Issue #2108: a multi-window child context must not be flattened into the
+/// active parent window. The active child window is grafted into the Portal
+/// slot; the remaining child windows are promoted to parent-context windows.
+#[test]
+fn dissolve_portal_preserves_multi_window_child_boundaries() {
+    use egui_tiles::{Container, Tile};
+    use std::collections::{HashMap, HashSet};
+
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let parent_ctx_id = app.router.active().context_id;
+    let parent_win_id = app.windows[0].window_id;
+    let child_ctx_id = 210860u64;
+    let child_win_a = 210861u64;
+    let child_win_primary = 210862u64;
+    let child_win_c = 210863u64;
+
+    let parent_pane = 210850u64;
+    let portal_pane_id = 210851u64;
+    let secondary_a_pane = 210852u64;
+    let primary_left = 210853u64;
+    let primary_right = 210854u64;
+    let secondary_c_pane = 210855u64;
+
+    let mut parent_tiles = egui_tiles::Tiles::default();
+    let parent_tile = parent_tiles.insert_pane(parent_pane);
+    let portal_tile = parent_tiles.insert_pane(portal_pane_id);
+    let parent_root = parent_tiles.insert_horizontal_tile(vec![parent_tile, portal_tile]);
+    let mut parent_panes = HashMap::new();
+    parent_panes.insert(parent_pane, test_app_pane(parent_pane));
+    parent_panes.insert(
+        portal_pane_id,
+        crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+            pane_id: portal_pane_id,
+            target_context_id: child_ctx_id,
+            context_state: None,
+            hidden: false,
+        })),
+    );
+    app.windows[0].tree = egui_tiles::Tree::new("dissolve_multi_parent", parent_root, parent_tiles);
+    app.windows[0].panes = parent_panes;
+    app.windows[0].focused_pane = Some(portal_tile);
+    app.windows[0].grid_x = 0;
+    app.windows[0].grid_y = 0;
+
+    app.router.push(test_context(
+        child_ctx_id,
+        parent_ctx_id,
+        "dissolve_multi_child",
+    ));
+    app.context_active_window
+        .insert(child_ctx_id, child_win_primary);
+
+    let mut tiles_a = egui_tiles::Tiles::default();
+    let tile_a = tiles_a.insert_pane(secondary_a_pane);
+    let mut panes_a = HashMap::new();
+    panes_a.insert(secondary_a_pane, test_app_pane(secondary_a_pane));
+    app.windows.push(Window {
+        name: "secondary-a".to_string(),
+        path: std::path::PathBuf::from("/tmp/dissolve_multi_a"),
+        tree: egui_tiles::Tree::new("dissolve_multi_a", tile_a, tiles_a),
+        panes: panes_a,
+        focused_pane: Some(tile_a),
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 0,
+        window_id: child_win_a,
+        context_id: child_ctx_id,
+    });
+
+    let mut tiles_primary = egui_tiles::Tiles::default();
+    let primary_left_tile = tiles_primary.insert_pane(primary_left);
+    let primary_right_tile = tiles_primary.insert_pane(primary_right);
+    let primary_root =
+        tiles_primary.insert_horizontal_tile(vec![primary_left_tile, primary_right_tile]);
+    let mut panes_primary = HashMap::new();
+    panes_primary.insert(primary_left, test_app_pane(primary_left));
+    panes_primary.insert(primary_right, test_app_pane(primary_right));
+    app.windows.push(Window {
+        name: "primary".to_string(),
+        path: std::path::PathBuf::from("/tmp/dissolve_multi_primary"),
+        tree: egui_tiles::Tree::new("dissolve_multi_primary", primary_root, tiles_primary),
+        panes: panes_primary,
+        focused_pane: Some(primary_right_tile),
+        zoomed_pane: Some(primary_right_tile),
+        grid_x: 1,
+        grid_y: 0,
+        window_id: child_win_primary,
+        context_id: child_ctx_id,
+    });
+
+    let mut tiles_c = egui_tiles::Tiles::default();
+    let tile_c = tiles_c.insert_pane(secondary_c_pane);
+    let mut panes_c = HashMap::new();
+    panes_c.insert(secondary_c_pane, test_app_pane(secondary_c_pane));
+    app.windows.push(Window {
+        name: "secondary-c".to_string(),
+        path: std::path::PathBuf::from("/tmp/dissolve_multi_c"),
+        tree: egui_tiles::Tree::new("dissolve_multi_c", tile_c, tiles_c),
+        panes: panes_c,
+        focused_pane: Some(tile_c),
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: child_win_c,
+        context_id: child_ctx_id,
+    });
+
+    app.dissolve_portal(child_ctx_id);
+
+    assert!(
+        app.router.iter().all(|ctx| ctx.context_id != child_ctx_id),
+        "dissolved child context must be removed from router"
+    );
+    assert!(
+        !app.context_active_window.contains_key(&child_ctx_id),
+        "dissolved child context must not keep an active-window entry"
+    );
+    assert!(
+        app.windows.iter().all(|w| w.context_id != child_ctx_id),
+        "all child windows should be reparented or removed"
+    );
+
+    let active_parent = app
+        .windows
+        .iter()
+        .find(|w| w.window_id == parent_win_id)
+        .expect("parent window should survive");
+    assert!(active_parent.panes.contains_key(&parent_pane));
+    assert!(active_parent.panes.contains_key(&primary_left));
+    assert!(active_parent.panes.contains_key(&primary_right));
+    assert!(
+        !active_parent.panes.contains_key(&secondary_a_pane)
+            && !active_parent.panes.contains_key(&secondary_c_pane),
+        "secondary child windows must not be flattened into the active parent window"
+    );
+    assert!(
+        !active_parent.panes.contains_key(&portal_pane_id),
+        "Portal pane must be removed after dissolve"
+    );
+    let portal_slot = match active_parent
+        .tree
+        .root
+        .and_then(|root| active_parent.tree.tiles.get(root))
+    {
+        Some(Tile::Container(Container::Linear(linear))) => {
+            assert_eq!(
+                linear.children.len(),
+                2,
+                "primary child tree should replace the portal slot"
+            );
+            linear.children[1]
+        }
+        other => panic!("expected parent root split, got {other:?}"),
+    };
+    assert!(
+        matches!(
+            active_parent.tree.tiles.get(portal_slot),
+            Some(Tile::Container(Container::Linear(_)))
+        ),
+        "primary child split should be grafted as a container"
+    );
+
+    let promoted_a = app
+        .windows
+        .iter()
+        .find(|w| w.window_id == child_win_a)
+        .expect("secondary child window A should be promoted");
+    let promoted_c = app
+        .windows
+        .iter()
+        .find(|w| w.window_id == child_win_c)
+        .expect("secondary child window C should be promoted");
+    assert_eq!(promoted_a.context_id, parent_ctx_id);
+    assert_eq!(promoted_c.context_id, parent_ctx_id);
+    assert!(promoted_a.panes.contains_key(&secondary_a_pane));
+    assert!(promoted_c.panes.contains_key(&secondary_c_pane));
+    assert!(
+        promoted_a
+            .tree
+            .root
+            .and_then(|root| promoted_a.tree.tiles.get(root))
+            .is_some(),
+        "promoted window A should keep its tile tree"
+    );
+    assert!(
+        promoted_c
+            .tree
+            .root
+            .and_then(|root| promoted_c.tree.tiles.get(root))
+            .is_some(),
+        "promoted window C should keep its tile tree"
+    );
+
+    let parent_window_coords: HashSet<_> = app
+        .windows
+        .iter()
+        .filter(|w| w.context_id == parent_ctx_id)
+        .map(|w| (w.grid_x, w.grid_y))
+        .collect();
+    let parent_window_count = app
+        .windows
+        .iter()
+        .filter(|w| w.context_id == parent_ctx_id)
+        .count();
+    assert_eq!(
+        parent_window_coords.len(),
+        parent_window_count,
+        "promoted child windows should have deterministic non-colliding grid coordinates"
+    );
+    assert!(
+        app.windows
+            .iter()
+            .flat_map(|w| w.panes.values())
+            .all(|pane| pane.portal_target() != Some(child_ctx_id)),
+        "no surviving PortalPane may point at the dissolved context"
     );
 }
