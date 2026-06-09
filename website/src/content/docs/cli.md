@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.673"
+verified_version: "0.0.681"
 order: 7
 ---
 
@@ -151,6 +151,9 @@ Install agent definitions from the global registry (`~/.plexi/agents/`) into the
 | `add` | Install an agent definition from the global registry into the current workspace |
 | `update` | Re-install an agent definition from the global registry, preserving memory and logs |
 | `list` | List agents installed in the current workspace |
+| `report` | Report agent state for this pane to the host |
+| `status` | Show current agent state for all panes |
+| `hook` | Install or uninstall Claude Code hook integration |
 
 ### `plexi agent init`
 
@@ -192,6 +195,65 @@ Example: plexi agent update project-manager
 ### `plexi agent list`
 
 List agents installed in the current workspace
+
+### `plexi agent report`
+
+Report agent state for this pane to the host.
+
+Called internally by hook scripts. Requires PLEXI_SOCKET and PLEXI_PANE_ID to be set in the environment.
+
+Example: plexi agent report --state working --agent claude-code
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--state` | string | yes | State to report: working, blocked, or idle |
+| `--agent` | string | no | Agent name (e.g. "claude-code") Default: `unknown`. |
+| `--session-id` | string | no | Session ID (optional, from hook event JSON) |
+
+### `plexi agent status`
+
+Show current agent state for all panes.
+
+Queries the host for all panes that have reported agent state via hooks. Formats as a table with pane ID, agent name, state, and session ID.
+
+Example: plexi agent status Example: plexi agent status --blocked
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--blocked` | flag | no | Show only blocked panes |
+| `--working` | flag | no | Show only working panes |
+| `--idle` | flag | no | Show only idle panes |
+
+### `plexi agent hook`
+
+Install or uninstall Claude Code hook integration.
+
+install: patches ~/.claude/settings.json with hook registrations for all Claude Code lifecycle events, routing them to plexi agent report.
+
+uninstall: removes all PLEXI hook entries from ~/.claude/settings.json.
+
+Example: plexi agent hook install --claude-code Example: plexi agent hook uninstall --claude-code
+
+| Subcommand | Description |
+|---|---|
+| `install` | Install the PLEXI hook script into ~/.claude/settings.json |
+| `uninstall` | Remove PLEXI hook entries from ~/.claude/settings.json |
+
+#### `plexi agent hook install`
+
+Install the PLEXI hook script into ~/.claude/settings.json
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--claude-code` | flag | no | Install Claude Code hooks (SessionStart, UserPromptSubmit, PermissionRequest, Stop, StopFailure, SessionEnd) |
+
+#### `plexi agent hook uninstall`
+
+Remove PLEXI hook entries from ~/.claude/settings.json
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--claude-code` | flag | no | Remove Claude Code hooks |
 
 ## `plexi context`
 
@@ -617,19 +679,6 @@ Example: plexi pane state 42
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<pane_id>` | string | yes | Pane id to query (from `plexi pane list`) |
-
-## `plexi terminal`
-
-Open a plain terminal pane
-
-| Flag / Arg | Type | Required | Description |
-|---|---|---|---|
-| `<cmd>` | string | no | Optional shell command to run inside the new terminal |
-| `--ephemeral` / `-e` | flag | no | Close the pane automatically when the command finishes |
-| `--layout` | string | no | Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, or new_window |
-| `--from-pane-id` | string | no | Open the new pane relative to this pane ID instead of the focused pane |
-| `--cwd` | string | no | Directory to open the terminal in |
-| `--no-focus` | flag | no | Keep focus on the current pane instead of jumping to the new one |
 
 ## `plexi notify`
 
