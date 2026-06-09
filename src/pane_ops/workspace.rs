@@ -47,6 +47,16 @@ fn auto_init_workspace(root: &std::path::Path) {
     }
 }
 
+fn persisted_next_pane_id(host_next: u64, windows: &[crate::workspace::SavedWindow]) -> u64 {
+    let next_from_saved = windows
+        .iter()
+        .flat_map(|win| win.panes.iter().map(|pane| pane.id))
+        .max()
+        .map(|id| id.saturating_add(1))
+        .unwrap_or(host_next);
+    host_next.max(next_from_saved)
+}
+
 impl PlexiApp {
     /// Create a child context nested inside `parent_name`. Always creates a fresh
     /// terminal in the child (portal model — no pane adoption). Inserts a Portal
@@ -1079,7 +1089,7 @@ impl PlexiApp {
             version: 2,
             active_context: self.router.active_idx(),
             sidebar_visible: self.sidebar_visible,
-            next_pane_id: self.host.next_pane_id(),
+            next_pane_id: persisted_next_pane_id(self.host.next_pane_id(), &saved_windows),
             contexts: saved_contexts,
             windows: saved_windows,
             context_active_window: self.context_active_window.clone(),
@@ -1088,5 +1098,47 @@ impl PlexiApp {
         if let Err(e) = ws.save() {
             log::error!("Failed to save workspace: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn saved_window_with_panes(ids: &[u64]) -> crate::workspace::SavedWindow {
+        crate::workspace::SavedWindow {
+            name: "test".to_string(),
+            path: std::env::temp_dir(),
+            tree: egui_tiles::Tree::empty("test_tree"),
+            panes: ids
+                .iter()
+                .map(|id| crate::workspace::SavedPane {
+                    id: *id,
+                    kind: crate::workspace::SavedPaneKind::App,
+                    cwd: std::env::temp_dir(),
+                    name: None,
+                    app_id: Some("test".to_string()),
+                    app_state: None,
+                    hidden: false,
+                })
+                .collect(),
+            focused_pane: None,
+            grid_x: 0,
+            grid_y: 0,
+            window_id: 1,
+            context_id: 1,
+        }
+    }
+
+    #[test]
+    fn persisted_next_pane_id_cannot_collide_with_saved_panes() {
+        let windows = vec![
+            saved_window_with_panes(&[1, 4]),
+            saved_window_with_panes(&[9, 12]),
+        ];
+
+        assert_eq!(persisted_next_pane_id(3, &windows), 13);
+        assert_eq!(persisted_next_pane_id(20, &windows), 20);
+        assert_eq!(persisted_next_pane_id(7, &[]), 7);
     }
 }

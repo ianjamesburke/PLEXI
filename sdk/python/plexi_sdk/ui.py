@@ -1560,6 +1560,14 @@ def render_tree(ctx, root: Component, fill: Optional[str] = None) -> None:
     if node is not None:
         ctx.render_tree(node)
         return
+    if getattr(ctx._app, "_l0_fallback_warned", False) is not True:
+        setattr(ctx._app, "_l0_fallback_warned", True)
+        ctx.warn(
+            "ctx.render() fell back to L0 draw commands because "
+            f"{type(root).__name__}.to_node() returned None. "
+            "Use UiNode-native components for ordinary app UI; reserve raw "
+            "drawing for games, visualizations, or explicitly documented escape hatches."
+        )
     root.render(ctx, 0.0, 0.0, ctx.w, ctx.h)
 
 

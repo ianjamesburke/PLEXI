@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from plexi_sdk._render_context import RenderContext
-from plexi_sdk.ui import Clickable, Tabs
+from plexi_sdk.ui import Clickable, Column, Component, Label, Tabs
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -84,6 +84,43 @@ def test_render_tree_with_clickable_component() -> None:
     assert cmd["type"] == "component_tree"
     assert cmd["root"]["type"] == "interactive"
     assert cmd["root"]["node_id"] == "btn-1"
+
+
+def test_ctx_render_native_component_tree_emits_component_tree() -> None:
+    """ctx.render(Column([...])) stays on the host-native ComponentTree path."""
+    ctx = _make_ctx()
+    ctx.render(Column([Label(text="native")]))
+
+    cmds = _buffered(ctx)
+    assert cmds[0]["type"] == "rect"  # clear background
+    assert cmds[1]["type"] == "component_tree"
+    assert cmds[1]["root"]["type"] == "column"
+    assert cmds[1]["root"]["children"][0]["text"] == "native"
+
+
+def test_ctx_render_l0_fallback_warns_once(capsys: pytest.CaptureFixture[str]) -> None:
+    """Raw fallback remains supported, but it is visible in app logs."""
+    class RawOnly(Component):
+        def measure(self, _avail_w: float) -> float:
+            return 12.0
+
+        def to_node(self) -> None:
+            return None
+
+        def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
+            ctx.rect(x, y, w, h, fill="#000000")
+
+    ctx = _make_ctx()
+    ctx.render(Column([RawOnly()]))
+    ctx.render(Column([RawOnly()]))
+
+    emitted = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    warnings = [
+        cmd for cmd in emitted
+        if cmd.get("type") == "log" and cmd.get("level") == "warn"
+    ]
+    assert len(warnings) == 1
+    assert "fell back to L0 draw commands" in warnings[0]["message"]
 
 
 def test_render_tree_rejects_invalid_type() -> None:
