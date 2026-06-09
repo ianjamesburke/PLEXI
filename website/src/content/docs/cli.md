@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.662"
+verified_version: "0.0.671"
 order: 7
 ---
 
@@ -207,6 +207,7 @@ Manage the active context (the folder and project scope tied to the current pane
 | `zoom` | Zoom into a sub-context by its numeric context_id |
 | `zoom-out` | Zoom out of the current sub-context to the parent |
 | `push` | Push the focused pane into a new sub-context |
+| `list` | List all open contexts as a JSON array |
 
 ### `plexi context new`
 
@@ -266,6 +267,10 @@ Push the focused pane into a new sub-context
 |---|---|---|---|
 | `<name>` | string | no | Name for the new sub-context. Defaults to the pane name |
 
+### `plexi context list`
+
+List all open contexts as a JSON array
+
 ## `plexi app`
 
 Manage your Plexi apps — open, install, list, scaffold, and inspect
@@ -277,6 +282,7 @@ Manage your Plexi apps — open, install, list, scaffold, and inspect
 | `uninstall` | Remove an installed app by id |
 | `list` | Show all installed apps with their versions |
 | `render` | Render an app headlessly (JSON frame tree by default, or PNG with --png) |
+| `check` | Check a local app with manifest, SDK, and render-size checks |
 | `info` | Show details about an installed app: id, name, version, and available tools |
 | `init` | Create a new app from a template |
 | `validate` | Check a Plexi app directory for errors before publishing or installing |
@@ -337,11 +343,23 @@ Render an app headlessly (JSON frame tree by default, or PNG with --png)
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `<id>` | string | yes | App id to render (e.g. "snake") |
+| `<app>` | string | yes | App id or local path to render (e.g. "snake" or "./my-app") |
 | `--size` | string | no | Image dimensions as WxH (e.g. 500x500) Default: `800x600`. |
 | `--state` | string | no | Pre-seed the app's state from a JSON file before rendering |
 | `--output` | string | no | Where to save the output (default: stdout) |
 | `--png` | flag | no | Render to a PNG image instead of JSON (default: JSON) |
+
+### `plexi app check`
+
+Check a local app with manifest, SDK, and render-size checks.
+
+This is the compiler-like gate for generated Plexi apps. It checks the manifest, inspects Python SDK usage without importing app code, and renders the app at small and normal pane sizes.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<path>` | string | no | Local app directory to check (default: current directory) Default: `.`. |
+| `--size` | string (repeatable) | no | Render size to check as WxH. Repeat to override the default matrix |
+| `--png-dir` | string | no | Write PNG snapshots for each checked size into this directory |
 
 ### `plexi app info`
 
@@ -446,7 +464,7 @@ Control panes — list, focus, send input, capture output, and more
 | `close` | Close a pane. Omit the pane id to close the pane you are currently in |
 | `send` | Type text into another pane as if it came from the keyboard |
 | `self` | Print the id of the pane you are currently in |
-| `info` | Print details about the current pane as JSON |
+| `info` | Print details about the current pane (or the previously focused pane) as JSON |
 | `capture` | Capture the last N lines of a pane's output as a JSON array |
 | `key` | Send a key press to a pane |
 | `command` | Send a shell command to a terminal pane as if typed from the keyboard |
@@ -536,7 +554,11 @@ Useful in scripts: MY_PANE=$(plexi pane self)
 
 ### `plexi pane info`
 
-Print details about the current pane as JSON
+Print details about the current pane (or the previously focused pane) as JSON
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--previous` | flag | no | Return info for the previously focused pane instead of the current one |
 
 ### `plexi pane capture`
 

@@ -262,7 +262,7 @@ PGAP is the wire protocol that every Plexi app speaks — built-in or third-part
 6. Out-of-frame commands (`notify`, `secret_get`, `capability_request`, etc.) arrive at any time; host processes them immediately.
 7. On close: host sends `shutdown`; app must exit cleanly within a short timeout.
 
-Current protocol version: **pgap/3**. Full reference: [PGAP.md](PGAP.md).
+Current protocol version: **pgap/3**. The Python SDK has its own authoring API version; SDK v2 apps speak PGAP v3. Full reference: [PGAP.md](PGAP.md).
 
 ---
 

@@ -1,5 +1,9 @@
 # Plexi SDK v2 — Developer Reference
 
+SDK v2 is the Python authoring API. PGAP v3 (`pgap/3`) is the host/app wire
+protocol the SDK speaks. They are different version lines: SDK v2 apps normally
+emit PGAP v3 component trees.
+
 ## The Pattern (memorize this)
 
 ```python

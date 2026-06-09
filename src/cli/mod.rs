@@ -104,6 +104,7 @@ pub mod setup;
 pub mod agent;
 pub mod ai;
 pub mod app;
+pub mod app_check;
 pub mod completions;
 pub mod config_cli;
 pub mod context_cli;
@@ -172,6 +173,7 @@ pub(super) fn binary_in_path(name: &str) -> bool {
 
 // ── Public re-exports (preserve crate::cli::fn_name() call sites in main.rs) ──
 pub use app::{app_init, app_uninstall, app_install_with_pin, app_info, app_list, app_render, app_publish, app_update_cli, app_action_cli};
+pub use app_check::app_check_cli;
 pub use completions::{completions_cli, complete_open_cli};
 pub use config_cli::{config_check, config_edit, config_get, config_reset};
 pub use context_cli::{

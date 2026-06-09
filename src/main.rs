@@ -330,6 +330,10 @@ fn main() -> eframe::Result {
                         AppCmd::Render { app, size, state, output, png } => {
                             std::process::exit(cli::app_render(&app, &size, state.as_deref(), output.as_deref(), png))
                         }
+                        AppCmd::Check { path, sizes, png_dir } => {
+                            log::info!("app_check:cli: path={path} sizes={sizes:?} png_dir={png_dir:?}");
+                            std::process::exit(cli::app_check_cli(&path, &sizes, png_dir.as_deref()));
+                        }
                         AppCmd::Info { id } => std::process::exit(cli::app_info(&id)),
                         AppCmd::Validate { path } => {
                             log::info!("app_validate:cli: path={path}");

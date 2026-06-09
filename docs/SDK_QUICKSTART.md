@@ -4,6 +4,8 @@ Audience: a coding agent building its first PGAP app.
 Goal: a running counter app using SDK v2.
 Deeper reference: [`docs/sdk-v2.md`](sdk-v2.md) and [`docs/PGAP_REFERENCE.md`](PGAP_REFERENCE.md).
 
+Naming: SDK v2 is the Python authoring API. PGAP v3 (`pgap/3`) is the host/app protocol it speaks.
+
 ## 1. Create The App
 
 Run this inside a Plexi workspace:
@@ -92,9 +94,12 @@ Python apps are native subprocesses. Capabilities gate PGAP host APIs; they are 
 ## 4. Open And Test
 
 ```bash
+plexi app check ./counter
 plexi app open ./counter
 plexi app render ./counter --state '{"count": 5}'
 ```
+
+`plexi app check` validates the manifest, inspects Python SDK usage without importing app code, and renders the app at small and normal pane sizes.
 
 For a live app pane, agents can drive the UI with:
 
