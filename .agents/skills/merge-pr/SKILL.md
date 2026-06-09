@@ -143,7 +143,7 @@ VERSION=$(grep '^version' Cargo.toml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]
 
 ---
 
-## Step 7 — Remove Pipeline Labels, Close Issue, Update Project Board
+## Step 7 — Remove Pipeline Labels And Close Issue
 
 ```bash
 # Remove pipeline labels before closing (closing alone doesn't remove labels)
@@ -154,8 +154,6 @@ gh issue edit $ISSUE_NUMBER \
   --remove-label "pipeline:implement" \
   --remove-label "in progress" 2>/dev/null || true
 gh issue close $ISSUE_NUMBER --comment "Closed by PR #$PR_NUMBER — verified on alpha v$VERSION"
-_PROJ_ITEM=$(gh api graphql -f query='query($n:Int!){repository(owner:"ianjamesburke",name:"PLEXI"){issue(number:$n){projectItems(first:5){nodes{id project{id}}}}}}' -F n=$ISSUE_NUMBER --jq '.data.repository.issue.projectItems.nodes[]|select(.project.id=="PVT_kwHOAkOgys4BXaQY")|.id')
-[ -n "$_PROJ_ITEM" ] && gh api graphql -f query='mutation($i:ID!,$v:String!){updateProjectV2ItemFieldValue(input:{projectId:"PVT_kwHOAkOgys4BXaQY",itemId:$i,fieldId:"PVTSSF_lAHOAkOgys4BXaQYzhSnRw8",value:{singleSelectOptionId:$v}}){projectV2Item{id}}}' -f i="$_PROJ_ITEM" -f v="98236657" > /dev/null
 ```
 
 **Bundle mode:** close all issues:

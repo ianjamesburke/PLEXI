@@ -109,8 +109,6 @@ If ls-remote is non-empty: another agent owns this branch. Surface it and any ex
 gh issue edit <number> --add-label "in progress" --add-label "pipeline:implement"
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<number> · impl"
 IMPL_PANE=$PLEXI_PANE_ID
-_PROJ_ITEM=$(gh api graphql -f query='query($n:Int!){repository(owner:"ianjamesburke",name:"PLEXI"){issue(number:$n){projectItems(first:5){nodes{id project{id}}}}}}' -F n=<number> --jq '.data.repository.issue.projectItems.nodes[]|select(.project.id=="PVT_kwHOAkOgys4BXaQY")|.id')
-[ -n "$_PROJ_ITEM" ] && gh api graphql -f query='mutation($i:ID!,$v:String!){updateProjectV2ItemFieldValue(input:{projectId:"PVT_kwHOAkOgys4BXaQY",itemId:$i,fieldId:"PVTSSF_lAHOAkOgys4BXaQYzhSnRw8",value:{singleSelectOptionId:$v}}){projectV2Item{id}}}' -f i="$_PROJ_ITEM" -f v="47fc9ee4" > /dev/null
 wtp add -b feature/<issue-number>-short-description origin/alpha
 ```
 

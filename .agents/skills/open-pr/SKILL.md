@@ -165,13 +165,6 @@ Update pipeline label on **each** issue in the bundle (or the single issue):
 gh issue edit <N> --add-label "in progress" --remove-label "pipeline:implement" --add-label "pipeline:open-pr" 2>/dev/null || true
 ```
 
-Update project board to "In Review" for **each** issue in the bundle:
-```bash
-# Repeat for each issue number N:
-_PROJ_ITEM=$(gh api graphql -f query='query($n:Int!){repository(owner:"ianjamesburke",name:"PLEXI"){issue(number:$n){projectItems(first:5){nodes{id project{id}}}}}}' -F n=<N> --jq '.data.repository.issue.projectItems.nodes[]|select(.project.id=="PVT_kwHOAkOgys4BXaQY")|.id')
-[ -n "$_PROJ_ITEM" ] && gh api graphql -f query='mutation($i:ID!,$v:String!){updateProjectV2ItemFieldValue(input:{projectId:"PVT_kwHOAkOgys4BXaQY",itemId:$i,fieldId:"PVTSSF_lAHOAkOgys4BXaQYzhSnRw8",value:{singleSelectOptionId:$v}}){projectV2Item{id}}}' -f i="$_PROJ_ITEM" -f v="f1399a59" > /dev/null
-```
-
 Update pane status:
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · pr-open"   # bundle: "#<n1>+<n2> · pr-open"

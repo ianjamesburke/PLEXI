@@ -3,11 +3,20 @@
 **CLAUDE.md does not track in-progress work or completion status.** It goes stale immediately and will mislead future sessions.
 
 - **What shipped and why** → `git log --oneline -20` and `GOTCHAS.md` for non-obvious discoveries
-- **What's currently in flight** → `git status`
-- **What's planned** → GitHub issues
-- **What to dispatch next** → GitHub Project board #7 "Up Next" column (query: `gh project item-list 7 --owner ianjamesburke --format json | jq '.items[] | select(.status == "Up Next")'`)
+- **What's currently in flight** → `git status`, open PRs, and issue pipeline labels
+- **Product direction** → `NORTH_STAR.md`
+- **App-framework + marketplace plan** → `docs/prm/app-framework-marketplace.md`
+- **Implementation backlog** → GitHub issues, used as work tickets only
 
 Before reporting anything as "done" or "missing", verify against `git log`.
+
+## Planning Source
+
+Plexi no longer uses GitHub Project board #7, `NEXT.md`, or generated dispatch snapshots to decide what happens next. Do not query, update, or trust the Project board for planning.
+
+For app-framework, packaging, marketplace, MCPUI, WASM/WASI, and Bevy work, read `docs/prm/app-framework-marketplace.md` first. That PRM is the local source of truth and resolves conflicts with older roadmap fragments.
+
+GitHub issues are implementation tickets. To choose the next dispatch, match open issues against the first unfinished milestone in the PRM, skip anything blocked or in progress, then choose parallel lanes whose `area:*` labels do not overlap. If the PRM calls for work that has no issue yet, create or triage the issue before dispatching.
 
 ## North Star
 
@@ -21,24 +30,25 @@ Feature branch naming: `feature/<issue-number>-short-description`. Never push di
 
 ## GitHub Issues
 
-**Always use the `/create-issue` skill to create issues.** It owns the full labeling convention (type, priority, area, load, blocking relationships, triage state) and enforces North Star alignment. Never create issues manually or with ad-hoc labels.
+**Always use the `/create-issue` skill to create issues.** It owns the full labeling convention (type, priority, area, load, blocking relationships, triage state) and enforces North Star / PRM alignment. Never create issues manually or with ad-hoc labels.
 
-## Dispatch Orchestration (GitHub Project Board #7)
+## Dispatch Orchestration
 
-The PLEXI project board has a **Status** field with these columns: `Idea → Backlog → Up Next → In Progress → In Review → Done`.
+Dispatch works from explicit issue numbers:
 
-**"Up Next"** is the dispatch staging area — issues staged here are ready for parallel agent dispatch. At session start, query the board to see what's queued. Use the `/dispatch` skill: `/dispatch <issue1> [issue2...]`.
+```
+/dispatch <issue1> [issue2...]
+```
 
-**Status transitions:**
-- Triage → **Up Next**: issue is ready, unblocked, and parallelizable (doesn't conflict with other Up Next issues)
-- **Up Next** → **In Progress**: agent dispatched
-- **In Progress** → **Done**: PR merged and issue closed
+There is no separate "Up Next" staging area. Before dispatching, read the marketplace PRM, audit the relevant open issues, and pick issues that match the next unfinished milestone.
 
-**Parallelizability rule:** Two issues are parallelizable if they don't touch the same source files. Check `area:*` labels as a proxy — same area = potential conflict.
+**Pipeline labels are the live work state:** `pipeline:implement`, `pipeline:open-pr`, `pipeline:validate`, `pipeline:merge`, and `in progress`. The Project board is retired.
+
+**Parallelizability rule:** Two issues are parallelizable if they do not touch the same source files. Check `area:*` labels as a proxy — same area = potential conflict.
 
 ## Milestones
 
-Milestones define release collections. Assign a milestone when work is actively planned for a specific release sprint. Issues without a milestone are accepted but unslotted.
+GitHub milestones are optional release buckets, not the planning source. Do not introduce milestone bookkeeping unless the user explicitly asks for a release collection. The PRM's prose milestones are enough for marketplace sequencing.
 
 ## Build Channels & Isolated Profiles
 

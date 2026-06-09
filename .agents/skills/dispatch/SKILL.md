@@ -14,7 +14,7 @@ Open parallel implement-issue panes. Each pane self-orchestrates its own pipelin
 /dispatch 1671 1679   # ship two issues in parallel
 ```
 
-An issue number is always required. Dispatch does not auto-pick — use `/pick-parallel` first if nothing is queued.
+An issue number is always required. Dispatch does not auto-pick. To choose lanes, read `docs/prm/app-framework-marketplace.md`, audit matching open GitHub issues, and pick ready unblocked issues whose `area:*` labels do not overlap.
 
 ---
 

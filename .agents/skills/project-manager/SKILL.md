@@ -1,11 +1,11 @@
 ---
 name: project-manager
-description: Reactive 4-lane dispatcher. Keeps up to 4 agent panes running at all times — fills empty slots from the ready queue (newest-first), watches on a timer, and refills as lanes complete. Use when starting a dispatch session, told to watch the queue, or asked to keep agents running. Not for single-issue work — use /implement-issue for that.
+description: Reactive 4-lane dispatcher. Keeps up to 4 agent panes running at all times — fills empty slots from the PRM-aligned ready queue, watches on a timer, and refills as lanes complete. Use when starting a dispatch session, told to watch the queue, or asked to keep agents running. Not for single-issue work — use /implement-issue for that.
 ---
 
 # Project Manager
 
-Reads current state, fills empty slots, watches on a timer. No scoring by default — use `/score` separately if needed.
+Reads current state, fills empty slots, watches on a timer. The default ordering comes from `docs/prm/app-framework-marketplace.md`, not GitHub Project board state.
 
 ---
 
@@ -28,14 +28,14 @@ Read what the user said before fetching anything. Extract signals:
 
 | Signal | Behaviour |
 |---|---|
-| "just added issues" / "new issues" / "just filed" | Newest-first, skip scoring |
+| "just added issues" / "new issues" / "just filed" | Re-audit new issues against the current PRM milestone |
 | "score" / "prioritize" | Invoke `/score` skill first, then use scored order |
 | "stop" / "done watching" | Cancel loop — do not call ScheduleWakeup |
 | "wind down" / "drain" / "let it finish" / "no new lanes" | Set `DISPATCH=false` — existing lanes finish, no new ones open |
 | Number (e.g. "run 6 lanes", "use 3") | Set `MAX_LANES` to that number |
-| No signal | Default: newest-first, watch loop on |
+| No signal | Default: PRM-aligned order, watch loop on |
 
-Set `ORDER_MODE` = `newest-first` (default) or `scored`.
+Set `ORDER_MODE` = `prm` (default) or `scored`.
 Set `WATCH` = true (default) or false.
 Set `DISPATCH` = true (default) or false. When false: existing lanes run to completion, pipeline stages (validate/merge) still resume, but no fresh issues are dispatched.
 Set `MAX_LANES` = number from message, or fall back to value in `.claude/agent-memory/project-manager/config.json` (`max_lanes`), or default 4.
@@ -191,7 +191,7 @@ The watch loop ends when `DISPATCH=false` AND `ACTIVE_LANE_COUNT = 0`.
 
 ## Step 4 — Select candidates
 
-Fetch ready issues with bundle flag, sorted newest-first.
+Read `docs/prm/app-framework-marketplace.md` and identify the first unfinished milestone. Fetch ready issues with bundle flag, then keep only issues that match that milestone. If no ready issues match, surface that the backlog needs issue triage instead of filling lanes with unrelated work.
 
 **Critical:** `ready` is added at every pipeline handoff (implement→open-pr→validate→merge), so it does NOT mean "fresh, dispatch me" — it means "ready for the next stage." A genuinely fresh issue has `ready` AND **no** `pipeline:*` label. Issues carrying any `pipeline:*` label belong to Step 2c (stalled resume), not fresh dispatch — the jq below excludes them so they never leak into a fresh lane:
 
@@ -202,6 +202,8 @@ gh issue list --label "ready" --state open \
         | {number, title, areas: [.labels[].name | select(startswith("area:"))], bundle: ([.labels[].name] | contains(["bundle"]))}] | sort_by(-.number)'
 ```
 
+Filter this list to the current PRM milestone before bundle batching. Newest issue number is only a tie-breaker inside the PRM-aligned candidate set.
+
 **Bundle batching (do this first before selecting individual issues):**
 
 Group all `bundle: true` issues by their primary area (first `area:*` label). For each group that has 2+ issues and none of whose areas conflict with `IN_PROGRESS_AREAS`:
@@ -211,7 +213,7 @@ Group all `bundle: true` issues by their primary area (first `area:*` label). Fo
 
 After bundle groups consume their slots, fill remaining slots with individual non-bundle issues.
 
-**For each non-bundle candidate (newest-first):**
+**For each non-bundle candidate (PRM-aligned order, newest as tie-breaker):**
 
 Skip any issue that:
 1. Is in `IN_PROGRESS_NUMBERS`
@@ -242,7 +244,7 @@ Candidate #1805: area:cli/commands → no conflict → SELECT
 
 Stop when `OPEN_SLOTS` reaches 0 or candidates are exhausted.
 
-If `ORDER_MODE` = `scored`: invoke `/score` on the candidate list first, then walk in scored order instead of newest-first.
+If `ORDER_MODE` = `scored`: invoke `/score` on the PRM-aligned candidate list first, then walk in scored order.
 
 Print selection:
 ```
@@ -323,8 +325,8 @@ On each re-entry after initial dispatch, lead with:
 - **Post-merge cleanup runs every cycle.** Check merged PRs for still-open linked issues and close them automatically.
 - **Auto-push alpha before dispatch.** `$PLEXI terminal` will clone a dirty tree — push first.
 - **Channel binary** auto-detected via `$PLEXI_CHANNEL` — never hardcode.
-- **Newest-first is the default.** Higher issue numbers were filed more recently.
+- **PRM alignment is the default.** Higher issue numbers are only a tie-breaker inside the current PRM milestone.
 - **Conflict detection is live, not scored.** Two issues conflict only if they share an `area:*` label with something currently in-progress.
-- **Scoring is opt-in.** Invoke `/score` before or say "score these first" to get conviction-ranked ordering.
+- **Scoring is opt-in and secondary.** Invoke `/score` before or say "score these first" to rank the PRM-aligned candidate list.
 - **pipeline:* labels are live state.** Never read Ship Log to determine current pipeline stage — check labels.
 - **Stalled pipeline issues always take priority** — they already have partial work and should complete the cycle before fresh dispatch.
