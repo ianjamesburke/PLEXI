@@ -317,6 +317,7 @@ impl PlexiApp {
                     if before == after {
                         log::warn!("pane_ipc: close_pane: pane_id={pane_id} not found");
                     }
+                    self.pane_agent_states.remove(pane_id);
                 }
                 crate::app_protocol::AppRequest::SpawnPane {
                     type_id,
@@ -1335,6 +1336,7 @@ impl PlexiApp {
         }
 
         for pane_id in panes_to_close {
+            self.pane_agent_states.remove(&pane_id);
             self.close_pane_by_id(pane_id);
         }
     }
