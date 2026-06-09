@@ -79,13 +79,6 @@ context zoom-out         Zoom out to parent context.
 context push [NAME]      Push focused pane into a new sub-context.
 ```
 
-### terminal -- shorthand for pane new
-
-```
-terminal [CMD]           Same as pane new. Flags: -e, --layout LAYOUT, --from-pane-id ID,
-                         --cwd DIR, --no-focus.
-```
-
 ### notify -- surface information to the user
 
 ```
@@ -143,7 +136,7 @@ uninstall                Remove app bundle, CLI, completions. --keep-data, -y.
 
 ## Non-Obvious Translation Rules
 
-- `pane new` is primary; `terminal` is a shorthand alias -- prefer `pane new`
+- `pane new` is the canonical way to open a terminal pane
 - `app open TYPE_ID` opens installed apps -- never `pane send ID "app\n"`
 - `app render` takes an installed app **ID** (not a path) -- run `app list` first
 - `agent init` replaces the former `app init --agent` form

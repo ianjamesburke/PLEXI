@@ -414,9 +414,9 @@ pub fn open_cli(
 
     if type_id == "terminal" {
         log::warn!(
-            "open:cli: 'plexi app open terminal' is deprecated, use 'plexi terminal' instead"
+            "open:cli: 'plexi app open terminal' is deprecated, use 'plexi pane new' instead"
         );
-        eprintln!("warning: 'plexi app open terminal' is deprecated, use 'plexi terminal' instead");
+        eprintln!("warning: 'plexi app open terminal' is deprecated, use 'plexi pane new' instead");
     }
 
     // If type_id looks like a path to an app directory (contains manifest.toml), open by path.
@@ -502,30 +502,6 @@ fn open_app_by_path(abs_path: &str, layout: Option<&str>, from_pane_id: Option<u
     0
 }
 
-/// Thin wrapper preserving the existing `plexi terminal` call site.
-pub fn terminal_cli(
-    cmd: Option<&str>,
-    ephemeral: bool,
-    layout: Option<&str>,
-    from_pane_id: Option<u64>,
-    cwd: Option<&str>,
-    no_focus: bool,
-) -> i32 {
-    let layout_str = layout.unwrap_or("split_h");
-    pane_new_cli(
-        cmd,
-        None,
-        layout_str,
-        from_pane_id,
-        cwd,
-        ephemeral,
-        no_focus,
-        None,
-        &[],
-        None,
-        &[],
-    )
-}
 
 /// Read a line from stdin with echo disabled (for password-style input).
 pub(super) fn read_secret_from_stdin() -> io::Result<String> {

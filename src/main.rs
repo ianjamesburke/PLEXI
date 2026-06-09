@@ -529,9 +529,6 @@ fn main() -> eframe::Result {
                             ));
                         }
                     },
-                    Commands::Terminal { cmd, ephemeral, layout, from_pane_id, cwd, no_focus } => {
-                        std::process::exit(cli::terminal_cli(cmd.as_deref(), ephemeral, layout.as_deref(), from_pane_id, cwd.as_deref(), no_focus));
-                    }
                     Commands::CompleteOpen { prefix } => {
                         std::process::exit(cli::complete_open_cli(&prefix));
                     },

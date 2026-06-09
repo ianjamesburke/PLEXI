@@ -109,26 +109,6 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: PaneCmd,
     },
-    /// Open a plain terminal pane.
-    Terminal {
-        /// Optional shell command to run inside the new terminal
-        cmd: Option<String>,
-        /// Close the pane automatically when the command finishes
-        #[arg(long, short = 'e')]
-        ephemeral: bool,
-        /// Where to place the new pane: split_h (right), split_left (left), split_v (below), split_right, split_below, split_above, tab, or new_window
-        #[arg(long, value_parser = ["split_h", "split_left", "split_right", "split_v", "split_below", "split_above", "tab", "new_window"])]
-        layout: Option<String>,
-        /// Open the new pane relative to this pane ID instead of the focused pane
-        #[arg(long)]
-        from_pane_id: Option<u64>,
-        /// Directory to open the terminal in
-        #[arg(long, value_hint = ValueHint::DirPath)]
-        cwd: Option<String>,
-        /// Keep focus on the current pane instead of jumping to the new one
-        #[arg(long)]
-        no_focus: bool,
-    },
     /// Send a notification to the Plexi UI.
     Notify {
         /// Notification title (required)
