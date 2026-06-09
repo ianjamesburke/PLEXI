@@ -109,45 +109,46 @@ tail -20 ~/.plexi-pr-$PR_NUMBER/plexi.log
 **Skip gate — assess before running.** Read the diff and changed file list, then classify the PR:
 
 - **Run checks** if any changed file contains: new logic, new branches, new error paths, behavioral changes, new API surface, bug fixes, or anything systemic that could break silently.
-- **Skip checks** if ALL changes are exclusively: color/spacing/font-size constants, help/doc strings, markdown files, config TOML values, label/copy text, or UI layout values that require human eyes to verify anyway. When skipping, set `CR_FINDINGS="skipped — cosmetic/style change, user verifies visually"` and `AI_FINDINGS=""`.
+- **Skip checks** if ALL changes are exclusively: color/spacing/font-size constants, help/doc strings, markdown files, config TOML values, label/copy text, or UI layout values that require human eyes to verify anyway. When skipping, set `AI_FINDINGS="skipped — cosmetic/style change, user verifies visually"`.
 
 When in doubt, run. Skipping is only correct when you are confident a human looking at the UI is the only meaningful verification.
 
-**If running — CodeRabbit in parallel with the AI diff review chain:**
+**If running — rigorous Codex review (gpt-5.5, xhigh reasoning):**
 
-CodeRabbit (structured agent output):
 ```bash
-cd "$(git rev-parse --show-toplevel)/worktrees/$BRANCH"
-coderabbit review --agent --base alpha --type committed 2>&1
-```
+ISSUE_BODY=$(gh issue view $ISSUE_NUMBER --json title,body --jq '"Title: \(.title)\n\n\(.body)"')
+REFLECT_FILES=$(gh pr diff $PR_NUMBER --name-only | grep -iE "reflect|macro|derive|proc_macro" || echo "none")
 
-AI diff review — Codex first, Gemini fallback:
-```bash
-DIFF=$(gh pr diff $PR_NUMBER)
-REVIEW_PROMPT="You are reviewing a PR for PLEXI, a Rust + Python terminal multiplexer. Review this diff for bugs, correctness issues, missing error handling, or anything that would block shipping. Be concise. Start with PASS if no blockers, or BLOCKERS: followed by a bullet list if there are issues."
-AI_FINDINGS=""
+REVIEW_PROMPT="You are a rigorous security and correctness reviewer for PLEXI, a Rust + Python terminal multiplexer.
 
-# 1. Codex (OpenAI quota pool — try first)
+== ISSUE CONTEXT ==
+$ISSUE_BODY
+
+== REFLECT-RELATED FILES CHANGED ==
+$REFLECT_FILES
+
+== REVIEW INSTRUCTIONS ==
+1. Reflect/macro scrutiny: for any file involving Rust reflection, proc macros, or derive macros — verify correctness, token hygiene, and that macro expansion cannot produce unsound code.
+2. False positives: if a pattern looks concerning but is actually safe, name it and explain why it is safe. Do not omit these.
+3. Security threats: injection (shell, SQL, format string), privilege escalation, unsafe blocks, untrusted input reaching sensitive APIs, path traversal, insecure deserialization.
+4. Correctness: logic errors, missing error handling, incorrect state transitions, off-by-one, race conditions.
+
+== OUTPUT FORMAT ==
+Start with PASS if no blockers.
+Start with BLOCKERS: followed by a bullet list if any blocker exists.
+Then a SECURITY: section (write 'None found' if clean).
+Then a FALSE POSITIVES: section (write 'None' if none flagged).
+Be direct and concise. No padding."
+
 AI_FINDINGS=$(cd "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" && \
-  codex review "$REVIEW_PROMPT" --base alpha 2>&1)
-[ $? -ne 0 ] || [ -z "$AI_FINDINGS" ] && AI_FINDINGS=""
-
-# 2. Gemini fallback chain (if Codex failed or returned empty)
-if [ -z "$AI_FINDINGS" ]; then
-  for MODEL in "gemini-3.1-pro" "gemini-2.5-pro" "gemini-3-flash" "gemini-2.5-flash-lite"; do
-    OUTPUT=$(echo "$DIFF" | gemini -p "$REVIEW_PROMPT" --yolo -m "$MODEL" 2>&1)
-    if [ $? -eq 0 ] && ! echo "$OUTPUT" | grep -qi "exhausted\|quota"; then
-      AI_FINDINGS="$OUTPUT"
-      break
-    fi
-    echo "gemini: $MODEL unavailable, trying next..."
-  done
-fi
-
-[ -z "$AI_FINDINGS" ] && AI_FINDINGS="All AI diff reviewers unavailable — skipping automated review."
+  echo "$REVIEW_PROMPT" | codex review - \
+    -c model="gpt-5.5" \
+    -c model_reasoning_effort="xhigh" \
+    --base alpha 2>&1)
+[ -z "$AI_FINDINGS" ] && AI_FINDINGS="Codex review unavailable — skipping automated review."
 ```
 
-Capture both outputs as `CR_FINDINGS` and `AI_FINDINGS`. These are surfaced verbatim in the testing block — do not summarize or filter them.
+`AI_FINDINGS` is surfaced verbatim in the testing block — do not summarize or filter it.
 
 ---
 
@@ -174,10 +175,7 @@ PR: <pr-url>
 Issue #<issue-number>: <ISSUE_TITLE>
 What this ships: <ISSUE_WHAT — first non-header paragraph from issue body>
 
-CodeRabbit:
-<CR_FINDINGS verbatim, or "No findings.">
-
-AI review:
+Codex review (gpt-5.5 xhigh):
 <AI_FINDINGS verbatim>
 
 Pass criteria (from Done When):
@@ -197,7 +195,7 @@ plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
 REPLY_PANE="${PM_PANE_ID:-$PLEXI_PANE_ID}"
 RESULT=$(plexi notify \
   --title "PR #<n> quality checks done (attempt $((ATTEMPT_COUNT+1))/3)" \
-  --body "<title>. Review CodeRabbit + AI findings above, then reply pass/fail/modify." \
+  --body "<title>. Review Codex findings above, then reply pass/fail/modify." \
   --choice "a:Talk to Claude:pane_focus:$REPLY_PANE" \
   --choice "b:Open PR build" \
   --choice "c:Open PR")
@@ -382,10 +380,7 @@ What this ships: <ISSUE_WHAT — first non-header paragraph from issue body>
 
 No binary install needed for this change.
 
-CodeRabbit:
-<CR_FINDINGS verbatim, or "No findings.">
-
-AI review:
+Codex review (gpt-5.5 xhigh):
 <AI_FINDINGS verbatim>
 
 Pass criteria:
@@ -406,9 +401,9 @@ plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
 
 ## Rules
 
-- Step 2b quality checks (coderabbit + AI diff review) run unless the PR is exclusively cosmetic/style — assess the diff, then decide
+- Step 2b quality checks (Codex diff review) run unless the PR is exclusively cosmetic/style — assess the diff, then decide
 - Cosmetic = colors, spacing, font sizes, help strings, markdown, config values, UI copy — anything where human visual verification is the only meaningful check
-- CR_FINDINGS and AI_FINDINGS are always shown verbatim — never summarized or filtered
+- AI_FINDINGS is always shown verbatim — never summarized or filtered
 - Issue brief (ISSUE_TITLE + ISSUE_WHAT) must appear at the top of every testing block
 - `fail` without description: ask for it before taking any action
 - `modify` is only valid if pass criteria not yet met
