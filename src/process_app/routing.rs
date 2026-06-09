@@ -1860,6 +1860,27 @@ impl ProcessApp {
                     context_id,
                 });
             }
+            AppRequest::SetAgentState {
+                pane_id,
+                state,
+                agent,
+                session_id: _,
+            } => {
+                // SetAgentState is a CLI/hook-only command routed through the host socket.
+                // Apps should not send this; log and ignore.
+                log::warn!(
+                    "ProcessApp[{}]: SetAgentState ignored — pane_id={pane_id} agent={agent} state={state:?}",
+                    self.type_id
+                );
+            }
+            AppRequest::GetAgentStates { response_file } => {
+                // GetAgentStates is a CLI-only command routed through the host socket.
+                // Apps should not send this; log and ignore.
+                log::warn!(
+                    "ProcessApp[{}]: GetAgentStates ignored — response_file={response_file:?}",
+                    self.type_id
+                );
+            }
         }
     }
 

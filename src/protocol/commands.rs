@@ -432,6 +432,24 @@ pub struct ResponsiveTier {
     pub gap: f32,
 }
 
+/// Agent state reported by a hook script.
+#[derive(Serialize, Deserialize, JsonSchema, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentState {
+    Working,
+    Blocked,
+    Idle,
+}
+
+/// Per-pane agent state stored in PlexiApp.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PaneAgentState {
+    pub pane_id: u64,
+    pub state: AgentState,
+    pub agent: String,
+    pub session_id: Option<String>,
+}
+
 /// App-to-host requests — go to `route_command`.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -520,6 +538,18 @@ pub enum AppRequest {
         /// Omit for backwards-compatible global behaviour.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<NotifyScope>,
+    },
+    /// Report agent state for a pane. Called by hook scripts via `plexi agent report`.
+    SetAgentState {
+        pane_id: u64,
+        state: AgentState,
+        agent: String,
+        #[serde(default)]
+        session_id: Option<String>,
+    },
+    /// Get all tracked pane agent states. Writes JSON array to response_file.
+    GetAgentStates {
+        response_file: String,
     },
     /// Open a typed pipe.
     /// mode: "json" | "binary"
@@ -3228,7 +3258,6 @@ mod tests {
 mod ui_node_tests {
     use super::*;
     use crate::protocol::events::PlexiEvent;
-    use crate::protocol::ui_nodes::*;
 
     #[test]
     fn stack_with_text_child_serializes_correctly() {

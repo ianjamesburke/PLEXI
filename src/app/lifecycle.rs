@@ -838,6 +838,41 @@ impl PlexiApp {
                         }
                     }
                 }
+                crate::app_protocol::AppRequest::SetAgentState {
+                    pane_id,
+                    state,
+                    agent,
+                    session_id,
+                } => {
+                    log::info!(
+                        "pane_ipc: kind=set_agent_state pane_id={pane_id} agent={agent} state={state:?}"
+                    );
+                    self.pane_agent_states.insert(
+                        *pane_id,
+                        crate::app_protocol::PaneAgentState {
+                            pane_id: *pane_id,
+                            state: state.clone(),
+                            agent: agent.clone(),
+                            session_id: session_id.clone(),
+                        },
+                    );
+                }
+                crate::app_protocol::AppRequest::GetAgentStates { response_file } => {
+                    log::info!("pane_ipc: kind=get_agent_states response_file={response_file:?}");
+                    let states: Vec<&crate::app_protocol::PaneAgentState> =
+                        self.pane_agent_states.values().collect();
+                    let json_str =
+                        serde_json::to_string(&states).unwrap_or_else(|_| "[]".to_string());
+                    let temp = format!("{response_file}.tmp");
+                    if let Err(e) = std::fs::write(&temp, &json_str) {
+                        log::error!(
+                            "pane_ipc: get_agent_states: could not write temp file: {e}"
+                        );
+                    } else if let Err(e) = std::fs::rename(&temp, response_file) {
+                        log::error!("pane_ipc: get_agent_states: rename failed: {e}");
+                        let _ = std::fs::remove_file(&temp);
+                    }
+                }
                 crate::app_protocol::AppRequest::Notify {
                     level,
                     title,

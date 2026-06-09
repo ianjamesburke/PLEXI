@@ -844,6 +844,70 @@ pub enum AgentCmd {
     },
     /// List agents installed in the current workspace.
     List,
+    /// Report agent state for this pane to the host.
+    ///
+    /// Called internally by hook scripts. Requires PLEXI_SOCKET and PLEXI_PANE_ID
+    /// to be set in the environment.
+    ///
+    /// Example: plexi agent report --state working --agent claude-code
+    Report {
+        /// State to report: working, blocked, or idle
+        #[arg(long)]
+        state: String,
+        /// Agent name (e.g. "claude-code")
+        #[arg(long, default_value = "unknown")]
+        agent: String,
+        /// Session ID (optional, from hook event JSON)
+        #[arg(long)]
+        session_id: Option<String>,
+    },
+    /// Show current agent state for all panes.
+    ///
+    /// Queries the host for all panes that have reported agent state via hooks.
+    /// Formats as a table with pane ID, agent name, state, and session ID.
+    ///
+    /// Example: plexi agent status
+    /// Example: plexi agent status --blocked
+    Status {
+        /// Show only blocked panes
+        #[arg(long)]
+        blocked: bool,
+        /// Show only working panes
+        #[arg(long)]
+        working: bool,
+        /// Show only idle panes
+        #[arg(long)]
+        idle: bool,
+    },
+    /// Install or uninstall Claude Code hook integration.
+    ///
+    /// install: patches ~/.claude/settings.json with hook registrations for all
+    /// Claude Code lifecycle events, routing them to plexi agent report.
+    ///
+    /// uninstall: removes all PLEXI hook entries from ~/.claude/settings.json.
+    ///
+    /// Example: plexi agent hook install --claude-code
+    /// Example: plexi agent hook uninstall --claude-code
+    Hook {
+        #[command(subcommand)]
+        action: HookAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HookAction {
+    /// Install the PLEXI hook script into ~/.claude/settings.json.
+    Install {
+        /// Install Claude Code hooks (SessionStart, UserPromptSubmit, PermissionRequest, Stop, StopFailure, SessionEnd)
+        #[arg(long = "claude-code")]
+        claude_code: bool,
+    },
+    /// Remove PLEXI hook entries from ~/.claude/settings.json.
+    Uninstall {
+        /// Remove Claude Code hooks
+        #[arg(long = "claude-code")]
+        claude_code: bool,
+    },
 }
 
 #[derive(Subcommand)]
