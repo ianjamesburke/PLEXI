@@ -91,14 +91,15 @@ Hold the full issue body in context — Phase 3 uses it directly. Do not re-fetc
 
 **Hard stops — check all before proceeding. Any failure exits immediately, no conditional paths:**
 
-1. Unpushed commits on alpha → STOP. "Push alpha first, then re-run."
+1. Unpushed commits on alpha → **allowed** as long as the working tree is clean. Log a warning: "NOTE: local alpha is ahead of origin — worktree will branch from local HEAD, not origin/alpha." Skip the `git pull --rebase` step below (pulling would try to reconcile unpushed local commits). Do NOT stop.
 2. Dirty working tree → STOP. Print `git status --short`. Do not stash, do not proceed.
 3. Issue is `CLOSED` → set pane `noop`, stop. "Issue #<n> is already closed."
 4. Issue is labeled `in progress` → STOP. "ERROR: issue #<n> is already in progress." Surface existing worktree + any open PR. Do not proceed.
 
 Then run in parallel:
 ```bash
-git pull --rebase origin alpha
+# Only pull when in sync with origin (no unpushed commits). Skip when ahead — worktree already branches from local HEAD.
+git pull --rebase origin alpha  # skip if local alpha is ahead of origin
 git ls-remote origin "refs/heads/feature/<issue-number>-*"
 ```
 
@@ -109,7 +110,7 @@ If ls-remote is non-empty: another agent owns this branch. Surface it and any ex
 gh issue edit <number> --add-label "in progress" --add-label "pipeline:implement"
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<number> · impl"
 IMPL_PANE=$PLEXI_PANE_ID
-wtp add -b feature/<issue-number>-short-description origin/alpha
+wtp add -b feature/<issue-number>-short-description HEAD  # origin/alpha when in sync; local HEAD when ahead
 ```
 
 If "branch already exists": check `git worktree list`. If no worktree, `wtp add` without `-b`. Check for prior commits.
