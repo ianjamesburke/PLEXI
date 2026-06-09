@@ -14,7 +14,7 @@ This is the compass for Plexi's development. It is not a sprint plan or a featur
 
 ## Short Bio
 
-Plexi is a tiling, terminal-native personal computing environment. You run sandboxed apps inside it, build apps for it, and wire them together with typed pipes and shared context. Everything lives on disk. AI, audio, network, and filesystem access are brokered with explicit consent and a full audit trail. You install it once and build your working environment on top of it for the rest of your life.
+Plexi is a tiling, terminal-native personal computing environment. You run capability-gated apps inside it, build apps for it, and wire them together with typed pipes and shared context. Everything lives on disk. AI, audio, network, and filesystem access are brokered with explicit consent and a full audit trail. You install it once and build your working environment on top of it for the rest of your life.
 
 ---
 
@@ -26,7 +26,7 @@ Software was built for human interaction first. Every interface, every workflow,
 
 The whole paradigm needs to be re-imagined. Not for AI alone — for collaboration. Getting the most out of a human and the most out of an AI requires software that can act as a garden: a living, modular, breathing protocol where both participants can tend the environment, hand off control naturally, and grow interfaces that fit the individual using them. Not a universal UI. A personal one, shaped by use.
 
-Plexi is built for that model from the ground up. At the core is a tiling layout with three pane types — terminal (PTY), app (PGAP process), and agent (LLM loop). Apps don't share memory or state with the host; they communicate over a typed protocol with explicit capability grants. A sandboxed app can render UI, play audio, open a browser, query an LLM, read your filesystem — but only if you said yes, and only in the scope you granted. Every decision is logged.
+Plexi is built for that model from the ground up. At the core is a tiling layout with three pane types — terminal (PTY), app (PGAP process), and agent (LLM loop). Apps don't share memory or state with the host; they communicate over a typed protocol with explicit capability grants. A PGAP app can render UI, play audio, open a browser, query an LLM, read your filesystem — but only through host APIs you granted, and only in the scope you granted. Every decision is logged. Python apps are native subprocesses until the WASM runtime provides process isolation.
 
 The protocol — PGAP, Plexi Generic App Protocol — is the key abstraction. Any process that speaks newline-delimited JSON can be a Plexi app. The Python SDK wraps it, but the protocol is the primitive. This means apps are portable, auditable, and replaceable — and agents can invoke them, wire them together, and build new ones without leaving the environment.
 
@@ -88,7 +88,7 @@ Ephemeral pane manager: panes that are alive but not in the active tiling layout
 
 WASM app runtime with WASI capability mapping. Same UiNode tree protocol, different transport: shared memory IPC instead of JSON over pipes. True process sandboxing via WASM. `Surface { id }` node for direct GPU rendering (games, real-time visualizations). This is the performance tier: apps that need 60fps with hundreds of objects target WASM; apps that need simplicity target Python. Both ship to the same marketplace.
 
-App marketplace: `plexi app dev` (hot-reload local development), `plexi app publish` (package + upload), `plexi app install <name>` from registry. Submission review flow. Revenue sharing for app authors. The marketplace lists both Python and WASM apps; users don't need to know which runtime an app uses.
+App marketplace: `plexi app dev` (hot-reload local development), `plexi app publish` (package + upload), `plexi app install <name>` from registry. Submission review flow. Revenue sharing for app authors. The marketplace lists both Python and WASM apps with visible trust labels, while the install flow stays the same.
 
 ### Phase 5 — The Portable Instance *(long term)*
 

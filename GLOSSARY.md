@@ -16,7 +16,7 @@ Shared vocabulary for Plexi. When introducing or redefining terms, update this f
 
 ## Protocol & Communication
 
-**PGAP** — Plexi Generic App Protocol. Newline-delimited JSON over a child process's stdin/stdout. Apps declare what they can do; the host sends events (input, renders, permissions); apps send draw commands and requests back. Binary payloads (audio PCM, video frames) travel on typed pipes, not stdio. The isolation boundary — no shared memory, no inherited file descriptors.
+**PGAP** — Plexi Generic App Protocol. Newline-delimited JSON over a child process's stdin/stdout. Apps declare what they can do; the host sends events (input, renders, permissions); apps send draw commands and requests back. Binary payloads (audio PCM, video frames) travel on typed pipes, not stdio. PGAP is the host API boundary; Python apps are native subprocesses until the WASM runtime provides process isolation.
 
 **PlexiEvent** — Host → app message. Types: init, render, input (keyboard/mouse), capability decision, secret value, run update, pipe message, path changed, suspend/resume, shutdown.
 

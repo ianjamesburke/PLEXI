@@ -53,4 +53,4 @@ Plexi ships three channels. Each is a fully isolated instance with its own binar
 
 - [Quick Note](/docs/quick-note) — open a persistent scratch pane from anywhere
 - [Panes & Pages](/docs/panes) — understand the layout model
-- [Apps](/docs/apps) — run sandboxed apps inside Plexi
+- [Apps](/docs/apps) — build and run Plexi apps

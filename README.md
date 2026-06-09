@@ -162,7 +162,7 @@ A toolbar badge shows the count of pending notifications. `Cmd+Shift+A` always g
 
 ## Apps
 
-Apps are Python processes that render native UI and communicate with the host over PGAP. They declare capabilities in a manifest; the host enforces them at runtime.
+Apps are Python processes that render native UI and communicate with the host over PGAP. They declare capabilities in a manifest; the host enforces those capabilities for PGAP host APIs. Native Python apps are not a process sandbox.
 
 A fresh install seeds a core set of apps automatically. Browse them with `Cmd+P` or manage them from the terminal.
 
@@ -195,7 +195,7 @@ plexi validate <path>         # validate a manifest before publishing
 plexi app init my-app
 ```
 
-Creates `.plexi/apps/my-app/` in the current directory with `manifest.toml`, `main.py`, and a bundled `plexi_sdk.py`. Edit `main.py`, open Plexi, and the app appears in the command palette immediately — no restart needed.
+Creates a Plexi app directory with `manifest.toml` and `main.py`. Inside a workspace it goes under that workspace's channel app directory; outside a workspace, pass `--global` to install into the global app registry. The host injects the SDK at launch.
 
 **Minimal `manifest.toml`:**
 
@@ -219,20 +219,25 @@ layout_hint = { side = "right", split = 0.5 }
 
 ### App interaction model
 
-Apps launch side-by-side with an agent pane (or alone, depending on `layout_hint`). The host spawns the app process and communicates over stdin/stdout using PGAP.
-
-**Inside a frame** (`on_render`): call `ctx.rect(...)`, `ctx.text(...)`, or pass a UI tree to `ctx.render(...)`. The SDK handles layout, padding, and truncation.
-
-**Outside frames**: use `emit.*` for out-of-frame actions — `emit.notify(...)`, `emit.info(...)`, `emit.error(...)`.
-
-**Logging from an app:**
+Normal apps implement `view()` and return an L1 component tree. The host handles layout, spacing, theme colors, hit testing, and rendering.
 
 ```python
-ctx.info("State initialized")   # inside on_render
-ctx.warn("Retrying connection")
-ctx.error("Auth failed", detail=str(e))
-emit.info("App starting up")    # outside frames / at module level
+from plexi_sdk import App
+from plexi_sdk.ui import AppBar, Column, Label
+
+class MyApp(App):
+    def view(self):
+        return Column([
+            AppBar("My App"),
+            Label("Hello from Plexi"),
+        ])
+
+MyApp().run()
 ```
+
+Use `on_render(ctx)` only for canvas apps, games, realtime visualizations, or other pixel-control surfaces.
+
+Use `self.emit.*` for host-brokered actions: `self.emit.notify(...)`, `self.emit.info(...)`, `await self.emit.secret_get(...)`, `await self.emit.ai_query(...)`.
 
 App logs forward into the host log tagged `app::<app_id>`. Check `~/.plexi/plexi.log` (or `~/.plexi-alpha/plexi.log` on alpha) when debugging.
 
@@ -242,7 +247,7 @@ To share your app: push the repo to GitHub, then anyone can install it with `ple
 
 ## PGAP — Plexi General App Protocol
 
-PGAP is the wire protocol that every Plexi app speaks — built-in or third-party. It is the isolation boundary: no shared memory, no inherited file descriptors.
+PGAP is the wire protocol that every Plexi app speaks — built-in or third-party. It is the host API boundary: app requests go through typed messages and capability checks. Native Python apps are still native subprocesses, not a process sandbox.
 
 **Transport:** newline-delimited JSON on **stdin** (host → app) and **stdout** (app → host). One JSON object per line; no framing, no length prefix.
 
@@ -279,7 +284,7 @@ plexi secret delete <key>       # remove from Keychain
 **From an app**, request the `secrets.get` capability in the manifest and call:
 
 ```python
-value = await ctx.secret_get("MY_API_KEY")
+value = await self.emit.secret_get("MY_API_KEY")
 ```
 
 The host presents a permission prompt on first access; subsequent calls within the same session use the cached grant.
@@ -299,7 +304,7 @@ All `plexi` subcommands work identically on alpha, beta, stable, and PR builds. 
 | `plexi validate <path>` | Validate an app directory's manifest |
 | `plexi pack` | Pack management (apply, list packs) |
 | `plexi app init <name>` | Scaffold a new app in the current directory |
-| `plexi open <app-id>` | Open an app pane |
+| `plexi app open <app-id>` | Open an app pane |
 | `plexi terminal [cmd]` | Open a terminal pane, optionally running a command |
 | `plexi pane <subcommand>` | Pane management (name, close, list, focus) |
 | `plexi notify` | Emit a notification (see Notifications section) |

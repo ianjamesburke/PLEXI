@@ -1,28 +1,18 @@
 # plexi-sdk
 
-Python SDK for building Plexi apps via the PGAP v3 protocol.
+Python SDK v2 for building Plexi PGAP apps.
 
-Full API reference: `plexi_sdk/__init__.py` docstring.
+Full API reference: `plexi_sdk/__init__.py` and `docs/sdk-v2.md`.
 
----
-
-## Install
-
-```sh
-pip install plexi-sdk
-```
-
-## Development
-
-To work on the SDK itself with live source changes, install it as an editable package:
+## Install For SDK Development
 
 ```sh
 uv pip install -e ./sdk/python
 ```
 
-Run from the repo root. `uv` creates `.venv` automatically if it doesn't exist. Changes to `sdk/python/plexi_sdk/` take effect immediately — no reinstall needed.
+Run from the repo root. `uv` creates `.venv` automatically if needed. Changes to `sdk/python/plexi_sdk/` take effect immediately in that environment.
 
-This makes `plexi_sdk` importable in your virtual environment and IDE. Note that apps running inside Plexi use the bundled SDK copy set on `PYTHONPATH` by the host — the editable install does not affect those. Use it for type checking, testing, and local development only.
+Apps running inside Plexi use the SDK copy injected by the host on `PYTHONPATH`; the editable install is for type checking, tests, and local development.
 
 Verify the install:
 
@@ -31,17 +21,45 @@ source .venv/bin/activate
 python3 -c "from plexi_sdk import App; print('ok')"
 ```
 
-To rebuild and reinstall the bundled copy (used by running apps), run `just install` from the repo root.
+## App Pattern
 
----
+Normal apps implement `view()` and return a component tree:
+
+```python
+from plexi_sdk import App
+from plexi_sdk.ui import AppBar, Column, FooterKeys, Label, Spacer
+
+
+class CounterApp(App):
+    def on_init(self) -> None:
+        self.count = self.state.get("count", 0)
+
+    def view(self):
+        return Column([
+            AppBar("Counter"),
+            Spacer(grow=True),
+            Label(str(self.count), bold=True),
+            Spacer(grow=True),
+            FooterKeys([("+", "increment"), ("-", "decrement")]),
+        ])
+
+    def on_key(self, key: str, mods: dict) -> None:
+        if key in ("plus", "equals"):
+            self.count += 1
+        elif key == "minus":
+            self.count -= 1
+        self.state.save({"count": self.count})
+        self.emit.schedule_render()
+
+
+CounterApp().run()
+```
+
+Use `on_render(ctx)` only for games, animations, realtime visualizations, or other pixel-control apps.
 
 ## Keyboard Conventions
 
-Apps should follow these standard navigation bindings so users get consistent behavior across all Plexi apps.
-
-### Key name strings
-
-Keys arrive in `on_key(ctx, key, mods)` as **lowercase canonical strings**:
+Keys arrive in `on_key(self, key, mods)` as lowercase canonical strings.
 
 | Physical key | `key` string |
 |---|---|
@@ -52,83 +70,26 @@ Keys arrive in `on_key(ctx, key, mods)` as **lowercase canonical strings**:
 | Space | `"space"` |
 | Arrow keys | `"up"` / `"down"` / `"left"` / `"right"` |
 
-The SDK normalizes egui's internal key names automatically. Always match against
-the lowercase canonical strings — `key == "return"`, not `key == "Enter"`.
+Use `"return"`, not `"Enter"`. Use `"escape"`, not `"Escape"`.
 
-### Focus / modal conventions
-
-| Action | Key |
-|---|---|
-| Open item / confirm / select | `"return"` |
-| Exit focused view / go back | `"escape"` |
-| Exit focused view (fallback) | `"backspace"` (optional second binding) |
-
-Any view that opens a focused sub-view (detail panel, modal, inline editor) must
-let the user exit with `"escape"`. No view should be a dead end.
-
-**TextInput exception:** `"return"` fires `on_text_submitted`, so the TextInput
-widget owns that key while focused. `"escape"` should still dismiss the
-surrounding view or cancel the input mode.
-
-```python
-def on_key(self, ctx, key, mods):
-    if self.detail_open:
-        if key in ("escape", "backspace"):
-            self.detail_open = False
-            return
-        if key == "return":
-            self._confirm()
-            return
-    # list navigation below
-```
-
-### List navigation
-
-Standard bindings for any scrollable list:
+Common list bindings:
 
 | Key | Action |
 |---|---|
 | `j` / `"down"` | Move selection down |
 | `k` / `"up"` | Move selection up |
 | `"return"` | Open selected item |
-| `"escape"` | Exit list / go back |
+| `"escape"` | Exit list or go back |
 
----
-
-## List + Detail Views
-
-For any app with a list-and-detail pattern, prefer `SelectList` from
-`plexi_sdk.ui` over managing selection state manually. It handles j/k/arrow
-navigation, scroll-to-keep-selected-visible, and click hit-testing.
+## State And Host I/O
 
 ```python
-from plexi_sdk import App
-from plexi_sdk.ui import SelectList, Column
-
-class MyApp(App):
-    async def on_init(self, ctx):
-        self.items = [{"name": "Alpha"}, {"name": "Beta"}, {"name": "Gamma"}]
-        self.list = SelectList(self.items)  # stateful — create once, not per frame
-        self.detail_open = False
-
-    def on_key(self, ctx, key, mods):
-        if self.detail_open:
-            if key in ("escape", "backspace"):
-                self.detail_open = False
-            return
-        if key == "return":
-            self.detail_open = True
-            return
-        self.list.handle_key(key)  # handles j/k/up/down
-
-    def on_render(self, ctx):
-        if self.detail_open:
-            ctx.text(20, 40, self.items[self.list.selected_idx]["name"])
-        else:
-            ctx.draw(Column([self.list.render(self.items)]))
+self.state.get("key", default)
+self.state.save({"key": value})
+self.emit.schedule_render()
+await self.emit.http_get(url)
+await self.emit.secret_get("API_KEY")
+await self.emit.ai_query("low", system, messages)
 ```
 
-`SelectList` is stateful — create it in `on_init`, not `on_render`.
-
-For the lower-level `ctx.list_view()` primitive (draw only, no state) see the
-`ListItem` shape in the API reference.
+Declare capabilities in `manifest.toml` before using brokered host powers.

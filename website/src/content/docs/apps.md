@@ -1,24 +1,23 @@
 ---
 title: Apps
-description: Build and run sandboxed apps inside Plexi.
-verified_version: "0.0.505"
+description: Build and run Plexi apps.
+verified_version: "0.0.669"
 order: 5
 ---
 
-Plexi apps are sandboxed processes that render into panes via PGAP. They can be written in any language, but the Python SDK is the primary development path.
+Plexi apps render into panes through PGAP. The Python SDK is the default authoring path.
 
-<div style="border: 1px solid rgba(245, 158, 11, 0.35); background: rgba(245, 158, 11, 0.07); border-radius: 6px; padding: 12px 16px; margin: 0 0 32px; font-size: 13px; color: #f59e0b; line-height: 1.6;">
-  <strong>🚧 SDK not yet on PyPI</strong><br />
-  The Python SDK ships bundled with Plexi and is available automatically once you install the app. A standalone <code>pip install plexi-sdk</code> package is coming — this page will be updated when it's live.
-</div>
+Python apps are native subprocesses. Capabilities gate host APIs such as `net.http`, `secrets.get`, and `ai.query`; they are not a Python process sandbox.
 
 ## Create an App
 
-From inside any directory:
+From inside a Plexi workspace:
 
 ```sh
 plexi app init my-app
 ```
+
+Outside a workspace, use `--global`.
 
 This scaffolds a new app folder with:
 
@@ -28,31 +27,37 @@ my-app/
   main.py          ← your app code
 ```
 
-## Run an App
+## Open an App
 
 Pass the path to the app folder:
 
 ```sh
-plexi app run ./my-app
+plexi app open ./my-app
 ```
 
-The focused pane switches to app mode and starts rendering your app. Use this during development — no install step required.
+The app opens in a pane. Use this during development; no marketplace install is required.
 
-## The Render Loop
+## The App Pattern
 
-Subclass `App` and override `on_render`. The host calls it on every tick:
+Normal apps implement `view()` and return a component tree:
 
 ```python
-from plexi_sdk import App, RenderContext
+from plexi_sdk import App
+from plexi_sdk.ui import AppBar, Column, Label
 
 
 class MyApp(App):
-    def on_render(self, ctx: RenderContext) -> None:
-        ctx.text("Hello from my-app", color="#f0f3f6")
+    def view(self):
+        return Column([
+            AppBar("My App"),
+            Label("Hello from my-app"),
+        ])
 
 
 MyApp().run()
 ```
+
+Use `on_render(ctx)` only for games, animations, realtime visualizations, or other pixel-control apps.
 
 ## Capabilities
 
@@ -60,27 +65,25 @@ Declare what your app needs in `manifest.toml`:
 
 ```toml
 [app.capabilities]
-capabilities = ["secrets.read", "net.http"]
+capabilities = ["secrets.get", "net.http"]
 ```
 
-The host enforces these at launch. An app that didn't declare `secrets.read` cannot read any secret, even if it requests one.
-
-Common capabilities: `secrets.read`, `net.http`, `fs.read`, `fs.write`, `ai.query`, `audio.record`, `timer`.
+Common capabilities: `secrets.get`, `net.http`, `fs.read`, `fs.write`, `ai.query`, `audio.record`, `timer`.
 
 ## Logging
 
 Use `self.emit.info()`, `self.emit.warn()`, `self.emit.error()` from any method. Log lines are tagged `app::my-app` in the host log.
 
 ```python
-from plexi_sdk import App, RenderContext
+from plexi_sdk import App
 
 
 class MyApp(App):
-    async def on_init(self, ctx: RenderContext) -> None:
+    def on_init(self) -> None:
         self.emit.info("my-app initialized")
 
-    def on_render(self, ctx: RenderContext) -> None:
-        ctx.text("Hello from my-app", color="#f0f3f6")
+    def view(self):
+        ...
 
 
 MyApp().run()

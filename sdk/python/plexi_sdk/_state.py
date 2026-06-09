@@ -11,7 +11,7 @@ class State:
         class Counter(App):
             count = State(0)
 
-        def on_key(self, ctx, key, mods):
+        def on_key(self, key, mods):
             if key == "j":
                 self.count += 1  # triggers a re-render
     """
