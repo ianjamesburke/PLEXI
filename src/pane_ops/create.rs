@@ -992,7 +992,7 @@ impl PlexiApp {
         log::info!("scratchpad: opening text-editor pane for {:?}", path);
         if let Err(e) = self.launch_app_by_id_with_layout(
             "text-editor",
-            Some("split_h".to_string()),
+            None,
             &[path_str],
             None,
         ) {
@@ -1981,9 +1981,19 @@ mod quick_note_tests {
     }
 }
 
-/// Static scratchpad file path: `<config_dir>/notes/scratch.md`.
+/// Build a timestamped note path under the workspace-scoped notes dir.
 fn scratchpad_file() -> PathBuf {
-    crate::config::config_dir().join("notes").join("scratch.md")
+    use chrono::Local;
+    let notes_base = crate::config::config_dir().join("notes");
+    let workspace_slug = crate::config::active_workspace_root()
+        .and_then(|p| p.file_name().map(|n| n.to_os_string()))
+        .map(|n| n.to_string_lossy().into_owned());
+    let dir = match workspace_slug {
+        Some(slug) => notes_base.join(slug),
+        None => notes_base,
+    };
+    let ts = Local::now().format("note-%Y%m%d-%H%M%S.md").to_string();
+    dir.join(ts)
 }
 
 

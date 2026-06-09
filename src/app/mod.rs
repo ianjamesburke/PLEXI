@@ -103,6 +103,8 @@ pub(crate) enum FocusLayer {
     /// so the modal renders in step 2 of `update()` with exclusive keyboard
     /// ownership — before `dispatch_app_key_events` can steal Escape.
     CapabilityModal,
+    /// Notes picker overlay: lists workspace notes sorted by mtime, opens selected in focused text-editor.
+    NotesPicker,
 }
 
 /// What a `TextInputOverlay` commit should do.
@@ -351,6 +353,10 @@ pub struct PlexiApp {
     pub(crate) quick_note_text: String,
     /// Context captured at the time the quick note modal was opened.
     pub(crate) quick_note_ctx: QuickNoteCtx,
+    /// Notes picker: sorted list of (path, first-line-preview) for the current workspace.
+    pub(crate) notes_picker_entries: Vec<(std::path::PathBuf, String)>,
+    /// Notes picker: currently highlighted row index.
+    pub(crate) notes_picker_selected: usize,
     /// Cursor row in the destination picker (0 = global backlog, 1+ = config destinations).
     pub(crate) quick_note_dest_cursor: usize,
     /// Cursor row in the sub-destination picker.
@@ -970,6 +976,8 @@ impl PlexiApp {
                     modal_input_buffer: String::new(),
                     quick_note_text: String::new(),
                     quick_note_ctx: QuickNoteCtx::default(),
+                    notes_picker_entries: Vec::new(),
+                    notes_picker_selected: 0,
                     quick_note_dest_cursor: 0,
                     quick_note_sub_cursor: 0,
                     quick_note_children_cache: HashMap::new(),
@@ -1144,6 +1152,8 @@ impl PlexiApp {
             modal_input_buffer: String::new(),
             quick_note_text: String::new(),
             quick_note_ctx: QuickNoteCtx::default(),
+            notes_picker_entries: Vec::new(),
+            notes_picker_selected: 0,
             quick_note_dest_cursor: 0,
             quick_note_sub_cursor: 0,
             quick_note_children_cache: HashMap::new(),
@@ -1313,6 +1323,8 @@ impl PlexiApp {
             modal_input_buffer: String::new(),
             quick_note_text: String::new(),
             quick_note_ctx: QuickNoteCtx::default(),
+            notes_picker_entries: Vec::new(),
+            notes_picker_selected: 0,
             quick_note_dest_cursor: 0,
             quick_note_sub_cursor: 0,
             quick_note_children_cache: HashMap::new(),
@@ -1550,6 +1562,10 @@ impl eframe::App for PlexiApp {
                 Some(FocusLayer::TextInput) => self.text_input_handle_key(ctx),
                 Some(FocusLayer::ContextCloseConfirm) => self.context_close_confirm_handle_key(ctx),
                 Some(FocusLayer::CapabilityModal) => self.capability_modal_handle_key(ctx),
+                Some(FocusLayer::NotesPicker) => {
+                    self.notes_picker_handle_key(ctx);
+                    crate::app::app_trait::KeyDisposition::Passthrough
+                }
                 None => crate::app::app_trait::KeyDisposition::Passthrough,
             };
             // Step 2: render the overlay (visual only — key reads already done above).
@@ -1594,6 +1610,9 @@ impl eframe::App for PlexiApp {
                 }
                 Some(FocusLayer::CapabilityModal) => {
                     self.draw_capability_modal(ctx);
+                }
+                Some(FocusLayer::NotesPicker) => {
+                    self.draw_notes_picker(ctx);
                 }
                 None => {}
             }
@@ -2858,6 +2877,24 @@ impl eframe::App for PlexiApp {
                     log::info!("scratchpad: Cmd+Shift+Space — opening");
                     self.open_scratchpad();
                 }
+                Action::OpenNotesPicker => {
+                    let active = self.active_window;
+                    let is_text_editor = self.windows[active]
+                        .focused_pane
+                        .and_then(|tile_id| {
+                            if let Some(egui_tiles::Tile::Pane(pane_id)) = self.windows[active].tree.tiles.get(tile_id) {
+                                self.windows[active].panes.get(pane_id)
+                            } else {
+                                None
+                            }
+                        })
+                        .map(|pane| matches!(pane, crate::host::pane::Pane::App(a) if a.runtime.type_id() == "text-editor"))
+                        .unwrap_or(false);
+                    if is_text_editor {
+                        log::info!("notes_picker: Cmd+O — opening picker");
+                        self.open_notes_picker();
+                    }
+                }
                 Action::ContextZoomOut => {
                     log::info!("ContextZoomOut: popping depth stack (depth={})", self.router.current_depth());
                     if let Some((parent_ctx_id, parent_win_id, focused_tile)) = self.router.pop_depth() {
@@ -3006,6 +3043,52 @@ impl eframe::App for PlexiApp {
             log::info!("focus_changed: shutdown — banking final session duration_secs={duration_secs}");
             self.emit_focus_changed_for_tile(window_id, tile_id, duration_secs);
         }
+    }
+
+}
+
+impl PlexiApp {
+    pub(crate) fn open_notes_picker(&mut self) {
+        let notes_base = crate::config::config_dir().join("notes");
+        let workspace_slug = crate::config::active_workspace_root()
+            .and_then(|p| p.file_name().map(|n| n.to_os_string()))
+            .map(|n| n.to_string_lossy().into_owned());
+        let notes_dir = match workspace_slug {
+            Some(ref slug) => notes_base.join(slug),
+            None => notes_base,
+        };
+        let mut with_mtime: Vec<(std::time::SystemTime, std::path::PathBuf, String)> =
+            std::fs::read_dir(&notes_dir)
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().map_or(false, |x| x == "md"))
+                .filter_map(|e| {
+                    let path = e.path();
+                    let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
+                    let preview = std::fs::read_to_string(&path).unwrap_or_default();
+                    let first_line = preview
+                        .lines()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or("")
+                        .to_string();
+                    Some((mtime, path, first_line))
+                })
+                .collect();
+        with_mtime.sort_by(|a, b| b.0.cmp(&a.0));
+        let entries: Vec<(std::path::PathBuf, String)> =
+            with_mtime.into_iter().map(|(_, p, l)| (p, l)).collect();
+        if entries.is_empty() {
+            log::info!("notes_picker: no notes in {:?}", notes_dir);
+            return;
+        }
+        log::info!("notes_picker: {} notes found in {:?}", entries.len(), notes_dir);
+        self.notes_picker_entries = entries;
+        self.notes_picker_selected = 0;
+        self.push_focus_layer(FocusLayer::NotesPicker);
+        // Surrender egui keyboard focus from the active TextEdit so the picker
+        // receives j/k and other navigation keys immediately on the first frame.
+        self.ctx.memory_mut(|m| { if let Some(id) = m.focused() { m.surrender_focus(id); } });
     }
 }
 

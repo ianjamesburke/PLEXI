@@ -1330,6 +1330,10 @@ impl PlexiApp {
         if let Some(pane) = ctx.panes.get_mut(&pane_id) {
             if let Some(t) = pane.as_terminal_mut() {
                 t.font_size = (t.font_size + delta).clamp(8.0, 32.0);
+            } else if let Some(a) = pane.as_app_mut() {
+                if let crate::host::pane::AppRuntime::Builtin(app) = &mut a.runtime {
+                    app.adjust_font_size(delta);
+                }
             }
         }
     }

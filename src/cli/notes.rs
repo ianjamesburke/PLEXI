@@ -3,7 +3,14 @@ use super::pane::pane_send_cli;
 use super::{binary_in_path};
 
 pub fn notes_list_cli() -> i32 {
-    let notes_dir = crate::config::config_dir().join("notes");
+    let notes_base = crate::config::config_dir().join("notes");
+    let workspace_slug = crate::config::active_workspace_root()
+        .and_then(|p| p.file_name().map(|n| n.to_os_string()))
+        .map(|n| n.to_string_lossy().into_owned());
+    let notes_dir = match workspace_slug {
+        Some(ref slug) => notes_base.join(slug),
+        None => notes_base,
+    };
     log::info!("notes_list: scanning {:?}", notes_dir);
     let entries = match std::fs::read_dir(&notes_dir) {
         Ok(r) => r,
@@ -37,7 +44,14 @@ pub fn notes_list_cli() -> i32 {
 ///
 /// Falls back to printing the notes directory when PLEXI_SOCKET is unset or fzf is absent.
 pub fn notes_open_cli() -> i32 {
-    let notes_dir = crate::config::config_dir().join("notes");
+    let notes_base = crate::config::config_dir().join("notes");
+    let workspace_slug = crate::config::active_workspace_root()
+        .and_then(|p| p.file_name().map(|n| n.to_os_string()))
+        .map(|n| n.to_string_lossy().into_owned());
+    let notes_dir = match workspace_slug {
+        Some(ref slug) => notes_base.join(slug),
+        None => notes_base,
+    };
     let notes_dir_str = notes_dir.display().to_string();
 
     if !binary_in_path("fzf") {

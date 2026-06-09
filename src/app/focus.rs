@@ -110,6 +110,7 @@ impl PlexiApp {
                 | Some(FocusLayer::TextInput)
                 | Some(FocusLayer::ContextCloseConfirm)
                 | Some(FocusLayer::CapabilityModal)
+                | Some(FocusLayer::NotesPicker)
         )
     }
 

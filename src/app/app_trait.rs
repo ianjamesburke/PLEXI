@@ -233,4 +233,8 @@ pub trait App: Send {
 
     /// Restore app state from a previously serialised value.
     fn restore_state(&mut self, _state: &serde_json::Value) {}
+
+    /// Adjust the app's internal font size by `delta` points (positive = larger).
+    /// Only implemented by apps with their own font size, e.g. TextEditorApp.
+    fn adjust_font_size(&mut self, _delta: f32) {}
 }
