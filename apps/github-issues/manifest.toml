@@ -1,0 +1,14 @@
+schema_version = 1
+
+[app]
+id = "github-issues"
+type = "app"
+name = "GitHub Issues"
+version = "0.1.0"
+description = "GitHub Issues viewer for the workspace repo."
+entry = "main.py"
+
+[app.capabilities]
+capabilities = []
+
+[launch]
