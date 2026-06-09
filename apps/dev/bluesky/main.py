@@ -31,7 +31,7 @@ LIMIT    = 30
 
 AVATAR_R = 14.0   # avatar circle radius in thread view
 THREAD_H = 72.0   # thread row base height
-IMG_H    = 84.0   # height per image in thread view
+IMG_H    = 140.0  # slot height per image in thread view (120px image + 20px gap)
 NARROW_W = 400    # pane width threshold for compact layout
 
 
@@ -184,6 +184,7 @@ class BlueskyApp(App):
                 try:
                     handle = await self.emit.load_image(url)
                     self._avatar_handles[did] = handle
+                    self.emit.schedule_render()
                 except Exception as exc:
                     self.emit.warn(f"bluesky: avatar load failed for {did}: {exc}")
 
@@ -360,8 +361,9 @@ class BlueskyApp(App):
             ctx.markdown(t_x, y + 6 + HINT + 4, ctx.w - t_x - PAD, _text(post))
 
             img_y = y + THREAD_H - 6.0
+            img_w = max(120.0, ctx.w - t_x - PAD)
             for thumb in _thumbs(post)[:2]:
-                ctx.image(thumb, t_x, img_y, 120.0, 72.0, fit="cover")
+                ctx.image(thumb, t_x, img_y, img_w, 120.0, fit="cover")
                 img_y += IMG_H
 
             likes   = post.get("likeCount", 0)
