@@ -1,9 +1,45 @@
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
-use crate::secrets::SecretEntry;
+use crate::ui::{style, widgets};
 use std::path::PathBuf;
 
-/// Match the CLI app_id so `plexi secret list` sees manually-stored entries.
-const APP_ID_USER: &str = "plexi-run";
+#[derive(Clone)]
+struct ManagedSecret {
+    /// Full Keychain account string: `plexi:user:<name>` or `plexi:<ws-id>:<name>`.
+    account: String,
+    /// Friendly display name (everything after the second `:`).
+    name: String,
+    /// `"global"` for user-scoped, or the workspace ID for workspace-scoped.
+    scope: String,
+}
+
+impl ManagedSecret {
+    fn from_account(account: String) -> Option<Self> {
+        let (scope_part, name) = account.strip_prefix("plexi:")?.split_once(':')?;
+        let scope = if scope_part == "user" {
+            "global".to_string()
+        } else {
+            scope_part.to_string()
+        };
+        let name = name.to_string();
+        Some(Self { account, name, scope })
+    }
+}
+
+fn load_entries() -> Vec<ManagedSecret> {
+    #[cfg(target_os = "macos")]
+    {
+        use crate::workspace::secrets::{MacKeychain, SecretStore};
+        MacKeychain::new()
+            .list_with_prefix("plexi:")
+            .into_iter()
+            .filter_map(ManagedSecret::from_account)
+            .collect()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
@@ -15,21 +51,23 @@ enum Mode {
 enum FormField {
     Key,
     Value,
-    Dir,
 }
 
 pub struct SecretsApp {
-    entries: Vec<SecretEntry>,
+    entries: Vec<ManagedSecret>,
     selected: usize,
     cwd: PathBuf,
 
     mode: Mode,
     new_key: String,
     new_value: String,
-    new_dir: String,
-    new_inject: bool,
     form_focus: FormField,
     focus_requested: bool,
+
+    /// First `d` sets this; second `d` or `y` confirms the delete.
+    pending_delete: bool,
+    /// Set in handle_key; processed in ui() where ui.ctx() is available.
+    copy_pending: bool,
 
     pending_cmds: Vec<AppCommand>,
     status_msg: Option<String>,
@@ -37,8 +75,7 @@ pub struct SecretsApp {
 
 impl SecretsApp {
     pub fn new(cwd: PathBuf) -> Self {
-        let entries = crate::secrets::list_all_secrets();
-        let dir = cwd.to_string_lossy().to_string();
+        let entries = load_entries();
         Self {
             entries,
             selected: 0,
@@ -46,25 +83,24 @@ impl SecretsApp {
             mode: Mode::List,
             new_key: String::new(),
             new_value: String::new(),
-            new_dir: dir,
-            new_inject: false,
             form_focus: FormField::Key,
             focus_requested: false,
+            pending_delete: false,
+            copy_pending: false,
             pending_cmds: Vec::new(),
             status_msg: None,
         }
     }
 
     fn refresh(&mut self) {
-        self.entries = crate::secrets::list_all_secrets();
+        self.entries = load_entries();
         self.selected = self.selected.min(self.entries.len().saturating_sub(1));
+        log::info!("secrets_manager: refreshed — {} entries", self.entries.len());
     }
 
     fn begin_add(&mut self) {
         self.new_key.clear();
         self.new_value.clear();
-        self.new_dir = self.cwd.to_string_lossy().to_string();
-        self.new_inject = false;
         self.form_focus = FormField::Key;
         self.focus_requested = false;
         self.mode = Mode::Adding;
@@ -75,71 +111,86 @@ impl SecretsApp {
     }
 
     fn commit_add(&mut self) {
-        let key = self.new_key.trim().to_string();
+        let name = self.new_key.trim().to_string();
         let value = self.new_value.trim().to_string();
-        let dir = self.new_dir.trim().to_string();
 
-        if key.is_empty() || value.is_empty() {
-            self.status_msg = Some("Key and value cannot be empty.".to_string());
+        if name.is_empty() || value.is_empty() {
+            self.status_msg = Some("Name and value cannot be empty.".to_string());
             return;
         }
 
-        if crate::secrets::store_secret(&key, &value, APP_ID_USER, &dir) {
-            // index_add always writes inject: false for new entries; persist the
-            // chosen value immediately so build_env() sees it on next pane spawn.
-            if self.new_inject {
-                crate::secrets::toggle_inject_secret(&key, APP_ID_USER, &dir);
-            }
-            // Optimistic update: push directly instead of re-dumping the keychain
-            // (dump-keychain triggers a macOS permission prompt every call).
-            // Remove any existing entry with the same key+dir to avoid duplicates.
-            self.entries
-                .retain(|e| !(e.key == key && e.directory == dir && e.app_id == APP_ID_USER));
-            self.entries.push(SecretEntry {
-                app_id: APP_ID_USER.to_string(),
-                directory: dir,
-                key: key.clone(),
-                workspace_root: None, // v1/v2 legacy path — no workspace scoping
-                inject: self.new_inject,
-            });
-            self.selected = self.entries.len().saturating_sub(1);
-            self.mode = Mode::List;
-            self.status_msg = Some(format!("Stored '{key}'. Press r to sync."));
-        } else {
-            self.status_msg = Some("Failed to store secret - check logs.".to_string());
-        }
-    }
+        #[cfg(target_os = "macos")]
+        {
+            use crate::workspace::secrets::{
+                keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore,
+                WorkspaceConfig,
+            };
 
-    fn toggle_inject_selected(&mut self) {
-        if let Some(entry) = self.entries.get(self.selected).cloned() {
-            match crate::secrets::toggle_inject_secret(&entry.key, &entry.app_id, &entry.directory) {
-                Some(new_inject) => {
-                    // Optimistic update — don't re-read the whole index.
-                    if let Some(e) = self.entries.get_mut(self.selected) {
-                        e.inject = new_inject;
-                    }
-                    let label = if new_inject { "inject enabled" } else { "inject disabled" };
-                    self.status_msg = Some(format!("'{}' — {label}.", entry.key));
+            // Resolve scope: workspace-scoped if cwd is inside an initialized workspace.
+            let workspace = crate::app::registry::resolve_workspace_root(&self.cwd)
+                .and_then(|root| {
+                    WorkspaceConfig::load(&root)
+                        .ok()
+                        .flatten()
+                        .map(|cfg| (root, cfg))
+                });
+
+            let (account, scope) = match &workspace {
+                Some((_, cfg)) => (keychain_workspace_name(&cfg.id, &name), cfg.id.clone()),
+                None => (keychain_user_name(&name), "global".to_string()),
+            };
+
+            let store = MacKeychain::new();
+            match store.set(&account, &value) {
+                Ok(()) => {
+                    self.entries.retain(|e| e.account != account);
+                    self.entries.push(ManagedSecret {
+                        account,
+                        name: name.clone(),
+                        scope: scope.clone(),
+                    });
+                    self.selected = self.entries.len().saturating_sub(1);
+                    self.mode = Mode::List;
+                    self.status_msg = Some(format!("Stored '{name}'."));
+                    log::info!("secrets_manager: stored secret '{name}' scope={scope}");
                 }
-                None => {
-                    self.status_msg =
-                        Some("Secret not found in index — press r to refresh".to_string());
+                Err(e) => {
+                    self.status_msg = Some("Failed to store secret — check logs.".to_string());
+                    log::error!("secrets_manager: store failed for '{name}': {e}");
                 }
             }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            log::warn!("secrets_manager: commit_add: Keychain not available on this platform");
         }
     }
 
     fn delete_selected(&mut self) {
         if let Some(entry) = self.entries.get(self.selected).cloned() {
-            if crate::secrets::delete_secret(&entry.key, &entry.app_id, &entry.directory) {
-                // Optimistic removal — no keychain dump needed.
-                self.entries.remove(self.selected);
-                if self.selected > 0 && self.selected >= self.entries.len() {
-                    self.selected = self.entries.len().saturating_sub(1);
+            #[cfg(target_os = "macos")]
+            {
+                use crate::workspace::secrets::{MacKeychain, SecretStore};
+                let store = MacKeychain::new();
+                match store.delete(&entry.account) {
+                    Ok(()) => {
+                        let name = entry.name.clone();
+                        self.entries.remove(self.selected);
+                        if self.selected > 0 && self.selected >= self.entries.len() {
+                            self.selected = self.entries.len().saturating_sub(1);
+                        }
+                        self.status_msg = Some(format!("Deleted '{name}'."));
+                        log::info!("secrets_manager: deleted '{name}'");
+                    }
+                    Err(e) => {
+                        self.status_msg = Some("Failed to delete — check logs.".to_string());
+                        log::error!("secrets_manager: delete failed for '{}': {e}", entry.name);
+                    }
                 }
-                self.status_msg = Some(format!("Deleted '{}'.", entry.key));
-            } else {
-                self.status_msg = Some("Failed to delete - check logs.".to_string());
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                log::warn!("secrets_manager: delete_selected: Keychain not available");
             }
         }
     }
@@ -161,16 +212,19 @@ impl App for SecretsApp {
     fn handle_key(&mut self, input: &egui::InputState) -> crate::app::app_trait::KeyDisposition {
         use crate::app::app_trait::KeyDisposition;
         if self.mode == Mode::Adding {
-            // Escape cancels the form
             if input.key_pressed(egui::Key::Escape) {
                 self.cancel_add();
                 return KeyDisposition::Consumed;
             }
-            // Let all other keys go to TextEdit widgets in ui()
             return KeyDisposition::Passthrough;
         }
 
-        // List mode
+        if self.pending_delete && input.key_pressed(egui::Key::Escape) {
+            self.pending_delete = false;
+            self.status_msg = None;
+            return KeyDisposition::Consumed;
+        }
+
         if input.modifiers.command || input.modifiers.alt {
             return KeyDisposition::Passthrough;
         }
@@ -180,29 +234,47 @@ impl App for SecretsApp {
         if input.key_pressed(egui::Key::J) || input.key_pressed(egui::Key::ArrowDown) {
             if !self.entries.is_empty() && self.selected < self.entries.len() - 1 {
                 self.selected += 1;
+                self.pending_delete = false;
             }
             consumed = true;
         }
         if input.key_pressed(egui::Key::K) || input.key_pressed(egui::Key::ArrowUp) {
             if self.selected > 0 {
                 self.selected -= 1;
+                self.pending_delete = false;
             }
             consumed = true;
         }
         if input.key_pressed(egui::Key::R) {
             self.refresh();
+            self.pending_delete = false;
             consumed = true;
         }
         if input.key_pressed(egui::Key::N) {
+            self.pending_delete = false;
             self.begin_add();
             consumed = true;
         }
         if input.key_pressed(egui::Key::D) && !self.entries.is_empty() {
-            self.delete_selected();
+            if self.pending_delete {
+                self.delete_selected();
+                self.pending_delete = false;
+            } else if let Some(entry) = self.entries.get(self.selected) {
+                self.pending_delete = true;
+                let name = entry.name.clone();
+                self.status_msg =
+                    Some(format!("Delete '{name}'? Press d/y to confirm, Esc to cancel."));
+            }
             consumed = true;
         }
-        if input.key_pressed(egui::Key::I) && !self.entries.is_empty() {
-            self.toggle_inject_selected();
+        if input.key_pressed(egui::Key::Y) && self.pending_delete && !self.entries.is_empty() {
+            self.delete_selected();
+            self.pending_delete = false;
+            consumed = true;
+        }
+        if input.key_pressed(egui::Key::C) && !self.entries.is_empty() {
+            self.pending_delete = false;
+            self.copy_pending = true;
             consumed = true;
         }
 
@@ -215,13 +287,38 @@ impl App for SecretsApp {
         ui.painter().rect_filled(rect, 0.0, colors.terminal_bg);
 
         const HEADER_H: f32 = 44.0;
-        const FORM_H: f32 = 188.0;
-        const ROW_H: f32 = 52.0;
+        const FORM_H: f32 = 140.0;
+
+        // Process clipboard copy request (needs ui.ctx() — not available in handle_key).
+        if self.copy_pending {
+            self.copy_pending = false;
+            if let Some(entry) = self.entries.get(self.selected) {
+                let account = entry.account.clone();
+                let name = entry.name.clone();
+                #[cfg(target_os = "macos")]
+                {
+                    use crate::workspace::secrets::{MacKeychain, SecretStore};
+                    match MacKeychain::new().get(&account) {
+                        Some(value) => {
+                            ui.ctx().copy_text((*value).clone());
+                            self.status_msg = Some(format!("'{name}' copied to clipboard."));
+                            log::info!("secrets_manager: copied value for '{name}'");
+                        }
+                        None => {
+                            self.status_msg =
+                                Some(format!("Could not retrieve '{name}' — check logs."));
+                            log::warn!(
+                                "secrets_manager: MacKeychain::get returned None for account='{account}'"
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // ── Header ──────────────────────────────────────────────────────────
         let header_rect = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), HEADER_H));
-        ui.painter()
-            .rect_filled(header_rect, 0.0, colors.bg_sidebar);
+        ui.painter().rect_filled(header_rect, 0.0, colors.bg_sidebar);
         ui.painter().line_segment(
             [
                 egui::pos2(header_rect.left(), header_rect.bottom()),
@@ -230,48 +327,54 @@ impl App for SecretsApp {
             egui::Stroke::new(1.0, colors.border),
         );
 
-        let hint = if self.mode == Mode::Adding {
-            "Esc=cancel"
-        } else {
-            "n=new · d=delete · i=inject · r=refresh · j/k=navigate"
-        };
-
-        let mut header_ui = ui
-            .new_child(egui::UiBuilder::new().max_rect(header_rect.shrink2(egui::vec2(16.0, 0.0))));
+        let mut header_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(header_rect.shrink2(egui::vec2(style::SPACE_MD, 0.0))),
+        );
         header_ui.horizontal_centered(|ui| {
             ui.label(
                 egui::RichText::new("Secrets")
                     .color(colors.accent)
-                    .size(16.0)
+                    .size(style::TEXT_BODY)
                     .strong(),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(hint)
-                        .color(colors.text_dim)
-                        .size(11.0)
-                        .family(egui::FontFamily::Monospace),
-                );
+                if self.mode == Mode::Adding {
+                    widgets::key_combo_list(ui, &[&["Esc"]], Some("cancel"), colors);
+                } else {
+                    // RTL: emit rightmost first → visual L→R: [n] new [d] del [c] copy [r] refresh
+                    widgets::key_combo_list(ui, &[&["r"]], Some("refresh"), colors);
+                    widgets::key_combo_list(ui, &[&["c"]], Some("copy"), colors);
+                    widgets::key_combo_list(ui, &[&["d"]], Some("del"), colors);
+                    widgets::key_combo_list(ui, &[&["n"]], Some("new"), colors);
+                }
             });
         });
 
         // ── Status message ───────────────────────────────────────────────────
-        if let Some(msg) = &self.status_msg.clone() {
+        let status_h = if let Some(msg) = &self.status_msg {
             let status_rect = egui::Rect::from_min_size(
                 egui::pos2(rect.left(), rect.top() + HEADER_H),
                 egui::vec2(rect.width(), 28.0),
             );
             ui.painter().rect_filled(status_rect, 0.0, colors.bg_active);
-            ui.painter().text(
-                egui::pos2(status_rect.left() + 16.0, status_rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                msg,
-                egui::FontId::monospace(11.0),
-                colors.text_dim,
+            let mut status_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(status_rect.shrink2(egui::vec2(style::SPACE_MD, 0.0))),
             );
-        }
+            status_ui.centered_and_justified(|ui| {
+                ui.label(
+                    egui::RichText::new(msg.as_str())
+                        .size(style::TEXT_HINT)
+                        .color(colors.text_dim)
+                        .family(egui::FontFamily::Monospace),
+                );
+            });
+            28.0_f32
+        } else {
+            0.0_f32
+        };
 
-        let status_h = if self.status_msg.is_some() { 28.0 } else { 0.0 };
         let list_top = rect.top() + HEADER_H + status_h + 1.0;
 
         // ── Add form (when active) ───────────────────────────────────────────
@@ -288,45 +391,51 @@ impl App for SecretsApp {
             );
 
             let mut form_ui = ui.new_child(
-                egui::UiBuilder::new().max_rect(form_rect.shrink2(egui::vec2(20.0, 16.0))),
+                egui::UiBuilder::new()
+                    .max_rect(form_rect.shrink2(egui::vec2(20.0, style::SPACE_SM * 2.0))),
             );
 
             form_ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new("New Secret")
                         .color(colors.accent)
-                        .size(13.0)
+                        .size(style::TEXT_CAPTION)
                         .strong(),
                 );
-                ui.add_space(10.0);
+                ui.add_space(style::SPACE_SM);
 
                 let styled_input = |ui: &mut egui::Ui, edit: egui::TextEdit| -> egui::Response {
                     ui.scope(|ui| {
                         ui.visuals_mut().text_cursor.stroke.width = 1.5;
                         ui.visuals_mut().text_cursor.stroke.color = colors.accent;
                         ui.visuals_mut().extreme_bg_color = colors.bg_active;
-                        ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
-                        ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
+                        ui.visuals_mut().widgets.active.bg_stroke =
+                            egui::Stroke::new(1.0, colors.accent);
+                        ui.visuals_mut().widgets.inactive.bg_stroke =
+                            egui::Stroke::new(1.0, colors.border);
                         ui.add(edit)
-                    }).inner
+                    })
+                    .inner
                 };
 
-                // Key field
+                // Name field
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("Key   ")
+                        egui::RichText::new("Name  ")
                             .color(colors.text_dim)
-                            .size(11.0)
+                            .size(style::TEXT_HINT)
                             .family(egui::FontFamily::Monospace),
                     );
-                    let key_resp = styled_input(ui, egui::TextEdit::singleline(&mut self.new_key)
-                        .desired_width(f32::INFINITY)
-                        .font(egui::FontId::monospace(12.0))
-                        .text_color(colors.text_primary)
-                        .frame(true)
-                        .margin(egui::Margin::symmetric(8, 5))
-                        .hint_text("e.g. OPENAI_API_KEY"));
-                    // Request focus on the key field when form opens
+                    let key_resp = styled_input(
+                        ui,
+                        egui::TextEdit::singleline(&mut self.new_key)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::FontId::monospace(style::TEXT_CAPTION))
+                            .text_color(colors.text_primary)
+                            .frame(true)
+                            .margin(egui::Margin::symmetric(8, 5))
+                            .hint_text("e.g. OPENAI_API_KEY"),
+                    );
                     if !self.focus_requested {
                         key_resp.request_focus();
                         self.focus_requested = true;
@@ -334,116 +443,65 @@ impl App for SecretsApp {
                     if key_resp.has_focus() {
                         self.form_focus = FormField::Key;
                     }
-                    // Tab advances to value field
                     if key_resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Tab)) {
                         self.form_focus = FormField::Value;
                     }
                 });
 
-                ui.add_space(6.0);
+                ui.add_space(style::SPACE_XS);
 
                 // Value field (masked)
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new("Value ")
                             .color(colors.text_dim)
-                            .size(11.0)
+                            .size(style::TEXT_HINT)
                             .family(egui::FontFamily::Monospace),
                     );
-                    let val_resp = styled_input(ui, egui::TextEdit::singleline(&mut self.new_value)
-                        .desired_width(f32::INFINITY)
-                        .font(egui::FontId::monospace(12.0))
-                        .text_color(colors.text_primary)
-                        .password(true)
-                        .frame(true)
-                        .margin(egui::Margin::symmetric(8, 5))
-                        .hint_text("secret value"));
+                    let val_resp = styled_input(
+                        ui,
+                        egui::TextEdit::singleline(&mut self.new_value)
+                            .desired_width(f32::INFINITY)
+                            .font(egui::FontId::monospace(style::TEXT_CAPTION))
+                            .text_color(colors.text_primary)
+                            .password(true)
+                            .frame(true)
+                            .margin(egui::Margin::symmetric(8, 5))
+                            .hint_text("secret value"),
+                    );
                     if self.form_focus == FormField::Value && !val_resp.has_focus() {
                         val_resp.request_focus();
                     }
                     if val_resp.has_focus() {
                         self.form_focus = FormField::Value;
                     }
-                    if val_resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Tab)) {
-                        self.form_focus = FormField::Dir;
-                    }
-                });
-
-                ui.add_space(6.0);
-
-                // Directory field
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Dir   ")
-                            .color(colors.text_dim)
-                            .size(11.0)
-                            .family(egui::FontFamily::Monospace),
-                    );
-                    let dir_resp = styled_input(ui, egui::TextEdit::singleline(&mut self.new_dir)
-                        .desired_width(f32::INFINITY)
-                        .font(egui::FontId::monospace(12.0))
-                        .text_color(colors.text_primary)
-                        .frame(true)
-                        .margin(egui::Margin::symmetric(8, 5))
-                        .hint_text("/path/to/project"));
-                    if self.form_focus == FormField::Dir && !dir_resp.has_focus() {
-                        dir_resp.request_focus();
-                    }
-                    if dir_resp.has_focus() {
-                        self.form_focus = FormField::Dir;
-                    }
-                    // Enter on Dir field saves
-                    if dir_resp.has_focus()
-                        && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+                    if val_resp.has_focus()
+                        && ui
+                            .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
                     {
                         self.commit_add();
                     }
                 });
 
-                ui.add_space(6.0);
-
-                // Inject toggle
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Inject")
-                            .color(colors.text_dim)
-                            .size(11.0)
-                            .family(egui::FontFamily::Monospace),
-                    );
-                    ui.add_space(4.0);
-                    ui.checkbox(
-                        &mut self.new_inject,
-                        egui::RichText::new(
-                            "inject as env var into new terminal panes (e.g. for API keys)",
-                        )
-                        .color(colors.text_dim.linear_multiply(0.65))
-                        .size(10.0)
-                        .family(egui::FontFamily::Monospace),
-                    );
-                });
-
-                ui.add_space(10.0);
-
-                // Enter from value field also saves (common shortcut)
-                if self.form_focus == FormField::Value
-                    && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
-                {
-                    self.commit_add();
-                }
+                ui.add_space(style::SPACE_SM);
 
                 ui.horizontal(|ui| {
                     if ui
-                        .button(egui::RichText::new("Save").color(colors.accent).size(12.0))
+                        .button(
+                            egui::RichText::new("Save")
+                                .color(colors.accent)
+                                .size(style::TEXT_CAPTION),
+                        )
                         .clicked()
                     {
                         self.commit_add();
                     }
-                    ui.add_space(8.0);
+                    ui.add_space(style::SPACE_SM);
                     if ui
                         .button(
                             egui::RichText::new("Cancel")
                                 .color(colors.text_dim)
-                                .size(12.0),
+                                .size(style::TEXT_CAPTION),
                         )
                         .clicked()
                     {
@@ -453,23 +511,21 @@ impl App for SecretsApp {
                         ui.label(
                             egui::RichText::new("Tab to advance · Enter to save · Esc to cancel")
                                 .color(colors.text_dim.linear_multiply(0.6))
-                                .size(10.0)
+                                .size(style::TEXT_HINT)
                                 .family(egui::FontFamily::Monospace),
                         );
                     });
                 });
             });
 
-            // List occupies space above form
             let list_rect = egui::Rect::from_min_max(
                 egui::pos2(rect.left(), list_top),
                 egui::pos2(rect.right(), form_rect.top() - 1.0),
             );
-            self.draw_list(ui, colors, list_rect, ROW_H);
+            self.draw_list(ui, colors, list_rect);
         } else {
-            // Full-height list
             let list_rect = egui::Rect::from_min_max(egui::pos2(rect.left(), list_top), rect.max);
-            self.draw_list(ui, colors, list_rect, ROW_H);
+            self.draw_list(ui, colors, list_rect);
         }
     }
 
@@ -490,11 +546,10 @@ impl App for SecretsApp {
 
 impl SecretsApp {
     fn draw_list(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         colors: &crate::ui::theme::Colors,
         rect: egui::Rect,
-        row_h: f32,
     ) {
         let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
         egui::ScrollArea::vertical()
@@ -506,89 +561,60 @@ impl SecretsApp {
                         ui.label(
                             egui::RichText::new("No secrets stored")
                                 .color(colors.text_dim)
-                                .size(14.0),
+                                .size(style::TEXT_BODY),
                         );
-                        ui.add_space(8.0);
+                        ui.add_space(style::SPACE_SM);
                         ui.label(
-                            egui::RichText::new("Press n to add one")
-                                .color(colors.text_dim.linear_multiply(0.6))
-                                .size(11.0)
-                                .family(egui::FontFamily::Monospace),
+                            egui::RichText::new(
+                                "Use `plexi secret set` or press n to add the first one",
+                            )
+                            .color(colors.text_dim.linear_multiply(0.6))
+                            .size(style::TEXT_HINT)
+                            .family(egui::FontFamily::Monospace),
                         );
                     });
                     return;
                 }
 
+                let mut clicked_idx: Option<usize> = None;
+
                 for (idx, entry) in self.entries.iter().enumerate() {
                     let is_selected = idx == self.selected;
+                    let (resp, _) = widgets::selectable_row(ui, is_selected, colors, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new(&entry.name)
+                                        .size(style::TEXT_BODY)
+                                        .color(colors.text_primary),
+                                );
+                                ui.scope(|ui| {
+                                    ui.set_max_width(300.0);
+                                    widgets::description_label(ui, &entry.scope, colors);
+                                });
+                            });
+                        });
+                    });
 
-                    let row_resp = ui.allocate_rect(
-                        egui::Rect::from_min_size(
-                            ui.cursor().min,
-                            egui::vec2(ui.available_width(), row_h),
-                        ),
-                        egui::Sense::click(),
-                    );
-
-                    // Note: click to select is read-only here (mutable borrow issues across the loop)
-                    let row_rect = row_resp.rect;
-
-                    if is_selected {
-                        ui.painter().rect_filled(row_rect, 0.0, colors.bg_active);
-                    }
-
-                    if idx > 0 {
-                        ui.painter().line_segment(
-                            [
-                                egui::pos2(row_rect.left() + 16.0, row_rect.top()),
-                                egui::pos2(row_rect.right(), row_rect.top()),
-                            ],
-                            egui::Stroke::new(1.0, colors.border.linear_multiply(0.4)),
-                        );
-                    }
-
-                    // Accent bar
                     if is_selected {
                         ui.painter().rect_filled(
                             egui::Rect::from_min_size(
-                                row_rect.min,
-                                egui::vec2(3.0, row_rect.height()),
+                                resp.rect.min,
+                                egui::vec2(3.0, resp.rect.height()),
                             ),
                             0.0,
                             colors.accent,
                         );
                     }
 
-                    ui.painter().text(
-                        egui::pos2(row_rect.left() + 16.0, row_rect.top() + 12.0),
-                        egui::Align2::LEFT_TOP,
-                        &entry.key,
-                        egui::FontId::proportional(14.0),
-                        colors.text_primary,
-                    );
-
-                    let subtitle = if entry.directory.is_empty() || entry.directory == "/" {
-                        entry.app_id.to_string()
-                    } else {
-                        format!("{} · {}", entry.app_id, entry.directory)
-                    };
-                    ui.painter().text(
-                        egui::pos2(row_rect.left() + 16.0, row_rect.top() + 30.0),
-                        egui::Align2::LEFT_TOP,
-                        subtitle,
-                        egui::FontId::monospace(11.0),
-                        colors.text_dim.linear_multiply(0.75),
-                    );
-
-                    if entry.inject {
-                        ui.painter().text(
-                            egui::pos2(row_rect.right() - 12.0, row_rect.center().y),
-                            egui::Align2::RIGHT_CENTER,
-                            "→env",
-                            egui::FontId::monospace(11.0),
-                            colors.accent,
-                        );
+                    if resp.clicked() {
+                        clicked_idx = Some(idx);
                     }
+                }
+
+                if let Some(idx) = clicked_idx {
+                    self.selected = idx;
+                    self.pending_delete = false;
                 }
             });
     }
