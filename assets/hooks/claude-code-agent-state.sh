@@ -12,7 +12,7 @@ fi
 
 # Read JSON from stdin; extract hook_event_name.
 INPUT=$(cat)
-EVENT=$(printf '%s' "$INPUT" | jq -r '.hook_event_name // empty' 2>/dev/null || true)
+EVENT=$(jq -r '.hook_event_name // empty' <<< "$INPUT" 2>/dev/null || true)
 
 case "$EVENT" in
     SessionStart|UserPromptSubmit)    STATE="working" ;;
@@ -22,7 +22,7 @@ case "$EVENT" in
     *)                                exit 0 ;;  # unknown event, skip
 esac
 
-SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)
+SESSION_ID=$(jq -r '.session_id // empty' <<< "$INPUT" 2>/dev/null || true)
 
 # Build plexi binary name from the socket path channel suffix.
 BINARY="plexi"

@@ -250,10 +250,7 @@ pub fn agent_status_cli(blocked: bool, working: bool, idle: bool) -> i32 {
     log::info!("agent_status:cli: blocked={blocked} working={working} idle={idle}");
     let tmp_path = std::env::temp_dir().join(format!(
         "plexi-agent-states-{}.json",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+        uuid::Uuid::new_v4()
     ));
     let tmp_path_str = tmp_path.to_string_lossy().to_string();
     let code = super::send_to_socket(serde_json::json!({
@@ -263,15 +260,15 @@ pub fn agent_status_cli(blocked: bool, working: bool, idle: bool) -> i32 {
     if code != 0 {
         return code;
     }
-    // Poll for response (host writes async)
+    // Poll for response (host writes async); check before sleeping to avoid artificial latency
     let response = (|| {
-        for _ in 0..50 {
-            std::thread::sleep(std::time::Duration::from_millis(50));
+        for _ in 0..250 {
             if let Ok(content) = std::fs::read_to_string(&tmp_path) {
                 if !content.is_empty() {
                     return Some(content);
                 }
             }
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
         None
     })();
@@ -464,9 +461,8 @@ pub fn agent_hook_uninstall_cli(claude_code: bool) -> i32 {
 }
 
 fn claude_settings_path() -> std::path::PathBuf {
-    std::env::var("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("~"))
+    dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join(".claude")
         .join("settings.json")
 }
@@ -505,16 +501,18 @@ fn write_claude_settings(path: &std::path::Path, settings: &serde_json::Value) -
             return 1;
         }
     };
-    match std::fs::write(path, json) {
-        Ok(()) => {
-            log::info!("agent_hook: wrote {}", path.display());
-            0
-        }
-        Err(e) => {
-            eprintln!("error: could not write {}: {e}", path.display());
-            1
-        }
+    let tmp_path = path.with_extension("json.tmp");
+    if let Err(e) = std::fs::write(&tmp_path, &json) {
+        eprintln!("error: could not write temp settings: {e}");
+        return 1;
     }
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        eprintln!("error: could not rename temp settings: {e}");
+        let _ = std::fs::remove_file(&tmp_path);
+        return 1;
+    }
+    log::info!("agent_hook: wrote {}", path.display());
+    0
 }
 
 #[cfg(test)]
