@@ -5,6 +5,9 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 const DEBOUNCE: Duration = Duration::from_secs(2);
+const FONT_SIZE_DEFAULT: f32 = 14.0;
+const FONT_SIZE_MIN: f32 = 9.0;
+const FONT_SIZE_MAX: f32 = 32.0;
 
 pub struct TextEditorApp {
     path: PathBuf,
@@ -13,6 +16,7 @@ pub struct TextEditorApp {
     wants_close: bool,
     load_error: Option<String>,
     focus_requested: bool,
+    font_size: f32,
 }
 
 impl TextEditorApp {
@@ -23,7 +27,15 @@ impl TextEditorApp {
             Err(e) => (String::new(), Some(e.to_string())),
         };
         log::info!("TextEditorApp: opened {:?} ({} bytes)", path, content.len());
-        Self { path, content, last_edit: None, wants_close: false, load_error, focus_requested: false }
+        Self {
+            path,
+            content,
+            last_edit: None,
+            wants_close: false,
+            load_error,
+            focus_requested: false,
+            font_size: FONT_SIZE_DEFAULT,
+        }
     }
 
     fn flush(&mut self) {
@@ -65,6 +77,11 @@ impl App for TextEditorApp {
         KeyDisposition::Passthrough
     }
 
+    fn adjust_font_size(&mut self, delta: f32) {
+        self.font_size = (self.font_size + delta).clamp(FONT_SIZE_MIN, FONT_SIZE_MAX);
+        log::info!("TextEditorApp: font_size -> {}", self.font_size);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
         let colors = ctx.colors;
 
@@ -82,28 +99,64 @@ impl App for TextEditorApp {
         ui.visuals_mut().extreme_bg_color = colors.bg_darkest;
         ui.visuals_mut().override_text_color = Some(colors.text_primary);
 
-        let response = ui.add_sized(
-            ui.available_size(),
-            egui::TextEdit::multiline(&mut self.content)
-                .font(egui::TextStyle::Monospace)
-                .desired_width(f32::INFINITY)
-                .frame(false),
-        );
+        let te_id = egui::Id::new("text_editor_content").with(&self.path);
+        let font_id = egui::FontId::monospace(self.font_size);
 
-        if response.changed() {
-            self.last_edit = Some(Instant::now());
-        }
+        // Minimum rows to fill the pane even on short documents.
+        let min_rows = ((ui.available_height() / self.font_size) as usize).max(10) + 5;
 
-        if let Some(t) = self.last_edit {
-            if t.elapsed() >= DEBOUNCE {
-                self.flush();
-            }
-        }
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let output = egui::TextEdit::multiline(&mut self.content)
+                    .id(te_id)
+                    .font(font_id)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(min_rows)
+                    .frame(false)
+                    .show(ui);
 
-        if !self.focus_requested {
-            response.request_focus();
-            self.focus_requested = true;
-        }
+                if output.response.changed() {
+                    self.last_edit = Some(Instant::now());
+                }
+
+                if let Some(t) = self.last_edit {
+                    if t.elapsed() >= DEBOUNCE {
+                        self.flush();
+                    }
+                }
+
+                // Down arrow at end of content → append a newline so the cursor
+                // can move past the last line without requiring an explicit Enter.
+                if output.response.has_focus() {
+                    let at_end = output
+                        .cursor_range
+                        .map(|r| r.primary.ccursor.index >= self.content.len())
+                        .unwrap_or(false);
+                    if at_end {
+                        let down_pressed = ui.input_mut(|i| {
+                            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown)
+                        });
+                        if down_pressed {
+                            self.content.push('\n');
+                            self.last_edit = Some(Instant::now());
+                            // Reposition cursor to the new end.
+                            let mut state = egui::TextEdit::load_state(ui.ctx(), te_id)
+                                .unwrap_or_default();
+                            let end = egui::text::CCursor::new(self.content.len());
+                            state
+                                .cursor
+                                .set_char_range(Some(egui::text::CCursorRange::one(end)));
+                            egui::TextEdit::store_state(ui.ctx(), te_id, state);
+                        }
+                    }
+                }
+
+                if !self.focus_requested {
+                    output.response.request_focus();
+                    self.focus_requested = true;
+                }
+            });
     }
 
     fn wants_close(&self) -> bool {
