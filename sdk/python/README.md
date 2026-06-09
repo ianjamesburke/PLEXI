@@ -2,6 +2,8 @@
 
 Python SDK v2 for building Plexi PGAP apps.
 
+SDK v2 is the Python authoring API. PGAP v3 (`pgap/3`) is the host/app wire protocol the SDK speaks.
+
 Full API reference: `plexi_sdk/__init__.py` and `docs/sdk-v2.md`.
 
 ## Install For SDK Development

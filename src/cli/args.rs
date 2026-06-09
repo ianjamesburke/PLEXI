@@ -390,6 +390,22 @@ pub enum AppCmd {
         #[arg(long)]
         png: bool,
     },
+    /// Check a local app with manifest, SDK, and render-size checks.
+    ///
+    /// This is the compiler-like gate for generated Plexi apps. It checks the
+    /// manifest, inspects Python SDK usage without importing app code, and
+    /// renders the app at small and normal pane sizes.
+    Check {
+        /// Local app directory to check (default: current directory)
+        #[arg(default_value = ".", value_hint = ValueHint::DirPath)]
+        path: String,
+        /// Render size to check as WxH. Repeat to override the default matrix.
+        #[arg(long = "size")]
+        sizes: Vec<String>,
+        /// Write PNG snapshots for each checked size into this directory.
+        #[arg(long, value_hint = ValueHint::DirPath)]
+        png_dir: Option<String>,
+    },
     /// Show details about an installed app: id, name, version, and available tools.
     Info {
         id: String,
@@ -445,6 +461,7 @@ pub enum AppCmd {
     self.emit.ai_query(tier, sys, msgs) LLM queries
 
   Headless testing:
+    plexi app check <path>                             Validate SDK shape + render size matrix
     plexi app render <id>                           JSON frame tree to stdout
     plexi app render <id> --png --output shot.png   PNG image to file
     Use --state file.json to pre-populate app state before on_init.
