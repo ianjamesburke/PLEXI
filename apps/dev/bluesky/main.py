@@ -22,7 +22,7 @@ from plexi_sdk import (
 )
 from plexi_sdk.ui import (
     AppBar, FooterKeys,
-    ListRow, RowChip, LeadingAvatar, LeadingIcon,
+    ListRow, LeadingAvatar, LeadingIcon,
 )
 
 BASE     = "https://public.api.bsky.app/xrpc"
@@ -31,7 +31,7 @@ LIMIT    = 30
 
 AVATAR_R = 14.0   # avatar circle radius in thread view
 THREAD_H = 72.0   # thread row base height
-IMG_H    = 140.0  # slot height per image in thread view (120px image + 20px gap)
+IMG_H    = 116.0  # slot height per image in thread view (104px image + 12px gap)
 NARROW_W = 400    # pane width threshold for compact layout
 
 
@@ -144,13 +144,15 @@ class BlueskyApp(App):
             self._feed     = [item["post"] for item in data.get("feed", []) if "post" in item]
             self._next_cur = data.get("cursor")
             self._sel      = 0
+            self._loading  = False
             self.emit.info(f"bluesky: discover loaded {len(self._feed)} posts")
-            await self._load_avatars()
+            self.emit.schedule_render()
+            asyncio.create_task(self._load_avatars(self._feed))
         except Exception as exc:
             self.emit.warn(f"bluesky: discover error: {exc}")
             self._error = str(exc)
-        self._loading = False
-        self.emit.schedule_render()
+            self._loading = False
+            self.emit.schedule_render()
 
     async def _fetch_author(self, handle: str, cursor: str | None) -> None:
         self._loading = True
@@ -168,16 +170,18 @@ class BlueskyApp(App):
             self._feed     = [p for p in posts if not (p.get("record") or {}).get("reply")]
             self._next_cur = data.get("cursor")
             self._sel      = 0
+            self._loading  = False
             self.emit.info(f"bluesky: author @{handle} loaded {len(self._feed)} posts")
-            await self._load_avatars()
+            self.emit.schedule_render()
+            asyncio.create_task(self._load_avatars(self._feed))
         except Exception as exc:
             self.emit.warn(f"bluesky: author feed error: {exc}")
             self._error = str(exc)
-        self._loading = False
-        self.emit.schedule_render()
+            self._loading = False
+            self.emit.schedule_render()
 
-    async def _load_avatars(self) -> None:
-        for post in self._feed:
+    async def _load_avatars(self, posts: list[dict]) -> None:
+        for post in posts:
             did = _did(post)
             url = _avatar_url(post)
             if did and url and did not in self._avatar_handles:
@@ -201,12 +205,15 @@ class BlueskyApp(App):
             self._walk(data.get("thread", {}), posts, depth=0)
             self._thread   = posts
             self._t_scroll = 0.0
+            self._loading  = False
             self.emit.info(f"bluesky: thread loaded {len(posts)} nodes uri={uri!r}")
+            self.emit.schedule_render()
+            asyncio.create_task(self._load_avatars([item["post"] for item in self._thread]))
         except Exception as exc:
             self.emit.warn(f"bluesky: thread error: {exc}")
             self._error = str(exc)
-        self._loading = False
-        self.emit.schedule_render()
+            self._loading = False
+            self.emit.schedule_render()
 
     def _walk(self, node: dict, out: list, depth: int) -> None:
         if not node or node.get("$type") != "app.bsky.feed.defs#threadViewPost":
@@ -245,19 +252,21 @@ class BlueskyApp(App):
     def _build_rows(self, narrow: bool) -> list[dict]:
         rows = []
         for i, post in enumerate(self._feed):
-            did      = _did(post)
+            did       = _did(post)
             av_handle = self._avatar_handles.get(did, "")
-            ts       = _short_ts((post.get("record") or {}).get("createdAt", ""))
-            likes    = post.get("likeCount", 0)
-            reposts  = post.get("repostCount", 0)
-            thumbs   = _thumbs(post)
+            ts        = _short_ts((post.get("record") or {}).get("createdAt", ""))
+            likes     = post.get("likeCount", 0)
+            reposts   = post.get("repostCount", 0)
+            thumbs    = _thumbs(post)
+            a         = post.get("author") or {}
+            name      = a.get("displayName") or ""
+            hand      = a.get("handle") or "?"
+            text      = _text(post)
 
-            chips: list[RowChip] = [
-                RowChip(f"♥ {likes}", "muted"),
-                RowChip(f"↺ {reposts}", "muted"),
-            ]
-            if thumbs:
-                chips.append(RowChip("📷", "muted"))
+            # primary: @handle  secondary: Name · text · stats
+            stat_str = f"♥{likes}  ↺{reposts}" + ("  📷" if thumbs else "")
+            parts = [p for p in [name if name != hand else "", text, stat_str] if p]
+            secondary = "  ·  ".join(parts) if parts else None
 
             leading = (
                 LeadingIcon("👤") if (narrow or not av_handle)
@@ -267,9 +276,9 @@ class BlueskyApp(App):
             rows.append(ListRow(
                 id=f"post-{i}",
                 leading=leading,
-                primary=_author(post),
-                secondary=_text(post) or None,
-                chips=chips,
+                primary=f"@{hand}",
+                secondary=secondary,
+                chips=[],
                 trailing=ts or None,
             ).to_dict())
         return rows
@@ -363,7 +372,7 @@ class BlueskyApp(App):
             img_y = y + THREAD_H - 6.0
             img_w = max(120.0, ctx.w - t_x - PAD)
             for thumb in _thumbs(post)[:2]:
-                ctx.image(thumb, t_x, img_y, img_w, 120.0, fit="cover")
+                ctx.image(thumb, t_x, img_y, img_w, 104.0, fit="cover")
                 img_y += IMG_H
 
             likes   = post.get("likeCount", 0)
