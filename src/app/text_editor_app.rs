@@ -1,7 +1,8 @@
 //! Built-in file-backed text editor pane.
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const DEBOUNCE: Duration = Duration::from_secs(2);
@@ -37,33 +38,171 @@ impl TextEditorApp {
     }
 
     fn flush(&mut self) {
-        self.last_edit = None;
         // Empty content → delete the file rather than writing an empty document.
         if self.content.is_empty() {
             if self.path.exists() {
                 if let Err(e) = std::fs::remove_file(&self.path) {
-                    log::warn!("TextEditorApp: failed to delete empty note {:?}: {e}", self.path);
+                    log::warn!(
+                        "TextEditorApp: failed to delete empty note {:?}: {e}",
+                        self.path
+                    );
+                    self.last_edit = Some(Instant::now());
                 } else {
                     log::info!("TextEditorApp: deleted empty note {:?}", self.path);
+                    self.last_edit = None;
                 }
+            } else {
+                self.last_edit = None;
             }
             return;
         }
-        if let Some(parent) = self.path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                log::warn!("TextEditorApp: could not create parent dir {:?}: {e}", parent);
-                return;
-            }
-        }
-        match std::fs::write(&self.path, &self.content) {
+        match write_note_atomically(&self.path, self.content.as_bytes()) {
             Ok(()) => {
-                log::info!("TextEditorApp: saved {:?} ({} bytes)", self.path, self.content.len());
+                self.last_edit = None;
+                log::info!(
+                    "TextEditorApp: saved {:?} ({} bytes)",
+                    self.path,
+                    self.content.len()
+                );
             }
             Err(e) => {
+                self.last_edit = Some(Instant::now());
                 log::warn!("TextEditorApp: save failed for {:?}: {e}", self.path);
             }
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_temp_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("{name}-{}-{}", std::process::id(), unique_suffix()))
+    }
+
+    fn unique_suffix() -> u128 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    }
+
+    #[test]
+    fn note_path_identity_matches_existing_file_aliases() {
+        let dir = unique_temp_dir("plexi-note-identity");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("note.md");
+        std::fs::write(&path, "hello").expect("write note");
+        let alias = dir.join(".").join("note.md");
+
+        assert_eq!(note_path_identity(&path), note_path_identity(&alias));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn note_path_identity_matches_missing_file_when_parent_exists() {
+        let dir = unique_temp_dir("plexi-note-missing-identity");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join("missing.md");
+        let alias = dir.join(".").join("missing.md");
+
+        assert_eq!(note_path_identity(&path), note_path_identity(&alias));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_note_atomically_replaces_existing_file_contents() {
+        let dir = unique_temp_dir("plexi-note-atomic-write");
+        let path = dir.join("note.md");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        std::fs::write(&path, "old contents").expect("seed note");
+
+        write_note_atomically(&path, b"new contents").expect("atomic write");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read note"),
+            "new contents"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .expect("read temp dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp files should be cleaned up");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+pub(crate) fn note_path_identity(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+
+    let path = normalize_lexically(path);
+    let Some(parent) = path.parent() else {
+        return path;
+    };
+    match parent.canonicalize() {
+        Ok(parent) => path
+            .file_name()
+            .map(|name| parent.join(name))
+            .unwrap_or(path),
+        Err(_) => path,
+    }
+}
+
+fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn write_note_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("note");
+    let temp_path = parent.join(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+
+    let write_result = (|| {
+        let mut temp_file = std::fs::File::create(&temp_path)?;
+        temp_file.write_all(bytes)?;
+        temp_file.sync_all()?;
+        drop(temp_file);
+        std::fs::rename(&temp_path, path)
+    })();
+
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&temp_path);
+    }
+
+    write_result
 }
 
 impl App for TextEditorApp {
@@ -106,7 +245,8 @@ impl App for TextEditorApp {
         }
 
         // Fill the entire pane rect for consistent background in both tiled and zoomed modes.
-        ui.painter().rect_filled(ui.max_rect(), 0.0, colors.bg_darkest);
+        ui.painter()
+            .rect_filled(ui.max_rect(), 0.0, colors.bg_darkest);
 
         ui.visuals_mut().extreme_bg_color = colors.bg_darkest;
         ui.visuals_mut().override_text_color = Some(colors.text_primary);
@@ -157,8 +297,8 @@ impl App for TextEditorApp {
                             self.content.push('\n');
                             self.last_edit = Some(Instant::now());
                             // Reposition cursor to the new end.
-                            let mut state = egui::TextEdit::load_state(ui.ctx(), te_id)
-                                .unwrap_or_default();
+                            let mut state =
+                                egui::TextEdit::load_state(ui.ctx(), te_id).unwrap_or_default();
                             let end = egui::text::CCursor::new(self.content.len());
                             state
                                 .cursor
@@ -192,8 +332,12 @@ impl App for TextEditorApp {
     fn restore_state(&mut self, state: &serde_json::Value) {
         if let Some(p) = state.get("path").and_then(|v| v.as_str()) {
             let new_path = PathBuf::from(p);
-            if new_path != self.path {
-                log::info!("TextEditorApp: switching from {:?} to {:?}", self.path, new_path);
+            if note_path_identity(&new_path) != note_path_identity(&self.path) {
+                log::info!(
+                    "TextEditorApp: switching from {:?} to {:?}",
+                    self.path,
+                    new_path
+                );
                 self.flush();
                 let (content, load_error) = match std::fs::read_to_string(&new_path) {
                     Ok(s) => (s, None),
