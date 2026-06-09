@@ -102,7 +102,7 @@ class GhIssues(App):
     def _fetch(self) -> None:
         self._loading = True
         self._error   = None
-        asyncio.get_event_loop().create_task(asyncio.to_thread(self._load_list))
+        asyncio.create_task(asyncio.to_thread(self._load_list))
 
     def _load_list(self) -> None:
         rc, out, err = _gh(
@@ -264,13 +264,13 @@ class GhIssues(App):
 
     # ── input ─────────────────────────────────────────────────────────────────
 
-    def on_key(self, key: str, _mods: dict) -> None:
+    async def on_key(self, key: str, _mods: dict) -> None:
         if self._loading:
             return
 
         if self._view == self.VIEW_LIST:
             if key == "o":
-                self._open_browser()
+                await self._open_browser()
             elif key == "r":
                 self.emit.info("gh-issues: refresh")
                 self._fetch()
@@ -281,14 +281,16 @@ class GhIssues(App):
             if key == "escape":
                 self._view   = self.VIEW_LIST
                 self._detail = None
+                self._error  = None
                 self.emit.info("gh-issues: back to list")
                 self.emit.status_summary("Issues")
                 self.emit.schedule_render()
             elif key == "o":
                 if self._detail:
                     num = self._detail["number"]
-                    rc, _, _ = _gh("issue", "view", str(num), "--web",
-                                   cwd=self._root or None)
+                    rc, _, _ = await asyncio.to_thread(
+                        _gh, "issue", "view", str(num), "--web", cwd=self._root or None,
+                    )
                     self.emit.info(f"gh-issues: open #{num} in browser rc={rc}")
             else:
                 if self._body_scroll.handle_key(key):
@@ -318,15 +320,17 @@ class GhIssues(App):
         self._detail_loading            = True
         self._error                     = None
         self._body_scroll.scroll_offset = 0.0
-        asyncio.get_event_loop().create_task(
+        asyncio.create_task(
             asyncio.to_thread(self._load_detail, issue["number"])
         )
 
-    def _open_browser(self) -> None:
+    async def _open_browser(self) -> None:
         if not self._issues:
             return
         num = self._issues[self._sel]["number"]
-        rc, _, _ = _gh("issue", "view", str(num), "--web", cwd=self._root or None)
+        rc, _, _ = await asyncio.to_thread(
+            _gh, "issue", "view", str(num), "--web", cwd=self._root or None,
+        )
         self.emit.info(f"gh-issues: open #{num} in browser rc={rc}")
 
     def _new_issue(self) -> None:
