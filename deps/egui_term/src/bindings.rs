@@ -360,6 +360,12 @@ fn platform_keyboard_bindings() -> Vec<(Binding<InputKind>, BindingAction)> {
         KeyboardBinding;
         C, Modifiers::MAC_CMD; BindingAction::Copy;
         V, Modifiers::MAC_CMD; BindingAction::Paste;
+        // macOS natural text editing: prefer shell-friendly word commands over
+        // generic xterm modified-key CSI sequences.
+        Backspace, Modifiers::ALT; BindingAction::Char('\x17');
+        Delete, Modifiers::ALT; BindingAction::Esc("\x1bd".into());
+        ArrowLeft, Modifiers::ALT; BindingAction::Esc("\x1bb".into());
+        ArrowRight, Modifiers::ALT; BindingAction::Esc("\x1bf".into());
         ArrowUp,   Modifiers::COMMAND; BindingAction::ScrollLines(1);
         ArrowDown, Modifiers::COMMAND; BindingAction::ScrollLines(-1);
         Home,      Modifiers::COMMAND; BindingAction::ScrollToTop;
@@ -381,4 +387,44 @@ fn mouse_default_bindings() -> Vec<(Binding<InputKind>, BindingAction)> {
         MouseBinding;
         Primary, Modifiers::COMMAND; BindingAction::LinkOpen;
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn action_for(
+        layout: &BindingsLayout,
+        key: Key,
+        modifiers: Modifiers,
+    ) -> BindingAction {
+        layout.get_action(
+            InputKind::KeyCode(key),
+            modifiers,
+            TerminalMode::empty(),
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_option_word_editing_uses_shell_friendly_sequences() {
+        let layout = BindingsLayout::new();
+
+        assert_eq!(
+            action_for(&layout, Key::Backspace, Modifiers::ALT),
+            BindingAction::Char('\x17')
+        );
+        assert_eq!(
+            action_for(&layout, Key::Delete, Modifiers::ALT),
+            BindingAction::Esc("\x1bd".to_string())
+        );
+        assert_eq!(
+            action_for(&layout, Key::ArrowLeft, Modifiers::ALT),
+            BindingAction::Esc("\x1bb".to_string())
+        );
+        assert_eq!(
+            action_for(&layout, Key::ArrowRight, Modifiers::ALT),
+            BindingAction::Esc("\x1bf".to_string())
+        );
+    }
 }
