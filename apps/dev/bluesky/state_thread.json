@@ -1,0 +1,75 @@
+{
+  "_loading": false,
+  "_thread": [
+    {
+      "uri": "at://did:plc:abc1/app.bsky.feed.post/1",
+      "author": {
+        "did": "did:plc:abc1",
+        "handle": "weratdogs.bsky.social",
+        "displayName": "WeRateDogs",
+        "avatar": ""
+      },
+      "record": {
+        "text": "This is Simba. He has a special stuffed friend who protects him while he sleeps. Partly by being big spoon, and partly by being a pretty good decoy. 12/10",
+        "createdAt": "2026-06-09T10:00:00Z"
+      },
+      "embed": {
+        "$type": "app.bsky.embed.images#view",
+        "images": [
+          {"thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:abc1/bafkreifake1@jpeg"}
+        ]
+      },
+      "likeCount": 2561,
+      "repostCount": 284,
+      "replyCount": 42
+    },
+    {
+      "uri": "at://did:plc:abc2/app.bsky.feed.post/2",
+      "author": {
+        "did": "did:plc:abc2",
+        "handle": "ardentarchivist.bsky.social",
+        "displayName": "Ardent Archivist",
+        "avatar": ""
+      },
+      "record": {
+        "text": "I love this so much. The dedication of the stuffed friend is truly admirable.",
+        "createdAt": "2026-06-09T10:15:00Z"
+      },
+      "likeCount": 45,
+      "repostCount": 3,
+      "replyCount": 2
+    },
+    {
+      "uri": "at://did:plc:abc3/app.bsky.feed.post/3",
+      "author": {
+        "did": "did:plc:abc3",
+        "handle": "dogperson.bsky.social",
+        "displayName": "Dog Person",
+        "avatar": ""
+      },
+      "record": {
+        "text": "Big spoon confirmed. 10/10 would trust with my life",
+        "createdAt": "2026-06-09T10:20:00Z"
+      },
+      "likeCount": 23,
+      "repostCount": 1,
+      "replyCount": 0
+    },
+    {
+      "uri": "at://did:plc:abc4/app.bsky.feed.post/4",
+      "author": {
+        "did": "did:plc:abc4",
+        "handle": "anotherperson.bsky.social",
+        "displayName": "Another Person",
+        "avatar": ""
+      },
+      "record": {
+        "text": "The stuffed friend's dedication to duty is unmatched in the animal kingdom.",
+        "createdAt": "2026-06-09T10:25:00Z"
+      },
+      "likeCount": 12,
+      "repostCount": 0,
+      "replyCount": 1
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "_loading": false,
+  "_thread": [
+    {
+      "uri": "at://did:plc:abc1/app.bsky.feed.post/1",
+      "author": {
+        "did": "did:plc:abc1",
+        "handle": "longposter.bsky.social",
+        "displayName": "Long Poster",
+        "avatar": ""
+      },
+      "record": {
+        "text": "This is a very long post that spans multiple lines to test the dynamic height calculation. It keeps going and going with more and more text to push the line count up well beyond what a fixed 72px slot would handle. This should force the row height to grow and prevent the image from overlapping the text area below. The text continues to fill space.",
+        "createdAt": "2026-06-09T10:00:00Z"
+      },
+      "embed": {
+        "$type": "app.bsky.embed.images#view",
+        "images": [
+          {"thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:abc1/bafkreifake1@jpeg"},
+          {"thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:abc1/bafkreifake2@jpeg"}
+        ]
+      },
+      "likeCount": 999,
+      "repostCount": 123,
+      "replyCount": 45
+    },
+    {
+      "uri": "at://did:plc:abc2/app.bsky.feed.post/2",
+      "author": {
+        "did": "did:plc:abc2",
+        "handle": "reply.bsky.social",
+        "displayName": "Reply Person",
+        "avatar": ""
+      },
+      "record": {
+        "text": "Short reply.",
+        "createdAt": "2026-06-09T10:05:00Z"
+      },
+      "likeCount": 5,
+      "repostCount": 0,
+      "replyCount": 0
+    }
+  ]
+}

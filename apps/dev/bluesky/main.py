@@ -29,10 +29,14 @@ BASE     = "https://public.api.bsky.app/xrpc"
 DISCOVER = "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot"
 LIMIT    = 30
 
-AVATAR_R = 14.0   # avatar circle radius in thread view
-THREAD_H = 72.0   # thread row base height
-IMG_H    = 116.0  # slot height per image in thread view (104px image + 12px gap)
-NARROW_W = 400    # pane width threshold for compact layout
+AVATAR_R  = 14.0   # avatar circle radius in thread view
+IMG_H     = 116.0  # slot height per image in thread view (104px image + 12px gap)
+NARROW_W  = 400    # pane width threshold for compact layout
+# Thread row layout constants
+_TH_TOP   = 6.0    # padding above author line
+_TH_GAP   = 4.0    # gap between author line and text
+_TH_BOT   = 8.0    # padding below stats line
+_TH_IMGAP = 8.0    # gap between text and first image
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -74,6 +78,19 @@ def _thumbs(post: dict) -> list[str]:
     return []
 
 
+def _est_text_h(text: str, avail_w: float) -> float:
+    """Estimate markdown text height at HINT font size."""
+    chars_per_line = max(20, avail_w / 7.5)
+    lines = max(1, -(-len(text) // int(chars_per_line)))  # ceil
+    return lines * (HINT + 5.0)
+
+
+def _thread_row_h(post: dict, avail_w: float) -> float:
+    text_h = _est_text_h(_text(post), avail_w)
+    n_imgs = min(len(_thumbs(post)), 2)
+    return _TH_TOP + HINT + _TH_GAP + text_h + _TH_IMGAP + n_imgs * IMG_H + HINT + _TH_BOT
+
+
 def _at_web(uri: str) -> str:
     if not uri.startswith("at://"):
         return ""
@@ -111,6 +128,21 @@ class BlueskyApp(App):
         self._t_scroll = 0.0
 
         self._avatar_handles: dict[str, str] = {}
+
+        # Headless render: --state JSON lands in self._app_state before on_init.
+        seeded = self._app_state
+        if "_feed" in seeded or "_thread" in seeded:
+            self._loading = seeded.get("_loading", False)
+            self._error   = seeded.get("_error")
+            self._sel     = seeded.get("_sel", 0)
+            if "_feed" in seeded:
+                self._feed = seeded["_feed"]
+            if "_thread" in seeded:
+                raw = seeded["_thread"]
+                self._thread = [{"post": p, "depth": i} for i, p in enumerate(raw)]
+                self._view   = self.VIEW_THREAD
+            self.emit.info(f"bluesky: seeded feed={len(self._feed)} thread={len(self._thread)}")
+            return
 
         self.emit.info("bluesky: init")
         self.emit.status_summary("Loading Discover feed…")
@@ -257,14 +289,13 @@ class BlueskyApp(App):
             ts        = _short_ts((post.get("record") or {}).get("createdAt", ""))
             likes     = post.get("likeCount", 0)
             reposts   = post.get("repostCount", 0)
-            thumbs    = _thumbs(post)
             a         = post.get("author") or {}
             name      = a.get("displayName") or ""
             hand      = a.get("handle") or "?"
             text      = _text(post)
 
             # primary: @handle  secondary: Name · text · stats
-            stat_str = f"♥{likes}  ↺{reposts}" + ("  📷" if thumbs else "")
+            stat_str = f"♥{likes}  ↺{reposts}"
             parts = [p for p in [name if name != hand else "", text, stat_str] if p]
             secondary = "  ·  ".join(parts) if parts else None
 
@@ -333,8 +364,9 @@ class BlueskyApp(App):
                      size=14.0, color=ctx.theme.muted)
             return
 
-        heights     = [THREAD_H + min(len(_thumbs(item["post"])), 2) * IMG_H
-                       for item in self._thread]
+        # Dynamic heights: measure text per post so long posts don't overlap images.
+        base_avail_w = ctx.w - PAD * 2 - AVATAR_R * 2 - 6
+        heights = [_thread_row_h(item["post"], base_avail_w) for item in self._thread]
         content_tot = sum(heights)
 
         ctx.begin_scroll("thread-list", 0.0, content_y, ctx.w, content_h, content_tot)
@@ -352,25 +384,28 @@ class BlueskyApp(App):
 
             did       = _did(post)
             av_handle = self._avatar_handles.get(did, "")
-            av_cy     = y + HINT / 2 + 6
+            av_cy     = y + _TH_TOP + HINT / 2
             if av_handle:
                 ctx.avatar(av_handle, x=PAD + indent, y_center=av_cy, radius=AVATAR_R)
             else:
                 ctx.circle(PAD + indent + AVATAR_R, av_cy, AVATAR_R,
                            fill=ctx.theme.surface)
 
-            t_x = PAD + indent + AVATAR_R * 2 + 6
-            ts  = _short_ts((post.get("record") or {}).get("createdAt", ""))
-            ctx.text(t_x, y + 6, _author(post),
+            t_x      = PAD + indent + AVATAR_R * 2 + 6
+            avail_w  = ctx.w - t_x - PAD
+            ts       = _short_ts((post.get("record") or {}).get("createdAt", ""))
+            ctx.text(t_x, y + _TH_TOP, _author(post),
                      size=HINT, color=ctx.theme.accent,
-                     max_width=ctx.w - t_x - PAD - 36)
+                     max_width=avail_w - 36)
             if ts:
-                ctx.text(ctx.w - PAD - 32, y + 6, ts, size=HINT, color=ctx.theme.muted)
+                ctx.text(ctx.w - PAD - 32, y + _TH_TOP, ts, size=HINT, color=ctx.theme.muted)
 
-            ctx.markdown(t_x, y + 6 + HINT + 4, ctx.w - t_x - PAD, _text(post))
+            text_y = y + _TH_TOP + HINT + _TH_GAP
+            ctx.markdown(t_x, text_y, avail_w, _text(post))
 
-            img_y = y + THREAD_H - 6.0
-            img_w = max(120.0, ctx.w - t_x - PAD)
+            text_h = _est_text_h(_text(post), avail_w)
+            img_y  = text_y + text_h + _TH_IMGAP
+            img_w  = max(120.0, avail_w)
             for thumb in _thumbs(post)[:2]:
                 ctx.image(thumb, t_x, img_y, img_w, 104.0, fit="cover")
                 img_y += IMG_H
@@ -378,8 +413,8 @@ class BlueskyApp(App):
             likes   = post.get("likeCount", 0)
             reposts = post.get("repostCount", 0)
             replies = post.get("replyCount", 0)
-            ctx.text(t_x, y + h - HINT - 4,
-                     f"♥ {likes}  ↺ {reposts}  💬 {replies}",
+            ctx.text(t_x, y + h - HINT - _TH_BOT + 4,
+                     f"♥ {likes}  ↺ {reposts}  ↩ {replies}",
                      size=HINT, color=ctx.theme.muted)
 
             y += h

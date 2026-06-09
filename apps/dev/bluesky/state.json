@@ -1,0 +1,124 @@
+{
+  "_loading": false,
+  "_sel": 0,
+  "_feed": [
+    {
+      "uri": "at://did:plc:abc1/app.bsky.feed.post/1",
+      "author": {
+        "did": "did:plc:abc1",
+        "handle": "bsky.app",
+        "displayName": "Bluesky",
+        "avatar": ""
+      },
+      "record": {
+        "text": "Welcome to Bluesky! We're building a social network that gives you more control over your experience.",
+        "createdAt": "2026-06-09T10:00:00Z"
+      },
+      "likeCount": 12340,
+      "repostCount": 4560,
+      "replyCount": 789
+    },
+    {
+      "uri": "at://did:plc:abc2/app.bsky.feed.post/2",
+      "author": {
+        "did": "did:plc:abc2",
+        "handle": "jay.bsky.social",
+        "displayName": "Jay Graber",
+        "avatar": ""
+      },
+      "record": {
+        "text": "Shipping new features every week. The AT Protocol is maturing fast and it's exciting to see builders creating on top of it.",
+        "createdAt": "2026-06-08T22:30:00Z"
+      },
+      "likeCount": 3421,
+      "repostCount": 891,
+      "replyCount": 203
+    },
+    {
+      "uri": "at://did:plc:abc3/app.bsky.feed.post/3",
+      "author": {
+        "did": "did:plc:abc3",
+        "handle": "weirdoreads.bsky.social",
+        "displayName": "Weirdo Reads",
+        "avatar": ""
+      },
+      "record": {
+        "text": "Just finished reading a really good book about distributed systems. Would recommend to anyone building on federated protocols.",
+        "createdAt": "2026-06-08T18:15:00Z"
+      },
+      "likeCount": 567,
+      "repostCount": 89,
+      "replyCount": 34
+    },
+    {
+      "uri": "at://did:plc:abc4/app.bsky.feed.post/4",
+      "author": {
+        "did": "did:plc:abc4",
+        "handle": "pfrazee.com",
+        "displayName": "Paul Frazee",
+        "avatar": ""
+      },
+      "record": {
+        "text": "Thread on what makes a good social app: 1/ It should be obvious what you're sharing and with whom. 2/ It should never surprise you. 3/ You should be able to leave without losing your data.",
+        "createdAt": "2026-06-08T14:45:00Z"
+      },
+      "embed": {
+        "$type": "app.bsky.embed.images#view",
+        "images": [
+          {"thumb": "https://cdn.bsky.app/img/feed_thumbnail/plain/did:plc:abc4/bafkreifake1@jpeg"}
+        ]
+      },
+      "likeCount": 2100,
+      "repostCount": 445,
+      "replyCount": 128
+    },
+    {
+      "uri": "at://did:plc:abc5/app.bsky.feed.post/5",
+      "author": {
+        "did": "did:plc:abc5",
+        "handle": "haileywhipple.bsky.social",
+        "displayName": "Hailey Whipple",
+        "avatar": ""
+      },
+      "record": {
+        "text": "Okay but has anyone else noticed the timeline feels so much calmer lately? Way less doom scrolling vibes.",
+        "createdAt": "2026-06-08T11:00:00Z"
+      },
+      "likeCount": 890,
+      "repostCount": 120,
+      "replyCount": 56
+    },
+    {
+      "uri": "at://did:plc:abc6/app.bsky.feed.post/6",
+      "author": {
+        "did": "did:plc:abc6",
+        "handle": "longhandleuser.bsky.social",
+        "displayName": "A User With A Very Long Display Name That Might Overflow",
+        "avatar": ""
+      },
+      "record": {
+        "text": "Short post.",
+        "createdAt": "2026-06-07T09:00:00Z"
+      },
+      "likeCount": 12,
+      "repostCount": 3,
+      "replyCount": 1
+    },
+    {
+      "uri": "at://did:plc:abc7/app.bsky.feed.post/7",
+      "author": {
+        "did": "did:plc:abc7",
+        "handle": "techperson.dev",
+        "displayName": "",
+        "avatar": ""
+      },
+      "record": {
+        "text": "Just deployed to prod. Fingers crossed 🤞 This is the post text to check truncation behavior on the feed view with a relatively long message that should be truncated.",
+        "createdAt": "2026-06-07T08:30:00Z"
+      },
+      "likeCount": 234,
+      "repostCount": 45,
+      "replyCount": 17
+    }
+  ]
+}
