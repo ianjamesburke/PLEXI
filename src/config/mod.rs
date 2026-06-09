@@ -781,6 +781,7 @@ pub fn workspace_channel_dir() -> String {
     }
     if let Ok(channel) = std::env::var("PLEXI_CHANNEL") {
         if !channel.is_empty() {
+            log::info!("workspace_channel_dir: using PLEXI_CHANNEL={channel}");
             return channel_suffix_from_basename(&format!("plexi-{channel}"));
         }
     }
@@ -803,6 +804,7 @@ fn config_dir_name() -> String {
     }
     if let Ok(channel) = std::env::var("PLEXI_CHANNEL") {
         if !channel.is_empty() {
+            log::info!("config_dir_name: using PLEXI_CHANNEL={channel}");
             return channel_suffix_from_basename(&format!("plexi-{channel}"));
         }
     }
@@ -1410,6 +1412,18 @@ mod tests {
         let prev = std::env::var("PLEXI_CHANNEL").ok();
         unsafe { std::env::set_var("PLEXI_CHANNEL", "pr-999") };
         let result = config_dir_name();
+        match prev {
+            Some(v) => unsafe { std::env::set_var("PLEXI_CHANNEL", v) },
+            None => unsafe { std::env::remove_var("PLEXI_CHANNEL") },
+        }
+        assert_eq!(result, ".plexi-pr-999");
+    }
+
+    #[test]
+    fn workspace_channel_dir_respects_plexi_channel_env() {
+        let prev = std::env::var("PLEXI_CHANNEL").ok();
+        unsafe { std::env::set_var("PLEXI_CHANNEL", "pr-999") };
+        let result = workspace_channel_dir();
         match prev {
             Some(v) => unsafe { std::env::set_var("PLEXI_CHANNEL", v) },
             None => unsafe { std::env::remove_var("PLEXI_CHANNEL") },
