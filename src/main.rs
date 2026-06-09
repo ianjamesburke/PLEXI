@@ -176,7 +176,7 @@ fn main() -> eframe::Result {
             Some(a.clone())
         })
         .collect();
-    use crate::cli::args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd, ConfigCmd, RoutineCmd, NotesCmd, AgentCmd, AiCmd};
+    use crate::cli::args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd, ConfigCmd, RoutineCmd, NotesCmd, AgentCmd, HookAction, AiCmd};
     use clap::Parser;
 
     match Cli::try_parse_from(&args) {
@@ -199,6 +199,12 @@ fn main() -> eframe::Result {
                         AgentCmd::Add { name } => std::process::exit(cli::agent_add(&name)),
                         AgentCmd::Update { name } => std::process::exit(cli::agent_update(&name)),
                         AgentCmd::List => std::process::exit(cli::agent_list()),
+                        AgentCmd::Report { state, agent, session_id } => std::process::exit(cli::agent_report_cli(state.as_str(), agent.as_str(), session_id.as_deref())),
+                        AgentCmd::Status { blocked, working, idle } => std::process::exit(cli::agent_status_cli(blocked, working, idle)),
+                        AgentCmd::Hook { action } => match action {
+                            HookAction::Install { claude_code } => std::process::exit(cli::agent_hook_install_cli(claude_code)),
+                            HookAction::Uninstall { claude_code } => std::process::exit(cli::agent_hook_uninstall_cli(claude_code)),
+                        },
                     },
                     Commands::Secret { cmd } => match cmd {
                         SecretCmd::Set { friendly_name, from_env, global, alias } => std::process::exit(cli::workspace_secret_set(&friendly_name, from_env, global, alias.as_deref())),
