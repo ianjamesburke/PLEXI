@@ -142,7 +142,7 @@ fn focus_changed_detected_on_pane_switch() {
 }
 
 #[test]
-fn focus_changed_not_emitted_for_same_pane() {
+fn focus_log_stays_quiet_for_same_pane_below_heartbeat_threshold() {
     let ctx = egui::Context::default();
     let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
@@ -151,13 +151,56 @@ fn focus_changed_not_emitted_for_same_pane() {
 
     app.windows[0].focused_pane = Some(tile_a);
     app.last_logged_focus = Some((win_id, tile_a));
+    app.focus_started_at = Some(std::time::Instant::now());
 
-    // Same focus — current_focus == last_logged_focus, no emission expected.
-    let current_focus = app
-        .windows
-        .get(app.active_window)
-        .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)));
-    assert_eq!(current_focus, app.last_logged_focus);
+    let outcome = app.reconcile_focus_logging(std::time::Duration::from_secs(15 * 60));
+
+    assert_eq!(outcome, FocusLogOutcome::Unchanged);
+    assert_eq!(app.last_logged_focus, Some((win_id, tile_a)));
+}
+
+#[test]
+fn focus_log_heartbeats_for_same_pane_after_threshold() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
+    let (tile_a, _) = app.add_test_pane();
+    let win_id = app.windows[0].window_id;
+
+    app.windows[0].focused_pane = Some(tile_a);
+    app.last_logged_focus = Some((win_id, tile_a));
+    app.focus_started_at =
+        Some(std::time::Instant::now() - std::time::Duration::from_secs(15 * 60 + 1));
+
+    let outcome = app.reconcile_focus_logging(std::time::Duration::from_secs(15 * 60));
+
+    assert_eq!(outcome, FocusLogOutcome::Heartbeat);
+    assert_eq!(app.last_logged_focus, Some((win_id, tile_a)));
+    assert!(
+        app.focus_started_at
+            .expect("heartbeat should restart the focus segment")
+            .elapsed()
+            < std::time::Duration::from_secs(5)
+    );
+}
+
+#[test]
+fn focus_log_records_pane_switch_as_transition() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _) = PlexiApp::new_for_test(ctx, frame_tick);
+    let (tile_a, _) = app.add_test_pane();
+    let (tile_b, _) = app.add_test_pane();
+    let win_id = app.windows[0].window_id;
+
+    app.windows[0].focused_pane = Some(tile_b);
+    app.last_logged_focus = Some((win_id, tile_a));
+    app.focus_started_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(12));
+
+    let outcome = app.reconcile_focus_logging(std::time::Duration::from_secs(15 * 60));
+
+    assert_eq!(outcome, FocusLogOutcome::Transition);
+    assert_eq!(app.last_logged_focus, Some((win_id, tile_b)));
 }
 
 #[test]

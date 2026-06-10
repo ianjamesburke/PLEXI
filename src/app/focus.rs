@@ -2,6 +2,34 @@
 
 use super::PendingNotification;
 use super::PlexiApp;
+use std::time::Duration;
+
+pub(crate) const FOCUS_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15 * 60);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FocusLogOutcome {
+    Unchanged,
+    Started,
+    Transition,
+    Heartbeat,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FocusSegmentReason {
+    PaneSwitch,
+    Heartbeat,
+    Shutdown,
+}
+
+impl FocusSegmentReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PaneSwitch => "pane_switch",
+            Self::Heartbeat => "heartbeat",
+            Self::Shutdown => "shutdown",
+        }
+    }
+}
 
 /// Which layer currently owns keyboard input.
 ///
@@ -74,6 +102,7 @@ impl PlexiApp {
         window_id: u64,
         tile_id: egui_tiles::TileId,
         duration_secs: u64,
+        reason: FocusSegmentReason,
     ) {
         use egui_tiles::Tile;
         let Some(win) = self.windows.iter().find(|w| w.window_id == window_id) else {
@@ -107,7 +136,8 @@ impl PlexiApp {
         };
 
         log::info!(
-            "focus_changed: pane_id={pane_id} context={context_name:?} context_root={context_root:?} duration_secs={duration_secs} pty_title={pty_title:?} pane_name={pane_name:?} app_type_id={app_type_id:?}"
+            "focus_changed: pane_id={pane_id} reason={} context={context_name:?} context_root={context_root:?} duration_secs={duration_secs} pty_title={pty_title:?} pane_name={pane_name:?} app_type_id={app_type_id:?}",
+            reason.as_str()
         );
         crate::host::event_log::emit(crate::host::event_log::HostEvent::FocusChanged {
             pane_id,
@@ -118,9 +148,72 @@ impl PlexiApp {
             pty_title,
             pane_name,
             app_type_id,
+            reason: Some(reason.as_str().to_string()),
             duration_secs,
             timestamp: crate::host::event_log::now_timestamp(),
         });
+    }
+
+    pub(crate) fn current_focus_target(&self) -> Option<(u64, egui_tiles::TileId)> {
+        self.windows
+            .get(self.active_window)
+            .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)))
+    }
+
+    pub(crate) fn reconcile_focus_logging(
+        &mut self,
+        heartbeat_interval: Duration,
+    ) -> FocusLogOutcome {
+        let current_focus = self.current_focus_target();
+        let now = std::time::Instant::now();
+
+        if current_focus != self.last_logged_focus {
+            let had_previous_focus = self.last_logged_focus.is_some();
+            if let Some((window_id, tile_id)) = self.last_logged_focus {
+                let duration_secs = self
+                    .focus_started_at
+                    .and_then(|started| now.checked_duration_since(started))
+                    .map(|elapsed| elapsed.as_secs())
+                    .unwrap_or(0);
+                self.emit_focus_changed_for_tile(
+                    window_id,
+                    tile_id,
+                    duration_secs,
+                    FocusSegmentReason::PaneSwitch,
+                );
+            }
+            self.last_logged_focus = current_focus;
+            self.focus_started_at = current_focus.map(|_| now);
+            return if had_previous_focus {
+                FocusLogOutcome::Transition
+            } else {
+                FocusLogOutcome::Started
+            };
+        }
+
+        let Some((window_id, tile_id)) = current_focus else {
+            return FocusLogOutcome::Unchanged;
+        };
+        let Some(started_at) = self.focus_started_at else {
+            self.focus_started_at = Some(now);
+            return FocusLogOutcome::Started;
+        };
+        let Some(elapsed) = now.checked_duration_since(started_at) else {
+            self.focus_started_at = Some(now);
+            return FocusLogOutcome::Unchanged;
+        };
+        if elapsed < heartbeat_interval {
+            return FocusLogOutcome::Unchanged;
+        }
+
+        self.emit_focus_changed_for_tile(
+            window_id,
+            tile_id,
+            elapsed.as_secs(),
+            FocusSegmentReason::Heartbeat,
+        );
+        self.focus_started_at = Some(now);
+        FocusLogOutcome::Heartbeat
     }
 
     /// Returns `true` when the current top focus layer is a non-critical modal

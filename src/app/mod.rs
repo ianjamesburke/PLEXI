@@ -15,7 +15,11 @@ pub mod secrets_app;
 mod sync;
 pub mod text_editor_app;
 
-pub(crate) use focus::{ContextCloseState, FocusLayer};
+#[cfg(test)]
+pub(crate) use focus::FocusLogOutcome;
+pub(crate) use focus::{
+    ContextCloseState, FocusLayer, FocusSegmentReason, FOCUS_HEARTBEAT_INTERVAL,
+};
 pub(crate) use notification_image::NotificationImageState;
 #[cfg(test)]
 pub(crate) use notifications::save_pending_notifications_to;
@@ -326,7 +330,8 @@ pub struct PlexiApp {
     /// pipes, queries) are dispatched immediately even during overlay ownership.
     pub(crate) overlay_held_cmds: Vec<crate::app::app_trait::AppCommand>,
     /// Per-pane agent state reported via hook scripts. Keyed by pane_id.
-    pub(crate) pane_agent_states: std::collections::HashMap<u64, crate::app_protocol::PaneAgentState>,
+    pub(crate) pane_agent_states:
+        std::collections::HashMap<u64, crate::app_protocol::PaneAgentState>,
 }
 
 #[cfg(test)]
@@ -2989,25 +2994,9 @@ impl eframe::App for PlexiApp {
 
         self.render_panels(ctx);
 
-        // Detect genuine pane focus transitions and emit FocusChanged events.
-        // Comparing at frame-end means temporary save/restore patterns in
-        // canvas_bindings are invisible — focused_pane holds the settled value here.
-        // Uses stable window_id (not the vector index) so the key survives window removal.
-        let current_focus = self
-            .windows
-            .get(self.active_window)
-            .and_then(|win| win.focused_pane.map(|tile| (win.window_id, tile)));
-        if current_focus != self.last_logged_focus {
-            if let Some((window_id, tile_id)) = self.last_logged_focus {
-                let duration_secs = self
-                    .focus_started_at
-                    .map(|t| t.elapsed().as_secs())
-                    .unwrap_or(0);
-                self.emit_focus_changed_for_tile(window_id, tile_id, duration_secs);
-            }
-            self.last_logged_focus = current_focus;
-            self.focus_started_at = Some(std::time::Instant::now());
-        }
+        // Detect genuine pane focus transitions, and periodically bank long
+        // same-pane sessions so Stats has live data without keystroke tracking.
+        self.reconcile_focus_logging(FOCUS_HEARTBEAT_INTERVAL);
 
         let frame_ms = _frame_start.elapsed().as_millis();
         if frame_ms > 50 {
@@ -3024,7 +3013,12 @@ impl eframe::App for PlexiApp {
             log::info!(
                 "focus_changed: shutdown — banking final session duration_secs={duration_secs}"
             );
-            self.emit_focus_changed_for_tile(window_id, tile_id, duration_secs);
+            self.emit_focus_changed_for_tile(
+                window_id,
+                tile_id,
+                duration_secs,
+                FocusSegmentReason::Shutdown,
+            );
         }
     }
 }

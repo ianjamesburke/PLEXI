@@ -134,6 +134,8 @@ pub enum HostEvent {
         pane_name: Option<String>,
         /// For App panes: the manifest_id (e.g. "gh-issues"). Null for terminals.
         app_type_id: Option<String>,
+        /// Why this focus segment was banked: pane_switch, heartbeat, or shutdown.
+        reason: Option<String>,
         /// Seconds this pane held focus before the switch.
         duration_secs: u64,
         timestamp: String,
