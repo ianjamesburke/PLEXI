@@ -65,6 +65,45 @@ plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · validate"
 
 ---
 
+## Step 0b — Resume Guard After User Reply
+
+Run this before handling any `pass`, `fail`, or `modify` reply, especially after context compaction. A reply to a `[TESTING]` block is part of PR validation by default; do not treat it as a fresh alpha bug report unless the user explicitly says to leave the PR flow.
+
+Rehydrate the PR and force all subsequent reads, edits, tests, commits, pushes, and PR installs into the feature worktree:
+```bash
+if [ -z "${PR_NUMBER:-}" ]; then
+  VALIDATION_STATE="/tmp/plexi-validate-${PLEXI_PANE_ID:-unknown}.env"
+  test -f "$VALIDATION_STATE" || { echo "Missing PR_NUMBER and validation state: $VALIDATION_STATE"; exit 1; }
+  . "$VALIDATION_STATE"
+fi
+PR_JSON=$(gh pr view $PR_NUMBER --json headRefName,baseRefName,state,isDraft)
+BRANCH=$(printf '%s' "$PR_JSON" | jq -r '.headRefName')
+PR_STATE=$(printf '%s' "$PR_JSON" | jq -r '.state')
+test "$PR_STATE" = "OPEN" || { echo "PR #$PR_NUMBER is not open: $PR_STATE"; exit 1; }
+ALPHA_ROOT=$(git worktree list --porcelain | awk '
+  /^worktree / { path=$2 }
+  /^branch refs\/heads\/alpha$/ { print path; exit }
+')
+test -n "$ALPHA_ROOT" || { echo "Could not resolve alpha worktree"; exit 1; }
+WORKTREE="$ALPHA_ROOT/worktrees/$BRANCH"
+test -d "$WORKTREE" || { echo "Missing PR worktree: $WORKTREE"; exit 1; }
+CURRENT_BRANCH=$(git -C "$WORKTREE" branch --show-current)
+test "$CURRENT_BRANCH" = "$BRANCH" || { echo "Wrong worktree branch: $CURRENT_BRANCH != $BRANCH"; exit 1; }
+case "$CURRENT_BRANCH" in alpha|beta|main) echo "Refusing to validate from protected branch: $CURRENT_BRANCH"; exit 1 ;; esac
+cd "$WORKTREE"
+git status --short --branch
+```
+
+Hard stops:
+- Current checkout is `alpha`, `beta`, or `main`.
+- `WORKTREE` cannot be resolved from the PR head branch.
+- The PR is closed or merged.
+- You are about to edit files before the guard above has passed.
+
+While handling validation feedback, `just install` is banned. Reinstall only with `just pr-install $PR_NUMBER` from `WORKTREE`.
+
+---
+
 ## Step 1 — Install Gate
 
 Check if a binary install is needed:
@@ -186,6 +225,19 @@ After printing the testing block in the final response, send a best-effort notif
 
 Until `plexi notify --no-wait` is available, do not use `plexi notify --choice` in this handoff path. A blocking choice notification keeps the agent process alive and can corrupt the final validation handoff. Use a plain fire-and-forget notification instead:
 ```bash
+# Persist enough state for a later user reply to survive context compaction.
+ALPHA_ROOT=$(git worktree list --porcelain | awk '
+  /^worktree / { path=$2 }
+  /^branch refs\/heads\/alpha$/ { print path; exit }
+')
+VALIDATION_STATE="/tmp/plexi-validate-${PLEXI_PANE_ID:-unknown}.env"
+{
+  printf 'PR_NUMBER=%s\n' "$PR_NUMBER"
+  printf 'ISSUE_NUMBER=%s\n' "$ISSUE_NUMBER"
+  printf 'BRANCH=%s\n' "$BRANCH"
+  printf 'WORKTREE=%s\n' "$ALPHA_ROOT/worktrees/$BRANCH"
+} > "$VALIDATION_STATE"
+
 # Flip pane status to needs-you so the PM surfaces this lane as awaiting the user
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
 # Route reply to PM pane if PM dispatched this skill, otherwise this pane
@@ -235,15 +287,17 @@ Invoke `/merge-pr <pr-number>` inline in the same pane.
 
 Valid only if pass criteria were **not** fully met. If criteria were met and user wants extras: "Pass criteria are met. Filing that as a separate issue." Create the issue, then treat as pass.
 
+First run **Step 0b — Resume Guard After User Reply**. Do not inspect or edit production files until `cd "$WORKTREE"` has succeeded.
+
 Fix the specific change on the feature branch, commit, push:
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · fixing"
-git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" add <files>
-git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" commit -m "fix: <description>"
-git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" push
+git add <files>
+git commit -m "fix: <description>"
+git push
 ```
 
-Re-run `just pr-install $PR_NUMBER` **from inside the feature worktree** (`cd worktrees/$BRANCH && just pr-install $PR_NUMBER`) — not from the repo root. Re-surface the testing block (which flips status back to `needs-you`). Do not expand scope.
+Run `cargo build` from `WORKTREE`, then re-run `just pr-install $PR_NUMBER` **from inside `WORKTREE`**. Never run `just install` during validation. Re-surface the testing block (which flips status back to `needs-you`). Do not expand scope.
 
 Append to Ship Log:
 ```markdown
@@ -267,15 +321,17 @@ tail -100 ~/.plexi-pr-$PR_NUMBER/plexi.log
 ```
 Report what the log shows.
 
+First run **Step 0b — Resume Guard After User Reply**. Do not inspect or edit production files until `cd "$WORKTREE"` has succeeded.
+
 Apply the targeted fix to the feature branch, commit, push:
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · fixing"
-git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" add <files>
-git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" commit -m "fix: <description from failure>"
-git -C "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" push
+git add <files>
+git commit -m "fix: <description from failure>"
+git push
 ```
 
-Re-run `just pr-install $PR_NUMBER` **from inside the feature worktree** (`cd worktrees/$BRANCH && just pr-install $PR_NUMBER`) — not from the repo root.
+Run `cargo build` from `WORKTREE`, then re-run `just pr-install $PR_NUMBER` **from inside `WORKTREE`**. Never run `just install` during validation.
 
 Append to Ship Log:
 ```markdown
@@ -405,6 +461,10 @@ plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
 - Issue brief (ISSUE_TITLE + ISSUE_WHAT) must appear at the top of every testing block
 - `fail` without description: ask for it before taking any action
 - `modify` is only valid if pass criteria not yet met
+- A user reply after a `[TESTING]` block stays inside `/validate-pr` by default, even after context compaction
+- Before any validation fix, rehydrate the PR with Step 0b and move into `WORKTREE`; no edits from repo root
+- `just install` is forbidden during validation; only `just pr-install $PR_NUMBER` from `WORKTREE`
+- Never commit or release-bump `alpha`, `beta`, or `main` while handling `pass`, `fail`, or `modify`
 - Attempt count comes from the Ship Log, not arguments
 - Max 3 soft rejects. Hard reject requires explicit confirmation unless user already typed "fail" 3 times.
 - Never close an issue on hard reject — only the PR closes. Issue stays open.
