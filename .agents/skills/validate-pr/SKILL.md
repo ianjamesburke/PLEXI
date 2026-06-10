@@ -99,7 +99,10 @@ just pr-install $PR_NUMBER
 
 Wait for completion. Read the log to confirm the build landed:
 ```bash
-tail -20 ~/.plexi-pr-$PR_NUMBER/plexi.log
+# Only read a runtime log if the PR app has already launched and created one.
+# A fresh install does not create plexi.log. Do not block testing on this.
+LOG_PATH="$HOME/.plexi-pr-$PR_NUMBER/plexi.log"
+[ -f "$LOG_PATH" ] && tail -20 "$LOG_PATH" || true
 ```
 
 ---
@@ -121,12 +124,24 @@ When in doubt, run. Skipping is only correct when you are confident a human look
 # Use git worktree list to find the alpha root — git rev-parse --show-toplevel returns the
 # CWD's worktree path (not the main repo root) when run from inside a worktree.
 ALPHA_ROOT=$(git worktree list --porcelain | grep -B2 "branch refs/heads/alpha" | grep "^worktree " | head -1 | cut -d' ' -f2)
-AI_FINDINGS=$(cd "$ALPHA_ROOT/worktrees/$BRANCH" && \
-  codex review --base alpha 2>&1)
-[ -z "$AI_FINDINGS" ] && AI_FINDINGS="Codex review unavailable — skipping automated review."
+REVIEW_OUT="/tmp/plexi-pr-$PR_NUMBER-codex-review.txt"
+(cd "$ALPHA_ROOT/worktrees/$BRANCH" && codex review --base alpha > "$REVIEW_OUT" 2>&1) || true
+
+# codex review can print tool transcripts before the actual findings. Keep that
+# bulk out of the main agent context and testing block.
+AI_FINDINGS=$(awk '
+  /Findings|No findings|No issues|Issues found|Review findings/ { capture=1 }
+  capture { print }
+' "$REVIEW_OUT" | tail -120)
+
+if [ -z "$AI_FINDINGS" ]; then
+  AI_FINDINGS="Codex review completed; no concise findings section was detected. Full raw output: $REVIEW_OUT"
+fi
 ```
 
-`AI_FINDINGS` is surfaced verbatim in the testing block — do not summarize or filter it.
+Only surface `AI_FINDINGS` in the testing block. Do not paste the raw `codex review` transcript into chat; it can be thousands of lines of tool output. If you need to inspect raw output, read the temp file narrowly with `tail`, `rg`, or `sed`.
+
+After the PR is installed, mergeable, and the review summary is available, surface the testing block immediately. Do not launch the PR app, browse logs, run broad full-suite tests, or keep investigating unless the install, build, targeted tests, or Codex findings show a real blocker.
 
 ---
 
