@@ -116,35 +116,13 @@ When in doubt, run. Skipping is only correct when you are confident a human look
 **If running — rigorous Codex review (gpt-5.5, xhigh reasoning):**
 
 ```bash
-ISSUE_BODY=$(gh issue view $ISSUE_NUMBER --json title,body --jq '"Title: \(.title)\n\n\(.body)"')
-REFLECT_FILES=$(gh pr diff $PR_NUMBER --name-only | grep -iE "reflect|macro|derive|proc_macro" || echo "none")
-
-REVIEW_PROMPT="You are a rigorous security and correctness reviewer for PLEXI, a Rust + Python terminal multiplexer.
-
-== ISSUE CONTEXT ==
-$ISSUE_BODY
-
-== REFLECT-RELATED FILES CHANGED ==
-$REFLECT_FILES
-
-== REVIEW INSTRUCTIONS ==
-1. Reflect/macro scrutiny: for any file involving Rust reflection, proc macros, or derive macros — verify correctness, token hygiene, and that macro expansion cannot produce unsound code.
-2. False positives: if a pattern looks concerning but is actually safe, name it and explain why it is safe. Do not omit these.
-3. Security threats: injection (shell, SQL, format string), privilege escalation, unsafe blocks, untrusted input reaching sensitive APIs, path traversal, insecure deserialization.
-4. Correctness: logic errors, missing error handling, incorrect state transitions, off-by-one, race conditions.
-
-== OUTPUT FORMAT ==
-Start with PASS if no blockers.
-Start with BLOCKERS: followed by a bullet list if any blocker exists.
-Then a SECURITY: section (write 'None found' if clean).
-Then a FALSE POSITIVES: section (write 'None' if none flagged).
-Be direct and concise. No padding."
-
-AI_FINDINGS=$(cd "$(git rev-parse --show-toplevel)/worktrees/$BRANCH" && \
-  echo "$REVIEW_PROMPT" | codex review - \
-    -c model="gpt-5.5" \
-    -c model_reasoning_effort="xhigh" \
-    --base alpha 2>&1)
+# codex review: [PROMPT] and --base are mutually exclusive — use --base alone.
+# Config (~/.codex/config.toml) already sets model=gpt-5.5 and model_reasoning_effort=xhigh.
+# Use git worktree list to find the alpha root — git rev-parse --show-toplevel returns the
+# CWD's worktree path (not the main repo root) when run from inside a worktree.
+ALPHA_ROOT=$(git worktree list --porcelain | grep -B2 "branch refs/heads/alpha" | grep "^worktree " | head -1 | cut -d' ' -f2)
+AI_FINDINGS=$(cd "$ALPHA_ROOT/worktrees/$BRANCH" && \
+  codex review --base alpha 2>&1)
 [ -z "$AI_FINDINGS" ] && AI_FINDINGS="Codex review unavailable — skipping automated review."
 ```
 
