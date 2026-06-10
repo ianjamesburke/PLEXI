@@ -356,7 +356,7 @@ impl PlexiApp {
             .map(|qn| qn.destinations.as_slice())
             .unwrap_or(&[]);
         let colors = self.colors;
-        ModalShell::centered("quick_note_dest")
+        ModalShell::centered("quick_note_picker")
             .width(modal_w)
             .click_away(false)
             .show(ctx, &colors, |ui| {
@@ -671,7 +671,7 @@ impl PlexiApp {
         let node_label = node.as_ref().map(|n| n.label.as_str()).unwrap_or("Menu");
         let colors = self.colors;
 
-        ModalShell::centered("quick_note_sub")
+        ModalShell::centered("quick_note_picker")
             .title(node_label)
             .width(modal_w)
             .click_away(false)
