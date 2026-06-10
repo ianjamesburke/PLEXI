@@ -2,7 +2,7 @@
 id: "0050"
 title: "v1 PGAP perf: visible app render scheduling"
 status: backlog
-sprint: "s14"
+sprint: "s13"
 estimate: 12h
 blocked_by: ["0049"]
 blocked_by_gh: []

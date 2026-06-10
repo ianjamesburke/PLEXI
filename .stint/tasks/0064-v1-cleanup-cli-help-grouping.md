@@ -2,7 +2,7 @@
 id: "0064"
 title: "v1 cleanup: grouped CLI help"
 status: backlog
-sprint: "s12"
+sprint: "s11"
 estimate: 4h
 blocked_by: []
 blocked_by_gh: []

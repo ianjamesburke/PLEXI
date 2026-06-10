@@ -2,7 +2,7 @@
 id: "0069"
 title: "v1 docs: alpha config discipline"
 status: backlog
-sprint: "s6"
+sprint: "s14"
 estimate: 3h
 blocked_by: []
 blocked_by_gh: []

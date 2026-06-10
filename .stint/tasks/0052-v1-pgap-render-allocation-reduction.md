@@ -2,7 +2,7 @@
 id: "0052"
 title: "v1 PGAP perf: render allocation reduction"
 status: backlog
-sprint: "s14"
+sprint: "s13"
 estimate: 8h
 blocked_by: ["0049"]
 blocked_by_gh: []

@@ -2,7 +2,7 @@
 id: "0030"
 title: "v1: release hardening and install QA"
 status: backlog
-sprint: "s6"
+sprint: "s14"
 estimate: 16h
 blocked_by: ["0028", "0029"]
 blocked_by_gh: []

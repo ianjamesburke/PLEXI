@@ -2,7 +2,7 @@
 id: "0057"
 title: "v1 performance: clippy perf gate"
 status: backlog
-sprint: "s14"
+sprint: "s13"
 estimate: 4h
 blocked_by: ["0049"]
 blocked_by_gh: []

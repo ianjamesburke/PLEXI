@@ -2,7 +2,7 @@
 id: "0037"
 title: "Testing: channel isolation regression suite"
 status: backlog
-sprint: "s9"
+sprint: "s8"
 estimate: 8h
 blocked_by: []
 blocked_by_gh: []

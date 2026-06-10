@@ -2,7 +2,7 @@
 id: "0045"
 title: "v1 cleanup: Nord theme contrast"
 status: backlog
-sprint: "s12"
+sprint: "s11"
 estimate: 3h
 blocked_by: []
 blocked_by_gh: []

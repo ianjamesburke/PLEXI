@@ -2,7 +2,7 @@
 id: "0061"
 title: "Host agent state: pane file slots"
 status: backlog
-sprint: "s7"
+sprint: "s6"
 estimate: 10h
 blocked_by: ["0033", "0034"]
 blocked_by_gh: []

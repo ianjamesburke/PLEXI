@@ -2,7 +2,7 @@
 id: "0039"
 title: "Workspace restore: builtin app state path"
 status: backlog
-sprint: "s10"
+sprint: "s9"
 estimate: 8h
 blocked_by: []
 blocked_by_gh: []

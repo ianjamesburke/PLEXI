@@ -2,7 +2,7 @@
 id: "0070"
 title: "v1 install: dotfiles reference"
 status: backlog
-sprint: "s6"
+sprint: "s14"
 estimate: 1h
 blocked_by: []
 blocked_by_gh: []

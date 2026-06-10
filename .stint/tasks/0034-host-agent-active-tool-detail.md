@@ -2,7 +2,7 @@
 id: "0034"
 title: "Host agents: active tool detail in status"
 status: backlog
-sprint: "s7"
+sprint: "s6"
 estimate: 6h
 blocked_by: ["0033"]
 blocked_by_gh: []

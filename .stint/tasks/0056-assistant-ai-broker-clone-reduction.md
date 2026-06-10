@@ -2,7 +2,7 @@
 id: "0056"
 title: "Assistant refactor: AI broker clone reduction"
 status: backlog
-sprint: "s13"
+sprint: "s12"
 estimate: 6h
 blocked_by: []
 blocked_by_gh: []

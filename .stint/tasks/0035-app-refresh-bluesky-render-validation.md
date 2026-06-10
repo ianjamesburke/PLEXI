@@ -2,7 +2,7 @@
 id: "0035"
 title: "App refresh: Bluesky render-validated rewrite"
 status: backlog
-sprint: "s8"
+sprint: "s7"
 estimate: 12h
 blocked_by: []
 blocked_by_gh: []

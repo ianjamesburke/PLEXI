@@ -2,7 +2,7 @@
 id: "0029"
 title: "v1: GitHub issue hygiene and stint alignment"
 status: backlog
-sprint: "s6"
+sprint: "s14"
 estimate: 8h
 blocked_by: ["0027"]
 blocked_by_gh: []

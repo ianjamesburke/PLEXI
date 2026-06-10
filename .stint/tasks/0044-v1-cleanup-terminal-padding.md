@@ -2,7 +2,7 @@
 id: "0044"
 title: "v1 cleanup: terminal glyph padding"
 status: backlog
-sprint: "s12"
+sprint: "s11"
 estimate: 6h
 blocked_by: []
 blocked_by_gh: []

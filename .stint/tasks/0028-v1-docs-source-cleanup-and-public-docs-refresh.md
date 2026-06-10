@@ -2,7 +2,7 @@
 id: "0028"
 title: "v1: docs source cleanup and public docs refresh"
 status: backlog
-sprint: "s6"
+sprint: "s14"
 estimate: 8h
 blocked_by: ["0027"]
 blocked_by_gh: []

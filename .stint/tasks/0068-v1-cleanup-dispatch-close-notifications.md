@@ -2,7 +2,7 @@
 id: "0068"
 title: "v1 cleanup: dispatch close notification suppression"
 status: backlog
-sprint: "s12"
+sprint: "s11"
 estimate: 2h
 blocked_by: []
 blocked_by_gh: []

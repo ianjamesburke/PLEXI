@@ -2,7 +2,7 @@
 id: "0033"
 title: "Host agents: pane-native agent state"
 status: backlog
-sprint: "s7"
+sprint: "s6"
 estimate: 8h
 blocked_by: []
 blocked_by_gh: []

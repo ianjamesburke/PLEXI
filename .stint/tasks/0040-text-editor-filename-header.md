@@ -2,7 +2,7 @@
 id: "0040"
 title: "Text editor: filename header"
 status: backlog
-sprint: "s10"
+sprint: "s9"
 estimate: 3h
 blocked_by: []
 blocked_by_gh: []

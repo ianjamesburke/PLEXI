@@ -2,7 +2,7 @@
 id: "0031"
 title: "v1: security and trust wording audit"
 status: backlog
-sprint: "s6"
+sprint: "s14"
 estimate: 8h
 blocked_by: ["0028"]
 blocked_by_gh: []

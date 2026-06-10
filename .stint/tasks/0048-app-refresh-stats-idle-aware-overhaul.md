@@ -2,7 +2,7 @@
 id: "0048"
 title: "App refresh: Stats idle-aware overhaul"
 status: backlog
-sprint: "s8"
+sprint: "s7"
 estimate: 8h
 blocked_by: []
 blocked_by_gh: []

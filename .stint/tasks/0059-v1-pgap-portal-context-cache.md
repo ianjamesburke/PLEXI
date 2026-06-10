@@ -2,7 +2,7 @@
 id: "0059"
 title: "v1 PGAP perf: portal and context metadata cache"
 status: backlog
-sprint: "s14"
+sprint: "s13"
 estimate: 4h
 blocked_by: ["0050", "0051", "0052"]
 blocked_by_gh: []

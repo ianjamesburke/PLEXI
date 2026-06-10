@@ -2,7 +2,7 @@
 id: "0042"
 title: "Secrets CLI: plural command alias"
 status: backlog
-sprint: "s11"
+sprint: "s10"
 estimate: 1h
 blocked_by: []
 blocked_by_gh: []

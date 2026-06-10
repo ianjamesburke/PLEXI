@@ -2,7 +2,7 @@
 id: "0043"
 title: "v1 cleanup: pane info previous steps"
 status: backlog
-sprint: "s12"
+sprint: "s11"
 estimate: 3h
 blocked_by: []
 blocked_by_gh: []

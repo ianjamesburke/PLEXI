@@ -2,7 +2,7 @@
 id: "0036"
 title: "App refresh: GitHub Issues filtering and sorting"
 status: backlog
-sprint: "s8"
+sprint: "s7"
 estimate: 6h
 blocked_by: []
 blocked_by_gh: []
