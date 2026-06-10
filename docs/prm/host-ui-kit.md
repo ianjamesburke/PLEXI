@@ -197,11 +197,11 @@ Done when:
 
 The work should be filed as focused issues:
 
-1. Add host `ListRow` primitives and migrate NotesPicker.
-2. Add `ModalShell` and `HintBar`.
-3. Add host `TextField` focus registration.
-4. Migrate CommandPalette to the host UI kit.
-5. Migrate QuickNote destination and submenu UI to the host UI kit.
-6. Add a host UI gallery for design review.
+1. [#2122](https://github.com/ianjamesburke/PLEXI/issues/2122) - Add host `ListRow` primitives and migrate NotesPicker.
+2. [#2123](https://github.com/ianjamesburke/PLEXI/issues/2123) - Add `ModalShell` and `HintBar`.
+3. [#2124](https://github.com/ianjamesburke/PLEXI/issues/2124) - Add host `TextField` focus registration.
+4. [#2125](https://github.com/ianjamesburke/PLEXI/issues/2125) - Migrate CommandPalette to the host UI kit.
+5. [#2126](https://github.com/ianjamesburke/PLEXI/issues/2126) - Migrate QuickNote destination and submenu UI to the host UI kit.
+6. [#2127](https://github.com/ianjamesburke/PLEXI/issues/2127) - Add a host UI gallery for design review.
 
 The first issue is the best starting point. It fixes the screenshot bug and tests whether the abstraction is right before the modal/focus work grows.
