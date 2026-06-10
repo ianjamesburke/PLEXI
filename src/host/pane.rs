@@ -98,7 +98,10 @@ impl Pane {
     pub fn agent(&self) -> Option<&crate::app_protocol::PaneAgentState> {
         match self {
             Pane::Terminal(t) => t.agent.as_ref(),
-            Pane::App(a) => a.agent.as_ref(),
+            Pane::App(a) => a
+                .agent
+                .as_ref()
+                .or_else(|| a.overlay_replaced.as_deref().and_then(Pane::agent)),
             Pane::Portal(_) => None,
         }
     }
@@ -110,8 +113,12 @@ impl Pane {
                 true
             }
             Pane::App(a) => {
-                a.agent = agent;
-                true
+                if let Some(replaced) = a.overlay_replaced.as_deref_mut() {
+                    replaced.set_agent(agent)
+                } else {
+                    a.agent = agent;
+                    true
+                }
             }
             Pane::Portal(_) => false,
         }

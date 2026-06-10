@@ -169,6 +169,7 @@ impl PlexiApp {
                         if let Some(pane) = win.panes.get(pane_id) {
                             let focused =
                                 win_idx == active_win && focused_pane_id == Some(*pane_id);
+                            let agent = pane.agent();
                             let info = match pane {
                                 crate::host::pane::Pane::Terminal(t) => {
                                     let cwd =
@@ -182,7 +183,7 @@ impl PlexiApp {
                                         "context_id": win.context_id,
                                         "window_id": win.window_id,
                                         "cwd": cwd,
-                                        "agent": t.agent.as_ref(),
+                                        "agent": agent,
                                     })
                                 }
                                 crate::host::pane::Pane::App(a) => {
@@ -195,7 +196,7 @@ impl PlexiApp {
                                         "window_id": win.window_id,
                                         "cwd": a.workspace_root.to_string_lossy().as_ref(),
                                         "manifest_id": a.manifest_id.clone(),
-                                        "agent": a.agent.as_ref(),
+                                        "agent": agent,
                                     })
                                 }
                                 crate::host::pane::Pane::Portal(p) => {
