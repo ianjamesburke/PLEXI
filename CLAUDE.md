@@ -139,15 +139,15 @@ Release flow:
 
 ## Build & Install
 
-`just bump && just install` is the standard post-merge command — bumps the version and regenerates CHANGELOG via git-cliff, then builds and installs. Always run from the repo root.
+`just bump` is the standard post-merge command — bumps the version and regenerates CHANGELOG via git-cliff. Always run from the repo root.
 
-`just install` alone is for re-installing without a version bump (e.g. after editing config or docs without a code change). Run from the repo root.
+`just install` is manual. Do not run it automatically at the end of direct-to-alpha or PR merge flows; the user handles install when they want to update the local app. When run, use the repo root unless a channel-specific instruction says otherwise.
 
 `just bump [minor|major]` without install is for explicit pre-promote version bumps when you need a minor or major release.
 
-**Bump and install after Rust code commits to alpha.** Only needed when Rust source changes — skip for commits that only touch docs, skills, scripts, or config. Every Rust commit to alpha must end with `just bump && just install`. If unrelated uncommitted changes block `just bump`, stash them first and pop after.
+**Bump after Rust code commits to alpha.** Only needed when Rust source changes — skip for commits that only touch docs, skills, scripts, or config. Every Rust commit to alpha must end with `just bump`. If unrelated uncommitted changes block `just bump`, stash them first and pop after.
 
-**Never claim a task complete based on an install from a feature worktree.** Uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. The full done cycle is: commit → PR → squash-merge to alpha → `git pull` in the repo root → `just bump && just install` from the repo root.
+**Never claim a task complete based on an install from a feature worktree.** Uncommitted changes compile and install successfully, making the task appear done when nothing has been committed. The full PR done cycle is: commit → PR → squash-merge to alpha → `git pull` in the repo root → `just bump` from the repo root. Direct-to-alpha flow ends after commit and the required `just bump` when Rust changed.
 
 ## Logging
 
