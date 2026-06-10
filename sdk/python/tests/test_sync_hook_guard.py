@@ -45,6 +45,26 @@ def test_blocking_emit_returns_coroutine_outside_sync_hook():
     coro.close()
 
 
+def test_capability_request_records_runtime_grant():
+    """A granted runtime capability is available to later guarded helpers."""
+    from plexi_sdk._emitter import Emitter
+
+    app = _make_app()
+    emitter = Emitter(app)
+
+    async def _run():
+        task = asyncio.create_task(emitter.capability_request("net.http"))
+        await asyncio.sleep(0)
+        assert app._pending_capability
+        queue = next(iter(app._pending_capability.values()))
+        queue.put_nowait(True)
+        await task
+
+    asyncio.run(_run())
+
+    assert app.capabilities == ["net.http"]
+
+
 def test_sentinel_is_thread_local():
     """Sentinel set on event-loop thread does not affect background threads."""
     from plexi_sdk._emitter import Emitter, _sync_hook_scope

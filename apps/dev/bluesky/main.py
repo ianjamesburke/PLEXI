@@ -30,13 +30,16 @@ DISCOVER = "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-
 LIMIT    = 30
 
 AVATAR_R  = 14.0   # avatar circle radius in thread view
-IMG_H     = 116.0  # slot height per image in thread view (104px image + 12px gap)
 NARROW_W  = 400    # pane width threshold for compact layout
+IMG_MIN_H = 96.0
+IMG_MAX_H = 200.0
+IMG_FRAC  = 0.36
 # Thread row layout constants
 _TH_TOP   = 6.0    # padding above author line
 _TH_GAP   = 4.0    # gap between author line and text
 _TH_BOT   = 8.0    # padding below stats line
 _TH_IMGAP = 8.0    # gap between text and first image
+_TH_IMG_GAP = 12.0 # gap after each image
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -79,16 +82,32 @@ def _thumbs(post: dict) -> list[str]:
 
 
 def _est_text_h(text: str, avail_w: float) -> float:
-    """Estimate markdown text height at HINT font size."""
+    """Fallback only; live thread rows use host text measurement."""
     chars_per_line = max(20, avail_w / 7.5)
     lines = max(1, -(-len(text) // int(chars_per_line)))  # ceil
     return lines * (HINT + 5.0)
 
 
-def _thread_row_h(post: dict, avail_w: float) -> float:
-    text_h = _est_text_h(_text(post), avail_w)
+def _image_h(pane_w: float) -> float:
+    return max(IMG_MIN_H, min(IMG_MAX_H, pane_w * IMG_FRAC))
+
+
+def _fmt_count(value: int) -> str:
+    try:
+        value = int(value)
+    except Exception:
+        value = 0
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}m".replace(".0m", "m")
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}k".replace(".0k", "k")
+    return str(value)
+
+
+def _thread_row_h(post: dict, text_h: float, image_h: float) -> float:
     n_imgs = min(len(_thumbs(post)), 2)
-    return _TH_TOP + HINT + _TH_GAP + text_h + _TH_IMGAP + n_imgs * IMG_H + HINT + _TH_BOT
+    image_block_h = (_TH_IMGAP + n_imgs * (image_h + _TH_IMG_GAP)) if n_imgs else 0.0
+    return _TH_TOP + HINT + _TH_GAP + text_h + image_block_h + HINT + _TH_BOT
 
 
 def _at_web(uri: str) -> str:
@@ -109,12 +128,13 @@ class BlueskyApp(App):
     VIEW_FEED   = "feed"
     VIEW_THREAD = "thread"
 
-    def on_init(self) -> None:
+    async def on_init(self) -> None:
         self._view    = self.VIEW_FEED
         self._feed    : list[dict] = []
         self._sel     = 0
         self._loading = True
         self._error   : str | None = None
+        self._has_net_http = False
 
         self._cursors  : list[str | None] = [None]
         self._page_idx = 0
@@ -125,6 +145,8 @@ class BlueskyApp(App):
         self._show_input    = False
 
         self._thread   : list[dict] = []
+        self._thread_heights: list[float] = []
+        self._thread_measure_w = 0.0
         self._t_scroll = 0.0
 
         self._avatar_handles: dict[str, str] = {}
@@ -146,9 +168,6 @@ class BlueskyApp(App):
 
         self.emit.info("bluesky: init")
         self.emit.status_summary("Loading Discover feed…")
-        asyncio.create_task(self._init_async())
-
-    async def _init_async(self) -> None:
         try:
             await self.emit.capability_request("net.http")
         except CapabilityDeniedError:
@@ -157,6 +176,8 @@ class BlueskyApp(App):
             self.emit.warn("bluesky: net.http capability denied")
             self.emit.schedule_render()
             return
+        self._has_net_http = True
+        self.emit.info(f"bluesky: net.http granted capabilities={self.capabilities}")
         asyncio.create_task(self._fetch_discover(None))
 
     # ── data ──────────────────────────────────────────────────────────────────
@@ -213,6 +234,9 @@ class BlueskyApp(App):
             self.emit.schedule_render()
 
     async def _load_avatars(self, posts: list[dict]) -> None:
+        if not self._has_net_http and "net.http" not in self.capabilities:
+            self.emit.warn("bluesky: skip avatar load; net.http not granted")
+            return
         for post in posts:
             did = _did(post)
             url = _avatar_url(post)
@@ -237,6 +261,7 @@ class BlueskyApp(App):
             self._walk(data.get("thread", {}), posts, depth=0)
             self._thread   = posts
             self._t_scroll = 0.0
+            await self._measure_thread_heights()
             self._loading  = False
             self.emit.info(f"bluesky: thread loaded {len(posts)} nodes uri={uri!r}")
             self.emit.schedule_render()
@@ -254,6 +279,27 @@ class BlueskyApp(App):
             out.append({"post": node["post"], "depth": depth})
         for reply in node.get("replies", [])[:5]:
             self._walk(reply, out, depth + 1)
+
+    def _thread_text_w(self, pane_w: float, depth: int) -> float:
+        indent = min(depth, 3) * 12.0
+        t_x = PAD + indent + AVATAR_R * 2 + 6
+        return max(80.0, pane_w - t_x - PAD)
+
+    async def _measure_thread_heights(self) -> None:
+        pane_w = float(self._rect.get("w", 800.0))
+        heights: list[float] = []
+        for item in self._thread:
+            post = item["post"]
+            avail_w = self._thread_text_w(pane_w, int(item.get("depth", 0)))
+            try:
+                text_h = await self.emit.measure_text_wrapped(_text(post), HINT, avail_w)
+            except Exception as exc:
+                self.emit.warn(f"bluesky: thread text measure failed: {exc}")
+                text_h = _est_text_h(_text(post), avail_w)
+            heights.append(text_h)
+        self._thread_heights = heights
+        self._thread_measure_w = pane_w
+        self.emit.info(f"bluesky: measured thread rows={len(heights)} width={pane_w:.0f}")
 
     # ── pagination ────────────────────────────────────────────────────────────
 
@@ -294,10 +340,12 @@ class BlueskyApp(App):
             hand      = a.get("handle") or "?"
             text      = _text(post)
 
-            # primary: @handle  secondary: Name · text · stats
-            stat_str = f"♥{likes}  ↺{reposts}"
-            parts = [p for p in [name if name != hand else "", text, stat_str] if p]
+            # primary: @handle  secondary: Name · text; stats stay visible in trailing.
+            parts = [p for p in [name if name != hand else "", text] if p]
             secondary = "  ·  ".join(parts) if parts else None
+            trailing_parts = [f"♥{_fmt_count(likes)}", f"↺{_fmt_count(reposts)}"]
+            if ts:
+                trailing_parts.append(ts)
 
             leading = (
                 LeadingIcon("👤") if (narrow or not av_handle)
@@ -310,7 +358,7 @@ class BlueskyApp(App):
                 primary=f"@{hand}",
                 secondary=secondary,
                 chips=[],
-                trailing=ts or None,
+                trailing="  ".join(trailing_parts),
             ).to_dict())
         return rows
 
@@ -364,9 +412,17 @@ class BlueskyApp(App):
                      size=14.0, color=ctx.theme.muted)
             return
 
-        # Dynamic heights: measure text per post so long posts don't overlap images.
-        base_avail_w = ctx.w - PAD * 2 - AVATAR_R * 2 - 6
-        heights = [_thread_row_h(item["post"], base_avail_w) for item in self._thread]
+        image_h = _image_h(ctx.w)
+        text_heights = list(self._thread_heights)
+        if len(text_heights) != len(self._thread) or abs(self._thread_measure_w - ctx.w) > 1.0:
+            text_heights = [
+                _est_text_h(_text(item["post"]), self._thread_text_w(ctx.w, int(item.get("depth", 0))))
+                for item in self._thread
+            ]
+        heights = [
+            _thread_row_h(item["post"], text_heights[idx], image_h)
+            for idx, item in enumerate(self._thread)
+        ]
         content_tot = sum(heights)
 
         ctx.begin_scroll("thread-list", 0.0, content_y, ctx.w, content_h, content_tot)
@@ -403,12 +459,12 @@ class BlueskyApp(App):
             text_y = y + _TH_TOP + HINT + _TH_GAP
             ctx.markdown(t_x, text_y, avail_w, _text(post))
 
-            text_h = _est_text_h(_text(post), avail_w)
+            text_h = text_heights[idx]
             img_y  = text_y + text_h + _TH_IMGAP
             img_w  = max(120.0, avail_w)
             for thumb in _thumbs(post)[:2]:
-                ctx.image(thumb, t_x, img_y, img_w, 104.0, fit="cover")
-                img_y += IMG_H
+                ctx.image(thumb, t_x, img_y, img_w, image_h, fit="cover")
+                img_y += image_h + _TH_IMG_GAP
 
             likes   = post.get("likeCount", 0)
             reposts = post.get("repostCount", 0)
