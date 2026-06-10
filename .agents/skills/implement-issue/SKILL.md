@@ -1,6 +1,6 @@
 ---
 name: implement-issue
-description: "Phase 1 of the PLEXI ship pipeline. Finds an issue, sets up a worktree, and implements the code changes. Stops before creating a PR — output is a pushed feature branch. Entry points: /implement-issue (auto-find), /implement-issue <n> (specific), /implement-issue P1 (by priority), /implement-issue <n> <m> [...] (bundle)."
+description: "Phase 1 of the PLEXI ship pipeline. Finds an issue, sets up a worktree, implements the code changes, pushes the feature branch, then invokes /open-pr inline in the same pane. Entry points: /implement-issue (auto-find), /implement-issue <n> (specific), /implement-issue P1 (by priority), /implement-issue <n> <m> [...] (bundle)."
 risk: medium
 source: local
 date_added: "2026-05-20"
@@ -8,7 +8,7 @@ date_added: "2026-05-20"
 
 # Implement Issue
 
-Phase 1 of the ship pipeline. Output: a pushed feature branch ready for `/open-pr`.
+Phase 1 of the ship pipeline. Output: a pushed feature branch and an immediate inline handoff to `/open-pr`.
 
 | Invocation | Behavior |
 |---|---|
@@ -25,6 +25,8 @@ Branch: feature/<n>-short-description
 Files changed: <N>
 Pipeline: pipeline:open-pr + ready set — invoking /open-pr inline
 ```
+
+This skill is not complete when the branch is merely pushed. Completion includes invoking `/open-pr` inline in the same pane and letting the pipeline continue to validation.
 
 > **Labels are the live state.** Never read the Ship Log to determine pipeline stage — read the issue labels. Ship Log is audit trail only.
 
@@ -288,6 +290,8 @@ gh issue edit <N> \
 Set the pane status to `pushed`, then invoke `/open-pr` inline in the same pane — do not spawn a new pane or wait for PM to dispatch:
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · pushed"   # bundle: "#<n1>+<n2> · pushed"
+# Next action in this same pane:
+/open-pr <branch-or-issue>
 ```
 
 ---
@@ -308,4 +312,5 @@ plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · pushed"   # bundle: "#
 - CLI changes must update `~/.claude/skills/plexi-cli/SKILL.md` in same PR
 - `cargo build --manifest-path <worktree>/Cargo.toml` — never rely on CWD
 - Start linked stint tasks here; never mark them done here. `/merge-pr` owns completion timing.
+- After pushing, always invoke `/open-pr` inline before considering this skill complete.
 - On unrecoverable failure: set `plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · blocked"`, close PR if open, comment on issue under `## Prior Attempts`, remove `in progress`, add `ready`, exit
