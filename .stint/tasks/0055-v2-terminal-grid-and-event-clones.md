@@ -2,7 +2,7 @@
 id: "0055"
 title: "v2 terminal perf: grid and event clone reduction"
 status: backlog
-sprint: "s16"
+sprint: "s18"
 estimate: 6h
 blocked_by: ["0054"]
 blocked_by_gh: []

@@ -2,7 +2,7 @@
 id: "0047"
 title: "v2 host architecture: focused state-machine extraction"
 status: backlog
-sprint: "s13"
+sprint: "s15"
 estimate: 12h
 blocked_by: []
 blocked_by_gh: []

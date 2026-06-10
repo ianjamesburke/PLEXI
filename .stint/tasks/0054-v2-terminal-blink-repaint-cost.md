@@ -2,7 +2,7 @@
 id: "0054"
 title: "v2 terminal perf: blink repaint cost"
 status: backlog
-sprint: "s16"
+sprint: "s18"
 estimate: 8h
 blocked_by: []
 blocked_by_gh: []

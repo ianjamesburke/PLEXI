@@ -2,7 +2,7 @@
 id: "0053"
 title: "v2 performance: CLI renderer allocation cleanup"
 status: backlog
-sprint: "s15"
+sprint: "s16"
 estimate: 6h
 blocked_by: []
 blocked_by_gh: []
