@@ -149,6 +149,8 @@ class BlueskyApp(App):
         self._thread_heights: list[float] = []
         self._thread_measure_w = 0.0
         self._thread_measure_pending_w: float | None = None
+        self._thread_measure_pending_generation: int | None = None
+        self._thread_generation = 0
         self._t_scroll = 0.0
 
         self._avatar_handles: dict[str, str] = {}
@@ -262,9 +264,11 @@ class BlueskyApp(App):
             posts: list[dict] = []
             self._walk(data.get("thread", {}), posts, depth=0)
             self._thread   = posts
+            self._thread_generation += 1
             self._thread_heights = []
             self._thread_measure_w = 0.0
             self._thread_measure_pending_w = None
+            self._thread_measure_pending_generation = None
             self._t_scroll = 0.0
             self._loading  = False
             self.emit.info(f"bluesky: thread loaded {len(posts)} nodes uri={uri!r}")
@@ -292,13 +296,15 @@ class BlueskyApp(App):
 
     async def _measure_thread_heights(self) -> None:
         pane_w = float(self._rect.get("w", 800.0))
-        await self._measure_thread_heights_for_width(pane_w)
+        await self._measure_thread_heights_for_width(pane_w, self._thread_generation)
 
-    async def _measure_thread_heights_for_width(self, pane_w: float) -> None:
+    async def _measure_thread_heights_for_width(self, pane_w: float, generation: int) -> None:
         self._thread_measure_pending_w = pane_w
+        self._thread_measure_pending_generation = generation
         heights: list[float] = []
         try:
-            for item in self._thread:
+            thread_snapshot = list(self._thread)
+            for item in thread_snapshot:
                 post = item["post"]
                 avail_w = self._thread_text_w(pane_w, int(item.get("depth", 0)))
                 try:
@@ -307,12 +313,20 @@ class BlueskyApp(App):
                     self.emit.warn(f"bluesky: thread text measure failed: {exc}")
                     text_h = _est_text_h(_text(post), avail_w)
                 heights.append(text_h)
+            if generation != self._thread_generation or thread_snapshot != self._thread:
+                self.emit.info("bluesky: discarded stale thread measurement")
+                return
             self._thread_heights = heights
             self._thread_measure_w = pane_w
             self.emit.info(f"bluesky: measured thread rows={len(heights)} width={pane_w:.0f}")
             self.emit.schedule_render()
         finally:
-            self._thread_measure_pending_w = None
+            if (
+                self._thread_measure_pending_generation == generation
+                and self._thread_measure_pending_w == pane_w
+            ):
+                self._thread_measure_pending_w = None
+                self._thread_measure_pending_generation = None
 
     # ── pagination ────────────────────────────────────────────────────────────
 
@@ -428,8 +442,12 @@ class BlueskyApp(App):
         image_h = _image_h(ctx.w)
         text_heights = list(self._thread_heights)
         if len(text_heights) != len(self._thread) or abs(self._thread_measure_w - ctx.w) > 1.0:
-            if self._thread_measure_pending_w is None or abs(self._thread_measure_pending_w - ctx.w) > 1.0:
-                asyncio.create_task(self._measure_thread_heights_for_width(ctx.w))
+            if (
+                self._thread_measure_pending_generation != self._thread_generation
+                or self._thread_measure_pending_w is None
+                or abs(self._thread_measure_pending_w - ctx.w) > 1.0
+            ):
+                asyncio.create_task(self._measure_thread_heights_for_width(ctx.w, self._thread_generation))
             text_heights = [
                 _est_text_h(_text(item["post"]), self._thread_text_w(ctx.w, int(item.get("depth", 0))))
                 for item in self._thread
@@ -578,9 +596,11 @@ class BlueskyApp(App):
         self.emit.info(f"bluesky: open thread uri={uri!r}")
         self._view   = self.VIEW_THREAD
         self._thread = []
+        self._thread_generation += 1
         self._thread_heights = []
         self._thread_measure_w = 0.0
         self._thread_measure_pending_w = None
+        self._thread_measure_pending_generation = None
         asyncio.create_task(self._fetch_thread(uri))
 
     def _open_browser(self, from_thread: bool) -> None:
