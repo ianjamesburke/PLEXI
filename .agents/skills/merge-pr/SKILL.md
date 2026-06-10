@@ -1,6 +1,6 @@
 ---
 name: merge-pr
-description: "Phase 4 of the PLEXI ship pipeline. Takes an approved PR number, squash-merges to alpha, bumps the version, installs, closes the issue, and cleans up. Input: PR number. Output: installed alpha build at new version."
+description: "Phase 4 of the PLEXI ship pipeline. Takes an approved PR number, squash-merges to alpha, bumps the version, closes the issue, and cleans up. Input: PR number. Output: merged alpha at new version."
 risk: medium
 source: local
 date_added: "2026-05-20"
@@ -136,6 +136,8 @@ just bump
 git push
 ```
 
+> `just install` is not run here — the user handles install after merge.
+
 Read the new version:
 ```bash
 VERSION=$(grep '^version' Cargo.toml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
@@ -244,7 +246,7 @@ plexi notify \
 ## Rules
 
 - CWD must be repo root for all commands in this skill
-- `just channel-clean pr-<N>`, `just bump`, `just install` run from repo root
+- `just channel-clean pr-<N>`, `just bump` run from repo root — `just install` is the user's responsibility post-merge
 - `just pr-install` runs from the feature worktree (only if re-needed)
 - Never pass `--delete-branch` to `gh pr merge` — git refuses to delete a branch checked out by a worktree
 - Never commit directly to alpha, beta, or main
