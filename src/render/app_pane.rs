@@ -22,9 +22,9 @@ const OVERTAKE_BAR_HEIGHT: f32 = 24.0;
 pub fn render(ui: &mut egui::Ui, app_pane: &mut AppPane, colors: &Colors, is_focused: bool) {
     // Viewport overtake indicator — shows when this app has replaced another pane's content.
     if app_pane.overlay_replaced.is_some() {
-        let bar_rect = egui::Rect::from_min_size(
-            ui.cursor().left_top(),
+        let (bar_rect, _) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), OVERTAKE_BAR_HEIGHT),
+            egui::Sense::hover(),
         );
 
         ui.painter().rect_filled(bar_rect, 0.0, colors.bg_active);
@@ -75,9 +75,9 @@ pub fn render(ui: &mut egui::Ui, app_pane: &mut AppPane, colors: &Colors, is_foc
         let nav_back_view_id = app_pane.runtime.nav_back_view_id();
 
         ui.vertical(|ui| {
-            let bar_rect = egui::Rect::from_min_size(
-                ui.cursor().left_top(),
+            let (bar_rect, _) = ui.allocate_exact_size(
                 egui::vec2(ui.available_width(), NAV_BAR_HEIGHT),
+                egui::Sense::hover(),
             );
 
             // Dim background for the nav bar to distinguish it from app content.
