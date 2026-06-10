@@ -34,7 +34,7 @@ Pipeline: pipeline:open-pr + ready set — invoking /open-pr inline
 > ```
 > Use the exact issue-number prefix the pane already has (`#<n1>+<n2>` for a bundle). **The status word must never contain a digit** — the PM maps panes to issues with `grep -oE '[0-9]+'` on the title, so a PR number in the suffix would corrupt the census. States this skill sets: `impl`, `pushed`, `noop`, `blocked`.
 
-> **Stint timing is mandatory.** When implementation starts, run `stint start <task-id>` for every linked `.stint` task materially worked. When implementation completes, run `stint done <task-id>` so `completed_at` and `actual` are recorded. Include the same timing in the GitHub Ship Log. This is how estimate accuracy is audited.
+> **Stint timing is mandatory.** This skill opens linked stint work with `stint start <task-id>`. Do not close stint tasks here; `/merge-pr` runs `stint done <task-id>` after the PR merges and alpha is verified. Use `stint start --help` / `stint done --help` for exact flags instead of manually editing timing fields.
 
 ---
 
@@ -127,6 +127,7 @@ wtp add -b feature/<issue-number>-short-description HEAD  # origin/alpha when in
    ```
 3. Do not use `--restart` unless deliberately replacing bad timing data; normal resumed work keeps the original `started_at`.
 4. For historical backfill only, use `stint start <task-id> --started-at <UTC-RFC3339>`.
+5. If no linked task exists, continue but note the missing stint linkage in the issue Ship Log; do not invent timing only in GitHub.
 
 If "branch already exists": check `git worktree list`. If no worktree, `wtp add` without `-b`. Check for prior commits.
 
@@ -243,24 +244,14 @@ git -C worktrees/<branch> push -u origin HEAD
 
 After pushing, append this section to the issue body. In bundle mode, write a Ship Log entry to **each** issue body. If a `## Ship Log` section already exists (prior attempt), append a new entry under it. If not, add the section.
 
-Before writing the Ship Log, complete every linked stint task worked by this attempt:
-
-```bash
-stint done <task-id>
-```
-
-Use `stint done <task-id> --actual <duration>` only when overriding the computed/prompted actual time. Use `--completed-at <UTC-RFC3339>` only for historical backfill.
-
-If the task estimate was wrong by more than 2x in either direction, add one sentence to the task body explaining why. This keeps future estimates calibrated.
+Do not run `stint done` in this skill. A pushed implementation is not task completion; validation and merge can still fail. `/merge-pr` closes linked stint tasks after the PR merges and alpha is verified.
 
 ```markdown
 ## Ship Log
 
 ### Attempt <N> — <YYYY-MM-DD>
 **Branch:** feature/<n>-short-description
-**Started:** <UTC ISO-8601 timestamp>
-**Completed:** <UTC ISO-8601 timestamp>
-**Actual:** <elapsed wall-clock time>
+**Stint:** started <task-id> at <UTC ISO-8601 timestamp>, or missing linked task
 **Files changed:** <list key files>
 **Spec summary:** <one-line description of approach>
 ```
@@ -270,7 +261,7 @@ Append with:
 CURRENT_BODY=$(gh issue view <number> --json body --jq '.body')
 ATTEMPT_N=$(printf '%s' "$CURRENT_BODY" | grep -c '^### Attempt ' || true)
 ATTEMPT_N=$((ATTEMPT_N + 1))
-ATTEMPT_BLOCK=$(printf '### Attempt %s — %s\n**Branch:** feature/<branch>\n**Started:** <started_at>\n**Completed:** <completed_at>\n**Actual:** <elapsed>\n**Files changed:** <files>\n**Spec summary:** <summary>' "$ATTEMPT_N" "$(date +%Y-%m-%d)")
+ATTEMPT_BLOCK=$(printf '### Attempt %s — %s\n**Branch:** feature/<branch>\n**Stint:** started <task-id> at <started_at>, or missing linked task\n**Files changed:** <files>\n**Spec summary:** <summary>' "$ATTEMPT_N" "$(date +%Y-%m-%d)")
 if printf '%s' "$CURRENT_BODY" | grep -q '^## Ship Log$'; then
   NEW_BODY=$(printf '%s\n\n%s' "$CURRENT_BODY" "$ATTEMPT_BLOCK")
 else
@@ -316,4 +307,5 @@ plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · pushed"   # bundle: "#
 - Every implementation needs a logging plan
 - CLI changes must update `~/.claude/skills/plexi-cli/SKILL.md` in same PR
 - `cargo build --manifest-path <worktree>/Cargo.toml` — never rely on CWD
+- Start linked stint tasks here; never mark them done here. `/merge-pr` owns completion timing.
 - On unrecoverable failure: set `plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · blocked"`, close PR if open, comment on issue under `## Prior Attempts`, remove `in progress`, add `ready`, exit

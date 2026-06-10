@@ -12,6 +12,8 @@ Phase 4 of the ship pipeline. Input: approved PR number. Output: clean alpha at 
 
 > **Labels are the live state.** On success, all `pipeline:*` labels are removed when the issue closes. On failure, remove all `pipeline:*` labels and `in progress`, add `ready`.
 
+> **Stint timing closure.** This skill closes linked stint tasks with `stint done <task-id>` after the PR merges, alpha is synced, and the version bump succeeds. Do not manually edit timing fields; use `stint done --help` for overrides/backfills.
+
 **Entry:** `/merge-pr <pr-number>`
 
 On completion, appends final entry to the issue's Ship Log, fires a notify, closes the pane, and outputs `[COMPLETE]` as the last line before close — never before.
@@ -147,6 +149,20 @@ VERSION=$(grep '^version' Cargo.toml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]
 
 ## Step 7 — Remove Pipeline Labels And Close Issue
 
+Complete linked stint tasks before closing GitHub issues:
+
+1. For every issue being closed, find linked tasks:
+   ```bash
+   rg -l 'gh_issue: .*"<issue-number>"|gh_issue: .*\\[<issue-number>\\]' .stint/tasks
+   ```
+2. For each linked task materially completed by the merged PR, run:
+   ```bash
+   stint done <task-id>
+   ```
+3. Use `stint done <task-id> --actual <duration>` only when overriding computed actual time. Use `--completed-at <UTC-RFC3339>` only for historical backfill.
+4. If the task estimate was wrong by more than 2x in either direction, add one sentence to the task body explaining why.
+5. If no linked stint task exists, note that in the final Ship Log entry before closing the issue.
+
 ```bash
 # Remove pipeline labels before closing (closing alone doesn't remove labels)
 gh issue edit $ISSUE_NUMBER \
@@ -161,6 +177,7 @@ gh issue close $ISSUE_NUMBER --comment "Closed by PR #$PR_NUMBER — verified on
 **Bundle mode:** close all issues:
 ```bash
 for N in <n1> <n2> ...; do
+  # First complete linked stint tasks for $N with `stint done <task-id>`.
   gh issue close $N --comment "Closed by PR #$PR_NUMBER — verified on alpha v$VERSION"
 done
 ```
@@ -173,6 +190,7 @@ done
 CURRENT_BODY=$(gh issue view $ISSUE_NUMBER --json body --jq '.body')
 # Append to Ship Log:
 # **Merged:** PR #<pr-number> → alpha v<version> (<YYYY-MM-DD>)
+# **Stint:** completed <task-id> at <completed_at>; actual <duration>, or missing linked task
 gh issue edit $ISSUE_NUMBER --body "<updated body>"
 ```
 
@@ -251,5 +269,6 @@ plexi notify \
 - Never pass `--delete-branch` to `gh pr merge` — git refuses to delete a branch checked out by a worktree
 - Never commit directly to alpha, beta, or main
 - Alpha must be clean when this skill exits
+- Never close a linked stint task until the PR is merged, alpha is synced, the version bump has succeeded, and the issue is being closed
 - On unrecoverable failure: set `plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · blocked"`, comment on issue, remove `in progress` and all `pipeline:*` labels, add `ready`, exit
 - `git status` clean check is the final gate before notify
