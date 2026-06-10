@@ -10,6 +10,8 @@ date_added: "2026-03-24"
 
 This is an **issue creation flow only**. Do not implement anything. The goal is a single, well-researched GitHub issue that can be handed off or picked up later.
 
+Every issue must have a place in the ship cycle. Do not create unbounded "someday" issues that are not mirrored into `.stint/`, not ordered in a sprint, or missing blockers. GitHub issues are implementation tickets; stint is the operating graph.
+
 ---
 
 ## Step 0 — North Star + Foot Gun Gate (enhancements and features only)
@@ -267,8 +269,6 @@ gh issue create --title "<title>" --body "<body>" \
   --label "<ready|untriaged|blocked>"
 ```
 
-Return the issue URL.
-
 ---
 
 ## Step 4b — Wire Blocking Relationships (if applicable)
@@ -284,6 +284,24 @@ gh issue-ext blocking add <new-issue> <blocker-2>
 Also apply the `blocked` label. Do **not** add any `depends_on` front matter to the issue body — the native relationship is the source of truth.
 
 If `gh-issue-ext` is not installed: `gh extension install jwilger/gh-issue-ext`
+
+## Step 4c — Mirror Into Stint
+
+After creating or updating the GitHub issue, mirror the planned work into `.stint/` in the same change. Do this before returning the issue URL.
+
+1. Find the right sprint by product sequence, not by issue age. Read the relevant PRM/PRD and existing `.stint/sprints/*.md` entries.
+2. Create or update one stint task whose scope matches the GitHub issue. Use a new task only when no existing task naturally owns the work.
+3. Set:
+   - `gh_issue: ["<number>"]`
+   - `area` matching the issue's `area:*` labels without the `area:` prefix
+   - `blocked_by` for all real prerequisites, using local task ids or `@<issue>` references
+   - a sprint that makes the issue claimable at the right time
+4. If the issue is urgent workflow infrastructure and has no real dependency, put it as early as the active product sequence allows. Do not let it sit in a late catch-all sprint just because it was filed late.
+5. Run `stint check`.
+
+If the issue should attach to an existing stint task, add the GitHub issue number to that task's `gh_issue` list instead of creating a duplicate task. If an existing task becomes a blocker, update both the issue body and the task frontmatter so future agents see the same graph from either entry point.
+
+Return the issue URL.
 
 That's the end of this flow — **do not implement**.
 

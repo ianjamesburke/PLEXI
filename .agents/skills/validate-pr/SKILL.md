@@ -180,22 +180,27 @@ Fail criteria:
 Reply: "pass" | "fail: <description>" | "modify: <bounded change>"
 ```
 
-**Print the testing block above in your response first. Only after the testing block text is in your response, run the notification:**
+**Your final response for this turn must be the testing block above.** Do not replace it with a status recap. Do not keep working after it is surfaced.
+
+After printing the testing block in the final response, send a best-effort notification. The notification is only an attention cue; the testing block is the source of truth.
+
+Until `plexi notify --no-wait` is available, do not use `plexi notify --choice` in this handoff path. A blocking choice notification keeps the agent process alive and can corrupt the final validation handoff. Use a plain fire-and-forget notification instead:
 ```bash
 # Flip pane status to needs-you so the PM surfaces this lane as awaiting the user
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
 # Route reply to PM pane if PM dispatched this skill, otherwise this pane
 REPLY_PANE="${PM_PANE_ID:-$PLEXI_PANE_ID}"
-RESULT=$(plexi notify \
+plexi notify \
   --title "PR #<n> quality checks done (attempt $((ATTEMPT_COUNT+1))/3)" \
-  --body "<title>. Review Codex findings above, then reply pass/fail/modify." \
-  --choice "a:Talk to Claude:pane_focus:$REPLY_PANE" \
-  --choice "b:Open PR build" \
-  --choice "c:Open PR")
-case "$RESULT" in
-  b) open -a "Plexi PR$PR_NUMBER" ;;
-  c) open "<pr-url>" ;;
-esac
+  --body "<title>. Review the [TESTING] block in pane $REPLY_PANE, then reply pass/fail/modify."
+```
+
+After `plexi notify --no-wait` lands, use this non-blocking choice notification:
+```bash
+plexi notify --no-wait \
+  --title "PR #<n> quality checks done (attempt $((ATTEMPT_COUNT+1))/3)" \
+  --body "<title>. Review the [TESTING] block, then reply pass/fail/modify." \
+  --choice "talk:Talk to Claude:pane_focus:$REPLY_PANE"
 ```
 
 **STOP. Wait for user reply.**
@@ -385,7 +390,7 @@ Fail criteria:
 Reply: "pass" | "fail: <description>" | "modify: <change>"
 ```
 
-Before firing the notification and waiting, flip pane status the same as the install path:
+Before firing the notification, flip pane status the same as the install path:
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
 ```
