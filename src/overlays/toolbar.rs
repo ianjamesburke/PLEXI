@@ -30,6 +30,31 @@ impl PlexiApp {
 
             // Right side — help button + notification badge
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if host_ui_gallery_available() {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("UI").size(12.0).color(self.colors.text_dim),
+                            )
+                            .frame(false)
+                            .min_size(egui::vec2(24.0, 0.0)),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("Host UI gallery")
+                        .clicked()
+                    {
+                        self.show_ui_gallery = !self.show_ui_gallery;
+                        log::info!(
+                            "ui_gallery: {} from debug toolbar",
+                            if self.show_ui_gallery {
+                                "opened"
+                            } else {
+                                "closed"
+                            }
+                        );
+                    }
+                }
+
                 if ui
                     .add(
                         egui::Button::new(
@@ -96,4 +121,11 @@ impl PlexiApp {
             });
         });
     }
+}
+
+fn host_ui_gallery_available() -> bool {
+    cfg!(debug_assertions)
+        || crate::config::build_channel()
+            .as_deref()
+            .is_some_and(|channel| channel.starts_with("pr-"))
 }

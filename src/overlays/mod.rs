@@ -12,6 +12,7 @@ pub(crate) mod notification_modal;
 pub(crate) mod quick_note;
 pub(crate) mod setup;
 pub(crate) mod toolbar;
+pub(crate) mod ui_gallery;
 
 /// Consume the first digit key (0–9) pressed this frame; return its value.
 pub(crate) fn consume_digit_key(ctx: &egui::Context) -> Option<u8> {

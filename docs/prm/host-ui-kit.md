@@ -20,7 +20,7 @@ When a PRD-backed issue lands, update its row in this table before treating the 
 | 3. TextField focus registration | [#2124](https://github.com/ianjamesburke/PLEXI/issues/2124) | Done | CommandPalette search uses host TextField focus registration |
 | 4. CommandPalette migration | [#2125](https://github.com/ianjamesburke/PLEXI/issues/2125) | Blocked | Blocked by #2122, #2123, #2124 |
 | 5. QuickNote menu migration | [#2126](https://github.com/ianjamesburke/PLEXI/issues/2126) | Done | QuickNote destination and submenu use ModalShell, ListRow, and HintBar |
-| 6. Host UI gallery | [#2127](https://github.com/ianjamesburke/PLEXI/issues/2127) | Blocked | Blocked by #2122, #2123, #2124 |
+| 6. Host UI gallery | [#2127](https://github.com/ianjamesburke/PLEXI/issues/2127) | In progress | Debug toolbar opens a developer-only gallery for host chrome primitives |
 
 ## Purpose
 
