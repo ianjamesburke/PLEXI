@@ -274,6 +274,13 @@ impl FileBrowserApp {
         }
     }
 
+    fn refresh_preserving_filter(&mut self) {
+        self.refresh();
+        if self.in_search {
+            self.refilter();
+        }
+    }
+
     fn navigate_into(&mut self, path: PathBuf) {
         if let Some(entry) = self.selected_entry() {
             self.directory_selection_memory
@@ -689,7 +696,7 @@ impl FileBrowserApp {
             );
             if header_response.clicked() {
                 self.columns.toggle_sort(column.id);
-                self.refresh();
+                self.refresh_preserving_filter();
                 log::info!(
                     "file_browser: sort changed to {} {}",
                     self.columns.sort.column.key(),
@@ -800,7 +807,11 @@ impl FileBrowserApp {
             .map(|column| column.width.max(column.id.min_width()))
             .sum::<f32>()
             .max(1.0);
-        let scale = (rect.width() / total_config_width).max(1.0);
+        let scale = if total_config_width > rect.width() {
+            rect.width() / total_config_width
+        } else {
+            1.0
+        };
         let mut columns = Vec::with_capacity(visible.len());
         for (idx, column) in visible.iter().enumerate() {
             let right = if idx + 1 == visible.len() {
@@ -1008,7 +1019,7 @@ impl FileBrowserApp {
                 };
                 if ui.small_button(folders_label).clicked() {
                     self.columns.folders_on_top = !self.columns.folders_on_top;
-                    self.refresh();
+                    self.refresh_preserving_filter();
                     log::info!(
                         "file_browser: folders_on_top changed to {}",
                         self.columns.folders_on_top
@@ -1379,6 +1390,7 @@ impl App for FileBrowserApp {
 mod tests {
     use super::*;
     use egui::{Event, Key, Modifiers, RawInput};
+    use helpers::SortDescriptor;
 
     fn key_event(key: Key, modifiers: Modifiers) -> Event {
         Event::Key {
@@ -1863,6 +1875,60 @@ mod tests {
             .position(|column| column.id == ColumnId::Modified)
             .expect("modified column");
         assert!(created_index < modified_index);
+    }
+
+    #[test]
+    fn refresh_preserving_filter_rebuilds_search_indices_after_sort_change() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("aaa.txt"), b"a").expect("write a");
+        std::fs::write(dir.path().join("bbb.txt"), b"b").expect("write b");
+        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        app.columns.sort = SortDescriptor {
+            column: ColumnId::Name,
+            direction: SortDirection::Asc,
+        };
+        app.refresh();
+        app.in_search = true;
+        app.search_query = "b".to_string();
+        app.refilter();
+        assert_eq!(
+            app.selected_entry().map(|entry| entry.name.as_str()),
+            Some("bbb.txt")
+        );
+
+        app.columns.sort = SortDescriptor {
+            column: ColumnId::Name,
+            direction: SortDirection::Desc,
+        };
+        app.refresh_preserving_filter();
+
+        assert_eq!(
+            app.selected_entry().map(|entry| entry.name.as_str()),
+            Some("bbb.txt"),
+            "search indices must follow the refreshed entry order"
+        );
+    }
+
+    #[test]
+    fn details_columns_keep_enabled_columns_reachable_at_breakpoint_width() {
+        let (mut app, _dir) = make_populated_dir_app();
+        for id in ColumnId::ALL {
+            app.columns.set_column_visible(id, true);
+        }
+        let rect = egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(DETAILS_TABLE_MIN_WIDTH, DETAILS_HEADER_H),
+        );
+        let columns = app.details_columns(rect);
+
+        assert_eq!(columns.len(), ColumnId::ALL.len());
+        for (column, cell) in columns {
+            assert!(
+                cell.width() > 0.0,
+                "{} column should remain reachable",
+                column.id.key()
+            );
+        }
     }
 
     #[test]
