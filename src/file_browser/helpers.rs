@@ -418,12 +418,12 @@ pub(crate) fn sort_entries(entries: &mut [Entry], sort: SortDescriptor, folders_
                 return folder_order;
             }
         }
-        let ordering = compare_entry_column(a, b, sort.column)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-        match sort.direction {
-            SortDirection::Asc => ordering,
-            SortDirection::Desc => ordering.reverse(),
-        }
+        let primary = compare_entry_column(a, b, sort.column);
+        let directed_primary = match sort.direction {
+            SortDirection::Asc => primary,
+            SortDirection::Desc => primary.reverse(),
+        };
+        directed_primary.then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
 }
 
@@ -609,6 +609,28 @@ mod column_model_tests {
             .map(|entry| entry.name.as_str())
             .collect::<Vec<_>>();
         assert_eq!(names, ["large.bin", "tiny.txt", "z-folder"]);
+    }
+
+    #[test]
+    fn descending_metadata_sort_keeps_name_tiebreaker_ascending() {
+        let mut entries = vec![
+            entry("zeta.txt", false, Some(10), 20),
+            entry("alpha.txt", false, Some(10), 20),
+            entry("middle.txt", false, Some(1), 10),
+        ];
+        sort_entries(
+            &mut entries,
+            SortDescriptor {
+                column: ColumnId::Modified,
+                direction: SortDirection::Desc,
+            },
+            true,
+        );
+        let names = entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["alpha.txt", "zeta.txt", "middle.txt"]);
     }
 
     #[test]
