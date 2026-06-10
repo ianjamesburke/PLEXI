@@ -754,6 +754,8 @@ pub enum AppRequest {
         name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        windows: Vec<String>,
     },
     /// Focus existing context by root, or create one. Sent by `plexi context open`.
     FocusContext { root: std::path::PathBuf },

@@ -1,7 +1,7 @@
 use super::validate::resolve_path;
 use super::{print_tip, send_to_socket};
 
-pub fn context_new_cli(name: Option<&str>, path: Option<&str>, parent: Option<&str>) -> i32 {
+pub fn context_new_cli(name: Option<&str>, path: Option<&str>, parent: Option<&str>, windows: &[String]) -> i32 {
     // Only resolve root when the user explicitly passed a path argument.
     // Without an explicit path, we let the host use the focused pane's cwd.
     let explicit_root = match path {
@@ -22,12 +22,13 @@ pub fn context_new_cli(name: Option<&str>, path: Option<&str>, parent: Option<&s
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
     log::info!(
-        "context_new_cli: name={:?} root={:?} parent={:?}",
+        "context_new_cli: name={:?} root={:?} parent={:?} windows={}",
         name,
         explicit_root
             .as_ref()
             .map(|p: &std::path::PathBuf| p.display().to_string()),
-        explicit_parent.as_deref()
+        explicit_parent.as_deref(),
+        windows.len()
     );
     let mut payload = serde_json::json!({ "type": "create_context" });
     if let Some(r) = explicit_root {
@@ -38,6 +39,9 @@ pub fn context_new_cli(name: Option<&str>, path: Option<&str>, parent: Option<&s
     }
     if let Some(p) = explicit_parent {
         payload["parent_name"] = serde_json::Value::String(p);
+    }
+    if !windows.is_empty() {
+        payload["windows"] = serde_json::to_value(windows).expect("Vec<String> is serializable");
     }
     send_to_socket(payload)
 }

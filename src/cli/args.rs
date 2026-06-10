@@ -738,6 +738,9 @@ pub enum ContextCmd {
         /// Create as a child of the named context. Defaults to current context if inside one.
         #[arg(long)]
         parent: Option<String>,
+        /// Command to run in each pre-populated window. Repeatable; zero = current behavior.
+        #[arg(long, action = clap::ArgAction::Append)]
+        window: Vec<String>,
     },
     /// Switch the current pane to a context at the given path.
     Open { path: Option<String> },

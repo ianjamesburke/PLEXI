@@ -944,12 +944,14 @@ impl PlexiApp {
                     root,
                     name,
                     parent_name,
+                    windows,
                 } => {
                     log::info!(
-                        "pane_ipc: kind=create_context root={:?} name={:?} parent_name={:?}",
+                        "pane_ipc: kind=create_context root={:?} name={:?} parent_name={:?} windows={}",
                         root,
                         name,
-                        parent_name
+                        parent_name,
+                        windows.len()
                     );
                     if let Some(pname) = parent_name {
                         let path = root.as_ref().cloned().unwrap_or_else(|| {
@@ -988,6 +990,25 @@ impl PlexiApp {
                         if let Some(n) = name {
                             let idx = self.router.len() - 1;
                             self.router.get_mut(idx).name = n.clone();
+                        }
+                    }
+                    if !windows.is_empty() {
+                        let ws_id = self.router.active().context_id;
+                        let active_y = self.windows[self.active_window].grid_y;
+                        let mut new_x = self
+                            .windows
+                            .iter()
+                            .filter(|w| w.context_id == ws_id && w.grid_y == active_y)
+                            .map(|w| w.grid_x)
+                            .max()
+                            .map(|x| x + 1)
+                            .unwrap_or(1);
+                        for cmd in windows {
+                            log::info!(
+                                "pane_ipc: create_context window grid_x={new_x} cmd={cmd:?}"
+                            );
+                            self.create_page_at(new_x, active_y, Some(cmd.as_str()), false);
+                            new_x += 1;
                         }
                     }
                     self.save_workspace();
