@@ -4,13 +4,16 @@ title: "Testing: channel isolation regression suite"
 status: backlog
 sprint: "s8"
 estimate: 8h
-blocked_by: []
+blocked_by:
+  - 147
 gh_issue: ["2095"]
 area: ["infra/testing", "host/config", "cli/commands", "infra/build"]
 tags: ["testing", "v2"]
 ---
 
 Add focused regression coverage for channel-specific profile, workspace, socket, app registry, secrets, and event paths across main, alpha, beta, and PR builds.
+
+Sequenced after `0147` because validation handoff reliability is the immediate ship-pipeline blocker in the same CLI workflow lane.
 
 ## Why
 
