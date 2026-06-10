@@ -1945,6 +1945,7 @@ mod move_to_adjacent_window_tests {
             linked_pane_id: None,
             overlay_replaced: None,
             hidden: false,
+            agent: None,
         }))
     }
 
@@ -2079,6 +2080,7 @@ mod pop_pane_to_new_window_tests {
             linked_pane_id: None,
             overlay_replaced: None,
             hidden: false,
+            agent: None,
         }))
     }
 
@@ -2261,6 +2263,7 @@ mod move_to_row_boundary_tests {
             linked_pane_id: None,
             overlay_replaced: None,
             hidden: false,
+            agent: None,
         }))
     }
 
@@ -2467,6 +2470,7 @@ mod context_root_cwd_tests {
             linked_pane_id: None,
             overlay_replaced: None,
             hidden: false,
+            agent: None,
         };
         let tile = app.windows[0].tree.tiles.insert_pane(pane_id);
         app.windows[0].tree.root = Some(tile);
@@ -2594,6 +2598,7 @@ mod navigate_boundary_tests {
             linked_pane_id: None,
             overlay_replaced: None,
             hidden: false,
+            agent: None,
         }))
     }
 

@@ -332,9 +332,6 @@ pub struct PlexiApp {
     /// Only overlay-unsafe side effects are held here; safe commands (ShowNotification,
     /// pipes, queries) are dispatched immediately even during overlay ownership.
     pub(crate) overlay_held_cmds: Vec<crate::app::app_trait::AppCommand>,
-    /// Per-pane agent state reported via hook scripts. Keyed by pane_id.
-    pub(crate) pane_agent_states:
-        std::collections::HashMap<u64, crate::app_protocol::PaneAgentState>,
 }
 
 #[cfg(test)]
@@ -549,6 +546,7 @@ impl PlexiApp {
                                         linked_pane_id: None,
                                         overlay_replaced: None,
                                         hidden: false,
+                                        agent: None,
                                     })));
                             }
                             "secrets_manager" => {
@@ -572,6 +570,7 @@ impl PlexiApp {
                                         linked_pane_id: None,
                                         overlay_replaced: None,
                                         hidden: false,
+                                        agent: None,
                                     })));
                             }
                             other => {
@@ -591,6 +590,7 @@ impl PlexiApp {
                                             linked_pane_id: None,
                                             overlay_replaced: None,
                                             hidden: false,
+                                            agent: None,
                                         })));
                                 }
                             }
@@ -812,7 +812,6 @@ impl PlexiApp {
                     focus_started_at: None,
                     last_system_theme: None,
                     overlay_held_cmds: Vec::new(),
-                    pane_agent_states: std::collections::HashMap::new(),
                 };
                 app.apply_context_transition_effects();
                 return app;
@@ -993,7 +992,6 @@ impl PlexiApp {
             focus_started_at: None,
             last_system_theme: None,
             overlay_held_cmds: Vec::new(),
-            pane_agent_states: std::collections::HashMap::new(),
         };
         app.apply_context_transition_effects();
         app
@@ -1183,7 +1181,6 @@ impl PlexiApp {
                 focus_started_at: None,
                 last_system_theme: None,
                 overlay_held_cmds: Vec::new(),
-                pane_agent_states: std::collections::HashMap::new(),
             },
             pane_ipc_tx,
         )
@@ -1214,6 +1211,7 @@ impl PlexiApp {
             linked_pane_id: None,
             overlay_replaced: None,
             hidden: false,
+            agent: None,
         };
 
         let win = &mut self.windows[0];

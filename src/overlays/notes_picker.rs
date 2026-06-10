@@ -253,6 +253,7 @@ mod tests {
             linked_pane_id: None,
             overlay_replaced: None,
             hidden: false,
+            agent: None,
         };
 
         app.windows[0]
