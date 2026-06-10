@@ -148,6 +148,7 @@ class BlueskyApp(App):
         self._thread   : list[dict] = []
         self._thread_heights: list[float] = []
         self._thread_measure_w = 0.0
+        self._thread_measure_pending_w: float | None = None
         self._t_scroll = 0.0
 
         self._avatar_handles: dict[str, str] = {}
@@ -288,19 +289,27 @@ class BlueskyApp(App):
 
     async def _measure_thread_heights(self) -> None:
         pane_w = float(self._rect.get("w", 800.0))
+        await self._measure_thread_heights_for_width(pane_w)
+
+    async def _measure_thread_heights_for_width(self, pane_w: float) -> None:
+        self._thread_measure_pending_w = pane_w
         heights: list[float] = []
-        for item in self._thread:
-            post = item["post"]
-            avail_w = self._thread_text_w(pane_w, int(item.get("depth", 0)))
-            try:
-                text_h = await self.emit.measure_text_wrapped(_text(post), THREAD_TEXT_SIZE, avail_w)
-            except Exception as exc:
-                self.emit.warn(f"bluesky: thread text measure failed: {exc}")
-                text_h = _est_text_h(_text(post), avail_w)
-            heights.append(text_h)
-        self._thread_heights = heights
-        self._thread_measure_w = pane_w
-        self.emit.info(f"bluesky: measured thread rows={len(heights)} width={pane_w:.0f}")
+        try:
+            for item in self._thread:
+                post = item["post"]
+                avail_w = self._thread_text_w(pane_w, int(item.get("depth", 0)))
+                try:
+                    text_h = await self.emit.measure_text_wrapped(_text(post), THREAD_TEXT_SIZE, avail_w)
+                except Exception as exc:
+                    self.emit.warn(f"bluesky: thread text measure failed: {exc}")
+                    text_h = _est_text_h(_text(post), avail_w)
+                heights.append(text_h)
+            self._thread_heights = heights
+            self._thread_measure_w = pane_w
+            self.emit.info(f"bluesky: measured thread rows={len(heights)} width={pane_w:.0f}")
+            self.emit.schedule_render()
+        finally:
+            self._thread_measure_pending_w = None
 
     # ── pagination ────────────────────────────────────────────────────────────
 
@@ -416,6 +425,8 @@ class BlueskyApp(App):
         image_h = _image_h(ctx.w)
         text_heights = list(self._thread_heights)
         if len(text_heights) != len(self._thread) or abs(self._thread_measure_w - ctx.w) > 1.0:
+            if self._thread_measure_pending_w is None or abs(self._thread_measure_pending_w - ctx.w) > 1.0:
+                asyncio.create_task(self._measure_thread_heights_for_width(ctx.w))
             text_heights = [
                 _est_text_h(_text(item["post"]), self._thread_text_w(ctx.w, int(item.get("depth", 0))))
                 for item in self._thread
