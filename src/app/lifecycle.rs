@@ -972,6 +972,10 @@ impl PlexiApp {
                         portal_direction
                     );
                     let mut ctx_ok = true;
+                    // Track which context was active before and which context was just created.
+                    // Windows must be placed in the new context regardless of focus state.
+                    let orig_ctx_id = self.router.active().context_id;
+                    let mut new_ctx_id = orig_ctx_id;
                     if let Some(pname) = parent_name {
                         let path = root.as_ref().cloned().unwrap_or_else(|| {
                             let p = self.router.active().path.clone();
@@ -995,7 +999,7 @@ impl PlexiApp {
                                 self.router.get_mut(idx).name = n.clone();
                             }
                             let new_ctx_idx = self.router.len() - 1;
-                            let new_ctx_id = self.router.get(new_ctx_idx).context_id;
+                            new_ctx_id = self.router.get(new_ctx_idx).context_id;
                             if *focus {
                                 self.router
                                     .push_depth(current_ctx_id, current_win_id, current_focused);
@@ -1019,30 +1023,46 @@ impl PlexiApp {
                             let idx = self.router.len() - 1;
                             self.router.get_mut(idx).name = n.clone();
                         }
+                        new_ctx_id = self.router.get(self.router.len() - 1).context_id;
                     }
                     if ctx_ok && !windows.is_empty() {
-                        let ws_id = self.router.active().context_id;
+                        // When no-focus, active context is still the parent — temporarily switch
+                        // to the new context so create_page_at places windows there, then restore.
+                        let need_restore = self.router.active().context_id != new_ctx_id;
+                        if need_restore {
+                            if let Some(idx) =
+                                self.router.position(|c| c.context_id == new_ctx_id)
+                            {
+                                self.switch_workspace(idx);
+                            }
+                        }
                         let active_y = self.windows[self.active_window].grid_y;
                         let mut new_x = self
                             .windows
                             .iter()
-                            .filter(|w| w.context_id == ws_id && w.grid_y == active_y)
+                            .filter(|w| w.context_id == new_ctx_id && w.grid_y == active_y)
                             .map(|w| w.grid_x)
                             .max()
                             .map(|x| x + 1)
                             .unwrap_or(1);
                         for cmd in windows {
                             log::info!(
-                                "pane_ipc: create_context window grid_x={new_x} cmd={cmd:?}"
+                                "pane_ipc: create_context window ctx_id={new_ctx_id} grid_x={new_x} cmd={cmd:?}"
                             );
                             self.create_page_at(new_x, active_y, Some(cmd.as_str()), false);
                             new_x += 1;
+                        }
+                        if need_restore {
+                            if let Some(idx) =
+                                self.router.position(|c| c.context_id == orig_ctx_id)
+                            {
+                                self.switch_workspace(idx);
+                            }
                         }
                     }
                     // Write JSON response for callers that passed a response_file path.
                     if ctx_ok {
                         if let Some(rf) = response_file {
-                            let new_ctx_id = self.router.active().context_id;
                             let windows_info: Vec<serde_json::Value> = self
                                 .windows
                                 .iter()
