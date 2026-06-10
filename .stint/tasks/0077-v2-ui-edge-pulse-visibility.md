@@ -5,7 +5,6 @@ status: backlog
 sprint: "s19"
 estimate: 2h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["1223"]
 area: ["ui/chrome"]
 tags: ["v2", "ui", "chrome"]

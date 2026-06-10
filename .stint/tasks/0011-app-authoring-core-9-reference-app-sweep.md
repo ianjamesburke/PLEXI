@@ -4,8 +4,9 @@ title: "App authoring: Core 9 reference app sweep"
 status: backlog
 sprint: "s2"
 estimate: 16h
-blocked_by: ["0009", "0010"]
-blocked_by_gh: []
+blocked_by:
+  - 9
+  - 10
 gh_issue: []
 area: ["apps/examples", "sdk/python", "host/permissions"]
 tags: ["app-authoring", "core-9", "references"]

@@ -4,8 +4,8 @@ title: "v2 navigation: send pane in direction"
 status: backlog
 sprint: "s20"
 estimate: 3h
-blocked_by: ["0081"]
-blocked_by_gh: []
+blocked_by:
+  - 81
 gh_issue: ["1710"]
 area: ["host/pane-ops", "host/navigation"]
 tags: ["v2", "navigation", "pane-ops"]

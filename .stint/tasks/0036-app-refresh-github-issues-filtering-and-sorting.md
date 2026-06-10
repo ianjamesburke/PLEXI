@@ -5,7 +5,6 @@ status: backlog
 sprint: "s7"
 estimate: 6h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["2110"]
 area: ["apps/github-issues"]
 tags: ["apps", "app-refresh"]

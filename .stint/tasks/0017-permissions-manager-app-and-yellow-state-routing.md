@@ -4,8 +4,8 @@ title: "Permissions: manager app and yellow-state routing"
 status: backlog
 sprint: "s3"
 estimate: 16h
-blocked_by: ["0016"]
-blocked_by_gh: []
+blocked_by:
+  - 16
 gh_issue: []
 area: ["host/permissions", "sdk/pgap"]
 tags: ["permissions", "trust", "capabilities"]

@@ -4,8 +4,8 @@ title: "v2 UI: shared text overlay system"
 status: backlog
 sprint: "s19"
 estimate: 8h
-blocked_by: ["0073"]
-blocked_by_gh: []
+blocked_by:
+  - 73
 gh_issue: ["1278"]
 area: ["ui/overlays"]
 tags: ["v2", "ui", "overlays", "input"]

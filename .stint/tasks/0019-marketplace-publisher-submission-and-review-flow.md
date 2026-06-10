@@ -4,8 +4,9 @@ title: "Marketplace: publisher submission and review flow"
 status: backlog
 sprint: "s4"
 estimate: 16h
-blocked_by: ["0018", "0015"]
-blocked_by_gh: []
+blocked_by:
+  - 18
+  - 15
 gh_issue: []
 area: ["infra/server", "cli/commands"]
 tags: ["marketplace", "publisher", "review"]

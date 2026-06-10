@@ -5,7 +5,6 @@ status: backlog
 sprint: "s10"
 estimate: 3h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["2085"]
 area: ["cli/commands", "host/secrets"]
 tags: ["v1", "secrets", "cli"]

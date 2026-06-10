@@ -4,8 +4,8 @@ title: "v2 host config: directory-scoped overrides"
 status: backlog
 sprint: "s30"
 estimate: 6h
-blocked_by: ["0084"]
-blocked_by_gh: []
+blocked_by:
+  - 84
 gh_issue: ["1556"]
 area: ["host/config"]
 tags: ["v2", "config", "context"]

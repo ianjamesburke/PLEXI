@@ -4,8 +4,9 @@ title: "v1 UI: permission and trust popups"
 status: backlog
 sprint: "s5"
 estimate: 16h
-blocked_by: ["0017", "0023"]
-blocked_by_gh: []
+blocked_by:
+  - 17
+  - 23
 gh_issue: []
 area: ["host/permissions", "ui/overlays", "ui/widgets"]
 tags: ["v1", "ui", "permissions", "trust"]

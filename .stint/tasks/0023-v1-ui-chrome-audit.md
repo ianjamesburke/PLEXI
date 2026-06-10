@@ -4,8 +4,8 @@ title: "v1 UI: host chrome audit"
 status: backlog
 sprint: "s5"
 estimate: 6h
-blocked_by: ["0022"]
-blocked_by_gh: []
+blocked_by:
+  - 22
 gh_issue: []
 area: ["ui/overlays", "ui/widgets"]
 tags: ["v1", "ui", "host-ui-kit"]

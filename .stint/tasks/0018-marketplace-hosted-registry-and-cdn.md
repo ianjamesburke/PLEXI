@@ -4,8 +4,8 @@ title: "Marketplace: hosted registry and CDN"
 status: backlog
 sprint: "s4"
 estimate: 16h
-blocked_by: ["0017"]
-blocked_by_gh: []
+blocked_by:
+  - 17
 gh_issue: []
 area: ["infra/server", "infra/build"]
 tags: ["marketplace", "registry", "cdn"]

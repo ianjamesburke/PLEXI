@@ -4,8 +4,8 @@ title: "v2 CLI registry: public CDN client"
 status: backlog
 sprint: "s22"
 estimate: 6h
-blocked_by: ["0096"]
-blocked_by_gh: []
+blocked_by:
+  - 96
 gh_issue: ["356"]
 area: ["cli/commands"]
 tags: ["v2", "cli-registry"]

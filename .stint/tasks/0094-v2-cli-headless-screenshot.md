@@ -4,8 +4,8 @@ title: "v2 CLI: headless app screenshot"
 status: backlog
 sprint: "s21"
 estimate: 8h
-blocked_by: ["0080"]
-blocked_by_gh: []
+blocked_by:
+  - 80
 gh_issue: ["616"]
 area: ["cli/commands"]
 tags: ["v2", "cli", "rendering"]

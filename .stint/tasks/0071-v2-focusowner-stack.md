@@ -5,7 +5,6 @@ status: backlog
 sprint: "s15"
 estimate: 8h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["1238"]
 area: ["host/pane-ops"]
 tags: ["v2", "input", "architecture"]

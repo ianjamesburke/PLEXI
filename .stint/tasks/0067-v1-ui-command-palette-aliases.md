@@ -5,7 +5,6 @@ status: backlog
 sprint: "s5"
 estimate: 3h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["1733"]
 area: ["cli/commands"]
 tags: ["v1", "ui", "command-palette"]

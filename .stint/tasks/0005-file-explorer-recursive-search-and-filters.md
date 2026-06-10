@@ -4,8 +4,8 @@ title: "File Explorer: recursive search and filters"
 status: backlog
 sprint: "s1"
 estimate: 12h
-blocked_by: ["0002"]
-blocked_by_gh: []
+blocked_by:
+  - 2
 gh_issue: ["2139"]
 area: ["apps/file-browser", "ui/widgets"]
 tags: ["file-explorer", "search", "filters"]

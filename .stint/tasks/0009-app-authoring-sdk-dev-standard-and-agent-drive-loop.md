@@ -4,8 +4,8 @@ title: "App authoring: SDK dev standard and agent drive loop"
 status: backlog
 sprint: "s2"
 estimate: 8h
-blocked_by: ["0008"]
-blocked_by_gh: []
+blocked_by:
+  - 8
 gh_issue: ["257"]
 area: ["sdk/python", "infra/build", "cli/commands"]
 tags: ["app-authoring", "sdk-v2", "agent-loop"]

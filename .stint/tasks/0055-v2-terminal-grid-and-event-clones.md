@@ -4,8 +4,8 @@ title: "v2 terminal perf: grid and event clone reduction"
 status: backlog
 sprint: "s18"
 estimate: 6h
-blocked_by: ["0054"]
-blocked_by_gh: []
+blocked_by:
+  - 54
 gh_issue: ["2025"]
 area: ["host/terminal"]
 tags: ["v2", "performance", "terminal"]

@@ -4,8 +4,8 @@ title: "v2 UI chrome: animated pane transitions"
 status: backlog
 sprint: "s19"
 estimate: 8h
-blocked_by: ["0081"]
-blocked_by_gh: []
+blocked_by:
+  - 81
 gh_issue: ["190"]
 area: ["ui/chrome"]
 tags: ["v2", "ui", "chrome", "animation"]

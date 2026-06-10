@@ -4,8 +4,8 @@ title: "v1 UI: command help and shortcut affordances"
 status: backlog
 sprint: "s5"
 estimate: 8h
-blocked_by: ["0024"]
-blocked_by_gh: []
+blocked_by:
+  - 24
 gh_issue: []
 area: ["ui/overlays", "cli/commands"]
 tags: ["v1", "ui", "shortcuts", "help"]

@@ -5,7 +5,6 @@ status: backlog
 sprint: "s11"
 estimate: 3h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["2052"]
 area: ["host/navigation", "host/context"]
 tags: ["v1", "cleanup", "minimap"]

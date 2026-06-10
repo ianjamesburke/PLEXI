@@ -4,8 +4,8 @@ title: "File Explorer: inspector and Quick Look overlay"
 status: backlog
 estimate: 12h
 sprint: "s1"
-blocked_by: ["0001"]
-blocked_by_gh: []
+blocked_by:
+  - 1
 gh_issue: ["2137"]
 area: ["apps/file-browser", "ui/overlays", "ui/widgets"]
 tags: ["file-explorer", "preview", "quick-look"]

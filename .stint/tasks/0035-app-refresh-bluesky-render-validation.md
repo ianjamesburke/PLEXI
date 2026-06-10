@@ -5,7 +5,6 @@ status: backlog
 sprint: "s7"
 estimate: 12h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["2118"]
 area: ["apps/bluesky", "sdk/python"]
 tags: ["apps", "app-refresh", "render-validation"]

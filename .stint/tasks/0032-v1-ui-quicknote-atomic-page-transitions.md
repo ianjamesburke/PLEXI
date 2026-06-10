@@ -4,8 +4,8 @@ title: "v1 UI: QuickNote atomic page transitions"
 status: backlog
 sprint: "s5"
 estimate: 6h
-blocked_by: ["0024"]
-blocked_by_gh: []
+blocked_by:
+  - 24
 gh_issue: ["2133"]
 area: ["ui/overlays", "ui/widgets"]
 tags: ["v1", "ui", "quick-note", "host-ui-kit"]

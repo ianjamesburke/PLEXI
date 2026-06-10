@@ -4,8 +4,8 @@ title: "v2 terminal input: Windows copy and paste"
 status: backlog
 sprint: "s17"
 estimate: 4h
-blocked_by: []
-blocked_by_gh: ["ianjamesburke/PLEXI#1239"]
+blocked_by:
+  - "ianjamesburke/PLEXI@1239"
 gh_issue: ["1735"]
 area: ["host/terminal"]
 tags: ["v2", "terminal", "windows", "input"]

@@ -4,8 +4,8 @@ title: "v1 UI: command palette search cache"
 status: backlog
 sprint: "s5"
 estimate: 3h
-blocked_by: ["0067"]
-blocked_by_gh: []
+blocked_by:
+  - 67
 gh_issue: ["1734"]
 area: ["cli/commands"]
 tags: ["v1", "ui", "command-palette", "performance"]

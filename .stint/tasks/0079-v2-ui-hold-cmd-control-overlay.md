@@ -4,8 +4,9 @@ title: "v2 UI: Hold-Cmd control overlay"
 status: backlog
 sprint: "s19"
 estimate: 8h
-blocked_by: ["0072", "0074"]
-blocked_by_gh: []
+blocked_by:
+  - 72
+  - 74
 gh_issue: ["141"]
 area: ["ui/overlays"]
 tags: ["v2", "ui", "shortcuts"]

@@ -4,8 +4,9 @@ title: "v1: release hardening and install QA"
 status: backlog
 sprint: "s14"
 estimate: 16h
-blocked_by: ["0028", "0029"]
-blocked_by_gh: []
+blocked_by:
+  - 28
+  - 29
 gh_issue: []
 area: ["infra/build", "cli/commands"]
 tags: ["v1", "release", "qa"]

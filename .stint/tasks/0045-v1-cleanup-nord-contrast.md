@@ -5,7 +5,6 @@ status: backlog
 sprint: "s11"
 estimate: 3h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["2062"]
 area: ["ui/widgets"]
 tags: ["v1", "cleanup", "theme"]

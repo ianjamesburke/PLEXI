@@ -5,7 +5,6 @@ status: backlog
 sprint: "s12"
 estimate: 6h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["2028"]
 area: ["host/ai"]
 tags: ["v1", "assistant", "ai", "performance"]

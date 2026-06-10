@@ -4,8 +4,9 @@ title: "Host agent state: pane file slots"
 status: backlog
 sprint: "s6"
 estimate: 10h
-blocked_by: ["0033", "0034"]
-blocked_by_gh: []
+blocked_by:
+  - 33
+  - 34
 gh_issue: ["1994"]
 area: ["host/pane-ops", "cli/commands", "agents"]
 tags: ["v1", "agents", "state"]

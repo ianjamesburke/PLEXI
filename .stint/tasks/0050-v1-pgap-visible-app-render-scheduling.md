@@ -4,8 +4,8 @@ title: "v1 PGAP perf: visible app render scheduling"
 status: backlog
 sprint: "s13"
 estimate: 12h
-blocked_by: ["0049"]
-blocked_by_gh: []
+blocked_by:
+  - 49
 gh_issue: ["2020"]
 area: ["host/pane-ops", "sdk/pgap"]
 tags: ["v1", "pgap", "performance", "rendering"]

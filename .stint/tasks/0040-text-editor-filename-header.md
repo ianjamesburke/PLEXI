@@ -5,7 +5,6 @@ status: backlog
 sprint: "s9"
 estimate: 3h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["2086"]
 area: ["apps/text-editor", "ui/widgets"]
 tags: ["v1", "text-editor", "ui"]

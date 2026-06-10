@@ -5,7 +5,6 @@ status: backlog
 sprint: "s11"
 estimate: 6h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["2067"]
 area: ["host/terminal", "egui_term"]
 tags: ["v1", "cleanup", "terminal"]

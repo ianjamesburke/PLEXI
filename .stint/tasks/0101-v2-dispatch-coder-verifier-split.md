@@ -5,7 +5,6 @@ status: backlog
 sprint: "s23"
 estimate: 6h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["1446"]
 area: ["infra/skills", "infra/agents"]
 tags: ["v2", "dispatch", "agents"]

@@ -5,7 +5,6 @@ status: backlog
 sprint: "s7"
 estimate: 8h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["2144"]
 area: ["apps/stats", "host/events"]
 tags: ["v1", "apps", "app-refresh", "stats"]

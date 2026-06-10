@@ -4,8 +4,8 @@ title: "v2 context: opt-in auto-switch design"
 status: backlog
 sprint: "s20"
 estimate: 4h
-blocked_by: ["0081"]
-blocked_by_gh: []
+blocked_by:
+  - 81
 gh_issue: ["786"]
 area: ["host/context"]
 tags: ["v2", "navigation", "context"]

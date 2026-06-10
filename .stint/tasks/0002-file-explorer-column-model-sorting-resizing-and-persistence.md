@@ -4,8 +4,8 @@ title: "File Explorer: column model sorting resizing and persistence"
 status: backlog
 estimate: 16h
 sprint: "s1"
-blocked_by: ["0001"]
-blocked_by_gh: []
+blocked_by:
+  - 1
 gh_issue: ["2136"]
 area: ["apps/file-browser", "ui/widgets"]
 tags: ["file-explorer", "details-table", "metadata"]

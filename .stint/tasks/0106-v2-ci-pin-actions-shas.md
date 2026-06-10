@@ -5,7 +5,6 @@ status: backlog
 sprint: "s24"
 estimate: 4h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["1605"]
 area: ["infra/build"]
 tags: ["v2", "ci", "security"]

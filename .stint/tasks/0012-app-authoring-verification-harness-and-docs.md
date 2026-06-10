@@ -4,8 +4,8 @@ title: "App authoring: verification harness and docs"
 status: backlog
 sprint: "s2"
 estimate: 12h
-blocked_by: ["0011"]
-blocked_by_gh: []
+blocked_by:
+  - 11
 gh_issue: []
 area: ["infra/docs", "sdk/python", "sdk/pgap"]
 tags: ["app-authoring", "docs", "verification"]

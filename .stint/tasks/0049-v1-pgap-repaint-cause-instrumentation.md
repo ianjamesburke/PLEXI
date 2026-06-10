@@ -5,7 +5,6 @@ status: backlog
 sprint: "s13"
 estimate: 4h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["2019"]
 area: ["host/events", "ui/tile-tree"]
 tags: ["v1", "pgap", "performance", "instrumentation"]

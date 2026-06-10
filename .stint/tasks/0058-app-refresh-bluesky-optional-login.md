@@ -4,8 +4,10 @@ title: "App refresh: Bluesky optional login"
 status: backlog
 sprint: "s7"
 estimate: 8h
-blocked_by: ["0014", "0017", "0041"]
-blocked_by_gh: []
+blocked_by:
+  - 14
+  - 17
+  - 41
 gh_issue: ["2071"]
 area: ["apps/examples", "host/permissions", "host/secrets", "sdk/python"]
 tags: ["v1", "app-refresh", "bluesky", "permissions", "secrets"]

@@ -5,7 +5,6 @@ status: backlog
 sprint: "s8"
 estimate: 8h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["2095"]
 area: ["infra/testing", "host/config", "cli/commands", "infra/build"]
 tags: ["testing", "v2"]

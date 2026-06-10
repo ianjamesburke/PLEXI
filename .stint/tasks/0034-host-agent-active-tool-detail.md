@@ -4,8 +4,8 @@ title: "Host agents: active tool detail in status"
 status: backlog
 sprint: "s6"
 estimate: 6h
-blocked_by: ["0033"]
-blocked_by_gh: []
+blocked_by:
+  - 33
 gh_issue: ["2120"]
 area: ["host/pane-ops", "cli/commands", "agents"]
 tags: ["agents", "host", "status"]

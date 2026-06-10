@@ -4,8 +4,8 @@ title: "v2 app: DAG runner"
 status: backlog
 sprint: "s29"
 estimate: 10h
-blocked_by: ["0086"]
-blocked_by_gh: []
+blocked_by:
+  - 86
 gh_issue: ["944"]
 area: ["apps/examples"]
 tags: ["v2", "apps", "workflow"]

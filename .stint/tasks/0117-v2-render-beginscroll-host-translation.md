@@ -4,8 +4,8 @@ title: "v2 render: host-managed BeginScroll"
 status: backlog
 sprint: "s26"
 estimate: 8h
-blocked_by: ["0080"]
-blocked_by_gh: []
+blocked_by:
+  - 80
 gh_issue: ["1148"]
 area: ["sdk/python", "sdk/pgap"]
 tags: ["v2", "pgap", "rendering"]

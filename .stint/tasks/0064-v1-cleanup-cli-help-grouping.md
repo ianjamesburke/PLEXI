@@ -5,7 +5,6 @@ status: backlog
 sprint: "s11"
 estimate: 4h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["1826"]
 area: ["cli/commands"]
 tags: ["v1", "cleanup", "cli"]

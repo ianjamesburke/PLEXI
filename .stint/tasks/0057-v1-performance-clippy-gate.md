@@ -4,8 +4,8 @@ title: "v1 performance: clippy perf gate"
 status: backlog
 sprint: "s13"
 estimate: 4h
-blocked_by: ["0049"]
-blocked_by_gh: []
+blocked_by:
+  - 49
 gh_issue: ["2026"]
 area: ["infra/build", "infra/testing"]
 tags: ["v1", "performance", "testing", "clippy"]

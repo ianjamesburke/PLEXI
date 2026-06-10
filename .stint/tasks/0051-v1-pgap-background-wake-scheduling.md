@@ -4,8 +4,8 @@ title: "v1 PGAP perf: background wake scheduling"
 status: backlog
 sprint: "s13"
 estimate: 12h
-blocked_by: ["0050"]
-blocked_by_gh: []
+blocked_by:
+  - 50
 gh_issue: ["2021"]
 area: ["host/pane-ops", "host/notifications", "sdk/pgap"]
 tags: ["v1", "pgap", "performance", "background-apps"]

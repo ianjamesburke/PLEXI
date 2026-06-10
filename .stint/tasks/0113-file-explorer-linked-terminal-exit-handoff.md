@@ -4,8 +4,8 @@ title: "File Explorer: linked terminal exit directory handoff"
 status: backlog
 sprint: "s1"
 estimate: 5h
-blocked_by: ["0086"]
-blocked_by_gh: []
+blocked_by:
+  - 86
 gh_issue: ["2145"]
 area: ["apps/file-browser", "host/terminal", "host/pane-ops"]
 tags: ["v1", "file-explorer", "terminal", "cwd"]

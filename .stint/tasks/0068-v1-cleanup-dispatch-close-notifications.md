@@ -5,7 +5,6 @@ status: backlog
 sprint: "s11"
 estimate: 2h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["1692"]
 area: ["host/notifications", "infra/skills"]
 tags: ["v1", "cleanup", "dispatch"]

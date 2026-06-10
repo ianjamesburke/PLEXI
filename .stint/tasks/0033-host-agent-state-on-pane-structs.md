@@ -5,7 +5,6 @@ status: backlog
 sprint: "s6"
 estimate: 8h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["2119"]
 area: ["host/pane-ops", "cli/commands", "agents"]
 tags: ["agents", "host", "state"]

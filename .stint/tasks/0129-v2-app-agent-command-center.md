@@ -4,8 +4,8 @@ title: "v2 app: agent command center"
 status: backlog
 sprint: "s29"
 estimate: 3h
-blocked_by: ["0061"]
-blocked_by_gh: []
+blocked_by:
+  - 61
 gh_issue: ["1623"]
 area: ["apps/examples"]
 tags: ["v2", "apps", "agents"]

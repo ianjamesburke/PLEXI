@@ -4,8 +4,8 @@ title: "v2 host architecture: PlexiInput router"
 status: backlog
 sprint: "s15"
 estimate: 12h
-blocked_by: ["0071"]
-blocked_by_gh: []
+blocked_by:
+  - 71
 gh_issue: ["1239"]
 area: ["host/pane-ops"]
 tags: ["v2", "input", "architecture", "blocked"]

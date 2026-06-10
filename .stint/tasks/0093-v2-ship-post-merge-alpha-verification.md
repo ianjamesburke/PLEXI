@@ -4,8 +4,8 @@ title: "v2 ship: post-merge alpha verification"
 status: backlog
 sprint: "s21"
 estimate: 3h
-blocked_by: ["0092"]
-blocked_by_gh: []
+blocked_by:
+  - 92
 gh_issue: ["1255"]
 area: ["cli/commands"]
 tags: ["v2", "ship", "verification"]

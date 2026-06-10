@@ -4,8 +4,8 @@ title: "Packages: artifact and validator contract"
 status: backlog
 sprint: "s3"
 estimate: 16h
-blocked_by: ["0013"]
-blocked_by_gh: []
+blocked_by:
+  - 13
 gh_issue: []
 area: ["infra/build", "cli/commands", "sdk/pgap"]
 tags: ["packages", "validation", "marketplace"]

@@ -4,8 +4,8 @@ title: "v2 UI: unified text input component"
 status: backlog
 sprint: "s19"
 estimate: 8h
-blocked_by: ["0071"]
-blocked_by_gh: []
+blocked_by:
+  - 71
 gh_issue: ["1555"]
 area: ["ui/widgets"]
 tags: ["v2", "ui", "input"]

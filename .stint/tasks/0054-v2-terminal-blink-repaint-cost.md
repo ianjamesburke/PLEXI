@@ -5,7 +5,6 @@ status: backlog
 sprint: "s18"
 estimate: 8h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["2022"]
 area: ["host/terminal"]
 tags: ["v2", "performance", "terminal"]

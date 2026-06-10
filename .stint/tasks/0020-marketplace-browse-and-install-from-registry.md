@@ -4,8 +4,9 @@ title: "Marketplace: browse and install from registry"
 status: backlog
 sprint: "s4"
 estimate: 16h
-blocked_by: ["0019", "0016"]
-blocked_by_gh: []
+blocked_by:
+  - 19
+  - 16
 gh_issue: []
 area: ["cli/commands", "host/permissions", "infra/server"]
 tags: ["marketplace", "install", "trust-labels"]

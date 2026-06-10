@@ -4,8 +4,8 @@ title: "v1: docs source cleanup and public docs refresh"
 status: backlog
 sprint: "s14"
 estimate: 8h
-blocked_by: ["0027"]
-blocked_by_gh: []
+blocked_by:
+  - 27
 gh_issue: []
 area: ["infra/docs"]
 tags: ["v1", "docs", "cleanup"]

@@ -4,8 +4,8 @@ title: "v1 app-terminal: linked terminal contract"
 status: backlog
 sprint: "s3"
 estimate: 10h
-blocked_by: ["0014"]
-blocked_by_gh: []
+blocked_by:
+  - 14
 gh_issue: ["599"]
 area: ["host/pane-ops", "host/terminal", "host/permissions", "sdk/pgap"]
 tags: ["v1", "app-terminal", "permissions", "terminal"]

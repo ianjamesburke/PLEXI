@@ -4,8 +4,8 @@ title: "v2 app: GitHub issues viewer"
 status: backlog
 sprint: "s29"
 estimate: 5h
-blocked_by: ["0133"]
-blocked_by_gh: []
+blocked_by:
+  - 133
 gh_issue: ["1285"]
 area: ["apps/github-issues"]
 tags: ["v2", "apps", "github"]

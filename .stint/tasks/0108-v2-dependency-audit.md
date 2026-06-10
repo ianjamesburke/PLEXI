@@ -4,8 +4,8 @@ title: "v2 deps: automated dependency audit"
 status: backlog
 sprint: "s24"
 estimate: 6h
-blocked_by: ["0107"]
-blocked_by_gh: []
+blocked_by:
+  - 107
 gh_issue: ["794"]
 area: ["infra/build"]
 tags: ["v2", "deps", "build"]

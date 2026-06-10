@@ -4,8 +4,8 @@ title: "v2 PGAP: cross-pane drag and drop"
 status: backlog
 sprint: "s26"
 estimate: 10h
-blocked_by: ["0081"]
-blocked_by_gh: []
+blocked_by:
+  - 81
 gh_issue: ["1647"]
 area: ["host/pane-ops", "sdk/pgap"]
 tags: ["v2", "pgap", "drag-drop"]

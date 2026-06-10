@@ -4,8 +4,8 @@ title: "v2 text editor: CodeMirror WebView pane"
 status: backlog
 sprint: "s29"
 estimate: 12h
-blocked_by: ["0039"]
-blocked_by_gh: []
+blocked_by:
+  - 39
 gh_issue: ["1748"]
 area: ["host/pane-ops", "sdk/pgap", "apps/file-browser", "apps/text-editor"]
 tags: ["v2", "text-editor", "webview"]

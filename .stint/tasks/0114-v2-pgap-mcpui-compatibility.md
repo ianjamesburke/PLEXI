@@ -5,7 +5,6 @@ status: backlog
 sprint: "s26"
 estimate: 8h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["2056"]
 area: ["sdk/pgap", "apps/mcp-renderer"]
 tags: ["v2", "pgap", "mcpui"]

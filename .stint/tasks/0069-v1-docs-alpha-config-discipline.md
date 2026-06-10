@@ -5,7 +5,6 @@ status: backlog
 sprint: "s14"
 estimate: 3h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["1690"]
 area: ["host/config", "infra/docs"]
 tags: ["v1", "docs", "config"]

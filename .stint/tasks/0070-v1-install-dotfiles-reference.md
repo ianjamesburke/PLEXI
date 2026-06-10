@@ -5,7 +5,6 @@ status: backlog
 sprint: "s14"
 estimate: 1h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["1688"]
 area: ["infra/build"]
 tags: ["v1", "install", "docs"]

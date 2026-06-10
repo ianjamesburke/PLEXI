@@ -4,8 +4,10 @@ title: "v1 PGAP perf: portal and context metadata cache"
 status: backlog
 sprint: "s13"
 estimate: 4h
-blocked_by: ["0050", "0051", "0052"]
-blocked_by_gh: []
+blocked_by:
+  - 50
+  - 51
+  - 52
 gh_issue: ["2023"]
 area: ["ui/tile-tree", "host/context"]
 tags: ["v1", "pgap", "performance"]

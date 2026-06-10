@@ -4,8 +4,9 @@ title: "File Explorer: icon column and gallery views"
 status: backlog
 sprint: "s1"
 estimate: 16h
-blocked_by: ["0002", "0003"]
-blocked_by_gh: []
+blocked_by:
+  - 2
+  - 3
 gh_issue: ["2140"]
 area: ["apps/file-browser", "ui/widgets"]
 tags: ["file-explorer", "view-modes"]

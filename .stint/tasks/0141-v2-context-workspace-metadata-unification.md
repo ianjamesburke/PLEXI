@@ -4,8 +4,8 @@ title: "v2 context: workspace metadata unification"
 status: backlog
 sprint: "s30"
 estimate: 6h
-blocked_by: ["0084"]
-blocked_by_gh: []
+blocked_by:
+  - 84
 gh_issue: ["1123"]
 area: ["host/context"]
 tags: ["v2", "context", "workspace"]

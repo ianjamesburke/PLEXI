@@ -4,8 +4,9 @@ title: "v2 media: video player example app"
 status: backlog
 sprint: "s27"
 estimate: 5h
-blocked_by: ["0120", "0121"]
-blocked_by_gh: []
+blocked_by:
+  - 120
+  - 121
 gh_issue: ["1566"]
 area: ["sdk/pgap", "apps/examples", "host/video"]
 tags: ["v2", "media", "example"]

@@ -4,8 +4,8 @@ title: "Marketplace: paid apps license and revenue model"
 status: backlog
 sprint: "s4"
 estimate: 12h
-blocked_by: ["0020"]
-blocked_by_gh: []
+blocked_by:
+  - 20
 gh_issue: []
 area: ["infra/server"]
 tags: ["marketplace", "billing", "licenses"]

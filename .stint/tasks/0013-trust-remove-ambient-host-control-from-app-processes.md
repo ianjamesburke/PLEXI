@@ -4,8 +4,8 @@ title: "Trust: remove ambient host control from app processes"
 status: backlog
 sprint: "s3"
 estimate: 16h
-blocked_by: ["0012"]
-blocked_by_gh: []
+blocked_by:
+  - 12
 gh_issue: []
 area: ["host/permissions", "sdk/pgap", "cli/commands"]
 tags: ["trust", "capabilities", "marketplace"]

@@ -4,8 +4,8 @@ title: "Packages: local install inspect and trust sheet"
 status: backlog
 sprint: "s3"
 estimate: 12h
-blocked_by: ["0015"]
-blocked_by_gh: []
+blocked_by:
+  - 15
 gh_issue: []
 area: ["host/permissions", "ui/overlays", "cli/commands"]
 tags: ["packages", "trust-labels", "install"]

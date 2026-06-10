@@ -4,8 +4,9 @@ title: "v2 secrets: protocol SDK app conversion"
 status: backlog
 sprint: "s30"
 estimate: 8h
-blocked_by: ["0041", "0042"]
-blocked_by_gh: []
+blocked_by:
+  - 41
+  - 42
 gh_issue: ["674"]
 area: ["host/secrets"]
 tags: ["v2", "secrets", "sdk"]

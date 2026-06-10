@@ -4,8 +4,8 @@ title: "v1 UI: modal and shortcut refactor"
 status: backlog
 sprint: "s5"
 estimate: 16h
-blocked_by: ["0023"]
-blocked_by_gh: []
+blocked_by:
+  - 23
 gh_issue: []
 area: ["ui/overlays", "ui/widgets"]
 tags: ["v1", "ui", "modals", "shortcuts"]

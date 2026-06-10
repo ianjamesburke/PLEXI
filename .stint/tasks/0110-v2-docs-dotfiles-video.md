@@ -4,8 +4,8 @@ title: "v2 docs: dotfiles walkthrough video"
 status: backlog
 sprint: "s24"
 estimate: 3h
-blocked_by: ["0070"]
-blocked_by_gh: []
+blocked_by:
+  - 70
 gh_issue: ["1473"]
 area: ["infra/docs"]
 tags: ["v2", "docs", "onboarding"]

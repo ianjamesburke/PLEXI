@@ -4,8 +4,8 @@ title: "v2 portals: live miniature context tiles"
 status: backlog
 sprint: "s20"
 estimate: 10h
-blocked_by: ["0081"]
-blocked_by_gh: []
+blocked_by:
+  - 81
 gh_issue: ["1495"]
 area: ["ui/overlays", "ui/tile-tree"]
 tags: ["v2", "navigation", "portals", "rendering"]

@@ -4,8 +4,8 @@ title: "v2 app: personal notes graph"
 status: backlog
 sprint: "s29"
 estimate: 12h
-blocked_by: ["0039"]
-blocked_by_gh: []
+blocked_by:
+  - 39
 gh_issue: ["1624"]
 area: ["apps/examples"]
 tags: ["v2", "apps", "knowledge"]

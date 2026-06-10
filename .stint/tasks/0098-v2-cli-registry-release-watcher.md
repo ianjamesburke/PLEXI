@@ -4,8 +4,8 @@ title: "v2 CLI registry: release watcher automation"
 status: backlog
 sprint: "s22"
 estimate: 5h
-blocked_by: ["0097"]
-blocked_by_gh: []
+blocked_by:
+  - 97
 gh_issue: ["355"]
 area: ["cli/commands"]
 tags: ["v2", "cli-registry", "automation"]

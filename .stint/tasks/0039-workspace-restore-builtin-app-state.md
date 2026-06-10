@@ -5,7 +5,6 @@ status: backlog
 sprint: "s9"
 estimate: 8h
 blocked_by: []
-blocked_by_gh: []
 gh_issue: ["2143"]
 area: ["host/pane-ops", "apps/text-editor", "apps/file-browser"]
 tags: ["v1", "workspace", "apps", "state"]
