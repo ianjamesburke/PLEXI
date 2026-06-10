@@ -129,6 +129,9 @@ pub enum Commands {
         /// Repeatable. The host runs this even after the process that sent the notification has exited.
         #[arg(long = "host-action")]
         host_actions: Vec<String>,
+        /// Queue choice buttons without waiting for a selected value
+        #[arg(long)]
+        no_wait: bool,
         /// How many seconds before the notification disappears (0 = stays until dismissed)
         #[arg(long, default_value = "0")]
         timeout: u64,
