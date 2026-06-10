@@ -1,0 +1,18 @@
+---
+id: "0034"
+title: "Host agents: active tool detail in status"
+status: backlog
+sprint: "s7"
+estimate: 6h
+blocked_by: ["0033"]
+blocked_by_gh: []
+gh_issue: ["2120"]
+area: ["host/pane-ops", "cli/commands", "agents"]
+tags: ["agents", "host", "status"]
+---
+
+Surface concise active-tool detail from Claude Code hooks so agent panes show what work is happening, not just that work is happening.
+
+## Why
+
+`working` is not enough for orchestration. Tool detail makes agent status inspectable without scraping terminal output.
