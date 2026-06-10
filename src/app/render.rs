@@ -852,6 +852,9 @@ impl PlexiApp {
         // Changelog overlay
         self.draw_changelog_overlay(ctx);
 
+        // Developer-only host chrome gallery
+        self.draw_ui_gallery(ctx);
+
         // First-launch completions nudge
         self.draw_completions_banner(ctx);
 
