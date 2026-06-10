@@ -59,6 +59,11 @@ pub const MODAL_WIDTH_NOTIFY: f32 = 760.0; // Notification modal — wider for b
 pub const BUTTON_H_MD: f32 = 40.0; // Standard form buttons.
 pub const BUTTON_H_LG: f32 = 52.0; // Primary action buttons in modals.
 
+// ── List rows ──────────────────────────────────────────────────────────────
+pub const LIST_ROW_H: f32 = 36.0;
+pub const LIST_ROW_PAD_H: f32 = 10.0;
+pub const LIST_ROW_GAP: f32 = 8.0;
+
 // ── Overlay / modal chrome ─────────────────────────────────────────────────
 /// Alpha (0-255) of the black scrim drawn behind modals. Higher = more of the
 /// workspace is dimmed.

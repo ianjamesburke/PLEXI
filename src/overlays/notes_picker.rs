@@ -1,6 +1,11 @@
 use crate::app::text_editor_app::note_path_identity;
 use crate::app::{FocusLayer, PlexiApp};
 use crate::ui::style;
+use crate::ui::{
+    hints::{HintBar, HintGroup},
+    list::ListRow,
+    overlay::ModalShell,
+};
 
 impl PlexiApp {
     fn text_editor_path_for_pane(
@@ -160,151 +165,59 @@ impl PlexiApp {
         let entries = self.notes_picker_entries.clone();
         let selected = self.notes_picker_selected;
 
-        let screen = ctx.screen_rect();
-
-        // Scrim — clicking outside the modal dismisses it.
-        let scrim_clicked = egui::Area::new(egui::Id::new("notes_picker_scrim"))
-            .fixed_pos(screen.min)
-            .order(egui::Order::Middle)
-            .show(ctx, |ui| {
-                ui.painter().rect_filled(
-                    screen,
-                    0.0,
-                    egui::Color32::from_black_alpha(style::SCRIM_ALPHA),
-                );
-                ui.allocate_rect(screen, egui::Sense::click()).clicked()
-            })
-            .inner;
-
         // Track which row the user clicked × on (Cell for shared borrow across nested closures).
         let delete_cell = std::cell::Cell::new(None::<usize>);
 
-        egui::Area::new(egui::Id::new("notes_picker"))
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(colors.bg_sidebar)
-                    .stroke(egui::Stroke::new(1.0, colors.border))
-                    .corner_radius(style::RADIUS_LG)
-                    .inner_margin(egui::Margin::symmetric(
-                        style::MODAL_PADDING_H,
-                        style::MODAL_PADDING_V,
-                    ))
+        let modal_response = ModalShell::centered("notes_picker")
+            .title("Notes")
+            .width(480.0)
+            .escape(true)
+            .show(ctx, &colors, |ui| {
+                if entries.is_empty() {
+                    ui.label(
+                        egui::RichText::new(
+                            "No notes yet. Press \u{2318}+Shift+Space to create one.",
+                        )
+                        .size(style::TEXT_HINT)
+                        .color(colors.text_dim),
+                    );
+                    return;
+                }
+
+                egui::ScrollArea::vertical()
+                    .max_height(320.0)
                     .show(ui, |ui| {
-                        ui.set_width(480.0);
-
-                        ui.label(
-                            egui::RichText::new("Notes")
-                                .size(style::TEXT_BODY)
-                                .color(colors.text_primary),
-                        );
-                        ui.add_space(style::SPACE_SM);
-
-                        if entries.is_empty() {
-                            ui.label(
-                                egui::RichText::new(
-                                    "No notes yet. Press \u{2318}+Shift+Space to create one.",
-                                )
-                                .size(style::TEXT_HINT)
-                                .color(colors.text_dim),
-                            );
-                            return;
+                        for (i, (path, preview)) in entries.iter().enumerate() {
+                            let is_selected = i == selected;
+                            let filename = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_default();
+                            let truncated: String = preview.chars().take(50).collect();
+                            let row_response = ListRow::new(&filename)
+                                .leading_chip("note")
+                                .secondary(&truncated)
+                                .trailing_action("×")
+                                .danger_trailing(true)
+                                .selected(is_selected)
+                                .show(ui, &colors);
+                            if row_response.row_clicked() && !row_response.trailing_clicked() {
+                                self.notes_picker_selected = i;
+                                self.notes_picker_open_selected();
+                            }
+                            if row_response.trailing_clicked() {
+                                delete_cell.set(Some(i));
+                            }
                         }
-
-                        egui::ScrollArea::vertical()
-                            .max_height(320.0)
-                            .show(ui, |ui| {
-                                for (i, (path, preview)) in entries.iter().enumerate() {
-                                    let is_selected = i == selected;
-                                    let filename = path
-                                        .file_name()
-                                        .map(|n| n.to_string_lossy().into_owned())
-                                        .unwrap_or_default();
-
-                                    let row_fill = if is_selected {
-                                        colors.bg_active
-                                    } else {
-                                        egui::Color32::TRANSPARENT
-                                    };
-                                    let (rect, _) = ui.allocate_exact_size(
-                                        egui::Vec2::new(ui.available_width(), 28.0),
-                                        egui::Sense::hover(),
-                                    );
-                                    ui.painter().rect_filled(rect, style::RADIUS_MD, row_fill);
-
-                                    let mut row_ui =
-                                        ui.new_child(egui::UiBuilder::new().max_rect(rect));
-                                    row_ui.horizontal(|ui| {
-                                        ui.add_space(style::SPACE_SM);
-                                        ui.label(
-                                            egui::RichText::new(&filename)
-                                                .size(style::TEXT_HINT)
-                                                .color(if is_selected {
-                                                    colors.text_primary
-                                                } else {
-                                                    colors.text_dim
-                                                }),
-                                        );
-                                        if !preview.is_empty() {
-                                            let truncated: String =
-                                                preview.chars().take(50).collect();
-                                            ui.add_space(style::SPACE_SM);
-                                            ui.scope(|ui| {
-                                                ui.set_max_width(160.0);
-                                                ui.label(
-                                                    egui::RichText::new(truncated)
-                                                        .size(style::TEXT_HINT)
-                                                        .color(colors.text_dim),
-                                                );
-                                            });
-                                        }
-                                        // Delete button — right-aligned via RTL sub-layout.
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                ui.add_space(style::SPACE_SM);
-                                                let del = ui.add(
-                                                    egui::Button::new(
-                                                        egui::RichText::new("×")
-                                                            .size(style::TEXT_HINT)
-                                                            .color(colors.text_dim),
-                                                    )
-                                                    .frame(false),
-                                                );
-                                                if del.clicked() {
-                                                    delete_cell.set(Some(i));
-                                                }
-                                            },
-                                        );
-                                    });
-                                }
-                            });
-
-                        ui.add_space(style::SPACE_SM);
-                        ui.horizontal(|ui| {
-                            crate::ui::widgets::key_combo_list(
-                                ui,
-                                &[&["j", "k"]],
-                                Some("navigate"),
-                                &colors,
-                            );
-                            ui.add_space(style::SPACE_SM);
-                            crate::ui::widgets::key_combo_list(
-                                ui,
-                                &[&["\u{21b5}"]],
-                                Some("open"),
-                                &colors,
-                            );
-                            ui.add_space(style::SPACE_SM);
-                            crate::ui::widgets::key_combo_list(
-                                ui,
-                                &[&["esc"]],
-                                Some("dismiss"),
-                                &colors,
-                            );
-                        });
                     });
+
+                ui.add_space(style::SPACE_SM);
+                let hints = [
+                    HintGroup::new(&["j", "k"], "navigate"),
+                    HintGroup::new(&["\u{21b5}"], "open"),
+                    HintGroup::new(&["esc"], "dismiss"),
+                ];
+                HintBar::new(&hints).show(ui, &colors);
             });
 
         // Handle delete: remove file and entry from the list.
@@ -314,7 +227,7 @@ impl PlexiApp {
 
         // Dismiss on click outside the modal (processed after picker Area so it doesn't
         // fire when clicking inside the modal itself).
-        if scrim_clicked {
+        if modal_response.dismissed {
             self.pop_focus_layer(&FocusLayer::NotesPicker);
         }
     }
