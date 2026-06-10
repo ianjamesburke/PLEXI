@@ -22,7 +22,7 @@ const INSPECTOR_MIN_WIDTH: f32 = 920.0;
 const DIR_PREVIEW_CAP: usize = 500;
 const DETAILS_HEADER_H: f32 = 28.0;
 const DETAILS_ROW_H: f32 = style::LIST_ROW_H;
-const STATUS_BAR_H: f32 = 28.0;
+const STATUS_BAR_H: f32 = 44.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FileBrowserLayout {
@@ -1166,7 +1166,7 @@ impl App for FileBrowserApp {
                 }
 
                 let mut navigate_to: Option<(PathBuf, bool)> = None;
-                let body_height = (ui.available_height() - STATUS_BAR_H).max(120.0);
+                let body_height = (ui.available_height() - STATUS_BAR_H).max(0.0);
 
                 if layout.shows_inspector() {
                     ui.columns(2, |columns| {
