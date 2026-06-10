@@ -1,8 +1,13 @@
-use egui::{Align2, Color32, CornerRadius, RichText, Stroke, Vec2};
+use egui::RichText;
 
 use crate::app::PlexiApp;
-use crate::overlays::MODAL_WIDTH;
-use crate::ui::widgets::{selectable_row, TextField};
+use crate::ui::{
+    hints::{HintBar, HintGroup},
+    list::ListRow,
+    overlay::ModalShell,
+    style,
+    widgets::{description_label, TextField},
+};
 
 enum PaletteEntry {
     Context {
@@ -25,6 +30,7 @@ enum PaletteEntry {
 impl PlexiApp {
     pub(crate) fn draw_command_palette(&mut self, ctx: &egui::Context) {
         let query = self.palette_query.to_lowercase();
+        let colors = self.colors;
 
         // ── Window entries (active context first, then by visit recency) ──
         // Two-tier sort: panes whose window belongs to the active context float
@@ -333,218 +339,154 @@ impl PlexiApp {
         }
 
         // ── Render ─────────────────────────────────────────────────────────
-        let screen_rect = ctx.screen_rect();
-        let palette_max_list_h = (screen_rect.height() - 80.0 - 120.0).max(200.0);
-
-        egui::Area::new(egui::Id::new("palette_scrim"))
-            .fixed_pos(screen_rect.min)
-            .show(ctx, |ui| {
-                ui.painter()
-                    .rect_filled(screen_rect, 0.0, Color32::from_black_alpha(120));
-                let scrim_response = ui.allocate_rect(screen_rect, egui::Sense::click());
-                if scrim_response.clicked() {
-                    self.show_command_palette = false;
+        let palette_max_list_h = (ctx.screen_rect().height() - 80.0 - 120.0).max(200.0);
+        let modal_response = ModalShell::centered("command_palette")
+            .width(style::MODAL_WIDTH_MD)
+            .escape(true)
+            .show(ctx, &colors, |ui| {
+                let te_id = egui::Id::new("palette_search");
+                let te = TextField::singleline(te_id, "Jump to context or launch app...")
+                    .focused(true)
+                    .log_name("command_palette")
+                    .show(ui, &mut self.palette_query, &colors);
+                if te.changed() {
+                    self.palette_selected = 0;
                 }
-            });
 
-        egui::Area::new(egui::Id::new("command_palette"))
-            .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
-                    .stroke(Stroke::new(1.0, self.colors.border))
-                    .corner_radius(CornerRadius::same(6))
-                    .inner_margin(egui::Margin::symmetric(12, 10))
+                ui.add_space(style::SPACE_SM);
+
+                if entries.is_empty() {
+                    ui.scope(|ui| {
+                        ui.set_max_width(style::MODAL_WIDTH_MD);
+                        description_label(ui, "No matching contexts or apps", &colors);
+                    });
+                    return;
+                }
+
+                let mut click_action: Option<Action> = None;
+                let mut hover_select: Option<usize> = None;
+                let mouse_moved = ctx.input(|i| i.pointer.delta().length_sq() > 0.5);
+                let should_scroll = self.palette_selected != prev_selected;
+                let mut shown_apps_header = false;
+
+                egui::ScrollArea::vertical()
+                    .max_height(palette_max_list_h)
+                    .min_scrolled_height(palette_max_list_h)
+                    .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_width(MODAL_WIDTH);
+                        ui.set_width(style::MODAL_WIDTH_MD);
 
-                        let te_id = egui::Id::new("palette_search");
-                        let te = TextField::singleline(te_id, "Jump to context or launch app...")
-                            .focused(true)
-                            .log_name("command_palette")
-                            .show(ui, &mut self.palette_query, &self.colors);
-                        if te.changed() {
-                            self.palette_selected = 0;
-                        }
+                        for (i, entry) in entries.iter().enumerate() {
+                            let is_selected = i == self.palette_selected;
 
-                        ui.add_space(6.0);
+                            match entry {
+                                PaletteEntry::Context {
+                                    ctx_idx,
+                                    context_id,
+                                    name,
+                                    workspace_name,
+                                    pane_id,
+                                } => {
+                                    let row = ListRow::new(name.as_str())
+                                        .leading_chip("ctx")
+                                        .secondary(workspace_name.as_str())
+                                        .selected(is_selected);
+                                    let row_response = row.show(ui, &colors);
 
-                        if entries.is_empty() {
-                            ui.label(
-                                RichText::new("No matching contexts or apps")
-                                    .size(11.0)
-                                    .color(self.colors.text_dim),
-                            );
-                            return;
-                        }
-
-                        let mut shown_apps_header = false;
-                        let mut click_action: Option<Action> = None;
-                        let mut hover_select: Option<usize> = None;
-                        let colors = self.colors;
-                        let mouse_moved = ctx.input(|i| i.pointer.delta().length_sq() > 0.5);
-                        let should_scroll = self.palette_selected != prev_selected;
-
-                        egui::ScrollArea::vertical()
-                            .max_height(palette_max_list_h)
-                            .min_scrolled_height(palette_max_list_h)
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                ui.set_width(MODAL_WIDTH);
-
-                                for (i, entry) in entries.iter().enumerate() {
-                                    let is_selected = i == self.palette_selected;
-
-                                    match entry {
-                                        PaletteEntry::Context {
-                                            ctx_idx,
-                                            context_id,
-                                            name,
-                                            workspace_name,
-                                            pane_id,
-                                        } => {
-                                            let is_active = *context_id == active_win_id;
-                                            let name_color = if is_active {
-                                                colors.accent
-                                            } else {
-                                                colors.text_primary
-                                            };
-
-                                            let (r, _) =
-                                                selectable_row(ui, is_selected, &colors, |ui| {
-                                                    ui.horizontal(|ui| {
-                                                        if !workspace_name.is_empty() {
-                                                            ui.label(
-                                                                RichText::new(
-                                                                    workspace_name.as_str(),
-                                                                )
-                                                                .size(10.0)
-                                                                .color(colors.text_dim),
-                                                            );
-                                                            ui.label(
-                                                                RichText::new("\u{203A}")
-                                                                    .size(10.0)
-                                                                    .color(colors.text_dim),
-                                                            );
-                                                        }
-                                                        ui.label(
-                                                            RichText::new(name.as_str())
-                                                                .size(12.0)
-                                                                .color(name_color),
-                                                        );
-                                                    });
-                                                });
-
-                                            if is_selected && should_scroll {
-                                                r.scroll_to_me(None);
-                                            }
-                                            if r.clicked() {
-                                                click_action = Some(Action::JumpContext(
-                                                    *ctx_idx,
-                                                    *context_id,
-                                                    *pane_id,
-                                                ));
-                                            }
-                                            if r.hovered() {
-                                                hover_select = Some(i);
-                                            }
-                                        }
-
-                                        PaletteEntry::App {
-                                            id,
-                                            name,
-                                            description,
-                                            running_in_background,
-                                            is_workspace_local,
-                                        } => {
-                                            if !shown_apps_header {
-                                                shown_apps_header = true;
-                                                ui.add_space(4.0);
-                                                ui.label(
-                                                    RichText::new("APPS")
-                                                        .size(9.0)
-                                                        .color(colors.text_dim),
-                                                );
-                                                ui.add_space(2.0);
-                                            }
-
-                                            let (r, _) =
-                                                selectable_row(ui, is_selected, &colors, |ui| {
-                                                    ui.horizontal(|ui| {
-                                                        ui.label(
-                                                            RichText::new("⬡")
-                                                                .size(10.0)
-                                                                .color(colors.accent),
-                                                        );
-                                                        ui.add_space(4.0);
-                                                        ui.label(
-                                                            RichText::new(name.as_str())
-                                                                .size(12.0)
-                                                                .color(colors.text_primary),
-                                                        );
-                                                        if *running_in_background {
-                                                            ui.add_space(6.0);
-                                                            ui.label(
-                                                                RichText::new("bg")
-                                                                    .size(9.0)
-                                                                    .color(colors.text_dim),
-                                                            );
-                                                        }
-                                                        if *is_workspace_local {
-                                                            ui.add_space(6.0);
-                                                            ui.label(
-                                                                RichText::new("ws")
-                                                                    .size(9.0)
-                                                                    .color(colors.accent),
-                                                            );
-                                                        }
-                                                    });
-                                                    if !description.is_empty() {
-                                                        ui.label(
-                                                            RichText::new(description.as_str())
-                                                                .size(9.0)
-                                                                .color(colors.text_dim),
-                                                        );
-                                                    }
-                                                });
-
-                                            if is_selected && should_scroll {
-                                                r.scroll_to_me(None);
-                                            }
-                                            if r.clicked() {
-                                                click_action = Some(Action::LaunchApp(id.clone()));
-                                            }
-                                            if r.hovered() {
-                                                hover_select = Some(i);
-                                            }
-                                        }
+                                    if is_selected && should_scroll {
+                                        row_response.scroll_to_me(None);
+                                    }
+                                    if row_response.row_clicked() {
+                                        click_action = Some(Action::JumpContext(
+                                            *ctx_idx,
+                                            *context_id,
+                                            *pane_id,
+                                        ));
+                                    }
+                                    if row_response.row_hovered() {
+                                        hover_select = Some(i);
                                     }
                                 }
-                            });
+                                PaletteEntry::App {
+                                    id,
+                                    name,
+                                    description,
+                                    running_in_background,
+                                    is_workspace_local,
+                                } => {
+                                    if !shown_apps_header {
+                                        shown_apps_header = true;
+                                        ui.add_space(style::SPACE_XS);
+                                        ui.label(
+                                            RichText::new("APPS")
+                                                .size(style::TEXT_HINT)
+                                                .color(colors.text_dim),
+                                        );
+                                        ui.add_space(style::SPACE_XS);
+                                    }
 
-                        if let Some(i) = hover_select {
-                            if mouse_moved {
-                                self.palette_selected = i;
-                            }
-                        }
+                                    let mut row = ListRow::new(name.as_str())
+                                        .leading_chip("app")
+                                        .secondary(description.as_str())
+                                        .selected(is_selected);
 
-                        if let Some(act) = click_action {
-                            match act {
-                                Action::JumpContext(ctx_idx, context_id, pane_id) => {
-                                    self.jump_to_context(ctx_idx, context_id, pane_id);
-                                    self.show_command_palette = false;
-                                    self.palette_query.clear();
-                                }
-                                Action::LaunchApp(id) => {
-                                    self.show_command_palette = false;
-                                    self.palette_query.clear();
-                                    self.launch_app_by_id(&id);
+                                    if *running_in_background {
+                                        row = row.trailing_action("bg");
+                                    }
+                                    if *is_workspace_local {
+                                        row = row.leading_chip("ws");
+                                    }
+
+                                    let row_response = row.show(ui, &colors);
+
+                                    if is_selected && should_scroll {
+                                        row_response.scroll_to_me(None);
+                                    }
+                                    if row_response.row_clicked() {
+                                        click_action = Some(Action::LaunchApp(id.clone()));
+                                    }
+                                    if row_response.row_hovered() {
+                                        hover_select = Some(i);
+                                    }
                                 }
                             }
                         }
                     });
+
+                ui.add_space(style::SPACE_SM);
+                let hints = [
+                    HintGroup::new(&["j", "k"], "navigate"),
+                    HintGroup::new(&["\u{21b5}"], "open"),
+                    HintGroup::new(&["esc"], "dismiss"),
+                ];
+                HintBar::new(&hints).show(ui, &colors);
+
+                if let Some(i) = hover_select {
+                    if mouse_moved {
+                        self.palette_selected = i;
+                    }
+                }
+
+                if let Some(act) = click_action {
+                    match act {
+                        Action::JumpContext(ctx_idx, context_id, pane_id) => {
+                            self.jump_to_context(ctx_idx, context_id, pane_id);
+                            self.show_command_palette = false;
+                            self.palette_query.clear();
+                        }
+                        Action::LaunchApp(id) => {
+                            self.show_command_palette = false;
+                            self.palette_query.clear();
+                            self.launch_app_by_id(&id);
+                        }
+                    }
+                }
             });
+
+        if modal_response.dismissed {
+            self.show_command_palette = false;
+            self.palette_query.clear();
+        }
     }
 
     /// Jump to a window by index, switching context if necessary.
