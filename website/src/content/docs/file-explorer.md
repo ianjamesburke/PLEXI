@@ -22,7 +22,7 @@ Press `⌘E` from any focused terminal pane. The overlay opens over your current
 | Open file / enter directory | `Enter`, `l`, or `→` |
 | Go up one directory | `h`, `Backspace`, or `←` |
 | Search by name | `/` |
-| Toggle sort order | `s` |
+| Toggle recent/name sort | `s` |
 | Refresh listing | `r` |
 | Close | `Escape` |
 
@@ -32,6 +32,10 @@ Files open in the focused terminal pane. Directories are entered in place — th
 
 Press `/` to enter search mode. Type to filter the current directory listing by filename. Press `Escape` to exit search and return to normal navigation, or `Enter` to open the highlighted match.
 
-## Sort Order
+## Details Columns
 
-Press `s` to toggle between recent-first and name sort. The sort persists for the current session.
+Medium and wide panes show a details table. Click a column header to sort by that metadata, click the same header again to reverse direction, drag the header sideways to reorder columns, and drag the right edge of a header to resize it.
+
+The toolbar can show or hide metadata columns for kind, size, modified time, creation time, extension, permissions, and tags. The folders-on-top toggle keeps directories grouped above files. Column widths, visibility, sort order, and the folders-on-top setting persist with the File Explorer pane state.
+
+Press `s` to toggle quickly between recent-first and name sort.

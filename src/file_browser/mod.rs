@@ -11,7 +11,10 @@ use image::imageops::FilterType;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use helpers::{format_modified, format_size, DirStats, Entry, MediaKind, SortMode};
+use helpers::{
+    format_modified, format_size, sort_entries, ColumnConfig, ColumnId, ColumnModel, DirStats,
+    Entry, MediaKind, SortDirection,
+};
 use icons::paint_entry_icon;
 
 const DETAILS_TABLE_MIN_WIDTH: f32 = 560.0;
@@ -149,7 +152,7 @@ pub struct FileBrowserApp {
     pub cwd: PathBuf,
     entries: Vec<Entry>,
     selected: usize,
-    sort_mode: SortMode,
+    columns: ColumnModel,
     error: Option<String>,
     // Image preview
     preview_texture: Option<egui::TextureHandle>,
@@ -181,7 +184,7 @@ impl FileBrowserApp {
             cwd,
             entries: Vec::new(),
             selected: 0,
-            sort_mode: SortMode::RecentlyTouched,
+            columns: ColumnModel::default(),
             error: None,
             preview_texture: None,
             preview_texture_path: None,
@@ -222,10 +225,21 @@ impl FileBrowserApp {
                             meta.as_ref()
                                 .and_then(|m| if is_dir { None } else { Some(m.len()) });
                         let modified = meta.as_ref().and_then(|m| m.modified().ok());
+                        let created = meta.as_ref().and_then(|m| m.created().ok());
                         let ext = path
                             .extension()
                             .and_then(|e| e.to_str())
                             .map(|e| e.to_ascii_lowercase());
+                        let permissions = meta
+                            .as_ref()
+                            .map(|m| {
+                                if m.permissions().readonly() {
+                                    "ro"
+                                } else {
+                                    "rw"
+                                }
+                            })
+                            .unwrap_or("?");
                         let is_image = ext
                             .as_deref()
                             .map(|e| {
@@ -242,22 +256,15 @@ impl FileBrowserApp {
                             is_image,
                             size_bytes,
                             modified,
+                            created,
+                            extension: ext,
+                            permissions: permissions.to_string(),
+                            tags: Vec::new(),
                         })
                     })
                     .collect();
 
-                match self.sort_mode {
-                    SortMode::Name => {
-                        entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then(a.name.cmp(&b.name)));
-                    }
-                    SortMode::RecentlyTouched => {
-                        entries.sort_by(|a, b| {
-                            b.is_dir
-                                .cmp(&a.is_dir)
-                                .then(b.modified.cmp(&a.modified).then(a.name.cmp(&b.name)))
-                        });
-                    }
-                }
+                sort_entries(&mut entries, self.columns.sort, self.columns.folders_on_top);
                 self.entries = entries;
                 self.selected = self.selected.min(self.entries.len().saturating_sub(1));
             }
@@ -540,6 +547,28 @@ impl FileBrowserApp {
         }
     }
 
+    fn entry_cell_text(entry: &Entry, column: ColumnId) -> String {
+        match column {
+            ColumnId::Name => Self::entry_title(entry),
+            ColumnId::Kind => Self::entry_kind(entry).to_string(),
+            ColumnId::Size => format_size(entry.size_bytes),
+            ColumnId::Modified => format_modified(entry.modified),
+            ColumnId::Created => format_modified(entry.created),
+            ColumnId::Extension => entry
+                .extension
+                .clone()
+                .unwrap_or_else(|| "\u{2014}".to_string()),
+            ColumnId::Permissions => entry.permissions.clone(),
+            ColumnId::Tags => {
+                if entry.tags.is_empty() {
+                    "\u{2014}".to_string()
+                } else {
+                    entry.tags.join(", ")
+                }
+            }
+        }
+    }
+
     fn entry_chip(entry: &Entry) -> &'static str {
         if entry.is_dir {
             "dir"
@@ -630,7 +659,7 @@ impl FileBrowserApp {
         navigate_to
     }
 
-    fn draw_details_header(&self, ui: &mut egui::Ui, colors: &Colors) {
+    fn draw_details_header(&mut self, ui: &mut egui::Ui, colors: &Colors) {
         let (rect, _) = ui.allocate_exact_size(
             egui::vec2(ui.available_width(), DETAILS_HEADER_H),
             egui::Sense::hover(),
@@ -643,19 +672,84 @@ impl FileBrowserApp {
             Stroke::new(1.0, colors.border),
             StrokeKind::Inside,
         );
-        let cols = self.details_columns(rect);
-        for (label, cell) in [
-            ("Name", cols.0),
-            ("Kind", cols.1),
-            ("Size", cols.2),
-            ("Modified", cols.3),
-        ] {
+        for (column, cell) in self.details_columns(rect) {
+            let handle_rect = egui::Rect::from_min_max(
+                egui::pos2(cell.right() - 5.0, cell.top()),
+                egui::pos2(cell.right() + 5.0, cell.bottom()),
+            );
+            let header_response = ui.interact(
+                cell,
+                ui.id().with(("file-browser-header", column.id.key())),
+                egui::Sense::click_and_drag(),
+            );
+            let resize_response = ui.interact(
+                handle_rect,
+                ui.id().with(("file-browser-resize", column.id.key())),
+                egui::Sense::drag(),
+            );
+            if header_response.clicked() {
+                self.columns.toggle_sort(column.id);
+                self.refresh();
+                log::info!(
+                    "file_browser: sort changed to {} {}",
+                    self.columns.sort.column.key(),
+                    self.columns.sort.direction.key()
+                );
+            }
+            if header_response.drag_stopped() {
+                let delta = header_response.drag_delta().x;
+                let offset = if delta < -cell.width() * 0.35 {
+                    Some(-1)
+                } else if delta > cell.width() * 0.35 {
+                    Some(1)
+                } else {
+                    None
+                };
+                if let Some(offset) = offset {
+                    self.columns.move_column(column.id, offset);
+                    log::info!(
+                        "file_browser: moved column {} by {}",
+                        column.id.key(),
+                        offset
+                    );
+                }
+            }
+            if resize_response.dragged() {
+                let frame_delta = ui.input(|input| input.pointer.delta().x);
+                self.columns
+                    .resize_column(column.id, column.width + frame_delta);
+                log::info!(
+                    "file_browser: resized column {} to {:.1}",
+                    column.id.key(),
+                    self.columns
+                        .columns
+                        .iter()
+                        .find(|candidate| candidate.id == column.id)
+                        .map(|candidate| candidate.width)
+                        .unwrap_or(column.width)
+                );
+            }
+            let sort_suffix = if self.columns.sort.column == column.id {
+                match self.columns.sort.direction {
+                    SortDirection::Asc => " \u{2191}",
+                    SortDirection::Desc => " \u{2193}",
+                }
+            } else {
+                ""
+            };
             ui.painter().text(
                 egui::pos2(cell.left() + style::SPACE_SM, cell.center().y),
                 egui::Align2::LEFT_CENTER,
-                label,
+                format!("{}{}", column.id.label(), sort_suffix),
                 egui::FontId::proportional(style::TEXT_HINT),
                 colors.text_dim,
+            );
+            ui.painter().line_segment(
+                [
+                    egui::pos2(cell.right(), cell.top() + 5.0),
+                    egui::pos2(cell.right(), cell.bottom() - 5.0),
+                ],
+                Stroke::new(1.0, colors.border),
             );
         }
     }
@@ -668,56 +762,62 @@ impl FileBrowserApp {
         entry: &Entry,
         selected: bool,
     ) {
-        let cols = self.details_columns(rect);
         let primary = if selected {
             colors.text_primary
         } else {
             colors.text_dim
         };
         let font = egui::FontId::proportional(style::TEXT_HINT);
-        let icon_rect = egui::Rect::from_min_size(
-            egui::pos2(cols.0.left() + style::SPACE_SM, cols.0.center().y - 9.0),
-            egui::vec2(18.0, 18.0),
-        );
-        paint_entry_icon(ui.painter(), icon_rect, entry, colors);
-        let name_cell = cols.0.shrink2(egui::vec2(28.0, 0.0));
-
-        for (text, cell, color) in [
-            (Self::entry_title(entry), name_cell, primary),
-            (Self::entry_kind(entry).to_string(), cols.1, colors.text_dim),
-            (format_size(entry.size_bytes), cols.2, colors.text_dim),
-            (format_modified(entry.modified), cols.3, colors.text_dim),
-        ] {
+        for (column, mut cell) in self.details_columns(rect) {
+            if column.id == ColumnId::Name {
+                let icon_rect = egui::Rect::from_min_size(
+                    egui::pos2(cell.left() + style::SPACE_SM, cell.center().y - 9.0),
+                    egui::vec2(18.0, 18.0),
+                );
+                paint_entry_icon(ui.painter(), icon_rect, entry, colors);
+                cell = cell.shrink2(egui::vec2(28.0, 0.0));
+            }
             let text_pos = egui::pos2(cell.left() + style::SPACE_SM, cell.center().y);
             ui.painter().text(
                 text_pos,
                 egui::Align2::LEFT_CENTER,
-                text,
+                Self::entry_cell_text(entry, column.id),
                 font.clone(),
-                color,
+                if column.id == ColumnId::Name {
+                    primary
+                } else {
+                    colors.text_dim
+                },
             );
         }
     }
 
-    fn details_columns(
-        &self,
-        rect: egui::Rect,
-    ) -> (egui::Rect, egui::Rect, egui::Rect, egui::Rect) {
-        let w = rect.width();
-        let name_w = (w * 0.48).clamp(180.0, 420.0);
-        let kind_w = 92.0;
-        let size_w = 96.0;
-        let name = egui::Rect::from_min_size(rect.min, egui::vec2(name_w, rect.height()));
-        let kind = egui::Rect::from_min_size(
-            egui::pos2(name.right(), rect.top()),
-            egui::vec2(kind_w, rect.height()),
-        );
-        let size = egui::Rect::from_min_size(
-            egui::pos2(kind.right(), rect.top()),
-            egui::vec2(size_w, rect.height()),
-        );
-        let modified = egui::Rect::from_min_max(egui::pos2(size.right(), rect.top()), rect.max);
-        (name, kind, size, modified)
+    fn details_columns(&self, rect: egui::Rect) -> Vec<(ColumnConfig, egui::Rect)> {
+        let mut x = rect.left();
+        let visible = self.columns.visible_columns().copied().collect::<Vec<_>>();
+        let total_config_width = visible
+            .iter()
+            .map(|column| column.width.max(column.id.min_width()))
+            .sum::<f32>()
+            .max(1.0);
+        let scale = (rect.width() / total_config_width).max(1.0);
+        let mut columns = Vec::with_capacity(visible.len());
+        for (idx, column) in visible.iter().enumerate() {
+            let right = if idx + 1 == visible.len() {
+                rect.right()
+            } else {
+                (x + column.width * scale).min(rect.right())
+            };
+            columns.push((
+                *column,
+                egui::Rect::from_min_max(
+                    egui::pos2(x, rect.top()),
+                    egui::pos2(right, rect.bottom()),
+                ),
+            ));
+            x = right;
+        }
+        columns
     }
 
     fn draw_sidebar_preview(&mut self, ui: &mut egui::Ui, colors: &Colors) {
@@ -901,25 +1001,48 @@ impl FileBrowserApp {
                     .monospace(),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let name_label = if self.sort_mode == SortMode::Name {
-                    "Name \u{2713}"
+                let folders_label = if self.columns.folders_on_top {
+                    "Folders \u{2713}"
                 } else {
-                    "Name"
+                    "Folders"
                 };
-                let recent_label = if self.sort_mode == SortMode::RecentlyTouched {
-                    "Recent \u{2713}"
-                } else {
-                    "Recent"
-                };
-                if ui.small_button(name_label).clicked() {
-                    self.sort_mode = SortMode::Name;
+                if ui.small_button(folders_label).clicked() {
+                    self.columns.folders_on_top = !self.columns.folders_on_top;
                     self.refresh();
-                    log::info!("file_browser: sort changed to name");
+                    log::info!(
+                        "file_browser: folders_on_top changed to {}",
+                        self.columns.folders_on_top
+                    );
                 }
-                if ui.small_button(recent_label).clicked() {
-                    self.sort_mode = SortMode::RecentlyTouched;
-                    self.refresh();
-                    log::info!("file_browser: sort changed to recent");
+                for id in [
+                    ColumnId::Tags,
+                    ColumnId::Permissions,
+                    ColumnId::Extension,
+                    ColumnId::Created,
+                    ColumnId::Modified,
+                    ColumnId::Size,
+                    ColumnId::Kind,
+                ] {
+                    let visible = self
+                        .columns
+                        .columns
+                        .iter()
+                        .find(|column| column.id == id)
+                        .map(|column| column.visible)
+                        .unwrap_or(false);
+                    let label = if visible {
+                        format!("{} \u{2713}", id.label())
+                    } else {
+                        id.label().to_string()
+                    };
+                    if ui.small_button(label).clicked() {
+                        self.columns.set_column_visible(id, !visible);
+                        log::info!(
+                            "file_browser: column {} visibility changed to {}",
+                            id.key(),
+                            !visible
+                        );
+                    }
                 }
                 ui.label(
                     egui::RichText::new(match layout {
@@ -1193,11 +1316,13 @@ impl App for FileBrowserApp {
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::ToggleSort)) => {
-                self.sort_mode = match self.sort_mode {
-                    SortMode::RecentlyTouched => SortMode::Name,
-                    SortMode::Name => SortMode::RecentlyTouched,
-                };
+                self.columns.toggle_legacy_sort();
                 self.refresh();
+                log::info!(
+                    "file_browser: sort changed to {} {}",
+                    self.columns.sort.column.key(),
+                    self.columns.sort.direction.key()
+                );
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::Refresh)) => {
@@ -1228,6 +1353,7 @@ impl App for FileBrowserApp {
         Some(serde_json::json!({
             "cwd": self.cwd.display().to_string(),
             "selected": self.selected,
+            "columns": self.columns.to_json(),
         }))
     }
 
@@ -1241,6 +1367,10 @@ impl App for FileBrowserApp {
         }
         if let Some(sel) = state["selected"].as_u64() {
             self.selected = (sel as usize).min(self.entries.len().saturating_sub(1));
+        }
+        if state.get("columns").is_some() {
+            self.columns = ColumnModel::from_json(&state["columns"]);
+            self.refresh();
         }
     }
 }
@@ -1666,7 +1796,7 @@ mod tests {
     #[test]
     fn search_mode_s_does_not_toggle_sort() {
         let (mut app, _dir) = make_populated_dir_app();
-        let original_sort = app.sort_mode;
+        let original_sort = app.columns.sort;
         app.in_search = true;
         app.refilter();
         run_handle_key(
@@ -1677,13 +1807,62 @@ mod tests {
             ],
         );
         assert_eq!(
-            app.sort_mode, original_sort,
+            app.columns.sort, original_sort,
             "S in search mode must not toggle sort"
         );
         assert_eq!(
             app.search_query, "s",
             "S in search mode must append to query"
         );
+    }
+
+    #[test]
+    fn serialized_state_persists_column_preferences() {
+        let (mut app, _dir) = make_populated_dir_app();
+        app.columns.toggle_sort(ColumnId::Size);
+        app.columns.resize_column(ColumnId::Name, 344.0);
+        app.columns.set_column_visible(ColumnId::Created, true);
+        app.columns.move_column(ColumnId::Created, -1);
+        app.columns.folders_on_top = false;
+
+        let state = app.serialize_state().expect("state");
+        let mut restored = FileBrowserApp::new(app.cwd.clone());
+        restored.restore_state(&state);
+
+        assert_eq!(restored.columns.sort.column, ColumnId::Size);
+        assert_eq!(restored.columns.sort.direction, SortDirection::Desc);
+        assert!(!restored.columns.folders_on_top);
+        assert_eq!(
+            restored
+                .columns
+                .columns
+                .iter()
+                .find(|column| column.id == ColumnId::Name)
+                .map(|column| column.width),
+            Some(344.0)
+        );
+        assert_eq!(
+            restored
+                .columns
+                .columns
+                .iter()
+                .find(|column| column.id == ColumnId::Created)
+                .map(|column| column.visible),
+            Some(true)
+        );
+        let created_index = restored
+            .columns
+            .columns
+            .iter()
+            .position(|column| column.id == ColumnId::Created)
+            .expect("created column");
+        let modified_index = restored
+            .columns
+            .columns
+            .iter()
+            .position(|column| column.id == ColumnId::Modified)
+            .expect("modified column");
+        assert!(created_index < modified_index);
     }
 
     #[test]
