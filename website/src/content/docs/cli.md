@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.681"
+verified_version: "0.0.689"
 order: 7
 ---
 
@@ -273,13 +273,21 @@ Manage the active context (the folder and project scope tied to the current pane
 
 ### `plexi context new`
 
-Open a new context with an optional name
+Open a new context with an optional name.
+
+Examples: plexi context new "sprint"                          # top-level context plexi context new "sprint" --parent                 # child of current context (no-focus) plexi context new "sprint" --parent "main" -d       # child, portal splits below plexi context new "sprint" --parent --window "echo a" --window "echo b"
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<name>` | string | no | Name for the new context. Defaults to the directory basename |
 | `--path` | string | no | Root path for the new context. Defaults to current working directory |
-| `--parent` | string | no | Create as a child of the named context. Defaults to current context if inside one |
+| `--parent` | string | no | Create as a child of the named context. With no value, uses the current context (reads PLEXI_CONTEXT_NAME from env) |
+| `--window` | string (repeatable) | no | Command to run in each pre-populated window. Repeatable |
+| `--focus` | flag | no | Focus (zoom into) the new sub-context after creation. Default: stay in current pane |
+| `--down` / `-d` | flag | no | Split portal below instead of right (requires --parent) |
+| `--left` / `-l` | flag | no | Split portal left (requires --parent) |
+| `--up` / `-u` | flag | no | Split portal above (requires --parent) |
+| `--right` / `-r` | flag | no | Split portal right — explicit (default, requires --parent) |
 
 ### `plexi context open`
 
