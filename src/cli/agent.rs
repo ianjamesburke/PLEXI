@@ -227,9 +227,7 @@ pub fn agent_report_cli(state: &str, agent: &str, session_id: Option<&str>) -> i
     {
         Some(id) => id,
         None => {
-            eprintln!(
-                "error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane"
-            );
+            eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane");
             return 1;
         }
     };
@@ -248,10 +246,8 @@ pub fn agent_report_cli(state: &str, agent: &str, session_id: Option<&str>) -> i
 /// `plexi agent status` — query agent states for all panes.
 pub fn agent_status_cli(blocked: bool, working: bool, idle: bool) -> i32 {
     log::info!("agent_status:cli: blocked={blocked} working={working} idle={idle}");
-    let tmp_path = std::env::temp_dir().join(format!(
-        "plexi-agent-states-{}.json",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp_path =
+        std::env::temp_dir().join(format!("plexi-agent-states-{}.json", uuid::Uuid::new_v4()));
     let tmp_path_str = tmp_path.to_string_lossy().to_string();
     let code = super::send_to_socket(serde_json::json!({
         "type": "get_agent_states",
@@ -303,15 +299,15 @@ pub fn agent_status_cli(blocked: bool, working: bool, idle: bool) -> i32 {
         println!("No agent states tracked.");
         return 0;
     }
-    println!("{:<12} {:<16} {:<12} {}", "PANE_ID", "AGENT", "STATE", "SESSION_ID");
+    println!(
+        "{:<12} {:<16} {:<12} {}",
+        "PANE_ID", "AGENT", "STATE", "SESSION_ID"
+    );
     for s in &filtered {
         let pane_id = s["pane_id"].as_u64().unwrap_or(0);
         let agent = s["agent"].as_str().unwrap_or("unknown");
         let state = s["state"].as_str().unwrap_or("unknown");
-        let session_id = s
-            .get("session_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("-");
+        let session_id = s.get("session_id").and_then(|v| v.as_str()).unwrap_or("-");
         println!("{:<12} {:<16} {:<12} {}", pane_id, agent, state, session_id);
     }
     0
@@ -394,7 +390,10 @@ exit 0
     ];
 
     for event in &events {
-        let event_hooks = settings["hooks"][*event].as_array().cloned().unwrap_or_default();
+        let event_hooks = settings["hooks"][*event]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
 
         // Idempotency: skip if this script or any PLEXI agent-report command is already registered.
         let already_registered = event_hooks.iter().any(|h| {
@@ -435,7 +434,10 @@ exit 0
     let code = write_claude_settings(&settings_path, &settings);
     if code == 0 {
         println!("Hook script: {script_str}");
-        println!("Registered in {} for 6 lifecycle events.", settings_path.display());
+        println!(
+            "Registered in {} for 6 lifecycle events.",
+            settings_path.display()
+        );
     }
     code
 }
@@ -450,7 +452,10 @@ pub fn agent_hook_uninstall_cli(claude_code: bool) -> i32 {
 
     let settings_path = claude_settings_path();
     if !settings_path.exists() {
-        println!("Nothing to uninstall — {} does not exist.", settings_path.display());
+        println!(
+            "Nothing to uninstall — {} does not exist.",
+            settings_path.display()
+        );
         return 0;
     }
 

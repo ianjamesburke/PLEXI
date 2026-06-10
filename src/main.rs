@@ -14,21 +14,21 @@ mod features;
 mod file_browser;
 mod host;
 mod media;
-mod platform;
 mod overlays;
 mod pane_ops;
+mod platform;
 mod plexi_ai;
-mod render;
 mod process_app;
 mod protocol;
+mod render;
 mod secrets;
 mod spatial;
-mod ui;
-mod workspace;
 #[cfg(test)]
 mod testing;
+mod ui;
 #[cfg(test)]
 mod ui_tests;
+mod workspace;
 
 fn main() -> eframe::Result {
     if std::env::args().nth(1).as_deref() == Some("--render") {
@@ -53,9 +53,17 @@ fn main() -> eframe::Result {
             {
                 let n_ok = outcomes
                     .iter()
-                    .filter(|o| matches!(o.status, crate::cli::install_host::InstallStatus::Installed(_)))
+                    .filter(|o| {
+                        matches!(
+                            o.status,
+                            crate::cli::install_host::InstallStatus::Installed(_)
+                        )
+                    })
                     .count();
-                log::info!("examples pack: seeded {n_ok} apps to {}", apps_dir.display());
+                log::info!(
+                    "examples pack: seeded {n_ok} apps to {}",
+                    apps_dir.display()
+                );
             }
         }
 
@@ -63,7 +71,12 @@ fn main() -> eframe::Result {
         let core_outcomes = crate::cli::install_host::apply_core_pack_always(&cloner, &apps_dir);
         let n_installed = core_outcomes
             .iter()
-            .filter(|o| matches!(o.status, crate::cli::install_host::InstallStatus::Installed(_)))
+            .filter(|o| {
+                matches!(
+                    o.status,
+                    crate::cli::install_host::InstallStatus::Installed(_)
+                )
+            })
             .count();
         if n_installed > 0 {
             log::info!(
@@ -115,15 +128,15 @@ fn main() -> eframe::Result {
         .unwrap_or_default();
     let log_level = log_config.level_filter().unwrap_or(log::LevelFilter::Info);
     let retention_days = log_config.retention_days.unwrap_or(30);
-    let cli_mode = raw_args.iter().skip(1).any(|a| {
-        !a.starts_with('-') && known_subcommands().contains(a.as_str())
-    });
+    let cli_mode = raw_args
+        .iter()
+        .skip(1)
+        .any(|a| !a.starts_with('-') && known_subcommands().contains(a.as_str()));
     crate::platform::logging::init(log_level, retention_days, cli_mode);
     let frame_tick = crate::platform::logging::new_frame_tick();
     // Note: spawn_heartbeat is deferred to just before eframe::run_native so
     // the shell probes below don't trigger false FREEZE alerts. The heartbeat
     // should only monitor actual eframe operation, not pre-startup work.
-
 
     // One-shot migration from the v3.0 global-namespace secrets index to the
     // workspace-namespaced layout (issue #322). Idempotent: a no-op once the
@@ -176,7 +189,10 @@ fn main() -> eframe::Result {
             Some(a.clone())
         })
         .collect();
-    use crate::cli::args::{Cli, Commands, WorkspaceCmd, SecretCmd, AppCmd, UpdateCmd, PaneCmd, DescriptorCmd, RegistryCmd, ContextCmd, ConfigCmd, RoutineCmd, NotesCmd, AgentCmd, HookAction, AiCmd};
+    use crate::cli::args::{
+        AgentCmd, AiCmd, AppCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd, HookAction,
+        NotesCmd, PaneCmd, RegistryCmd, RoutineCmd, SecretCmd, UpdateCmd, WorkspaceCmd,
+    };
     use clap::Parser;
 
     match Cli::try_parse_from(&args) {
@@ -195,178 +211,318 @@ fn main() -> eframe::Result {
                         RoutineCmd::Run { name } => std::process::exit(cli::routine_run(&name)),
                     },
                     Commands::Agent { cmd } => match cmd {
-                        AgentCmd::Init { name, from_pane_id } => std::process::exit(cli::agent_init(&name, from_pane_id)),
+                        AgentCmd::Init { name, from_pane_id } => {
+                            std::process::exit(cli::agent_init(&name, from_pane_id))
+                        }
                         AgentCmd::Add { name } => std::process::exit(cli::agent_add(&name)),
                         AgentCmd::Update { name } => std::process::exit(cli::agent_update(&name)),
                         AgentCmd::List => std::process::exit(cli::agent_list()),
-                        AgentCmd::Report { state, agent, session_id } => std::process::exit(cli::agent_report_cli(state.as_str(), agent.as_str(), session_id.as_deref())),
-                        AgentCmd::Status { blocked, working, idle } => std::process::exit(cli::agent_status_cli(blocked, working, idle)),
+                        AgentCmd::Report {
+                            state,
+                            agent,
+                            session_id,
+                        } => std::process::exit(cli::agent_report_cli(
+                            state.as_str(),
+                            agent.as_str(),
+                            session_id.as_deref(),
+                        )),
+                        AgentCmd::Status {
+                            blocked,
+                            working,
+                            idle,
+                        } => std::process::exit(cli::agent_status_cli(blocked, working, idle)),
                         AgentCmd::Hook { action } => match action {
-                            HookAction::Install { claude_code } => std::process::exit(cli::agent_hook_install_cli(claude_code)),
-                            HookAction::Uninstall { claude_code } => std::process::exit(cli::agent_hook_uninstall_cli(claude_code)),
+                            HookAction::Install { claude_code } => {
+                                std::process::exit(cli::agent_hook_install_cli(claude_code))
+                            }
+                            HookAction::Uninstall { claude_code } => {
+                                std::process::exit(cli::agent_hook_uninstall_cli(claude_code))
+                            }
                         },
                     },
                     Commands::Secret { cmd } => match cmd {
-                        SecretCmd::Set { friendly_name, from_env, global, alias } => std::process::exit(cli::workspace_secret_set(&friendly_name, from_env, global, alias.as_deref())),
-                        SecretCmd::Get { friendly_name, global } => std::process::exit(cli::workspace_secret_get(&friendly_name, global)),
+                        SecretCmd::Set {
+                            friendly_name,
+                            from_env,
+                            global,
+                            alias,
+                        } => std::process::exit(cli::workspace_secret_set(
+                            &friendly_name,
+                            from_env,
+                            global,
+                            alias.as_deref(),
+                        )),
+                        SecretCmd::Get {
+                            friendly_name,
+                            global,
+                        } => std::process::exit(cli::workspace_secret_get(&friendly_name, global)),
                         SecretCmd::List => std::process::exit(cli::workspace_secret_list()),
-                        SecretCmd::Delete { friendly_name, global } => std::process::exit(cli::workspace_secret_delete(&friendly_name, global)),
+                        SecretCmd::Delete {
+                            friendly_name,
+                            global,
+                        } => {
+                            std::process::exit(cli::workspace_secret_delete(&friendly_name, global))
+                        }
                     },
-                    Commands::App { cmd } => match cmd {
-                        AppCmd::Open { type_id, mcp, cli: cli_flag, down, left, up, right, tab, window, from_pane_id, extra_args } => {
-                            let layout: Option<String> = if down { Some("split_v".into()) }
-                                else if left { Some("split_left".into()) }
-                                else if up { Some("split_above".into()) }
-                                else if right { Some("split_h".into()) }
-                                else if tab { Some("tab".into()) }
-                                else if window { Some("new_window".into()) }
-                                else { None }; // default: overlay
-                            let mode_count = type_id.is_some() as u8
-                                + (!mcp.is_empty()) as u8
-                                + cli_flag.is_some() as u8;
-                            if mode_count == 0 {
-                                eprintln!("error: one of TYPE_ID, --mcp, or --cli is required");
-                                std::process::exit(2);
-                            }
-                            if mode_count > 1 {
-                                eprintln!("error: TYPE_ID, --mcp, and --cli are mutually exclusive");
-                                std::process::exit(2);
-                            }
-                            if let Some(tid) = type_id {
-                                // Prefix routing: cli:, mcp:, app:, or bare name
-                                match cli::parse_prefix(&tid) {
-                                    cli::OpenPrefix::Cli(name) => {
-                                        log::info!("app_open:cli: prefix-routed cli:{name}");
-                                        std::process::exit(cli::open_cli_by_name(&name, layout.as_deref(), from_pane_id, None));
-                                    }
-                                    cli::OpenPrefix::Mcp(name) => {
-                                        log::info!("app_open:cli: prefix-routed mcp:{name}");
-                                        std::process::exit(cli::open_mcp_by_name(&name, layout.as_deref(), from_pane_id, None));
-                                    }
-                                    cli::OpenPrefix::App(name) => {
-                                        log::info!("app_open:cli: prefix-routed app:{name}");
-                                        std::process::exit(cli::open_cli(&name, &extra_args, layout.as_deref(), from_pane_id, None));
-                                    }
-                                    cli::OpenPrefix::Bare(name) => {
-                                        log::info!("app_open:cli: opening app type_id={name}");
-                                        std::process::exit(cli::open_cli(&name, &extra_args, layout.as_deref(), from_pane_id, None));
-                                    }
+                    Commands::App { cmd } => {
+                        match cmd {
+                            AppCmd::Open {
+                                type_id,
+                                mcp,
+                                cli: cli_flag,
+                                down,
+                                left,
+                                up,
+                                right,
+                                tab,
+                                window,
+                                from_pane_id,
+                                extra_args,
+                            } => {
+                                let layout: Option<String> = if down {
+                                    Some("split_v".into())
+                                } else if left {
+                                    Some("split_left".into())
+                                } else if up {
+                                    Some("split_above".into())
+                                } else if right {
+                                    Some("split_h".into())
+                                } else if tab {
+                                    Some("tab".into())
+                                } else if window {
+                                    Some("new_window".into())
+                                } else {
+                                    None
+                                }; // default: overlay
+                                let mode_count = type_id.is_some() as u8
+                                    + (!mcp.is_empty()) as u8
+                                    + cli_flag.is_some() as u8;
+                                if mode_count == 0 {
+                                    eprintln!("error: one of TYPE_ID, --mcp, or --cli is required");
+                                    std::process::exit(2);
                                 }
-                            } else if !mcp.is_empty() {
-                                let title = cli::mcp_pane_title(&mcp);
-                                log::info!("app_open:cli: launching mcp-renderer with command {:?}, auto-title={title:?}", mcp);
-                                let layout_str = layout.as_deref().unwrap_or("split_h");
-                                std::process::exit(cli::pane_new_cli(
-                                    None,
-                                    Some(title.as_str()),
-                                    layout_str,
-                                    from_pane_id,
-                                    None,
-                                    false,
-                                    false,
-                                    Some("mcp-renderer"),
-                                    &mcp,
-                                    None,
-                                    &[],
-                                ));
-                            } else {
-                                let binary = cli_flag.unwrap();
-                                log::info!("app_open:cli: running --help parser for `{binary}`, auto-title={binary:?}");
-                                match crate::cli::help_parser::parse_help_to_descriptor(&binary) {
-                                    Ok(json) => {
-                                        let id = uuid::Uuid::new_v4();
-                                        let tmp = std::env::temp_dir()
-                                            .join(format!("plexi-descriptor-{id}.json"));
-                                        if let Err(e) = std::fs::write(&tmp, &json) {
-                                            eprintln!("error: could not write descriptor temp file: {e}");
+                                if mode_count > 1 {
+                                    eprintln!(
+                                        "error: TYPE_ID, --mcp, and --cli are mutually exclusive"
+                                    );
+                                    std::process::exit(2);
+                                }
+                                if let Some(tid) = type_id {
+                                    // Prefix routing: cli:, mcp:, app:, or bare name
+                                    match cli::parse_prefix(&tid) {
+                                        cli::OpenPrefix::Cli(name) => {
+                                            log::info!("app_open:cli: prefix-routed cli:{name}");
+                                            std::process::exit(cli::open_cli_by_name(
+                                                &name,
+                                                layout.as_deref(),
+                                                from_pane_id,
+                                                None,
+                                            ));
+                                        }
+                                        cli::OpenPrefix::Mcp(name) => {
+                                            log::info!("app_open:cli: prefix-routed mcp:{name}");
+                                            std::process::exit(cli::open_mcp_by_name(
+                                                &name,
+                                                layout.as_deref(),
+                                                from_pane_id,
+                                                None,
+                                            ));
+                                        }
+                                        cli::OpenPrefix::App(name) => {
+                                            log::info!("app_open:cli: prefix-routed app:{name}");
+                                            std::process::exit(cli::open_cli(
+                                                &name,
+                                                &extra_args,
+                                                layout.as_deref(),
+                                                from_pane_id,
+                                                None,
+                                            ));
+                                        }
+                                        cli::OpenPrefix::Bare(name) => {
+                                            log::info!("app_open:cli: opening app type_id={name}");
+                                            std::process::exit(cli::open_cli(
+                                                &name,
+                                                &extra_args,
+                                                layout.as_deref(),
+                                                from_pane_id,
+                                                None,
+                                            ));
+                                        }
+                                    }
+                                } else if !mcp.is_empty() {
+                                    let title = cli::mcp_pane_title(&mcp);
+                                    log::info!("app_open:cli: launching mcp-renderer with command {:?}, auto-title={title:?}", mcp);
+                                    let layout_str = layout.as_deref().unwrap_or("split_h");
+                                    std::process::exit(cli::pane_new_cli(
+                                        None,
+                                        Some(title.as_str()),
+                                        layout_str,
+                                        from_pane_id,
+                                        None,
+                                        false,
+                                        false,
+                                        Some("mcp-renderer"),
+                                        &mcp,
+                                        None,
+                                        &[],
+                                    ));
+                                } else {
+                                    let binary = cli_flag.unwrap();
+                                    log::info!("app_open:cli: running --help parser for `{binary}`, auto-title={binary:?}");
+                                    match crate::cli::help_parser::parse_help_to_descriptor(&binary)
+                                    {
+                                        Ok(json) => {
+                                            let id = uuid::Uuid::new_v4();
+                                            let tmp = std::env::temp_dir()
+                                                .join(format!("plexi-descriptor-{id}.json"));
+                                            if let Err(e) = std::fs::write(&tmp, &json) {
+                                                eprintln!("error: could not write descriptor temp file: {e}");
+                                                std::process::exit(1);
+                                            }
+                                            let path = tmp.to_string_lossy().into_owned();
+                                            let layout_str = layout.as_deref().unwrap_or("split_h");
+                                            log::info!("app_open:cli: launching cli-renderer with descriptor at {path}");
+                                            std::process::exit(cli::pane_new_cli(
+                                                None,
+                                                Some(binary.as_str()),
+                                                layout_str,
+                                                from_pane_id,
+                                                None,
+                                                false,
+                                                false,
+                                                Some("cli-renderer"),
+                                                &[],
+                                                None,
+                                                &[path],
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            eprintln!("error: could not parse --help output: {e}");
                                             std::process::exit(1);
                                         }
-                                        let path = tmp.to_string_lossy().into_owned();
-                                        let layout_str = layout.as_deref().unwrap_or("split_h");
-                                        log::info!("app_open:cli: launching cli-renderer with descriptor at {path}");
-                                        std::process::exit(cli::pane_new_cli(
-                                            None,
-                                            Some(binary.as_str()),
-                                            layout_str,
-                                            from_pane_id,
-                                            None,
-                                            false,
-                                            false,
-                                            Some("cli-renderer"),
-                                            &[],
-                                            None,
-                                            &[path],
-                                        ));
-                                    }
-                                    Err(e) => {
-                                        eprintln!("error: could not parse --help output: {e}");
-                                        std::process::exit(1);
                                     }
                                 }
                             }
-                        }
-                        AppCmd::Install { spec_or_path, pack, version } => {
-                            if let Some(p) = pack {
-                                log::info!("app_install:cli: pack={p}");
-                                std::process::exit(cli::install_pack_cli(&p));
-                            }
-                            match spec_or_path {
-                                None => {
-                                    log::info!("app_install:cli: workspace pack (no args)");
-                                    std::process::exit(cli::install_workspace_pack_cli());
+                            AppCmd::Install {
+                                spec_or_path,
+                                pack,
+                                version,
+                            } => {
+                                if let Some(p) = pack {
+                                    log::info!("app_install:cli: pack={p}");
+                                    std::process::exit(cli::install_pack_cli(&p));
                                 }
-                                Some(s) => {
-                                    // Local path: contains a path separator, starts with . or /, or is an existing directory.
-                                    // Using is_dir() (not exists()) avoids misrouting bare app IDs that happen
-                                    // to match a file in the current directory.
-                                    let is_local = s.contains('/') || s.starts_with('.') || std::path::Path::new(&s).is_dir();
-                                    if is_local {
-                                        log::info!("app_install:cli: local path={s} version={version:?}");
-                                        std::process::exit(cli::app_install_with_pin(&s, version.as_deref()));
-                                    } else {
-                                        log::info!("app_install:cli: remote spec={s} version={version:?}");
-                                        std::process::exit(cli::install_cli(&s));
+                                match spec_or_path {
+                                    None => {
+                                        log::info!("app_install:cli: workspace pack (no args)");
+                                        std::process::exit(cli::install_workspace_pack_cli());
+                                    }
+                                    Some(s) => {
+                                        // Local path: contains a path separator, starts with . or /, or is an existing directory.
+                                        // Using is_dir() (not exists()) avoids misrouting bare app IDs that happen
+                                        // to match a file in the current directory.
+                                        let is_local = s.contains('/')
+                                            || s.starts_with('.')
+                                            || std::path::Path::new(&s).is_dir();
+                                        if is_local {
+                                            log::info!("app_install:cli: local path={s} version={version:?}");
+                                            std::process::exit(cli::app_install_with_pin(
+                                                &s,
+                                                version.as_deref(),
+                                            ));
+                                        } else {
+                                            log::info!("app_install:cli: remote spec={s} version={version:?}");
+                                            std::process::exit(cli::install_cli(&s));
+                                        }
                                     }
                                 }
                             }
+                            AppCmd::Init {
+                                name,
+                                lang,
+                                global,
+                                no_open,
+                                from_pane_id,
+                            } => std::process::exit(cli::app_init(
+                                &name,
+                                &lang,
+                                global,
+                                no_open,
+                                from_pane_id,
+                            )),
+                            AppCmd::Uninstall { id, yes } => {
+                                std::process::exit(cli::app_uninstall(&id, yes))
+                            }
+                            AppCmd::List => std::process::exit(cli::app_list()),
+                            AppCmd::Render {
+                                app,
+                                size,
+                                state,
+                                output,
+                                png,
+                            } => std::process::exit(cli::app_render(
+                                &app,
+                                &size,
+                                state.as_deref(),
+                                output.as_deref(),
+                                png,
+                            )),
+                            AppCmd::Check {
+                                path,
+                                sizes,
+                                png_dir,
+                            } => {
+                                log::info!("app_check:cli: path={path} sizes={sizes:?} png_dir={png_dir:?}");
+                                std::process::exit(cli::app_check_cli(
+                                    &path,
+                                    &sizes,
+                                    png_dir.as_deref(),
+                                ));
+                            }
+                            AppCmd::Info { id } => std::process::exit(cli::app_info(&id)),
+                            AppCmd::Validate { path } => {
+                                log::info!("app_validate:cli: path={path}");
+                                std::process::exit(cli::validate_cli(&path));
+                            }
+                            AppCmd::Freeze { path } => {
+                                log::info!("app_freeze:cli: path={path}");
+                                std::process::exit(cli::freeze_cli(&path));
+                            }
+                            AppCmd::Publish => {
+                                std::process::exit(cli::app_publish());
+                            }
+                            AppCmd::Update { id } => {
+                                log::info!("app_update:cli: id={id:?}");
+                                std::process::exit(cli::app_update_cli(id.as_deref()));
+                            }
+                            AppCmd::Action {
+                                pane_id,
+                                action,
+                                args,
+                            } => {
+                                log::info!("app_action:cli: pane_id={pane_id} action={action:?} args={args:?}");
+                                std::process::exit(cli::app_action_cli(pane_id, &action, &args));
+                            }
                         }
-                        AppCmd::Init { name, lang, global, no_open, from_pane_id } => std::process::exit(cli::app_init(&name, &lang, global, no_open, from_pane_id)),
-                        AppCmd::Uninstall { id, yes } => std::process::exit(cli::app_uninstall(&id, yes)),
-                        AppCmd::List => std::process::exit(cli::app_list()),
-                        AppCmd::Render { app, size, state, output, png } => {
-                            std::process::exit(cli::app_render(&app, &size, state.as_deref(), output.as_deref(), png))
-                        }
-                        AppCmd::Check { path, sizes, png_dir } => {
-                            log::info!("app_check:cli: path={path} sizes={sizes:?} png_dir={png_dir:?}");
-                            std::process::exit(cli::app_check_cli(&path, &sizes, png_dir.as_deref()));
-                        }
-                        AppCmd::Info { id } => std::process::exit(cli::app_info(&id)),
-                        AppCmd::Validate { path } => {
-                            log::info!("app_validate:cli: path={path}");
-                            std::process::exit(cli::validate_cli(&path));
-                        }
-                        AppCmd::Freeze { path } => {
-                            log::info!("app_freeze:cli: path={path}");
-                            std::process::exit(cli::freeze_cli(&path));
-                        }
-                        AppCmd::Publish => {
-                            std::process::exit(cli::app_publish());
-                        }
-                        AppCmd::Update { id } => {
-                            log::info!("app_update:cli: id={id:?}");
-                            std::process::exit(cli::app_update_cli(id.as_deref()));
-                        }
-                        AppCmd::Action { pane_id, action, args } => {
-                            log::info!("app_action:cli: pane_id={pane_id} action={action:?} args={args:?}");
-                            std::process::exit(cli::app_action_cli(pane_id, &action, &args));
-                        }
-                    },
-                    Commands::Uninstall { keep_data, yes } => std::process::exit(cli::plexi_uninstall_cli(keep_data, yes)),
+                    }
+                    Commands::Uninstall { keep_data, yes } => {
+                        std::process::exit(cli::plexi_uninstall_cli(keep_data, yes))
+                    }
                     Commands::Update { subcommand } => match subcommand {
-                        Some(UpdateCmd::Apps { id }) => std::process::exit(cli::update_cli(id.as_deref())),
+                        Some(UpdateCmd::Apps { id }) => {
+                            std::process::exit(cli::update_cli(id.as_deref()))
+                        }
                         None => std::process::exit(cli::self_update_cli()),
                     },
-                    Commands::Notify { title, body, level, choices, host_actions, timeout, scope } => {
+                    Commands::Notify {
+                        title,
+                        body,
+                        level,
+                        choices,
+                        host_actions,
+                        timeout,
+                        scope,
+                    } => {
                         // Parse --host-action flags into a key → "action_type:action_arg" map.
                         let mut host_action_map: std::collections::HashMap<String, String> =
                             std::collections::HashMap::new();
@@ -419,137 +575,223 @@ fn main() -> eframe::Result {
                             eprintln!("{msg}");
                             std::process::exit(1);
                         }
-                        let parsed_scope: Option<crate::app_protocol::NotifyScope> = match scope.as_deref() {
-                            None | Some("global") => None,
-                            Some("window") => Some(crate::app_protocol::NotifyScope::Window),
-                            Some("context") => Some(crate::app_protocol::NotifyScope::Context),
-                            Some(other) => {
-                                let msg = format!(
+                        let parsed_scope: Option<crate::app_protocol::NotifyScope> =
+                            match scope.as_deref() {
+                                None | Some("global") => None,
+                                Some("window") => Some(crate::app_protocol::NotifyScope::Window),
+                                Some("context") => Some(crate::app_protocol::NotifyScope::Context),
+                                Some(other) => {
+                                    let msg = format!(
                                     "error: --scope must be window, context, or global — got {:?}",
                                     other
                                 );
-                                log::warn!("notify:cli: {msg}");
-                                eprintln!("{msg}");
-                                std::process::exit(1);
-                            }
-                        };
+                                    log::warn!("notify:cli: {msg}");
+                                    eprintln!("{msg}");
+                                    std::process::exit(1);
+                                }
+                            };
                         log::info!(
                             "notify:cli: host_actions={} merged into choices",
                             host_actions.len()
                         );
-                        std::process::exit(cli::notify_cli(&title, &body, &level, &parsed_choices, timeout, parsed_scope));
+                        std::process::exit(cli::notify_cli(
+                            &title,
+                            &body,
+                            &level,
+                            &parsed_choices,
+                            timeout,
+                            parsed_scope,
+                        ));
                     }
-                    Commands::Pane { cmd } => match cmd {
-                        PaneCmd::Name { first, second } => {
-                            let (pane_id, name) = match second {
-                                Some(title) => match first.parse::<u64>() {
-                                    Ok(id) => (Some(id), title),
-                                    Err(_) => {
-                                        eprintln!("error: expected a numeric pane ID as first argument, got {:?}", first);
-                                        std::process::exit(1);
-                                    }
-                                },
-                                None => (None, first),
-                            };
-                            std::process::exit(cli::pane_set_title_cli(pane_id, &name))
-                        }
-                        PaneCmd::SetTitle { first, second } => {
-                            eprintln!("warning: `pane set-title` is deprecated — use `pane name` instead");
-                            let (pane_id, name) = match second {
-                                Some(title) => match first.parse::<u64>() {
-                                    Ok(id) => (Some(id), title),
-                                    Err(_) => {
-                                        eprintln!("error: expected a numeric pane ID as first argument, got {:?}", first);
-                                        std::process::exit(1);
-                                    }
-                                },
-                                None => (None, first),
-                            };
-                            std::process::exit(cli::pane_set_title_cli(pane_id, &name))
-                        }
-                        PaneCmd::List { context } => {
-                            let (context_id, current) = match context.as_deref() {
-                                None => (None, false),
-                                Some("current") => (None, true),
-                                Some(s) => match s.parse::<u64>() {
-                                    Ok(id) => (Some(id), false),
-                                    Err(_) => {
-                                        eprintln!("error: --context value must be a numeric context ID or omitted for current context");
-                                        std::process::exit(1);
-                                    }
-                                },
-                            };
-                            std::process::exit(cli::pane_list_cli(context_id, current))
-                        }
-                        PaneCmd::Focus { pane_id } => std::process::exit(cli::pane_focus_cli(pane_id)),
-                        PaneCmd::Close { pane_id } => {
-                            let id = match pane_id {
-                                Some(id) => id,
-                                None => {
-                                    let s = match std::env::var("PLEXI_PANE_ID") {
-                                        Ok(s) => s,
+                    Commands::Pane { cmd } => {
+                        match cmd {
+                            PaneCmd::Name { first, second } => {
+                                let (pane_id, name) = match second {
+                                    Some(title) => match first.parse::<u64>() {
+                                        Ok(id) => (Some(id), title),
                                         Err(_) => {
-                                            eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane or pass a pane ID explicitly");
+                                            eprintln!("error: expected a numeric pane ID as first argument, got {:?}", first);
                                             std::process::exit(1);
                                         }
-                                    };
-                                    match s.parse::<u64>() {
-                                        Ok(id) => id,
+                                    },
+                                    None => (None, first),
+                                };
+                                std::process::exit(cli::pane_set_title_cli(pane_id, &name))
+                            }
+                            PaneCmd::SetTitle { first, second } => {
+                                eprintln!("warning: `pane set-title` is deprecated — use `pane name` instead");
+                                let (pane_id, name) = match second {
+                                    Some(title) => match first.parse::<u64>() {
+                                        Ok(id) => (Some(id), title),
                                         Err(_) => {
-                                            eprintln!("error: PLEXI_PANE_ID is not a valid number: {s}");
+                                            eprintln!("error: expected a numeric pane ID as first argument, got {:?}", first);
                                             std::process::exit(1);
                                         }
+                                    },
+                                    None => (None, first),
+                                };
+                                std::process::exit(cli::pane_set_title_cli(pane_id, &name))
+                            }
+                            PaneCmd::List { context } => {
+                                let (context_id, current) = match context.as_deref() {
+                                    None => (None, false),
+                                    Some("current") => (None, true),
+                                    Some(s) => match s.parse::<u64>() {
+                                        Ok(id) => (Some(id), false),
+                                        Err(_) => {
+                                            eprintln!("error: --context value must be a numeric context ID or omitted for current context");
+                                            std::process::exit(1);
+                                        }
+                                    },
+                                };
+                                std::process::exit(cli::pane_list_cli(context_id, current))
+                            }
+                            PaneCmd::Focus { pane_id } => {
+                                std::process::exit(cli::pane_focus_cli(pane_id))
+                            }
+                            PaneCmd::Close { pane_id } => {
+                                let id = match pane_id {
+                                    Some(id) => id,
+                                    None => {
+                                        let s = match std::env::var("PLEXI_PANE_ID") {
+                                            Ok(s) => s,
+                                            Err(_) => {
+                                                eprintln!("error: PLEXI_PANE_ID is not set — run this inside a Plexi terminal pane or pass a pane ID explicitly");
+                                                std::process::exit(1);
+                                            }
+                                        };
+                                        match s.parse::<u64>() {
+                                            Ok(id) => id,
+                                            Err(_) => {
+                                                eprintln!("error: PLEXI_PANE_ID is not a valid number: {s}");
+                                                std::process::exit(1);
+                                            }
+                                        }
                                     }
-                                }
-                            };
-                            log::info!("pane_close:cli: pane_id={id}");
-                            std::process::exit(cli::pane_close_cli(id));
+                                };
+                                log::info!("pane_close:cli: pane_id={id}");
+                                std::process::exit(cli::pane_close_cli(id));
+                            }
+                            PaneCmd::Send { pane_id, text } => {
+                                std::process::exit(cli::pane_send_cli(pane_id, &text))
+                            }
+                            PaneCmd::Command {
+                                pane_id,
+                                text,
+                                enter,
+                            } => {
+                                let payload = if enter {
+                                    format!("{text}\n")
+                                } else {
+                                    text.clone()
+                                };
+                                log::info!(
+                                    "pane_command:cli: pane_id={pane_id} len={} enter={enter}",
+                                    payload.len()
+                                );
+                                std::process::exit(cli::pane_send_cli(pane_id, &payload));
+                            }
+                            PaneCmd::Key { pane_id, key } => {
+                                std::process::exit(cli::pane_key_cli(pane_id, &key))
+                            }
+                            PaneCmd::Self_ => std::process::exit(cli::pane_self_cli()),
+                            PaneCmd::Info { previous } => {
+                                std::process::exit(cli::pane_info_cli(previous))
+                            }
+                            PaneCmd::Capture {
+                                pane_id,
+                                lines,
+                                full_output,
+                                from_cursor,
+                            } => std::process::exit(cli::pane_capture_cli(
+                                pane_id,
+                                lines,
+                                full_output,
+                                from_cursor,
+                            )),
+                            PaneCmd::State { pane_id } => {
+                                std::process::exit(cli::pane_state_cli(pane_id))
+                            }
+                            PaneCmd::New {
+                                cmd,
+                                name,
+                                down,
+                                left,
+                                up,
+                                right,
+                                tab,
+                                window,
+                                overlay,
+                                from,
+                                ephemeral,
+                                no_focus,
+                                cwd,
+                            } => {
+                                let layout = if down {
+                                    "split_v"
+                                } else if left {
+                                    "split_left"
+                                } else if up {
+                                    "split_above"
+                                } else if right {
+                                    "split_h"
+                                } else if tab {
+                                    "tab"
+                                } else if window {
+                                    "new_window"
+                                } else if overlay {
+                                    "overlay"
+                                } else {
+                                    "split_h"
+                                };
+                                std::process::exit(cli::pane_new_cli(
+                                    cmd.as_deref(),
+                                    name.as_deref(),
+                                    layout,
+                                    from,
+                                    cwd.as_deref(),
+                                    ephemeral,
+                                    no_focus,
+                                    None,
+                                    &[],
+                                    None,
+                                    &[],
+                                ));
+                            }
                         }
-                        PaneCmd::Send { pane_id, text } => std::process::exit(cli::pane_send_cli(pane_id, &text)),
-                        PaneCmd::Command { pane_id, text, enter } => {
-                            let payload = if enter {
-                                format!("{text}\n")
-                            } else {
-                                text.clone()
-                            };
-                            log::info!("pane_command:cli: pane_id={pane_id} len={} enter={enter}", payload.len());
-                            std::process::exit(cli::pane_send_cli(pane_id, &payload));
-                        }
-                        PaneCmd::Key { pane_id, key } => std::process::exit(cli::pane_key_cli(pane_id, &key)),
-                        PaneCmd::Self_ => std::process::exit(cli::pane_self_cli()),
-                        PaneCmd::Info { previous } => std::process::exit(cli::pane_info_cli(previous)),
-                        PaneCmd::Capture { pane_id, lines, full_output, from_cursor } => std::process::exit(cli::pane_capture_cli(pane_id, lines, full_output, from_cursor)),
-                        PaneCmd::State { pane_id } => std::process::exit(cli::pane_state_cli(pane_id)),
-                        PaneCmd::New { cmd, name, down, left, up, right, tab, window, overlay, from, ephemeral, no_focus, cwd } => {
-                            let layout = if down { "split_v" }
-                                else if left { "split_left" }
-                                else if up { "split_above" }
-                                else if right { "split_h" }
-                                else if tab { "tab" }
-                                else if window { "new_window" }
-                                else if overlay { "overlay" }
-                                else { "split_h" };
-                            std::process::exit(cli::pane_new_cli(
-                                cmd.as_deref(), name.as_deref(), layout, from, cwd.as_deref(),
-                                ephemeral, no_focus, None, &[], None, &[],
-                            ));
-                        }
-                    },
+                    }
                     Commands::CompleteOpen { prefix } => {
                         std::process::exit(cli::complete_open_cli(&prefix));
-                    },
+                    }
                     Commands::Descriptor { cmd } => match cmd {
-                        DescriptorCmd::Probe { command, no_registry, no_crawl, json, extra_args } => {
+                        DescriptorCmd::Probe {
+                            command,
+                            no_registry,
+                            no_crawl,
+                            json,
+                            extra_args,
+                        } => {
                             if json {
                                 match crate::cli::help_parser::parse_help_to_descriptor(&command) {
-                                    Ok(j) => { println!("{j}"); std::process::exit(0); }
-                                    Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
+                                    Ok(j) => {
+                                        println!("{j}");
+                                        std::process::exit(0);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("error: {e}");
+                                        std::process::exit(1);
+                                    }
                                 }
                             }
                             let runner = cli::descriptor::RealRunner;
-                            let opts = cli::descriptor::ProbeOptions { use_registry: !no_registry, use_crawl: !no_crawl };
+                            let opts = cli::descriptor::ProbeOptions {
+                                use_registry: !no_registry,
+                                use_crawl: !no_crawl,
+                            };
                             let extra: Vec<&str> = extra_args.iter().map(|s| s.as_str()).collect();
-                            std::process::exit(cli::descriptor::probe_with_options(&runner, &command, &extra, &opts));
+                            std::process::exit(cli::descriptor::probe_with_options(
+                                &runner, &command, &extra, &opts,
+                            ));
                         }
                     },
                     Commands::Registry { cmd } => match cmd {
@@ -558,17 +800,52 @@ fn main() -> eframe::Result {
                         }
                     },
                     Commands::Context { cmd } => match cmd {
-                        ContextCmd::New { name, path, parent, window, focus, down, left, up, right: _ } => {
-                            let dir = if down { "down" } else if left { "left" } else if up { "up" } else { "right" };
-                            std::process::exit(cli::context_new_cli(name.as_deref(), path.as_deref(), parent.as_deref(), &window, focus, dir))
+                        ContextCmd::New {
+                            name,
+                            path,
+                            parent,
+                            window,
+                            focus,
+                            down,
+                            left,
+                            up,
+                            right: _,
+                        } => {
+                            let dir = if down {
+                                "down"
+                            } else if left {
+                                "left"
+                            } else if up {
+                                "up"
+                            } else {
+                                "right"
+                            };
+                            std::process::exit(cli::context_new_cli(
+                                name.as_deref(),
+                                path.as_deref(),
+                                parent.as_deref(),
+                                &window,
+                                focus,
+                                dir,
+                            ))
                         }
-                        ContextCmd::Open { path } => std::process::exit(cli::context_open_cli(path.as_deref())),
-                        ContextCmd::SetRoot { path } => std::process::exit(cli::context_set_root_cli(path.as_deref())),
+                        ContextCmd::Open { path } => {
+                            std::process::exit(cli::context_open_cli(path.as_deref()))
+                        }
+                        ContextCmd::SetRoot { path } => {
+                            std::process::exit(cli::context_set_root_cli(path.as_deref()))
+                        }
                         ContextCmd::Current => std::process::exit(cli::context_current_cli()),
-                        ContextCmd::Describe { text } => std::process::exit(cli::context_describe_cli(&text)),
-                        ContextCmd::Zoom { context_id } => std::process::exit(cli::context_zoom_cli(context_id)),
+                        ContextCmd::Describe { text } => {
+                            std::process::exit(cli::context_describe_cli(&text))
+                        }
+                        ContextCmd::Zoom { context_id } => {
+                            std::process::exit(cli::context_zoom_cli(context_id))
+                        }
                         ContextCmd::ZoomOut => std::process::exit(cli::context_zoom_out_cli()),
-                        ContextCmd::Push { name } => std::process::exit(cli::context_push_cli(name.as_deref())),
+                        ContextCmd::Push { name } => {
+                            std::process::exit(cli::context_push_cli(name.as_deref()))
+                        }
                         ContextCmd::List => std::process::exit(cli::context_list_cli()),
                     },
                     Commands::Completions { shell } => {
@@ -644,7 +921,6 @@ fn main() -> eframe::Result {
     // Shell probes are done. Start the heartbeat now so it only monitors
     // eframe operation — not pre-startup shell work (#588).
     crate::platform::logging::spawn_heartbeat(frame_tick.clone());
-
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -855,8 +1131,7 @@ mod cli_tests {
 
     #[test]
     fn plexi_with_no_args_returns_none() {
-        let resolved = parse_workspace_path_arg(&argv(&[]))
-            .expect("no args should resolve");
+        let resolved = parse_workspace_path_arg(&argv(&[])).expect("no args should resolve");
         assert!(resolved.is_none());
     }
 
@@ -871,12 +1146,10 @@ mod cli_tests {
     #[test]
     fn plexi_path_arg_skips_short_flags() {
         // `plexi -h` must not be treated as a workspace path (fixes issue #1747).
-        let resolved = parse_workspace_path_arg(&argv(&["-h"]))
-            .expect("-h should not error");
+        let resolved = parse_workspace_path_arg(&argv(&["-h"])).expect("-h should not error");
         assert!(resolved.is_none());
 
-        let resolved = parse_workspace_path_arg(&argv(&["-V"]))
-            .expect("-V should not error");
+        let resolved = parse_workspace_path_arg(&argv(&["-V"])).expect("-V should not error");
         assert!(resolved.is_none());
     }
 }

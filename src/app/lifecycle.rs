@@ -953,15 +953,13 @@ impl PlexiApp {
                     // vertical=true  → side-by-side (left/right)
                     // vertical=false → stacked (up/down)
                     // new_pane_first=true → portal appears before the existing pane (left/up)
-                    let (portal_vertical, portal_first) = match portal_direction
-                        .as_deref()
-                        .unwrap_or("right")
-                    {
-                        "down" => (false, false),
-                        "up" => (false, true),
-                        "left" => (true, true),
-                        _ => (true, false), // "right" is default
-                    };
+                    let (portal_vertical, portal_first) =
+                        match portal_direction.as_deref().unwrap_or("right") {
+                            "down" => (false, false),
+                            "up" => (false, true),
+                            "left" => (true, true),
+                            _ => (true, false), // "right" is default
+                        };
                     log::info!(
                         "pane_ipc: kind=create_context root={:?} name={:?} parent_name={:?} \
                          windows={} focus={focus} direction={:?}",
@@ -988,9 +986,12 @@ impl PlexiApp {
                         let current_ctx_id = self.router.active().context_id;
                         let current_win_id = self.windows[self.active_window].window_id;
                         let current_focused = self.windows[self.active_window].focused_pane;
-                        if let Err(e) =
-                            self.new_child_context(pname.as_str(), path, portal_vertical, portal_first)
-                        {
+                        if let Err(e) = self.new_child_context(
+                            pname.as_str(),
+                            path,
+                            portal_vertical,
+                            portal_first,
+                        ) {
                             log::warn!("pane_ipc: create_context with parent failed: {e}");
                             ctx_ok = false;
                         } else {
@@ -1001,8 +1002,11 @@ impl PlexiApp {
                             let new_ctx_idx = self.router.len() - 1;
                             new_ctx_id = self.router.get(new_ctx_idx).context_id;
                             if *focus {
-                                self.router
-                                    .push_depth(current_ctx_id, current_win_id, current_focused);
+                                self.router.push_depth(
+                                    current_ctx_id,
+                                    current_win_id,
+                                    current_focused,
+                                );
                                 self.switch_workspace(new_ctx_idx);
                                 log::info!(
                                     "pane_ipc: zoomed into new child context ctx_id={new_ctx_id}"
@@ -1030,8 +1034,7 @@ impl PlexiApp {
                         // to the new context so create_page_at places windows there, then restore.
                         let need_restore = self.router.active().context_id != new_ctx_id;
                         if need_restore {
-                            if let Some(idx) =
-                                self.router.position(|c| c.context_id == new_ctx_id)
+                            if let Some(idx) = self.router.position(|c| c.context_id == new_ctx_id)
                             {
                                 self.switch_workspace(idx);
                             }
@@ -1053,8 +1056,7 @@ impl PlexiApp {
                             new_x += 1;
                         }
                         if need_restore {
-                            if let Some(idx) =
-                                self.router.position(|c| c.context_id == orig_ctx_id)
+                            if let Some(idx) = self.router.position(|c| c.context_id == orig_ctx_id)
                             {
                                 self.switch_workspace(idx);
                             }

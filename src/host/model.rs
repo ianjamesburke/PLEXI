@@ -389,7 +389,11 @@ mod tests {
     fn new_model_has_one_bootstrap_pane_registered() {
         let model = HostModel::new();
         let ids = model.test_pane_ids();
-        assert_eq!(ids, vec![0], "HostModel::new() registers bootstrap pane id=0");
+        assert_eq!(
+            ids,
+            vec![0],
+            "HostModel::new() registers bootstrap pane id=0"
+        );
         assert_eq!(model.test_focused_pane(), Some(0));
         assert_eq!(model.test_next_pane_id(), 1);
     }
@@ -400,7 +404,10 @@ mod tests {
         let a = model.alloc_pane_id();
         let b = model.alloc_pane_id();
         let c = model.alloc_pane_id();
-        assert!(a < b && b < c, "alloc_pane_id must return strictly increasing IDs");
+        assert!(
+            a < b && b < c,
+            "alloc_pane_id must return strictly increasing IDs"
+        );
         assert_eq!(model.test_next_pane_id(), c + 1);
     }
 
@@ -426,7 +433,10 @@ mod tests {
             })
             .expect("OpenPane must emit PaneOpened");
 
-        assert_eq!(opened_id, pre_next, "PaneOpened id must equal pre-call next_pane_id");
+        assert_eq!(
+            opened_id, pre_next,
+            "PaneOpened id must equal pre-call next_pane_id"
+        );
         assert!(
             model.test_pane_ids().contains(&opened_id),
             "opened pane must be registered in model"
@@ -490,7 +500,10 @@ mod tests {
             })
             .expect("SplitVertical must emit SplitOpened");
 
-        assert_eq!(split_id, pre_next, "split pane id must equal pre-call next_pane_id");
+        assert_eq!(
+            split_id, pre_next,
+            "split pane id must equal pre-call next_pane_id"
+        );
         assert!(
             model.test_pane_ids().contains(&split_id),
             "split pane must be registered in model"

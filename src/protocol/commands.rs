@@ -548,9 +548,7 @@ pub enum AppRequest {
         session_id: Option<String>,
     },
     /// Get all tracked pane agent states. Writes JSON array to response_file.
-    GetAgentStates {
-        response_file: String,
-    },
+    GetAgentStates { response_file: String },
     /// Open a typed pipe.
     /// mode: "json" | "binary"
     /// direction: "in" | "out" | "duplex"

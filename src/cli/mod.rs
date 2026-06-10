@@ -6,7 +6,6 @@ pub(super) fn commands_file() -> String {
     format!("{}/commands.toml", crate::config::workspace_channel_dir())
 }
 
-
 /// Parsed .plexi/commands.toml
 #[derive(Deserialize)]
 pub struct PlexiCommands {
@@ -114,7 +113,6 @@ pub mod doctor;
 pub mod install;
 pub mod install_host;
 pub mod list;
-pub mod updater;
 pub mod notes;
 pub mod notify;
 pub mod open;
@@ -122,6 +120,7 @@ pub mod pane;
 pub mod registry_watch;
 pub mod routine;
 pub mod run;
+pub mod updater;
 pub mod validate;
 pub mod workspace;
 
@@ -172,30 +171,43 @@ pub(super) fn binary_in_path(name: &str) -> bool {
 }
 
 // ── Public re-exports (preserve crate::cli::fn_name() call sites in main.rs) ──
-pub use app::{app_init, app_uninstall, app_install_with_pin, app_info, app_list, app_render, app_publish, app_update_cli, app_action_cli};
+pub use agent::{
+    agent_add, agent_hook_install_cli, agent_hook_uninstall_cli, agent_init, agent_list,
+    agent_report_cli, agent_status_cli, agent_update,
+};
+pub use ai::{ai_doctor_cli, ai_setup_cli};
+pub use app::{
+    app_action_cli, app_info, app_init, app_install_with_pin, app_list, app_publish, app_render,
+    app_uninstall, app_update_cli,
+};
 pub use app_check::app_check_cli;
-pub use completions::{completions_cli, complete_open_cli};
+pub use completions::{complete_open_cli, completions_cli};
 pub use config_cli::{config_check, config_edit, config_get, config_reset};
 pub use context_cli::{
-    context_new_cli, context_zoom_cli, context_zoom_out_cli, context_open_cli,
-    context_set_root_cli, context_current_cli, context_describe_cli, context_push_cli,
-    context_list_cli,
+    context_current_cli, context_describe_cli, context_list_cli, context_new_cli, context_open_cli,
+    context_push_cli, context_set_root_cli, context_zoom_cli, context_zoom_out_cli,
 };
 pub use demo::demo_cli;
 pub use doctor::doctor_cli;
-pub use install::{install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli, update_cli, self_update_cli};
+pub use install::{
+    install_cli, install_pack_cli, install_workspace_pack_cli, plexi_uninstall_cli,
+    self_update_cli, update_cli,
+};
 pub use list::{freeze_cli, parse_notify_choice};
 pub use notes::{notes_list_cli, notes_open_cli};
 pub use notify::notify_cli;
-pub use open::{open_cli, pane_new_cli, mcp_pane_title, parse_prefix, open_cli_by_name, open_mcp_by_name, OpenPrefix};
+pub use open::{
+    mcp_pane_title, open_cli, open_cli_by_name, open_mcp_by_name, pane_new_cli, parse_prefix,
+    OpenPrefix,
+};
 pub use pane::{
-    pane_set_title_cli, pane_list_cli, pane_self_cli, pane_info_cli,
-    pane_focus_cli, pane_close_cli, pane_send_cli, pane_key_cli, pane_capture_cli,
-    pane_state_cli,
+    pane_capture_cli, pane_close_cli, pane_focus_cli, pane_info_cli, pane_key_cli, pane_list_cli,
+    pane_self_cli, pane_send_cli, pane_set_title_cli, pane_state_cli,
 };
 pub use routine::{routine_list, routine_run};
-pub use run::{run_list_commands, run_command};
+pub use run::{run_command, run_list_commands};
 pub use validate::validate_cli;
-pub use workspace::{workspace_init, workspace_secret_set, workspace_secret_get, workspace_secret_list, workspace_secret_delete};
-pub use agent::{agent_init, agent_add, agent_update, agent_list, agent_report_cli, agent_status_cli, agent_hook_install_cli, agent_hook_uninstall_cli};
-pub use ai::{ai_doctor_cli, ai_setup_cli};
+pub use workspace::{
+    workspace_init, workspace_secret_delete, workspace_secret_get, workspace_secret_list,
+    workspace_secret_set,
+};

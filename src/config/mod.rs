@@ -779,7 +779,10 @@ pub fn workspace_channel_dir() -> String {
     if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
         return format!(".plexi-{profile}");
     }
-    if let Some(channel) = std::env::var("PLEXI_CHANNEL").ok().filter(|c| !c.is_empty()) {
+    if let Some(channel) = std::env::var("PLEXI_CHANNEL")
+        .ok()
+        .filter(|c| !c.is_empty())
+    {
         log::info!("workspace_channel_dir: using PLEXI_CHANNEL={channel}");
         return format!(".plexi-{channel}");
     }
@@ -800,7 +803,10 @@ fn config_dir_name() -> String {
     if let Some(Some(profile)) = PROFILE_OVERRIDE.get() {
         return format!(".plexi-{profile}");
     }
-    if let Some(channel) = std::env::var("PLEXI_CHANNEL").ok().filter(|c| !c.is_empty()) {
+    if let Some(channel) = std::env::var("PLEXI_CHANNEL")
+        .ok()
+        .filter(|c| !c.is_empty())
+    {
         log::info!("config_dir_name: using PLEXI_CHANNEL={channel}");
         return format!(".plexi-{channel}");
     }

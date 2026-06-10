@@ -502,7 +502,6 @@ fn open_app_by_path(abs_path: &str, layout: Option<&str>, from_pane_id: Option<u
     0
 }
 
-
 /// Read a line from stdin with echo disabled (for password-style input).
 pub(super) fn read_secret_from_stdin() -> io::Result<String> {
     // Disable echo via stty (avoids libc dependency).

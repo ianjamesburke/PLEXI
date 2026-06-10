@@ -24,127 +24,135 @@ impl PlexiApp {
                 );
                 ui.add_space(style::SPACE_MD);
 
-                    egui::ScrollArea::vertical()
-                        .max_height((ctx.screen_rect().height() - 180.0).max(280.0))
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            ui.set_width(style::MODAL_WIDTH_NOTIFY);
-                            gallery_section(ui, "Modal shell", &colors, |ui| {
-                                token_strip(ui, &colors);
-                                hint_bar(ui, &colors);
-                            });
+                egui::ScrollArea::vertical()
+                    .max_height((ctx.screen_rect().height() - 180.0).max(280.0))
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_width(style::MODAL_WIDTH_NOTIFY);
+                        gallery_section(ui, "Modal shell", &colors, |ui| {
+                            token_strip(ui, &colors);
+                            hint_bar(ui, &colors);
+                        });
 
-                            gallery_section(ui, "Rows", &colors, |ui| {
-                                ListRow::new("Normal row")
-                                    .secondary("Secondary metadata")
-                                    .leading_chip("app")
-                                    .trailing_action("Open")
-                                    .show(ui, &colors);
-                                ListRow::new("Selected row")
-                                    .secondary("Keyboard-selected state")
-                                    .leading_chip("term")
-                                    .trailing_action("Run")
-                                    .selected(true)
-                                    .show(ui, &colors);
-                                ListRow::new("Danger row")
-                                    .secondary("Destructive trailing action")
-                                    .leading_chip("ctx")
-                                    .trailing_action("Delete")
-                                    .danger_trailing(true)
-                                    .show(ui, &colors);
-                                let _ = selectable_row(ui, true, &colors, |ui| {
-                                    ui.label(
-                                        RichText::new("Selectable row primitive")
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_primary),
+                        gallery_section(ui, "Rows", &colors, |ui| {
+                            ListRow::new("Normal row")
+                                .secondary("Secondary metadata")
+                                .leading_chip("app")
+                                .trailing_action("Open")
+                                .show(ui, &colors);
+                            ListRow::new("Selected row")
+                                .secondary("Keyboard-selected state")
+                                .leading_chip("term")
+                                .trailing_action("Run")
+                                .selected(true)
+                                .show(ui, &colors);
+                            ListRow::new("Danger row")
+                                .secondary("Destructive trailing action")
+                                .leading_chip("ctx")
+                                .trailing_action("Delete")
+                                .danger_trailing(true)
+                                .show(ui, &colors);
+                            let _ = selectable_row(ui, true, &colors, |ui| {
+                                ui.label(
+                                    RichText::new("Selectable row primitive")
+                                        .size(style::TEXT_HINT)
+                                        .color(colors.text_primary),
+                                );
+                                ui.scope(|ui| {
+                                    ui.set_max_width(360.0);
+                                    description_label(
+                                        ui,
+                                        "Truncated description label with a long path-like value",
+                                        &colors,
                                     );
-                                    ui.scope(|ui| {
-                                        ui.set_max_width(360.0);
-                                        description_label(
-                                            ui,
-                                            "Truncated description label with a long path-like value",
-                                            &colors,
+                                });
+                            });
+                        });
+
+                        gallery_section(ui, "Text fields", &colors, |ui| {
+                            TextField::singleline(
+                                egui::Id::new("host_ui_gallery_text_normal"),
+                                "Normal text field",
+                            )
+                            .show(
+                                ui,
+                                &mut self.ui_gallery_normal_buf,
+                                &colors,
+                            );
+                            ui.add_space(style::SPACE_SM);
+                            TextField::singleline(
+                                egui::Id::new("host_ui_gallery_text_focused"),
+                                "Focused text field",
+                            )
+                            .focused(true)
+                            .log_name("ui_gallery")
+                            .show(
+                                ui,
+                                &mut self.ui_gallery_focused_buf,
+                                &colors,
+                            );
+                        });
+
+                        gallery_section(ui, "Buttons and chips", &colors, |ui| {
+                            ui.horizontal(|ui| {
+                                button_sample(ui, "Primary", colors.accent, &colors);
+                                button_sample(ui, "Neutral", colors.bg_active, &colors);
+                                button_sample(ui, "Danger", colors.danger, &colors);
+                                ui.add_enabled(
+                                    false,
+                                    egui::Button::new(
+                                        RichText::new("Disabled")
+                                            .size(style::TEXT_BODY)
+                                            .color(colors.text_dim),
+                                    )
+                                    .min_size(egui::vec2(96.0, style::BUTTON_H_MD)),
+                                );
+                            });
+                            ui.add_space(style::SPACE_SM);
+                            ui.horizontal(|ui| {
+                                key_chip(
+                                    ui,
+                                    "app",
+                                    &colors,
+                                    egui::FontId::monospace(style::TEXT_HINT),
+                                );
+                                key_chip(
+                                    ui,
+                                    "term",
+                                    &colors,
+                                    egui::FontId::monospace(style::TEXT_HINT),
+                                );
+                                status_chip(ui, "running", colors.accent, &colors);
+                                status_chip(ui, "error", colors.danger, &colors);
+                                status_chip(ui, "empty", colors.text_dim, &colors);
+                            });
+                        });
+
+                        gallery_section(ui, "Empty states", &colors, |ui| {
+                            egui::Frame::new()
+                                .fill(colors.bg_toolbar)
+                                .stroke(egui::Stroke::new(1.0, colors.border))
+                                .corner_radius(style::RADIUS_MD)
+                                .inner_margin(egui::Margin::symmetric(12, 10))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.vertical_centered(|ui| {
+                                        ui.label(
+                                            RichText::new("No matching items")
+                                                .size(style::TEXT_BODY)
+                                                .color(colors.text_primary),
+                                        );
+                                        ui.label(
+                                            RichText::new(
+                                                "Empty chrome should stay compact and quiet.",
+                                            )
+                                            .size(style::TEXT_HINT)
+                                            .color(colors.text_dim),
                                         );
                                     });
                                 });
-                            });
-
-                            gallery_section(ui, "Text fields", &colors, |ui| {
-                                TextField::singleline(
-                                    egui::Id::new("host_ui_gallery_text_normal"),
-                                    "Normal text field",
-                                )
-                                .show(ui, &mut self.ui_gallery_normal_buf, &colors);
-                                ui.add_space(style::SPACE_SM);
-                                TextField::singleline(
-                                    egui::Id::new("host_ui_gallery_text_focused"),
-                                    "Focused text field",
-                                )
-                                .focused(true)
-                                .log_name("ui_gallery")
-                                .show(ui, &mut self.ui_gallery_focused_buf, &colors);
-                            });
-
-                            gallery_section(ui, "Buttons and chips", &colors, |ui| {
-                                ui.horizontal(|ui| {
-                                    button_sample(ui, "Primary", colors.accent, &colors);
-                                    button_sample(ui, "Neutral", colors.bg_active, &colors);
-                                    button_sample(ui, "Danger", colors.danger, &colors);
-                                    ui.add_enabled(
-                                        false,
-                                        egui::Button::new(
-                                            RichText::new("Disabled")
-                                                .size(style::TEXT_BODY)
-                                                .color(colors.text_dim),
-                                        )
-                                        .min_size(egui::vec2(96.0, style::BUTTON_H_MD)),
-                                    );
-                                });
-                                ui.add_space(style::SPACE_SM);
-                                ui.horizontal(|ui| {
-                                    key_chip(
-                                        ui,
-                                        "app",
-                                        &colors,
-                                        egui::FontId::monospace(style::TEXT_HINT),
-                                    );
-                                    key_chip(
-                                        ui,
-                                        "term",
-                                        &colors,
-                                        egui::FontId::monospace(style::TEXT_HINT),
-                                    );
-                                    status_chip(ui, "running", colors.accent, &colors);
-                                    status_chip(ui, "error", colors.danger, &colors);
-                                    status_chip(ui, "empty", colors.text_dim, &colors);
-                                });
-                            });
-
-                            gallery_section(ui, "Empty states", &colors, |ui| {
-                                egui::Frame::new()
-                                    .fill(colors.bg_toolbar)
-                                    .stroke(egui::Stroke::new(1.0, colors.border))
-                                    .corner_radius(style::RADIUS_MD)
-                                    .inner_margin(egui::Margin::symmetric(12, 10))
-                                    .show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        ui.vertical_centered(|ui| {
-                                            ui.label(
-                                                RichText::new("No matching items")
-                                                    .size(style::TEXT_BODY)
-                                                    .color(colors.text_primary),
-                                            );
-                                            ui.label(
-                                                RichText::new(
-                                                    "Empty chrome should stay compact and quiet.",
-                                                )
-                                                .size(style::TEXT_HINT)
-                                                .color(colors.text_dim),
-                                            );
-                                        });
-                                    });
-                            });
                         });
+                    });
             });
 
         if response.dismissed {
