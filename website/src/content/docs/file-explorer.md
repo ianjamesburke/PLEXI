@@ -7,6 +7,8 @@ order: 8
 
 The file explorer is a built-in overlay that lets you browse and open files from within any Plexi context. Open it with `⌘E` from a terminal pane — no shell command required.
 
+The layout adapts to the pane width. Narrow splits use a compact list, medium panes switch to a details table, and wide panes add an inspector with preview metadata for the selected item.
+
 ## Opening the File Explorer
 
 Press `⌘E` from any focused terminal pane. The overlay opens over your current layout. It starts at the current working directory of that pane (tracked via OSC 7).
@@ -32,4 +34,4 @@ Press `/` to enter search mode. Type to filter the current directory listing by 
 
 ## Sort Order
 
-Press `s` to toggle between name-ascending and name-descending sort. The sort persists for the current session.
+Press `s` to toggle between recent-first and name sort. The sort persists for the current session.

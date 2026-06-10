@@ -1,6 +1,4 @@
 use super::super::*;
-use crate::host::context::Window;
-
 /// Issue #1392: creating a child context must NOT remove or replace the parent's
 /// focused pane (adoption branch was removed). The parent should have:
 /// (count_before + 1) panes — its original pane(s) plus the new Portal tile.
@@ -16,8 +14,13 @@ fn new_child_context_does_not_adopt_focused_pane() {
     let parent_id = app.router.active().context_id;
     let parent_name = app.router.active().name.clone();
 
-    app.new_child_context(&parent_name, std::path::PathBuf::from("/tmp/no_adopt"))
-        .expect("child create should succeed");
+    app.new_child_context(
+        &parent_name,
+        std::path::PathBuf::from("/tmp/no_adopt"),
+        true,
+        false,
+    )
+    .expect("child create should succeed");
 
     let parent_win = app
         .windows
@@ -61,7 +64,8 @@ fn new_child_context_no_focused_pane_inserts_sub_ctx() {
     let parent_pane_count_before = app.windows[0].panes.len();
     let parent_id = app.router.active().context_id;
 
-    let result = app.new_child_context("Test", std::path::PathBuf::from("/tmp/child2"));
+    let result =
+        app.new_child_context("Test", std::path::PathBuf::from("/tmp/child2"), true, false);
 
     // Whether success or failure, the parent's focused_pane must remain None.
     assert_eq!(
@@ -106,7 +110,12 @@ fn new_child_context_case_insensitive_parent() {
     // The initial context is named "Test" (from new_for_test).
     // Lookup with lowercase "test" must not return "no context named" error.
     // It may fail for another reason (PTY unavailable in test env), but not lookup.
-    let result = app.new_child_context("test", std::path::PathBuf::from("/tmp/child_ci"));
+    let result = app.new_child_context(
+        "test",
+        std::path::PathBuf::from("/tmp/child_ci"),
+        true,
+        false,
+    );
     match result {
         Ok(_) => {}
         Err(e) => {
@@ -134,7 +143,12 @@ fn create_child_context_auto_zooms() {
 
     // Simulate what the CreateContext handler does: capture current state,
     // call new_child_context, then push_depth + switch_workspace.
-    let result = app.new_child_context("Test", std::path::PathBuf::from("/tmp/child_zoom"));
+    let result = app.new_child_context(
+        "Test",
+        std::path::PathBuf::from("/tmp/child_zoom"),
+        true,
+        false,
+    );
 
     if result.is_err() {
         // PTY unavailable in test env — verify caller-side depth push still works.
@@ -240,7 +254,7 @@ fn depth_four_chain_has_portal_tiles() {
 
     for &child in &names {
         let path = std::path::PathBuf::from(format!("/tmp/depth_test_{child}"));
-        let result = app.new_child_context(&parent_name, path);
+        let result = app.new_child_context(&parent_name, path, true, false);
         if result.is_err() {
             // PTY unavailable — can't build the full chain in test env. Stop here.
             break;
@@ -1371,8 +1385,15 @@ fn create_context_with_windows_adds_extra_pages() {
         return;
     }
     let ctx_id = app.router.active().context_id;
-    let initial_window_count = app.windows.iter().filter(|w| w.context_id == ctx_id).count();
-    assert_eq!(initial_window_count, 1, "new_context starts with 1 anchor window");
+    let initial_window_count = app
+        .windows
+        .iter()
+        .filter(|w| w.context_id == ctx_id)
+        .count();
+    assert_eq!(
+        initial_window_count, 1,
+        "new_context starts with 1 anchor window"
+    );
 
     // Now simulate the windows loop from the CreateContext handler.
     let cmds = vec!["echo a".to_string(), "echo b".to_string()];
@@ -1390,10 +1411,13 @@ fn create_context_with_windows_adds_extra_pages() {
         new_x += 1;
     }
 
-    let final_window_count = app.windows.iter().filter(|w| w.context_id == ctx_id).count();
+    let final_window_count = app
+        .windows
+        .iter()
+        .filter(|w| w.context_id == ctx_id)
+        .count();
     assert_eq!(
-        final_window_count,
-        3,
+        final_window_count, 3,
         "anchor + 2 --window args = 3 windows total"
     );
 }

@@ -130,6 +130,10 @@ impl ListRowResponse {
         self.row.clicked()
     }
 
+    pub fn row_double_clicked(&self) -> bool {
+        self.row.double_clicked()
+    }
+
     pub fn row_hovered(&self) -> bool {
         self.row.hovered()
     }

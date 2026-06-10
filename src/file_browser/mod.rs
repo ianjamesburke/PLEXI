@@ -2,6 +2,9 @@ mod helpers;
 mod icons;
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
+use crate::ui::hints::{HintBar, HintGroup};
+use crate::ui::list::ListRow;
+use crate::ui::style;
 use crate::ui::theme::Colors;
 use egui::{Color32, CornerRadius, Stroke, StrokeKind};
 use image::imageops::FilterType;
@@ -11,9 +14,39 @@ use std::path::{Path, PathBuf};
 use helpers::{format_modified, format_size, DirStats, Entry, MediaKind, SortMode};
 use icons::paint_entry_icon;
 
-const ROW_HEIGHT: f32 = 58.0;
-const MIN_SIDEBAR_WIDTH: f32 = 920.0;
+const DETAILS_TABLE_MIN_WIDTH: f32 = 560.0;
+const INSPECTOR_MIN_WIDTH: f32 = 920.0;
 const DIR_PREVIEW_CAP: usize = 500;
+const DETAILS_HEADER_H: f32 = 28.0;
+const DETAILS_ROW_H: f32 = style::LIST_ROW_H;
+const STATUS_BAR_H: f32 = 28.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileBrowserLayout {
+    CompactList,
+    DetailsTable,
+    DetailsWithInspector,
+}
+
+impl FileBrowserLayout {
+    fn for_width(width: f32) -> Self {
+        if width >= INSPECTOR_MIN_WIDTH {
+            Self::DetailsWithInspector
+        } else if width >= DETAILS_TABLE_MIN_WIDTH {
+            Self::DetailsTable
+        } else {
+            Self::CompactList
+        }
+    }
+
+    fn shows_details(self) -> bool {
+        matches!(self, Self::DetailsTable | Self::DetailsWithInspector)
+    }
+
+    fn shows_inspector(self) -> bool {
+        matches!(self, Self::DetailsWithInspector)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -298,6 +331,7 @@ impl FileBrowserApp {
     /// Platform-appropriate fallback opener. macOS / Linux only — Windows
     /// callers fall through to a no-op since the media-bridge surface is
     /// unix-first for v3.4 (mirrors `canvas_bindings::shell_open`).
+    #[cfg(not(test))]
     fn system_opener() -> &'static str {
         #[cfg(target_os = "macos")]
         {
@@ -472,93 +506,218 @@ impl FileBrowserApp {
 
     // ─── Drawing ─────────────────────────────────────────────────────────────
 
-    fn draw_list(&mut self, ui: &mut egui::Ui, colors: &Colors) -> Option<(PathBuf, bool)> {
-        let mut navigate_to: Option<(PathBuf, bool)> = None;
-        let should_scroll = self.pending_scroll;
-        self.pending_scroll = false;
-        let display_count = if self.in_search {
+    fn visible_entry_count(&self) -> usize {
+        if self.in_search {
             self.search_indices.len()
         } else {
             self.entries.len()
-        };
-        for idx in 0..display_count {
-            let actual_idx = if self.in_search {
-                self.search_indices[idx]
-            } else {
-                idx
-            };
+        }
+    }
+
+    fn visible_entry_indices(&self) -> Vec<usize> {
+        if self.in_search {
+            self.search_indices.clone()
+        } else {
+            (0..self.entries.len()).collect()
+        }
+    }
+
+    fn entry_title(entry: &Entry) -> String {
+        if entry.is_dir {
+            format!("{}/", entry.name)
+        } else {
+            entry.name.clone()
+        }
+    }
+
+    fn entry_kind(entry: &Entry) -> &'static str {
+        if entry.is_dir {
+            "Folder"
+        } else if entry.is_image {
+            "Image"
+        } else {
+            "File"
+        }
+    }
+
+    fn entry_chip(entry: &Entry) -> &'static str {
+        if entry.is_dir {
+            "dir"
+        } else {
+            "file"
+        }
+    }
+
+    fn draw_compact_list(&mut self, ui: &mut egui::Ui, colors: &Colors) -> Option<(PathBuf, bool)> {
+        let mut navigate_to: Option<(PathBuf, bool)> = None;
+        let should_scroll = self.pending_scroll;
+        self.pending_scroll = false;
+        for (idx, actual_idx) in self.visible_entry_indices().into_iter().enumerate() {
             let entry = self.entries[actual_idx].clone();
-            let (rect, resp) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), ROW_HEIGHT),
-                egui::Sense::click(),
-            );
             let is_selected = self.selected == idx;
+            let secondary = if entry.is_dir {
+                format!(
+                    "{} \u{00b7} {}",
+                    Self::entry_kind(&entry),
+                    format_modified(entry.modified)
+                )
+            } else {
+                format!(
+                    "{} \u{00b7} {}",
+                    format_size(entry.size_bytes),
+                    format_modified(entry.modified)
+                )
+            };
+            let title = Self::entry_title(&entry);
+            let response = ListRow::new(&title)
+                .secondary(&secondary)
+                .leading_chip(Self::entry_chip(&entry))
+                .selected(is_selected)
+                .show(ui, colors);
             if is_selected && should_scroll {
-                resp.scroll_to_me(None);
+                response.scroll_to_me(None);
             }
-            let fill = if is_selected {
-                colors.bg_active
-            } else if resp.hovered() {
-                colors.bg_sidebar_hover
-            } else {
-                colors.bg_sidebar
-            };
-            ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
-            ui.painter().rect_stroke(
-                rect,
-                CornerRadius::same(6),
-                Stroke::new(
-                    if is_selected { 1.5 } else { 1.0 },
-                    if is_selected {
-                        colors.accent
-                    } else {
-                        colors.border
-                    },
-                ),
-                StrokeKind::Inside,
-            );
-
-            let icon_rect = egui::Rect::from_min_size(
-                egui::pos2(rect.left() + 8.0, rect.center().y - 12.0),
-                egui::vec2(24.0, 24.0),
-            );
-            paint_entry_icon(ui.painter(), icon_rect, &entry, colors);
-
-            let title = if entry.is_dir {
-                format!("{}/", entry.name)
-            } else {
-                entry.name.clone()
-            };
-            let sub = if entry.is_dir {
-                "directory".to_string()
-            } else {
-                format_size(entry.size_bytes)
-            };
-            ui.painter().text(
-                egui::pos2(rect.left() + 40.0, rect.top() + 10.0),
-                egui::Align2::LEFT_TOP,
-                title,
-                egui::FontId::proportional(11.5),
-                colors.text_primary,
-            );
-            ui.painter().text(
-                egui::pos2(rect.left() + 40.0, rect.top() + 32.0),
-                egui::Align2::LEFT_TOP,
-                format!("{sub} \u{00b7} {}", format_modified(entry.modified)),
-                egui::FontId::proportional(9.5),
-                colors.text_dim,
-            );
-
-            if resp.clicked() {
+            if response.row_clicked() {
                 self.selected = idx;
             }
-            if resp.double_clicked() {
+            if response.row_double_clicked() {
                 self.selected = idx;
                 navigate_to = Some((entry.path.clone(), entry.is_dir));
             }
-            ui.add_space(4.0);
         }
         navigate_to
+    }
+
+    fn draw_details_table(
+        &mut self,
+        ui: &mut egui::Ui,
+        colors: &Colors,
+    ) -> Option<(PathBuf, bool)> {
+        let should_scroll = self.pending_scroll;
+        self.pending_scroll = false;
+        self.draw_details_header(ui, colors);
+
+        let mut navigate_to = None;
+        for (idx, actual_idx) in self.visible_entry_indices().into_iter().enumerate() {
+            let entry = self.entries[actual_idx].clone();
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(ui.available_width(), DETAILS_ROW_H),
+                egui::Sense::click(),
+            );
+            if self.selected == idx && should_scroll {
+                response.scroll_to_me(None);
+            }
+            let selected = self.selected == idx;
+            let fill = if selected {
+                colors.bg_active
+            } else if response.hovered() {
+                colors.bg_hover
+            } else {
+                Color32::TRANSPARENT
+            };
+            ui.painter().rect_filled(rect, style::RADIUS_MD, fill);
+
+            self.paint_details_cells(ui, colors, rect, &entry, selected);
+
+            if response.clicked() {
+                self.selected = idx;
+            }
+            if response.double_clicked() {
+                self.selected = idx;
+                navigate_to = Some((entry.path.clone(), entry.is_dir));
+            }
+        }
+        navigate_to
+    }
+
+    fn draw_details_header(&self, ui: &mut egui::Ui, colors: &Colors) {
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), DETAILS_HEADER_H),
+            egui::Sense::hover(),
+        );
+        ui.painter()
+            .rect_filled(rect, style::RADIUS_MD, colors.bg_sidebar);
+        ui.painter().rect_stroke(
+            rect,
+            style::RADIUS_MD,
+            Stroke::new(1.0, colors.border),
+            StrokeKind::Inside,
+        );
+        let cols = self.details_columns(rect);
+        for (label, cell) in [
+            ("Name", cols.0),
+            ("Kind", cols.1),
+            ("Size", cols.2),
+            ("Modified", cols.3),
+        ] {
+            ui.painter().text(
+                egui::pos2(cell.left() + style::SPACE_SM, cell.center().y),
+                egui::Align2::LEFT_CENTER,
+                label,
+                egui::FontId::proportional(style::TEXT_HINT),
+                colors.text_dim,
+            );
+        }
+    }
+
+    fn paint_details_cells(
+        &self,
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        rect: egui::Rect,
+        entry: &Entry,
+        selected: bool,
+    ) {
+        let cols = self.details_columns(rect);
+        let primary = if selected {
+            colors.text_primary
+        } else {
+            colors.text_dim
+        };
+        let font = egui::FontId::proportional(style::TEXT_HINT);
+        let icon_rect = egui::Rect::from_min_size(
+            egui::pos2(cols.0.left() + style::SPACE_SM, cols.0.center().y - 9.0),
+            egui::vec2(18.0, 18.0),
+        );
+        paint_entry_icon(ui.painter(), icon_rect, entry, colors);
+        let name_cell = cols.0.shrink2(egui::vec2(28.0, 0.0));
+
+        for (text, cell, color) in [
+            (Self::entry_title(entry), name_cell, primary),
+            (Self::entry_kind(entry).to_string(), cols.1, colors.text_dim),
+            (format_size(entry.size_bytes), cols.2, colors.text_dim),
+            (format_modified(entry.modified), cols.3, colors.text_dim),
+        ] {
+            let text_pos = egui::pos2(cell.left() + style::SPACE_SM, cell.center().y);
+            ui.painter().text(
+                text_pos,
+                egui::Align2::LEFT_CENTER,
+                text,
+                font.clone(),
+                color,
+            );
+        }
+    }
+
+    fn details_columns(
+        &self,
+        rect: egui::Rect,
+    ) -> (egui::Rect, egui::Rect, egui::Rect, egui::Rect) {
+        let w = rect.width();
+        let name_w = (w * 0.48).clamp(180.0, 420.0);
+        let kind_w = 92.0;
+        let size_w = 96.0;
+        let name = egui::Rect::from_min_size(rect.min, egui::vec2(name_w, rect.height()));
+        let kind = egui::Rect::from_min_size(
+            egui::pos2(name.right(), rect.top()),
+            egui::vec2(kind_w, rect.height()),
+        );
+        let size = egui::Rect::from_min_size(
+            egui::pos2(kind.right(), rect.top()),
+            egui::vec2(size_w, rect.height()),
+        );
+        let modified = egui::Rect::from_min_max(egui::pos2(size.right(), rect.top()), rect.max);
+        (name, kind, size, modified)
     }
 
     fn draw_sidebar_preview(&mut self, ui: &mut egui::Ui, colors: &Colors) {
@@ -732,6 +891,106 @@ impl FileBrowserApp {
                 }
             });
     }
+
+    fn draw_toolbar(&mut self, ui: &mut egui::Ui, colors: &Colors, layout: FileBrowserLayout) {
+        ui.horizontal(|ui| {
+            ui.colored_label(
+                colors.accent,
+                egui::RichText::new(self.cwd.display().to_string())
+                    .size(style::TEXT_HINT)
+                    .monospace(),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let name_label = if self.sort_mode == SortMode::Name {
+                    "Name \u{2713}"
+                } else {
+                    "Name"
+                };
+                let recent_label = if self.sort_mode == SortMode::RecentlyTouched {
+                    "Recent \u{2713}"
+                } else {
+                    "Recent"
+                };
+                if ui.small_button(name_label).clicked() {
+                    self.sort_mode = SortMode::Name;
+                    self.refresh();
+                    log::info!("file_browser: sort changed to name");
+                }
+                if ui.small_button(recent_label).clicked() {
+                    self.sort_mode = SortMode::RecentlyTouched;
+                    self.refresh();
+                    log::info!("file_browser: sort changed to recent");
+                }
+                ui.label(
+                    egui::RichText::new(match layout {
+                        FileBrowserLayout::CompactList => "compact",
+                        FileBrowserLayout::DetailsTable => "details",
+                        FileBrowserLayout::DetailsWithInspector => "details + inspector",
+                    })
+                    .size(style::TEXT_HINT)
+                    .color(colors.text_dim),
+                );
+            });
+        });
+    }
+
+    fn draw_search_bar(&self, ui: &mut egui::Ui, colors: &Colors) {
+        ui.horizontal(|ui| {
+            ui.colored_label(colors.accent, "/");
+            ui.colored_label(
+                colors.text_primary,
+                if self.search_query.is_empty() {
+                    "type to filter\u{2026}"
+                } else {
+                    &self.search_query
+                },
+            );
+            let count = self.search_indices.len();
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.colored_label(
+                    colors.text_dim,
+                    format!("{count} match{}", if count == 1 { "" } else { "es" }),
+                );
+            });
+        });
+    }
+
+    fn draw_status_bar(&self, ui: &mut egui::Ui, colors: &Colors, layout: FileBrowserLayout) {
+        ui.add_space(style::SPACE_XS);
+        ui.separator();
+        ui.horizontal_wrapped(|ui| {
+            ui.set_min_height(STATUS_BAR_H);
+            let selected_label = self
+                .selected_entry()
+                .map(|entry| entry.name.as_str())
+                .unwrap_or("none");
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} items \u{00b7} selected: {}",
+                    self.visible_entry_count(),
+                    selected_label
+                ))
+                .size(style::TEXT_HINT)
+                .color(colors.text_dim),
+            );
+            if layout.shows_inspector() {
+                ui.label(
+                    egui::RichText::new("\u{00b7} inspector visible")
+                        .size(style::TEXT_HINT)
+                        .color(colors.text_dim),
+                );
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let hints = [
+                    HintGroup::new(&["/"], "search"),
+                    HintGroup::new(&["s"], "sort"),
+                    HintGroup::new(&["Enter"], "open"),
+                    HintGroup::new(&["Esc"], "close"),
+                ];
+                HintBar::new(&hints).show(ui, colors);
+            });
+        });
+    }
 }
 
 impl App for FileBrowserApp {
@@ -748,65 +1007,19 @@ impl App for FileBrowserApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
         let colors = ctx.colors;
+        let layout = FileBrowserLayout::for_width(ui.available_width());
 
         egui::Frame::new()
             .fill(colors.terminal_bg)
             .inner_margin(egui::Margin::symmetric(12, 8))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.colored_label(
-                        colors.accent,
-                        egui::RichText::new(self.cwd.display().to_string())
-                            .size(11.0)
-                            .monospace(),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let name_label = if self.sort_mode == SortMode::Name {
-                            "Name \u{2713}"
-                        } else {
-                            "Name"
-                        };
-                        let recent_label = if self.sort_mode == SortMode::RecentlyTouched {
-                            "Recent \u{2713}"
-                        } else {
-                            "Recent"
-                        };
-                        if ui.small_button(name_label).clicked() {
-                            self.sort_mode = SortMode::Name;
-                            self.refresh();
-                        }
-                        if ui.small_button(recent_label).clicked() {
-                            self.sort_mode = SortMode::RecentlyTouched;
-                            self.refresh();
-                        }
-                    });
-                });
-
-                ui.add_space(4.0);
+                self.draw_toolbar(ui, colors, layout);
 
                 if self.in_search {
-                    ui.horizontal(|ui| {
-                        ui.colored_label(colors.accent, "/");
-                        ui.colored_label(
-                            colors.text_primary,
-                            if self.search_query.is_empty() {
-                                "type to filter…"
-                            } else {
-                                &self.search_query
-                            },
-                        );
-                        let count = self.search_indices.len();
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.colored_label(
-                                colors.text_dim,
-                                format!("{count} match{}", if count == 1 { "" } else { "es" }),
-                            );
-                        });
-                    });
+                    self.draw_search_bar(ui, colors);
                 }
 
-                ui.separator();
-                ui.add_space(4.0);
+                ui.add_space(style::SPACE_XS);
 
                 if let Some(err) = &self.error.clone() {
                     ui.colored_label(colors.text_dim, err);
@@ -818,25 +1031,35 @@ impl App for FileBrowserApp {
                     return;
                 }
 
-                let show_sidebar = ui.available_width() >= MIN_SIDEBAR_WIDTH;
                 let mut navigate_to: Option<(PathBuf, bool)> = None;
+                let body_height = (ui.available_height() - STATUS_BAR_H).max(120.0);
 
-                if show_sidebar {
+                if layout.shows_inspector() {
                     ui.columns(2, |columns| {
+                        columns[0].set_min_width(DETAILS_TABLE_MIN_WIDTH);
+                        columns[1].set_min_width(240.0);
                         egui::ScrollArea::vertical()
                             .auto_shrink([false, false])
+                            .max_height(body_height)
                             .show(&mut columns[0], |ui| {
-                                navigate_to = self.draw_list(ui, colors);
+                                navigate_to = self.draw_details_table(ui, colors);
                             });
                         self.draw_sidebar_preview(&mut columns[1], colors);
                     });
                 } else {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
+                        .max_height(body_height)
                         .show(ui, |ui| {
-                            navigate_to = self.draw_list(ui, colors);
+                            navigate_to = if layout.shows_details() {
+                                self.draw_details_table(ui, colors)
+                            } else {
+                                self.draw_compact_list(ui, colors)
+                            };
                         });
                 }
+
+                self.draw_status_bar(ui, colors, layout);
 
                 if let Some((path, is_dir)) = navigate_to {
                     if is_dir {
@@ -1064,6 +1287,32 @@ mod tests {
         std::fs::write(dir.path().join("file.txt"), b"hi").expect("write");
         let app = FileBrowserApp::new(dir.path().to_path_buf());
         (app, dir)
+    }
+
+    #[test]
+    fn layout_policy_keeps_narrow_panes_compact() {
+        assert_eq!(
+            FileBrowserLayout::for_width(DETAILS_TABLE_MIN_WIDTH - 1.0),
+            FileBrowserLayout::CompactList
+        );
+        assert_eq!(
+            FileBrowserLayout::for_width(DETAILS_TABLE_MIN_WIDTH),
+            FileBrowserLayout::DetailsTable
+        );
+        assert_eq!(
+            FileBrowserLayout::for_width(INSPECTOR_MIN_WIDTH),
+            FileBrowserLayout::DetailsWithInspector
+        );
+    }
+
+    #[test]
+    fn layout_policy_exposes_details_and_inspector_separately() {
+        assert!(!FileBrowserLayout::CompactList.shows_details());
+        assert!(!FileBrowserLayout::CompactList.shows_inspector());
+        assert!(FileBrowserLayout::DetailsTable.shows_details());
+        assert!(!FileBrowserLayout::DetailsTable.shows_inspector());
+        assert!(FileBrowserLayout::DetailsWithInspector.shows_details());
+        assert!(FileBrowserLayout::DetailsWithInspector.shows_inspector());
     }
 
     // ── Regression tests for issue #926 ──────────────────────────────────────
