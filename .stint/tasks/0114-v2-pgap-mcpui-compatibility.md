@@ -1,0 +1,14 @@
+---
+id: "0114"
+title: "v2 PGAP: MCPUI compatibility research"
+status: backlog
+sprint: "s26"
+estimate: 8h
+blocked_by: []
+blocked_by_gh: []
+gh_issue: ["2056"]
+area: ["sdk/pgap", "apps/mcp-renderer"]
+tags: ["v2", "pgap", "mcpui"]
+---
+
+Explore MCPUI compatibility so Plexi apps can interoperate with MCP Apps hosts and Plexi can host MCPUI apps without compromising PGAP boundaries.
