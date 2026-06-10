@@ -1354,3 +1354,46 @@ fn dissolve_portal_preserves_multi_window_child_boundaries() {
         "no surviving PortalPane may point at the dissolved context"
     );
 }
+
+/// Issue #2121: CreateContext with windows creates anchor + N extra windows.
+/// Simulates what the CreateContext handler does after this change.
+#[test]
+fn create_context_with_windows_adds_extra_pages() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    // Create a new context (simulates the no-parent branch of CreateContext).
+    let ctx_count_before = app.router.len();
+    app.new_context();
+    // PTY may be unavailable in CI — new_context returns early without creating a context.
+    if app.router.len() == ctx_count_before {
+        return;
+    }
+    let ctx_id = app.router.active().context_id;
+    let initial_window_count = app.windows.iter().filter(|w| w.context_id == ctx_id).count();
+    assert_eq!(initial_window_count, 1, "new_context starts with 1 anchor window");
+
+    // Now simulate the windows loop from the CreateContext handler.
+    let cmds = vec!["echo a".to_string(), "echo b".to_string()];
+    let active_y = app.windows[app.active_window].grid_y;
+    let mut new_x = app
+        .windows
+        .iter()
+        .filter(|w| w.context_id == ctx_id && w.grid_y == active_y)
+        .map(|w| w.grid_x)
+        .max()
+        .map(|x| x + 1)
+        .unwrap_or(1);
+    for cmd in &cmds {
+        app.create_page_at(new_x, active_y, Some(cmd.as_str()), false);
+        new_x += 1;
+    }
+
+    let final_window_count = app.windows.iter().filter(|w| w.context_id == ctx_id).count();
+    assert_eq!(
+        final_window_count,
+        3,
+        "anchor + 2 --window args = 3 windows total"
+    );
+}

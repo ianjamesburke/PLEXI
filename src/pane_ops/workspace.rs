@@ -200,6 +200,8 @@ impl PlexiApp {
         &mut self,
         parent_name: &str,
         path: PathBuf,
+        vertical: bool,
+        new_pane_first: bool,
     ) -> Result<(), String> {
         let parent_idx = self
             .router
@@ -267,12 +269,12 @@ impl PlexiApp {
                 &mut self.windows[parent_win_idx].tree,
                 split_target,
                 sub_ctx_pane_id,
-                true, // vertical = side-by-side
+                vertical,
                 crate::host::command::ShareRatio {
                     numerator: 1.0,
                     denominator: 1.0,
                 },
-                false,
+                new_pane_first,
             );
             self.windows[parent_win_idx].panes.insert(
                 sub_ctx_pane_id,
@@ -331,7 +333,7 @@ impl PlexiApp {
             parent_path.display()
         );
 
-        match self.new_child_context(&parent_name, parent_path) {
+        match self.new_child_context(&parent_name, parent_path, true, false) {
             Ok(()) => {
                 let new_ctx_idx = self.router.len() - 1;
                 self.router

@@ -729,15 +729,40 @@ pub enum RegistryCmd {
 #[derive(Subcommand)]
 pub enum ContextCmd {
     /// Open a new context with an optional name.
+    ///
+    /// Examples:
+    ///   plexi context new "sprint"                          # top-level context
+    ///   plexi context new "sprint" --parent                 # child of current context (no-focus)
+    ///   plexi context new "sprint" --parent "main" -d       # child, portal splits below
+    ///   plexi context new "sprint" --parent --window "echo a" --window "echo b"
     New {
         /// Name for the new context. Defaults to the directory basename.
         name: Option<String>,
         /// Root path for the new context. Defaults to current working directory.
         #[arg(long)]
         path: Option<String>,
-        /// Create as a child of the named context. Defaults to current context if inside one.
-        #[arg(long)]
+        /// Create as a child of the named context.
+        /// With no value, uses the current context (reads PLEXI_CONTEXT_NAME from env).
+        #[arg(long, num_args = 0..=1, default_missing_value = "__current__")]
         parent: Option<String>,
+        /// Command to run in each pre-populated window. Repeatable.
+        #[arg(long, action = clap::ArgAction::Append)]
+        window: Vec<String>,
+        /// Focus (zoom into) the new sub-context after creation. Default: stay in current pane.
+        #[arg(long)]
+        focus: bool,
+        /// Split portal below instead of right (requires --parent).
+        #[arg(long, short = 'd', conflicts_with_all = ["left", "up", "right"])]
+        down: bool,
+        /// Split portal left (requires --parent).
+        #[arg(long, short = 'l', conflicts_with_all = ["down", "up", "right"])]
+        left: bool,
+        /// Split portal above (requires --parent).
+        #[arg(long, short = 'u', conflicts_with_all = ["down", "left", "right"])]
+        up: bool,
+        /// Split portal right — explicit (default, requires --parent).
+        #[arg(long, short = 'r', conflicts_with_all = ["down", "left", "up"])]
+        right: bool,
     },
     /// Switch the current pane to a context at the given path.
     Open { path: Option<String> },

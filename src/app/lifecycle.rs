@@ -944,13 +944,38 @@ impl PlexiApp {
                     root,
                     name,
                     parent_name,
+                    windows,
+                    focus,
+                    portal_direction,
+                    response_file,
                 } => {
+                    // Map direction string to insert_split_tile params.
+                    // vertical=true  → side-by-side (left/right)
+                    // vertical=false → stacked (up/down)
+                    // new_pane_first=true → portal appears before the existing pane (left/up)
+                    let (portal_vertical, portal_first) = match portal_direction
+                        .as_deref()
+                        .unwrap_or("right")
+                    {
+                        "down" => (false, false),
+                        "up" => (false, true),
+                        "left" => (true, true),
+                        _ => (true, false), // "right" is default
+                    };
                     log::info!(
-                        "pane_ipc: kind=create_context root={:?} name={:?} parent_name={:?}",
+                        "pane_ipc: kind=create_context root={:?} name={:?} parent_name={:?} \
+                         windows={} focus={focus} direction={:?}",
                         root,
                         name,
-                        parent_name
+                        parent_name,
+                        windows.len(),
+                        portal_direction
                     );
+                    let mut ctx_ok = true;
+                    // Track which context was active before and which context was just created.
+                    // Windows must be placed in the new context regardless of focus state.
+                    let orig_ctx_id = self.router.active().context_id;
+                    let mut new_ctx_id = orig_ctx_id;
                     if let Some(pname) = parent_name {
                         let path = root.as_ref().cloned().unwrap_or_else(|| {
                             let p = self.router.active().path.clone();
@@ -963,21 +988,30 @@ impl PlexiApp {
                         let current_ctx_id = self.router.active().context_id;
                         let current_win_id = self.windows[self.active_window].window_id;
                         let current_focused = self.windows[self.active_window].focused_pane;
-                        if let Err(e) = self.new_child_context(pname.as_str(), path) {
+                        if let Err(e) =
+                            self.new_child_context(pname.as_str(), path, portal_vertical, portal_first)
+                        {
                             log::warn!("pane_ipc: create_context with parent failed: {e}");
+                            ctx_ok = false;
                         } else {
                             if let Some(n) = name {
                                 let idx = self.router.len() - 1;
                                 self.router.get_mut(idx).name = n.clone();
                             }
                             let new_ctx_idx = self.router.len() - 1;
-                            let new_ctx_id = self.router.get(new_ctx_idx).context_id;
-                            self.router
-                                .push_depth(current_ctx_id, current_win_id, current_focused);
-                            self.switch_workspace(new_ctx_idx);
-                            log::info!(
-                                "pane_ipc: auto-zoomed into new child context ctx_id={new_ctx_id}"
-                            );
+                            new_ctx_id = self.router.get(new_ctx_idx).context_id;
+                            if *focus {
+                                self.router
+                                    .push_depth(current_ctx_id, current_win_id, current_focused);
+                                self.switch_workspace(new_ctx_idx);
+                                log::info!(
+                                    "pane_ipc: zoomed into new child context ctx_id={new_ctx_id}"
+                                );
+                            } else {
+                                log::info!(
+                                    "pane_ipc: created child context ctx_id={new_ctx_id} (no-focus)"
+                                );
+                            }
                         }
                     } else {
                         if let Some(r) = root {
@@ -988,6 +1022,70 @@ impl PlexiApp {
                         if let Some(n) = name {
                             let idx = self.router.len() - 1;
                             self.router.get_mut(idx).name = n.clone();
+                        }
+                        new_ctx_id = self.router.get(self.router.len() - 1).context_id;
+                    }
+                    if ctx_ok && !windows.is_empty() {
+                        // When no-focus, active context is still the parent — temporarily switch
+                        // to the new context so create_page_at places windows there, then restore.
+                        let need_restore = self.router.active().context_id != new_ctx_id;
+                        if need_restore {
+                            if let Some(idx) =
+                                self.router.position(|c| c.context_id == new_ctx_id)
+                            {
+                                self.switch_workspace(idx);
+                            }
+                        }
+                        let active_y = self.windows[self.active_window].grid_y;
+                        let mut new_x = self
+                            .windows
+                            .iter()
+                            .filter(|w| w.context_id == new_ctx_id && w.grid_y == active_y)
+                            .map(|w| w.grid_x)
+                            .max()
+                            .map(|x| x + 1)
+                            .unwrap_or(1);
+                        for cmd in windows {
+                            log::info!(
+                                "pane_ipc: create_context window ctx_id={new_ctx_id} grid_x={new_x} cmd={cmd:?}"
+                            );
+                            self.create_page_at(new_x, active_y, Some(cmd.as_str()), false);
+                            new_x += 1;
+                        }
+                        if need_restore {
+                            if let Some(idx) =
+                                self.router.position(|c| c.context_id == orig_ctx_id)
+                            {
+                                self.switch_workspace(idx);
+                            }
+                        }
+                    }
+                    // Write JSON response for callers that passed a response_file path.
+                    if ctx_ok {
+                        if let Some(rf) = response_file {
+                            let windows_info: Vec<serde_json::Value> = self
+                                .windows
+                                .iter()
+                                .filter(|w| w.context_id == new_ctx_id)
+                                .map(|w| {
+                                    serde_json::json!({
+                                        "window_id": w.window_id,
+                                        "grid_x": w.grid_x,
+                                        "grid_y": w.grid_y,
+                                    })
+                                })
+                                .collect();
+                            let response = serde_json::json!({
+                                "context_id": new_ctx_id,
+                                "windows": windows_info,
+                            });
+                            if let Ok(s) = serde_json::to_string(&response) {
+                                if let Err(e) = std::fs::write(&rf, s) {
+                                    log::warn!(
+                                        "pane_ipc: create_context failed to write response file {rf}: {e}"
+                                    );
+                                }
+                            }
                         }
                     }
                     self.save_workspace();

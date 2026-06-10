@@ -69,7 +69,7 @@ app action ID ACTION [ARGS]  Send a semantic action to a running app (not raw te
 ### context -- manage project scopes
 
 ```
-context new [NAME]       New context. --path DIR, --parent NAME.
+context new [NAME]       New context. --path DIR, --parent NAME, --window CMD (repeatable; creates extra windows atomically).
 context open [PATH]      Switch current pane to a context at PATH.
 context set-root [PATH]  Change root folder for active context.
 context current          Print context id/name as JSON.
