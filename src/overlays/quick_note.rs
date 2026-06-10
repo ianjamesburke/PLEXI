@@ -163,9 +163,13 @@ impl PlexiApp {
 
     /// Quick note destination picker: digit keys route instantly; arrows/jk navigate.
     pub(crate) fn draw_quick_note_destination(&mut self, ctx: &egui::Context) {
-        use crate::ui::style;
-        use crate::ui::widgets;
-        use egui::{Align2, RichText, Vec2};
+        use crate::ui::{
+            hints::{HintBar, HintGroup},
+            list::ListRow,
+            overlay::ModalShell,
+            style,
+        };
+        use egui::RichText;
 
         let dest_count = self
             .config
@@ -343,17 +347,6 @@ impl PlexiApp {
         // Render
         let screen_rect = ctx.screen_rect();
 
-        egui::Area::new(egui::Id::new("quick_note_scrim"))
-            .fixed_pos(screen_rect.min)
-            .order(egui::Order::Middle)
-            .show(ctx, |ui| {
-                ui.painter().rect_filled(
-                    screen_rect,
-                    0.0,
-                    egui::Color32::from_black_alpha(style::SCRIM_ALPHA),
-                );
-            });
-
         let modal_w = (screen_rect.width() * 0.6).min(672.0).max(408.0);
         let cursor = self.quick_note_dest_cursor;
         let destinations = self
@@ -362,133 +355,84 @@ impl PlexiApp {
             .as_ref()
             .map(|qn| qn.destinations.as_slice())
             .unwrap_or(&[]);
-        egui::Area::new(egui::Id::new("quick_note_dest_modal"))
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
-                    .stroke(egui::Stroke::new(1.0, self.colors.border))
-                    .corner_radius(egui::CornerRadius::same(8))
-                    .inner_margin(egui::Margin::symmetric(24, 20))
-                    .show(ui, |ui| {
-                        ui.set_width(modal_w);
-
-                        // Note preview — up to 4 lines, each truncated at 80 chars.
-                        let preview = {
-                            let t = self.quick_note_text.trim();
-                            let mut lines: Vec<String> = t
-                                .lines()
-                                .take(4)
-                                .map(|line| {
-                                    if let Some((idx, _)) = line.char_indices().nth(80) {
-                                        format!("{}…", &line[..idx])
-                                    } else {
-                                        line.to_string()
-                                    }
-                                })
-                                .collect();
-                            if t.lines().count() > 4 {
-                                lines.push("…".to_string());
+        let colors = self.colors;
+        ModalShell::centered("quick_note_picker")
+            .width(modal_w)
+            .click_away(false)
+            .show(ctx, &colors, |ui| {
+                // Note preview — up to 4 lines, each truncated at 80 chars.
+                let preview = {
+                    let t = self.quick_note_text.trim();
+                    let mut lines: Vec<String> = t
+                        .lines()
+                        .take(4)
+                        .map(|line| {
+                            if let Some((idx, _)) = line.char_indices().nth(80) {
+                                format!("{}...", &line[..idx])
+                            } else {
+                                line.to_string()
                             }
-                            lines.join("\n")
-                        };
-                        ui.label(
-                            RichText::new(&preview)
-                                .color(self.colors.text_dim.linear_multiply(0.5))
-                                .size(style::TEXT_BODY)
-                                .family(egui::FontFamily::Monospace),
-                        );
-                        ui.add_space(style::SPACE_XL);
+                        })
+                        .collect();
+                    if t.lines().count() > 4 {
+                        lines.push("...".to_string());
+                    }
+                    lines.join("\n")
+                };
+                ui.label(
+                    RichText::new(&preview)
+                        .color(colors.text_dim.linear_multiply(0.5))
+                        .size(style::TEXT_BODY)
+                        .family(egui::FontFamily::Monospace),
+                );
+                ui.add_space(style::SPACE_XL);
 
-                        ui.label(
-                            RichText::new("Send to…")
-                                .color(self.colors.text_primary)
-                                .size(style::TEXT_BODY),
-                        );
-                        ui.add_space(style::SPACE_MD);
+                ui.label(
+                    RichText::new("Send to...")
+                        .color(colors.text_primary)
+                        .size(style::TEXT_BODY),
+                );
+                ui.add_space(style::SPACE_MD);
 
-                        // Row 0: global backlog
-                        let row0_frame = if cursor == 0 {
-                            egui::Frame::new()
-                                .fill(self.colors.bg_active)
-                                .corner_radius(egui::CornerRadius::same(4))
-                                .inner_margin(egui::Margin::symmetric(4, 2))
-                        } else {
-                            egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2))
-                        };
-                        row0_frame.show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = style::SPACE_SM;
-                                widgets::key_chip(
-                                    ui,
-                                    "0",
-                                    &self.colors,
-                                    egui::FontId::monospace(style::TEXT_CAPTION),
-                                );
-                                ui.label(
-                                    RichText::new("Backlog (global)")
-                                        .color(self.colors.text_dim)
-                                        .size(style::TEXT_BODY),
-                                );
-                            });
-                        });
-                        ui.add_space(style::SPACE_SM);
+                ListRow::new("Backlog (global)")
+                    .leading_chip("0")
+                    .selected(cursor == 0)
+                    .show(ui, &colors);
 
-                        // Config destinations
-                        for (idx, dest) in destinations.iter().enumerate() {
-                            let row_idx = idx + 1;
-                            let label = if dest.options.is_some() || dest.children_cmd.is_some() {
-                                format!("{} ›", dest.label)
-                            } else {
-                                dest.label.clone()
-                            };
-                            let row_frame = if cursor == row_idx {
-                                egui::Frame::new()
-                                    .fill(self.colors.bg_active)
-                                    .corner_radius(egui::CornerRadius::same(4))
-                                    .inner_margin(egui::Margin::symmetric(4, 2))
-                            } else {
-                                egui::Frame::new().inner_margin(egui::Margin::symmetric(4, 2))
-                            };
-                            row_frame.show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = style::SPACE_SM;
-                                    widgets::key_chip(
-                                        ui,
-                                        &dest.key.to_string(),
-                                        &self.colors,
-                                        egui::FontId::monospace(style::TEXT_CAPTION),
-                                    );
-                                    ui.label(
-                                        RichText::new(&label)
-                                            .color(self.colors.text_dim)
-                                            .size(style::TEXT_BODY),
-                                    );
-                                });
-                            });
-                            ui.add_space(style::SPACE_SM);
-                        }
+                for (idx, dest) in destinations.iter().enumerate() {
+                    let row_idx = idx + 1;
+                    let key = dest.key.to_string();
+                    let row = ListRow::new(&dest.label)
+                        .leading_chip(&key)
+                        .selected(cursor == row_idx);
+                    if dest.options.is_some() || dest.children_cmd.is_some() {
+                        row.trailing_action("›").show(ui, &colors);
+                    } else {
+                        row.show(ui, &colors);
+                    }
+                }
 
-                        ui.add_space(style::SPACE_XL);
-                        ui.label(
-                            RichText::new(
-                                "↑↓/jk navigate  ·  Enter select  ·  n add dest  ·  H/Esc back",
-                            )
-                            .color(self.colors.text_dim.linear_multiply(0.4))
-                            .size(style::TEXT_HINT)
-                            .family(egui::FontFamily::Monospace),
-                        );
-                    });
+                ui.add_space(style::SPACE_SM);
+                let hints = [
+                    HintGroup::new(&["↑", "↓", "j", "k"], "navigate"),
+                    HintGroup::new(&["Enter"], "select"),
+                    HintGroup::new(&["n"], "add dest"),
+                    HintGroup::new(&["H", "Esc"], "back"),
+                ];
+                HintBar::new(&hints).show(ui, &colors);
             });
     }
 
     /// Recursive quick-note menu renderer. `key_path` is the sequence of keys from the
     /// root destinations list to the current node. E.g. `&[3]` = children of destination 3.
     pub(crate) fn draw_quick_note_menu(&mut self, ctx: &egui::Context, key_path: &[u8]) {
-        use crate::ui::style;
-        use crate::ui::widgets;
-        use egui::{Align2, RichText, Vec2};
+        use crate::ui::{
+            hints::{HintBar, HintGroup},
+            list::ListRow,
+            overlay::ModalShell,
+            style,
+        };
+        use egui::RichText;
 
         // Resolve the current node by walking key_path through the config tree.
         let node: Option<crate::config::QuickNoteNode> = {
@@ -722,92 +666,51 @@ impl PlexiApp {
 
         // ── Render ────────────────────────────────────────────────────────────────
         let screen_rect = ctx.screen_rect();
-        egui::Area::new(egui::Id::new("quick_note_scrim"))
-            .fixed_pos(screen_rect.min)
-            .order(egui::Order::Middle)
-            .show(ctx, |ui| {
-                ui.painter().rect_filled(
-                    screen_rect,
-                    0.0,
-                    egui::Color32::from_black_alpha(style::SCRIM_ALPHA),
-                );
-            });
-
         let modal_w = (screen_rect.width() * 0.6).min(672.0).max(408.0);
         let sub_cursor = self.quick_note_sub_cursor;
         let node_label = node.as_ref().map(|n| n.label.as_str()).unwrap_or("Menu");
+        let colors = self.colors;
 
-        egui::Area::new(egui::Id::new("quick_note_sub_modal"))
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
-                    .stroke(egui::Stroke::new(1.0, self.colors.border))
-                    .corner_radius(egui::CornerRadius::same(8))
-                    .inner_margin(egui::Margin::symmetric(24, 20))
-                    .show(ui, |ui| {
-                        ui.set_width(modal_w);
-
-                        ui.label(
-                            RichText::new(node_label)
-                                .color(self.colors.text_primary)
-                                .size(style::TEXT_BODY)
-                                .strong(),
-                        );
-                        ui.add_space(style::SPACE_MD);
-
-                        if loading {
-                            ui.label(
-                                RichText::new("Loading…")
-                                    .color(self.colors.text_dim)
-                                    .size(style::TEXT_BODY),
-                            );
-                        } else if children.is_empty() {
-                            ui.label(
-                                RichText::new("No items")
-                                    .color(self.colors.text_dim.linear_multiply(0.5))
-                                    .size(style::TEXT_BODY),
-                            );
+        ModalShell::centered("quick_note_picker")
+            .title(node_label)
+            .width(modal_w)
+            .click_away(false)
+            .show(ctx, &colors, |ui| {
+                if loading {
+                    ui.label(
+                        RichText::new("Loading...")
+                            .color(colors.text_dim)
+                            .size(style::TEXT_BODY),
+                    );
+                } else if children.is_empty() {
+                    ui.label(
+                        RichText::new("No items")
+                            .color(colors.text_dim.linear_multiply(0.5))
+                            .size(style::TEXT_BODY),
+                    );
+                } else {
+                    for (idx, child) in children.iter().enumerate() {
+                        let key = child.key.to_string();
+                        let row = ListRow::new(&child.label)
+                            .leading_chip(&key)
+                            .selected(sub_cursor == idx);
+                        if child.options.is_some() || child.children_cmd.is_some() {
+                            row.trailing_action("›").show(ui, &colors);
                         } else {
-                            for (idx, child) in children.iter().enumerate() {
-                                let child_label = if child.options.is_some() || child.children_cmd.is_some() {
-                                    format!("{} ›", child.label)
-                                } else {
-                                    child.label.clone()
-                                };
-                                let row_frame = if sub_cursor == idx {
-                                    egui::Frame::new()
-                                        .fill(self.colors.bg_active)
-                                        .corner_radius(egui::CornerRadius::same(4))
-                                        .inner_margin(egui::Margin::symmetric(4, 2))
-                                } else {
-                                    egui::Frame::new()
-                                        .inner_margin(egui::Margin::symmetric(4, 2))
-                                };
-                                row_frame.show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = style::SPACE_SM;
-                                        widgets::key_chip(ui, &child.key.to_string(), &self.colors, egui::FontId::monospace(style::TEXT_CAPTION));
-                                        ui.label(
-                                            RichText::new(&child_label)
-                                                .color(self.colors.text_dim)
-                                                .size(style::TEXT_BODY),
-                                        );
-                                    });
-                                });
-                                ui.add_space(style::SPACE_SM);
-                            }
+                            row.show(ui, &colors);
                         }
+                    }
+                }
 
-                        ui.add_space(style::SPACE_XL);
-                        ui.label(
-                            RichText::new("↑↓/jk navigate  ·  Enter select  ·  L enter  ·  n add dest  ·  H/Esc back")
-                                .color(self.colors.text_dim.linear_multiply(0.4))
-                                .size(style::TEXT_HINT)
-                                .family(egui::FontFamily::Monospace),
-                        );
-                    });
+                ui.add_space(style::SPACE_SM);
+                let hints = [
+                    HintGroup::new(&["↑", "↓", "j", "k"], "navigate"),
+                    HintGroup::new(&["Enter"], "select"),
+                    HintGroup::new(&["L"], "enter"),
+                    HintGroup::new(&["n"], "add dest"),
+                    HintGroup::new(&["H", "Esc"], "back"),
+                ];
+                HintBar::new(&hints).show(ui, &colors);
             });
     }
 
