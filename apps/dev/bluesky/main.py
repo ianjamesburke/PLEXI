@@ -34,6 +34,7 @@ NARROW_W  = 400    # pane width threshold for compact layout
 IMG_MIN_H = 96.0
 IMG_MAX_H = 200.0
 IMG_FRAC  = 0.36
+THREAD_TEXT_SIZE = 14.0
 # Thread row layout constants
 _TH_TOP   = 6.0    # padding above author line
 _TH_GAP   = 4.0    # gap between author line and text
@@ -85,7 +86,7 @@ def _est_text_h(text: str, avail_w: float) -> float:
     """Fallback only; live thread rows use host text measurement."""
     chars_per_line = max(20, avail_w / 7.5)
     lines = max(1, -(-len(text) // int(chars_per_line)))  # ceil
-    return lines * (HINT + 5.0)
+    return lines * (THREAD_TEXT_SIZE + 5.0)
 
 
 def _image_h(pane_w: float) -> float:
@@ -292,7 +293,7 @@ class BlueskyApp(App):
             post = item["post"]
             avail_w = self._thread_text_w(pane_w, int(item.get("depth", 0)))
             try:
-                text_h = await self.emit.measure_text_wrapped(_text(post), HINT, avail_w)
+                text_h = await self.emit.measure_text_wrapped(_text(post), THREAD_TEXT_SIZE, avail_w)
             except Exception as exc:
                 self.emit.warn(f"bluesky: thread text measure failed: {exc}")
                 text_h = _est_text_h(_text(post), avail_w)
@@ -457,7 +458,7 @@ class BlueskyApp(App):
                 ctx.text(ctx.w - PAD - 32, y + _TH_TOP, ts, size=HINT, color=ctx.theme.muted)
 
             text_y = y + _TH_TOP + HINT + _TH_GAP
-            ctx.markdown(t_x, text_y, avail_w, _text(post))
+            ctx.markdown(t_x, text_y, avail_w, _text(post), base_size=THREAD_TEXT_SIZE)
 
             text_h = text_heights[idx]
             img_y  = text_y + text_h + _TH_IMGAP
