@@ -7,6 +7,21 @@ This PRM defines the path from hand-built egui overlays to a Plexi-owned host UI
 
 It does not cover PGAP app authoring, SDK component trees, app marketplace UI, or WebView/native app rendering. Those belong to the app framework PRM.
 
+## Progress
+
+GitHub issue state is the source of truth. This table is the PRM reader's map so finished work is visible without re-deriving the sequence from closed issues.
+
+When a PRD-backed issue lands, update its row in this table before treating the issue as closed out. If a step is superseded, mark it `Superseded` and link the replacement issue. If a step reopens, move it back to `Ready`, `In progress`, or `Blocked`.
+
+| Step | Issue | Status | Completion note |
+|---|---|---|---|
+| 1. ListRow + NotesPicker | [#2122](https://github.com/ianjamesburke/PLEXI/issues/2122) | Ready | Not started |
+| 2. ModalShell + HintBar | [#2123](https://github.com/ianjamesburke/PLEXI/issues/2123) | Blocked | Blocked by #2122 |
+| 3. TextField focus registration | [#2124](https://github.com/ianjamesburke/PLEXI/issues/2124) | Blocked | Blocked by #2123 |
+| 4. CommandPalette migration | [#2125](https://github.com/ianjamesburke/PLEXI/issues/2125) | Blocked | Blocked by #2122, #2123, #2124 |
+| 5. QuickNote menu migration | [#2126](https://github.com/ianjamesburke/PLEXI/issues/2126) | Blocked | Blocked by #2122, #2123, #2124 |
+| 6. Host UI gallery | [#2127](https://github.com/ianjamesburke/PLEXI/issues/2127) | Blocked | Blocked by #2122, #2123, #2124 |
+
 ## Purpose
 
 Host UI should feel like Plexi, not like default egui.

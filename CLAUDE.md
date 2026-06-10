@@ -24,6 +24,8 @@ For host-level UI chrome work (modals, overlays, palettes, rows, text fields, bu
 
 For File Explorer overhaul work, read `docs/prm/file-explorer-overhaul.md` after `docs/prm/host-ui-kit.md`. The File Explorer PRD is intentionally queued behind the Host UI Kit rework; do not rebuild File Explorer-specific row, table, modal, button, text field, or hint primitives that belong in the shared host UI kit.
 
+When a PRD has a `Progress` table, update the relevant row in the same change that finishes or supersedes an issue. Do not make future agents infer PRD completion only from closed GitHub issues.
+
 GitHub issues are implementation tickets. To choose the next dispatch, match open issues against the first unfinished milestone in the PRM, skip anything blocked or in progress, then choose parallel lanes whose `area:*` labels do not overlap. If the PRM calls for work that has no issue yet, create or triage the issue before dispatching.
 
 ## North Star
