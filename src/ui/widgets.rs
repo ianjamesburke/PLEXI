@@ -210,6 +210,51 @@ pub(crate) fn styled_text_input(
     .inner
 }
 
+pub(crate) struct TextField<'a> {
+    id: egui::Id,
+    hint: egui::WidgetText,
+    focused: bool,
+    log_name: &'a str,
+}
+
+impl<'a> TextField<'a> {
+    pub(crate) fn singleline(id: egui::Id, hint: impl Into<egui::WidgetText>) -> Self {
+        Self {
+            id,
+            hint: hint.into(),
+            focused: false,
+            log_name: "text_field",
+        }
+    }
+
+    pub(crate) fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    pub(crate) fn log_name(mut self, log_name: &'a str) -> Self {
+        self.log_name = log_name;
+        self
+    }
+
+    pub(crate) fn show(
+        self,
+        ui: &mut egui::Ui,
+        buf: &mut String,
+        colors: &Colors,
+    ) -> egui::Response {
+        let response = styled_text_input(ui, buf, self.hint, self.id, colors);
+        if self.focused {
+            crate::ui::focus::register_overlay_focus(ui.ctx(), self.id);
+            if !response.has_focus() {
+                response.request_focus();
+                log::info!("{}: focus requested for host TextField", self.log_name);
+            }
+        }
+        response
+    }
+}
+
 /// 📋 / ✓ copy-to-clipboard button. Shows the clipboard icon normally; switches
 /// to ✓ for 2 seconds after a successful copy. `id` must be unique per call site.
 pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::Response {
