@@ -1,14 +1,23 @@
 ---
 id: "0048"
 title: "App refresh: Stats idle-aware overhaul"
-status: backlog
+status: in-progress
+estimate: "8h"
+started_at: "2026-06-10T23:58:36Z"
 sprint: "s7"
-estimate: 8h
 blocked_by: []
-gh_issue: ["2144"]
-area: ["apps/stats", "host/events"]
-tags: ["v1", "apps", "app-refresh", "stats"]
+gh_issue:
+  - "2144"
+area:
+  - "apps/stats"
+  - "host/events"
+tags:
+  - "v1"
+  - "apps"
+  - "app-refresh"
+  - "stats"
 ---
+
 
 Refresh the Stats app UI and make its time calculations ignore or clamp idle focus segments caused by leaving a pane open while away.
 
