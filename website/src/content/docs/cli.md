@@ -479,7 +479,7 @@ Like `pip freeze` — captures exactly what's installed so you can replay it lat
 
 Publish an app to the Plexi marketplace.
 
-The Plexi app marketplace is under development. This command will be available in a future release.
+Publishing is on the v1 marketplace roadmap. Use app validate and local package install flows until the hosted publisher path ships.
 
 ### `plexi app update`
 
