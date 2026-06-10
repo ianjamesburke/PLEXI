@@ -130,6 +130,14 @@ impl ListRowResponse {
         self.row.clicked()
     }
 
+    pub fn row_hovered(&self) -> bool {
+        self.row.hovered()
+    }
+
+    pub fn scroll_to_me(&self, align: Option<egui::Align>) {
+        self.row.scroll_to_me(align);
+    }
+
     pub fn trailing_clicked(&self) -> bool {
         self.trailing.as_ref().is_some_and(Response::clicked)
     }
