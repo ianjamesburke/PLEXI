@@ -103,6 +103,7 @@ impl PlexiApp {
                                 "context_name": context_name,
                                 "window_id": win.window_id,
                                 "cwd": cwd,
+                                "agent": pane.agent(),
                             }));
                         }
                     }
@@ -168,6 +169,7 @@ impl PlexiApp {
                         if let Some(pane) = win.panes.get(pane_id) {
                             let focused =
                                 win_idx == active_win && focused_pane_id == Some(*pane_id);
+                            let agent = pane.agent();
                             let info = match pane {
                                 crate::host::pane::Pane::Terminal(t) => {
                                     let cwd =
@@ -181,6 +183,7 @@ impl PlexiApp {
                                         "context_id": win.context_id,
                                         "window_id": win.window_id,
                                         "cwd": cwd,
+                                        "agent": agent,
                                     })
                                 }
                                 crate::host::pane::Pane::App(a) => {
@@ -193,6 +196,7 @@ impl PlexiApp {
                                         "window_id": win.window_id,
                                         "cwd": a.workspace_root.to_string_lossy().as_ref(),
                                         "manifest_id": a.manifest_id.clone(),
+                                        "agent": agent,
                                     })
                                 }
                                 crate::host::pane::Pane::Portal(p) => {
@@ -317,7 +321,6 @@ impl PlexiApp {
                     if before == after {
                         log::warn!("pane_ipc: close_pane: pane_id={pane_id} not found");
                     }
-                    self.pane_agent_states.remove(pane_id);
                 }
                 crate::app_protocol::AppRequest::SpawnPane {
                     type_id,
@@ -848,20 +851,34 @@ impl PlexiApp {
                     log::info!(
                         "pane_ipc: kind=set_agent_state pane_id={pane_id} agent={agent} state={state:?}"
                     );
-                    self.pane_agent_states.insert(
-                        *pane_id,
-                        crate::app_protocol::PaneAgentState {
-                            pane_id: *pane_id,
-                            state: state.clone(),
-                            agent: agent.clone(),
-                            session_id: session_id.clone(),
-                        },
-                    );
+                    let mut found = false;
+                    for win in &mut self.windows {
+                        if let Some(pane) = win.panes.get_mut(pane_id) {
+                            found = pane.set_agent(Some(crate::app_protocol::PaneAgentState {
+                                pane_id: *pane_id,
+                                state: state.clone(),
+                                agent: agent.clone(),
+                                session_id: session_id.clone(),
+                            }));
+                            break;
+                        }
+                    }
+                    if found {
+                        log::info!("pane_ipc: set_agent_state: pane_id={pane_id} stored on pane");
+                    } else {
+                        log::warn!(
+                            "pane_ipc: set_agent_state: pane_id={pane_id} not found or not agent-addressable"
+                        );
+                    }
                 }
                 crate::app_protocol::AppRequest::GetAgentStates { response_file } => {
                     log::info!("pane_ipc: kind=get_agent_states response_file={response_file:?}");
-                    let states: Vec<&crate::app_protocol::PaneAgentState> =
-                        self.pane_agent_states.values().collect();
+                    let states: Vec<&crate::app_protocol::PaneAgentState> = self
+                        .windows
+                        .iter()
+                        .flat_map(|win| win.panes.values())
+                        .filter_map(|pane| pane.agent())
+                        .collect();
                     let json_str =
                         serde_json::to_string(&states).unwrap_or_else(|_| "[]".to_string());
                     let temp = format!("{response_file}.tmp");
@@ -1434,7 +1451,6 @@ impl PlexiApp {
         }
 
         for pane_id in panes_to_close {
-            self.pane_agent_states.remove(&pane_id);
             self.close_pane_by_id(pane_id);
         }
     }

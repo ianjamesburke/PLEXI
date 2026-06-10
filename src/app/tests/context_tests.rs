@@ -947,6 +947,7 @@ fn test_app_pane(pane_id: u64) -> crate::host::pane::Pane {
         linked_pane_id: None,
         overlay_replaced: None,
         hidden: false,
+        agent: None,
     }))
 }
 

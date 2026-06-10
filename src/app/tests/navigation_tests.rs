@@ -158,6 +158,7 @@ fn send_to_pane_searches_all_windows() {
             linked_pane_id: None,
             overlay_replaced: None,
             hidden: false,
+            agent: None,
         }
     };
     win1.panes.insert(
@@ -230,6 +231,7 @@ fn pane_list_excludes_orphaned_panes_and_navigate_succeeds() {
         linked_pane_id: None,
         overlay_replaced: None,
         hidden: false,
+        agent: None,
     }));
     h.app.windows[0].panes.insert(orphan_id, orphan_pane);
     assert!(
@@ -265,6 +267,158 @@ fn pane_list_excludes_orphaned_panes_and_navigate_succeeds() {
     }
 
     let _ = std::fs::remove_file(&resp_file);
+}
+
+#[test]
+fn pane_info_and_list_include_agent_state() {
+    let mut h = HostHarness::new();
+    let pane_id = h.add_test_pane();
+
+    h.inject_ipc(crate::app_protocol::AppRequest::SetAgentState {
+        pane_id,
+        state: crate::app_protocol::AgentState::Working,
+        agent: "claude-code".to_string(),
+        session_id: Some("session-33".to_string()),
+    });
+    h.app.drain_pane_cmd_channel();
+
+    let info_file = std::env::temp_dir().join("plexi_test_pane_info_agent_2119.json");
+    h.inject_ipc(crate::app_protocol::AppRequest::GetPaneInfo {
+        pane_id,
+        response_file: info_file.to_string_lossy().to_string(),
+    });
+    h.app.drain_pane_cmd_channel();
+
+    let info_json =
+        std::fs::read_to_string(&info_file).expect("GetPaneInfo must write response file");
+    let info: serde_json::Value = serde_json::from_str(&info_json).expect("valid pane info JSON");
+    assert_eq!(info["agent"]["pane_id"], pane_id);
+    assert_eq!(info["agent"]["state"], "working");
+    assert_eq!(info["agent"]["agent"], "claude-code");
+    assert_eq!(info["agent"]["session_id"], "session-33");
+
+    let list_file = std::env::temp_dir().join("plexi_test_pane_list_agent_2119.json");
+    h.inject_ipc(crate::app_protocol::AppRequest::ListPanes {
+        response_file: list_file.to_string_lossy().to_string(),
+        context_id: None,
+    });
+    h.app.drain_pane_cmd_channel();
+
+    let list_json =
+        std::fs::read_to_string(&list_file).expect("ListPanes must write response file");
+    let panes: Vec<serde_json::Value> = serde_json::from_str(&list_json).expect("valid JSON");
+    let pane = panes
+        .iter()
+        .find(|pane| pane["id"].as_u64() == Some(pane_id))
+        .expect("pane must be present in pane list");
+    assert_eq!(pane["agent"]["pane_id"], pane_id);
+    assert_eq!(pane["agent"]["state"], "working");
+    assert_eq!(pane["agent"]["agent"], "claude-code");
+    assert_eq!(pane["agent"]["session_id"], "session-33");
+
+    let _ = std::fs::remove_file(&info_file);
+    let _ = std::fs::remove_file(&list_file);
+}
+
+#[test]
+fn get_agent_states_collects_state_from_panes() {
+    let mut h = HostHarness::new();
+    let pane_id = h.add_test_pane();
+
+    h.inject_ipc(crate::app_protocol::AppRequest::SetAgentState {
+        pane_id,
+        state: crate::app_protocol::AgentState::Blocked,
+        agent: "claude-code".to_string(),
+        session_id: None,
+    });
+    h.app.drain_pane_cmd_channel();
+
+    let states_file = std::env::temp_dir().join("plexi_test_agent_states_2119.json");
+    h.inject_ipc(crate::app_protocol::AppRequest::GetAgentStates {
+        response_file: states_file.to_string_lossy().to_string(),
+    });
+    h.app.drain_pane_cmd_channel();
+
+    let states_json =
+        std::fs::read_to_string(&states_file).expect("GetAgentStates must write response file");
+    let states: Vec<serde_json::Value> = serde_json::from_str(&states_json).expect("valid JSON");
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0]["pane_id"], pane_id);
+    assert_eq!(states[0]["state"], "blocked");
+    assert_eq!(states[0]["agent"], "claude-code");
+    assert!(states[0]["session_id"].is_null());
+
+    let _ = std::fs::remove_file(&states_file);
+}
+
+#[test]
+fn overlay_panes_preserve_replaced_pane_agent_state() {
+    let mut h = HostHarness::new();
+    let pane_id = h.add_test_pane();
+
+    h.inject_ipc(crate::app_protocol::AppRequest::SetAgentState {
+        pane_id,
+        state: crate::app_protocol::AgentState::Working,
+        agent: "claude-code".to_string(),
+        session_id: Some("overlay-session".to_string()),
+    });
+    h.app.drain_pane_cmd_channel();
+
+    let replaced = h.app.windows[0]
+        .panes
+        .remove(&pane_id)
+        .expect("test pane exists before overlay");
+    let (overlay_app, _draw_tx) = crate::process_app::ProcessApp::new_for_test(
+        pane_id,
+        crate::app::permissions::AppPermissions::builtin(),
+    );
+    h.app.windows[0].panes.insert(
+        pane_id,
+        crate::host::pane::Pane::App(Box::new(crate::host::pane::AppPane {
+            id: pane_id,
+            runtime: crate::host::pane::AppRuntime::Process(Box::new(overlay_app)),
+            workspace_root: std::env::temp_dir(),
+            permissions: crate::app::permissions::AppPermissions::builtin(),
+            manifest_id: "overlay".to_string(),
+            name: "Overlay".to_string(),
+            pane_group: None,
+            linked_pane_id: None,
+            overlay_replaced: Some(Box::new(replaced)),
+            hidden: false,
+            agent: None,
+        })),
+    );
+
+    let states_file = std::env::temp_dir().join("plexi_test_overlay_agent_states_2119.json");
+    h.inject_ipc(crate::app_protocol::AppRequest::GetAgentStates {
+        response_file: states_file.to_string_lossy().to_string(),
+    });
+    h.app.drain_pane_cmd_channel();
+
+    let states_json =
+        std::fs::read_to_string(&states_file).expect("GetAgentStates must write response file");
+    let states: Vec<serde_json::Value> = serde_json::from_str(&states_json).expect("valid JSON");
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0]["pane_id"], pane_id);
+    assert_eq!(states[0]["state"], "working");
+    assert_eq!(states[0]["session_id"], "overlay-session");
+
+    let info_file = std::env::temp_dir().join("plexi_test_overlay_pane_info_agent_2119.json");
+    h.inject_ipc(crate::app_protocol::AppRequest::GetPaneInfo {
+        pane_id,
+        response_file: info_file.to_string_lossy().to_string(),
+    });
+    h.app.drain_pane_cmd_channel();
+
+    let info_json =
+        std::fs::read_to_string(&info_file).expect("GetPaneInfo must write response file");
+    let info: serde_json::Value = serde_json::from_str(&info_json).expect("valid pane info JSON");
+    assert_eq!(info["agent"]["pane_id"], pane_id);
+    assert_eq!(info["agent"]["state"], "working");
+    assert_eq!(info["agent"]["session_id"], "overlay-session");
+
+    let _ = std::fs::remove_file(&states_file);
+    let _ = std::fs::remove_file(&info_file);
 }
 
 /// #1074: navigate(Down) at the vertical pane boundary jumps to the LAST

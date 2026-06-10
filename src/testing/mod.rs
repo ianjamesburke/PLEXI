@@ -120,6 +120,7 @@ impl HostHarness {
             linked_pane_id: None,
             overlay_replaced: None,
             hidden: false,
+            agent: None,
         };
 
         let win = &mut self.app.windows[0];

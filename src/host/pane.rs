@@ -95,6 +95,35 @@ impl Pane {
         }
     }
 
+    pub fn agent(&self) -> Option<&crate::app_protocol::PaneAgentState> {
+        match self {
+            Pane::Terminal(t) => t.agent.as_ref(),
+            Pane::App(a) => a
+                .agent
+                .as_ref()
+                .or_else(|| a.overlay_replaced.as_deref().and_then(Pane::agent)),
+            Pane::Portal(_) => None,
+        }
+    }
+
+    pub fn set_agent(&mut self, agent: Option<crate::app_protocol::PaneAgentState>) -> bool {
+        match self {
+            Pane::Terminal(t) => {
+                t.agent = agent;
+                true
+            }
+            Pane::App(a) => {
+                if let Some(replaced) = a.overlay_replaced.as_deref_mut() {
+                    replaced.set_agent(agent)
+                } else {
+                    a.agent = agent;
+                    true
+                }
+            }
+            Pane::Portal(_) => false,
+        }
+    }
+
     /// Returns the target context_id if this is a Portal pane.
     pub fn portal_target(&self) -> Option<u64> {
         match self {
@@ -130,6 +159,7 @@ pub struct TerminalPane {
     pub(crate) outside_workspace_root: Option<PathBuf>,
     /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
     pub hidden: bool,
+    pub agent: Option<crate::app_protocol::PaneAgentState>,
 }
 
 impl TerminalPane {
@@ -160,6 +190,7 @@ impl TerminalPane {
             outside_workspace_checked_at: None,
             outside_workspace_root: None,
             hidden: false,
+            agent: None,
         })
     }
 }
@@ -316,4 +347,5 @@ pub struct AppPane {
     pub overlay_replaced: Option<Box<Pane>>,
     /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
     pub hidden: bool,
+    pub agent: Option<crate::app_protocol::PaneAgentState>,
 }

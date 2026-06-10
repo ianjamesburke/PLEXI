@@ -441,7 +441,7 @@ pub enum AgentState {
     Idle,
 }
 
-/// Per-pane agent state stored in PlexiApp.
+/// Per-pane agent state stored on the pane struct.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PaneAgentState {
     pub pane_id: u64,
