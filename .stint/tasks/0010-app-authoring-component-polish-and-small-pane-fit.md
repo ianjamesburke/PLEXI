@@ -4,7 +4,7 @@ title: "App authoring: component polish and small-pane fit"
 status: backlog
 sprint: "s2"
 estimate: 8h
-blocked_by: ["0008"]
+blocked_by: ["0008", "0146"]
 blocked_by_gh: []
 gh_issue: ["2111"]
 area: ["sdk/python", "ui/widgets"]

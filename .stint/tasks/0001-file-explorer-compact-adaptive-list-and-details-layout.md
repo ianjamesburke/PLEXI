@@ -1,15 +1,23 @@
 ---
 id: "0001"
 title: "File Explorer: compact adaptive list and details layout"
-status: todo
-estimate: 16h
+status: in-progress
+estimate: "16h"
+started_at: "2026-06-10T20:44:15Z"
 sprint: "s1"
 blocked_by: []
 blocked_by_gh: []
-gh_issue: ["2135"]
-area: ["apps/file-browser", "ui/widgets"]
-tags: ["file-explorer", "layout", "host-ui-kit"]
+gh_issue:
+  - "2135"
+area:
+  - "apps/file-browser"
+  - "ui/widgets"
+tags:
+  - "file-explorer"
+  - "layout"
+  - "host-ui-kit"
 ---
+
 
 Build the responsive File Explorer foundation from `docs/prm/file-explorer-overhaul.md`.
 
