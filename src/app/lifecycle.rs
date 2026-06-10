@@ -866,9 +866,7 @@ impl PlexiApp {
                         serde_json::to_string(&states).unwrap_or_else(|_| "[]".to_string());
                     let temp = format!("{response_file}.tmp");
                     if let Err(e) = std::fs::write(&temp, &json_str) {
-                        log::error!(
-                            "pane_ipc: get_agent_states: could not write temp file: {e}"
-                        );
+                        log::error!("pane_ipc: get_agent_states: could not write temp file: {e}");
                     } else if let Err(e) = std::fs::rename(&temp, response_file) {
                         log::error!("pane_ipc: get_agent_states: rename failed: {e}");
                         let _ = std::fs::remove_file(&temp);

@@ -1,7 +1,5 @@
 use super::super::*;
-use crate::host::command::{
-    HostAction, OpenPaneRequest, PaneRuntimeKind, Placement, ShareRatio,
-};
+use crate::host::command::{HostAction, OpenPaneRequest, PaneRuntimeKind, Placement, ShareRatio};
 use crate::host::effect::HostEffect;
 
 fn make_app() -> PlexiApp {
@@ -28,7 +26,10 @@ fn alloc_pane_id_is_monotone_across_app() {
     let a = app.host.alloc_pane_id();
     let b = app.host.alloc_pane_id();
     let c = app.host.alloc_pane_id();
-    assert!(a < b && b < c, "alloc_pane_id must return strictly increasing IDs");
+    assert!(
+        a < b && b < c,
+        "alloc_pane_id must return strictly increasing IDs"
+    );
     assert_eq!(app.host.test_next_pane_id(), c + 1);
 }
 
