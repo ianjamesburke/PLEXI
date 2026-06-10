@@ -866,6 +866,8 @@ class Emitter:
             raise CapabilityDeniedError(
                 f"capability_denied: user denied '{capability}'"
             )
+        if capability not in self._app.capabilities:
+            self._app.capabilities.append(capability)
 
     @_blocking_emit_method
     async def secret_get(self, key: str) -> "str | None":
