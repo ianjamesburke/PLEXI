@@ -425,17 +425,24 @@ impl PlexiApp {
                                         ui.add_space(style::SPACE_XS);
                                     }
 
-                                    let mut row = ListRow::new(name.as_str())
-                                        .leading_chip("app")
-                                        .secondary(description.as_str())
-                                        .selected(is_selected);
-
+                                    let mut secondary = description.clone();
                                     if *running_in_background {
-                                        row = row.trailing_action("bg");
+                                        if !secondary.is_empty() {
+                                            secondary.push_str(" · ");
+                                        }
+                                        secondary.push_str("bg");
                                     }
                                     if *is_workspace_local {
-                                        row = row.leading_chip("ws");
+                                        if !secondary.is_empty() {
+                                            secondary.push_str(" · ");
+                                        }
+                                        secondary.push_str("ws");
                                     }
+
+                                    let row = ListRow::new(name.as_str())
+                                        .leading_chip("app")
+                                        .secondary(&secondary)
+                                        .selected(is_selected);
 
                                     let row_response = row.show(ui, &colors);
 
@@ -486,6 +493,7 @@ impl PlexiApp {
         if modal_response.dismissed {
             self.show_command_palette = false;
             self.palette_query.clear();
+            self.palette_selected = 0;
         }
     }
 
