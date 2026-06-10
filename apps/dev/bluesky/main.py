@@ -263,10 +263,10 @@ class BlueskyApp(App):
             self._walk(data.get("thread", {}), posts, depth=0)
             self._thread   = posts
             self._t_scroll = 0.0
-            await self._measure_thread_heights()
             self._loading  = False
             self.emit.info(f"bluesky: thread loaded {len(posts)} nodes uri={uri!r}")
             self.emit.schedule_render()
+            asyncio.create_task(self._measure_thread_heights())
             asyncio.create_task(self._load_avatars([item["post"] for item in self._thread]))
         except Exception as exc:
             self.emit.warn(f"bluesky: thread error: {exc}")
