@@ -262,6 +262,9 @@ class BlueskyApp(App):
             posts: list[dict] = []
             self._walk(data.get("thread", {}), posts, depth=0)
             self._thread   = posts
+            self._thread_heights = []
+            self._thread_measure_w = 0.0
+            self._thread_measure_pending_w = None
             self._t_scroll = 0.0
             self._loading  = False
             self.emit.info(f"bluesky: thread loaded {len(posts)} nodes uri={uri!r}")
@@ -575,6 +578,9 @@ class BlueskyApp(App):
         self.emit.info(f"bluesky: open thread uri={uri!r}")
         self._view   = self.VIEW_THREAD
         self._thread = []
+        self._thread_heights = []
+        self._thread_measure_w = 0.0
+        self._thread_measure_pending_w = None
         asyncio.create_task(self._fetch_thread(uri))
 
     def _open_browser(self, from_thread: bool) -> None:
