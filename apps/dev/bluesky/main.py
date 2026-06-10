@@ -129,7 +129,7 @@ class BlueskyApp(App):
     VIEW_FEED   = "feed"
     VIEW_THREAD = "thread"
 
-    async def on_init(self) -> None:
+    def on_init(self) -> None:
         self._view    = self.VIEW_FEED
         self._feed    : list[dict] = []
         self._sel     = 0
@@ -172,6 +172,9 @@ class BlueskyApp(App):
 
         self.emit.info("bluesky: init")
         self.emit.status_summary("Loading Discover feed…")
+        asyncio.create_task(self._init_async())
+
+    async def _init_async(self) -> None:
         try:
             await self.emit.capability_request("net.http")
         except CapabilityDeniedError:
