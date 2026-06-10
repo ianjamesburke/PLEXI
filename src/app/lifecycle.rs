@@ -953,6 +953,7 @@ impl PlexiApp {
                         parent_name,
                         windows.len()
                     );
+                    let mut ctx_ok = true;
                     if let Some(pname) = parent_name {
                         let path = root.as_ref().cloned().unwrap_or_else(|| {
                             let p = self.router.active().path.clone();
@@ -967,6 +968,7 @@ impl PlexiApp {
                         let current_focused = self.windows[self.active_window].focused_pane;
                         if let Err(e) = self.new_child_context(pname.as_str(), path) {
                             log::warn!("pane_ipc: create_context with parent failed: {e}");
+                            ctx_ok = false;
                         } else {
                             if let Some(n) = name {
                                 let idx = self.router.len() - 1;
@@ -992,7 +994,7 @@ impl PlexiApp {
                             self.router.get_mut(idx).name = n.clone();
                         }
                     }
-                    if !windows.is_empty() {
+                    if ctx_ok && !windows.is_empty() {
                         let ws_id = self.router.active().context_id;
                         let active_y = self.windows[self.active_window].grid_y;
                         let mut new_x = self

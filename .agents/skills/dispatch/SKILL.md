@@ -63,12 +63,13 @@ Split the current window to create a new anchor pane, push it into a sub-context
 ```bash
 PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}
 
-# Create sub-context and all lanes atomically
-WINDOW_ARGS=""
+# Create sub-context and all lanes atomically.
+# Use an array (not eval + string concat) so sprint names with quotes don't break the command.
+WINDOW_ARGS=()
 for ISSUE in <issue1> [issue2...]; do
-  WINDOW_ARGS="$WINDOW_ARGS --window \"c '/implement-issue $ISSUE'\""
+  WINDOW_ARGS+=("--window" "c '/implement-issue $ISSUE'")
 done
-eval "$PLEXI context new \"$SPRINT_NAME\" $WINDOW_ARGS"
+$PLEXI context new "$SPRINT_NAME" --path "$PWD" "${WINDOW_ARGS[@]}"
 ```
 
 **Bundle mode:** if the user passes multiple issues that should share a single PR, open ONE window with all numbers: `c '/implement-issue N1 N2 N3'`. Name it `#N1+N2+N3`.
