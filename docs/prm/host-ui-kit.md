@@ -15,8 +15,8 @@ When a PRD-backed issue lands, update its row in this table before treating the 
 
 | Step | Issue | Status | Completion note |
 |---|---|---|---|
-| 1. ListRow + NotesPicker | [#2122](https://github.com/ianjamesburke/PLEXI/issues/2122) | In progress | Bundle branch `feature/bundle-2122-2123` adds ListRow and migrates NotesPicker |
-| 2. ModalShell + HintBar | [#2123](https://github.com/ianjamesburke/PLEXI/issues/2123) | In progress | Bundle branch `feature/bundle-2122-2123` adds ModalShell and HintBar for NotesPicker |
+| 1. ListRow + NotesPicker | [#2122](https://github.com/ianjamesburke/PLEXI/issues/2122) | Done | Landed in PR #2129; NotesPicker rows use host ListRow |
+| 2. ModalShell + HintBar | [#2123](https://github.com/ianjamesburke/PLEXI/issues/2123) | Done | Landed in PR #2129; NotesPicker uses ModalShell and HintBar |
 | 3. TextField focus registration | [#2124](https://github.com/ianjamesburke/PLEXI/issues/2124) | Blocked | Blocked by #2123 |
 | 4. CommandPalette migration | [#2125](https://github.com/ianjamesburke/PLEXI/issues/2125) | Blocked | Blocked by #2122, #2123, #2124 |
 | 5. QuickNote menu migration | [#2126](https://github.com/ianjamesburke/PLEXI/issues/2126) | Blocked | Blocked by #2122, #2123, #2124 |
