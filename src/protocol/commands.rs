@@ -756,6 +756,15 @@ pub enum AppRequest {
         parent_name: Option<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         windows: Vec<String>,
+        /// Zoom into the new sub-context after creation. Default false (stay in parent).
+        #[serde(default)]
+        focus: bool,
+        /// Direction the portal tile splits in the parent window: "right" | "down" | "left" | "up".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        portal_direction: Option<String>,
+        /// If set, the host writes a JSON response (context_id, windows) to this path.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        response_file: Option<String>,
     },
     /// Focus existing context by root, or create one. Sent by `plexi context open`.
     FocusContext { root: std::path::PathBuf },

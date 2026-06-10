@@ -558,7 +558,10 @@ fn main() -> eframe::Result {
                         }
                     },
                     Commands::Context { cmd } => match cmd {
-                        ContextCmd::New { name, path, parent, window } => std::process::exit(cli::context_new_cli(name.as_deref(), path.as_deref(), parent.as_deref(), &window)),
+                        ContextCmd::New { name, path, parent, window, focus, down, left, up, right: _ } => {
+                            let dir = if down { "down" } else if left { "left" } else if up { "up" } else { "right" };
+                            std::process::exit(cli::context_new_cli(name.as_deref(), path.as_deref(), parent.as_deref(), &window, focus, dir))
+                        }
                         ContextCmd::Open { path } => std::process::exit(cli::context_open_cli(path.as_deref())),
                         ContextCmd::SetRoot { path } => std::process::exit(cli::context_set_root_cli(path.as_deref())),
                         ContextCmd::Current => std::process::exit(cli::context_current_cli()),

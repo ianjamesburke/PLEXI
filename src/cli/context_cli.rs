@@ -1,9 +1,14 @@
 use super::validate::resolve_path;
 use super::{print_tip, send_to_socket};
 
-pub fn context_new_cli(name: Option<&str>, path: Option<&str>, parent: Option<&str>, windows: &[String]) -> i32 {
-    // Only resolve root when the user explicitly passed a path argument.
-    // Without an explicit path, we let the host use the focused pane's cwd.
+pub fn context_new_cli(
+    name: Option<&str>,
+    path: Option<&str>,
+    parent: Option<&str>,
+    windows: &[String],
+    focus: bool,
+    direction: &str,
+) -> i32 {
     let explicit_root = match path {
         Some(_) => match resolve_path(path) {
             Ok(p) => Some(p),
@@ -14,15 +19,46 @@ pub fn context_new_cli(name: Option<&str>, path: Option<&str>, parent: Option<&s
         },
         None => None,
     };
-    // Only pass parent_name when the user explicitly provided --parent.
-    // Auto-resolving from PLEXI_CONTEXT_NAME would route to new_child_context
-    // (which always creates a fresh terminal), bypassing the wrap behavior.
-    let explicit_parent = parent
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
+    // "--parent" with no value resolves to the current context via env.
+    // "--parent <name>" passes that name directly.
+    // No "--parent" → None (top-level context).
+    let explicit_parent = match parent {
+        None => None,
+        Some("__current__") => match std::env::var("PLEXI_CONTEXT_NAME") {
+            Ok(n) if !n.is_empty() => Some(n),
+            _ => {
+                eprintln!(
+                    "error: --parent (no value) requires PLEXI_CONTEXT_NAME — run inside a Plexi pane"
+                );
+                return 1;
+            }
+        },
+        Some(n) => {
+            let trimmed = n.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+    };
+    // Only request a response file when creating a sub-context (--parent set).
+    // Top-level context new stays fire-and-forget to preserve existing behaviour.
+    let response_file = if explicit_parent.is_some() {
+        Some(
+            crate::config::config_dir()
+                .join(format!(
+                    "context-new-response-{}.json",
+                    uuid::Uuid::new_v4()
+                ))
+                .to_string_lossy()
+                .into_owned(),
+        )
+    } else {
+        None
+    };
     log::info!(
-        "context_new_cli: name={:?} root={:?} parent={:?} windows={}",
+        "context_new_cli: name={:?} root={:?} parent={:?} windows={} focus={focus} direction={direction}",
         name,
         explicit_root
             .as_ref()
@@ -37,13 +73,53 @@ pub fn context_new_cli(name: Option<&str>, path: Option<&str>, parent: Option<&s
     if let Some(n) = name {
         payload["name"] = serde_json::Value::String(n.to_string());
     }
-    if let Some(p) = explicit_parent {
-        payload["parent_name"] = serde_json::Value::String(p);
+    if let Some(p) = &explicit_parent {
+        payload["parent_name"] = serde_json::Value::String(p.clone());
     }
     if !windows.is_empty() {
         payload["windows"] = serde_json::to_value(windows).expect("Vec<String> is serializable");
     }
-    send_to_socket(payload)
+    if focus {
+        payload["focus"] = serde_json::Value::Bool(true);
+    }
+    if direction != "right" {
+        payload["portal_direction"] = serde_json::Value::String(direction.to_string());
+    }
+    if let Some(ref rf) = response_file {
+        payload["response_file"] = serde_json::Value::String(rf.clone());
+    }
+    let rc = send_to_socket(payload);
+    if rc != 0 {
+        return rc;
+    }
+    // Poll for response JSON (sub-context only).
+    if let Some(rf) = response_file {
+        let path = std::path::PathBuf::from(&rf);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if path.exists() {
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => {
+                        let _ = std::fs::remove_file(&path);
+                        println!("{content}");
+                        return 0;
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&path);
+                        eprintln!("error: could not read context-new response: {e}");
+                        return 1;
+                    }
+                }
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = std::fs::remove_file(&path);
+                eprintln!("error: timed out waiting for context-new response");
+                return 1;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+    0
 }
 
 /// `plexi context zoom <context_id>`

@@ -945,13 +945,31 @@ impl PlexiApp {
                     name,
                     parent_name,
                     windows,
+                    focus,
+                    portal_direction,
+                    response_file,
                 } => {
+                    // Map direction string to insert_split_tile params.
+                    // vertical=true  → side-by-side (left/right)
+                    // vertical=false → stacked (up/down)
+                    // new_pane_first=true → portal appears before the existing pane (left/up)
+                    let (portal_vertical, portal_first) = match portal_direction
+                        .as_deref()
+                        .unwrap_or("right")
+                    {
+                        "down" => (false, false),
+                        "up" => (false, true),
+                        "left" => (true, true),
+                        _ => (true, false), // "right" is default
+                    };
                     log::info!(
-                        "pane_ipc: kind=create_context root={:?} name={:?} parent_name={:?} windows={}",
+                        "pane_ipc: kind=create_context root={:?} name={:?} parent_name={:?} \
+                         windows={} focus={focus} direction={:?}",
                         root,
                         name,
                         parent_name,
-                        windows.len()
+                        windows.len(),
+                        portal_direction
                     );
                     let mut ctx_ok = true;
                     if let Some(pname) = parent_name {
@@ -966,7 +984,9 @@ impl PlexiApp {
                         let current_ctx_id = self.router.active().context_id;
                         let current_win_id = self.windows[self.active_window].window_id;
                         let current_focused = self.windows[self.active_window].focused_pane;
-                        if let Err(e) = self.new_child_context(pname.as_str(), path) {
+                        if let Err(e) =
+                            self.new_child_context(pname.as_str(), path, portal_vertical, portal_first)
+                        {
                             log::warn!("pane_ipc: create_context with parent failed: {e}");
                             ctx_ok = false;
                         } else {
@@ -976,12 +996,18 @@ impl PlexiApp {
                             }
                             let new_ctx_idx = self.router.len() - 1;
                             let new_ctx_id = self.router.get(new_ctx_idx).context_id;
-                            self.router
-                                .push_depth(current_ctx_id, current_win_id, current_focused);
-                            self.switch_workspace(new_ctx_idx);
-                            log::info!(
-                                "pane_ipc: auto-zoomed into new child context ctx_id={new_ctx_id}"
-                            );
+                            if *focus {
+                                self.router
+                                    .push_depth(current_ctx_id, current_win_id, current_focused);
+                                self.switch_workspace(new_ctx_idx);
+                                log::info!(
+                                    "pane_ipc: zoomed into new child context ctx_id={new_ctx_id}"
+                                );
+                            } else {
+                                log::info!(
+                                    "pane_ipc: created child context ctx_id={new_ctx_id} (no-focus)"
+                                );
+                            }
                         }
                     } else {
                         if let Some(r) = root {
@@ -1011,6 +1037,35 @@ impl PlexiApp {
                             );
                             self.create_page_at(new_x, active_y, Some(cmd.as_str()), false);
                             new_x += 1;
+                        }
+                    }
+                    // Write JSON response for callers that passed a response_file path.
+                    if ctx_ok {
+                        if let Some(rf) = response_file {
+                            let new_ctx_id = self.router.active().context_id;
+                            let windows_info: Vec<serde_json::Value> = self
+                                .windows
+                                .iter()
+                                .filter(|w| w.context_id == new_ctx_id)
+                                .map(|w| {
+                                    serde_json::json!({
+                                        "window_id": w.window_id,
+                                        "grid_x": w.grid_x,
+                                        "grid_y": w.grid_y,
+                                    })
+                                })
+                                .collect();
+                            let response = serde_json::json!({
+                                "context_id": new_ctx_id,
+                                "windows": windows_info,
+                            });
+                            if let Ok(s) = serde_json::to_string(&response) {
+                                if let Err(e) = std::fs::write(&rf, s) {
+                                    log::warn!(
+                                        "pane_ipc: create_context failed to write response file {rf}: {e}"
+                                    );
+                                }
+                            }
                         }
                     }
                     self.save_workspace();
