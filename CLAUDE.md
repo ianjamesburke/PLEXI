@@ -1,11 +1,15 @@
 ## Source of Truth for Project State
 
+`AGENTS.md` is a symlink to this file. Keep project-agent instructions here so both entry points stay identical.
+
 **CLAUDE.md does not track in-progress work or completion status.** It goes stale immediately and will mislead future sessions.
 
 - **What shipped and why** → `git log --oneline -20` and `GOTCHAS.md` for non-obvious discoveries
 - **What's currently in flight** → `git status`, open PRs, and issue pipeline labels
 - **Product direction** → `NORTH_STAR.md`
 - **App-framework + marketplace plan** → `docs/prm/app-framework-marketplace.md`
+- **Host UI kit plan** → `docs/prm/host-ui-kit.md`
+- **File Explorer overhaul PRD** → `docs/prm/file-explorer-overhaul.md`
 - **Implementation backlog** → GitHub issues, used as work tickets only
 
 Before reporting anything as "done" or "missing", verify against `git log`.
@@ -15,6 +19,10 @@ Before reporting anything as "done" or "missing", verify against `git log`.
 Plexi no longer uses GitHub Project board #7, `NEXT.md`, or generated dispatch snapshots to decide what happens next. Do not query, update, or trust the Project board for planning.
 
 For app-framework, packaging, marketplace, MCPUI, WASM/WASI, and Bevy work, read `docs/prm/app-framework-marketplace.md` first. That PRM is the local source of truth and resolves conflicts with older roadmap fragments.
+
+For host-level UI chrome work (modals, overlays, palettes, rows, text fields, buttons, hint bars, and overlay focus handling), read `docs/prm/host-ui-kit.md` first. That PRM is the local source of truth for the host UI kit sequence and points to the ordered implementation issues.
+
+For File Explorer overhaul work, read `docs/prm/file-explorer-overhaul.md` after `docs/prm/host-ui-kit.md`. The File Explorer PRD is intentionally queued behind the Host UI Kit rework; do not rebuild File Explorer-specific row, table, modal, button, text field, or hint primitives that belong in the shared host UI kit.
 
 GitHub issues are implementation tickets. To choose the next dispatch, match open issues against the first unfinished milestone in the PRM, skip anything blocked or in progress, then choose parallel lanes whose `area:*` labels do not overlap. If the PRM calls for work that has no issue yet, create or triage the issue before dispatching.
 
@@ -189,6 +197,8 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 - **cfg(unix) propagation on removal:** When removing a `#[cfg(unix)]` block or executable-bit check, grep for `set_mode`, `PermissionsExt`, and `0o755` across all test functions in the same file before staging. The helper function is never the only site.
 
 ## Host UI Systems — Reuse Before Rolling Your Own
+
+For new host-level UI chrome work, read [`docs/prm/host-ui-kit.md`](docs/prm/host-ui-kit.md) before editing overlays or shared widgets. It defines the host UI kit plan for modals, palettes, pickers, rows, text fields, buttons, hint bars, and overlay focus handling.
 
 Before writing any keyboard shortcut display, badge, chip, or inline label widget, check `src/widgets.rs` and `src/style.rs`. These modules contain the canonical, already-tested implementations. Re-rolling them inline produces visual inconsistency and duplicated sizing logic.
 
