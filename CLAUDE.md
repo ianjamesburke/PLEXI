@@ -31,6 +31,16 @@ GitHub issues are implementation tickets. To choose the next dispatch, match ope
 
 Sprint sequencing and task blockers live in `.stint/`. Use the PRM for product direction, then use `stint next` for the next claimable task. Keep `gh_issue`, `blocked_by`, and `blocked_by_gh` frontmatter current when a task is linked to GitHub or blocked by another task.
 
+## Stint Time Tracking
+
+Every stint task must record actual timing when work starts and when it completes. This is required so estimates can be compared against real elapsed implementation time.
+
+- When implementation begins, set the linked task `status` to `in-progress` and write `started_at: "<UTC ISO-8601 timestamp>"` if it is not already set.
+- When implementation is complete, write `completed_at: "<UTC ISO-8601 timestamp>"`, set `actual` to the elapsed wall-clock time from `started_at`, and mark the task done.
+- If a GitHub issue maps to multiple stint tasks, update every linked task that was materially worked.
+- If implementation is abandoned or blocked, leave `started_at` in place, do not set `completed_at`, and note the blocker in the issue body or task body.
+- Use UTC timestamps such as `2026-06-10T19:42:00Z`. Do not rely only on informal comments or GitHub timestamps.
+
 ## North Star
 
 Before making architectural decisions, read [`NORTH_STAR.md`](NORTH_STAR.md) for product direction and [`GLOSSARY.md`](GLOSSARY.md) for shared vocabulary (pane, context, PGAP, capability, secret, etc.).
