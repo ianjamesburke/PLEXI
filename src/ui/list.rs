@@ -174,7 +174,44 @@ fn elided_galley(
     color: Color32,
     max_width: f32,
 ) -> std::sync::Arc<egui::Galley> {
-    ui.fonts(|f| f.layout(text.to_string(), font_id, color, max_width))
+    let text = elide_to_width(ui, text, font_id.clone(), max_width);
+    ui.fonts(|f| f.layout_no_wrap(text, font_id, color))
+}
+
+fn elide_to_width(ui: &egui::Ui, text: &str, font_id: egui::FontId, max_width: f32) -> String {
+    if max_width <= 0.0 {
+        return String::new();
+    }
+
+    let width = |s: &str| {
+        ui.fonts(|f| {
+            f.layout_no_wrap(s.to_string(), font_id.clone(), Color32::WHITE)
+                .size()
+                .x
+        })
+    };
+
+    if width(text) <= max_width {
+        return text.to_string();
+    }
+
+    const ELLIPSIS: &str = "...";
+    if width(ELLIPSIS) > max_width {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    for ch in text.chars() {
+        let mut candidate = out.clone();
+        candidate.push(ch);
+        candidate.push_str(ELLIPSIS);
+        if width(&candidate) > max_width {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push_str(ELLIPSIS);
+    out
 }
 
 fn trailing_size(ui: &egui::Ui, label: &str) -> Vec2 {
@@ -231,5 +268,19 @@ mod tests {
         assert!(row.secondary.is_none());
         assert_eq!(row.leading_chip, Some("app"));
         assert!(!row.selected);
+    }
+
+    #[test]
+    fn elide_to_width_keeps_text_single_line_within_width() {
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            let font = egui::FontId::proportional(style::TEXT_HINT);
+            let elided = elide_to_width(ui, "a very long note filename.md", font.clone(), 40.0);
+            let galley = ui.fonts(|f| f.layout_no_wrap(elided, font, Color32::WHITE));
+            assert!(galley.size().x <= 40.0);
+            assert_eq!(galley.rows.len(), 1);
+        });
+        let _ = ctx.end_pass();
     }
 }
