@@ -892,13 +892,13 @@ impl PlexiApp {
 
         self.draw_feature_effects(ctx);
 
-        // Re-request focus for the palette search field after all pane rendering.
-        // App panes call request_focus() on their TextInput widgets during
-        // CentralPanel rendering, and egui focus is last-write-wins — without
-        // this, a keyboard-capture app pane steals focus from the palette every
-        // frame, making the search field non-typeable even though it's visible.
-        if self.show_command_palette {
-            ctx.memory_mut(|m| m.request_focus(egui::Id::new("palette_search")));
+        // Re-request registered overlay fields after all pane rendering. App panes
+        // call request_focus() on their TextInput widgets during CentralPanel, and
+        // egui focus is last-write-wins; host TextField registrations reclaim focus
+        // for migrated overlays without another hard-coded ID path.
+        let registered_overlay_focus = crate::ui::focus::drain_overlay_focus(ctx);
+        for id in registered_overlay_focus {
+            ctx.memory_mut(|m| m.request_focus(id));
         }
 
         // Same pattern: QuickNote compose mode needs re-focus every frame so

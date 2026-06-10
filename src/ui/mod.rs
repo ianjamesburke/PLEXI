@@ -1,3 +1,4 @@
+pub mod focus;
 pub mod hints;
 pub mod list;
 pub mod overlay;

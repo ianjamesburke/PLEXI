@@ -559,6 +559,26 @@ fn steal_focus(h: &HostHarness) -> egui::Id {
     steal_id
 }
 
+/// Regression guard for #2124: migrated host TextField overlays must register
+/// their focus intent with the UI-kit registry, and the post-CentralPanel drain
+/// must re-claim focus after a pane TextInput steals it.
+#[test]
+fn command_palette_text_field_registry_wins_after_central_panel_steal() {
+    let mut h = HostHarness::new();
+    h.app.show_command_palette = true;
+    h.app.sync_command_palette_focus();
+
+    h.run_frames(1);
+    steal_focus(&h);
+    h.run_frames(1);
+
+    assert_eq!(
+        h.ctx.memory(|m| m.focused()),
+        Some(egui::Id::new("palette_search")),
+        "palette_search must win focus back through the host TextField registry"
+    );
+}
+
 /// Regression guard for #1601: rename-pane TextEdit must retain egui focus
 /// after CentralPanel renders. The between-frame steal simulates a pane TextInput
 /// calling request_focus during CentralPanel — the post-CentralPanel block must
