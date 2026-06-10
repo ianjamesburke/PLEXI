@@ -1,6 +1,6 @@
 # Plexi Host UI Kit PRM
 
-Status: planning source for host-level UI chrome.
+Status: completed host-level UI kit sequence.
 Last updated: 2026-06-10.
 
 This PRM defines the path from hand-built egui overlays to a Plexi-owned host UI kit. It covers modals, palettes, pickers, rows, text fields, buttons, hint bars, focus capture, and overlay lifecycle.
@@ -17,16 +17,16 @@ When a PRD-backed issue lands, update its row in this table before treating the 
 |---|---|---|---|
 | 1. ListRow + NotesPicker | [#2122](https://github.com/ianjamesburke/PLEXI/issues/2122) | Done | Landed in PR #2129; NotesPicker rows use host ListRow |
 | 2. ModalShell + HintBar | [#2123](https://github.com/ianjamesburke/PLEXI/issues/2123) | Done | Landed in PR #2129; NotesPicker uses ModalShell and HintBar |
-| 3. TextField focus registration | [#2124](https://github.com/ianjamesburke/PLEXI/issues/2124) | Done | CommandPalette search uses host TextField focus registration |
-| 4. CommandPalette migration | [#2125](https://github.com/ianjamesburke/PLEXI/issues/2125) | Blocked | Blocked by #2122, #2123, #2124 |
-| 5. QuickNote menu migration | [#2126](https://github.com/ianjamesburke/PLEXI/issues/2126) | Done | QuickNote destination and submenu use ModalShell, ListRow, and HintBar |
-| 6. Host UI gallery | [#2127](https://github.com/ianjamesburke/PLEXI/issues/2127) | In progress | Debug toolbar opens a developer-only gallery for host chrome primitives |
+| 3. TextField focus registration | [#2124](https://github.com/ianjamesburke/PLEXI/issues/2124) | Done | Landed in PR #2130; CommandPalette search uses host TextField focus registration |
+| 4. CommandPalette migration | [#2125](https://github.com/ianjamesburke/PLEXI/issues/2125) | Done | Landed in PR #2131; CommandPalette uses ModalShell, TextField, ListRow, and HintBar |
+| 5. QuickNote menu migration | [#2126](https://github.com/ianjamesburke/PLEXI/issues/2126) | Done | Landed in PR #2132; QuickNote destination and submenu use ModalShell, ListRow, and HintBar |
+| 6. Host UI gallery | [#2127](https://github.com/ianjamesburke/PLEXI/issues/2127) | Done | Landed in PR #2134; debug toolbar opens the host chrome gallery |
 
 ## Purpose
 
 Host UI should feel like Plexi, not like default egui.
 
-Today the host uses egui directly in too many places. Each modal decides its own scrim, frame, padding, row height, text baseline, input chrome, button paint, footer hints, and focus behavior. That makes small visual bugs common and expensive. The Notes picker row alignment bug is a symptom: the row allocates a fixed rect, paints a background, then lays out labels inside a child `Ui` without a vertical-centering contract.
+The original problem was direct egui use in too many host overlays. Each modal decided its own scrim, frame, padding, row height, text baseline, input chrome, button paint, footer hints, and focus behavior. That made small visual bugs common and expensive. The Notes picker row alignment bug was the proving case: the row allocated a fixed rect, painted a background, then laid out labels inside a child `Ui` without a vertical-centering contract.
 
 The fix is not a new GUI framework. Plexi should keep egui for rendering, input, hit testing, and text editing, but stop exposing default egui widget behavior to host chrome. The host needs a small, opinionated UI kit that owns Plexi's modal/list/input/button grammar.
 
@@ -46,15 +46,16 @@ The work also prepares Phase 2 by applying the same rule to host chrome that PGA
 
 ## Current Truth
 
-- `src/ui/style.rs` has the right start: shared spacing, type sizes, radii, modal padding, and button heights.
-- `src/ui/widgets.rs` already has several host primitives: selectable rows, key chips, key combo lists, styled single-line input, copy button, description label, and a dismissable modal helper.
-- The existing widget layer is too shallow. Callers still hand-roll modal shells, row geometry, input visuals, button paint, footer hint rows, and focus behavior.
-- `src/overlays/notes_picker.rs` hand-paints a `28px` list row and then lays out labels in a child `Ui`, which causes visible vertical misalignment.
-- `src/overlays/command_palette.rs` uses `selectable_row`, but still builds its own modal shell and search input visuals.
-- `src/overlays/quick_note.rs` repeats scrim/frame/menu-row/footer-hint patterns across compose, destination, and submenu modals.
+- `src/ui/style.rs` owns shared spacing, type sizes, radii, modal padding, and button heights.
+- `src/ui/list.rs`, `src/ui/overlay.rs`, `src/ui/hints.rs`, and `src/ui/focus.rs` hold the first host UI kit primitives: ListRow, ModalShell, HintBar, and overlay text-field focus registration.
+- `src/ui/widgets.rs` still holds smaller reusable pieces such as key chips, styled text input, copy button, and description labels.
+- `src/overlays/notes_picker.rs` uses the host row, modal shell, and hint bar primitives.
+- `src/overlays/command_palette.rs` uses ModalShell, TextField, ListRow, and HintBar.
+- `src/overlays/quick_note.rs` uses ModalShell, ListRow, and HintBar for destination and submenu UI.
+- `src/overlays/ui_gallery.rs` is a developer-only gallery for reviewing host chrome primitives and states.
 - `src/overlays/notification_modal.rs` already custom-paints option and primary buttons because default egui buttons do not provide the needed fixed-rect label centering.
 - `src/app/mod.rs` owns a large `FocusLayer` switch for overlay key dispatch and rendering.
-- `src/app/render.rs` has a post-CentralPanel hard-coded focus re-request list for text-owning overlays because egui focus is last-writer-wins.
+- `src/app/render.rs` consumes host UI focus registrations so migrated text-owning overlays can win focus after `CentralPanel`.
 - `GOTCHAS.md` documents the two-layer egui TextEdit focus problem. New text-owning overlays are easy to break unless they are wired into both the one-shot overlay focus path and the post-CentralPanel re-focus path.
 
 ## Design Principles
