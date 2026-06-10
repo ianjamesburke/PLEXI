@@ -1,0 +1,18 @@
+---
+id: "0055"
+title: "v2 terminal perf: grid and event clone reduction"
+status: backlog
+sprint: "s16"
+estimate: 6h
+blocked_by: ["0054"]
+blocked_by_gh: []
+gh_issue: ["2025"]
+area: ["host/terminal"]
+tags: ["v2", "performance", "terminal"]
+---
+
+Reduce terminal backend data movement by avoiding full-grid, cursor, event, regex, and font clones when only small terminal state changes.
+
+## Why
+
+This is what #2025 is: terminal renderer/backend ownership cleanup, not PGAP.
