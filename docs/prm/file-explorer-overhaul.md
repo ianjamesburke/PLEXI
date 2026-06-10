@@ -1,6 +1,6 @@
 # Plexi File Explorer Overhaul PRD
 
-Status: queued behind the Host UI Kit rework.
+Status: queued as Sprint 1 in `.stint/sprints/s1.md`.
 Last updated: 2026-06-10.
 
 This PRD defines the File Explorer rework. It should not start until the Host UI Kit work in `docs/prm/host-ui-kit.md` has landed far enough that File Explorer can consume shared row, table, button, text field, hint bar, and modal primitives instead of hand-painting its own chrome.
@@ -203,33 +203,33 @@ All destructive operations should go through host-owned confirmation UI and writ
 
 ## Issue Bundle
 
-These are the implementation issues this PRD points to. File them with `/create-issue` when this PRD is ready to enter the queue, and link the resulting GitHub issue numbers back here.
+These are the implementation issues this PRD points to. The local sprint tasks live in `.stint/sprints/s1.md`.
 
-1. File Explorer: compact adaptive list/details layout
+1. [#2135](https://github.com/ianjamesburke/PLEXI/issues/2135) / stint `0001`: File Explorer: compact adaptive list/details layout
 
    Build the responsive shell, compact row layout, details table breakpoint, toolbar, path/status bars, and row-density model.
 
-2. File Explorer: column model, sorting, resizing, and persistence
+2. [#2136](https://github.com/ianjamesburke/PLEXI/issues/2136) / stint `0002`: File Explorer: column model, sorting, resizing, and persistence
 
    Add a real column model, sort descriptors, visible-column settings, resizing/reordering, folders-on-top, and per-folder or per-session persistence.
 
-3. File Explorer: inspector and Quick Look overlay
+3. [#2137](https://github.com/ianjamesburke/PLEXI/issues/2137) / stint `0003`: File Explorer: inspector and Quick Look overlay
 
    Replace the fixed right preview threshold with a toggled/resizable inspector and a Space-driven Quick Look modal.
 
-4. File Explorer: multi-select and safe file operations
+4. [#2138](https://github.com/ianjamesburke/PLEXI/issues/2138) / stint `0004`: File Explorer: multi-select and safe file operations
 
    Add multi-select plus rename, new folder, copy/cut/paste, duplicate, move to trash, reveal, open with default, and confirmation/logging for destructive operations.
 
-5. File Explorer: recursive search and filters
+5. [#2139](https://github.com/ianjamesburke/PLEXI/issues/2139) / stint `0005`: File Explorer: recursive search and filters
 
    Expand current fuzzy filtering into scoped recursive search with criteria for name, kind, extension, date, size, hidden files, and tags.
 
-6. File Explorer: icon, column, and gallery views
+6. [#2140](https://github.com/ianjamesburke/PLEXI/issues/2140) / stint `0006`: File Explorer: icon, column, and gallery views
 
    Add richer view modes after compact list and details table are stable.
 
-7. File Explorer: Plexi-native actions and agent selection state
+7. [#2141](https://github.com/ianjamesburke/PLEXI/issues/2141) / stint `0007`: File Explorer: Plexi-native actions and agent selection state
 
    Expose selected paths to linked terminals, host commands, Plexi apps, and agents without bypassing capability or context boundaries.
 

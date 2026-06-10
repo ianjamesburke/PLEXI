@@ -10,6 +10,7 @@
 - **App-framework + marketplace plan** → `docs/prm/app-framework-marketplace.md`
 - **Host UI kit plan** → `docs/prm/host-ui-kit.md`
 - **File Explorer overhaul PRD** → `docs/prm/file-explorer-overhaul.md`
+- **Operational sprint graph** → `.stint/` (`stint status`, `stint next`, `stint sprint show <id>`)
 - **Implementation backlog** → GitHub issues, used as work tickets only
 
 Before reporting anything as "done" or "missing", verify against `git log`.
@@ -27,6 +28,8 @@ For File Explorer overhaul work, read `docs/prm/file-explorer-overhaul.md` after
 When a PRD has a `Progress` table, update the relevant row in the same change that finishes or supersedes an issue. Do not make future agents infer PRD completion only from closed GitHub issues.
 
 GitHub issues are implementation tickets. To choose the next dispatch, match open issues against the first unfinished milestone in the PRM, skip anything blocked or in progress, then choose parallel lanes whose `area:*` labels do not overlap. If the PRM calls for work that has no issue yet, create or triage the issue before dispatching.
+
+Sprint sequencing and task blockers live in `.stint/`. Use the PRM for product direction, then use `stint next` for the next claimable task. Keep `gh_issue`, `blocked_by`, and `blocked_by_gh` frontmatter current when a task is linked to GitHub or blocked by another task.
 
 ## North Star
 

@@ -1,0 +1,27 @@
+---
+id: "0018"
+title: "Marketplace: hosted registry and CDN"
+status: backlog
+sprint: "s4"
+estimate: 16h
+blocked_by: ["0017"]
+blocked_by_gh: []
+gh_issue: ["689", "356"]
+area: ["infra/server", "infra/build"]
+tags: ["marketplace", "registry", "cdn"]
+---
+
+Stand up the hosted app registry surface needed for reviewed marketplace apps, using local package metadata as the source format.
+
+## Why
+
+The marketplace can only be up when users can fetch reviewed app metadata from a hosted registry without making hosted login required for local apps.
+
+## Gotchas
+
+- Hosted services may list, review, and sell apps, but installed apps and state stay local.
+
+## References
+
+- GitHub issues #689, #356
+- `docs/prm/app-framework-marketplace.md`

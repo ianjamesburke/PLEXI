@@ -19,6 +19,19 @@ Finish Plexi as a platform in the order that makes the product usable and defens
 
 The local-first rule stays intact. Installed apps and user data live on disk. Hosted services may sell apps, review submissions, and broker AI calls, but they must not become required for running installed apps.
 
+## Sprint Plan
+
+The operational sprint graph lives in `.stint/`. Use `stint status`, `stint next`, and `stint sprint show <id>` for the active task list and blockers.
+
+| Sprint | Dates | Goal | Task range |
+|---|---|---|---|
+| S1 | Jun 10-23 | File Explorer becomes a Host UI Kit based daily-driver file surface. | `0001`-`0007` |
+| S2 | Jun 24-Jul 7 | App authoring path is clear enough for Core 9 and third-party package authors. | `0008`-`0012` |
+| S3 | Jul 8-21 | Packages install locally with explicit capability and trust handling. | `0013`-`0017` |
+| S4 | Jul 22-Aug 4 | Hosted Marketplace can list and install reviewed apps. | `0018`-`0022` |
+
+S1 is the File Explorer sprint. The File Explorer issue bundle is linked from `docs/prm/file-explorer-overhaul.md`.
+
 ## Current Truth
 
 These are code facts as of 2026-06-09. Re-check before starting an implementation issue.
