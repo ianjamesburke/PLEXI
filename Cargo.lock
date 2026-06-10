@@ -3354,7 +3354,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "plexi"
-version = "0.0.685"
+version = "0.0.686"
 dependencies = [
  "base64",
  "chrono",
