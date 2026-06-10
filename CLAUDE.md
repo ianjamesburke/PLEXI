@@ -36,7 +36,9 @@ Sprint sequencing and task blockers live in `.stint/`. Use the PRM for product d
 Every stint task must record actual timing when work starts and when it completes. This is required so estimates can be compared against real elapsed implementation time.
 
 - When implementation begins, set the linked task `status` to `in-progress` and write `started_at: "<UTC ISO-8601 timestamp>"` if it is not already set.
-- When implementation is complete, write `completed_at: "<UTC ISO-8601 timestamp>"`, set `actual` to the elapsed wall-clock time from `started_at`, and mark the task done.
+- Use `stint start <task-id>` to do this; use `--started-at` only for historical backfill.
+- When implementation is complete, run `stint done <task-id>` so `completed_at`, elapsed `actual`, and `done` status are recorded together.
+- Use `stint done <task-id> --actual <duration>` only when overriding the computed/prompted actual time; use `--completed-at` only for historical backfill.
 - If a GitHub issue maps to multiple stint tasks, update every linked task that was materially worked.
 - If implementation is abandoned or blocked, leave `started_at` in place, do not set `completed_at`, and note the blocker in the issue body or task body.
 - Use UTC timestamps such as `2026-06-10T19:42:00Z`. Do not rely only on informal comments or GitHub timestamps.

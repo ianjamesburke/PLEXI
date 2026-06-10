@@ -34,7 +34,7 @@ Pipeline: pipeline:open-pr + ready set — invoking /open-pr inline
 > ```
 > Use the exact issue-number prefix the pane already has (`#<n1>+<n2>` for a bundle). **The status word must never contain a digit** — the PM maps panes to issues with `grep -oE '[0-9]+'` on the title, so a PR number in the suffix would corrupt the census. States this skill sets: `impl`, `pushed`, `noop`, `blocked`.
 
-> **Stint timing is mandatory.** When implementation starts, stamp every linked `.stint` task with `started_at`. When implementation completes, stamp `completed_at`, calculate elapsed wall-clock time into `actual`, and include the same timing in the GitHub Ship Log. This is how estimate accuracy is audited.
+> **Stint timing is mandatory.** When implementation starts, run `stint start <task-id>` for every linked `.stint` task materially worked. When implementation completes, run `stint done <task-id>` so `completed_at` and `actual` are recorded. Include the same timing in the GitHub Ship Log. This is how estimate accuracy is audited.
 
 ---
 
@@ -115,20 +115,18 @@ IMPL_PANE=$PLEXI_PANE_ID
 wtp add -b feature/<issue-number>-short-description HEAD  # origin/alpha when in sync; local HEAD when ahead
 ```
 
-**Stamp linked stint tasks immediately after the issue enters implementation:**
+**Start linked stint tasks immediately after the issue enters implementation:**
 
 1. Find tasks whose frontmatter links the issue:
    ```bash
    rg -l 'gh_issue: .*"<number>"|gh_issue: .*\\[<number>\\]' .stint/tasks
    ```
-2. For each linked task that will be worked, set:
-   - `status: in-progress`
-   - `started_at: "<UTC ISO-8601 timestamp>"`
-3. Do not overwrite an existing `started_at` for a resumed task; keep the original start and log resumed work separately if needed.
-4. Use:
+2. For each linked task that will be materially worked, run:
    ```bash
-   date -u +%Y-%m-%dT%H:%M:%SZ
+   stint start <task-id>
    ```
+3. Do not use `--restart` unless deliberately replacing bad timing data; normal resumed work keeps the original `started_at`.
+4. For historical backfill only, use `stint start <task-id> --started-at <UTC-RFC3339>`.
 
 If "branch already exists": check `git worktree list`. If no worktree, `wtp add` without `-b`. Check for prior commits.
 
@@ -245,11 +243,13 @@ git -C worktrees/<branch> push -u origin HEAD
 
 After pushing, append this section to the issue body. In bundle mode, write a Ship Log entry to **each** issue body. If a `## Ship Log` section already exists (prior attempt), append a new entry under it. If not, add the section.
 
-Before writing the Ship Log, update every linked stint task worked by this attempt:
+Before writing the Ship Log, complete every linked stint task worked by this attempt:
 
-- `completed_at: "<UTC ISO-8601 timestamp>"`
-- `actual: <elapsed wall-clock time from started_at>`
-- `status: done`
+```bash
+stint done <task-id>
+```
+
+Use `stint done <task-id> --actual <duration>` only when overriding the computed/prompted actual time. Use `--completed-at <UTC-RFC3339>` only for historical backfill.
 
 If the task estimate was wrong by more than 2x in either direction, add one sentence to the task body explaining why. This keeps future estimates calibrated.
 
