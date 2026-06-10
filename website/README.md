@@ -4,18 +4,18 @@ The website for [Plexi](https://github.com/ianjamesburke/PLEXI).
 
 ## Layout
 
-- `docs/` — strategy, architecture decisions, copy notes
-- `pocs/` — current landing-page proof of concept
-- (future) `src/` — the actual SvelteKit site
+- `src/` — Astro site source
+- `src/content/docs/` — public docs
+- `src/content/blog/` — published blog content
+- `drafts/` — unpublished writing drafts
+- `docs/` — deployment notes only
 
 ## Status
 
-Phase 0 → Phase 1 transition. Direction is locked on `pocs/poc-m-clean-dot.html` — dark mode, mono-only typeface, deeper amethyst palette, CRT scan-line texture, the P-of-panes logo (outlined left rect + outlined top-right square + filled violet bottom-right square), single "Download the App" hero CTA, and a donation-funded mission section in place of paid commissions.
+The site is an Astro app. Product roadmap and marketplace planning live in the repo root docs:
 
-```
-open pocs/poc-m-clean-dot.html
-```
+- [`../NORTH_STAR.md`](../NORTH_STAR.md)
+- [`../ROADMAP.md`](../ROADMAP.md)
+- [`../docs/prm/app-framework-marketplace.md`](../docs/prm/app-framework-marketplace.md)
 
-Strategy lock: see [`docs/2026-04-29-plexi-website-strategy.md`](docs/2026-04-29-plexi-website-strategy.md).
-
-Next: rebuild this POC as a real SvelteKit site, deploy to Vercel or Cloudflare Pages, wire the funding bar to the GitHub Sponsors GraphQL API.
+Do not keep a parallel website roadmap here.

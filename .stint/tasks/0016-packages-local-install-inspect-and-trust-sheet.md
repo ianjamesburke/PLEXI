@@ -6,7 +6,7 @@ sprint: "s3"
 estimate: 12h
 blocked_by: ["0015"]
 blocked_by_gh: []
-gh_issue: ["866"]
+gh_issue: []
 area: ["host/permissions", "ui/overlays", "cli/commands"]
 tags: ["packages", "trust-labels", "install"]
 ---
@@ -23,5 +23,4 @@ Users need to understand what a package can do before installing it, and marketp
 
 ## References
 
-- GitHub issue #866
 - `docs/prm/app-framework-marketplace.md`

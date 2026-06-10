@@ -1,9 +1,11 @@
 # Plexi App Framework + Marketplace PRM
 
-Status: canonical planning source for Layers 3-7.
-Last updated: 2026-06-09.
+Status: canonical planning source for the v1 app-platform release path.
+Last updated: 2026-06-10.
 
-This PRM defines the path from "Plexi can run apps" to "Plexi is an app platform." It owns app authoring, app packaging, marketplace trust, MCPUI interop, WASM/WASI, and the Bevy runtime path.
+This PRM defines the path from "Plexi can run apps" to "Plexi is an app platform." For v1 it owns app authoring, app packaging, marketplace trust, hosted marketplace install, paid-app planning, and Plexi AI subscription planning.
+
+MCPUI interop, WASM/WASI, `Surface`, and Bevy are v2 runtime lanes. They must fit the same app contract, but they do not block the v1 release.
 
 For those areas, this file supersedes older roadmap fragments, SDK overhaul plans, marketplace notes, and MCPUI future-enhancement docs. Superseded docs should be removed instead of kept as parallel history.
 
@@ -15,7 +17,7 @@ Finish Plexi as a platform in the order that makes the product usable and defens
 2. App permissions and packages are clear enough that a user can make an informed install decision.
 3. Local package/install works before hosted marketplace work.
 4. Hosted registry, paid apps, revenue share, and Plexi AI subscription arrive after the local app framework is stable.
-5. MCPUI, WASM/WASI, and Bevy fit under the same app contract instead of replacing it.
+5. MCPUI, WASM/WASI, and Bevy are planned as v2 runtime lanes that fit under the same app contract instead of replacing it.
 
 The local-first rule stays intact. Installed apps and user data live on disk. Hosted services may sell apps, review submissions, and broker AI calls, but they must not become required for running installed apps.
 
@@ -23,14 +25,48 @@ The local-first rule stays intact. Installed apps and user data live on disk. Ho
 
 The operational sprint graph lives in `.stint/`. Use `stint status`, `stint next`, and `stint sprint show <id>` for the active task list and blockers.
 
-| Sprint | Dates | Goal | Task range |
-|---|---|---|---|
-| S1 | Jun 10-23 | File Explorer becomes a Host UI Kit based daily-driver file surface. | `0001`-`0007` |
-| S2 | Jun 24-Jul 7 | App authoring path is clear enough for Core 9 and third-party package authors. | `0008`-`0012` |
-| S3 | Jul 8-21 | Packages install locally with explicit capability and trust handling. | `0013`-`0017` |
-| S4 | Jul 22-Aug 4 | Hosted Marketplace can list and install reviewed apps. | `0018`-`0022` |
+GitHub issues are still useful implementation tickets while `.stint` stabilizes, but `.stint` is the sprint graph. A stint task may link zero, one, or many GitHub issues. When the two disagree, update the task first, then reconcile issue labels or bodies during issue hygiene.
+
+| Sprint | Goal | Task range |
+|---|---|---|
+| S1 | File Explorer becomes a Host UI Kit based daily-driver file surface. | `0001`-`0007` |
+| S2 | App authoring path is clear enough for Core 9 and third-party package authors. | `0008`-`0012` |
+| S3 | Packages install locally with explicit capability and trust handling. | `0013`-`0017` |
+| S4 | Hosted Marketplace can list and install reviewed apps. | `0018`-`0022` |
+| S5 | Host UI stabilization: centralize v1 modals, shortcuts, permission grants, and app-platform chrome on the new UI kit. | `0023`-`0027` |
+| S6 | v1 release readiness: docs, issue hygiene, install QA, and security wording are clean enough to cut v1. | `0028`-`0031` |
 
 S1 is the File Explorer sprint. The File Explorer issue bundle is linked from `docs/prm/file-explorer-overhaul.md`.
+
+### Sprint Tasks
+
+| Task | Sprint | Work |
+|---|---|---|
+| `0001`-`0007` | S1 | File Explorer overhaul: adaptive list/details layout, columns, inspector/Quick Look, safe file operations, recursive search, richer views, Plexi-native selection actions. |
+| `0008` | S2 | Polish scaffold and app dev defaults so generated apps start from `view()` and L1 UI. |
+| `0009` | S2 | Standardize app-author dev loop: init, health, test, lint, render, inspect, act. |
+| `0010` | S2 | Polish SDK components and small-pane behavior. |
+| `0011` | S2 | Sweep Core 9 apps into clean references for common app patterns. |
+| `0012` | S2 | Add app-authoring verification harness and docs. |
+| `0013` | S3 | Remove or identity-bind ambient host control inherited by app processes. |
+| `0014` | S3 | Move Assistant pane/app/terminal powers through host-mediated capability APIs. |
+| `0015` | S3 | Define package artifacts and validator contract. |
+| `0016` | S3 | Add local install inspection and trust sheet. |
+| `0017` | S3 | Add permission management and yellow-state routing needed for package trust. |
+| `0018` | S4 | Stand up hosted app registry/CDN for reviewed app metadata. |
+| `0019` | S4 | Add publisher submission and review flow. |
+| `0020` | S4 | Browse and install reviewed apps from registry. |
+| `0021` | S4 | Specify paid apps, licenses, revenue share, refunds, takedowns, and analytics. |
+| `0022` | S4 | Specify Plexi AI subscription as an `ai.query` backend. |
+| `0023` | S5 | Audit remaining host chrome and identify one-off modal, shortcut, permission, and trust UI paths. |
+| `0024` | S5 | Move remaining modals and shortcut hint surfaces onto the centralized Host UI Kit. |
+| `0025` | S5 | Rework permission grant, package trust, and install confirmation popups on shared UI primitives. |
+| `0026` | S5 | Normalize keyboard shortcut display and command/help affordances across host chrome. |
+| `0027` | S5 | Add UI regression coverage and gallery states for v1 host/app-platform chrome. |
+| `0028` | S6 | Purge stale docs and regenerate public docs for v1. |
+| `0029` | S6 | Reconcile open GitHub issues with stint sprints, labels, and v1/v2 boundaries. |
+| `0030` | S6 | Run install, upgrade, channel, package, and marketplace acceptance QA. |
+| `0031` | S6 | Audit security/trust wording so v1 never claims Python sandboxing. |
 
 ## Current Truth
 
@@ -47,18 +83,18 @@ These are code facts as of 2026-06-09. Re-check before starting an implementatio
 - App validation exists but is shallow. It is not yet a marketplace package validator.
 - `plexi app publish` is a stub.
 - The Assistant app declares only `ai.query` in `apps/assistant/manifest.toml`, but registers tools that call the Plexi CLI in subprocesses to open terminals, open apps, list panes, and send pane commands. Those subprocesses inherit the app environment, including host routing such as `PLEXI_SOCKET`.
-- MCPUI is not implemented in the runtime. The sequence in this PRM replaces the old MCPUI technical sketch.
-- WASM/WASI is not an app runtime yet.
-- Bevy has no first implementation path until `Surface` and the WASM lane exist.
+- MCPUI is not implemented in the runtime. It is a v2 runtime lane.
+- WASM/WASI is not an app runtime yet. It is a v2 runtime lane.
+- Bevy has no first implementation path until `Surface` and the WASM lane exist. It is a v2 runtime lane.
 
 ## Product Decisions
 
 - PGAP remains Plexi's native app protocol.
 - SDK v2 is the canonical authoring path. A normal app implements `view()` and returns L1 UI. `on_render(ctx)` is for games, realtime canvases, visualizations, and other explicit pixel-control apps.
 - `Raw` stays as an escape hatch. It is not the default path for generated apps.
-- MCPUI is an interop lane. First export Plexi apps as MCPUI resources. Later host MCPUI apps in Plexi through WebView panes.
-- WASM/WASI is the real third-party sandbox and performance lane.
-- Bevy targets WASM + `Surface`. Native Bevy embedding is not the first path.
+- MCPUI is a v2 interop lane. First export Plexi apps as MCPUI resources. Later host MCPUI apps in Plexi through WebView panes.
+- WASM/WASI is the v2 third-party sandbox and performance lane.
+- Bevy targets WASM + `Surface` in v2. Native Bevy embedding is not the first path.
 - Marketplace trust cannot launch while apps have ambient host control through inherited environment and CLI subprocesses.
 - Python marketplace apps are reviewed native processes until WASM ships. Do not describe them as sandboxed.
 - Marketplace and Plexi AI subscription are business surfaces, but they do not block local package/install or app-framework completion.
@@ -191,7 +227,23 @@ Business model:
 
 Do not make hosted login required for local apps.
 
-### 5. Add Runtime Lanes
+### 5. v1 Release Readiness
+
+Before release readiness, run a UI stabilization sprint on top of the completed Host UI Kit sequence:
+
+- Audit host chrome for one-off modal shells, raw shortcut labels, ad hoc permission prompts, and package/install confirmation UI.
+- Refactor remaining v1 modals, shortcuts, permission grants, package trust sheets, and marketplace install chrome onto shared UI primitives.
+- Use the host UI gallery and focused regression tests to keep states visible: normal, hover-equivalent, selected, focused, disabled, danger, permission-required, and trust-warning.
+
+Then, before cutting v1:
+
+- Remove superseded docs instead of keeping parallel history.
+- Regenerate public docs and CLI references from the current build.
+- Reconcile open GitHub issues against stint tasks and v1/v2 labels.
+- Verify install, upgrade, channel isolation, local package install, hosted marketplace install, and trust-label wording.
+- Keep `docs/SECURITY_MODEL.md`, `docs/PGAP_REFERENCE.md`, `docs/sdk-v2.md`, website docs, and README aligned.
+
+### v2 Runtime Lanes
 
 PGAP/Python remains the simple path:
 
@@ -269,11 +321,12 @@ Marketplace acceptance scenarios:
 
 ## Source-Of-Truth Rules
 
-- This PRM owns planning for Layers 3-7 app-platform work.
+- This PRM owns v1 planning for app authoring, trust, packaging, marketplace, paid-app planning, Plexi AI subscription planning, and release readiness.
+- Runtime lanes after v1 are parked here as v2 direction until their own PRM or stint sprint is created.
 - `docs/sdk-v2.md` remains the SDK API reference as long as it matches this PRM.
 - `docs/PGAP_REFERENCE.md` remains the wire reference as long as it matches code.
 - `docs/SECURITY_MODEL.md` remains the current security disclosure as long as it says Python apps are not sandboxed.
-- Superseded plans under `docs/superpowers/plans/` should be removed when they conflict with the current PRM.
+- Superseded plans under `docs/superpowers/plans/` and `docs/superpowers/specs/` should be removed when they conflict with the current PRM.
 - The old MCPUI standalone plan has been removed. This PRM owns MCPUI sequence.
 - `ROADMAP.md` can summarize milestones, but this PRM resolves conflicts for app framework and marketplace decisions.
 

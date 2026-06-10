@@ -6,7 +6,7 @@ sprint: "s4"
 estimate: 16h
 blocked_by: ["0017"]
 blocked_by_gh: []
-gh_issue: ["689", "356"]
+gh_issue: []
 area: ["infra/server", "infra/build"]
 tags: ["marketplace", "registry", "cdn"]
 ---
@@ -23,5 +23,4 @@ The marketplace can only be up when users can fetch reviewed app metadata from a
 
 ## References
 
-- GitHub issues #689, #356
 - `docs/prm/app-framework-marketplace.md`

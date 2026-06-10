@@ -6,7 +6,7 @@ sprint: "s2"
 estimate: 16h
 blocked_by: ["0009", "0010"]
 blocked_by_gh: []
-gh_issue: ["2118", "2110", "2071"]
+gh_issue: []
 area: ["apps/examples", "sdk/python", "host/permissions"]
 tags: ["app-authoring", "core-9", "references"]
 ---
@@ -24,5 +24,4 @@ The fastest path for agents to generate good marketplace apps is copying first-p
 
 ## References
 
-- GitHub issues #2118, #2110, #2071
 - `docs/prm/app-framework-marketplace.md`

@@ -871,10 +871,12 @@ fn to_struct_name(s: &str) -> String {
         .collect::<String>()
 }
 
-/// `plexi app publish` — stub for future marketplace.
+/// `plexi app publish` — stub for the v1 marketplace publisher path.
 pub fn app_publish() -> i32 {
     log::info!("app_publish: stub invoked");
-    println!("Coming soon! The Plexi app marketplace is under development.");
+    println!(
+        "Publishing is on the v1 marketplace roadmap. Use `plexi app validate` before local install flows for now."
+    );
     println!("Follow progress at https://plexiapp.com");
     0
 }

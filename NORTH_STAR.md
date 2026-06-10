@@ -72,7 +72,7 @@ PGAP becomes the product's defining abstraction. **L1-only declarative UI**: app
 
 The goal: a non-technical person sits down with an AI assistant, says "give me a Plexi app that does X," and it works on the first try because the SDK is a tree builder with 10 concepts, not a rendering engine with 40. A functional, visually polished app in under 100 lines of Python.
 
-**Security model**: the capability system (consent + permissions.jsonl audit trail) is the v1 enforcement layer. Python process sandboxing is not attempted at the language level; the protocol brokers all I/O, and the marketplace review process catches abuse. True process isolation comes with the WASM runtime in Phase 4. This is an acknowledged gap, not an oversight.
+**Security model**: the capability system (consent + permissions.jsonl audit trail) is the v1 enforcement layer. Python process sandboxing is not attempted at the language level; the protocol brokers host APIs, and the marketplace review process catches abuse. v1 marketplace apps are reviewed native processes. True process isolation comes with the v2 WASM runtime. This is an acknowledged gap, not an oversight.
 
 The SDK's job after this phase: state management, tree building, event dispatch. That's it.
 
@@ -88,7 +88,7 @@ Ephemeral pane manager: panes that are alive but not in the active tiling layout
 
 WASM app runtime with WASI capability mapping. Same UiNode tree protocol, different transport: shared memory IPC instead of JSON over pipes. True process sandboxing via WASM. `Surface { id }` node for direct GPU rendering (games, real-time visualizations). This is the performance tier: apps that need 60fps with hundreds of objects target WASM; apps that need simplicity target Python. Both ship to the same marketplace.
 
-App marketplace: `plexi app dev` (hot-reload local development), `plexi app publish` (package + upload), `plexi app install <name>` from registry. Submission review flow. Revenue sharing for app authors. The marketplace lists both Python and WASM apps with visible trust labels, while the install flow stays the same.
+App marketplace: `plexi app dev` (hot-reload local development), `plexi app publish` (package + upload), `plexi app install <name>` from registry. Submission review flow. Revenue sharing for app authors. v1 starts with reviewed native-process apps and blunt trust labels. v2 adds WASM apps under the same install flow once the sandbox is real.
 
 ### Phase 5 — The Portable Instance *(long term)*
 

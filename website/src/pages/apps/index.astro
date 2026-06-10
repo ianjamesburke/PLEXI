@@ -1,134 +1,19 @@
 ---
 import Layout from '../../layouts/Layout.astro';
 import Newsletter from '../../components/Newsletter.astro';
-
-// App marketplace coming soon — POC app list commented out below
-// const REGISTRY_URL = 'https://raw.githubusercontent.com/ianjamesburke/plexi-registry/main/registry.json';
-// const apps = await fetch(REGISTRY_URL).then(r => r.json());
-// const allTags = ['all', ...new Set(apps.flatMap((a: any) => a.tags))];
 ---
 
-<Layout title="Apps — Plexi" description="The Plexi App Marketplace is coming soon.">
+<Layout title="Apps — Plexi" description="The Plexi App Marketplace is on the v1 roadmap.">
   <div class="wrap">
     <header class="apps-header">
-      <div class="soon-badge">coming soon</div>
+      <div class="soon-badge">v1 roadmap</div>
       <h1>App Marketplace</h1>
-      <p class="sub">A curated marketplace for Plexi apps is on the way.<br>Get notified when it launches.</p>
+      <p class="sub">Local packages come first. Reviewed app installs follow on the v1 path.</p>
     </header>
   </div>
 
   <Newsletter />
 </Layout>
-
-{/*
-  Previous app listing grid — preserved for future reference
-
-  <div class="wrap">
-    <header class="apps-header">
-      <h1>Apps</h1>
-      <p class="sub">{apps.length} apps available</p>
-    </header>
-
-    <div class="filters" id="filters">
-      {allTags.map((tag: string) => (
-        <button class={`filter-btn ${tag === 'all' ? 'active' : ''}`} data-tag={tag}>
-          {tag === 'all' ? 'All' : tag}
-        </button>
-      ))}
-    </div>
-
-    <div class="grid" id="grid">
-      {apps.map((app: any) => (
-        <a class="card" href={`/apps/${app.id}`} data-tags={app.tags.join(',')}>
-          <div class="card-top">
-            <span class="card-name">{app.name}</span>
-            {app.core && <span class="core-badge">core</span>}
-          </div>
-          <p class="card-desc">{app.description}</p>
-          <div class="card-bottom">
-            <div class="tags">
-              {app.tags.map((t: string) => <span class="tag">{t}</span>)}
-            </div>
-            <span class="card-install">plexi install {app.id}</span>
-          </div>
-        </a>
-      ))}
-    </div>
-  </div>
-
-  <script>
-    const filters = document.getElementById('filters')!;
-    const grid = document.getElementById('grid')!;
-    const cards = Array.from(grid.querySelectorAll<HTMLElement>('.card'));
-
-    filters.addEventListener('click', (e) => {
-      const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('.filter-btn');
-      if (!btn) return;
-      filters.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      const tag = btn.dataset.tag!;
-      cards.forEach(card => {
-        const tags = card.dataset.tags!.split(',');
-        card.style.display = (tag === 'all' || tags.includes(tag)) ? '' : 'none';
-      });
-    });
-  </script>
-
-  <style>
-    .filters {
-      display: flex;
-      gap: 6px;
-      flex-wrap: wrap;
-      margin-bottom: 28px;
-    }
-    .filter-btn {
-      background: transparent;
-      border: 1px solid var(--border);
-      color: var(--fg-4);
-      padding: 4px 12px;
-      border-radius: 99px;
-      font-size: 13px;
-      font-family: var(--mono);
-      cursor: pointer;
-      transition: all 0.15s;
-    }
-    .filter-btn:hover { border-color: var(--border-3); color: var(--fg-2); }
-    .filter-btn.active { background: var(--fg); color: var(--bg); border-color: var(--fg); }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-      gap: 12px;
-      padding-bottom: 80px;
-    }
-    .card {
-      background: var(--bg-2);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 20px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      text-decoration: none;
-      color: inherit;
-      transition: border-color 0.15s, background 0.15s;
-    }
-    .card:hover { border-color: var(--border-2); background: var(--bg-3); }
-    .card-top { display: flex; align-items: center; gap: 8px; }
-    .card-name { font-size: 14px; font-weight: 600; color: var(--fg); letter-spacing: -0.01em; }
-    .core-badge {
-      font-size: 12px; color: var(--accent-light); border: 1px solid var(--accent-dim);
-      background: var(--accent-dim); padding: 1px 6px; border-radius: 99px; letter-spacing: 0.04em;
-    }
-    .card-desc { font-size: 13px; color: var(--fg-2); line-height: 1.6; flex: 1; }
-    .card-bottom { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
-    .tags { display: flex; gap: 4px; flex-wrap: wrap; }
-    .tag {
-      font-size: 12px; color: var(--fg-4); background: var(--bg-3); border: 1px solid var(--border);
-      padding: 1px 6px; border-radius: 99px; text-transform: uppercase; letter-spacing: 0.04em;
-    }
-    .card-install { font-size: 13px; color: var(--good); opacity: 0.7; white-space: nowrap; }
-  </style>
-*/}
 
 <style>
   .apps-header {

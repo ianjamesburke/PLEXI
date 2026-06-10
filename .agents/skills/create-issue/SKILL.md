@@ -65,11 +65,11 @@ Before drafting anything, investigate the relevant code:
 
 **Persist the file map.** You are already locating every affected file — write it down instead of discarding it. The result goes into the issue body under `## Implementation Map` (feature/bug templates below) as `path:line — what changes`, plus a "Do not touch" list of adjacent-but-out-of-scope files. This is the single biggest lever on dispatch cost: the implementing agent reads only these files instead of re-running the whole discovery sweep. Record line numbers where you saw them, but treat them as hints — the implementing agent re-verifies each path before trusting it, so an approximate line is fine and a moved file is caught downstream.
 
-**Grep GOTCHAS.md and DEV_LOG.md for related pitfalls (if they exist in the repo):**
+**Grep GOTCHAS.md for related pitfalls (if it exists in the repo):**
 
 Extract 3–5 key terms from the proposed change (the subsystem, method, or pattern being touched). Run:
 ```bash
-grep -in "<term1>\|<term2>\|<term3>" GOTCHAS.md DEV_LOG.md 2>/dev/null
+grep -in "<term1>\|<term2>\|<term3>" GOTCHAS.md 2>/dev/null
 ```
 Any matches go directly into the issue body under a `## Known Gotchas` section — so the implementing agent sees them at the top of Phase 3 without having to re-discover them. If nothing matches, omit the section.
 

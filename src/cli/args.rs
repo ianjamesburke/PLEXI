@@ -480,8 +480,8 @@ pub enum AppCmd {
     },
     /// Publish an app to the Plexi marketplace.
     ///
-    /// The Plexi app marketplace is under development. This command will be available
-    /// in a future release.
+    /// Publishing is on the v1 marketplace roadmap. Use app validate and local package
+    /// install flows until the hosted publisher path ships.
     Publish,
     /// Check installed apps for available updates.
     ///

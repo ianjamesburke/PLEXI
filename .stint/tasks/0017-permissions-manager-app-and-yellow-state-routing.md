@@ -6,7 +6,7 @@ sprint: "s3"
 estimate: 16h
 blocked_by: ["0016"]
 blocked_by_gh: []
-gh_issue: ["867", "868", "412"]
+gh_issue: []
 area: ["host/permissions", "sdk/pgap"]
 tags: ["permissions", "trust", "capabilities"]
 ---
@@ -24,5 +24,4 @@ Marketplace installs need a visible place to inspect and revise grants, and app 
 
 ## References
 
-- GitHub issues #867, #868, #412
 - `docs/prm/app-framework-marketplace.md`

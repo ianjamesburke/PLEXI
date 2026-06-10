@@ -61,7 +61,7 @@ app info ID              Show app details: id, name, version, tools.
 app render ID            Render to PNG. --size WxH, --state FILE, --output FILE.
 app validate [PATH]      Check app dir for errors before publish/install.
 app freeze PATH          Export installed apps as TOML snapshot (like pip freeze).
-app publish              Publish to Plexi marketplace.
+app publish              Stub for future marketplace publishing; confirm behavior with --help.
 app update               Check for available updates.
 app action ID ACTION [ARGS]  Send a semantic action to a running app (not raw text).
 ```

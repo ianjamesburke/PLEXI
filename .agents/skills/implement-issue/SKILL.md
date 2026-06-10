@@ -143,12 +143,12 @@ wait && cat /tmp/issue_n*.json && rm /tmp/issue_n*.json
    git -C worktrees/<branch> ls-files <path1> <path2> ...
    grep -rn "<fn1>\|<fn2>" worktrees/<branch>/<mapped-files>
    ```
-2. Every path/symbol resolves → read ONLY the mapped files. Skip GOTCHAS/DEV_LOG grep. Common case; skips discovery entirely.
-3. A path is missing, a symbol moved, or the map is absent → the issue drifted since filing. Fall back to full discovery (grep affected modules, then read) for the unresolved parts only, note "Map stale: <what moved>" in the spec, **and** run the GOTCHAS/DEV_LOG grep below.
+2. Every path/symbol resolves → read ONLY the mapped files. Skip GOTCHAS grep. Common case; skips discovery entirely.
+3. A path is missing, a symbol moved, or the map is absent → the issue drifted since filing. Fall back to full discovery (grep affected modules, then read) for the unresolved parts only, note "Map stale: <what moved>" in the spec, **and** run the GOTCHAS grep below.
 
-**Grep GOTCHAS.md and DEV_LOG.md — only when doing full discovery (step 3 above):**
+**Grep GOTCHAS.md — only when doing full discovery (step 3 above):**
 ```bash
-grep -in "<term1>\|<term2>\|<term3>" GOTCHAS.md DEV_LOG.md
+grep -in "<term1>\|<term2>\|<term3>" GOTCHAS.md
 ```
 Surface every match under **Gotchas found:**. Each requires disposition: **NOTED** or **N/A**.
 

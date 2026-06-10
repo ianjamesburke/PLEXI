@@ -1,7 +1,7 @@
 ---
 title: Apps
 description: Build and run Plexi apps.
-verified_version: "0.0.669"
+verified_version: "0.0.689"
 order: 5
 ---
 
