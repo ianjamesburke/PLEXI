@@ -48,25 +48,38 @@ Dispatching #1671 — fix(infra/skills): implement-issue preflight optimization
 
 ---
 
-## Step 3 — Open lanes
+## Step 3 — Name the sprint
+
+Pick a short descriptive name for this dispatch batch. Base it on what the issues have in common — their shared `area:*` label, a common theme, or the feature being built. Examples: `sdk-frames`, `cli-completions`, `app-protocol`. If nothing ties them together, fall back to `dispatch/N1+N2+...`.
+
+If the repo uses GitHub milestones, the milestone title is a good name — but this is optional, not the default.
+
+---
+
+## Step 4 — Create subcontext and open lanes
+
+Split the current window to create a new anchor pane, push it into a sub-context, then open each lane as a window inside that sub-context. The orchestrator pane stays outside and untouched.
 
 ```bash
 PLEXI=plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL}
-PREV_ID=$PLEXI_PANE_ID
-LAYOUT=split_h
+
+# Create a new split pane — it receives focus by default
+$PLEXI pane new --name "$SPRINT_NAME"
+
+# Push that focused pane into a new sub-context
+$PLEXI context push "$SPRINT_NAME"
+
+# Open each lane as a new window — inherits the sub-context
 for ISSUE in <issue1> [issue2...]; do
-  PANE_ID=$($PLEXI terminal "c '/implement-issue $ISSUE'" \
-    --layout $LAYOUT \
-    --from-pane-id $PREV_ID \
+  $PLEXI pane new "c '/implement-issue $ISSUE'" \
+    --window \
+    --name "#${ISSUE}" \
     --cwd "$PWD" \
-    --no-focus)
-  $PLEXI pane name $PANE_ID "#${ISSUE}"
-  PREV_ID=$PANE_ID
-  LAYOUT=split_v
+    --no-focus
 done
 ```
 
-**Bundle mode:** if the user passes multiple issues that should share a single PR, open ONE pane with all numbers: `c '/implement-issue N1 N2 N3'`. Name the pane `#N1+N2+N3`.
+**Bundle mode:** if the user passes multiple issues that should share a single PR, open ONE window with all numbers: `c '/implement-issue N1 N2 N3'`. Name it `#N1+N2+N3`.
 
 The pipeline self-orchestrates inline from there:
 
@@ -74,7 +87,7 @@ The pipeline self-orchestrates inline from there:
 implement-issue → open-pr → validate-pr (notify user, wait) → merge-pr
 ```
 
-All phases run in the same pane. Each pane closes itself at the end of merge-pr and fires a notify.
+All phases run in the same window. Each window closes itself at the end of merge-pr and fires a notify.
 
 ---
 
