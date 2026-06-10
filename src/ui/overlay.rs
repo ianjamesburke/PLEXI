@@ -41,6 +41,11 @@ impl<'a> ModalShell<'a> {
         self
     }
 
+    pub(crate) fn click_away(mut self, enabled: bool) -> Self {
+        self.click_away = enabled;
+        self
+    }
+
     pub(crate) fn show<R>(
         self,
         ctx: &egui::Context,
