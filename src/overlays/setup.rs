@@ -198,26 +198,18 @@ impl PlexiApp {
         let colors = self.colors;
         let cmd = crate::cli::setup::INSTALL_COMMAND;
 
-        egui::Area::new(egui::Id::new("cli_setup_modal"))
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(colors.bg_sidebar)
-                    .stroke(Stroke::new(1.0, colors.border))
-                    .corner_radius(R6)
-                    .inner_margin(egui::Margin::symmetric(24, 20))
-                    .show(ui, |ui| {
-                        ui.set_width(400.0);
-
+        let title = format!("Install `{cli_name}`");
+        // No scrim — this prompt floats over the welcome screen at startup
+        // and shouldn't dim it (matches its pre-kit behavior).
+        let response = crate::ui::overlay::ModalShell::centered("cli_setup_modal")
+            .title(&title)
+            .width(400.0)
+            .scrim(false)
+            .escape(true)
+            .show(ctx, &colors, |ui| {
+                {
+                    {
                         ui.vertical_centered(|ui| {
-                            ui.label(
-                                RichText::new(format!("Install `{cli_name}`"))
-                                    .size(style::TEXT_BODY)
-                                    .color(colors.text_primary)
-                                    .strong(),
-                            );
-                            ui.add_space(style::SPACE_SM);
                             ui.label(
                                 RichText::new("Lets shell scripts, agents, and hooks:")
                                     .size(style::TEXT_CAPTION)
@@ -326,10 +318,11 @@ impl PlexiApp {
                                 }
                             });
                         });
-                    });
+                    }
+                }
             });
 
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        if response.dismissed {
             log::info!("cli_setup: dismissed via Escape — will ask again next launch");
             self.show_cli_setup_prompt = false;
         }
