@@ -341,6 +341,7 @@ impl PlexiApp {
                 match cmd {
                     AppCommand::SpawnApp { .. }
                     | AppCommand::SpawnPane { .. }
+                    | AppCommand::ForwardPaneRequest { .. }
                     | AppCommand::DeliverPipeMessage { .. }
                     | AppCommand::OpenDirectedPipe { .. }
                     | AppCommand::DeliverRunUpdate { .. }

@@ -1353,3 +1353,139 @@ fn capability_secret_overlay_focus_wins_after_central_panel_steal() {
         "capability_secret_input must win focus back after a CentralPanel pane widget steals it"
     );
 }
+
+// -- Pane read/control over PGAP (stint 0013/0014) --------------------------
+
+/// App WITHOUT `panes.read` sends ListPanes via PGAP: the request must not be
+/// forwarded — instead the capability gate writes a JSON error object to the
+/// response_file so the caller doesn't hang until its poll timeout.
+#[test]
+fn pgap_list_panes_denied_without_panes_read() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let response_file = tmp.path().join("list-panes.json");
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::ListPanes {
+            response_file: response_file.to_string_lossy().into_owned(),
+            context_id: None,
+        }),
+    );
+    h.run_frames(2);
+
+    let content =
+        std::fs::read_to_string(&response_file).expect("denial must write the response file");
+    let v: serde_json::Value = serde_json::from_str(&content).expect("response must be JSON");
+    assert_eq!(
+        v["capability"], "panes.read",
+        "denial object must name the missing capability: {content}"
+    );
+    assert!(
+        v["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("capability denied")),
+        "denial object must carry an error message: {content}"
+    );
+}
+
+/// App WITH `panes.read` sends ListPanes via PGAP: the request is forwarded
+/// into the host pane-IPC handler, which writes the pane list JSON array.
+#[test]
+fn pgap_list_panes_forwarded_with_panes_read() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[
+        "panes.read".to_string(),
+    ]));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let response_file = tmp.path().join("list-panes.json");
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::ListPanes {
+            response_file: response_file.to_string_lossy().into_owned(),
+            context_id: None,
+        }),
+    );
+    h.run_frames(2);
+
+    let content =
+        std::fs::read_to_string(&response_file).expect("grant must write the response file");
+    let v: serde_json::Value = serde_json::from_str(&content).expect("response must be JSON");
+    let panes = v
+        .as_array()
+        .expect("ListPanes response must be a JSON array");
+    assert!(
+        panes.iter().any(|p| p["id"].as_u64() == Some(pane)),
+        "pane list must contain the requesting pane: {content}"
+    );
+}
+
+/// App WITHOUT `panes.control` sends SendToPane via PGAP: the gate must write
+/// the capability-denied error object instead of forwarding.
+#[test]
+fn pgap_send_to_pane_denied_without_panes_control() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[
+        "panes.read".to_string(), // read alone must NOT grant control
+    ]));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let response_file = tmp.path().join("send-to-pane.json");
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::SendToPane {
+            pane_id: pane,
+            text: "echo hi".to_string(),
+            response_file: Some(response_file.to_string_lossy().into_owned()),
+        }),
+    );
+    h.run_frames(2);
+
+    let content =
+        std::fs::read_to_string(&response_file).expect("denial must write the response file");
+    let v: serde_json::Value = serde_json::from_str(&content).expect("response must be JSON");
+    assert_eq!(
+        v["capability"], "panes.control",
+        "denial object must name the missing capability: {content}"
+    );
+}
+
+/// App WITH `panes.control` sends SendToPane via PGAP: the request reaches the
+/// host pane-IPC handler. The target is the app's own (non-terminal) pane, so
+/// the handler — not the capability gate — answers with its pane-type error,
+/// proving the forward happened.
+#[test]
+fn pgap_send_to_pane_forwarded_with_panes_control() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[
+        "panes.control".to_string(),
+    ]));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let response_file = tmp.path().join("send-to-pane.json");
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::SendToPane {
+            pane_id: pane,
+            text: "echo hi".to_string(),
+            response_file: Some(response_file.to_string_lossy().into_owned()),
+        }),
+    );
+    h.run_frames(2);
+
+    let content =
+        std::fs::read_to_string(&response_file).expect("forward must write the response file");
+    let v: serde_json::Value = serde_json::from_str(&content).expect("response must be JSON");
+    assert!(
+        v.get("capability").is_none(),
+        "granted request must not produce a capability denial: {content}"
+    );
+    assert!(
+        v["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("not a terminal pane")),
+        "host handler must answer with its own pane-type error: {content}"
+    );
+}

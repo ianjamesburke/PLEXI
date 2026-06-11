@@ -1682,13 +1682,25 @@ impl ProcessApp {
                 }
             }
 
-            // SetPaneTitle is only valid over PLEXI_SOCKET; an app sending it
-            // via PGAP is a protocol error — log and drop.
-            AppRequest::SetPaneTitle { pane_id, .. } => {
-                log::warn!(
-                    "ProcessApp[{}]: received SetPaneTitle for pane_id={pane_id} over PGAP — ignored (use PLEXI_SOCKET instead)",
-                    self.type_id
-                );
+            // ── Pane read/control over PGAP (stint 0013/0014) ─────────────
+            // Apps may inspect and drive other panes through the same host
+            // pane-IPC handlers the `plexi pane` CLI uses, gated on the
+            // `panes.read` / `panes.control` capabilities.
+            request @ (AppRequest::ListPanes { .. }
+            | AppRequest::ListContexts { .. }
+            | AppRequest::GetPaneInfo { .. }
+            | AppRequest::GetPreviousPaneInfo { .. }
+            | AppRequest::GetPaneState { .. }
+            | AppRequest::CapturePane { .. }) => {
+                self.gate_and_forward_pane_request(request, Capability::PanesRead);
+            }
+            request @ (AppRequest::SetPaneTitle { .. }
+            | AppRequest::FocusPane { .. }
+            | AppRequest::ClosePane { .. }
+            | AppRequest::SendToPane { .. }
+            | AppRequest::KeyPane { .. }
+            | AppRequest::SendAppAction { .. }) => {
+                self.gate_and_forward_pane_request(request, Capability::PanesControl);
             }
 
             // Context commands are only valid over PLEXI_SOCKET; log and drop
@@ -1735,43 +1747,6 @@ impl ProcessApp {
                     self.type_id
                 );
             }
-            AppRequest::ListPanes { .. } => {
-                log::warn!(
-                    "ProcessApp[{}]: received ListPanes over PGAP — ignored (use PLEXI_SOCKET instead)",
-                    self.type_id
-                );
-            }
-            AppRequest::ListContexts { .. } => {
-                log::warn!(
-                    "ProcessApp[{}]: received ListContexts over PGAP — ignored (use PLEXI_SOCKET instead)",
-                    self.type_id
-                );
-            }
-            AppRequest::FocusPane { .. } => {
-                log::warn!(
-                    "ProcessApp[{}]: received FocusPane over PGAP — ignored (use PLEXI_SOCKET instead)",
-                    self.type_id
-                );
-            }
-            AppRequest::ClosePane { .. } => {
-                log::warn!(
-                    "ProcessApp[{}]: received ClosePane over PGAP — ignored (use PLEXI_SOCKET instead)",
-                    self.type_id
-                );
-            }
-            AppRequest::SendToPane { .. } => {
-                log::warn!(
-                    "ProcessApp[{}]: received SendToPane over PGAP — ignored (use PLEXI_SOCKET instead)",
-                    self.type_id
-                );
-            }
-            AppRequest::KeyPane { .. } => {
-                log::warn!(
-                    "ProcessApp[{}]: received KeyPane over PGAP — ignored (use PLEXI_SOCKET instead)",
-                    self.type_id
-                );
-            }
-
             // ── App state save ─────────────────────────────────────────────
             AppRequest::SaveAppState { payload } => {
                 let filename = format!("{}.json", self.type_id);
@@ -1822,39 +1797,6 @@ impl ProcessApp {
                     }
                 }
             }
-            AppRequest::GetPaneInfo { pane_id, .. } => {
-                log::warn!(
-                    "ProcessApp[{}]: GetPaneInfo pane_id={pane_id} received in app routing — ignored (host-only command)",
-                    self.type_id
-                );
-            }
-            AppRequest::GetPreviousPaneInfo { .. } => {
-                log::warn!(
-                    "ProcessApp[{}]: GetPreviousPaneInfo received in app routing — ignored (host-only command)",
-                    self.type_id
-                );
-            }
-            AppRequest::CapturePane { pane_id, .. } => {
-                log::warn!(
-                    "ProcessApp[{}]: CapturePane pane_id={pane_id} received in app routing — ignored (use PLEXI_SOCKET instead)",
-                    self.type_id
-                );
-            }
-            AppRequest::GetPaneState { pane_id, .. } => {
-                log::warn!(
-                    "ProcessApp[{}]: GetPaneState pane_id={pane_id} received in app routing — ignored (host-only command)",
-                    self.type_id
-                );
-            }
-
-            // ── SendAppAction — host-only, routed via PLEXI_SOCKET ────────
-            AppRequest::SendAppAction { pane_id, .. } => {
-                log::warn!(
-                    "ProcessApp[{}]: SendAppAction pane_id={pane_id} received in app routing — ignored (host-only command)",
-                    self.type_id
-                );
-            }
-
             // ── Query context state (#1518) ───────────────────────────────
             AppRequest::QueryContextState { context_id } => {
                 log::info!(
@@ -1916,6 +1858,44 @@ impl ProcessApp {
                 );
             }
         }
+    }
+
+    /// Capability gate for pane read/control requests arriving over PGAP
+    /// (stint 0013/0014). On grant the original request is forwarded into the
+    /// host's pane-IPC handler — the same path `plexi pane ...` CLI commands
+    /// take over PLEXI_SOCKET. On denial, callers waiting on a response_file
+    /// get a JSON error object so they don't hang until their poll timeout;
+    /// fire-and-forget requests just log.
+    fn gate_and_forward_pane_request(&mut self, request: AppRequest, cap: Capability) {
+        let kind = pane_request_kind(&request);
+        if let PermissionCheck::Denied(reason) = check(&self.permissions, cap) {
+            log::warn!(
+                "ProcessApp[{}]: {kind} denied — missing capability '{}': {reason}",
+                self.type_id,
+                cap.as_str()
+            );
+            if let Some(response_file) = pane_request_response_file(&request) {
+                let body = serde_json::json!({
+                    "error": format!("capability denied: {}", cap.as_str()),
+                    "capability": cap.as_str(),
+                })
+                .to_string();
+                if let Err(e) = std::fs::write(response_file, body) {
+                    log::warn!(
+                        "ProcessApp[{}]: {kind} denial — could not write response file {response_file:?}: {e}",
+                        self.type_id
+                    );
+                }
+            }
+            return;
+        }
+        log::info!(
+            "ProcessApp[{}]: forwarding {kind} to host pane-IPC handler (capability '{}')",
+            self.type_id,
+            cap.as_str()
+        );
+        self.pending_commands
+            .push(AppCommand::ForwardPaneRequest { request });
     }
 
     /// Allocate a binary pipe for `pipe_id`, spin up the audio capture
@@ -2327,6 +2307,42 @@ impl ProcessApp {
                 });
             }
         }
+    }
+}
+
+/// Wire name of a pane read/control request, for capability-gate log lines.
+fn pane_request_kind(request: &AppRequest) -> &'static str {
+    match request {
+        AppRequest::ListPanes { .. } => "ListPanes",
+        AppRequest::ListContexts { .. } => "ListContexts",
+        AppRequest::GetPaneInfo { .. } => "GetPaneInfo",
+        AppRequest::GetPreviousPaneInfo { .. } => "GetPreviousPaneInfo",
+        AppRequest::GetPaneState { .. } => "GetPaneState",
+        AppRequest::CapturePane { .. } => "CapturePane",
+        AppRequest::SetPaneTitle { .. } => "SetPaneTitle",
+        AppRequest::FocusPane { .. } => "FocusPane",
+        AppRequest::ClosePane { .. } => "ClosePane",
+        AppRequest::SendToPane { .. } => "SendToPane",
+        AppRequest::KeyPane { .. } => "KeyPane",
+        AppRequest::SendAppAction { .. } => "SendAppAction",
+        _ => "unknown pane request",
+    }
+}
+
+/// The response_file path a pane read/control request carries, if any.
+/// Used to write a capability-denied error object so callers don't hang.
+fn pane_request_response_file(request: &AppRequest) -> Option<&str> {
+    match request {
+        AppRequest::ListPanes { response_file, .. }
+        | AppRequest::ListContexts { response_file }
+        | AppRequest::GetPaneInfo { response_file, .. }
+        | AppRequest::GetPreviousPaneInfo { response_file }
+        | AppRequest::GetPaneState { response_file, .. }
+        | AppRequest::CapturePane { response_file, .. } => Some(response_file),
+        AppRequest::SendToPane { response_file, .. }
+        | AppRequest::KeyPane { response_file, .. }
+        | AppRequest::SendAppAction { response_file, .. } => response_file.as_deref(),
+        _ => None,
     }
 }
 

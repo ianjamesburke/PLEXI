@@ -2286,6 +2286,8 @@ fn cap_example_method(cap: &str) -> &'static str {
         "fs.read" => "fs_read",
         "fs.write" => "fs_write",
         "panes.spawn" => "spawn_pane",
+        "panes.read" => "list_panes",
+        "panes.control" => "send_to_pane",
         "midi.in" => "open_midi_input",
         "midi.out" => "send_midi",
         "video.playback" => "open_video",

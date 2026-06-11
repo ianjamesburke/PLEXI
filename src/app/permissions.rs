@@ -64,6 +64,16 @@ pub enum Capability {
     FsPick,
     /// Spawn a new pane via DrawCommand::SpawnPane (#592).
     PanesSpawn,
+    /// Read pane metadata and state across the workspace (stint 0013/0014).
+    /// Gates the PGAP path for `ListPanes`, `GetPaneInfo`, `GetPreviousPaneInfo`,
+    /// `GetPaneState`, `CapturePane`, and `ListContexts` — the same host
+    /// handlers `plexi pane list` / `plexi pane info` use over PLEXI_SOCKET.
+    PanesRead,
+    /// Act on other panes (stint 0013/0014). Gates the PGAP path for
+    /// `FocusPane`, `ClosePane`, `SendToPane`, `KeyPane`, `SetPaneTitle`,
+    /// and `SendAppAction` — the same host handlers the `plexi pane` CLI
+    /// commands use over PLEXI_SOCKET.
+    PanesControl,
 }
 
 impl fmt::Display for Capability {
@@ -92,6 +102,8 @@ impl Capability {
             Self::TerminalBindings => "terminal.bindings",
             Self::FsPick => "fs.pick",
             Self::PanesSpawn => "panes.spawn",
+            Self::PanesRead => "panes.read",
+            Self::PanesControl => "panes.control",
         }
     }
 
@@ -114,6 +126,8 @@ impl Capability {
             "terminal.bindings",
             "fs.pick",
             "panes.spawn",
+            "panes.read",
+            "panes.control",
         ]
     }
 
@@ -142,6 +156,8 @@ impl Capability {
         matches!(
             self,
             Self::PanesSpawn
+                | Self::PanesRead
+                | Self::PanesControl
                 | Self::SpawnApp
                 | Self::AiQuery
                 | Self::Llm
@@ -202,6 +218,8 @@ impl<'a> TryFrom<&'a str> for Capability {
             "terminal.bindings" => Ok(Self::TerminalBindings),
             "fs.pick" => Ok(Self::FsPick),
             "panes.spawn" => Ok(Self::PanesSpawn),
+            "panes.read" => Ok(Self::PanesRead),
+            "panes.control" => Ok(Self::PanesControl),
             other => Err(UnknownCapability(other.to_string())),
         }
     }
@@ -647,6 +665,64 @@ mod tests {
             PermissionCheck::Denied(reason) => {
                 assert!(
                     reason.contains("panes.spawn"),
+                    "denial must name capability: {reason}"
+                );
+            }
+            PermissionCheck::Allowed => panic!("must be denied without declaration"),
+        }
+    }
+
+    #[test]
+    fn panes_read_capability_recognized() {
+        let parsed = Capability::try_from("panes.read").expect("panes.read must parse");
+        assert_eq!(parsed, Capability::PanesRead);
+        assert_eq!(parsed.as_str(), "panes.read");
+        assert!(parsed.is_sensitive(), "panes.read must be sensitive");
+        let perms = AppPermissions::from_capability_strings(&["panes.read".to_string()]);
+        assert!(
+            perms.capabilities.contains(&Capability::PanesRead),
+            "panes.read must end up in granted capabilities"
+        );
+        assert!(matches!(
+            check(&perms, Capability::PanesRead),
+            PermissionCheck::Allowed
+        ));
+        match check(
+            &AppPermissions::from_capability_strings(&[]),
+            Capability::PanesRead,
+        ) {
+            PermissionCheck::Denied(reason) => {
+                assert!(
+                    reason.contains("panes.read"),
+                    "denial must name capability: {reason}"
+                );
+            }
+            PermissionCheck::Allowed => panic!("must be denied without declaration"),
+        }
+    }
+
+    #[test]
+    fn panes_control_capability_recognized() {
+        let parsed = Capability::try_from("panes.control").expect("panes.control must parse");
+        assert_eq!(parsed, Capability::PanesControl);
+        assert_eq!(parsed.as_str(), "panes.control");
+        assert!(parsed.is_sensitive(), "panes.control must be sensitive");
+        let perms = AppPermissions::from_capability_strings(&["panes.control".to_string()]);
+        assert!(
+            perms.capabilities.contains(&Capability::PanesControl),
+            "panes.control must end up in granted capabilities"
+        );
+        assert!(matches!(
+            check(&perms, Capability::PanesControl),
+            PermissionCheck::Allowed
+        ));
+        match check(
+            &AppPermissions::from_capability_strings(&[]),
+            Capability::PanesControl,
+        ) {
+            PermissionCheck::Denied(reason) => {
+                assert!(
+                    reason.contains("panes.control"),
                     "denial must name capability: {reason}"
                 );
             }

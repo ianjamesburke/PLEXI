@@ -38,6 +38,14 @@ pub enum AppCommand {
         request_id: Option<String>,
         target_context: Option<u64>,
     },
+    /// Forward a capability-gated pane read/control `AppRequest` (ListPanes,
+    /// FocusPane, SendToPane, ...) into the host's pane-IPC handler — the
+    /// same code path CLI requests take over PLEXI_SOCKET (stint 0013/0014).
+    /// Emitted by `routing.rs` after the `panes.read` / `panes.control`
+    /// capability check passes.
+    ForwardPaneRequest {
+        request: crate::app_protocol::AppRequest,
+    },
     /// Request the host to cd sibling terminals (same split container) to `cwd`.
     CdRequest { cwd: String, sender_pane_id: u64 },
     /// Deliver a JSON pipe message to all peer panes that have the given
