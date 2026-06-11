@@ -658,29 +658,25 @@ impl PlexiApp {
             .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
             .scrim(false)
             .show(ctx, &colors, |ui| {
-                {
-                    {
-                        let te_id = egui::Id::new("rename_context_input");
-                        let te = crate::ui::widgets::styled_text_input(
-                            ui,
-                            &mut self.rename_buffer,
-                            "Context name...",
-                            te_id,
-                            &self.colors,
-                        );
+                let te_id = egui::Id::new("rename_context_input");
+                let te = crate::ui::widgets::styled_text_input(
+                    ui,
+                    &mut self.rename_buffer,
+                    "Context name...",
+                    te_id,
+                    &self.colors,
+                );
 
-                        if !te.has_focus() {
-                            te.request_focus();
-                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
-                                state
-                                    .cursor
-                                    .set_char_range(Some(egui::text::CCursorRange::two(
-                                        egui::text::CCursor::new(0),
-                                        egui::text::CCursor::new(self.rename_buffer.len()),
-                                    )));
-                                state.store(ui.ctx(), te_id);
-                            }
-                        }
+                if !te.has_focus() {
+                    te.request_focus();
+                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::two(
+                                egui::text::CCursor::new(0),
+                                egui::text::CCursor::new(self.rename_buffer.len()),
+                            )));
+                        state.store(ui.ctx(), te_id);
                     }
                 }
             });
@@ -723,51 +719,47 @@ impl PlexiApp {
             .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
             .scrim(false)
             .show(ctx, &colors, |ui| {
-                {
-                    {
-                        let te_id = egui::Id::new("edit_description_input");
-                        let te = ui
-                            .scope(|ui| {
-                                ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                                ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
-                                ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
-                                ui.visuals_mut().widgets.active.bg_stroke =
-                                    egui::Stroke::new(1.0, self.colors.accent);
-                                ui.visuals_mut().widgets.inactive.bg_stroke =
-                                    egui::Stroke::new(1.0, self.colors.border);
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut self.description_buffer)
-                                        .id(te_id)
-                                        .desired_width(MODAL_WIDTH)
-                                        .desired_rows(3)
-                                        .hint_text("What are you working on in this context?")
-                                        .font(egui::TextStyle::Body)
-                                        .margin(egui::Margin::symmetric(8, 5)),
-                                )
-                            })
-                            .inner;
+                let te_id = egui::Id::new("edit_description_input");
+                let te = ui
+                    .scope(|ui| {
+                        ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                        ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                        ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
+                        ui.visuals_mut().widgets.active.bg_stroke =
+                            egui::Stroke::new(1.0, self.colors.accent);
+                        ui.visuals_mut().widgets.inactive.bg_stroke =
+                            egui::Stroke::new(1.0, self.colors.border);
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.description_buffer)
+                                .id(te_id)
+                                .desired_width(MODAL_WIDTH)
+                                .desired_rows(3)
+                                .hint_text("What are you working on in this context?")
+                                .font(egui::TextStyle::Body)
+                                .margin(egui::Margin::symmetric(8, 5)),
+                        )
+                    })
+                    .inner;
 
-                        ui.add_space(4.0);
-                        ui.label(
-                            RichText::new("Cmd+Enter to save  ·  Esc to cancel")
-                                .size(11.0)
-                                .color(self.colors.text_dim),
-                        );
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("Cmd+Enter to save  ·  Esc to cancel")
+                        .size(11.0)
+                        .color(self.colors.text_dim),
+                );
 
-                        if !self.description_focus_requested {
-                            te.request_focus();
-                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
-                                state
-                                    .cursor
-                                    .set_char_range(Some(egui::text::CCursorRange::two(
-                                        egui::text::CCursor::new(0),
-                                        egui::text::CCursor::new(self.description_buffer.len()),
-                                    )));
-                                state.store(ui.ctx(), te_id);
-                            }
-                            self.description_focus_requested = true;
-                        }
+                if !self.description_focus_requested {
+                    te.request_focus();
+                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::two(
+                                egui::text::CCursor::new(0),
+                                egui::text::CCursor::new(self.description_buffer.len()),
+                            )));
+                        state.store(ui.ctx(), te_id);
                     }
+                    self.description_focus_requested = true;
                 }
             });
 

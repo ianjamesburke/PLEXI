@@ -341,8 +341,7 @@ impl PlexiApp {
         // ── Render ─────────────────────────────────────────────────────────
         // 0.8: the palette is a launcher, not a workspace — filling nearly
         // the whole screen height read as massive.
-        let palette_max_list_h =
-            ((ctx.screen_rect().height() - 80.0 - 120.0) * 0.8).max(200.0);
+        let palette_max_list_h = ((ctx.screen_rect().height() - 80.0 - 120.0) * 0.8).max(200.0);
         let modal_response = ModalShell::centered("command_palette")
             .width(style::MODAL_WIDTH_PALETTE)
             .escape(true)

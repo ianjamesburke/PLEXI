@@ -69,8 +69,7 @@ impl<'a> ListRow<'a> {
                 size,
             )
         });
-        let trailing_hovered =
-            trailing_rect.is_some_and(|r| ui.rect_contains_pointer(r));
+        let trailing_hovered = trailing_rect.is_some_and(|r| ui.rect_contains_pointer(r));
 
         let inset = selection_inset(rect);
         if self.selected {
@@ -78,11 +77,8 @@ impl<'a> ListRow<'a> {
         } else if self.danger_trailing && trailing_hovered {
             // Hovering a destructive action warns at row level: soft danger
             // tint + hairline danger outline before anything is clicked.
-            ui.painter().rect_filled(
-                inset,
-                style::RADIUS_SM,
-                colors.danger.gamma_multiply(0.07),
-            );
+            ui.painter()
+                .rect_filled(inset, style::RADIUS_SM, colors.danger.gamma_multiply(0.07));
             ui.painter().rect_stroke(
                 inset,
                 style::RADIUS_SM,
@@ -90,34 +86,38 @@ impl<'a> ListRow<'a> {
                 StrokeKind::Inside,
             );
         } else if response.hovered() {
-            ui.painter().rect_filled(inset, style::RADIUS_SM, colors.bg_hover);
+            ui.painter()
+                .rect_filled(inset, style::RADIUS_SM, colors.bg_hover);
         }
 
         let x = rect.left() + style::LIST_ROW_PAD_H;
 
-        let trailing_response = self.trailing.zip(trailing_rect).map(|(label, trailing_rect)| {
-            let id = response.id.with("_trailing_action");
-            let trailing_response = ui.interact(trailing_rect, id, egui::Sense::click());
-            // Destructive actions read as destructive at rest — soft danger,
-            // escalating to full danger on hover.
-            let color = if self.danger_trailing {
-                if trailing_response.hovered() {
-                    colors.danger
+        let trailing_response = self
+            .trailing
+            .zip(trailing_rect)
+            .map(|(label, trailing_rect)| {
+                let id = response.id.with("_trailing_action");
+                let trailing_response = ui.interact(trailing_rect, id, egui::Sense::click());
+                // Destructive actions read as destructive at rest — soft danger,
+                // escalating to full danger on hover.
+                let color = if self.danger_trailing {
+                    if trailing_response.hovered() {
+                        colors.danger
+                    } else {
+                        colors.danger.gamma_multiply(0.75)
+                    }
                 } else {
-                    colors.danger.gamma_multiply(0.75)
-                }
-            } else {
-                colors.text_dim
-            };
-            ui.painter().text(
-                trailing_rect.center(),
-                Align2::CENTER_CENTER,
-                label,
-                egui::FontId::proportional(style::TEXT_CAPTION),
-                color,
-            );
-            trailing_response
-        });
+                    colors.text_dim
+                };
+                ui.painter().text(
+                    trailing_rect.center(),
+                    Align2::CENTER_CENTER,
+                    label,
+                    egui::FontId::proportional(style::TEXT_CAPTION),
+                    color,
+                );
+                trailing_response
+            });
 
         let text_right = self
             .trailing
@@ -204,8 +204,13 @@ fn draw_text_block(
 
     if let Some(secondary) = row.secondary {
         let secondary_font = egui::FontId::proportional(style::TEXT_HINT);
-        let secondary_galley =
-            elided_galley(ui, secondary, secondary_font, colors.text_dim, secondary_max);
+        let secondary_galley = elided_galley(
+            ui,
+            secondary,
+            secondary_font,
+            colors.text_dim,
+            secondary_max,
+        );
         let total_h = primary_size.y + 2.0 + secondary_galley.size().y;
         let primary_pos = Pos2::new(x, center_y - total_h / 2.0);
         let secondary_pos = Pos2::new(x, primary_pos.y + primary_size.y + 2.0);

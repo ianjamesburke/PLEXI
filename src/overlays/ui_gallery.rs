@@ -209,8 +209,7 @@ impl PlexiApp {
                     ];
                     HintBar::new(&hints).show(ui, &colors);
                 });
-            let enter =
-                ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+            let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
             if entry.dismissed || enter {
                 self.ui_gallery_show_text_modal = false;
                 log::info!("ui_gallery: text-entry modal demo closed");
