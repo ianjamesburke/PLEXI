@@ -87,6 +87,14 @@ fn combo_chip_font() -> egui::FontId {
     egui::FontId::monospace(style::TEXT_CAPTION)
 }
 
+fn shortcut_key_color(colors: &Colors) -> egui::Color32 {
+    colors.text_primary.gamma_multiply(0.78)
+}
+
+fn shortcut_label_color(colors: &Colors) -> egui::Color32 {
+    colors.text_primary.gamma_multiply(0.70)
+}
+
 /// Render a single keycap chip. Allocates its own exact-size rect and
 /// returns the egui Response so callers can compose with other widgets.
 ///
@@ -98,7 +106,8 @@ pub(crate) fn key_chip(
     colors: &Colors,
     font_id: egui::FontId,
 ) -> egui::Response {
-    let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, colors.text_dim));
+    let fg = shortcut_key_color(colors);
+    let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, fg));
     let text_w = galley.size().x;
     let text_h = galley.size().y;
     let chip_h = text_h + KEYCAP_PAD_V * 2.0;
@@ -108,7 +117,7 @@ pub(crate) fn key_chip(
     let painter = ui.painter();
     painter.rect_filled(rect, CornerRadius::same(4), colors.bg_active);
     let text_pos = Pos2::new(rect.center().x - text_w / 2.0, rect.min.y + KEYCAP_PAD_V);
-    painter.galley(text_pos, galley, colors.text_dim);
+    painter.galley(text_pos, galley, fg);
     response
 }
 
@@ -129,7 +138,7 @@ pub(crate) fn key_combo(ui: &mut egui::Ui, keys: &[&str], colors: &Colors) {
                 ui.label(
                     egui::RichText::new("+")
                         .size(style::TEXT_HINT)
-                        .color(colors.text_dim),
+                        .color(shortcut_label_color(colors)),
                 );
             }
             key_chip(ui, key, colors, combo_chip_font());
@@ -165,7 +174,7 @@ pub(crate) fn key_combo_list(
             ui.label(
                 egui::RichText::new(text)
                     .size(style::TEXT_HINT)
-                    .color(colors.text_dim),
+                    .color(shortcut_label_color(colors)),
             );
         }
     });
