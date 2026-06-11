@@ -1,5 +1,5 @@
 ---
-id: "0154"
+id: "0157"
 title: "UI hardening: host UI gallery visual smoke coverage"
 status: backlog
 sprint: "s31"
