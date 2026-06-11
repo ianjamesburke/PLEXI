@@ -1,9 +1,11 @@
 ---
 id: "0004"
 title: "File Explorer: multi-select and safe file operations"
-status: in-progress
+status: done
 estimate: "16h"
+actual: "10m"
 started_at: "2026-06-11T07:26:08Z"
+completed_at: "2026-06-11T07:35:09Z"
 sprint: "s1"
 blocked_by:
   - 2
@@ -21,6 +23,7 @@ tags:
 ---
 
 
+
 Add multi-select and common file operations with confirmation UI and logging.
 
 ## Why
@@ -31,6 +34,10 @@ File Explorer is not a daily-driver surface until users can select multiple file
 
 - Destructive operations need host-owned confirmation UI and info-level logs.
 - Keep operation failures explicit; never swallow I/O errors.
+
+## Variance
+
+Actual time was far under estimate because the prior File Explorer layout, details table, and Host UI Kit modal work had already landed. This pass stayed inside `src/file_browser/mod.rs` plus docs and focused on local selection state, filesystem helpers, confirmation routing, and tests.
 
 ## References
 

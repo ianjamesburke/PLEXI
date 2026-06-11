@@ -30,6 +30,25 @@ Press `⌘E` from any focused terminal pane. The overlay opens over your current
 
 Files open in the focused terminal pane. Directories are entered in place — the overlay stays open until you press `Escape`.
 
+## Selection And File Operations
+
+Use `Shift+↑` and `Shift+↓` to extend the current selection, or `⌘A` to select every visible item. Mouse selection supports normal single select, `Shift` range select, and `⌘` toggle select.
+
+| Action | Key |
+|--------|-----|
+| Select all visible items | `⌘A` |
+| New folder | `⌘N` |
+| Rename selected item | `⌘R` |
+| Copy selected items | `⌘C` |
+| Cut selected items | `⌘X` |
+| Paste into current folder | `⌘V` |
+| Duplicate selected items | `⌘D` |
+| Move selected items to trash | `⌘Backspace` |
+| Reveal selected items with the system opener | `⌘Enter` |
+| Open selected items with default app | `⌘O` |
+
+Moving items to trash opens a confirmation modal before changing the filesystem. File operations log success and failure details to the Plexi log.
+
 ## Search
 
 Press `/` to enter search mode. Type to filter the current directory listing by filename. Press `Escape` to exit search and return to normal navigation, or `Enter` to open the highlighted match.

@@ -9,6 +9,7 @@ use crate::ui::style;
 use crate::ui::theme::Colors;
 use egui::{Color32, CornerRadius, Stroke, StrokeKind};
 use image::imageops::FilterType;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -73,7 +74,34 @@ enum FileBrowserAction {
     ToggleInspector,
     ToggleQuickLook,
     Refresh,
+    SelectAll,
+    NewFolder,
+    Rename,
+    Copy,
+    Cut,
+    Paste,
+    Duplicate,
+    MoveToTrash,
+    Reveal,
+    OpenWithDefault,
     AppendText(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileOperation {
+    Copy,
+    Cut,
+}
+
+#[derive(Debug, Clone)]
+struct FileOperationClipboard {
+    operation: FileOperation,
+    paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+enum PendingFileOperation {
+    MoveToTrash { paths: Vec<PathBuf> },
 }
 
 fn key_pressed_no_repeat(input: &egui::InputState, key: egui::Key) -> bool {
@@ -86,6 +114,36 @@ fn key_pressed_no_repeat(input: &egui::InputState, key: egui::Key) -> bool {
 // to AppendText instead of firing navigation/action commands while the user
 // is typing a query. Arrow keys, Enter, Escape, and Backspace always work.
 fn classify_key(input: &egui::InputState, in_search: bool) -> Option<FileBrowserAction> {
+    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::A) {
+        return Some(FileBrowserAction::SelectAll);
+    }
+    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::N) {
+        return Some(FileBrowserAction::NewFolder);
+    }
+    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::R) {
+        return Some(FileBrowserAction::Rename);
+    }
+    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::C) {
+        return Some(FileBrowserAction::Copy);
+    }
+    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::X) {
+        return Some(FileBrowserAction::Cut);
+    }
+    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::V) {
+        return Some(FileBrowserAction::Paste);
+    }
+    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::D) {
+        return Some(FileBrowserAction::Duplicate);
+    }
+    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::Backspace) {
+        return Some(FileBrowserAction::MoveToTrash);
+    }
+    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::O) {
+        return Some(FileBrowserAction::OpenWithDefault);
+    }
+    if !in_search && input.modifiers.command && key_pressed_no_repeat(input, egui::Key::Enter) {
+        return Some(FileBrowserAction::Reveal);
+    }
     if key_pressed_no_repeat(input, egui::Key::Escape) {
         return Some(FileBrowserAction::Escape);
     }
@@ -158,6 +216,8 @@ pub struct FileBrowserApp {
     pub cwd: PathBuf,
     entries: Vec<Entry>,
     selected: usize,
+    multi_selected: BTreeSet<PathBuf>,
+    selection_anchor: Option<usize>,
     columns: ColumnModel,
     error: Option<String>,
     // Image preview
@@ -175,6 +235,10 @@ pub struct FileBrowserApp {
     inspector_open: bool,
     inspector_width: f32,
     quick_look_open: bool,
+    operation_clipboard: Option<FileOperationClipboard>,
+    pending_operation: Option<PendingFileOperation>,
+    rename_path: Option<PathBuf>,
+    rename_buffer: String,
     pending_cmds: Vec<AppCommand>,
     /// When true, the next draw_list pass will scroll the selected row into view.
     pending_scroll: bool,
@@ -197,6 +261,8 @@ impl FileBrowserApp {
             cwd,
             entries: Vec::new(),
             selected: 0,
+            multi_selected: BTreeSet::new(),
+            selection_anchor: None,
             columns: ColumnModel::default(),
             error: None,
             preview_texture: None,
@@ -211,6 +277,10 @@ impl FileBrowserApp {
             inspector_open: false,
             inspector_width: INSPECTOR_DEFAULT_WIDTH,
             quick_look_open: false,
+            operation_clipboard: None,
+            pending_operation: None,
+            rename_path: None,
+            rename_buffer: String::new(),
             pending_cmds: Vec::new(),
             pending_scroll: false,
             directory_selection_memory: std::collections::HashMap::new(),
@@ -286,6 +356,12 @@ impl FileBrowserApp {
                 sort_entries(&mut entries, self.columns.sort, self.columns.folders_on_top);
                 self.entries = entries;
                 self.selected = self.selected.min(self.entries.len().saturating_sub(1));
+                let live_paths = self
+                    .entries
+                    .iter()
+                    .map(|entry| entry.path.clone())
+                    .collect::<BTreeSet<_>>();
+                self.multi_selected.retain(|path| live_paths.contains(path));
             }
             Err(e) => {
                 self.error = Some(format!("Cannot read directory: {e}"));
@@ -313,6 +389,7 @@ impl FileBrowserApp {
             cwd: self.cwd.to_string_lossy().to_string(),
             sender_pane_id: 0, // dispatch.rs stamps the real pane_id
         });
+        self.clear_multi_selection();
     }
 
     /// Open a file the user activated (Enter, double-click, search-Enter).
@@ -416,6 +493,113 @@ impl FileBrowserApp {
         } else {
             self.entries.get(self.selected)
         }
+    }
+
+    fn selected_visible_entry_indices(&self) -> Vec<usize> {
+        let mut indices = self
+            .visible_entry_indices()
+            .into_iter()
+            .filter(|idx| {
+                self.entries
+                    .get(*idx)
+                    .map(|entry| self.multi_selected.contains(&entry.path))
+                    .unwrap_or(false)
+            })
+            .collect::<Vec<_>>();
+        if indices.is_empty() {
+            if let Some(actual_idx) = self.visible_entry_indices().get(self.selected).copied() {
+                indices.push(actual_idx);
+            }
+        }
+        indices
+    }
+
+    fn selected_paths(&self) -> Vec<PathBuf> {
+        self.selected_visible_entry_indices()
+            .into_iter()
+            .filter_map(|idx| self.entries.get(idx).map(|entry| entry.path.clone()))
+            .collect()
+    }
+
+    fn selected_count(&self) -> usize {
+        if self.multi_selected.is_empty() {
+            usize::from(self.selected_entry().is_some())
+        } else {
+            self.multi_selected.len()
+        }
+    }
+
+    fn is_entry_selected(&self, visible_idx: usize, entry: &Entry) -> bool {
+        if self.multi_selected.is_empty() {
+            self.selected == visible_idx
+        } else {
+            self.multi_selected.contains(&entry.path)
+        }
+    }
+
+    fn clear_multi_selection(&mut self) {
+        self.multi_selected.clear();
+        self.selection_anchor = None;
+    }
+
+    fn set_single_selection(&mut self, visible_idx: usize) {
+        self.selected = visible_idx;
+        self.clear_multi_selection();
+        self.selection_anchor = Some(visible_idx);
+    }
+
+    fn toggle_selection(&mut self, visible_idx: usize) {
+        let Some(actual_idx) = self.visible_entry_indices().get(visible_idx).copied() else {
+            return;
+        };
+        let Some(path) = self.entries.get(actual_idx).map(|entry| entry.path.clone()) else {
+            return;
+        };
+        if !self.multi_selected.remove(&path) {
+            self.multi_selected.insert(path);
+        }
+        self.selected = visible_idx;
+        self.selection_anchor = Some(visible_idx);
+        log::info!(
+            "file_browser: selection changed count={}",
+            self.selected_count()
+        );
+    }
+
+    fn extend_selection_to(&mut self, visible_idx: usize) {
+        let anchor = self.selection_anchor.unwrap_or(self.selected);
+        self.multi_selected.clear();
+        let (start, end) = if anchor <= visible_idx {
+            (anchor, visible_idx)
+        } else {
+            (visible_idx, anchor)
+        };
+        let visible = self.visible_entry_indices();
+        for idx in start..=end {
+            if let Some(actual_idx) = visible.get(idx).copied() {
+                if let Some(entry) = self.entries.get(actual_idx) {
+                    self.multi_selected.insert(entry.path.clone());
+                }
+            }
+        }
+        self.selected = visible_idx;
+        log::info!(
+            "file_browser: range selection changed count={}",
+            self.selected_count()
+        );
+    }
+
+    fn select_all_visible(&mut self) {
+        self.multi_selected = self
+            .visible_entry_indices()
+            .into_iter()
+            .filter_map(|idx| self.entries.get(idx).map(|entry| entry.path.clone()))
+            .collect();
+        self.selection_anchor = Some(0);
+        log::info!(
+            "file_browser: selected all visible entries count={}",
+            self.selected_count()
+        );
     }
 
     fn refilter(&mut self) {
@@ -592,6 +776,290 @@ impl FileBrowserApp {
         }
     }
 
+    fn unique_child_path(parent: &Path, stem: &str, extension: Option<&str>) -> PathBuf {
+        let mut index = 0usize;
+        loop {
+            let name = if index == 0 {
+                match extension {
+                    Some(ext) if !ext.is_empty() => format!("{stem}.{ext}"),
+                    _ => stem.to_string(),
+                }
+            } else {
+                match extension {
+                    Some(ext) if !ext.is_empty() => format!("{stem} {index}.{ext}"),
+                    _ => format!("{stem} {index}"),
+                }
+            };
+            let path = parent.join(name);
+            if !path.exists() {
+                return path;
+            }
+            index += 1;
+        }
+    }
+
+    fn create_new_folder(&mut self) -> Result<PathBuf, String> {
+        let path = Self::unique_child_path(&self.cwd, "Untitled Folder", None);
+        fs::create_dir(&path).map_err(|err| {
+            let msg = format!("Unable to create folder '{}': {err}", path.display());
+            log::warn!("file_browser: {msg}");
+            msg
+        })?;
+        log::info!("file_browser: created folder '{}'", path.display());
+        self.refresh_preserving_filter();
+        self.select_path(&path);
+        Ok(path)
+    }
+
+    fn rename_selected(&mut self, new_name: &str) -> Result<PathBuf, String> {
+        let Some(source) = self
+            .rename_path
+            .clone()
+            .or_else(|| self.selected_paths().first().cloned())
+        else {
+            return Err("No selected file to rename".to_string());
+        };
+        let trimmed = new_name.trim();
+        if trimmed.is_empty() || trimmed.contains('/') {
+            return Err("Rename requires a non-empty file name".to_string());
+        }
+        let target = self.cwd.join(trimmed);
+        fs::rename(&source, &target).map_err(|err| {
+            let msg = format!(
+                "Unable to rename '{}' to '{}': {err}",
+                source.display(),
+                target.display()
+            );
+            log::warn!("file_browser: {msg}");
+            msg
+        })?;
+        log::info!(
+            "file_browser: renamed '{}' to '{}'",
+            source.display(),
+            target.display()
+        );
+        self.refresh_preserving_filter();
+        self.select_path(&target);
+        Ok(target)
+    }
+
+    fn open_rename_modal(&mut self) {
+        let Some(entry) = self.selected_entry().cloned() else {
+            return;
+        };
+        self.rename_path = Some(entry.path);
+        self.rename_buffer = entry.name;
+        log::info!("file_browser: rename prompt opened");
+    }
+
+    fn confirm_rename_modal(&mut self) {
+        let new_name = self.rename_buffer.clone();
+        match self.rename_selected(&new_name) {
+            Ok(_) => {
+                self.rename_path = None;
+                self.rename_buffer.clear();
+            }
+            Err(err) => self.error = Some(err),
+        }
+    }
+
+    fn cancel_rename_modal(&mut self) {
+        if self.rename_path.is_some() {
+            log::info!("file_browser: rename prompt cancelled");
+        }
+        self.rename_path = None;
+        self.rename_buffer.clear();
+    }
+
+    fn copy_selected(&mut self, operation: FileOperation) {
+        let paths = self.selected_paths();
+        if paths.is_empty() {
+            return;
+        }
+        self.operation_clipboard = Some(FileOperationClipboard {
+            operation,
+            paths: paths.clone(),
+        });
+        log::info!(
+            "file_browser: staged {} path(s) for {:?}",
+            paths.len(),
+            operation
+        );
+    }
+
+    fn copy_path_recursive(source: &Path, target: &Path) -> Result<(), String> {
+        if source.is_dir() {
+            fs::create_dir(target).map_err(|err| {
+                format!(
+                    "Unable to create copied folder '{}': {err}",
+                    target.display()
+                )
+            })?;
+            let entries = fs::read_dir(source)
+                .map_err(|err| format!("Unable to read folder '{}': {err}", source.display()))?;
+            for entry in entries {
+                let entry = entry.map_err(|err| format!("Unable to read folder entry: {err}"))?;
+                Self::copy_path_recursive(&entry.path(), &target.join(entry.file_name()))?;
+            }
+        } else {
+            fs::copy(source, target).map_err(|err| {
+                format!(
+                    "Unable to copy '{}' to '{}': {err}",
+                    source.display(),
+                    target.display()
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    fn paste_into_current_dir(&mut self) -> Result<Vec<PathBuf>, String> {
+        let Some(clipboard) = self.operation_clipboard.clone() else {
+            return Ok(Vec::new());
+        };
+        let mut created = Vec::new();
+        for source in &clipboard.paths {
+            let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let target = Self::unique_child_path(&self.cwd, file_name, None);
+            match clipboard.operation {
+                FileOperation::Copy => Self::copy_path_recursive(source, &target)?,
+                FileOperation::Cut => fs::rename(source, &target).map_err(|err| {
+                    format!(
+                        "Unable to move '{}' to '{}': {err}",
+                        source.display(),
+                        target.display()
+                    )
+                })?,
+            }
+            created.push(target);
+        }
+        if clipboard.operation == FileOperation::Cut {
+            self.operation_clipboard = None;
+        }
+        log::info!(
+            "file_browser: pasted {} path(s) into '{}'",
+            created.len(),
+            self.cwd.display()
+        );
+        self.refresh_preserving_filter();
+        if let Some(path) = created.first() {
+            self.select_path(path);
+        }
+        Ok(created)
+    }
+
+    fn duplicate_selected(&mut self) -> Result<Vec<PathBuf>, String> {
+        let mut created = Vec::new();
+        for source in self.selected_paths() {
+            let stem = source
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .or_else(|| source.file_name().and_then(|name| name.to_str()))
+                .unwrap_or("Untitled");
+            let ext = source.extension().and_then(|ext| ext.to_str());
+            let target = Self::unique_child_path(&self.cwd, &format!("{stem} copy"), ext);
+            Self::copy_path_recursive(&source, &target)?;
+            created.push(target);
+        }
+        log::info!("file_browser: duplicated {} path(s)", created.len());
+        self.refresh_preserving_filter();
+        self.multi_selected = created.iter().cloned().collect();
+        if let Some(first) = created.first() {
+            self.select_path(first);
+            self.multi_selected = created.iter().cloned().collect();
+        }
+        Ok(created)
+    }
+
+    fn request_move_selected_to_trash(&mut self) {
+        let paths = self.selected_paths();
+        if paths.is_empty() {
+            return;
+        }
+        log::info!(
+            "file_browser: requested move to trash confirmation count={}",
+            paths.len()
+        );
+        self.pending_operation = Some(PendingFileOperation::MoveToTrash { paths });
+    }
+
+    fn confirm_pending_operation(&mut self) -> Result<(), String> {
+        let Some(operation) = self.pending_operation.take() else {
+            return Ok(());
+        };
+        match operation {
+            PendingFileOperation::MoveToTrash { paths } => {
+                let trash_dir = self.cwd.join(".Trash");
+                fs::create_dir_all(&trash_dir).map_err(|err| {
+                    format!(
+                        "Unable to create trash folder '{}': {err}",
+                        trash_dir.display()
+                    )
+                })?;
+                for source in paths {
+                    let Some(file_name) = source.file_name().and_then(|name| name.to_str()) else {
+                        continue;
+                    };
+                    let target = Self::unique_child_path(&trash_dir, file_name, None);
+                    fs::rename(&source, &target).map_err(|err| {
+                        format!(
+                            "Unable to move '{}' to trash '{}': {err}",
+                            source.display(),
+                            target.display()
+                        )
+                    })?;
+                    log::info!(
+                        "file_browser: moved '{}' to trash '{}'",
+                        source.display(),
+                        target.display()
+                    );
+                }
+            }
+        }
+        self.refresh_preserving_filter();
+        self.clear_multi_selection();
+        Ok(())
+    }
+
+    fn cancel_pending_operation(&mut self) {
+        if self.pending_operation.is_some() {
+            log::info!("file_browser: cancelled pending file operation");
+        }
+        self.pending_operation = None;
+    }
+
+    fn reveal_selected(&mut self) {
+        for path in self.selected_paths() {
+            log::info!("file_browser: reveal '{}'", path.display());
+            self.open_file(&path);
+        }
+    }
+
+    fn open_selected_with_default(&mut self) {
+        for path in self.selected_paths() {
+            self.open_file(&path);
+        }
+    }
+
+    fn select_path(&mut self, path: &Path) {
+        if let Some(idx) = self
+            .visible_entry_indices()
+            .into_iter()
+            .position(|actual_idx| {
+                self.entries
+                    .get(actual_idx)
+                    .map(|entry| entry.path == path)
+                    .unwrap_or(false)
+            })
+        {
+            self.selected = idx;
+            self.selection_anchor = Some(idx);
+            self.pending_scroll = true;
+        }
+    }
+
     // ─── Drawing ─────────────────────────────────────────────────────────────
 
     fn visible_entry_count(&self) -> usize {
@@ -664,7 +1132,7 @@ impl FileBrowserApp {
         self.pending_scroll = false;
         for (idx, actual_idx) in self.visible_entry_indices().into_iter().enumerate() {
             let entry = self.entries[actual_idx].clone();
-            let is_selected = self.selected == idx;
+            let is_selected = self.is_entry_selected(idx, &entry);
             let secondary = if entry.is_dir {
                 format!(
                     "{} \u{00b7} {}",
@@ -688,10 +1156,17 @@ impl FileBrowserApp {
                 response.scroll_to_me(None);
             }
             if response.row_clicked() {
-                self.selected = idx;
+                let modifiers = ui.input(|input| input.modifiers);
+                if modifiers.shift {
+                    self.extend_selection_to(idx);
+                } else if modifiers.command {
+                    self.toggle_selection(idx);
+                } else {
+                    self.set_single_selection(idx);
+                }
             }
             if response.row_double_clicked() {
-                self.selected = idx;
+                self.set_single_selection(idx);
                 navigate_to = Some((entry.path.clone(), entry.is_dir));
             }
         }
@@ -717,7 +1192,7 @@ impl FileBrowserApp {
             if self.selected == idx && should_scroll {
                 response.scroll_to_me(None);
             }
-            let selected = self.selected == idx;
+            let selected = self.is_entry_selected(idx, &entry);
             let fill = if selected {
                 colors.bg_active
             } else if response.hovered() {
@@ -730,10 +1205,17 @@ impl FileBrowserApp {
             self.paint_details_cells(ui, colors, rect, &entry, selected);
 
             if response.clicked() {
-                self.selected = idx;
+                let modifiers = ui.input(|input| input.modifiers);
+                if modifiers.shift {
+                    self.extend_selection_to(idx);
+                } else if modifiers.command {
+                    self.toggle_selection(idx);
+                } else {
+                    self.set_single_selection(idx);
+                }
             }
             if response.double_clicked() {
-                self.selected = idx;
+                self.set_single_selection(idx);
                 navigate_to = Some((entry.path.clone(), entry.is_dir));
             }
         }
@@ -1196,6 +1678,81 @@ impl FileBrowserApp {
         }
     }
 
+    fn draw_pending_operation_modal(&mut self, ctx: &egui::Context, colors: &Colors) {
+        let Some(operation) = self.pending_operation.clone() else {
+            return;
+        };
+        let PendingFileOperation::MoveToTrash { paths } = operation;
+        let count = paths.len();
+        let response = ModalShell::centered("file_browser_confirm_file_operation")
+            .title("Move to Trash")
+            .escape(true)
+            .show(ctx, colors, |ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Move {count} selected item{} to this folder's .Trash?",
+                        if count == 1 { "" } else { "s" }
+                    ))
+                    .size(style::TEXT_BODY)
+                    .color(colors.text_primary),
+                );
+                ui.add_space(style::SPACE_MD);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.cancel_pending_operation();
+                    }
+                    if ui.button("Move to Trash").clicked() {
+                        if let Err(err) = self.confirm_pending_operation() {
+                            self.error = Some(err);
+                        }
+                    }
+                });
+                ui.add_space(style::SPACE_MD);
+                let hints = [
+                    HintGroup::new(&["Enter"], "confirm"),
+                    HintGroup::new(&["Esc"], "cancel"),
+                ];
+                HintBar::new(&hints).show(ui, colors);
+            });
+        if response.dismissed {
+            self.cancel_pending_operation();
+        }
+    }
+
+    fn draw_rename_modal(&mut self, ctx: &egui::Context, colors: &Colors) {
+        if self.rename_path.is_none() {
+            return;
+        }
+        let response = ModalShell::centered("file_browser_rename")
+            .title("Rename")
+            .escape(true)
+            .show(ctx, colors, |ui| {
+                let text_response = ui.add(
+                    egui::TextEdit::singleline(&mut self.rename_buffer)
+                        .desired_width(f32::INFINITY),
+                );
+                text_response.request_focus();
+                ui.add_space(style::SPACE_MD);
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        self.cancel_rename_modal();
+                    }
+                    if ui.button("Rename").clicked() {
+                        self.confirm_rename_modal();
+                    }
+                });
+                ui.add_space(style::SPACE_MD);
+                let hints = [
+                    HintGroup::new(&["Enter"], "rename"),
+                    HintGroup::new(&["Esc"], "cancel"),
+                ];
+                HintBar::new(&hints).show(ui, colors);
+            });
+        if response.dismissed {
+            self.cancel_rename_modal();
+        }
+    }
+
     fn draw_quick_look_image(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
         self.ensure_image_preview(ui.ctx(), &entry.path);
         if let Some([w, h]) = self.preview_size {
@@ -1423,10 +1980,7 @@ impl FileBrowserApp {
         ui.separator();
         ui.horizontal_wrapped(|ui| {
             ui.set_min_height(STATUS_BAR_H);
-            let selected_label = self
-                .selected_entry()
-                .map(|entry| entry.name.as_str())
-                .unwrap_or("none");
+            let selected_label = self.selected_count().to_string();
             ui.label(
                 egui::RichText::new(format!(
                     "{} items \u{00b7} selected: {}",
@@ -1580,6 +2134,8 @@ impl App for FileBrowserApp {
             });
 
         self.draw_quick_look_modal(ui.ctx(), colors);
+        self.draw_pending_operation_modal(ui.ctx(), colors);
+        self.draw_rename_modal(ui.ctx(), colors);
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> crate::app::app_trait::KeyDisposition {
@@ -1593,6 +2149,36 @@ impl App for FileBrowserApp {
         };
         let action = classify_key(input, self.in_search);
         log::debug!("file_browser: handle_key mode={mode:?} action={action:?}");
+
+        if self.pending_operation.is_some() {
+            match action {
+                Some(FileBrowserAction::Escape) => {
+                    self.cancel_pending_operation();
+                    return KeyDisposition::Consumed;
+                }
+                Some(FileBrowserAction::Activate) => {
+                    if let Err(err) = self.confirm_pending_operation() {
+                        self.error = Some(err);
+                    }
+                    return KeyDisposition::Consumed;
+                }
+                _ => return KeyDisposition::Consumed,
+            }
+        }
+
+        if self.rename_path.is_some() {
+            match action {
+                Some(FileBrowserAction::Escape) => {
+                    self.cancel_rename_modal();
+                    return KeyDisposition::Consumed;
+                }
+                Some(FileBrowserAction::Activate) => {
+                    self.confirm_rename_modal();
+                    return KeyDisposition::Consumed;
+                }
+                _ => return KeyDisposition::Consumed,
+            }
+        }
 
         if self.quick_look_open {
             match action {
@@ -1684,33 +2270,43 @@ impl App for FileBrowserApp {
             }
             (Mode::Normal, Some(FileBrowserAction::SelectNext)) => {
                 let last = self.entries.len().saturating_sub(1);
-                self.selected = (self.selected + 1).min(last);
+                let next = (self.selected + 1).min(last);
+                if input.modifiers.shift {
+                    self.extend_selection_to(next);
+                } else {
+                    self.set_single_selection(next);
+                }
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::SelectPrev)) => {
-                self.selected = self.selected.saturating_sub(1);
+                let prev = self.selected.saturating_sub(1);
+                if input.modifiers.shift {
+                    self.extend_selection_to(prev);
+                } else {
+                    self.set_single_selection(prev);
+                }
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::SelectFirst)) => {
-                self.selected = 0;
+                self.set_single_selection(0);
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::SelectLast)) => {
-                self.selected = self.entries.len().saturating_sub(1);
+                self.set_single_selection(self.entries.len().saturating_sub(1));
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::PageDown)) => {
                 let last = self.entries.len().saturating_sub(1);
-                self.selected = (self.selected + 10).min(last);
+                self.set_single_selection((self.selected + 10).min(last));
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
             (Mode::Normal, Some(FileBrowserAction::PageUp)) => {
-                self.selected = self.selected.saturating_sub(10);
+                self.set_single_selection(self.selected.saturating_sub(10));
                 self.pending_scroll = true;
                 KeyDisposition::Consumed
             }
@@ -1746,6 +2342,52 @@ impl App for FileBrowserApp {
                 self.refresh();
                 KeyDisposition::Consumed
             }
+            (Mode::Normal, Some(FileBrowserAction::SelectAll)) => {
+                self.select_all_visible();
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::NewFolder)) => {
+                if let Err(err) = self.create_new_folder() {
+                    self.error = Some(err);
+                }
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::Rename)) => {
+                self.open_rename_modal();
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::Copy)) => {
+                self.copy_selected(FileOperation::Copy);
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::Cut)) => {
+                self.copy_selected(FileOperation::Cut);
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::Paste)) => {
+                if let Err(err) = self.paste_into_current_dir() {
+                    self.error = Some(err);
+                }
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::Duplicate)) => {
+                if let Err(err) = self.duplicate_selected() {
+                    self.error = Some(err);
+                }
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::MoveToTrash)) => {
+                self.request_move_selected_to_trash();
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::Reveal)) => {
+                self.reveal_selected();
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::OpenWithDefault)) => {
+                self.open_selected_with_default();
+                KeyDisposition::Consumed
+            }
             _ => KeyDisposition::Passthrough,
         }
     }
@@ -1755,7 +2397,7 @@ impl App for FileBrowserApp {
     }
 
     fn keyboard_capture(&self) -> bool {
-        self.quick_look_open
+        self.quick_look_open || self.pending_operation.is_some() || self.rename_path.is_some()
     }
 
     fn wants_close(&self) -> bool {
@@ -1815,8 +2457,16 @@ mod tests {
     fn run_handle_key(app: &mut FileBrowserApp, events: Vec<Event>) -> bool {
         use crate::app::app_trait::KeyDisposition;
         let ctx = egui::Context::default();
+        let modifiers = events
+            .iter()
+            .find_map(|event| match event {
+                Event::Key { modifiers, .. } => Some(*modifiers),
+                _ => None,
+            })
+            .unwrap_or_default();
         let raw = RawInput {
             events,
+            modifiers,
             ..Default::default()
         };
         let mut consumed = false;
@@ -2087,6 +2737,121 @@ mod tests {
         std::fs::write(dir.path().join("notes.txt"), b"hi").expect("write file");
         let app = FileBrowserApp::new(dir.path().to_path_buf());
         (app, dir)
+    }
+
+    fn make_three_file_app() -> (FileBrowserApp, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("alpha.txt"), b"a").expect("write alpha");
+        std::fs::write(dir.path().join("bravo.txt"), b"b").expect("write bravo");
+        std::fs::write(dir.path().join("charlie.txt"), b"c").expect("write charlie");
+        let mut app = FileBrowserApp::new(dir.path().to_path_buf());
+        app.columns.sort = SortDescriptor {
+            column: ColumnId::Name,
+            direction: SortDirection::Asc,
+        };
+        app.refresh();
+        (app, dir)
+    }
+
+    #[test]
+    fn shift_arrow_extends_selection_range() {
+        let (mut app, _dir) = make_three_file_app();
+
+        let consumed = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::ArrowDown,
+                Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            )],
+        );
+
+        assert!(consumed);
+        assert_eq!(app.selected_count(), 2);
+        assert!(app
+            .selected_paths()
+            .iter()
+            .any(|p| p.ends_with("alpha.txt")));
+        assert!(app
+            .selected_paths()
+            .iter()
+            .any(|p| p.ends_with("bravo.txt")));
+    }
+
+    #[test]
+    fn command_a_selects_all_visible_entries() {
+        let (mut app, _dir) = make_three_file_app();
+
+        let consumed = run_handle_key(
+            &mut app,
+            vec![key_event(
+                Key::A,
+                Modifiers {
+                    command: true,
+                    ..Default::default()
+                },
+            )],
+        );
+
+        assert!(consumed);
+        assert_eq!(app.selected_count(), 3);
+    }
+
+    #[test]
+    fn duplicate_selected_file_creates_copy_and_refreshes_entries() {
+        let (mut app, dir) = make_three_file_app();
+
+        app.duplicate_selected().expect("duplicate");
+
+        assert!(dir.path().join("alpha copy.txt").exists());
+        assert!(app
+            .entries
+            .iter()
+            .any(|entry| entry.name == "alpha copy.txt"));
+    }
+
+    #[test]
+    fn rename_prompt_confirms_selected_file_rename() {
+        let (mut app, dir) = make_three_file_app();
+
+        app.open_rename_modal();
+        app.rename_buffer = "renamed.txt".to_string();
+        app.confirm_rename_modal();
+
+        assert!(!dir.path().join("alpha.txt").exists());
+        assert!(dir.path().join("renamed.txt").exists());
+        assert!(app.rename_path.is_none());
+        assert_eq!(
+            app.selected_entry().map(|entry| entry.name.as_str()),
+            Some("renamed.txt")
+        );
+    }
+
+    #[test]
+    fn copy_and_paste_selected_file_creates_unique_copy() {
+        let (mut app, dir) = make_three_file_app();
+
+        app.copy_selected(FileOperation::Copy);
+        let created = app.paste_into_current_dir().expect("paste");
+
+        assert_eq!(created.len(), 1);
+        assert!(created[0].exists());
+        assert_ne!(created[0], dir.path().join("alpha.txt"));
+    }
+
+    #[test]
+    fn confirmed_trash_moves_selected_file_into_local_trash() {
+        let (mut app, dir) = make_three_file_app();
+
+        app.request_move_selected_to_trash();
+        assert!(app.pending_operation.is_some());
+        app.confirm_pending_operation().expect("confirm trash");
+
+        assert!(!dir.path().join("alpha.txt").exists());
+        assert!(dir.path().join(".Trash").join("alpha.txt").exists());
+        assert!(app.pending_operation.is_none());
     }
 
     #[test]
