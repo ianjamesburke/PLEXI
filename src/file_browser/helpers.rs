@@ -1,6 +1,9 @@
 use std::cmp::Ordering;
+use std::io::Read;
 use std::path::Path;
 use std::time::SystemTime;
+
+const TEXT_PREVIEW_MAX_BYTES: u64 = 32 * 1024;
 
 /// Routing classification for a file the user wants to open. Drives the
 /// GUI↔terminal media bridge (#79): video/audio files spawn the in-app
@@ -387,6 +390,76 @@ pub(crate) struct DirStats {
     pub dir_count: usize,
     pub total_bytes: u64,
     pub truncated: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct TextPreview {
+    pub body: String,
+    pub truncated: bool,
+}
+
+pub(crate) fn is_text_preview_candidate(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if matches!(
+        name,
+        "Makefile" | "Dockerfile" | "README" | "LICENSE" | "CHANGELOG"
+    ) {
+        return true;
+    }
+    let Some(ext) = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+    else {
+        return false;
+    };
+    matches!(
+        ext.as_str(),
+        "txt"
+            | "md"
+            | "markdown"
+            | "json"
+            | "toml"
+            | "yaml"
+            | "yml"
+            | "log"
+            | "rs"
+            | "py"
+            | "js"
+            | "jsx"
+            | "ts"
+            | "tsx"
+            | "css"
+            | "html"
+            | "sh"
+            | "zsh"
+            | "bash"
+            | "sql"
+            | "xml"
+            | "csv"
+    )
+}
+
+pub(crate) fn read_text_preview(path: &Path) -> Result<TextPreview, String> {
+    let mut file = std::fs::File::open(path).map_err(|e| format!("Unable to open text: {e}"))?;
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take(TEXT_PREVIEW_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Unable to read text: {e}"))?;
+    let truncated = bytes.len() > TEXT_PREVIEW_MAX_BYTES as usize;
+    if truncated {
+        bytes.truncate(TEXT_PREVIEW_MAX_BYTES as usize);
+    }
+    if bytes.contains(&0) {
+        return Err("File looks binary".to_string());
+    }
+    Ok(TextPreview {
+        body: String::from_utf8_lossy(&bytes).to_string(),
+        truncated,
+    })
 }
 
 fn default_direction_for(column: ColumnId) -> SortDirection {
