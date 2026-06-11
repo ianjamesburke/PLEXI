@@ -160,7 +160,18 @@ pub struct ProcessApp {
     /// Granted capabilities for this app instance.
     pub(crate) permissions: AppPermissions,
     /// Persisted three-state permission store. Updated on grant/deny decisions.
+    /// Legacy store — kept in lockstep with `grant_store` until every call
+    /// site reads through the unified broker.
     pub(crate) permission_store: crate::app::permissions::PermissionStore,
+    /// Unified permissions broker store (`grants.toml`) — generalized grant
+    /// model from docs/prm/permissions-broker.md. Capability requests
+    /// evaluate here; modal decisions are recorded here and mirrored to the
+    /// legacy store.
+    pub(crate) grant_store: crate::broker::GrantStore,
+    /// User-level permission posture from the channel `config.toml`
+    /// `[permissions]` table — applied at the actor-default tiers of broker
+    /// evaluation. `None` = no posture configured (broker falls back to Ask).
+    pub(crate) posture: Option<crate::broker::PermissionPosture>,
     /// Typed pipe registry.
     pub(crate) pipe_registry: Arc<Mutex<TypedPipeRegistry>>,
     pub(crate) run_registry: RunRegistry,
@@ -587,8 +598,24 @@ impl ProcessApp {
 
         let config_dir = crate::config::config_dir();
         let store = crate::app::permissions::PermissionStore::load_or_default(&config_dir);
-        let (granted_caps, blocked_caps) =
+        let (mut granted_caps, mut blocked_caps) =
             store.build_permission_sets(&type_id, &workspace_root, &capabilities);
+        // Unified broker store (grants.toml) — load (which also migrates any
+        // legacy entries) and overlay its records so broker-recorded
+        // decisions take effect at launch. Deny wins over allow.
+        let grant_store = crate::broker::GrantStore::load_or_default(&config_dir);
+        let posture = crate::broker::PermissionPosture::load_from_config(&config_dir);
+        log::info!(
+            "broker: {} grant records loaded for '{}' capability overlay (posture: {})",
+            grant_store.records().len(),
+            type_id,
+            posture.is_some()
+        );
+        let (broker_allowed, broker_denied) =
+            grant_store.app_capability_sets(&type_id, &workspace_root);
+        granted_caps.extend(broker_allowed);
+        blocked_caps.extend(broker_denied.iter().copied());
+        granted_caps.retain(|c| !blocked_caps.contains(c));
         let permissions = AppPermissions {
             capabilities: granted_caps,
             blocked: blocked_caps,
@@ -635,6 +662,8 @@ impl ProcessApp {
                 .unwrap_or_else(|| std::env::temp_dir()),
             permissions,
             permission_store: store,
+            grant_store,
+            posture,
             pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new(
                 crate::config::config_dir().join("pipes"),
             ))),
@@ -794,6 +823,8 @@ impl ProcessApp {
             app_dir: std::env::temp_dir(),
             permissions,
             permission_store: crate::app::permissions::PermissionStore::default(),
+            grant_store: crate::broker::GrantStore::default(),
+            posture: None,
             pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new(
                 std::env::temp_dir().join(format!("plexi-pipes-{}", uuid::Uuid::new_v4())),
             ))),

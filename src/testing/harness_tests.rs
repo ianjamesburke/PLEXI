@@ -1860,3 +1860,244 @@ fn red_capability_flat_denies_without_prompt() {
         "a blocked capability must not defer the request"
     );
 }
+
+// -- Unified permissions broker (docs/prm/permissions-broker.md, Phase A) ---
+
+/// A persisted broker allow record auto-grants a CapabilityRequest without
+/// showing the consent modal — the PGAP capability path resolves through the
+/// unified broker.
+#[test]
+fn capability_request_auto_granted_from_broker_record() {
+    use crate::app_protocol::PlexiEvent;
+    use crate::broker::{Decision, GrantRecord, GrantStore};
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
+
+    // Seed the pane's broker store with an allow grant for this app+workspace.
+    let ws = std::env::temp_dir();
+    {
+        let win = &mut h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+            panic!("expected App pane");
+        };
+        let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+            panic!("expected Process runtime");
+        };
+        let mut store = GrantStore::default();
+        store.record(GrantRecord::app_capability(
+            "test",
+            &ws,
+            crate::app::permissions::Capability::PanesRead,
+            Decision::Allow,
+        ));
+        proc.grant_store = store;
+    }
+
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::CapabilityRequest {
+            request_id: "cap-1".to_string(),
+            capability: "panes.read".to_string(),
+        }),
+    );
+    // Drive routing directly via background_tick — frames would flush the
+    // outbound events toward the (absent) subprocess before we can assert.
+    {
+        let win = &mut h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+            panic!("expected App pane");
+        };
+        let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+            panic!("expected Process runtime");
+        };
+        proc.background_tick();
+    }
+
+    let events = h.effects_drain(pane);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            PlexiEvent::CapabilityDecision { request_id, granted: true }
+                if request_id == "cap-1"
+        )),
+        "broker allow record must auto-grant without a modal: {events:?}"
+    );
+    let win = &h.app.windows[0];
+    let Some(Pane::App(app_pane)) = win.panes.get(&pane) else {
+        panic!("expected App pane");
+    };
+    let AppRuntime::Process(ref proc) = app_pane.runtime else {
+        panic!("expected Process runtime");
+    };
+    assert!(
+        proc.pending_prompts.is_empty(),
+        "no consent prompt must be queued for a broker-allowed capability"
+    );
+    assert!(
+        proc.permissions
+            .capabilities
+            .contains(&crate::app::permissions::Capability::PanesRead),
+        "broker allow must populate the in-memory capability set"
+    );
+}
+
+/// A persisted broker deny record auto-denies a CapabilityRequest without
+/// a modal — equivalent of the legacy Red state through the unified broker.
+#[test]
+fn capability_request_auto_denied_from_broker_record() {
+    use crate::app_protocol::PlexiEvent;
+    use crate::broker::{Decision, GrantRecord, GrantStore};
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
+
+    let ws = std::env::temp_dir();
+    {
+        let win = &mut h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+            panic!("expected App pane");
+        };
+        let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+            panic!("expected Process runtime");
+        };
+        let mut store = GrantStore::default();
+        store.record(GrantRecord::app_capability(
+            "test",
+            &ws,
+            crate::app::permissions::Capability::PanesControl,
+            Decision::Deny,
+        ));
+        proc.grant_store = store;
+    }
+
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::CapabilityRequest {
+            request_id: "cap-2".to_string(),
+            capability: "panes.control".to_string(),
+        }),
+    );
+    // Drive routing directly via background_tick — frames would flush the
+    // outbound events toward the (absent) subprocess before we can assert.
+    {
+        let win = &mut h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+            panic!("expected App pane");
+        };
+        let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+            panic!("expected Process runtime");
+        };
+        proc.background_tick();
+    }
+
+    let events = h.effects_drain(pane);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            PlexiEvent::CapabilityDecision { request_id, granted: false }
+                if request_id == "cap-2"
+        )),
+        "broker deny record must auto-deny without a modal: {events:?}"
+    );
+    let win = &h.app.windows[0];
+    let Some(Pane::App(app_pane)) = win.panes.get(&pane) else {
+        panic!("expected App pane");
+    };
+    let AppRuntime::Process(ref proc) = app_pane.runtime else {
+        panic!("expected Process runtime");
+    };
+    assert!(
+        proc.pending_prompts.is_empty(),
+        "no consent prompt must be queued for a broker-denied capability"
+    );
+}
+
+/// With no broker record and no legacy state, a CapabilityRequest still asks —
+/// the broker's default fallback is Ask, preserving the consent-modal flow.
+#[test]
+fn capability_request_without_grant_still_prompts() {
+    use crate::process_app::PendingPrompt;
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
+
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::CapabilityRequest {
+            request_id: "cap-3".to_string(),
+            capability: "fs.write".to_string(),
+        }),
+    );
+    h.run_frames(2);
+
+    let win = &h.app.windows[0];
+    let Some(Pane::App(app_pane)) = win.panes.get(&pane) else {
+        panic!("expected App pane");
+    };
+    let AppRuntime::Process(ref proc) = app_pane.runtime else {
+        panic!("expected Process runtime");
+    };
+    assert!(
+        proc.pending_prompts.iter().any(|p| {
+            matches!(p, PendingPrompt::Capability { capability, .. } if capability == "fs.write")
+        }),
+        "broker Ask fallback must queue the consent modal"
+    );
+}
+
+/// A configured posture deny list auto-denies a CapabilityRequest with no
+/// persisted grant — settings provide actor defaults in the evaluation order.
+#[test]
+fn capability_request_denied_by_posture() {
+    use crate::app_protocol::PlexiEvent;
+    use crate::broker::{Decision, PermissionPosture};
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
+    {
+        let win = &mut h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+            panic!("expected App pane");
+        };
+        let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+            panic!("expected Process runtime");
+        };
+        proc.posture = Some(PermissionPosture {
+            default_posture: Decision::Ask,
+            allow: vec![],
+            ask: vec![],
+            deny: vec!["net.http".to_string()],
+        });
+    }
+
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::CapabilityRequest {
+            request_id: "cap-4".to_string(),
+            capability: "net.http".to_string(),
+        }),
+    );
+    // Drive routing directly via background_tick — frames would flush the
+    // outbound events toward the (absent) subprocess before we can assert.
+    {
+        let win = &mut h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+            panic!("expected App pane");
+        };
+        let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+            panic!("expected Process runtime");
+        };
+        proc.background_tick();
+    }
+
+    let events = h.effects_drain(pane);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            PlexiEvent::CapabilityDecision { request_id, granted: false }
+                if request_id == "cap-4"
+        )),
+        "posture deny must auto-deny without a modal: {events:?}"
+    );
+}

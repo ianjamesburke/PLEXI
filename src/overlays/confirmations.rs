@@ -155,6 +155,7 @@ impl PlexiApp {
             mut permissions,
             mut secret_input_buf,
             mut permission_store,
+            mut grant_store,
             mut deferred_ai_queries,
             mut deferred_gated_requests,
             mut pending_commands,
@@ -180,6 +181,7 @@ impl PlexiApp {
                 std::mem::take(&mut proc.permissions),
                 std::mem::take(&mut proc.secret_input_buf),
                 std::mem::take(&mut proc.permission_store),
+                std::mem::take(&mut proc.grant_store),
                 std::mem::take(&mut proc.deferred_ai_queries),
                 std::mem::take(&mut proc.deferred_gated_requests),
                 std::mem::take(&mut proc.pending_commands),
@@ -202,6 +204,7 @@ impl PlexiApp {
             &mut secret_input_buf,
             &config_dir,
             &mut permission_store,
+            &mut grant_store,
             &colors,
             &mut deferred_ai_queries,
             &mut deferred_gated_requests,
@@ -224,6 +227,7 @@ impl PlexiApp {
         proc.permissions = permissions;
         proc.secret_input_buf = secret_input_buf;
         proc.permission_store = permission_store;
+        proc.grant_store = grant_store;
         proc.deferred_ai_queries = deferred_ai_queries;
         proc.deferred_gated_requests = deferred_gated_requests;
         // The modal may have appended ForwardPaneRequest commands for

@@ -29,6 +29,9 @@ impl ProcessApp {
                 capability,
             } => match Capability::try_from(capability.as_str()) {
                 Ok(cap) => {
+                    // In-memory session state first: a grant made this session
+                    // (or builtin) allows; a live block (e.g. SetPermission
+                    // revocation) denies.
                     if let PermissionCheck::Allowed = check(&self.permissions, cap) {
                         self.outbound_events
                             .push_back(PlexiEvent::CapabilityDecision {
@@ -47,11 +50,49 @@ impl ProcessApp {
                                 granted: false,
                             });
                     } else {
-                        self.pending_prompts
-                            .push_back(super::PendingPrompt::Capability {
-                                request_id,
-                                capability,
-                            });
+                        // Unified broker resolution (permissions-broker spec):
+                        // persisted deny → auto-deny, persisted allow → grant,
+                        // ask → consent modal.
+                        let req = crate::broker::PermissionRequest::app_capability(
+                            &self.type_id,
+                            &self.workspace_root,
+                            cap,
+                        );
+                        match self.grant_store.evaluate(&req, self.posture.as_ref()) {
+                            crate::broker::Decision::Deny => {
+                                log::info!(
+                                    "ProcessApp[{}]: broker denied {} — auto-denying",
+                                    self.type_id,
+                                    cap
+                                );
+                                self.permissions.blocked.insert(cap);
+                                self.outbound_events
+                                    .push_back(PlexiEvent::CapabilityDecision {
+                                        request_id,
+                                        granted: false,
+                                    });
+                            }
+                            crate::broker::Decision::Allow => {
+                                log::info!(
+                                    "ProcessApp[{}]: broker allowed {} from persisted grant",
+                                    self.type_id,
+                                    cap
+                                );
+                                self.permissions.capabilities.insert(cap);
+                                self.outbound_events
+                                    .push_back(PlexiEvent::CapabilityDecision {
+                                        request_id,
+                                        granted: true,
+                                    });
+                            }
+                            crate::broker::Decision::Ask => {
+                                self.pending_prompts
+                                    .push_back(super::PendingPrompt::Capability {
+                                        request_id,
+                                        capability,
+                                    });
+                            }
+                        }
                     }
                 }
                 Err(e) => {

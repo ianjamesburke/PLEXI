@@ -7,6 +7,7 @@
 
 mod app;
 mod app_protocol;
+mod broker;
 mod cli;
 
 mod config;
