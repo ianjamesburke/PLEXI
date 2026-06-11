@@ -220,10 +220,12 @@ fn main() -> eframe::Result {
                         AgentCmd::Report {
                             state,
                             agent,
+                            detail,
                             session_id,
                         } => std::process::exit(cli::agent_report_cli(
                             state.as_str(),
                             agent.as_str(),
+                            detail.as_deref(),
                             session_id.as_deref(),
                         )),
                         AgentCmd::Status {

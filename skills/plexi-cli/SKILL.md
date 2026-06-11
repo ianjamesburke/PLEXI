@@ -104,6 +104,9 @@ agent init NAME          Scaffold agent app (ai.query + chat UI). --from-pane-id
 agent add NAME           Install from global registry into workspace.
 agent update NAME        Re-install from registry, preserving memory/logs.
 agent list               List workspace agents.
+agent report             Hook-only state report. --state working|blocked|idle, --agent NAME,
+                         --session-id ID, --detail TEXT.
+agent status             Table of pane agent state. Adds DETAIL when any pane reports it.
 ```
 
 ### workspace, run, routine

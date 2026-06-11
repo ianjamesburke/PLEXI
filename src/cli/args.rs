@@ -885,6 +885,9 @@ pub enum AgentCmd {
         /// Agent name (e.g. "claude-code")
         #[arg(long, default_value = "unknown")]
         agent: String,
+        /// Active tool detail (optional, from hook event JSON)
+        #[arg(long)]
+        detail: Option<String>,
         /// Session ID (optional, from hook event JSON)
         #[arg(long)]
         session_id: Option<String>,
@@ -926,7 +929,7 @@ pub enum AgentCmd {
 pub enum HookAction {
     /// Install the PLEXI hook script into ~/.claude/settings.json.
     Install {
-        /// Install Claude Code hooks (SessionStart, UserPromptSubmit, PermissionRequest, Stop, StopFailure, SessionEnd)
+        /// Install Claude Code hooks (PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, PermissionRequest, Stop, StopFailure, SessionEnd)
         #[arg(long = "claude-code")]
         claude_code: bool,
     },

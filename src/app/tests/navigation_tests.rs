@@ -278,6 +278,7 @@ fn pane_info_and_list_include_agent_state() {
         pane_id,
         state: crate::app_protocol::AgentState::Working,
         agent: "claude-code".to_string(),
+        detail: Some("Bash: cargo test".to_string()),
         session_id: Some("session-33".to_string()),
     });
     h.app.drain_pane_cmd_channel();
@@ -295,6 +296,7 @@ fn pane_info_and_list_include_agent_state() {
     assert_eq!(info["agent"]["pane_id"], pane_id);
     assert_eq!(info["agent"]["state"], "working");
     assert_eq!(info["agent"]["agent"], "claude-code");
+    assert_eq!(info["agent"]["detail"], "Bash: cargo test");
     assert_eq!(info["agent"]["session_id"], "session-33");
 
     let list_file = std::env::temp_dir().join("plexi_test_pane_list_agent_2119.json");
@@ -314,6 +316,7 @@ fn pane_info_and_list_include_agent_state() {
     assert_eq!(pane["agent"]["pane_id"], pane_id);
     assert_eq!(pane["agent"]["state"], "working");
     assert_eq!(pane["agent"]["agent"], "claude-code");
+    assert_eq!(pane["agent"]["detail"], "Bash: cargo test");
     assert_eq!(pane["agent"]["session_id"], "session-33");
 
     let _ = std::fs::remove_file(&info_file);
@@ -329,6 +332,7 @@ fn get_agent_states_collects_state_from_panes() {
         pane_id,
         state: crate::app_protocol::AgentState::Blocked,
         agent: "claude-code".to_string(),
+        detail: None,
         session_id: None,
     });
     h.app.drain_pane_cmd_channel();
@@ -346,6 +350,7 @@ fn get_agent_states_collects_state_from_panes() {
     assert_eq!(states[0]["pane_id"], pane_id);
     assert_eq!(states[0]["state"], "blocked");
     assert_eq!(states[0]["agent"], "claude-code");
+    assert!(states[0]["detail"].is_null());
     assert!(states[0]["session_id"].is_null());
 
     let _ = std::fs::remove_file(&states_file);
@@ -360,6 +365,7 @@ fn overlay_panes_preserve_replaced_pane_agent_state() {
         pane_id,
         state: crate::app_protocol::AgentState::Working,
         agent: "claude-code".to_string(),
+        detail: Some("Edit: main.rs".to_string()),
         session_id: Some("overlay-session".to_string()),
     });
     h.app.drain_pane_cmd_channel();
@@ -401,6 +407,7 @@ fn overlay_panes_preserve_replaced_pane_agent_state() {
     assert_eq!(states.len(), 1);
     assert_eq!(states[0]["pane_id"], pane_id);
     assert_eq!(states[0]["state"], "working");
+    assert_eq!(states[0]["detail"], "Edit: main.rs");
     assert_eq!(states[0]["session_id"], "overlay-session");
 
     let info_file = std::env::temp_dir().join("plexi_test_overlay_pane_info_agent_2119.json");
@@ -415,6 +422,7 @@ fn overlay_panes_preserve_replaced_pane_agent_state() {
     let info: serde_json::Value = serde_json::from_str(&info_json).expect("valid pane info JSON");
     assert_eq!(info["agent"]["pane_id"], pane_id);
     assert_eq!(info["agent"]["state"], "working");
+    assert_eq!(info["agent"]["detail"], "Edit: main.rs");
     assert_eq!(info["agent"]["session_id"], "overlay-session");
 
     let _ = std::fs::remove_file(&states_file);
