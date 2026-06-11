@@ -489,6 +489,47 @@ fn workspace_clean_slots_lists_and_removes_dead_pane_slot_dirs() {
     assert!(!slot_dir.exists(), "clean should remove dead pane slot dir");
 }
 
+#[test]
+fn workspace_clean_slots_removes_unregistered_files_for_reused_pane_ids() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.set_active_context_root(tmp.path().to_path_buf());
+    let pane = h.add_test_pane();
+
+    let slot_dir = tmp
+        .path()
+        .join(crate::config::workspace_channel_dir())
+        .join("slots")
+        .join(pane.to_string());
+    std::fs::create_dir_all(&slot_dir).expect("create stale slot dir");
+    let stale_slot = slot_dir.join("artifact");
+    std::fs::write(&stale_slot, b"stale").expect("write stale slot");
+
+    let clean_file = temp_response(tmp.path(), "slot-clean-reused-pane");
+    h.inject_ipc(AppRequest::WorkspaceCleanSlots {
+        dry_run: false,
+        response_file: clean_file.clone(),
+    });
+    h.run_frames(1);
+    assert_eq!(read_json_response(&clean_file)["ok"].as_bool(), Some(true));
+    assert!(
+        !stale_slot.exists(),
+        "unregistered stale slot file should be removed for live pane id"
+    );
+
+    let write_file = temp_response(tmp.path(), "slot-reused-pane-write");
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id: pane,
+        slot_name: "artifact".to_string(),
+        content: b"fresh".to_vec(),
+        append: false,
+        replace: false,
+        response_file: write_file.clone(),
+    });
+    h.run_frames(1);
+    assert_eq!(read_json_response(&write_file)["ok"].as_bool(), Some(true));
+}
+
 // -- Nav stack ------------------------------------------------------------
 
 /// Regression guard for PR #392: `push_nav` and `pop_nav` commands must be

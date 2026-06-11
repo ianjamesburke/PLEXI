@@ -489,7 +489,7 @@ impl PlexiApp {
                     } else {
                         slot_path.clone()
                     };
-                    let exists = existing_path.exists();
+                    let exists = tracked_path.as_ref().is_some_and(|path| path.exists());
                     if exists && !*append && !*replace {
                         slot_error(
                             response_file,
@@ -681,6 +681,13 @@ impl PlexiApp {
                         .iter()
                         .flat_map(|win| win.panes.keys().copied())
                         .collect();
+                    let live_slot_paths: std::collections::HashSet<std::path::PathBuf> = self
+                        .windows
+                        .iter()
+                        .flat_map(|win| win.panes.values())
+                        .filter_map(|pane| pane.slots())
+                        .flat_map(|slots| slots.values().cloned())
+                        .collect();
                     let mut roots = vec![crate::config::config_dir().join("slots")];
                     for root in self.router.iter().filter_map(|ctx| ctx.root.as_ref()) {
                         roots.push(slot_base_dir(Some(root)));
@@ -703,10 +710,26 @@ impl PlexiApp {
                             else {
                                 continue;
                             };
-                            if live_panes.contains(&pane_id) {
+                            if !live_panes.contains(&pane_id) {
+                                paths.push(path);
                                 continue;
                             }
-                            paths.push(path);
+                            let has_live_slots = live_slot_paths
+                                .iter()
+                                .any(|slot_path| slot_path.parent() == Some(path.as_path()));
+                            if !has_live_slots {
+                                paths.push(path);
+                                continue;
+                            }
+                            let Ok(slot_entries) = std::fs::read_dir(&path) else {
+                                continue;
+                            };
+                            for slot_entry in slot_entries.flatten() {
+                                let slot_path = slot_entry.path();
+                                if !live_slot_paths.contains(&slot_path) {
+                                    paths.push(slot_path);
+                                }
+                            }
                         }
                     }
                     paths.sort();
@@ -714,9 +737,14 @@ impl PlexiApp {
                     let mut clean_error = None;
                     for path in paths {
                         if !*dry_run {
-                            if let Err(e) = std::fs::remove_dir_all(&path) {
+                            let remove_result = if path.is_dir() {
+                                std::fs::remove_dir_all(&path)
+                            } else {
+                                std::fs::remove_file(&path)
+                            };
+                            if let Err(e) = remove_result {
                                 clean_error = Some(format!(
-                                    "could not remove slot directory {}: {e}",
+                                    "could not remove slot path {}: {e}",
                                     path.display()
                                 ));
                                 break;
