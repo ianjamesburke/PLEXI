@@ -210,8 +210,13 @@ fn install_agent(global_agent_md: &Path, ws_agent_dir: &Path) -> Result<(), Stri
 }
 
 /// `plexi agent report --state <state>` — report agent state to host via socket.
-pub fn agent_report_cli(state: &str, agent: &str, session_id: Option<&str>) -> i32 {
-    log::info!("agent_report:cli: state={state} agent={agent}");
+pub fn agent_report_cli(
+    state: &str,
+    agent: &str,
+    detail: Option<&str>,
+    session_id: Option<&str>,
+) -> i32 {
+    log::info!("agent_report:cli: state={state} agent={agent} detail={detail:?}");
     let normalized = match state.to_lowercase().as_str() {
         "working" => "working",
         "blocked" => "blocked",
@@ -237,6 +242,9 @@ pub fn agent_report_cli(state: &str, agent: &str, session_id: Option<&str>) -> i
         "state": normalized,
         "agent": agent,
     });
+    if let Some(active_tool) = detail.and_then(non_empty_string) {
+        payload["detail"] = serde_json::Value::String(active_tool.to_string());
+    }
     if let Some(sid) = session_id {
         payload["session_id"] = serde_json::Value::String(sid.to_string());
     }
@@ -299,18 +307,45 @@ pub fn agent_status_cli(blocked: bool, working: bool, idle: bool) -> i32 {
         println!("No agent states tracked.");
         return 0;
     }
-    println!(
-        "{:<12} {:<16} {:<12} {}",
-        "PANE_ID", "AGENT", "STATE", "SESSION_ID"
-    );
+    let show_detail = filtered
+        .iter()
+        .any(|s| s.get("detail").and_then(|v| v.as_str()).is_some());
+    if show_detail {
+        println!(
+            "{:<12} {:<16} {:<12} {:<20} {}",
+            "PANE_ID", "AGENT", "STATE", "SESSION_ID", "DETAIL"
+        );
+    } else {
+        println!(
+            "{:<12} {:<16} {:<12} {}",
+            "PANE_ID", "AGENT", "STATE", "SESSION_ID"
+        );
+    }
     for s in &filtered {
         let pane_id = s["pane_id"].as_u64().unwrap_or(0);
         let agent = s["agent"].as_str().unwrap_or("unknown");
         let state = s["state"].as_str().unwrap_or("unknown");
         let session_id = s.get("session_id").and_then(|v| v.as_str()).unwrap_or("-");
-        println!("{:<12} {:<16} {:<12} {}", pane_id, agent, state, session_id);
+        if show_detail {
+            let detail = s.get("detail").and_then(|v| v.as_str()).unwrap_or("-");
+            println!(
+                "{:<12} {:<16} {:<12} {:<20} {}",
+                pane_id, agent, state, session_id, detail
+            );
+        } else {
+            println!("{:<12} {:<16} {:<12} {}", pane_id, agent, state, session_id);
+        }
     }
     0
+}
+
+fn non_empty_string(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 /// `plexi agent hook install --claude-code` — write hook script + patch ~/.claude/settings.json.
@@ -342,16 +377,79 @@ if [ -z "${{PLEXI_SOCKET:-}}" ] || [ -z "${{PLEXI_PANE_ID:-}}" ]; then
 fi
 INPUT=$(cat)
 EVENT=$(jq -r '.hook_event_name // empty' <<< "$INPUT" 2>/dev/null || true)
+truncate_detail() {{
+    local max="$1"
+    local value="$2"
+    if [ "${{#value}}" -gt "$max" ]; then
+        printf '%s' "${{value:0:$max}}"
+    else
+        printf '%s' "$value"
+    fi
+}}
+
+basename_detail() {{
+    local value="$1"
+    if [ -n "$value" ]; then
+        basename "$value"
+    fi
+}}
+
+tool_detail() {{
+    local tool_name value base
+    tool_name=$(jq -r '.tool_name // empty' <<< "$INPUT" 2>/dev/null || true)
+    case "$tool_name" in
+        Bash)
+            value=$(jq -r '.tool_input.command // empty' <<< "$INPUT" 2>/dev/null || true)
+            [ -n "$value" ] && printf 'Bash: %s' "$(truncate_detail 60 "$value")" || printf 'Bash'
+            ;;
+        Edit)
+            value=$(jq -r '.tool_input.file_path // .tool_input.path // empty' <<< "$INPUT" 2>/dev/null || true)
+            base=$(basename_detail "$value")
+            [ -n "$base" ] && printf 'Edit: %s' "$base" || printf 'Edit'
+            ;;
+        Write)
+            value=$(jq -r '.tool_input.file_path // .tool_input.path // empty' <<< "$INPUT" 2>/dev/null || true)
+            base=$(basename_detail "$value")
+            [ -n "$base" ] && printf 'Write: %s' "$base" || printf 'Write'
+            ;;
+        Read)
+            value=$(jq -r '.tool_input.file_path // .tool_input.path // empty' <<< "$INPUT" 2>/dev/null || true)
+            base=$(basename_detail "$value")
+            [ -n "$base" ] && printf 'Read: %s' "$base" || printf 'Read'
+            ;;
+        WebSearch)
+            value=$(jq -r '.tool_input.query // empty' <<< "$INPUT" 2>/dev/null || true)
+            [ -n "$value" ] && printf 'WebSearch: %s' "$(truncate_detail 50 "$value")" || printf 'WebSearch'
+            ;;
+        WebFetch)
+            value=$(jq -r '.tool_input.url // empty' <<< "$INPUT" 2>/dev/null || true)
+            [ -n "$value" ] && printf 'WebFetch: %s' "$(truncate_detail 60 "$value")" || printf 'WebFetch'
+            ;;
+        Agent)
+            value=$(jq -r '.tool_input.description // .tool_input.prompt // empty' <<< "$INPUT" 2>/dev/null || true)
+            [ -n "$value" ] && printf 'Agent: %s' "$(truncate_detail 60 "$value")" || printf 'Agent'
+            ;;
+        "")
+            ;;
+        *)
+            printf '%s' "$tool_name"
+            ;;
+    esac
+}}
+
+DETAIL=""
 case "$EVENT" in
+    PreToolUse)                    STATE="working"; DETAIL=$(tool_detail) ;;
     SessionStart|UserPromptSubmit) STATE="working" ;;
     PermissionRequest)             STATE="blocked" ;;
-    Stop|StopFailure|SessionEnd)   STATE="idle" ;;
+    PostToolBatch|Stop|StopFailure|SessionEnd) STATE="idle" ;;
     SubagentStop)                  exit 0 ;;
     *)                             exit 0 ;;
 esac
 SESSION_ID=$(jq -r '.session_id // empty' <<< "$INPUT" 2>/dev/null || true)
 ARGS=(agent report --state "$STATE" --agent claude-code)
 [ -n "$SESSION_ID" ] && ARGS+=(--session-id "$SESSION_ID")
+[ -n "$DETAIL" ] && ARGS+=(--detail "$DETAIL")
 "{binary}" "${{ARGS[@]}}" >/dev/null 2>&1 || true
 exit 0
 "#
@@ -381,9 +479,11 @@ exit 0
     }
 
     let events = [
+        "PreToolUse",
         "SessionStart",
         "UserPromptSubmit",
         "PermissionRequest",
+        "PostToolBatch",
         "Stop",
         "StopFailure",
         "SessionEnd",
@@ -435,8 +535,9 @@ exit 0
     if code == 0 {
         println!("Hook script: {script_str}");
         println!(
-            "Registered in {} for 6 lifecycle events.",
-            settings_path.display()
+            "Registered in {} for {} lifecycle events.",
+            settings_path.display(),
+            events.len()
         );
     }
     code

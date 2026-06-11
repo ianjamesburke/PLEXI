@@ -846,10 +846,11 @@ impl PlexiApp {
                     pane_id,
                     state,
                     agent,
+                    detail,
                     session_id,
                 } => {
                     log::info!(
-                        "pane_ipc: kind=set_agent_state pane_id={pane_id} agent={agent} state={state:?}"
+                        "pane_ipc: kind=set_agent_state pane_id={pane_id} agent={agent} state={state:?} detail={detail:?}"
                     );
                     let mut found = false;
                     for win in &mut self.windows {
@@ -858,6 +859,7 @@ impl PlexiApp {
                                 pane_id: *pane_id,
                                 state: state.clone(),
                                 agent: agent.clone(),
+                                detail: detail.clone(),
                                 session_id: session_id.clone(),
                             }));
                             break;

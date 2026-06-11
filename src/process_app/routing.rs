@@ -1864,12 +1864,13 @@ impl ProcessApp {
                 pane_id,
                 state,
                 agent,
+                detail,
                 session_id: _,
             } => {
                 // SetAgentState is a CLI/hook-only command routed through the host socket.
                 // Apps should not send this; log and ignore.
                 log::warn!(
-                    "ProcessApp[{}]: SetAgentState ignored — pane_id={pane_id} agent={agent} state={state:?}",
+                    "ProcessApp[{}]: SetAgentState ignored — pane_id={pane_id} agent={agent} state={state:?} detail={detail:?}",
                     self.type_id
                 );
             }

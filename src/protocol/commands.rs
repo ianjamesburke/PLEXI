@@ -447,6 +447,9 @@ pub struct PaneAgentState {
     pub pane_id: u64,
     pub state: AgentState,
     pub agent: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
 }
 
@@ -544,6 +547,8 @@ pub enum AppRequest {
         pane_id: u64,
         state: AgentState,
         agent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
         #[serde(default)]
         session_id: Option<String>,
     },
@@ -3542,6 +3547,55 @@ mod ai_stream_chunk_tests {
         assert!(
             serde_json::from_str::<AppRequest>(json).is_err(),
             "missing required response_file must fail"
+        );
+    }
+
+    #[test]
+    fn set_agent_state_detail_round_trips_serde() {
+        let json = r#"{"type":"set_agent_state","pane_id":7,"state":"working","agent":"claude-code","detail":"Bash: cargo test","session_id":"abc"}"#;
+        let req: AppRequest = serde_json::from_str(json).expect("deserialise");
+        match &req {
+            AppRequest::SetAgentState {
+                pane_id,
+                state,
+                agent,
+                detail,
+                session_id,
+            } => {
+                assert_eq!(*pane_id, 7);
+                assert_eq!(*state, AgentState::Working);
+                assert_eq!(agent, "claude-code");
+                assert_eq!(detail.as_deref(), Some("Bash: cargo test"));
+                assert_eq!(session_id.as_deref(), Some("abc"));
+            }
+            other => panic!("expected SetAgentState, got {other:?}"),
+        }
+
+        let serialised = serde_json::to_string(&req).expect("serialise");
+        assert!(
+            serialised.contains(r#""detail":"Bash: cargo test""#),
+            "detail must be emitted when present: {serialised}"
+        );
+    }
+
+    #[test]
+    fn set_agent_state_missing_detail_defaults_to_none() {
+        let json = r#"{"type":"set_agent_state","pane_id":7,"state":"idle","agent":"claude-code"}"#;
+        let req: AppRequest = serde_json::from_str(json).expect("deserialise");
+        match &req {
+            AppRequest::SetAgentState {
+                detail, session_id, ..
+            } => {
+                assert!(detail.is_none());
+                assert!(session_id.is_none());
+            }
+            other => panic!("expected SetAgentState, got {other:?}"),
+        }
+
+        let serialised = serde_json::to_string(&req).expect("serialise");
+        assert!(
+            !serialised.contains("detail"),
+            "empty detail should not add wire noise: {serialised}"
         );
     }
 }

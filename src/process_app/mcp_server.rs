@@ -334,7 +334,7 @@ fn generate_call_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
+    use std::io::{ErrorKind, Read, Write};
     use std::net::TcpStream;
 
     fn post_mcp(port: u16, token: Option<&str>, body: &[u8]) -> (u16, Vec<u8>) {
@@ -352,7 +352,11 @@ mod tests {
         stream.flush().unwrap();
 
         let mut response = Vec::new();
-        stream.read_to_end(&mut response).unwrap();
+        match stream.read_to_end(&mut response) {
+            Ok(_) => {}
+            Err(e) if e.kind() == ErrorKind::ConnectionReset && !response.is_empty() => {}
+            Err(e) => panic!("read response from MCP server: {e}"),
+        }
         let response_str = String::from_utf8_lossy(&response);
         let status: u16 = response_str
             .lines()

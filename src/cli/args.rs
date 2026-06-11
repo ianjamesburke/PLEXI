@@ -885,6 +885,9 @@ pub enum AgentCmd {
         /// Agent name (e.g. "claude-code")
         #[arg(long, default_value = "unknown")]
         agent: String,
+        /// Active tool detail (optional, from hook event JSON)
+        #[arg(long)]
+        detail: Option<String>,
         /// Session ID (optional, from hook event JSON)
         #[arg(long)]
         session_id: Option<String>,
