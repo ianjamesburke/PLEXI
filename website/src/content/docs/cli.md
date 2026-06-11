@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.699"
+verified_version: "0.0.711"
 order: 7
 ---
 
@@ -30,12 +30,21 @@ Run this once inside your project directory to enable workspace-scoped secrets a
 | Subcommand | Description |
 |---|---|
 | `init` | Set up a .plexi/ workspace in the current directory |
+| `clean` | Remove pane slot files for panes that are no longer open |
 
 ### `plexi workspace init`
 
 Set up a .plexi/ workspace in the current directory.
 
 Run this once inside your project folder. It creates a .plexi/workspace.toml so that secrets and commands are scoped to this project.
+
+### `plexi workspace clean`
+
+Remove pane slot files for panes that are no longer open
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--dry-run` | flag | no | Print slot directories that would be removed without deleting them |
 
 ## `plexi secret`
 
@@ -47,7 +56,7 @@ Secrets are saved to your system keychain and injected as environment variables 
 |---|---|
 | `set` | Save a secret to your keychain |
 | `get` | Print a stored secret's value to stdout |
-| `list` | Show all secrets stored for this project |
+| `list` | Show stored secrets |
 | `delete` | Delete a stored secret |
 
 ### `plexi secret set`
@@ -78,7 +87,13 @@ Looks up the secret for the current project first, then falls back to the global
 
 ### `plexi secret list`
 
-Show all secrets stored for this project
+Show stored secrets.
+
+Inside a workspace, shows project secrets plus user-scope secrets. Outside a workspace, falls back to user-scope secrets. Use --global to show only user-scope secrets from any directory.
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `--global` | flag | no | Show only globally-stored user-scope secrets |
 
 ### `plexi secret delete`
 
@@ -540,6 +555,7 @@ Control panes — list, focus, send input, capture output, and more
 | `key` | Send a key press to a pane |
 | `command` | Send a shell command to a terminal pane as if typed from the keyboard |
 | `state` | Return the current UI state of a pane as JSON |
+| `slot` | Manage host-managed named file slots for a pane |
 
 ### `plexi pane new`
 
@@ -688,6 +704,55 @@ Example: plexi pane state 42
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
 | `<pane_id>` | string | yes | Pane id to query (from `plexi pane list`) |
+
+### `plexi pane slot`
+
+Manage host-managed named file slots for a pane
+
+| Subcommand | Description |
+|---|---|
+| `write` | Write bytes to a named pane slot. If content is omitted, stdin is read fully |
+| `read` | Print raw bytes from a named pane slot |
+| `list` | List slots for a pane as JSON |
+| `delete` | Delete a named pane slot |
+
+#### `plexi pane slot write`
+
+Write bytes to a named pane slot. If content is omitted, stdin is read fully
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Slot name |
+| `<content>` | string | no | Optional content. If omitted, stdin is read fully |
+| `--pane-id` | string | no | Pane id. Defaults to PLEXI_PANE_ID |
+| `--append` | flag | no | Append to an existing slot instead of replacing it |
+| `--replace` | flag | no | Replace an existing slot |
+
+#### `plexi pane slot read`
+
+Print raw bytes from a named pane slot
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Slot name |
+| `<pane_id>` | string | no | Pane id. Defaults to PLEXI_PANE_ID |
+
+#### `plexi pane slot list`
+
+List slots for a pane as JSON
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<pane_id>` | string | no | Pane id. Defaults to PLEXI_PANE_ID |
+
+#### `plexi pane slot delete`
+
+Delete a named pane slot
+
+| Flag / Arg | Type | Required | Description |
+|---|---|---|---|
+| `<name>` | string | yes | Slot name |
+| `<pane_id>` | string | no | Pane id. Defaults to PLEXI_PANE_ID |
 
 ## `plexi notify`
 
