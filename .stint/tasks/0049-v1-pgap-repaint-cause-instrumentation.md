@@ -1,9 +1,11 @@
 ---
 id: "0049"
 title: "v1 PGAP perf: repaint cause instrumentation"
-status: in-progress
+status: done
 estimate: "4h"
+actual: "137m"
 started_at: "2026-06-11T03:37:55Z"
+completed_at: "2026-06-11T05:54:21Z"
 sprint: "s13"
 blocked_by: []
 gh_issue:
@@ -17,6 +19,7 @@ tags:
   - "performance"
   - "instrumentation"
 ---
+
 
 
 Add host-side frame/repaint cause instrumentation so idle CPU/GPU regressions can be attributed before changing scheduling behavior.
