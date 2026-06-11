@@ -1,5 +1,16 @@
 use std::path::Path;
 
+const CLAUDE_CODE_HOOK_EVENTS: &[&str] = &[
+    "PreToolUse",
+    "SessionStart",
+    "UserPromptSubmit",
+    "PermissionRequest",
+    "PostToolBatch",
+    "Stop",
+    "StopFailure",
+    "SessionEnd",
+];
+
 /// `plexi agent init <name>` — scaffold an agent app with ai.query capability.
 pub fn agent_init(name: &str, from_pane_id: Option<u64>) -> i32 {
     log::info!("agent_init:cli: name={name}");
@@ -216,7 +227,10 @@ pub fn agent_report_cli(
     detail: Option<&str>,
     session_id: Option<&str>,
 ) -> i32 {
-    log::info!("agent_report:cli: state={state} agent={agent} detail={detail:?}");
+    log::info!(
+        "agent_report:cli: state={state} agent={agent} detail_present={}",
+        detail.and_then(non_empty_string).is_some()
+    );
     let normalized = match state.to_lowercase().as_str() {
         "working" => "working",
         "blocked" => "blocked",
@@ -478,18 +492,7 @@ exit 0
         settings["hooks"] = serde_json::json!({});
     }
 
-    let events = [
-        "PreToolUse",
-        "SessionStart",
-        "UserPromptSubmit",
-        "PermissionRequest",
-        "PostToolBatch",
-        "Stop",
-        "StopFailure",
-        "SessionEnd",
-    ];
-
-    for event in &events {
+    for event in CLAUDE_CODE_HOOK_EVENTS {
         let event_hooks = settings["hooks"][*event]
             .as_array()
             .cloned()
@@ -537,7 +540,7 @@ exit 0
         println!(
             "Registered in {} for {} lifecycle events.",
             settings_path.display(),
-            events.len()
+            CLAUDE_CODE_HOOK_EVENTS.len()
         );
     }
     code
@@ -562,18 +565,10 @@ pub fn agent_hook_uninstall_cli(claude_code: bool) -> i32 {
 
     let mut settings = read_claude_settings(&settings_path);
 
-    let events = [
-        "SessionStart",
-        "UserPromptSubmit",
-        "PermissionRequest",
-        "Stop",
-        "StopFailure",
-        "SessionEnd",
-    ];
     let mut removed = 0usize;
 
     if let Some(hooks_map) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-        for event in &events {
+        for event in CLAUDE_CODE_HOOK_EVENTS {
             if let Some(event_arr) = hooks_map.get_mut(*event).and_then(|v| v.as_array_mut()) {
                 let before = event_arr.len();
                 event_arr.retain(|entry| {

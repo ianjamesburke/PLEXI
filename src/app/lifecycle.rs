@@ -850,7 +850,8 @@ impl PlexiApp {
                     session_id,
                 } => {
                     log::info!(
-                        "pane_ipc: kind=set_agent_state pane_id={pane_id} agent={agent} state={state:?} detail={detail:?}"
+                        "pane_ipc: kind=set_agent_state pane_id={pane_id} agent={agent} state={state:?} detail_present={}",
+                        detail.is_some()
                     );
                     let mut found = false;
                     for win in &mut self.windows {
