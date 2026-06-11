@@ -1,14 +1,24 @@
 ---
 id: "0039"
 title: "Workspace restore: builtin app state path"
-status: backlog
+status: in-progress
+estimate: "8h"
+started_at: "2026-06-11T09:59:54Z"
 sprint: "s9"
-estimate: 8h
 blocked_by: []
-gh_issue: ["2143"]
-area: ["host/pane-ops", "apps/text-editor", "apps/file-browser"]
-tags: ["v1", "workspace", "apps", "state"]
+gh_issue:
+  - "2143"
+area:
+  - "host/pane-ops"
+  - "apps/text-editor"
+  - "apps/file-browser"
+tags:
+  - "v1"
+  - "workspace"
+  - "apps"
+  - "state"
 ---
+
 
 Restore saved builtin app panes through a unified app-id plus serialized-state path so text editor, File Explorer, Secrets Manager, and future builtins reopen correctly.
 
