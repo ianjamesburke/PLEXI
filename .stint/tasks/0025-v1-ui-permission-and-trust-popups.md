@@ -1,16 +1,25 @@
 ---
 id: "0025"
 title: "v1 UI: permission and trust popups"
-status: backlog
+status: in-progress
+estimate: "16h"
+started_at: "2026-06-11T17:57:59Z"
 sprint: "s5"
-estimate: 16h
 blocked_by:
   - 17
   - 23
 gh_issue: []
-area: ["host/permissions", "ui/overlays", "ui/widgets"]
-tags: ["v1", "ui", "permissions", "trust"]
+area:
+  - "host/permissions"
+  - "ui/overlays"
+  - "ui/widgets"
+tags:
+  - "v1"
+  - "ui"
+  - "permissions"
+  - "trust"
 ---
+
 
 Rework permission grant, package trust, install confirmation, and marketplace warning popups on shared Host UI Kit primitives.
 
