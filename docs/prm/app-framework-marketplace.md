@@ -38,6 +38,8 @@ GitHub issues are still useful implementation tickets while `.stint` stabilizes,
 
 S1 is the File Explorer sprint. The File Explorer issue bundle is linked from `docs/prm/file-explorer-overhaul.md`.
 
+Re-order (2026-06-11): trust tasks `0013` and `0014` were deliberately pulled ahead of the S2 authoring chain. The host-mediated Assistant capability path (chat pane drives app panes through capability-gated PGAP APIs, with a runtime grant prompt) is the go-to-market priority and has no technical dependency on S2 scaffold polish. The runtime yellow-state grant sheet ships with `0014`; the permission manager app remains `0017`.
+
 ### Sprint Tasks
 
 | Task | Sprint | Work |
