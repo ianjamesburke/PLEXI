@@ -15,7 +15,7 @@ use crate::spatial::tiling::PaneId;
 use egui_term::BackendCommand;
 use egui_tiles::{Tile, TileId, Tree};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Instantiate a builtin `App` by id, checked before the process registry.
 ///
@@ -24,7 +24,7 @@ use std::path::PathBuf;
 /// `launch_app_by_id_with_layout` requires no further changes.
 ///
 /// `"terminal"` is intentionally absent — it is a PTY pane, not an `App`.
-fn builtin_factory(id: &str, args: &[String]) -> Option<Box<dyn App>> {
+pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<Box<dyn App>> {
     match id {
         "text-editor" => {
             let path = args
@@ -41,8 +41,68 @@ fn builtin_factory(id: &str, args: &[String]) -> Option<Box<dyn App>> {
                 crate::render::cli_renderer_app::CliRendererApp::new(path),
             ))
         }
+        "file_browser" => Some(Box::new(crate::file_browser::FileBrowserApp::new(
+            cwd.to_path_buf(),
+        ))),
+        "secrets_manager" => Some(Box::new(crate::app::secrets_app::SecretsApp::new(
+            cwd.to_path_buf(),
+        ))),
         _ => None,
     }
+}
+
+fn builtin_default_group(type_id: &str) -> Option<String> {
+    match type_id {
+        "file_browser" => Some("cwd".to_string()),
+        _ => None,
+    }
+}
+
+fn builtin_restore_args(
+    app_id: &str,
+    app_state: Option<&serde_json::Value>,
+) -> Option<Vec<String>> {
+    match app_id {
+        "text-editor" => app_state
+            .and_then(|state| state.get("path"))
+            .and_then(|path| path.as_str())
+            .map(|path| vec![path.to_string()]),
+        "file_browser" | "secrets_manager" => Some(vec![]),
+        _ => None,
+    }
+}
+
+pub(crate) fn restore_builtin_app_pane(
+    app_id: &str,
+    pane_id: PaneId,
+    cwd: PathBuf,
+    app_state: Option<&serde_json::Value>,
+) -> Option<Pane> {
+    let args = builtin_restore_args(app_id, app_state)?;
+    let mut app = builtin_factory(app_id, &cwd, &args)?;
+    if let Some(state) = app_state {
+        app.restore_state(state);
+    }
+    let runtime_id = app.type_id().to_string();
+    let name = app.display_name();
+    log::info!(
+        "workspace_restore: restored builtin app_id={app_id} runtime_id={runtime_id} pane_id={pane_id} cwd={}",
+        cwd.display()
+    );
+    Some(Pane::App(Box::new(crate::host::pane::AppPane {
+        id: pane_id,
+        runtime: crate::host::pane::AppRuntime::Builtin(app),
+        workspace_root: cwd,
+        permissions: crate::app::permissions::AppPermissions::builtin(),
+        manifest_id: runtime_id.clone(),
+        name,
+        pane_group: builtin_default_group(&runtime_id),
+        linked_pane_id: None,
+        overlay_replaced: None,
+        hidden: false,
+        agent: None,
+        slots: std::collections::HashMap::new(),
+    })))
 }
 
 impl PlexiApp {
@@ -822,9 +882,12 @@ impl PlexiApp {
         );
 
         // Builtin app factory — resolved before the process registry; builtins never touch disk.
-        if let Some(app) = builtin_factory(id, args) {
+        if let Some(app) = builtin_factory(id, &cwd, args) {
             log::info!("launch_app_by_id_with_layout: '{id}' resolved as builtin");
-            let group = self.registry.group_for(id);
+            let group = self
+                .registry
+                .group_for(id)
+                .or_else(|| builtin_default_group(app.type_id()));
             let hint = layout.unwrap_or_else(|| "overlay".to_string());
             let perms = crate::app::permissions::AppPermissions::builtin();
             self.open_builtin_app_pane(app, perms, cwd, group, Some(&hint), None);
@@ -1381,6 +1444,7 @@ fn cli_binary_in_path(name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::app::permissions::AppPermissions;
+    use crate::host::pane::{AppRuntime, Pane};
     use crate::process_app::ProcessApp;
     use crate::testing::HostHarness;
 
@@ -1422,6 +1486,71 @@ mod tests {
         assert!(
             h.app.windows[0].tree.root.is_some(),
             "tree root should be set after launch into empty context"
+        );
+    }
+
+    #[test]
+    fn workspace_restore_rehydrates_text_editor_builtin_state() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let restored_path = dir.path().join("restored.md");
+        std::fs::write(&restored_path, "restored").expect("write note");
+        let state = serde_json::json!({ "path": restored_path.display().to_string() });
+
+        let pane =
+            restore_builtin_app_pane("text-editor", 42, dir.path().to_path_buf(), Some(&state))
+                .expect("text-editor builtin should restore");
+        let Pane::App(app) = pane else {
+            panic!("expected app pane");
+        };
+
+        assert_eq!(app.id, 42);
+        assert_eq!(app.manifest_id, "text-editor");
+        assert_eq!(app.workspace_root, dir.path());
+        assert_eq!(app.name, "restored.md");
+        assert!(matches!(&app.runtime, AppRuntime::Builtin(_)));
+        assert_eq!(
+            app.runtime.serialize_state(),
+            Some(serde_json::json!({ "path": restored_path.to_string_lossy() }))
+        );
+    }
+
+    #[test]
+    fn workspace_restore_rehydrates_file_browser_builtin_state() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let restored = tempfile::tempdir().expect("restored cwd");
+        let state = serde_json::json!({
+            "cwd": restored.path().display().to_string(),
+            "selected": 0,
+        });
+
+        let pane = restore_builtin_app_pane(
+            "file_browser",
+            7,
+            workspace.path().to_path_buf(),
+            Some(&state),
+        )
+        .expect("file_browser builtin should restore");
+        let Pane::App(app) = pane else {
+            panic!("expected app pane");
+        };
+
+        assert_eq!(app.id, 7);
+        assert_eq!(app.manifest_id, "file_browser");
+        assert_eq!(app.workspace_root, workspace.path());
+        assert_eq!(app.pane_group.as_deref(), Some("cwd"));
+        assert_eq!(app.runtime.type_id(), "file_browser");
+        assert_eq!(app.runtime.current_cwd().as_deref(), Some(restored.path()));
+    }
+
+    #[test]
+    fn workspace_restore_skips_builtin_without_restore_state_contract() {
+        let dir = tempfile::tempdir().expect("workspace");
+
+        let pane = restore_builtin_app_pane("cli-renderer", 8, dir.path().to_path_buf(), None);
+
+        assert!(
+            pane.is_none(),
+            "cli-renderer restore needs persisted descriptor state"
         );
     }
 
