@@ -1,7 +1,7 @@
 //! Host repaint scheduling for PGAP panes.
 
 use crate::platform::frame_diag::{self, RepaintCause};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const RENDER_IN_FLIGHT_POLL: Duration = Duration::from_millis(16);
 const ASYNC_WAKE_POLL: Duration = Duration::from_millis(100);
@@ -39,6 +39,46 @@ impl AppSchedulerMode {
             Self::Continuous { interval } => Some(interval),
             Self::Idle | Self::Scheduled => None,
         }
+    }
+}
+
+/// Absolute frame clock for `Continuous` scheduler mode.
+///
+/// Deadlines advance by exactly `interval` from the *previous deadline*, never
+/// from the send timestamp. Rebasing to `send + interval` phase-locks a 60Hz
+/// host to ~30fps: FrameDone commits one vsync (~16.6ms) after the send, the
+/// rebased deadline (send + 16.7ms) misses being due by a hair, and the next
+/// Render waits for another full host frame.
+///
+/// If the cadence falls more than one interval behind (slow app, hidden pane),
+/// the clock rebases to `now` instead of bursting to catch up — the strict
+/// Render/FrameDone transaction means there is never more than one frame in
+/// flight, so debt must be dropped, not repaid.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AnimationClock {
+    interval: Duration,
+    next_deadline: Instant,
+}
+
+impl AnimationClock {
+    pub(crate) fn new(interval: Duration, now: Instant) -> Self {
+        Self {
+            interval,
+            next_deadline: now,
+        }
+    }
+
+    /// Record that a Render was sent at `now`; returns the absolute deadline
+    /// for the frame after it. A send before the scheduled tick (e.g. a
+    /// click-driven render) does not advance the phase.
+    pub(crate) fn deadline_after_send(&mut self, now: Instant) -> Instant {
+        if now >= self.next_deadline {
+            self.next_deadline += self.interval;
+            if self.next_deadline < now {
+                self.next_deadline = now;
+            }
+        }
+        self.next_deadline
     }
 }
 
@@ -124,6 +164,54 @@ mod tests {
             decide_repaint(input),
             RepaintDecision::After(RENDER_IN_FLIGHT_POLL)
         );
+    }
+
+    const FRAME: Duration = Duration::from_micros(16_667);
+
+    #[test]
+    fn animation_clock_keeps_absolute_phase() {
+        let t0 = Instant::now();
+        let mut clock = AnimationClock::new(FRAME, t0);
+        // The send fires a few ms after the deadline (host vsync
+        // quantization) — the next deadline must stay anchored to the
+        // previous deadline, not the send timestamp.
+        let d1 = clock.deadline_after_send(t0 + Duration::from_millis(5));
+        assert_eq!(d1, t0 + FRAME);
+    }
+
+    #[test]
+    fn deadline_is_due_when_frame_done_commits_one_vsync_after_a_late_send() {
+        // Regression: rebasing the followup to send + interval phase-locked a
+        // 60Hz host to ~30-37fps — FrameDone (send + ~16.6ms) missed the
+        // deadline (send + 16.7ms) by ~0.1ms every frame.
+        let t0 = Instant::now();
+        let mut clock = AnimationClock::new(FRAME, t0);
+        let send = t0 + Duration::from_millis(5);
+        let d1 = clock.deadline_after_send(send);
+        let frame_done = send + Duration::from_micros(16_600);
+        assert!(
+            d1 <= frame_done,
+            "followup deadline must already be due when FrameDone commits"
+        );
+    }
+
+    #[test]
+    fn early_send_does_not_advance_phase() {
+        let t0 = Instant::now();
+        let mut clock = AnimationClock::new(FRAME, t0);
+        let d1 = clock.deadline_after_send(t0);
+        // A click-driven render fires mid-tick; the scheduled tick stands.
+        let d2 = clock.deadline_after_send(t0 + Duration::from_millis(4));
+        assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn falling_behind_rebases_instead_of_bursting() {
+        let t0 = Instant::now();
+        let mut clock = AnimationClock::new(FRAME, t0);
+        // Pane hidden for 500ms — next deadline rebases to now, no burst.
+        let late = t0 + Duration::from_millis(500);
+        assert_eq!(clock.deadline_after_send(late), late);
     }
 
     #[test]

@@ -106,7 +106,10 @@ impl PgapRuntime {
         self.request_render_at(Instant::now() + delay)
     }
 
-    fn request_render_at(&mut self, deadline: Instant) -> bool {
+    /// Request a render at an absolute deadline. Used by the continuous
+    /// `AnimationClock`, whose deadlines are phase-anchored — converting to a
+    /// relative delay and back would reintroduce send-time rebasing.
+    pub(crate) fn request_render_at(&mut self, deadline: Instant) -> bool {
         match &mut self.state {
             RuntimeState::Spawned { pending_deadline } => {
                 let was_idle = pending_deadline.is_none();
@@ -321,6 +324,25 @@ mod tests {
         assert_eq!(runtime.complete_frame(1), FrameDoneOutcome::Matched);
         assert_eq!(
             runtime.poll_render(Instant::now()),
+            RenderPoll::Send { frame_id: 2 }
+        );
+    }
+
+    #[test]
+    fn absolute_followup_deadline_due_at_commit_sends_in_same_pass() {
+        // Regression: a continuous app's followup armed via an absolute
+        // deadline must produce an immediate Send when FrameDone commits at
+        // or after that deadline — no extra host repaint in between.
+        let mut runtime = PgapRuntime::ready_for_test_with_initial_render();
+        let t0 = Instant::now();
+        assert_eq!(runtime.poll_render(t0), RenderPoll::Send { frame_id: 1 });
+        let deadline = t0 + Duration::from_micros(16_667);
+        runtime.request_render_at(deadline);
+        // FrameDone commits one host frame later — past the deadline.
+        let commit = t0 + Duration::from_micros(21_000);
+        assert_eq!(runtime.complete_frame(1), FrameDoneOutcome::Matched);
+        assert_eq!(
+            runtime.poll_render(commit),
             RenderPoll::Send { frame_id: 2 }
         );
     }

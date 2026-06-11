@@ -194,16 +194,9 @@ fn schedule_render_requests_next_process_app_render() {
         DrawCommand::Control(crate::app_protocol::ControlCommand::ScheduleRender { after_ms: 0 }),
     );
     h.run_frames(1);
-    assert_eq!(
-        h.render_payload_take(pane),
-        None,
-        "ScheduleRender is handled after the render slot for this host frame"
-    );
-
-    h.run_frames(1);
     let scheduled = h
         .render_payload_take(pane)
-        .expect("ScheduleRender must request the next app Render");
+        .expect("a due ScheduleRender drained this pass must send the Render in the same pass");
     assert!(
         scheduled.contains("\"frame_id\":2"),
         "scheduled Render should use the next frame_id, got {scheduled}"

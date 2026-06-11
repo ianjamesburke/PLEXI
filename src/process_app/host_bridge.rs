@@ -35,6 +35,12 @@ impl ProcessApp {
                 self.pending_frame.clear();
                 self.click_awaiting_frame = false;
                 self.lifecycle.on_frame_done();
+                self.render_diag.record_frame_committed(
+                    &self.type_id,
+                    done_id,
+                    self.scheduler_mode.next_frame_delay(),
+                    std::time::Instant::now(),
+                );
                 if self.runtime.has_pending_render() {
                     ui.ctx().request_repaint();
                 }

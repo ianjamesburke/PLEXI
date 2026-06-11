@@ -29,6 +29,10 @@ pub(crate) fn request_repaint_from_thread(repaint_ctx: &Arc<Mutex<Option<egui::C
     }
 }
 
+fn stdout_command_wakes_host(cmd: &DrawCommand) -> bool {
+    !matches!(cmd, DrawCommand::Render(_))
+}
+
 pub(crate) fn spawn_stdin_writer(
     type_id: String,
     stdin: ChildStdin,
@@ -117,10 +121,13 @@ pub(crate) fn spawn_stdout_reader(
                 match line {
                     Ok(l) if !l.trim().is_empty() => match serde_json::from_str::<DrawCommand>(&l) {
                         Ok(cmd) => {
+                            let wakes_host = stdout_command_wakes_host(&cmd);
                             if draw_tx.send(cmd).is_err() {
                                 break;
                             }
-                            request_repaint_from_thread(&repaint_ctx);
+                            if wakes_host {
+                                request_repaint_from_thread(&repaint_ctx);
+                            }
                         }
                         Err(e) => {
                             log::warn!(
@@ -168,4 +175,29 @@ pub(crate) fn spawn_reaper(
             request_repaint_from_thread(&repaint_ctx);
         })
         .expect("failed to spawn app-reaper thread");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app_protocol::{ControlCommand, RenderCommand};
+
+    #[test]
+    fn render_primitives_do_not_wake_host_before_frame_done() {
+        let cmd = DrawCommand::Render(RenderCommand::Circle {
+            cx: 10.0,
+            cy: 10.0,
+            r: 4.0,
+            fill: "#ffffff".to_string(),
+        });
+
+        assert!(!stdout_command_wakes_host(&cmd));
+    }
+
+    #[test]
+    fn frame_done_wakes_host_at_transaction_boundary() {
+        let cmd = DrawCommand::Control(ControlCommand::FrameDone { frame_id: 7 });
+
+        assert!(stdout_command_wakes_host(&cmd));
+    }
 }

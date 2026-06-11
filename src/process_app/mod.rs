@@ -20,6 +20,7 @@ mod lifecycle;
 pub(crate) mod mcp_server;
 pub(crate) mod prompts;
 pub(crate) mod render;
+mod render_diag;
 mod render_session;
 mod routing;
 mod runtime_state;
@@ -27,6 +28,7 @@ mod scheduler;
 mod transport;
 
 pub(crate) use lifecycle::{LifecycleState, LifecycleTracker};
+use render_diag::RenderDiagnostics;
 use render_session::RenderSession;
 use runtime_state::{FrameDoneOutcome, PgapRuntime, RenderPoll};
 pub(crate) use transport::StdinItem;
@@ -142,6 +144,9 @@ pub struct ProcessApp {
     initialized: bool,
     runtime: PgapRuntime,
     scheduler_mode: scheduler::AppSchedulerMode,
+    /// Absolute frame clock — `Some` iff `scheduler_mode` is `Continuous`.
+    animation_clock: Option<scheduler::AnimationClock>,
+    render_diag: RenderDiagnostics,
     pending_async_completions: usize,
     idle_render_poll_logged: bool,
     sdk: Option<String>,
@@ -612,6 +617,8 @@ impl ProcessApp {
             initialized: false,
             runtime: PgapRuntime::spawned_with_initial_render(),
             scheduler_mode: scheduler::AppSchedulerMode::default(),
+            animation_clock: None,
+            render_diag: RenderDiagnostics::new(),
             pending_async_completions: 0,
             idle_render_poll_logged: false,
             sdk: None,
@@ -771,6 +778,8 @@ impl ProcessApp {
             initialized: true,
             runtime: PgapRuntime::ready_for_test_with_initial_render(),
             scheduler_mode: scheduler::AppSchedulerMode::default(),
+            animation_clock: None,
+            render_diag: RenderDiagnostics::new(),
             pending_async_completions: 0,
             idle_render_poll_logged: false,
             sdk: None,
@@ -939,7 +948,7 @@ impl ProcessApp {
 
     fn mark_render_needed_after(&mut self, reason: &'static str, delay: std::time::Duration) {
         if self.runtime.request_render_after(delay) {
-            if reason != "schedule_render" && reason != "continuous_scheduler" {
+            if reason != "schedule_render" {
                 log::info!(
                     "ProcessApp[{}]: render requested ({reason}, after {}ms)",
                     self.type_id,
@@ -950,7 +959,8 @@ impl ProcessApp {
     }
 
     fn send_render_if_needed(&mut self, size: egui::Vec2) -> Option<u64> {
-        match self.runtime.poll_render(std::time::Instant::now()) {
+        let now = std::time::Instant::now();
+        match self.runtime.poll_render(now) {
             RenderPoll::Send { frame_id } => {
                 self.send_event(&PlexiEvent::Render {
                     frame_id,
@@ -961,8 +971,14 @@ impl ProcessApp {
                         h: size.y,
                     },
                 });
-                if let Some(delay) = self.scheduler_mode.next_frame_delay() {
-                    self.mark_render_needed_after("continuous_scheduler", delay);
+                self.render_diag.record_render_sent(
+                    frame_id,
+                    self.scheduler_mode.next_frame_delay(),
+                    now,
+                );
+                if let Some(clock) = self.animation_clock.as_mut() {
+                    self.runtime
+                        .request_render_at(clock.deadline_after_send(now));
                 }
                 Some(frame_id)
             }
@@ -1112,6 +1128,21 @@ impl ProcessApp {
         match scheduler::AppSchedulerMode::from_wire(mode, fps) {
             Ok(parsed) => {
                 self.scheduler_mode = parsed;
+                self.animation_clock = match parsed {
+                    scheduler::AppSchedulerMode::Continuous { interval } => {
+                        // Anchor the clock and kick the cadence — switching to
+                        // continuous while Idle must start animating without
+                        // waiting for an unrelated render request.
+                        self.mark_render_needed("continuous_mode");
+                        Some(scheduler::AnimationClock::new(
+                            interval,
+                            std::time::Instant::now(),
+                        ))
+                    }
+                    scheduler::AppSchedulerMode::Idle | scheduler::AppSchedulerMode::Scheduled => {
+                        None
+                    }
+                };
                 log::info!(
                     "ProcessApp[{}]: scheduler mode set to {parsed:?}",
                     self.type_id
@@ -1482,6 +1513,12 @@ impl App for ProcessApp {
                 DrawCommand::Render(r) => self.pending_frame.push(r),
             }
         }
+
+        // A continuous app often completes its render transaction during this
+        // drain. Send the next due Render immediately instead of waiting for a
+        // separate host repaint; otherwise a 60Hz host loop can only drive
+        // one app frame every two host frames.
+        self.send_render_if_needed(size);
 
         // Render the current committed frame.
         //
@@ -2409,6 +2446,12 @@ mod tests;
 
 impl Drop for ProcessApp {
     fn drop(&mut self) {
+        self.render_diag.flush_if_nonempty(
+            &self.type_id,
+            self.scheduler_mode.next_frame_delay(),
+            std::time::Instant::now(),
+            "drop",
+        );
         self.runtime.mark_closing();
         // Cancel active StreamProcess children (#675) — same escalation as
         // CancelProcess: SIGTERM, then SIGKILL after 1s on a background thread.
