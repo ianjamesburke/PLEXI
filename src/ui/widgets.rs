@@ -1,4 +1,4 @@
-use egui::{Color32, CornerRadius, Pos2, RichText, Vec2};
+use egui::{Align2, Color32, CornerRadius, Pos2, RichText, Vec2};
 
 use crate::ui::style;
 use crate::ui::theme::Colors;
@@ -409,4 +409,85 @@ pub(crate) fn description_label(ui: &mut egui::Ui, text: &str, colors: &Colors) 
         )
         .truncate(),
     );
+}
+
+pub(crate) fn color_swatch(
+    ui: &mut egui::Ui,
+    label: &str,
+    fill: egui::Color32,
+    colors: &Colors,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(84.0, 30.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, style::RADIUS_MD, fill);
+    ui.painter().rect_stroke(
+        rect,
+        style::RADIUS_MD,
+        egui::Stroke::new(1.0, colors.border),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(style::TEXT_HINT),
+        colors.text_on(fill),
+    );
+    response
+}
+
+pub(crate) fn status_chip(ui: &mut egui::Ui, status: &str, colors: &Colors) -> egui::Response {
+    let color = match status.to_ascii_lowercase().as_str() {
+        "busy" | "running" => colors.accent,
+        "crashed" | "hung" | "error" | "exited" => colors.danger,
+        _ => colors.text_dim,
+    };
+    status_chip_with_color(ui, status, color, colors)
+}
+
+pub(crate) fn status_chip_with_color(
+    ui: &mut egui::Ui,
+    label: &str,
+    color: egui::Color32,
+    colors: &Colors,
+) -> egui::Response {
+    egui::Frame::new()
+        .fill(colors.bg_active)
+        .stroke(egui::Stroke::new(1.0, color))
+        .corner_radius(style::RADIUS_BADGE)
+        .inner_margin(egui::Margin::symmetric(8, 3))
+        .show(ui, |ui| {
+            ui.label(RichText::new(label).size(style::TEXT_HINT).color(color));
+        })
+        .response
+}
+
+pub(crate) fn empty_state_panel(
+    ui: &mut egui::Ui,
+    title: &str,
+    detail: Option<&str>,
+    colors: &Colors,
+) -> egui::Response {
+    egui::Frame::new()
+        .fill(colors.bg_toolbar)
+        .stroke(egui::Stroke::new(1.0, colors.border))
+        .corner_radius(style::RADIUS_MD)
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    RichText::new(title)
+                        .size(style::TEXT_BODY)
+                        .color(colors.text_primary),
+                );
+                if let Some(detail) = detail {
+                    ui.label(
+                        RichText::new(detail)
+                            .size(style::TEXT_HINT)
+                            .color(colors.text_dim),
+                    );
+                }
+            });
+        })
+        .response
 }

@@ -3,7 +3,10 @@ use crate::ui::{
     hints::{HintBar, HintGroup},
     list::ListRow,
     overlay::ModalShell,
-    widgets::{chrome_button, description_label, key_chip, selectable_row, ButtonKind, TextField},
+    widgets::{
+        chrome_button, color_swatch, description_label, empty_state_panel, key_chip,
+        selectable_row, status_chip, ButtonKind, TextField,
+    },
 };
 
 impl PlexiApp {
@@ -153,35 +156,19 @@ impl PlexiApp {
                                     &colors,
                                     egui::FontId::monospace(style::TEXT_HINT),
                                 );
-                                status_chip(ui, "running", colors.accent, &colors);
-                                status_chip(ui, "error", colors.danger, &colors);
-                                status_chip(ui, "empty", colors.text_dim, &colors);
+                                status_chip(ui, "running", &colors);
+                                status_chip(ui, "error", &colors);
+                                status_chip(ui, "empty", &colors);
                             });
                         });
 
                         gallery_section(ui, "Empty states", &colors, |ui| {
-                            egui::Frame::new()
-                                .fill(colors.bg_toolbar)
-                                .stroke(egui::Stroke::new(1.0, colors.border))
-                                .corner_radius(style::RADIUS_MD)
-                                .inner_margin(egui::Margin::symmetric(12, 10))
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.vertical_centered(|ui| {
-                                        ui.label(
-                                            RichText::new("No matching items")
-                                                .size(style::TEXT_BODY)
-                                                .color(colors.text_primary),
-                                        );
-                                        ui.label(
-                                            RichText::new(
-                                                "Empty chrome should stay compact and quiet.",
-                                            )
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                        );
-                                    });
-                                });
+                            empty_state_panel(
+                                ui,
+                                "No matching items",
+                                Some("Empty chrome should stay compact and quiet."),
+                                &colors,
+                            );
                         });
                     });
             });
@@ -247,29 +234,6 @@ fn token_strip(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
     });
 }
 
-fn color_swatch(
-    ui: &mut egui::Ui,
-    label: &str,
-    fill: egui::Color32,
-    colors: &crate::ui::theme::Colors,
-) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(84.0, 30.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, style::RADIUS_MD, fill);
-    ui.painter().rect_stroke(
-        rect,
-        style::RADIUS_MD,
-        egui::Stroke::new(1.0, colors.border),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        label,
-        egui::FontId::proportional(style::TEXT_HINT),
-        colors.text_on(fill),
-    );
-}
-
 fn hint_bar(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
     // The real modal-footer treatment: each label attached to its combo,
     // centered, divider above.
@@ -279,21 +243,4 @@ fn hint_bar(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
         HintGroup::new(&["esc"], "dismiss"),
     ];
     HintBar::new(&hints).show(ui, colors);
-}
-
-fn status_chip(
-    ui: &mut egui::Ui,
-    label: &str,
-    color: egui::Color32,
-    colors: &crate::ui::theme::Colors,
-) {
-    let text = RichText::new(label).size(style::TEXT_HINT).color(color);
-    egui::Frame::new()
-        .fill(colors.bg_active)
-        .stroke(egui::Stroke::new(1.0, color))
-        .corner_radius(style::RADIUS_BADGE)
-        .inner_margin(egui::Margin::symmetric(8, 3))
-        .show(ui, |ui| {
-            ui.label(text);
-        });
 }
