@@ -35,51 +35,40 @@ cargo test --bin plexi
 
 Record pass/fail counts and the module filters used. New `AppRequest`/`HostEffect` handlers must have a `HostHarness` test (`src/testing/mod.rs`) — written first, per repo discipline.
 
-## Step 3 — Host UI Evidence (screenshots are headless)
+## Step 3 — UI & App Evidence: Scenes
 
-`PlexiUiHarness` (`src/ui_tests.rs`) renders fully headless via wgpu Metal — no display, works in any terminal session. For a new or changed overlay/widget/pane type:
-
-1. **Write a committed test** in `src/ui_tests.rs` — open → step → assert → `save_screenshot()`. Tests are permanent regression coverage, never throwaway blocks that get reverted.
-2. Use `PlexiUiHarness::new_sized(1280.0, 800.0)` for screenshot tests so chrome is legible.
-3. Save evidence PNGs to `/tmp/plexi-render-<issue>-<name>.png`.
-
-Existing visual smoke tests to reuse:
+**TOML scene files are the one way to test observable behavior** — host UI, host apps, portals, and real PGAP app processes. The runner (`src/scenes.rs`) executes them on `PlexiUiHarness`: fully headless wgpu Metal rendering, real child processes through the production launch path.
 
 ```bash
-# Host app + portal (run in the default suite):
-cargo test --bin plexi shot_file_browser
-cargo test --bin plexi shot_subcontext_portal
+just scene tests/scenes/<name>.toml              # run one scene; PNGs + SceneReport JSON to /tmp/plexi-scenes
+just scene <file> /tmp/out 0                     # state-only: skip screenshot steps
+cargo test --bin plexi scene_suite               # all committed scenes (suite = true)
 ```
 
-Harness drivers available on `PlexiUiHarness`:
+For a new or changed overlay/widget/pane type/app: **add a committed scene file** under `tests/scenes/` — it is automatically a regression test. Scenes that spawn real app processes set `suite = false` and run via `just scene`.
 
-- `new_sized(w, h)` — explicit surface size for screenshots
-- `open_file_browser(cwd)` — built-in file browser host app
-- `push_focused_pane_to_subcontext(name)` — create a subcontext portal
-- `open_app_at(app_dir)` — spawn a **real PGAP app process** (manifest + Python child + IPC), returns the pane id
-- `wait_for_app_frame(pane_id, timeout)` — block until the app commits its first real frame; errors carry the app's stderr
-- `save_screenshot(path)` / `render()` — headless PNG
+```toml
+size = [1280.0, 800.0]
 
-## Step 4 — PGAP App Evidence (real process, no code change)
-
-Any app directory with a `manifest.toml` can be screenshotted headlessly without writing a test:
-
-```bash
-PLEXI_SHOT_APP=apps/<app> PLEXI_SHOT_OUT=/tmp/plexi-render-<issue>-<app>.png \
-  cargo test --bin plexi shot_app_from_env -- --ignored --nocapture
+[[steps]]
+open_app = "apps/balls"          # real Python process; args = [...] surface as ctx.args
+[[steps]]
+wait_app_frame = { timeout_s = 15.0 }
+[[steps]]
+assert = { pane_count = 1, lifecycle = "running", tree_contains = "balls" }
+[[steps]]
+shot = "balls.png"
 ```
 
-This spawns the actual Python process through the production launch path (`launch_app_by_path_with_layout`), waits for its first committed frame, and renders. The repo SDK at `sdk/python` is exported automatically via `PLEXI_SDK_PATH`.
+Verbs: `open_app` (+`args`), `open_file_browser`, `key`, `sidebar`, `switch_context`, `push_to_subcontext`, `wait_app_frame`, `run_steps`, `assert` (structured keys: `pane_count`, `window_count`, `context_count`, `portal_count`, `sidebar`, `lifecycle`, `tree_contains`), `shot`.
 
-Reference example: `cargo test --bin plexi shot_balls_app -- --ignored --nocapture`.
+The `SceneReport` JSON (`schema_version` field) contains per-step results, a host state snapshot, and the app's committed L1 render tree — assert on state, not pixels, whenever possible. If an app crashes before its first frame, the report carries its stderr — fix the app, don't screenshot a fallback state.
 
-If the app crashes before the first frame, the failure message contains its stderr — fix the app, don't screenshot a fallback state.
-
-## Step 5 — Inspect the Screenshots
+## Step 4 — Inspect the Screenshots
 
 Read every generated PNG with the Read tool and confirm it shows the intended state — not an empty pane, error tile, or default fallback. A screenshot nobody looked at is not evidence.
 
-## Step 6 — Write the Evidence Block
+## Step 5 — Write the Evidence Block
 
 Append to the Ship Log entry for this attempt (issue body), or the PR description when there is no linked issue:
 
@@ -96,6 +85,6 @@ Conclusion rules:
 
 ## Guards
 
-- `git status --short` must show no unintended test scaffolding before commit. Committed harness tests are the norm; if you wrote a one-off you don't want to keep, you should have used `shot_app_from_env` instead.
+- `git status --short` must show no unintended test scaffolding before commit. Committed scene files are the norm; a one-off you don't want to keep belongs outside the repo (`just scene /tmp/<file>.toml` works on absolute paths).
 - Never claim `install skippable` for a layer you didn't actually test.
 - Screenshot PNGs live in `/tmp` and die with the machine — the evidence block's one-line description is the durable record; keep it specific.

@@ -13,7 +13,7 @@ use super::super::*;
 use crate::app::permissions::AppPermissions;
 use crate::app_protocol::{AiMessage, AppRequest, ModelTier, PlexiEvent};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, AiBrokerResponse};
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 /// Test broker: records every dispatch and returns a canned response.
