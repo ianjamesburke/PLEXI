@@ -179,6 +179,28 @@ def _normalize_focus_events(events: list[dict]) -> tuple[list[dict], dict[str, f
     return normalized, stats
 
 
+def _timeline_fractions(
+    ts: datetime,
+    counted_secs: float,
+    raw_secs: float,
+    idle_state: str,
+    start_window: datetime,
+) -> tuple[float, float, float, float]:
+    raw_start = ts - timedelta(seconds=raw_secs)
+    raw_end = ts
+    if idle_state == "clamped":
+        counted_start = raw_start
+        counted_end = raw_start + timedelta(seconds=counted_secs)
+    else:
+        counted_start = ts - timedelta(seconds=counted_secs)
+        counted_end = ts
+
+    def frac(moment: datetime) -> float:
+        return max(0.0, min(1.0, (moment - start_window).total_seconds() / 86400.0))
+
+    return frac(raw_start), frac(raw_end), frac(counted_start), frac(counted_end)
+
+
 def _resolve_events_path() -> Path | None:
     sock = os.environ.get("PLEXI_SOCKET", "")
     if sock:
@@ -603,14 +625,14 @@ class StatsApp(App):
             raw_dur = _event_duration(ev, "_raw_duration_secs")
             cwd = _clean_text(ev.get("cwd")) or ""
             context_path, _ = _event_context_identity(ev)
-            end_frac = (ts - start_window).total_seconds() / 86400.0
-            start_frac = ((ts - timedelta(seconds=dur)) - start_window).total_seconds() / 86400.0
-            raw_start_frac = ((ts - timedelta(seconds=raw_dur)) - start_window).total_seconds() / 86400.0
-            raw_end_frac = end_frac
-            start_frac = max(0.0, min(1.0, start_frac))
-            end_frac = max(0.0, min(1.0, end_frac))
-            raw_start_frac = max(0.0, min(1.0, raw_start_frac))
-            raw_end_frac = max(0.0, min(1.0, raw_end_frac))
+            idle_state = str(ev.get("_idle_state") or "active")
+            raw_start_frac, raw_end_frac, start_frac, end_frac = _timeline_fractions(
+                ts,
+                dur,
+                raw_dur,
+                idle_state,
+                start_window,
+            )
             color_idx = context_colors.get(context_path, 0)
             self.timeline.append((
                 raw_start_frac,
@@ -620,7 +642,7 @@ class StatsApp(App):
                 context_path,
                 cwd,
                 color_idx,
-                str(ev.get("_idle_state") or "active"),
+                idle_state,
             ))
 
         self.emit.status_summary(f"{_fmt_duration(self.total_time)} active")

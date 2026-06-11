@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 sys.path.insert(
@@ -11,7 +11,7 @@ sys.path.insert(
 )
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from stats import _normalize_focus_events  # noqa: E402
+from stats import _normalize_focus_events, _timeline_fractions  # noqa: E402
 
 
 def _event(duration: int, reason: str, pane_id: int = 1) -> dict:
@@ -71,3 +71,20 @@ def test_idle_normalization_keeps_short_active_sessions():
     assert stats["counted_secs"] == 840
     assert stats["clamped_secs"] == 0
     assert stats["skipped_secs"] == 0
+
+
+def test_clamped_timeline_counted_slice_starts_at_raw_segment_start():
+    ts = datetime(2026, 6, 10, 12, 30, tzinfo=timezone.utc)
+    window_start = ts - timedelta(hours=12, minutes=30)
+
+    raw_start, raw_end, counted_start, counted_end = _timeline_fractions(
+        ts,
+        counted_secs=60,
+        raw_secs=1800,
+        idle_state="clamped",
+        start_window=window_start,
+    )
+
+    assert abs((raw_end - raw_start) - (1800 / 86400)) < 0.000001
+    assert counted_start == raw_start
+    assert abs((counted_end - counted_start) - (60 / 86400)) < 0.000001
