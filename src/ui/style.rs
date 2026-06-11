@@ -77,11 +77,11 @@ pub const LIST_ROW_GAP: f32 = 8.0;
 pub const SCRIM_ALPHA: u8 = 190;
 
 /// Inner padding of a modal frame (horizontal, vertical). Applied via
-/// `egui::Margin::symmetric`. Vertical is tighter than horizontal — modal
-/// content is text-dense and 28 read as dead air above titles and below
-/// hint rows.
-pub const MODAL_PADDING_H: i8 = 32;
-pub const MODAL_PADDING_V: i8 = 22;
+/// `egui::Margin::symmetric`. Calibrated against the rename-pane popover
+/// (16/12), the tightest modal in the product: ModalShell carries a title
+/// row so it gets slightly more, but anything past 20/16 read as dead air.
+pub const MODAL_PADDING_H: i8 = 20;
+pub const MODAL_PADDING_V: i8 = 16;
 
 // ── Pane ID overlay ────────────────────────────────────────────────────────
 /// Font size for the ⌘-hold pane ID ghost number (large, centered over pane content).

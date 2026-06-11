@@ -78,13 +78,13 @@ pub(crate) fn selectable_row<R>(
 //     key_combo_list(ui, &[["⌘", "["], ["⌘", "]"]], colors, "to cycle");
 
 /// Padding around the key label text inside the chip.
-const KEYCAP_PAD_H: f32 = 4.0;
-const KEYCAP_PAD_V: f32 = 1.5;
+const KEYCAP_PAD_H: f32 = 5.0;
+const KEYCAP_PAD_V: f32 = 2.0;
 
 /// Standard chip font for combos and hint rows. Compact — chips are
 /// annotations, not content.
 fn combo_chip_font() -> egui::FontId {
-    egui::FontId::monospace(style::TEXT_HINT)
+    egui::FontId::monospace(style::TEXT_CAPTION)
 }
 
 /// Render a single keycap chip. Allocates its own exact-size rect and
