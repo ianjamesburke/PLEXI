@@ -216,6 +216,10 @@ pub(crate) fn styled_text_input(
     id: egui::Id,
     colors: &Colors,
 ) -> egui::Response {
+    // Placeholder at half strength — the theme sets `override_text_color`,
+    // which makes egui's default hint color (weak_text_color) near-white.
+    let hint: egui::WidgetText = hint.into();
+    let hint = hint.color(colors.text_primary.gamma_multiply(0.5));
     ui.scope(|ui| {
         ui.visuals_mut().text_cursor.stroke.width = 1.5;
         ui.visuals_mut().text_cursor.stroke.color = colors.accent;

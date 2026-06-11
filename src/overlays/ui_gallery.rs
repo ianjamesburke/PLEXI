@@ -29,7 +29,10 @@ impl PlexiApp {
                     .max_height((ctx.screen_rect().height() - 180.0).max(280.0))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_width(style::MODAL_WIDTH_NOTIFY);
+                        // available_width, not MODAL_WIDTH_NOTIFY — the scroll
+                        // area reserves a scrollbar gutter; forcing the full
+                        // modal width would push content back under the bar.
+                        ui.set_width(ui.available_width());
                         gallery_section(ui, "Modal shell", &colors, |ui| {
                             token_strip(ui, &colors);
                             hint_bar(ui, &colors);

@@ -684,6 +684,9 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     style.spacing.window_margin = egui::Margin::same(tokens::SPACE_MD as i8);
     // Overlay scrollbars: invisible until the scroll area is hovered.
     style.spacing.scroll = egui::style::ScrollStyle::floating();
+    // Reserve a gutter for the floating bar so full-width content (text
+    // fields, selectable rows) never runs underneath it at the right edge.
+    style.spacing.scroll.floating_allocated_width = tokens::SPACE_MD;
     ctx.set_style(style);
 }
 

@@ -58,6 +58,20 @@ impl<'a> ListRow<'a> {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
 
+        let center_y = rect.center().y;
+
+        // Trailing rect is computable before any painting — needed early so
+        // the danger glow can be drawn behind the row content.
+        let trailing_rect = self.trailing.map(|label| {
+            let size = trailing_size(ui, label);
+            egui::Rect::from_center_size(
+                Pos2::new(rect.right() - TRAILING_PAD_H - size.x / 2.0, center_y),
+                size,
+            )
+        });
+        let trailing_hovered =
+            trailing_rect.is_some_and(|r| ui.rect_contains_pointer(r));
+
         // Selection language shared with the PGAP ListView renderer: inset
         // rounded accent-tinted highlight with an accent rail on the left.
         let inset = egui::Rect::from_min_max(
@@ -80,28 +94,42 @@ impl<'a> ListRow<'a> {
                 },
                 colors.accent,
             );
+        } else if self.danger_trailing && trailing_hovered {
+            // Hovering a destructive action warns at row level: soft danger
+            // tint + hairline danger outline before anything is clicked.
+            ui.painter().rect_filled(
+                inset,
+                style::RADIUS_SM,
+                colors.danger.gamma_multiply(0.07),
+            );
+            ui.painter().rect_stroke(
+                inset,
+                style::RADIUS_SM,
+                Stroke::new(1.0, colors.danger.gamma_multiply(0.35)),
+                StrokeKind::Inside,
+            );
         } else if response.hovered() {
             ui.painter().rect_filled(inset, style::RADIUS_SM, colors.bg_hover);
         }
 
         let mut x = rect.left() + style::LIST_ROW_PAD_H;
-        let center_y = rect.center().y;
 
         if let Some(label) = self.leading_chip {
             let chip = chip_rect(ui, label, colors, x, center_y);
             x = chip.right() + style::LIST_ROW_GAP;
         }
 
-        let trailing_response = self.trailing.map(|label| {
-            let size = trailing_size(ui, label);
-            let trailing_rect = egui::Rect::from_center_size(
-                Pos2::new(rect.right() - TRAILING_PAD_H - size.x / 2.0, center_y),
-                size,
-            );
+        let trailing_response = self.trailing.zip(trailing_rect).map(|(label, trailing_rect)| {
             let id = response.id.with("_trailing_action");
             let trailing_response = ui.interact(trailing_rect, id, egui::Sense::click());
-            let color = if self.danger_trailing && trailing_response.hovered() {
-                colors.danger
+            // Destructive actions read as destructive at rest — soft danger,
+            // escalating to full danger on hover.
+            let color = if self.danger_trailing {
+                if trailing_response.hovered() {
+                    colors.danger
+                } else {
+                    colors.danger.gamma_multiply(0.75)
+                }
             } else {
                 colors.text_dim
             };
@@ -166,12 +194,12 @@ fn draw_text_block(
     center_y: f32,
     max_width: f32,
 ) {
-    let primary_color = if row.selected {
-        colors.text_primary
-    } else {
-        colors.text_dim
-    };
-    let primary_font = egui::FontId::proportional(style::TEXT_HINT);
+    // Primary is always full-strength — selection is conveyed by the accent
+    // rail and tint, not by dimming unselected titles into the metadata.
+    let primary_color = colors.text_primary;
+    // Primary reads one step above secondary metadata — both size and weight,
+    // otherwise the two lines collapse into one undifferentiated block.
+    let primary_font = crate::ui::theme::font_medium(style::TEXT_CAPTION);
     let primary = elided_galley(ui, row.body, primary_font, primary_color, max_width);
 
     if let Some(secondary) = row.secondary {

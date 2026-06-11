@@ -195,13 +195,17 @@ impl RenderSession {
                     egui::Stroke::new(1.0, colors.accent);
                 child.visuals_mut().widgets.inactive.bg_stroke =
                     egui::Stroke::new(1.0, colors.border);
+                // Placeholder at half strength — the theme's override_text_color
+                // makes egui's default hint color near-white otherwise.
+                let hint = egui::RichText::new(placeholder.as_str())
+                    .color(colors.text_primary.gamma_multiply(0.5));
                 // TextEdit defaults to the Monospace text style — app input
                 // fields must read as UI chrome (Inter), not terminal text.
                 let output = if *multiline {
                     let edit = egui::TextEdit::multiline(buffer)
                         .id(widget_id)
                         .desired_width(actual_size.x)
-                        .hint_text(placeholder.as_str())
+                        .hint_text(hint)
                         .font(egui::TextStyle::Body)
                         .frame(true);
                     egui::ScrollArea::vertical()
@@ -212,7 +216,7 @@ impl RenderSession {
                     let edit = egui::TextEdit::singleline(buffer)
                         .id(widget_id)
                         .desired_width(actual_size.x)
-                        .hint_text(placeholder.as_str())
+                        .hint_text(hint)
                         .font(egui::TextStyle::Body)
                         .frame(true);
                     edit.show(&mut child)
