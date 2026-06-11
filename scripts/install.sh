@@ -194,7 +194,6 @@ elif [ ! -f "$CONFIG" ]; then
 fi
 
 # Ensure required top-level config sections are present (additive-only migration).
-# [ai] is intentionally omitted — it's commented out in the template (coming soon).
 "$SCRIPT_DIR/migrate-config.sh" "$CONFIG" "[notifications]" "[theme]" "[beta]"
 
 # Install agent skills for terminal AI assistants.

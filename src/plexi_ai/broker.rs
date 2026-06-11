@@ -790,9 +790,9 @@ mod tests {
             backend: Some("openrouter".to_string()),
             openrouter: Some(OpenRouterBackendConfig {
                 api_key_env: None,
-                model_low: Some("google/gemini-2.0-flash-001".to_string()),
-                model_medium: Some("anthropic/claude-sonnet-4-6".to_string()),
-                model_high: Some("anthropic/claude-opus-4-7".to_string()),
+                model_low: Some("qwen/qwen3.6-flash".to_string()),
+                model_medium: Some("xiaomi/mimo-v2.5-pro".to_string()),
+                model_high: Some("anthropic/claude-fable-5".to_string()),
             }),
             ollama: None,
             ..Default::default()
@@ -805,15 +805,15 @@ mod tests {
         let or_config = config.openrouter.as_ref().unwrap();
         assert_eq!(
             or_config.model_low.as_deref(),
-            Some("google/gemini-2.0-flash-001")
+            Some("qwen/qwen3.6-flash")
         );
         assert_eq!(
             or_config.model_medium.as_deref(),
-            Some("anthropic/claude-sonnet-4-6")
+            Some("xiaomi/mimo-v2.5-pro")
         );
         assert_eq!(
             or_config.model_high.as_deref(),
-            Some("anthropic/claude-opus-4-7")
+            Some("anthropic/claude-fable-5")
         );
     }
 
