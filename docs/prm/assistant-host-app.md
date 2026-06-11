@@ -59,6 +59,21 @@ It should be implemented as a host module with pure state and effects:
 
 The model must be testable without egui. Rendering gets smoke coverage through `PlexiUiHarness`.
 
+## Existing Infrastructure To Reuse
+
+The host Assistant should build on the infrastructure from the `feature/assistant-chat-refactor` work instead of recreating it.
+
+Reuse these primitives:
+
+- Live AI streaming from `AiBroker::dispatch(..., on_delta)` so Assistant text appears while the turn is running, not after the final response.
+- Reasoning/thinking deltas parsed from OpenRouter and carried separately from answer text.
+- `AiStreamChunk` events with optional reasoning payloads as the model for host-to-UI streaming state, even if the host Assistant eventually consumes the broker directly rather than through PGAP.
+- The SDK/UI learnings from the refactored chat composer: multiline input, Enter submit, Shift+Enter newline, live thinking display, bottom-aligned scroll, pinned-to-bottom behavior only during streaming, and persisted collapsed thinking markers.
+- Text input live-edit and control-key events (`TextChanged`, `TextInputKey`) for slash command filtering, completion menus, history navigation, and double-`Escape` history.
+- Headless scene coverage for idle and streaming Assistant states as the pattern for host Assistant UI regression tests.
+
+Do not keep the privileged workspace operator as a PGAP app. The refactor's useful output is the streaming, composer, thinking, and scene-test infrastructure. The pane/app/terminal control path still moves into host-native tools and the unified permission broker.
+
 ## Core Concepts
 
 **Agent**: A named Assistant persona with a system prompt, when-to-use description, model tier policy, optional exact model pointers, enabled tools, enabled skills, app connectors, permission posture, hooks, max-turn limits, and background/isolation behavior. Examples: Default, Builder, Spreadsheet Analyst, Writing Partner.
