@@ -1,15 +1,22 @@
 ---
 id: "0068"
 title: "v1 cleanup: dispatch close notification suppression"
-status: backlog
+status: in-progress
+estimate: "2h"
+started_at: "2026-06-11T08:54:17Z"
 sprint: "s11"
-estimate: 2h
-blocked_by:
-  - 147
-gh_issue: ["1692"]
-area: ["host/notifications", "infra/skills"]
-tags: ["v1", "cleanup", "dispatch"]
+blocked_by: []
+gh_issue:
+  - "1692"
+area:
+  - "host/notifications"
+  - "infra/skills"
+tags:
+  - "v1"
+  - "cleanup"
+  - "dispatch"
 ---
+
 
 Suppress redundant pane-close notifications after successful dispatch merges while preserving useful failure or unexpected-close notifications.
 
