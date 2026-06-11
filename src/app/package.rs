@@ -210,6 +210,51 @@ pub struct PackageReport {
     pub total_size: u64,
 }
 
+// ── Trust label ───────────────────────────────────────────────────────────────
+
+/// Blunt trust classification shown before any install proceeds (stint 0016).
+///
+/// v1 security stance: there is NO sandbox. Anything not bundled with Plexi
+/// runs with the user's full permissions, and the label says so verbatim.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustLabel {
+    /// The app id is in the bundled core pack — ships with Plexi itself.
+    FirstPartyCore,
+    /// A native executable from outside the core pack.
+    NativeUnreviewed,
+    /// A Python app from outside the core pack.
+    PythonUnreviewed,
+}
+
+impl TrustLabel {
+    /// Honest display string. Never claims sandboxing — none exists in v1.
+    pub fn display_str(self) -> &'static str {
+        match self {
+            Self::FirstPartyCore => "First-party core — ships with Plexi",
+            Self::PythonUnreviewed => {
+                "Unreviewed Python process — runs with your full user permissions"
+            }
+            Self::NativeUnreviewed => {
+                "Unreviewed native process — runs with your full user permissions"
+            }
+        }
+    }
+}
+
+/// Classify a validated package/dir for the trust sheet. `core_ids` is the
+/// bundled first-party core pack id set
+/// (see `crate::cli::install_host::core_pack_ids`).
+pub fn trust_label(report: &PackageReport, core_ids: &[&str]) -> TrustLabel {
+    if core_ids.contains(&report.id.as_str()) {
+        TrustLabel::FirstPartyCore
+    } else {
+        match report.runtime {
+            PackageRuntime::Python => TrustLabel::PythonUnreviewed,
+            PackageRuntime::Native => TrustLabel::NativeUnreviewed,
+        }
+    }
+}
+
 // ── Directory validation ──────────────────────────────────────────────────────
 
 /// Validate an app directory as packageable. Fail-closed: any structural
@@ -961,6 +1006,55 @@ mod tests {
         assert!(
             matches!(err, PackageError::WrongExtension(_)),
             "expected WrongExtension, got: {err}"
+        );
+    }
+
+    fn report(id: &str, runtime: PackageRuntime) -> PackageReport {
+        PackageReport {
+            id: id.to_string(),
+            name: "Test App".to_string(),
+            version: "0.1.0".to_string(),
+            runtime,
+            entry: match runtime {
+                PackageRuntime::Python => "main.py".to_string(),
+                PackageRuntime::Native => "bin/app".to_string(),
+            },
+            capabilities: Vec::new(),
+            file_count: 2,
+            total_size: 100,
+        }
+    }
+
+    #[test]
+    fn trust_label_core_id_is_first_party() {
+        let r = report("welcome", PackageRuntime::Python);
+        assert_eq!(
+            trust_label(&r, &["welcome", "snake"]),
+            TrustLabel::FirstPartyCore
+        );
+        assert_eq!(
+            TrustLabel::FirstPartyCore.display_str(),
+            "First-party core — ships with Plexi"
+        );
+    }
+
+    #[test]
+    fn trust_label_python_entry_is_python_unreviewed() {
+        let r = report("third-party", PackageRuntime::Python);
+        assert_eq!(trust_label(&r, &["welcome"]), TrustLabel::PythonUnreviewed);
+        assert_eq!(
+            TrustLabel::PythonUnreviewed.display_str(),
+            "Unreviewed Python process — runs with your full user permissions"
+        );
+    }
+
+    #[test]
+    fn trust_label_native_entry_is_native_unreviewed() {
+        let r = report("third-party-bin", PackageRuntime::Native);
+        assert_eq!(trust_label(&r, &[]), TrustLabel::NativeUnreviewed);
+        assert_eq!(
+            TrustLabel::NativeUnreviewed.display_str(),
+            "Unreviewed native process — runs with your full user permissions"
         );
     }
 

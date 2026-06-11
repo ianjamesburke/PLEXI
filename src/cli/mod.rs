@@ -177,8 +177,9 @@ pub use agent::{
 };
 pub use ai::{ai_doctor_cli, ai_setup_cli};
 pub use app::{
-    app_action_cli, app_info, app_init, app_install_package, app_install_with_pin, app_list,
-    app_package_cli, app_publish, app_render, app_uninstall, app_update_cli,
+    app_action_cli, app_info, app_init, app_inspect_cli, app_install_package,
+    app_install_with_pin, app_list, app_package_cli, app_publish, app_render, app_uninstall,
+    app_update_cli, InstallConfirm,
 };
 pub use app_check::app_check_cli;
 pub use completions::{complete_open_cli, completions_cli};

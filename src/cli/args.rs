@@ -360,6 +360,11 @@ pub enum AppCmd {
         /// The pinned version is recorded and shown by `plexi app update`.
         #[arg(long, value_name = "SEMVER")]
         version: Option<String>,
+        /// Skip the trust-sheet confirmation prompt. Required for
+        /// non-interactive (scripted) installs — without a terminal the
+        /// install fails closed instead of proceeding silently.
+        #[arg(long = "yes", short = 'y')]
+        yes: bool,
     },
     /// Remove an installed app by id.
     ///
@@ -489,6 +494,16 @@ pub enum AppCmd {
     Validate {
         /// App directory or .plexipkg file to check (default: current directory)
         #[arg(default_value = ".", value_hint = ValueHint::AnyPath)]
+        path: String,
+    },
+    /// Show the trust sheet for a local app directory or .plexipkg package.
+    ///
+    /// Validates first (fail-closed), then prints what the app is, what
+    /// runtime it uses with a blunt trust label, and every capability it
+    /// declares — the same sheet shown before `plexi app install` proceeds.
+    Inspect {
+        /// App directory or .plexipkg file to inspect
+        #[arg(value_hint = ValueHint::AnyPath)]
         path: String,
     },
     /// Build a distributable .plexipkg package from an app directory.

@@ -383,11 +383,183 @@ pub(super) fn write_pinned_version(app_dir: &std::path::Path, version: &str) {
     }
 }
 
-/// `plexi app install <path> [--version X.Y.Z]`
+/// Who approved this install. Threaded explicitly through every install call
+/// chain — no default, every caller chooses (stint 0016).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallConfirm {
+    /// A user typed the command — show the trust sheet and prompt.
+    Interactive,
+    /// An internal caller (bundled pack seeding, an outer install path that
+    /// already prompted) — never prompt.
+    PreApproved,
+}
+
+/// Format a byte count for the trust sheet (B / KB / MB / GB, one decimal).
+fn human_size(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    let b = bytes as f64;
+    if b < KB {
+        format!("{bytes} B")
+    } else if b < KB * KB {
+        format!("{:.1} KB", b / KB)
+    } else if b < KB * KB * KB {
+        format!("{:.1} MB", b / (KB * KB))
+    } else {
+        format!("{:.1} GB", b / (KB * KB * KB))
+    }
+}
+
+/// Print the trust sheet for a validated app dir or package: identity,
+/// runtime + trust label, size, and every declared capability with its
+/// description (sensitive ones marked). Plain text — no color, so NO_COLOR
+/// holds trivially.
+pub fn print_trust_sheet(
+    report: &crate::app::package::PackageReport,
+    label: crate::app::package::TrustLabel,
+) {
+    println!("id:           {}", report.id);
+    println!("name:         {}", report.name);
+    println!("version:      {}", report.version);
+    println!("entry:        {}", report.entry);
+    println!(
+        "runtime:      {} — {}",
+        report.runtime.as_str(),
+        label.display_str()
+    );
+    println!(
+        "files:        {} ({})",
+        report.file_count,
+        human_size(report.total_size)
+    );
+    if report.capabilities.is_empty() {
+        println!("capabilities: (none)");
+    } else {
+        println!("capabilities:");
+        for cap in &report.capabilities {
+            let sensitive = if cap.is_sensitive() { " [sensitive]" } else { "" };
+            println!("  {:<18}{}{sensitive}", cap.as_str(), cap.description());
+        }
+    }
+}
+
+/// Resolve the trust label for a report against the bundled core pack ids.
+fn trust_label_for(
+    report: &crate::app::package::PackageReport,
+) -> crate::app::package::TrustLabel {
+    let core_ids = crate::cli::install_host::core_pack_ids();
+    let core_refs: Vec<&str> = core_ids.iter().map(String::as_str).collect();
+    crate::app::package::trust_label(report, &core_refs)
+}
+
+/// The install confirmation gate. Returns `Ok(true)` to proceed,
+/// `Ok(false)` when the user declined, `Err` when confirmation is impossible
+/// (non-interactive stdin without `--yes`) or unreadable.
+///
+/// Pure decision logic over an injected reader so tests can feed answers.
+pub fn confirm_install(
+    report: &crate::app::package::PackageReport,
+    label: crate::app::package::TrustLabel,
+    mode: InstallConfirm,
+    assume_yes: bool,
+    is_tty: bool,
+    reader: &mut impl io::BufRead,
+) -> Result<bool, String> {
+    match mode {
+        InstallConfirm::PreApproved => Ok(true),
+        InstallConfirm::Interactive => {
+            if assume_yes {
+                log::info!(
+                    "confirm_install: --yes given, skipping prompt for '{}' ({:?})",
+                    report.id,
+                    label
+                );
+                return Ok(true);
+            }
+            if !is_tty {
+                return Err(format!(
+                    "stdin is not a terminal — cannot confirm install of '{}'. \
+                     Re-run with --yes to approve non-interactively.",
+                    report.id
+                ));
+            }
+            eprint!("Install? [y/N] ");
+            let _ = io::stderr().flush();
+            let mut answer = String::new();
+            reader
+                .read_line(&mut answer)
+                .map_err(|e| format!("failed to read install confirmation: {e}"))?;
+            Ok(matches!(answer.trim().to_lowercase().as_str(), "y" | "yes"))
+        }
+    }
+}
+
+/// Run the full trust gate for an interactive install: print the trust sheet,
+/// then prompt. Returns an exit code on refusal/abort, `None` to proceed.
+fn run_install_gate(
+    report: &crate::app::package::PackageReport,
+    assume_yes: bool,
+) -> Option<i32> {
+    use std::io::IsTerminal;
+    let label = trust_label_for(report);
+    print_trust_sheet(report, label);
+    let is_tty = io::stdin().is_terminal();
+    let mut stdin = io::stdin().lock();
+    match confirm_install(
+        report,
+        label,
+        InstallConfirm::Interactive,
+        assume_yes,
+        is_tty,
+        &mut stdin,
+    ) {
+        Ok(true) => None,
+        Ok(false) => {
+            eprintln!("install aborted — '{}' was not installed", report.id);
+            Some(1)
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            Some(1)
+        }
+    }
+}
+
+/// `plexi app inspect <path>` — validate a local app dir or `.plexipkg` file
+/// and print the trust sheet without installing anything (stint 0016).
+pub fn app_inspect_cli(path: &str) -> i32 {
+    log::info!("app_inspect:cli: path={path}");
+    let target = std::path::Path::new(path);
+    let report = if target.is_file() {
+        crate::app::package::validate_package(target)
+    } else {
+        crate::app::package::validate_dir(target)
+    };
+    match report {
+        Ok(report) => {
+            print_trust_sheet(&report, trust_label_for(&report));
+            0
+        }
+        Err(e) => {
+            eprintln!("error: validation failed for {path}: {e}");
+            1
+        }
+    }
+}
+
+/// `plexi app install <path> [--version X.Y.Z] [--yes]`
 ///
 /// When `pin` is `None` (the common case) this is a plain install.
 /// When `pin` is `Some(ver)` the version is stored in `pinned_version.txt`.
-pub fn app_install_with_pin(path: &str, pin: Option<&str>) -> i32 {
+///
+/// `confirm` decides whether the trust sheet + prompt gate runs:
+/// `Interactive` for user-typed installs, `PreApproved` for internal callers
+/// that already gated (or are first-party bundled content).
+pub fn app_install_with_pin(
+    path: &str,
+    pin: Option<&str>,
+    confirm: InstallConfirm,
+    assume_yes: bool,
+) -> i32 {
     let src = match std::path::Path::new(path).canonicalize() {
         Ok(p) => p,
         Err(e) => {
@@ -395,6 +567,35 @@ pub fn app_install_with_pin(path: &str, pin: Option<&str>) -> i32 {
             return 1;
         }
     };
+
+    // The 0015 validator is the install gate (stint 0016). User-initiated
+    // installs must pass it; PreApproved installs (bundled first-party
+    // content, or an outer path that already validated and prompted) proceed
+    // with a warning so startup seeding can never break on legacy layouts.
+    match crate::app::package::validate_dir(&src) {
+        Ok(report) => {
+            if confirm == InstallConfirm::Interactive {
+                if let Some(code) = run_install_gate(&report, assume_yes) {
+                    return code;
+                }
+            }
+        }
+        Err(e) => match confirm {
+            InstallConfirm::Interactive => {
+                eprintln!(
+                    "error: validation failed — refusing install of {}: {e}",
+                    src.display()
+                );
+                return 1;
+            }
+            InstallConfirm::PreApproved => {
+                log::warn!(
+                    "app::install: pre-approved install of {} proceeding despite validation failure: {e}",
+                    src.display()
+                );
+            }
+        },
+    }
 
     let manifest_path = src.join("manifest.toml");
     if !manifest_path.exists() {
@@ -529,8 +730,16 @@ pub fn app_package_cli(path: &str, out: Option<&str>) -> i32 {
 
 /// `plexi app install <file.plexipkg>` — validate the package (fail-closed),
 /// then extract to a temp dir and run the standard dir install on it.
-pub fn app_install_package(file: &str, pin: Option<&str>) -> i32 {
-    log::info!("app_install:cli: package file={file} pin={pin:?}");
+///
+/// The trust gate runs here (against the validated package report); the inner
+/// dir install is then `PreApproved` so the user is prompted exactly once.
+pub fn app_install_package(
+    file: &str,
+    pin: Option<&str>,
+    confirm: InstallConfirm,
+    assume_yes: bool,
+) -> i32 {
+    log::info!("app_install:cli: package file={file} pin={pin:?} confirm={confirm:?}");
     let pkg_path = match std::path::Path::new(file).canonicalize() {
         Ok(p) => p,
         Err(e) => {
@@ -547,6 +756,12 @@ pub fn app_install_package(file: &str, pin: Option<&str>) -> i32 {
         }
     };
 
+    if confirm == InstallConfirm::Interactive {
+        if let Some(code) = run_install_gate(&report, assume_yes) {
+            return code;
+        }
+    }
+
     // Extract into a unique temp dir and reuse the existing dir-install path.
     let staging = std::env::temp_dir().join(format!("plexipkg-install-{}", uuid::Uuid::new_v4()));
     if let Err(e) = crate::app::package::extract_package(&pkg_path, &staging) {
@@ -561,7 +776,14 @@ pub fn app_install_package(file: &str, pin: Option<&str>) -> i32 {
         report.file_count,
         staging.display()
     );
-    let code = app_install_with_pin(&staging.to_string_lossy(), pin);
+    // Already validated and (when interactive) confirmed above — the inner
+    // dir install must not prompt a second time.
+    let code = app_install_with_pin(
+        &staging.to_string_lossy(),
+        pin,
+        InstallConfirm::PreApproved,
+        assume_yes,
+    );
     if let Err(e) = std::fs::remove_dir_all(&staging) {
         log::warn!(
             "app_install:cli: could not clean up staging dir {}: {e}",
@@ -1137,7 +1359,9 @@ mod app_install_workspace_tests {
         let path = src.path().to_string_lossy().to_string();
 
         // No workspace present in src or any ancestor (temp dir) — must return 0.
-        let code = super::app_install_with_pin(&path, None);
+        // Interactive + --yes: gate prints the trust sheet but never prompts.
+        let code =
+            super::app_install_with_pin(&path, None, super::InstallConfirm::Interactive, true);
 
         // Clean up installed app to avoid polluting the apps dir between runs.
         let dest = crate::app::registry::apps_dir().join(app_id);
@@ -1153,9 +1377,147 @@ mod app_install_workspace_tests {
     fn install_fails_on_missing_manifest_not_workspace_error() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().to_string_lossy().to_string();
-        let code = super::app_install_with_pin(&path, None);
+        let code =
+            super::app_install_with_pin(&path, None, super::InstallConfirm::Interactive, true);
         // Must fail with exit code 1 (manifest missing), not a workspace error.
         assert_eq!(code, 1, "missing manifest must return 1");
+    }
+}
+
+#[cfg(test)]
+mod install_confirm_tests {
+    use super::{confirm_install, human_size, InstallConfirm};
+    use crate::app::package::{PackageReport, PackageRuntime, TrustLabel};
+    use std::io::Cursor;
+
+    fn report() -> PackageReport {
+        PackageReport {
+            id: "gate-test".to_string(),
+            name: "Gate Test".to_string(),
+            version: "0.1.0".to_string(),
+            runtime: PackageRuntime::Python,
+            entry: "main.py".to_string(),
+            capabilities: Vec::new(),
+            file_count: 2,
+            total_size: 64,
+        }
+    }
+
+    #[test]
+    fn non_tty_without_yes_fails_closed() {
+        let r = report();
+        let err = confirm_install(
+            &r,
+            TrustLabel::PythonUnreviewed,
+            InstallConfirm::Interactive,
+            false, // no --yes
+            false, // stdin not a tty
+            &mut Cursor::new(b"y\n"),
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("--yes"),
+            "fail-closed error must tell the user to pass --yes, got: {err}"
+        );
+    }
+
+    #[test]
+    fn assume_yes_skips_prompt() {
+        let r = report();
+        // Reader is empty: --yes must never read stdin, even non-tty.
+        let ok = confirm_install(
+            &r,
+            TrustLabel::PythonUnreviewed,
+            InstallConfirm::Interactive,
+            true,
+            false,
+            &mut Cursor::new(b""),
+        )
+        .unwrap();
+        assert!(ok, "--yes must approve without reading stdin");
+    }
+
+    #[test]
+    fn pre_approved_never_prompts() {
+        let r = report();
+        let ok = confirm_install(
+            &r,
+            TrustLabel::FirstPartyCore,
+            InstallConfirm::PreApproved,
+            false,
+            false,
+            &mut Cursor::new(b""),
+        )
+        .unwrap();
+        assert!(ok, "PreApproved must approve unconditionally");
+    }
+
+    #[test]
+    fn interactive_y_approves_and_n_refuses() {
+        let r = report();
+        for (input, expected) in [
+            (&b"y\n"[..], true),
+            (b"Y\n", true),
+            (b"yes\n", true),
+            (b"n\n", false),
+            (b"no\n", false),
+            (b"\n", false),
+            (b"", false), // EOF = refuse
+        ] {
+            let got = confirm_install(
+                &r,
+                TrustLabel::PythonUnreviewed,
+                InstallConfirm::Interactive,
+                false,
+                true,
+                &mut Cursor::new(input),
+            )
+            .unwrap();
+            assert_eq!(got, expected, "input {input:?}");
+        }
+    }
+
+    #[test]
+    fn human_size_formats() {
+        assert_eq!(human_size(512), "512 B");
+        assert_eq!(human_size(2048), "2.0 KB");
+        assert_eq!(human_size(3 * 1024 * 1024), "3.0 MB");
+    }
+}
+
+#[cfg(test)]
+mod app_inspect_tests {
+    use tempfile::TempDir;
+
+    #[test]
+    fn inspect_valid_dir_returns_0() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("manifest.toml"),
+            "schema_version = 1\n\n\
+             [app]\n\
+             id = \"inspect-test\"\n\
+             type = \"app\"\n\
+             name = \"Inspect Test\"\n\
+             entry = \"main.py\"\n\
+             version = \"0.1.0\"\n\
+             description = \"Test\"\n\n\
+             [app.capabilities]\n\
+             capabilities = [\"ai.query\"]\n\n\
+             [launch]\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("main.py"), "# stub\n").unwrap();
+        let code = super::app_inspect_cli(&dir.path().to_string_lossy());
+        assert_eq!(code, 0, "valid app dir must inspect cleanly");
+    }
+
+    #[test]
+    fn inspect_invalid_dir_returns_1() {
+        let dir = TempDir::new().unwrap();
+        // No manifest — must fail validation, exit non-zero.
+        let code = super::app_inspect_cli(&dir.path().to_string_lossy());
+        assert_eq!(code, 1, "dir without manifest must fail inspect");
     }
 }
 
