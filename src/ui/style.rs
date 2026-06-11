@@ -41,6 +41,7 @@ pub const TEXT_TITLE_XL: f32 = 28.0; // Primary modal title — the thing the
                                      // user reads first.
 
 // ── Corner radii ───────────────────────────────────────────────────────────
+pub const RADIUS_SM: CornerRadius = CornerRadius::same(6); // Inline widgets: buttons, inputs, combos.
 pub const RADIUS_MD: CornerRadius = CornerRadius::same(8);
 pub const RADIUS_LG: CornerRadius = CornerRadius::same(12);
 // Badge-specific radius. At TEXT_HINT size the pill height is ~17 px;

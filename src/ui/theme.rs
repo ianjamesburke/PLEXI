@@ -579,7 +579,12 @@ pub fn apply_preset(preset: &ThemeConfig, user: &ThemeConfig) -> ThemeConfig {
     }
 }
 
+/// Map the full egui `Visuals` + `Spacing` from the Plexi theme. Every raw
+/// egui widget the host still renders (buttons, combos, menus, scroll areas,
+/// text edits) inherits the Plexi look from here instead of stock egui — this
+/// is the single place where the default-egui appearance is retired.
 pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
+    use crate::ui::style as tokens;
     log::info!("theme: setup_style dark_mode={dark_mode}");
     let mut style = (*ctx.style()).clone();
     style.visuals = if dark_mode {
@@ -587,14 +592,86 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     } else {
         egui::Visuals::light()
     };
-    style.visuals.panel_fill = colors.bg_darkest;
-    style.visuals.window_fill = colors.bg_sidebar;
-    style.visuals.override_text_color = Some(colors.text_primary);
-    style.visuals.widgets.noninteractive.bg_fill = colors.bg_sidebar;
-    style.visuals.widgets.inactive.bg_fill = colors.bg_sidebar;
-    style.visuals.widgets.hovered.bg_fill = colors.bg_hover;
-    style.visuals.widgets.active.bg_fill = colors.bg_active;
-    style.spacing.item_spacing = egui::vec2(8.0, 4.0);
+    let hairline = egui::Stroke::new(1.0, colors.border);
+    let v = &mut style.visuals;
+
+    // Surfaces — layered from the workspace floor up through raised chrome.
+    v.panel_fill = colors.bg_darkest;
+    v.window_fill = colors.bg_sidebar;
+    v.extreme_bg_color = colors.bg_darkest; // TextEdit / ScrollArea backgrounds.
+    v.faint_bg_color = colors.bg_sidebar; // Striped rows.
+    v.code_bg_color = colors.bg_darkest;
+    v.override_text_color = Some(colors.text_primary);
+
+    // Window / menu / popup chrome: token radii, hairline border, soft
+    // long-throw shadows instead of egui's tight dark halo.
+    v.window_corner_radius = tokens::RADIUS_LG;
+    v.window_stroke = hairline;
+    v.menu_corner_radius = tokens::RADIUS_MD;
+    let shadow = |offset: [i8; 2], blur: u8| egui::Shadow {
+        offset,
+        blur,
+        spread: 0,
+        color: Color32::from_black_alpha(if dark_mode { 96 } else { 40 }),
+    };
+    v.window_shadow = shadow([0, 12], 32);
+    v.popup_shadow = shadow([0, 6], 16);
+
+    // Accent-driven feedback. Default egui ships its own blue selection and
+    // green cursor that ignore the theme entirely.
+    v.hyperlink_color = colors.accent;
+    v.selection.bg_fill = colors.accent.gamma_multiply(0.35);
+    v.selection.stroke = egui::Stroke::new(1.0, colors.accent);
+    v.text_cursor.stroke = egui::Stroke::new(2.0, colors.accent);
+    v.warn_fg_color = colors.warning;
+    v.error_fg_color = colors.danger;
+    v.slider_trailing_fill = true;
+
+    // Widget states. `bg_fill` paints checkbox/radio/slider bodies,
+    // `weak_bg_fill` paints button faces — keep them in lockstep so every
+    // interactive surface steps through the same theme layers.
+    let text = |width: f32| egui::Stroke::new(width, colors.text_primary);
+    let w = &mut v.widgets;
+    w.noninteractive.bg_fill = colors.bg_sidebar;
+    w.noninteractive.weak_bg_fill = colors.bg_sidebar;
+    w.noninteractive.bg_stroke = hairline; // Separators.
+    w.noninteractive.fg_stroke = egui::Stroke::new(1.0, colors.text_dim);
+    w.inactive.bg_fill = colors.bg_hover;
+    w.inactive.weak_bg_fill = colors.bg_hover;
+    w.inactive.bg_stroke = hairline;
+    w.inactive.fg_stroke = text(1.0);
+    w.hovered.bg_fill = colors.bg_sidebar_hover;
+    w.hovered.weak_bg_fill = colors.bg_sidebar_hover;
+    w.hovered.bg_stroke = egui::Stroke::new(1.0, colors.text_section);
+    w.hovered.fg_stroke = text(1.5);
+    w.active.bg_fill = colors.bg_active;
+    w.active.weak_bg_fill = colors.bg_active;
+    w.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
+    w.active.fg_stroke = text(2.0);
+    w.open.bg_fill = colors.bg_active;
+    w.open.weak_bg_fill = colors.bg_active;
+    w.open.bg_stroke = hairline;
+    w.open.fg_stroke = text(1.0);
+    for state in [
+        &mut w.noninteractive,
+        &mut w.inactive,
+        &mut w.hovered,
+        &mut w.active,
+        &mut w.open,
+    ] {
+        state.corner_radius = tokens::RADIUS_SM;
+        // Default egui grows widgets on hover/press; modern chrome stays put.
+        state.expansion = 0.0;
+    }
+
+    style.spacing.item_spacing = egui::vec2(tokens::SPACE_SM, tokens::SPACE_XS);
+    // Default egui button padding is (4, 1) — the single biggest "default
+    // egui" tell. Real apps give labels room to breathe.
+    style.spacing.button_padding = egui::vec2(tokens::SPACE_MD, 6.0);
+    style.spacing.menu_margin = egui::Margin::same(tokens::SPACE_SM as i8);
+    style.spacing.window_margin = egui::Margin::same(tokens::SPACE_MD as i8);
+    // Overlay scrollbars: invisible until the scroll area is hovered.
+    style.spacing.scroll = egui::style::ScrollStyle::floating();
     ctx.set_style(style);
 }
 
