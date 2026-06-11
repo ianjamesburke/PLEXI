@@ -212,6 +212,14 @@ impl ImageCache {
         completed
     }
 
+    pub(crate) fn has_pending(&self) -> bool {
+        !self.immediate_completions.is_empty()
+            || self
+                .cache
+                .values()
+                .any(|entry| matches!(entry, CachedImage::Loading))
+    }
+
     /// Returns the texture handle if the image is loaded; None otherwise.
     pub(crate) fn get(&self, src: &str) -> Option<&egui::TextureHandle> {
         match self.cache.get(src) {

@@ -153,6 +153,7 @@ pub struct ProcessApp {
     render_needed: bool,
     render_in_flight_frame_id: Option<u64>,
     render_not_before: Option<std::time::Instant>,
+    pending_async_completions: usize,
     idle_render_poll_logged: bool,
     sdk: Option<String>,
     features_used: Vec<String>,
@@ -713,6 +714,7 @@ impl ProcessApp {
             render_needed: true,
             render_in_flight_frame_id: None,
             render_not_before: None,
+            pending_async_completions: 0,
             idle_render_poll_logged: false,
             sdk: None,
             features_used: Vec::new(),
@@ -872,6 +874,7 @@ impl ProcessApp {
             render_needed: true,
             render_in_flight_frame_id: None,
             render_not_before: None,
+            pending_async_completions: 0,
             idle_render_poll_logged: false,
             sdk: None,
             features_used: Vec::new(),
@@ -1080,6 +1083,45 @@ impl ProcessApp {
         Some(frame_id)
     }
 
+    fn arm_async_completion_wake(&mut self, reason: &'static str) {
+        self.pending_async_completions = self.pending_async_completions.saturating_add(1);
+        log::info!(
+            "ProcessApp[{}]: async wake armed ({reason}); pending={}",
+            self.type_id,
+            self.pending_async_completions
+        );
+    }
+
+    fn complete_async_wake(&mut self) {
+        self.pending_async_completions = self.pending_async_completions.saturating_sub(1);
+    }
+
+    fn drain_async_events(&mut self) {
+        while let Ok(event) = self.http_rx.try_recv() {
+            match &event {
+                PlexiEvent::Timer { timer_id } => {
+                    self.pending_timers.remove(timer_id);
+                }
+                PlexiEvent::AiStreamChunk { .. } => {}
+                _ => self.complete_async_wake(),
+            }
+            self.outbound_events.push_back(event);
+            self.mark_render_needed("async_completion");
+        }
+        while let Ok(event) = self.file_picker_rx.try_recv() {
+            self.complete_async_wake();
+            self.outbound_events.push_back(event);
+            self.mark_render_needed("async_completion");
+        }
+    }
+
+    fn needs_async_wake_poll(&self) -> bool {
+        self.pending_async_completions > 0
+            || !self.pending_timers.is_empty()
+            || self.active_stream_threads.load(Ordering::Relaxed) > 0
+            || self.image_cache.has_pending()
+    }
+
     /// Drain the MCP call queue and forward each request to the app as a
     /// `PlexiEvent::McpToolCall`. Called each frame (both `ui()` and
     /// `background_tick()`) so tool calls are processed even for background apps.
@@ -1281,12 +1323,7 @@ impl ProcessApp {
     ///
     /// Visual draw commands are discarded — there is no pane to render into.
     pub(crate) fn background_tick(&mut self) {
-        while let Ok(event) = self.http_rx.try_recv() {
-            self.outbound_events.push_back(event);
-        }
-        while let Ok(event) = self.file_picker_rx.try_recv() {
-            self.outbound_events.push_back(event);
-        }
+        self.drain_async_events();
         self.poll_mcp_calls();
         self.flush_outbound_events();
         for cmd in self.drain_draw_commands() {
@@ -1555,14 +1592,7 @@ impl App for ProcessApp {
 
         self.send_render_if_needed(size);
 
-        // Drain async HTTP responses from background request threads.
-        while let Ok(event) = self.http_rx.try_recv() {
-            self.outbound_events.push_back(event);
-        }
-        // Drain file picker results from background dialog threads.
-        while let Ok(event) = self.file_picker_rx.try_recv() {
-            self.outbound_events.push_back(event);
-        }
+        self.drain_async_events();
 
         // Per-frame: detect audio capture pipes whose drain thread exited due
         // to a write error (e.g. Broken pipe when the app-side socket closed
@@ -2002,6 +2032,10 @@ impl App for ProcessApp {
             } else {
                 ui.ctx().request_repaint();
             }
+        } else if self.needs_async_wake_poll() {
+            frame_diag::note(RepaintCause::AppIdlePoll);
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
         } else {
             if !self.idle_render_poll_logged {
                 log::info!(

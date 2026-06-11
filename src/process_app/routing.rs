@@ -705,6 +705,7 @@ impl ProcessApp {
                     "ProcessApp[{}]: OpenFilePicker {request_id} filter={filter:?} multiple={multiple}",
                     self.type_id
                 );
+                self.arm_async_completion_wake("file_picker");
                 let tx = self.file_picker_tx.clone();
                 let type_id = self.type_id.clone();
                 std::thread::Builder::new()
@@ -879,6 +880,7 @@ impl ProcessApp {
                     self.type_id
                 );
 
+                self.arm_async_completion_wake("http_request");
                 let allowed_hosts = normalized_allowed_hosts;
                 let net = std::sync::Arc::clone(&self.net);
                 let tx = self.http_tx.clone();
@@ -1080,6 +1082,7 @@ impl ProcessApp {
 
                 let broker = self.ai_broker.clone();
                 let app_id = self.type_id.clone();
+                self.arm_async_completion_wake("ai_query");
                 let tx = self.http_tx.clone();
                 let workspace_root = self.workspace_root.clone();
                 let open_panes = crate::plexi_ai::broker::get_pane_snapshot();
@@ -1262,6 +1265,7 @@ impl ProcessApp {
                 // Offload to a background thread: cpal device enumeration can
                 // block for hundreds of milliseconds on macOS (Bluetooth scan).
                 let audio = std::sync::Arc::clone(&self.audio_device);
+                self.arm_async_completion_wake("list_audio_devices");
                 let tx = self.http_tx.clone();
                 let type_id = self.type_id.clone();
                 std::thread::Builder::new()
@@ -1292,6 +1296,7 @@ impl ProcessApp {
                 // already visible in Audio MIDI Setup.app, no privacy gate.
                 // Offload to a background thread for the same reason as audio.
                 let midi = std::sync::Arc::clone(&self.midi_device);
+                self.arm_async_completion_wake("list_midi_devices");
                 let tx = self.http_tx.clone();
                 let type_id = self.type_id.clone();
                 std::thread::Builder::new()
