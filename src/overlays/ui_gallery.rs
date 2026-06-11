@@ -4,8 +4,8 @@ use crate::ui::{
     list::ListRow,
     overlay::ModalShell,
     widgets::{
-        chrome_button, color_swatch, description_label, empty_state_panel, key_chip,
-        selectable_row, status_chip, ButtonKind, TextField,
+        chrome_button, chrome_section, color_swatch, description_label, empty_state_panel,
+        key_chip, selectable_row, status_chip, ButtonKind, TextField,
     },
 };
 
@@ -38,12 +38,12 @@ impl PlexiApp {
                         // area reserves a scrollbar gutter; forcing the full
                         // modal width would push content back under the bar.
                         ui.set_width(ui.available_width());
-                        gallery_section(ui, "Modal shell", &colors, |ui| {
+                        chrome_section(ui, "Modal shell", &colors, |ui| {
                             token_strip(ui, &colors);
                             hint_bar(ui, &colors);
                         });
 
-                        gallery_section(ui, "Rows", &colors, |ui| {
+                        chrome_section(ui, "Rows", &colors, |ui| {
                             ListRow::new("Normal row")
                                 .secondary("Secondary metadata")
                                 .chip("app")
@@ -78,7 +78,7 @@ impl PlexiApp {
                             });
                         });
 
-                        gallery_section(ui, "Text fields", &colors, |ui| {
+                        chrome_section(ui, "Text fields", &colors, |ui| {
                             TextField::singleline(
                                 egui::Id::new("host_ui_gallery_text_normal"),
                                 "Normal text field",
@@ -106,7 +106,7 @@ impl PlexiApp {
                             );
                         });
 
-                        gallery_section(ui, "Modal patterns", &colors, |ui| {
+                        chrome_section(ui, "Modal patterns", &colors, |ui| {
                             if chrome_button(
                                 ui,
                                 "Open text-entry modal",
@@ -121,7 +121,7 @@ impl PlexiApp {
                             }
                         });
 
-                        gallery_section(ui, "Buttons and chips", &colors, |ui| {
+                        chrome_section(ui, "Buttons and chips", &colors, |ui| {
                             ui.horizontal(|ui| {
                                 chrome_button(ui, "Primary", ButtonKind::Primary, &colors, 80.0);
                                 chrome_button(
@@ -162,7 +162,7 @@ impl PlexiApp {
                             });
                         });
 
-                        gallery_section(ui, "Empty states", &colors, |ui| {
+                        chrome_section(ui, "Empty states", &colors, |ui| {
                             empty_state_panel(
                                 ui,
                                 "No matching items",
@@ -206,22 +206,6 @@ impl PlexiApp {
             }
         }
     }
-}
-
-fn gallery_section(
-    ui: &mut egui::Ui,
-    title: &str,
-    colors: &crate::ui::theme::Colors,
-    body: impl FnOnce(&mut egui::Ui),
-) {
-    ui.label(
-        RichText::new(title)
-            .size(style::TEXT_CAPTION)
-            .color(colors.accent),
-    );
-    ui.add_space(style::SPACE_XS);
-    body(ui);
-    ui.add_space(style::SPACE_XL);
 }
 
 fn token_strip(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
