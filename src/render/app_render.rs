@@ -5,7 +5,7 @@
 use crate::app_protocol::{
     ControlCommand, DrawCommand, PlexiEvent, Rect as ProtoRect, RenderCommand,
 };
-use crate::ui::theme::Colors;
+use crate::ui::theme::{self, Colors};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::path::Path;
@@ -227,7 +227,7 @@ fn render_commands_to_png(
 ) -> Result<Vec<u8>, String> {
     // ── 1. Build egui shapes via a headless egui context ──────────────────
     let ctx = egui::Context::default();
-    ctx.set_fonts(egui::FontDefinitions::default());
+    theme::setup_fonts(&ctx);
 
     let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width as f32, height as f32));
     let mut viewport_info = egui::ViewportInfo::default();
