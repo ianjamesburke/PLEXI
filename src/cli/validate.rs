@@ -104,6 +104,8 @@ pub fn validate_cli(path: &str) -> i32 {
             "midi.out",
             "ai.query",
             "panes.spawn",
+            "panes.read",
+            "panes.control",
             "video.decode",
         ];
         for cap in caps {

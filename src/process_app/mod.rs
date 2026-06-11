@@ -446,17 +446,15 @@ impl ProcessApp {
                 cmd.env(var, v);
             }
         }
-        // Pass through every PLEXI_* var (harness knobs, mock-device selectors).
+        // Pass through every PLEXI_* var (harness knobs, mock-device selectors)
+        // EXCEPT PLEXI_SOCKET: app processes must not inherit socket routing.
+        // Pane read/control flows through capability-gated PGAP requests
+        // (panes.read / panes.control) instead of ambient CLI access.
         for (k, v) in std::env::vars() {
-            if k.starts_with("PLEXI_") {
+            if k.starts_with("PLEXI_") && k != "PLEXI_SOCKET" {
                 cmd.env(k, v);
             }
         }
-        // Set PLEXI_SOCKET so the app can invoke `plexi` CLI commands against
-        // the running host. macOS GUI apps don't inherit shell env, so this
-        // is never present via PLEXI_* passthrough above.
-        let socket_path = crate::config::config_dir().join("notify.sock");
-        cmd.env("PLEXI_SOCKET", &socket_path);
 
         // Start the MCP server when the manifest declares [app.mcp].
         let mcp_server_handle = mcp
@@ -2286,6 +2284,8 @@ fn cap_example_method(cap: &str) -> &'static str {
         "fs.read" => "fs_read",
         "fs.write" => "fs_write",
         "panes.spawn" => "spawn_pane",
+        "panes.read" => "list_panes",
+        "panes.control" => "send_to_pane",
         "midi.in" => "open_midi_input",
         "midi.out" => "send_midi",
         "video.playback" => "open_video",

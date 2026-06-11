@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import os
 import sys
+import tempfile
 import threading
 import uuid
 from contextlib import contextmanager
@@ -33,6 +35,16 @@ CAPABILITY_REGISTRY: dict[str, str] = {
     "get_secret": "secrets.get",
     "open_file_picker": "fs.pick",
     "spawn_pane": "panes.spawn",
+    "list_panes": "panes.read",
+    "get_pane_info": "panes.read",
+    "get_pane_state": "panes.read",
+    "capture_pane": "panes.read",
+    "send_to_pane": "panes.control",
+    "key_pane": "panes.control",
+    "focus_pane": "panes.control",
+    "close_pane": "panes.control",
+    "set_pane_title": "panes.control",
+    "send_app_action": "panes.control",
     "open_midi_input": "midi.in",
     "send_midi": "midi.out",
     "open_video": "video.playback",
@@ -655,6 +667,220 @@ class Emitter:
             cmd["request_id"] = request_id
         if target_context is not None:
             cmd["target_context"] = target_context
+        _emit(cmd)
+
+    # ── Pane read/control (stint 0013/0014) ─────────────────────────────────
+    #
+    # Host-mediated equivalents of the `plexi pane` CLI commands. The read
+    # methods gate on `panes.read`, the act-on-pane methods on
+    # `panes.control` — both are sensitive capabilities, so first use
+    # triggers the host consent modal unless the user already decided.
+    # Read methods use the pane-IPC response_file pattern: the host writes a
+    # JSON file at a path we choose; we poll for it with a timeout.
+
+    async def _await_pane_response(self, response_file: str, kind: str,
+                                   timeout: float = 10.0) -> Any:
+        """Poll for a host-written pane-IPC JSON response file.
+
+        Raises CapabilityDeniedError when the host answered with the
+        capability-denied error object, and TimeoutError when the host never
+        wrote the file (e.g. the request was dropped).
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        try:
+            while True:
+                if os.path.exists(response_file):
+                    with open(response_file, "r") as f:
+                        data = json.loads(f.read())
+                    if (isinstance(data, dict)
+                            and "capability" in data and "error" in data):
+                        raise CapabilityDeniedError(f"{kind}: {data['error']}")
+                    return data
+                if loop.time() >= deadline:
+                    raise TimeoutError(
+                        f"{kind}: timed out after {timeout}s waiting for the "
+                        f"host response file"
+                    )
+                await asyncio.sleep(0.05)
+        finally:
+            try:
+                os.remove(response_file)
+            except FileNotFoundError:
+                pass
+
+    @staticmethod
+    def _pane_response_file(prefix: str) -> str:
+        """Unique response-file path. The host creates the file; we only poll."""
+        return os.path.join(
+            tempfile.gettempdir(), f"plexi-{prefix}-{uuid.uuid4()}.json"
+        )
+
+    @_blocking_emit_method
+    async def list_panes(self, context_id: "int | None" = None) -> "list[dict]":
+        """List all open panes. Requires the ``panes.read`` capability.
+
+        Returns the same JSON array `plexi pane list` prints: one object per
+        pane with ``id``, ``title``, ``type``, ``context_id``, ``cwd``, etc.
+
+        Args:
+            context_id: When set, only panes in this context are returned.
+
+        Raises ``CapabilityDeniedError`` if the manifest doesn't declare
+        ``panes.read``.
+        """
+        response_file = self._pane_response_file("list-panes")
+        cmd: "dict[str, object]" = {
+            "type": "list_panes",
+            "response_file": response_file,
+        }
+        if context_id is not None:
+            cmd["context_id"] = context_id
+        _emit(cmd)
+        return await self._await_pane_response(response_file, "list_panes")
+
+    @_blocking_emit_method
+    async def get_pane_info(self, pane_id: int) -> dict:
+        """Query info for a specific pane. Requires the ``panes.read`` capability.
+
+        Returns the same JSON object `plexi pane info` prints.
+
+        Raises ``CapabilityDeniedError`` if the manifest doesn't declare
+        ``panes.read``.
+        """
+        response_file = self._pane_response_file("pane-info")
+        _emit({
+            "type": "get_pane_info",
+            "pane_id": int(pane_id),
+            "response_file": response_file,
+        })
+        return await self._await_pane_response(response_file, "get_pane_info")
+
+    @_blocking_emit_method
+    async def get_pane_state(self, pane_id: int) -> dict:
+        """Query the last-rendered UI state of a pane. Requires ``panes.read``.
+
+        For app panes the host answers with a ``frame`` array of
+        RenderCommands; for terminal panes a simple status object.
+
+        Raises ``CapabilityDeniedError`` if the manifest doesn't declare
+        ``panes.read``.
+        """
+        response_file = self._pane_response_file("pane-state")
+        _emit({
+            "type": "get_pane_state",
+            "pane_id": int(pane_id),
+            "response_file": response_file,
+        })
+        return await self._await_pane_response(response_file, "get_pane_state")
+
+    @_blocking_emit_method
+    async def capture_pane(self, pane_id: int, lines: int = 50,
+                           full_output: bool = False,
+                           from_cursor: "int | None" = None) -> "list[str]":
+        """Read the last ``lines`` lines of a terminal pane's scrollback.
+        Requires the ``panes.read`` capability.
+
+        Args:
+            pane_id: Target terminal pane.
+            lines: Number of lines from the end of the scrollback.
+            full_output: Preserve trailing empty lines (default strips them).
+            from_cursor: When set, capture from this saved cursor position.
+
+        Raises ``CapabilityDeniedError`` if the manifest doesn't declare
+        ``panes.read``.
+        """
+        response_file = self._pane_response_file("pane-capture")
+        cmd: "dict[str, object]" = {
+            "type": "capture_pane",
+            "pane_id": int(pane_id),
+            "lines": int(lines),
+            "response_file": response_file,
+        }
+        if full_output:
+            cmd["full_output"] = True
+        if from_cursor is not None:
+            cmd["from_cursor"] = int(from_cursor)
+        _emit(cmd)
+        return await self._await_pane_response(response_file, "capture_pane")
+
+    def send_to_pane(self, pane_id: int, text: str) -> None:
+        """Write ``text`` to a terminal pane's PTY stdin. Requires the
+        ``panes.control`` capability. ``\\n`` (literal backslash-n) is
+        interpreted as Enter.
+
+        Fire-and-forget — capability denial drops with a host log line.
+        """
+        _emit({
+            "type": "send_to_pane",
+            "pane_id": int(pane_id),
+            "text": text,
+        })
+
+    def key_pane(self, pane_id: int, key: str) -> None:
+        """Deliver a synthetic key event to any pane. Requires the
+        ``panes.control`` capability.
+
+        Args:
+            pane_id: Target pane.
+            key: Single char ("h"), named key ("enter", "escape", "up",
+                 "down", "left", "right", "space", "backspace"), or chord
+                 ("ctrl+c", "ctrl+d").
+
+        Fire-and-forget — capability denial drops with a host log line.
+        """
+        _emit({
+            "type": "key_pane",
+            "pane_id": int(pane_id),
+            "key": key,
+        })
+
+    def focus_pane(self, pane_id: int) -> None:
+        """Move UI focus to a pane. Requires the ``panes.control`` capability.
+
+        Fire-and-forget — capability denial drops with a host log line.
+        """
+        _emit({"type": "focus_pane", "pane_id": int(pane_id)})
+
+    def close_pane(self, pane_id: int) -> None:
+        """Close a pane. Requires the ``panes.control`` capability.
+
+        Fire-and-forget — capability denial drops with a host log line.
+        """
+        _emit({"type": "close_pane", "pane_id": int(pane_id)})
+
+    def set_pane_title(self, pane_id: int, name: str) -> None:
+        """Set the title shown on a pane's tab. Requires the
+        ``panes.control`` capability.
+
+        Fire-and-forget — capability denial drops with a host log line.
+        """
+        _emit({
+            "type": "set_pane_title",
+            "pane_id": int(pane_id),
+            "name": name,
+        })
+
+    def send_app_action(self, pane_id: int, action: str,
+                        args: "list[str] | None" = None) -> None:
+        """Dispatch a semantic action to an app pane. Requires the
+        ``panes.control`` capability. The host delivers
+        ``PlexiEvent::Action`` to the target app.
+
+        Args:
+            pane_id: Target app pane.
+            action: Action name, e.g. "refresh", "navigate-to".
+            args: Optional extra arguments.
+
+        Fire-and-forget — capability denial drops with a host log line.
+        """
+        cmd: "dict[str, object]" = {
+            "type": "send_app_action",
+            "pane_id": int(pane_id),
+            "action": action,
+        }
+        if args:
+            cmd["args"] = list(args)
         _emit(cmd)
 
     def query_context_state(self, context_id: int) -> None:

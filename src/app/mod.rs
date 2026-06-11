@@ -1547,6 +1547,13 @@ impl eframe::App for PlexiApp {
                 continue;
             }
             match cmd {
+                // Capability-gated pane read/control request from a PGAP app
+                // (stint 0013/0014). routing.rs already checked panes.read /
+                // panes.control; execute it through the same handler CLI
+                // requests take over PLEXI_SOCKET.
+                AppCommand::ForwardPaneRequest { request } => {
+                    self.handle_pane_ipc_request(request);
+                }
                 AppCommand::SpawnApp {
                     type_id,
                     layout,

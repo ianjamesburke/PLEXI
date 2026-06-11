@@ -49,3 +49,52 @@ fn user_global_secrets_not_injected_into_subprocess_env() {
         "user-global secret must not appear in subprocess env; got: {stdout:?}"
     );
 }
+
+/// App subprocesses must NOT inherit PLEXI_SOCKET (stint 0013). Pane
+/// read/control flows through capability-gated PGAP requests instead of
+/// ambient `plexi` CLI access. Models ProcessApp::launch's env construction:
+/// env_clear() + whitelist + PLEXI_* passthrough that excludes PLEXI_SOCKET.
+#[test]
+fn plexi_socket_not_injected_into_subprocess_env() {
+    let sh = ["/bin/sh", "/usr/bin/sh"]
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .copied();
+    let Some(sh) = sh else {
+        eprintln!("skipping: no /bin/sh available");
+        return;
+    };
+
+    // Simulated host env: PLEXI_SOCKET set (host launched from inside a pane)
+    // plus a harness knob that MUST pass through.
+    let host_env = [
+        ("PLEXI_SOCKET", "/tmp/fake-notify.sock"),
+        ("PLEXI_PANE_ID", "42"),
+    ];
+
+    let output = Command::new(sh)
+        .arg("-c")
+        .arg("echo \"${PLEXI_SOCKET:-ABSENT}|${PLEXI_PANE_ID:-ABSENT}\"")
+        .env_clear()
+        .envs(
+            WHITELIST
+                .iter()
+                .filter_map(|k| std::env::var(k).ok().map(|v| (*k, v))),
+        )
+        // The launch passthrough loop: every PLEXI_* var except PLEXI_SOCKET.
+        .envs(
+            host_env
+                .iter()
+                .filter(|(k, _)| k.starts_with("PLEXI_") && *k != "PLEXI_SOCKET")
+                .copied(),
+        )
+        .output()
+        .expect("sh spawn failed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "ABSENT|42",
+        "PLEXI_SOCKET must be absent and PLEXI_PANE_ID present in app subprocess env; got: {stdout:?}"
+    );
+}
