@@ -17,9 +17,12 @@ use egui_term::{TerminalTheme, TerminalView};
 use egui_tiles::TileId;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Once;
 use std::time::{Duration, Instant};
 
 const OUTSIDE_WORKSPACE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+const TERMINAL_GLYPH_PADDING_X: f32 = 2.0;
+static LOG_TERMINAL_GLYPH_PADDING: Once = Once::new();
 
 /// Render one frame of a terminal pane. Returns `true` if the process has
 /// exited and the user pressed a key (the caller should close the tile).
@@ -66,10 +69,17 @@ pub fn render(
     );
 
     let font_size = terminal.font_size;
+    LOG_TERMINAL_GLYPH_PADDING.call_once(|| {
+        log::info!(
+            "terminal_renderer: glyph padding enabled x={}px",
+            TERMINAL_GLYPH_PADDING_X
+        );
+    });
     let view = TerminalView::new(ui, &mut terminal.backend)
         .set_focus(is_focused)
         .set_theme(theme.clone())
         .set_font(theme::terminal_font(font_size))
+        .set_padding(Vec2::new(TERMINAL_GLYPH_PADDING_X, 0.0))
         .set_size(Vec2::new(ui.available_width(), ui.available_height()));
     ui.add(view);
 

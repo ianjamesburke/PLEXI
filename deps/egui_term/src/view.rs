@@ -106,6 +106,7 @@ pub struct TerminalView<'a> {
     widget_id: Id,
     has_focus: bool,
     size: Vec2,
+    padding: Vec2,
     backend: &'a mut TerminalBackend,
     font: TerminalFont,
     theme: TerminalTheme,
@@ -145,6 +146,7 @@ impl<'a> TerminalView<'a> {
             widget_id,
             has_focus: false,
             size: ui.available_size(),
+            padding: Vec2::ZERO,
             backend,
             font: TerminalFont::default(),
             theme: TerminalTheme::default(),
@@ -177,6 +179,12 @@ impl<'a> TerminalView<'a> {
     }
 
     #[inline]
+    pub fn set_padding(mut self, padding: Vec2) -> Self {
+        self.padding = Vec2::new(padding.x.max(0.0), padding.y.max(0.0));
+        self
+    }
+
+    #[inline]
     pub fn add_bindings(
         mut self,
         bindings: Vec<(Binding<InputKind>, BindingAction)>,
@@ -197,7 +205,7 @@ impl<'a> TerminalView<'a> {
 
     fn resize(self, layout: &Response) -> Self {
         self.backend.process_command(BackendCommand::Resize(
-            Size::from(layout.rect.size()),
+            Size::from(grid_size(layout.rect.size(), self.padding)),
             self.font.font_measure(&layout.ctx),
         ));
 
@@ -457,6 +465,7 @@ impl<'a> TerminalView<'a> {
                         layout,
                         self.backend,
                         &self.bindings_layout,
+                        self.padding,
                         button,
                         pos,
                         &modifiers,
@@ -476,6 +485,7 @@ impl<'a> TerminalView<'a> {
                         state,
                         layout,
                         self.backend,
+                        self.padding,
                         clamped,
                         &modifiers,
                     )
@@ -530,9 +540,10 @@ impl<'a> TerminalView<'a> {
                     pos.x.clamp(layout.rect.min.x, layout.rect.max.x);
                 let clamped_y =
                     pos.y.clamp(layout.rect.min.y, layout.rect.max.y);
+                let grid_origin = grid_min(layout.rect, self.padding);
                 self.backend.process_command(BackendCommand::SelectUpdate(
-                    clamped_x - layout.rect.min.x,
-                    clamped_y - layout.rect.min.y,
+                    clamped_x - grid_origin.x,
+                    clamped_y - grid_origin.y,
                     layout.ctx.pixels_per_point(),
                 ));
             }
@@ -576,7 +587,7 @@ impl<'a> TerminalView<'a> {
             state.frozen_selection_range
         };
 
-        let layout_min = layout.rect.min;
+        let layout_min = grid_min(layout.rect, self.padding);
         let layout_max = layout.rect.max;
         // Use font-metric-based cell dimensions from the committed terminal
         // size rather than recomputing from the pane rect. Recomputing gives
@@ -597,7 +608,7 @@ impl<'a> TerminalView<'a> {
         }
 
         let mut shapes = vec![Shape::Rect(RectShape::filled(
-            Rect::from_min_max(layout_min, layout_max),
+            layout.rect,
             CornerRadius::ZERO,
             global_bg,
         ))];
@@ -1623,6 +1634,7 @@ fn process_button_click(
     layout: &Response,
     backend: &TerminalBackend,
     bindings_layout: &BindingsLayout,
+    padding: Vec2,
     button: PointerButton,
     position: Pos2,
     modifiers: &Modifiers,
@@ -1634,6 +1646,7 @@ fn process_button_click(
             layout,
             backend,
             bindings_layout,
+            padding,
             position,
             modifiers,
             pressed,
@@ -1647,6 +1660,7 @@ fn process_left_button(
     layout: &Response,
     backend: &TerminalBackend,
     bindings_layout: &BindingsLayout,
+    padding: Vec2,
     position: Pos2,
     modifiers: &Modifiers,
     pressed: bool,
@@ -1660,13 +1674,14 @@ fn process_left_button(
             pressed,
         ))
     } else if pressed {
-        process_left_button_pressed(state, layout, position)
+        process_left_button_pressed(state, layout, padding, position)
     } else {
         process_left_button_released(
             state,
             layout,
             backend,
             bindings_layout,
+            padding,
             position,
             modifiers,
         )
@@ -1676,10 +1691,13 @@ fn process_left_button(
 fn process_left_button_pressed(
     state: &mut TerminalViewState,
     layout: &Response,
+    padding: Vec2,
     position: Pos2,
 ) -> InputAction {
     state.is_dragged = true;
-    InputAction::BackendCall(build_start_select_command(layout, position))
+    InputAction::BackendCall(build_start_select_command(
+        layout, position, padding,
+    ))
 }
 
 fn process_left_button_released(
@@ -1687,12 +1705,15 @@ fn process_left_button_released(
     layout: &Response,
     backend: &TerminalBackend,
     bindings_layout: &BindingsLayout,
+    padding: Vec2,
     position: Pos2,
     modifiers: &Modifiers,
 ) -> InputAction {
     state.is_dragged = false;
     if layout.double_clicked() || layout.triple_clicked() {
-        InputAction::BackendCall(build_start_select_command(layout, position))
+        InputAction::BackendCall(build_start_select_command(
+            layout, position, padding,
+        ))
     } else {
         let terminal_content = backend.last_content();
         let binding_action = bindings_layout.get_action(
@@ -1715,6 +1736,7 @@ fn process_left_button_released(
 fn build_start_select_command(
     layout: &Response,
     cursor_position: Pos2,
+    padding: Vec2,
 ) -> BackendCommand {
     let selection_type = if layout.double_clicked() {
         SelectionType::Semantic
@@ -1724,10 +1746,11 @@ fn build_start_select_command(
         SelectionType::Simple
     };
 
+    let grid_origin = grid_min(layout.rect, padding);
     BackendCommand::SelectStart(
         selection_type,
-        cursor_position.x - layout.rect.min.x,
-        cursor_position.y - layout.rect.min.y,
+        cursor_position.x - grid_origin.x,
+        cursor_position.y - grid_origin.y,
         layout.ctx.pixels_per_point(),
     )
 }
@@ -1736,12 +1759,14 @@ fn process_mouse_move(
     state: &mut TerminalViewState,
     layout: &Response,
     backend: &TerminalBackend,
+    padding: Vec2,
     position: Pos2,
     modifiers: &Modifiers,
 ) -> Vec<InputAction> {
     let terminal_content = backend.last_content();
-    let cursor_x = position.x - layout.rect.min.x;
-    let cursor_y = position.y - layout.rect.min.y;
+    let grid_origin = grid_min(layout.rect, padding);
+    let cursor_x = position.x - grid_origin.x;
+    let cursor_y = position.y - grid_origin.y;
     state.current_mouse_position_on_grid = TerminalBackend::selection_point(
         cursor_x,
         cursor_y,
@@ -1777,4 +1802,45 @@ fn process_mouse_move(
     // Link hover is handled per-frame in process_input, not per mouse-move.
 
     actions
+}
+
+fn grid_min(rect: Rect, padding: Vec2) -> Pos2 {
+    Pos2::new(
+        rect.min.x + padding.x.max(0.0),
+        rect.min.y + padding.y.max(0.0),
+    )
+}
+
+fn grid_size(size: Vec2, padding: Vec2) -> Vec2 {
+    Vec2::new(
+        (size.x - padding.x.max(0.0) * 2.0).max(0.0),
+        (size.y - padding.y.max(0.0) * 2.0).max(0.0),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grid_size_subtracts_padding_without_growing_layout() {
+        let size = grid_size(Vec2::new(101.0, 40.0), Vec2::new(3.0, 2.0));
+
+        assert_eq!(size, Vec2::new(95.0, 36.0));
+    }
+
+    #[test]
+    fn grid_size_clamps_when_padding_exceeds_rect() {
+        let size = grid_size(Vec2::new(4.0, 3.0), Vec2::new(8.0, 2.0));
+
+        assert_eq!(size, Vec2::ZERO);
+    }
+
+    #[test]
+    fn grid_min_offsets_origin_by_padding() {
+        let rect =
+            Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(100.0, 40.0));
+
+        assert_eq!(grid_min(rect, Vec2::new(3.0, 2.0)), Pos2::new(13.0, 22.0));
+    }
 }
