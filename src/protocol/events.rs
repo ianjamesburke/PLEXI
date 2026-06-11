@@ -238,12 +238,16 @@ pub enum PlexiEvent {
         error: Option<String>,
     },
     /// Incremental token chunk from a streaming ai_query response.
-    /// Sent before the final `AiResponse` so apps can display tokens as they arrive.
+    /// Sent live while the turn runs, before the final `AiResponse`.
     /// The final `AiResponse` is still sent with complete content + token counts.
     AiStreamChunk {
         request_id: String,
         /// Incremental text delta (may be empty for the final chunk before AiResponse)
         delta: String,
+        /// Incremental reasoning ("thinking") delta from a reasoning model.
+        /// Carried separately from `delta`; a chunk holds one or the other.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning: Option<String>,
         /// True on the last chunk before AiResponse fires
         #[serde(default)]
         done: bool,

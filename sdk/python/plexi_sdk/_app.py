@@ -420,6 +420,21 @@ class App:
         Default: no-op. Apps that only care about the final result can ignore this.
         """
 
+    def on_ai_thinking_chunk(self, _request_id: str, _delta: str, _done: bool) -> None:
+        """Called for each incremental reasoning ("thinking") chunk from a
+        streaming ai_query response against a reasoning model.
+
+        ``_delta`` is incremental reasoning text, carried separately from the
+        answer text delivered via :meth:`on_ai_stream_chunk`. Override to show
+        a live thinking indicator::
+
+            def on_ai_thinking_chunk(self, request_id, delta, done):
+                self.thinking_text += delta
+                self.emit.schedule_render()
+
+        Default: no-op.
+        """
+
     def on_midi_input_opened(
         self,
         _pipe_id: str,
@@ -841,9 +856,19 @@ class App:
                         q.put_nowait((status, message))
 
                 elif t == "ai_stream_chunk":
-                    # Incremental token chunk from a streaming ai_query response.
-                    # Dispatch to on_ai_stream_chunk if the app has overridden it.
-                    if type(self).on_ai_stream_chunk is not App.on_ai_stream_chunk:
+                    # Incremental chunk from a streaming ai_query response.
+                    # Reasoning ("thinking") deltas dispatch to
+                    # on_ai_thinking_chunk; text deltas to on_ai_stream_chunk.
+                    reasoning = ev.get("reasoning")
+                    if reasoning is not None:
+                        if type(self).on_ai_thinking_chunk is not App.on_ai_thinking_chunk:
+                            self._dispatch_hook_task(
+                                self.on_ai_thinking_chunk,
+                                str(ev.get("request_id", "")),
+                                str(reasoning),
+                                bool(ev.get("done", False)),
+                            )
+                    elif type(self).on_ai_stream_chunk is not App.on_ai_stream_chunk:
                         self._dispatch_hook_task(
                             self.on_ai_stream_chunk,
                             str(ev.get("request_id", "")),

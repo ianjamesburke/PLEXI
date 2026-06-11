@@ -23,7 +23,11 @@ struct CannedBroker {
 }
 
 impl AiBroker for CannedBroker {
-    fn dispatch(&self, request: AiBrokerRequest) -> AiBrokerResponse {
+    fn dispatch(
+            &self,
+            request: AiBrokerRequest,
+            _on_delta: &mut dyn FnMut(crate::plexi_ai::turn_loop::TurnDelta<'_>),
+        ) -> AiBrokerResponse {
         self.seen.lock().unwrap().push(request);
         self.response.clone()
     }
@@ -71,7 +75,11 @@ fn denied_app_gets_capability_denied_response() {
     // must short-circuit before reaching dispatch.
     struct PanicBroker;
     impl AiBroker for PanicBroker {
-        fn dispatch(&self, _: AiBrokerRequest) -> AiBrokerResponse {
+        fn dispatch(
+            &self,
+            _: AiBrokerRequest,
+            _on_delta: &mut dyn FnMut(crate::plexi_ai::turn_loop::TurnDelta<'_>),
+        ) -> AiBrokerResponse {
             panic!("blocked path must never call the broker");
         }
     }
@@ -128,7 +136,11 @@ fn withheld_app_defers_ai_query_and_queues_consent_prompt() {
 
     struct PanicBroker;
     impl AiBroker for PanicBroker {
-        fn dispatch(&self, _: AiBrokerRequest) -> AiBrokerResponse {
+        fn dispatch(
+            &self,
+            _: AiBrokerRequest,
+            _on_delta: &mut dyn FnMut(crate::plexi_ai::turn_loop::TurnDelta<'_>),
+        ) -> AiBrokerResponse {
             panic!("withheld path must never call the broker");
         }
     }
@@ -199,7 +211,7 @@ fn granted_app_dispatches_to_broker() {
     let seen: Arc<Mutex<Vec<AiBrokerRequest>>> = Arc::new(Mutex::new(Vec::new()));
     app.ai_broker = Arc::new(CannedBroker {
         seen: Arc::clone(&seen),
-        response: AiBrokerResponse::ok_with_deltas("Pong.".to_string(), 12, 4, Vec::new()),
+        response: AiBrokerResponse::ok("Pong.".to_string(), 12, 4),
     });
 
     app.route_command(AppRequest::AiQuery {
@@ -213,9 +225,25 @@ fn granted_app_dispatches_to_broker() {
         tools: vec![],
     });
 
-    // Worker thread is spawned — wait briefly for response to arrive
+    // Worker thread is spawned — wait briefly for events to arrive
     // on http_rx. 2s is generous; canned broker is in-memory so the
     // typical wait is microseconds.
+    //
+    // A terminal AiStreamChunk { done: true } always precedes AiResponse.
+    let event = app
+        .http_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("terminal stream chunk must arrive on http_rx within 2s");
+    match event {
+        PlexiEvent::AiStreamChunk {
+            request_id, done, ..
+        } => {
+            assert_eq!(request_id, "req-ok");
+            assert!(done, "terminal chunk must have done=true");
+        }
+        other => panic!("expected terminal AiStreamChunk, got {other:?}"),
+    }
+
     let event = app
         .http_rx
         .recv_timeout(std::time::Duration::from_secs(2))

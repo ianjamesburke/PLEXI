@@ -6,62 +6,92 @@ L1 Reference Implementation
 Patterns demonstrated:
   - ChatBubble for user/assistant/error messages
   - Scrollable container for conversation history
-  - Streaming via on_ai_stream_chunk + schedule_render
+  - Live token + thinking streaming via on_ai_stream_chunk /
+    on_ai_thinking_chunk + schedule_render
   - Background ai_query with emit.run_sync
-  - Column + AppBar + Scrollable + TextInput + FooterKeys
+  - Column + AppBar + Scrollable + multiline TextInput + FooterKeys
   - Session persistence via JSON in .plexi/assistant_sessions/
   - ExposeTools: registers an ask_assistant tool so other workspace apps
     can invoke the assistant programmatically (#2034)
   - Tool consumption: ai_query automatically receives tools exposed by
     other panes in the same workspace via the host tool dispatcher
-  - Host-mediated pane tools (stint 0014): the AI sees and drives other
-    panes via capability-gated SDK calls (panes.spawn/read/control) —
-    no subprocess, no ambient plexi CLI access
+  - --demo-state: seed the UI from JSON for headless scene tests
 """
 
-import asyncio
 import json
 import os
+import subprocess
 import threading
 import time
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from plexi_sdk import App, CapabilityDeniedError
+PLEXI_BINARY = os.environ.get("PLEXI_BINARY", "plexi-alpha")
+
+from plexi_sdk import App, Arg
 from plexi_sdk.ui import (
     Column, AppBar, ChatBubble, Scrollable, Spacer,
     FooterKeys, TextInput, Label,
+    SPACE_SM, SPACE_MD, SPACE_LG,
 )
 
 SYSTEM_PROMPT = (
     "You are a helpful assistant. Be concise and clear. "
     "You have access to tools offered by other running Plexi apps in this workspace — "
-    "use them when they help answer the user's request. "
-    "You can also see and drive the user's panes: list_panes first, then "
-    "get_pane_state (app panes) or capture_pane (terminal panes) to look inside, "
-    "then send_app_action or send_command to act, then read the state again to "
-    "verify the action worked."
+    "use them when they help answer the user's request."
 )
 MODEL_TIERS = ["low", "medium", "high"]
-_THINKING_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+_SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
+# How much of the live thinking stream to show while it scrolls past.
+_THINKING_TAIL_CHARS = 280
 
 
 class AssistantApp(App):
+    demo_state: Arg[str | None] = Arg("--demo-state", default=None)
+
     def on_init(self) -> None:
-        self._messages: list[dict] = []  # {role, content}
+        self._messages: list[dict] = []  # {role, content, thinking?, thinking_secs?}
         self._streaming_text = ""
+        self._thinking_text = ""
         self._is_streaming = False
+        self._stream_started = 0.0
         self._model_tier = "low"
-        self._input = TextInput("chat-input", placeholder="Message assistant…", height=56.0)
+        self._input = TextInput(
+            "chat-input",
+            placeholder="Message assistant…",
+            height=72.0,
+            multiline=True,
+        )
         self._scroll = Scrollable(child=Spacer())  # replaced each render
+        self._pin_to_bottom = False
         self._session_id = _new_session_id()
-        self._sessions_dir: Path | None = _resolve_sessions_dir(self.workspace_root)
-        self._spawn_waiters: dict[str, asyncio.Future] = {}
-        self._load_latest_session()
+        if self.demo_state:
+            self._sessions_dir: Path | None = None  # demo mode never persists
+            self._load_demo_state(str(self.demo_state))
+        else:
+            self._sessions_dir = _resolve_sessions_dir(self.workspace_root)
+            self._load_latest_session()
         self._register_tools()
-        self._register_pane_tools()
-        self.emit.info(f"AssistantApp ready — model={self._model_tier} sessions dir: {self._sessions_dir}")
+        self._register_cli_tools()
+        self.emit.info(
+            f"AssistantApp ready — model={self._model_tier} sessions dir: {self._sessions_dir}"
+        )
+
+    # ── Demo state (scene tests) ───────────────────────────────────────────────
+
+    def _load_demo_state(self, raw: str) -> None:
+        """Seed messages/streaming state from a JSON blob for headless scenes."""
+        try:
+            data = json.loads(raw)
+            self._messages = data.get("messages", [])
+            self._streaming_text = data.get("streaming_text", "")
+            self._thinking_text = data.get("thinking_text", "")
+            self._is_streaming = bool(data.get("is_streaming", False))
+            self._model_tier = data.get("model_tier", self._model_tier)
+            self._stream_started = time.monotonic()
+            self.emit.info(f"demo state loaded: {len(self._messages)} messages")
+        except Exception as e:
+            self.emit.error(f"invalid --demo-state JSON: {e}")
 
     # ── Tool registration (ExposeTools) ────────────────────────────────────────
 
@@ -109,83 +139,21 @@ class AssistantApp(App):
 
         self.emit.info("AssistantApp: exposed ask_assistant tool to workspace")
 
-    # ── Host-mediated pane tools (stint 0014) ──────────────────────────────────
+    def _register_cli_tools(self) -> None:
+        """Register CLI tools that let the AI agent control the Plexi workspace.
 
-    async def _call_with_capability(self, cap: str, op_name: str, attempt) -> dict:
-        """Run an async pane operation, popping the host grant modal when needed.
-
-        Pane capabilities are sensitive: even when declared in the manifest they
-        are withheld until the user grants them. First use either raises
-        CapabilityDeniedError (awaitable reads) or is silently dropped by the
-        host (fire-and-forget control), so when the capability isn't held yet we
-        request it up front via the host grant modal. A mid-flight denial gets
-        one grant-and-retry; a user denial is returned to the model as an error.
-        """
-        if cap not in self.capabilities:
-            try:
-                await self.emit.capability_request(cap)
-            except CapabilityDeniedError:
-                self.emit.warn(f"{op_name}: user denied {cap}")
-                return {"error": f"user denied {cap}"}
-        try:
-            return await attempt()
-        except CapabilityDeniedError:
-            pass
-        except Exception as exc:
-            self.emit.error(f"{op_name} failed: {exc}")
-            return {"error": str(exc)}
-        try:
-            await self.emit.capability_request(cap)
-        except CapabilityDeniedError:
-            self.emit.warn(f"{op_name}: user denied {cap}")
-            return {"error": f"user denied {cap}"}
-        try:
-            return await attempt()
-        except Exception as exc:
-            self.emit.error(f"{op_name} retry failed: {exc}")
-            return {"error": str(exc)}
-
-    async def _spawn_pane_and_wait(self, type_id: str,
-                                   args: "list[str] | None" = None) -> dict:
-        """spawn_pane + await the on_pane_spawned/on_pane_spawn_error callback."""
-        request_id = str(uuid.uuid4())
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._spawn_waiters[request_id] = fut
-        self.emit.spawn_pane(type_id, args=args, request_id=request_id)
-        try:
-            return await asyncio.wait_for(fut, timeout=10.0)
-        except asyncio.TimeoutError:
-            self.emit.error(f"spawn of {type_id!r} timed out")
-            return {"error": f"spawn of {type_id!r} timed out after 10s"}
-        finally:
-            self._spawn_waiters.pop(request_id, None)
-
-    def on_pane_spawned(self, pane_id: int, request_id: "str | None" = None) -> None:
-        fut = self._spawn_waiters.get(request_id) if request_id else None
-        if fut is not None and not fut.done():
-            fut.set_result({"pane_id": pane_id})
-
-    def on_pane_spawn_error(self, reason: str, request_id: "str | None" = None) -> None:
-        fut = self._spawn_waiters.get(request_id) if request_id else None
-        if fut is not None and not fut.done():
-            fut.set_result({"error": reason})
-
-    def _register_pane_tools(self) -> None:
-        """Register host-mediated tools that let the AI see and drive panes.
-
-        Everything goes through capability-gated PGAP requests — the app has
-        no socket or subprocess route to the host. Capabilities used:
-        panes.spawn (open_terminal, open_app), panes.read (list_panes,
-        get_pane_state, capture_pane), panes.control (send_command,
-        send_app_action, focus_pane).
+        Tools registered:
+          - open_terminal: spawn a new terminal pane (optionally running a command)
+          - open_app: open a Plexi app by ID in a new pane
+          - list_panes: return the current pane list as structured JSON
+          - send_command: send a text command to a specific pane
         """
 
         @self.tool(
             "open_terminal",
             description=(
-                "Spawn a new terminal pane in the Plexi workspace, optionally "
-                "running a shell command in it. Returns the new pane_id — use "
-                "capture_pane on it to read the command's output."
+                "Spawn a new terminal pane in the Plexi workspace. "
+                "Optionally run a shell command in it."
             ),
             schema={
                 "type": "object",
@@ -199,21 +167,26 @@ class AssistantApp(App):
             },
         )
         async def handle_open_terminal(args: dict) -> dict:
+            cmd = [PLEXI_BINARY, "terminal"]
             command_arg = args.get("command", "").strip()
-            self.emit.info(f"open_terminal tool: command={command_arg[:60]!r}")
-            return await self._call_with_capability(
-                "panes.spawn", "open_terminal",
-                lambda: self._spawn_pane_and_wait(
-                    "terminal", args=[command_arg] if command_arg else None
-                ),
-            )
+            if command_arg:
+                cmd += ["--command", command_arg]
+            self.emit.info(f"open_terminal: {cmd}")
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode != 0:
+                    err = result.stderr.strip() or result.stdout.strip()
+                    self.emit.error(f"open_terminal failed (rc={result.returncode}): {err}")
+                    return {"error": err}
+                pane_id = result.stdout.strip()
+                return {"pane_id": pane_id}
+            except Exception as exc:
+                self.emit.error(f"open_terminal exception: {exc}")
+                return {"error": str(exc)}
 
         @self.tool(
             "open_app",
-            description=(
-                "Open a Plexi app by its app ID in a new pane. Returns the new "
-                "pane_id — use get_pane_state on it to see the app's UI."
-            ),
+            description="Open a Plexi app by its app ID in a new pane.",
             schema={
                 "type": "object",
                 "properties": {
@@ -229,20 +202,23 @@ class AssistantApp(App):
             app_id = args.get("app_id", "").strip()
             if not app_id:
                 return {"error": "app_id must not be empty"}
-            self.emit.info(f"open_app tool: app_id={app_id!r}")
-            return await self._call_with_capability(
-                "panes.spawn", "open_app",
-                lambda: self._spawn_pane_and_wait(app_id),
-            )
+            cmd = [PLEXI_BINARY, "app", "open", app_id]
+            self.emit.info(f"open_app: {cmd}")
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode != 0:
+                    err = result.stderr.strip() or result.stdout.strip()
+                    self.emit.error(f"open_app failed (rc={result.returncode}): {err}")
+                    return {"error": err}
+                pane_id = result.stdout.strip()
+                return {"pane_id": pane_id}
+            except Exception as exc:
+                self.emit.error(f"open_app exception: {exc}")
+                return {"error": str(exc)}
 
         @self.tool(
             "list_panes",
-            description=(
-                "List all open panes in the Plexi workspace with their id, "
-                "title, and type. Start here: pick a pane_id, then use "
-                "get_pane_state (app panes) or capture_pane (terminal panes) "
-                "to see what's inside it."
-            ),
+            description="Return the current list of open panes in the Plexi workspace.",
             schema={
                 "type": "object",
                 "properties": {},
@@ -250,88 +226,32 @@ class AssistantApp(App):
             },
         )
         async def handle_list_panes(_args: dict) -> dict:
-            self.emit.info("list_panes tool invoked")
-
-            async def attempt() -> dict:
-                return {"panes": await self.emit.list_panes()}
-
-            return await self._call_with_capability(
-                "panes.read", "list_panes", attempt)
-
-        @self.tool(
-            "get_pane_state",
-            description=(
-                "Read the current UI tree of an app pane — every label, button, "
-                "and input it is rendering. Use this to see an app before acting "
-                "on it with send_app_action, and again afterwards to verify the "
-                "action worked."
-            ),
-            schema={
-                "type": "object",
-                "properties": {
-                    "pane_id": {
-                        "type": "integer",
-                        "description": "Target app pane id (from list_panes).",
-                    },
-                },
-                "required": ["pane_id"],
-            },
-        )
-        async def handle_get_pane_state(args: dict) -> dict:
-            pane_id = int(args["pane_id"])
-            self.emit.info(f"get_pane_state tool: pane={pane_id}")
-
-            async def attempt() -> dict:
-                return {"state": await self.emit.get_pane_state(pane_id)}
-
-            return await self._call_with_capability(
-                "panes.read", "get_pane_state", attempt)
-
-        @self.tool(
-            "capture_pane",
-            description=(
-                "Read the last lines of a terminal pane's scrollback. Use this "
-                "to see a terminal's output before and after send_command."
-            ),
-            schema={
-                "type": "object",
-                "properties": {
-                    "pane_id": {
-                        "type": "integer",
-                        "description": "Target terminal pane id (from list_panes).",
-                    },
-                    "lines": {
-                        "type": "integer",
-                        "description": "Number of lines from the end of the scrollback (default 50).",
-                    },
-                },
-                "required": ["pane_id"],
-            },
-        )
-        async def handle_capture_pane(args: dict) -> dict:
-            pane_id = int(args["pane_id"])
-            lines = int(args.get("lines", 50))
-            self.emit.info(f"capture_pane tool: pane={pane_id} lines={lines}")
-
-            async def attempt() -> dict:
-                return {"lines": await self.emit.capture_pane(pane_id, lines=lines)}
-
-            return await self._call_with_capability(
-                "panes.read", "capture_pane", attempt)
+            cmd = [PLEXI_BINARY, "pane", "list", "--json"]
+            self.emit.info("list_panes: fetching pane list")
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode != 0:
+                    err = result.stderr.strip() or result.stdout.strip()
+                    self.emit.error(f"list_panes failed (rc={result.returncode}): {err}")
+                    return {"error": err}
+                try:
+                    panes = json.loads(result.stdout)
+                except json.JSONDecodeError:
+                    panes = result.stdout.strip()
+                return {"panes": panes}
+            except Exception as exc:
+                self.emit.error(f"list_panes exception: {exc}")
+                return {"error": str(exc)}
 
         @self.tool(
             "send_command",
-            description=(
-                "Send text input to a terminal pane's stdin ('\\n' is Enter). "
-                "Verify the result with capture_pane afterwards. For app panes "
-                "use send_app_action instead."
-            ),
+            description="Send a text string as input to a specific pane by ID.",
             schema={
                 "type": "object",
                 "properties": {
                     "pane_id": {
-                        "type": "integer",
-                        "description": "Target terminal pane id (from list_panes).",
+                        "type": "string",
+                        "description": "The target pane ID.",
                     },
                     "text": {
                         "type": "string",
@@ -342,91 +262,26 @@ class AssistantApp(App):
             },
         )
         async def handle_send_command(args: dict) -> dict:
-            pane_id = int(args["pane_id"])
+            pane_id = args.get("pane_id", "").strip()
             text = args.get("text", "")
+            if not pane_id:
+                return {"error": "pane_id must not be empty"}
             if not text:
                 return {"error": "text must not be empty"}
-            self.emit.info(f"send_command tool: pane={pane_id} text={text[:60]!r}")
+            cmd = [PLEXI_BINARY, "pane", "command", pane_id, text]
+            self.emit.info(f"send_command: pane={pane_id!r} text={text[:60]!r}")
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode != 0:
+                    err = result.stderr.strip() or result.stdout.strip()
+                    self.emit.error(f"send_command failed (rc={result.returncode}): {err}")
+                    return {"ok": False, "error": err}
+                return {"ok": True}
+            except Exception as exc:
+                self.emit.error(f"send_command exception: {exc}")
+                return {"ok": False, "error": str(exc)}
 
-            async def attempt() -> dict:
-                self.emit.send_to_pane(pane_id, text)
-                return {"ok": True, "pane_id": pane_id}
-
-            return await self._call_with_capability(
-                "panes.control", "send_command", attempt)
-
-        @self.tool(
-            "send_app_action",
-            description=(
-                "Dispatch a semantic action to an app pane (e.g. 'refresh', "
-                "'navigate-to'). Workflow: get_pane_state to see the app, "
-                "send_app_action to drive it, get_pane_state again to verify."
-            ),
-            schema={
-                "type": "object",
-                "properties": {
-                    "pane_id": {
-                        "type": "integer",
-                        "description": "Target app pane id (from list_panes).",
-                    },
-                    "action": {
-                        "type": "string",
-                        "description": "Action name the app understands.",
-                    },
-                    "args": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Optional extra arguments for the action.",
-                    },
-                },
-                "required": ["pane_id", "action"],
-            },
-        )
-        async def handle_send_app_action(args: dict) -> dict:
-            pane_id = int(args["pane_id"])
-            action = args.get("action", "").strip()
-            if not action:
-                return {"error": "action must not be empty"}
-            extra = [str(a) for a in args.get("args", [])]
-            self.emit.info(f"send_app_action tool: pane={pane_id} action={action!r} args={extra}")
-
-            async def attempt() -> dict:
-                self.emit.send_app_action(pane_id, action, args=extra or None)
-                return {"ok": True, "pane_id": pane_id, "action": action}
-
-            return await self._call_with_capability(
-                "panes.control", "send_app_action", attempt)
-
-        @self.tool(
-            "focus_pane",
-            description="Move the user's UI focus to a pane by id (from list_panes).",
-            schema={
-                "type": "object",
-                "properties": {
-                    "pane_id": {
-                        "type": "integer",
-                        "description": "The pane id to focus.",
-                    },
-                },
-                "required": ["pane_id"],
-            },
-        )
-        async def handle_focus_pane(args: dict) -> dict:
-            pane_id = int(args["pane_id"])
-            self.emit.info(f"focus_pane tool: pane={pane_id}")
-
-            async def attempt() -> dict:
-                self.emit.focus_pane(pane_id)
-                return {"ok": True, "pane_id": pane_id}
-
-            return await self._call_with_capability(
-                "panes.control", "focus_pane", attempt)
-
-        self.emit.info(
-            "AssistantApp: registered pane tools (open_terminal, open_app, "
-            "list_panes, get_pane_state, capture_pane, send_command, "
-            "send_app_action, focus_pane)"
-        )
+        self.emit.info("AssistantApp: registered CLI tools (open_terminal, open_app, list_panes, send_command)")
 
     # ── Session persistence ────────────────────────────────────────────────────
 
@@ -481,6 +336,12 @@ class AssistantApp(App):
 
     def on_ai_stream_chunk(self, _request_id: str, delta: str, _done: bool) -> None:
         self._streaming_text += delta
+        self._pin_to_bottom = True
+        self.emit.schedule_render()
+
+    def on_ai_thinking_chunk(self, _request_id: str, delta: str, _done: bool) -> None:
+        self._thinking_text += delta
+        self._pin_to_bottom = True
         self.emit.schedule_render()
 
     def _send_query(self) -> None:
@@ -489,9 +350,14 @@ class AssistantApp(App):
         The host tool dispatcher automatically injects tools exposed by other
         panes in the same workspace into the ai_query call. The broker handles
         the tool call loop internally, so this method receives the final
-        resolved response after any tool rounds complete.
+        resolved response after any tool rounds complete; tokens and thinking
+        stream in live via on_ai_stream_chunk / on_ai_thinking_chunk.
         """
-        messages = [{"role": m["role"], "content": m["content"]} for m in self._messages]
+        messages = [
+            {"role": m["role"], "content": m["content"]}
+            for m in self._messages
+            if m["role"] in ("user", "assistant")
+        ]
         model_tier = self._model_tier
         try:
             resp = self.emit.run_sync(
@@ -501,18 +367,23 @@ class AssistantApp(App):
                     messages=messages,
                 )
             )
-            # Streaming chunks already built _streaming_text; use final content
-            # if streaming produced nothing (host might not stream).
-            if not self._streaming_text and resp.content:
-                self._streaming_text = resp.content
-            self._messages.append({"role": "assistant", "content": self._streaming_text})
+            # The final response content is authoritative; streamed deltas are
+            # the live preview (and the fallback if the host didn't stream).
+            content = resp.content or self._streaming_text
+            msg: dict = {"role": "assistant", "content": content}
+            if self._thinking_text:
+                msg["thinking"] = self._thinking_text
+                msg["thinking_secs"] = round(time.monotonic() - self._stream_started, 1)
+            self._messages.append(msg)
             self._save_session()
         except Exception as e:
             self.emit.error(f"ai_query failed: {e}")
-            self._messages.append({"role": "assistant", "content": f"Error: {e}"})
+            self._messages.append({"role": "error", "content": str(e)})
         finally:
             self._is_streaming = False
             self._streaming_text = ""
+            self._thinking_text = ""
+            self._pin_to_bottom = True
             self.emit.schedule_render()
 
     def _submit(self, text: str) -> None:
@@ -524,52 +395,88 @@ class AssistantApp(App):
         self._messages.append({"role": "user", "content": text})
         self._is_streaming = True
         self._streaming_text = ""
+        self._thinking_text = ""
+        self._stream_started = time.monotonic()
+        self._pin_to_bottom = True
         threading.Thread(target=self._send_query, daemon=True).start()
         self.emit.schedule_render()
 
     # ── Rendering ──────────────────────────────────────────────────────────────
 
-    def _thinking_label(self) -> Label:
-        """Animated thinking indicator — Braille spinner at 8 fps."""
-        frame = _THINKING_FRAMES[int(time.monotonic() * 8) % len(_THINKING_FRAMES)]
-        return Label(f"{frame}  thinking…", tone="hint")
+    def _spinner_label(self, text: str) -> Label:
+        """Animated indicator — Braille spinner at 8 fps."""
+        frame = _SPINNER_FRAMES[int(time.monotonic() * 8) % len(_SPINNER_FRAMES)]
+        self.emit.schedule_render()
+        return Label(f"{frame}  {text}", tone="hint")
+
+    def _thought_marker(self, msg: dict) -> Label | None:
+        """Collapsed one-line marker for a completed thinking phase."""
+        if not msg.get("thinking"):
+            return None
+        secs = msg.get("thinking_secs")
+        label = f"✦ thought for {secs}s" if secs else "✦ thought"
+        return Label(label, tone="hint")
 
     def _build_chat_column(self) -> Column:
         """Build a Column of ChatBubble nodes for the message history."""
-        children = []
+        children: list = []
         for msg in self._messages:
-            role = "user" if msg["role"] == "user" else "assistant"
+            role = msg["role"] if msg["role"] in ("user", "error") else "assistant"
+            marker = self._thought_marker(msg)
+            if marker is not None:
+                children.append(marker)
             children.append(ChatBubble(text=msg["content"], role=role, max_lines=100))
-        if self._is_streaming and self._streaming_text:
-            children.append(ChatBubble(
-                text=self._streaming_text, role="assistant", max_lines=100,
-            ))
-        elif self._is_streaming:
-            children.append(self._thinking_label())
-            self.emit.schedule_render()
+
+        if self._is_streaming:
+            if self._thinking_text and not self._streaming_text:
+                # Live thinking phase: spinner + scrolling tail of the thought.
+                children.append(self._spinner_label("thinking…"))
+                tail = self._thinking_text[-_THINKING_TAIL_CHARS:]
+                children.append(Label(tail, tone="hint", max_lines=4))
+            elif self._streaming_text:
+                if self._thinking_text:
+                    secs = round(time.monotonic() - self._stream_started, 1)
+                    children.append(Label(f"✦ thought for {secs}s", tone="hint"))
+                children.append(ChatBubble(
+                    text=self._streaming_text, role="assistant", max_lines=100,
+                ))
+            else:
+                children.append(self._spinner_label("waiting for model…"))
+
         if not children:
-            children.append(Label("Send a message to start.", tone="hint"))
-        return Column(children, padding=0.0, padding_top=0.0, gap=8.0)
+            children.append(Label("Ask anything. ⇧↵ for a new line.", tone="hint"))
+        return Column(children, padding=SPACE_LG, padding_top=SPACE_MD, gap=SPACE_MD)
 
     def on_render(self, ctx) -> None:
         self._scroll.child = self._build_chat_column()
-        self._scroll.scroll_offset = max(0.0, self._scroll._child_h - self._scroll._avail_h)
+        if self._pin_to_bottom:
+            self._scroll.scroll_offset = max(
+                0.0, self._scroll._child_h - self._scroll._avail_h
+            )
+            if not self._is_streaming:
+                self._pin_to_bottom = False
 
         if self._is_streaming:
-            footer_keys: list[tuple] = [("esc", "stop")]
+            footer_keys: list[tuple] = [("⌘N", "new")]
         else:
             footer_keys = [
                 ("↵", "send"),
-                ("⌘M", "model"),
+                ("⇧↵", "newline"),
+                ("⌘M", f"model: {self._model_tier}"),
                 ("⌘N", "new"),
-                ("esc", "quit"),
             ]
+
+        composer = Column(
+            [self._input],
+            padding=SPACE_LG,
+            padding_top=SPACE_SM,
+            gap=0.0,
+        )
 
         ctx.render(Column([
             AppBar(title="Assistant", subtitle=self._model_tier),
             self._scroll,
-            self._input,
-            Spacer(grow=False),
+            composer,
             FooterKeys(footer_keys),
         ], padding=0.0, padding_top=0, gap=0.0))
 
@@ -590,6 +497,7 @@ class AssistantApp(App):
 
     def on_key(self, key: str, mods: dict) -> None:
         if self._scroll.handle_key(key):
+            self._pin_to_bottom = False
             self.emit.schedule_render()
             return
         if key == "m" and mods.get("cmd"):

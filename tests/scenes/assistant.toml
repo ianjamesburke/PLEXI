@@ -1,0 +1,22 @@
+# Real apps/assistant PGAP app seeded via --demo-state: full chat layout with
+# user/assistant bubbles, a collapsed thinking marker, and a live thinking
+# stream. suite = false — spawns a real child process; run with
+# `just scene tests/scenes/assistant.toml`.
+size = [1280.0, 800.0]
+suite = false
+
+[[steps]]
+open_app = "apps/assistant"
+args = ["--demo-state", '{"messages": [{"role": "user", "content": "What is the difference between a git worktree and a branch?"}, {"role": "assistant", "content": "A **branch** is a pointer to a commit. A **worktree** is a separate working directory checked out to a branch, so you can have multiple branches checked out at once.", "thinking": "The user wants a concise comparison.", "thinking_secs": 2.3}, {"role": "user", "content": "Show me how to create one.\nKeep it short."}], "is_streaming": true, "thinking_text": "They want the wtp command. I should show `wtp add -b <branch>` and mention the worktrees/ directory convention, keeping it to two lines as requested.", "model_tier": "low"}']
+
+[[steps]]
+wait_app_frame = { timeout_s = 15.0 }
+
+[[steps]]
+run_steps = 5
+
+[[steps]]
+assert = { pane_count = 1, lifecycle = "running", tree_contains = "Assistant" }
+
+[[steps]]
+shot = "assistant.png"

@@ -3440,6 +3440,7 @@ mod ai_stream_chunk_tests {
         let event = PlexiEvent::AiStreamChunk {
             request_id: "req-123".to_string(),
             delta: "Hello, ".to_string(),
+            reasoning: None,
             done: false,
         };
         let json = serde_json::to_string(&event).expect("serialize");
@@ -3461,10 +3462,12 @@ mod ai_stream_chunk_tests {
             PlexiEvent::AiStreamChunk {
                 request_id,
                 delta,
+                reasoning,
                 done,
             } => {
                 assert_eq!(request_id, "req-123");
                 assert_eq!(delta, "Hello, ");
+                assert_eq!(reasoning, None);
                 assert!(!done);
             }
             other => panic!("expected AiStreamChunk, got {other:?}"),
@@ -3477,6 +3480,7 @@ mod ai_stream_chunk_tests {
         let event = PlexiEvent::AiStreamChunk {
             request_id: "req-456".to_string(),
             delta: String::new(),
+            reasoning: None,
             done: true,
         };
         let json = serde_json::to_string(&event).expect("serialize");
@@ -3493,12 +3497,51 @@ mod ai_stream_chunk_tests {
         let json = r#"{"type":"ai_stream_chunk","request_id":"r1","delta":"hi"}"#;
         let event: PlexiEvent = serde_json::from_str(json).expect("deserialize");
         match event {
-            PlexiEvent::AiStreamChunk { done, delta, .. } => {
+            PlexiEvent::AiStreamChunk {
+                done,
+                delta,
+                reasoning,
+                ..
+            } => {
                 assert!(!done, "done should default to false when absent");
                 assert_eq!(delta, "hi");
+                assert_eq!(reasoning, None, "reasoning should default to None");
             }
             other => panic!("expected AiStreamChunk, got {other:?}"),
         }
+    }
+
+    /// A reasoning-only chunk round-trips and omits the field when None.
+    #[test]
+    fn ai_stream_chunk_reasoning_round_trips() {
+        let event = PlexiEvent::AiStreamChunk {
+            request_id: "req-789".to_string(),
+            delta: String::new(),
+            reasoning: Some("considering options".to_string()),
+            done: false,
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        assert!(
+            json.contains(r#""reasoning":"considering options""#),
+            "reasoning missing: {json}"
+        );
+        let round_tripped: PlexiEvent = serde_json::from_str(&json).expect("deserialize");
+        match round_tripped {
+            PlexiEvent::AiStreamChunk { reasoning, .. } => {
+                assert_eq!(reasoning.as_deref(), Some("considering options"));
+            }
+            other => panic!("expected AiStreamChunk, got {other:?}"),
+        }
+
+        // None is omitted from the wire entirely (skip_serializing_if).
+        let text_chunk = PlexiEvent::AiStreamChunk {
+            request_id: "r".to_string(),
+            delta: "hi".to_string(),
+            reasoning: None,
+            done: false,
+        };
+        let json = serde_json::to_string(&text_chunk).expect("serialize");
+        assert!(!json.contains("reasoning"), "None must be omitted: {json}");
     }
 
     #[test]

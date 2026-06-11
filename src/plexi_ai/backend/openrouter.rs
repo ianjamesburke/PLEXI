@@ -38,7 +38,7 @@ fn parse_usage_tokens(usage: &serde_json::Value) -> (Option<u32>, Option<u32>) {
 /// OpenRouter streaming backend.
 pub struct OpenRouterBackend {
     pub api_key: String,
-    /// Full OpenRouter model ID. e.g. `"anthropic/claude-sonnet-4-6"`.
+    /// Full OpenRouter model ID. e.g. `"anthropic/claude-sonnet-4.6"`.
     pub model: String,
 }
 
@@ -303,6 +303,22 @@ fn stream_openrouter(
             return;
         }
 
+        // Reasoning ("thinking") delta. OpenRouter normalizes reasoning models
+        // to `delta.reasoning`; some providers surface `delta.reasoning_content`.
+        let reasoning = choice["delta"]["reasoning"]
+            .as_str()
+            .or_else(|| choice["delta"]["reasoning_content"].as_str());
+        if let Some(reasoning) = reasoning {
+            if !reasoning.is_empty()
+                && tx
+                    .send(StreamEvent::Reasoning(reasoning.to_string()))
+                    .is_err()
+            {
+                // Receiver dropped — caller cancelled.
+                return;
+            }
+        }
+
         // Text delta
         if let Some(text) = choice["delta"]["content"].as_str() {
             if !text.is_empty() {
@@ -347,7 +363,7 @@ mod tests {
         messages.extend(msgs.iter().cloned());
 
         let body = serde_json::json!({
-            "model": "anthropic/claude-sonnet-4-6",
+            "model": "anthropic/claude-sonnet-4.6",
             "messages": messages,
             "stream": true
         });
@@ -445,6 +461,49 @@ mod tests {
         }
 
         assert_eq!(deltas, vec!["Hello", ", ", "world", "!"]);
+    }
+
+    /// Reasoning deltas are extracted from `delta.reasoning` and
+    /// `delta.reasoning_content`, separately from text content.
+    #[test]
+    fn sse_parser_extracts_reasoning_deltas() {
+        let sse_lines = vec![
+            r#"data: {"choices":[{"delta":{"reasoning":"hmm, "}}]}"#,
+            r#"data: {"choices":[{"delta":{"reasoning_content":"let me think"}}]}"#,
+            r#"data: {"choices":[{"delta":{"content":"Answer."}}]}"#,
+            "data: [DONE]",
+        ];
+
+        let mut reasoning: Vec<String> = Vec::new();
+        let mut text: Vec<String> = Vec::new();
+        for line in &sse_lines {
+            let data = match line.strip_prefix("data: ") {
+                Some(d) => d,
+                None => continue,
+            };
+            if data == "[DONE]" {
+                break;
+            }
+            let chunk: serde_json::Value = serde_json::from_str(data).unwrap();
+            let choice = &chunk["choices"][0];
+            // Mirrors stream_openrouter reasoning extraction.
+            if let Some(r) = choice["delta"]["reasoning"]
+                .as_str()
+                .or_else(|| choice["delta"]["reasoning_content"].as_str())
+            {
+                if !r.is_empty() {
+                    reasoning.push(r.to_string());
+                }
+            }
+            if let Some(t) = choice["delta"]["content"].as_str() {
+                if !t.is_empty() {
+                    text.push(t.to_string());
+                }
+            }
+        }
+
+        assert_eq!(reasoning, vec!["hmm, ", "let me think"]);
+        assert_eq!(text, vec!["Answer."]);
     }
 
     /// Verify that `[DONE]` terminates SSE parsing before any subsequent lines.

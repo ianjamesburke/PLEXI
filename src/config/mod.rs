@@ -463,11 +463,11 @@ impl AiConfig {
 pub struct OpenRouterBackendConfig {
     /// Environment variable name for the API key. Default: `OPENROUTER_API_KEY`.
     pub api_key_env: Option<String>,
-    /// Low-tier model. e.g. "google/gemini-2.0-flash-001"
+    /// Low-tier model. e.g. "qwen/qwen3.6-flash"
     pub model_low: Option<String>,
-    /// Medium-tier model. e.g. "anthropic/claude-sonnet-4-6"
+    /// Medium-tier model. e.g. "anthropic/claude-sonnet-4.6"
     pub model_medium: Option<String>,
-    /// High-tier model. e.g. "anthropic/claude-opus-4-7"
+    /// High-tier model. e.g. "anthropic/claude-opus-4.8"
     pub model_high: Option<String>,
 }
 

@@ -733,8 +733,12 @@ impl ProcessApp {
 
         struct NoopBroker;
         impl AiBroker for NoopBroker {
-            fn dispatch(&self, _req: AiBrokerRequest) -> AiBrokerResponse {
-                AiBrokerResponse::ok_with_deltas("noop".to_string(), 0, 0, Vec::new())
+            fn dispatch(
+            &self,
+            _req: AiBrokerRequest,
+            _on_delta: &mut dyn FnMut(crate::plexi_ai::turn_loop::TurnDelta<'_>),
+        ) -> AiBrokerResponse {
+                AiBrokerResponse::ok("noop".to_string(), 0, 0)
             }
         }
 
