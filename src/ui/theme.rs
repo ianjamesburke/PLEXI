@@ -6,8 +6,20 @@ use std::sync::Arc;
 
 pub const FONT_SIZE: f32 = 14.0;
 const FONT_NAME: &str = "JetBrainsMono Nerd Font";
+const UI_FONT_NAME: &str = "Inter";
+const UI_FONT_MEDIUM_NAME: &str = "Inter Medium";
 const FALLBACK_FONT_NAME: &str = "DejaVu Sans";
 const UNICODE_FALLBACK_FONT_NAME: &str = "Noto Sans";
+
+/// Named family for medium-weight UI text (titles, section headers). egui has
+/// no weight axis — a second family backed by Inter Medium is how weight
+/// contrast works.
+const UI_MEDIUM_FAMILY: &str = "ui-medium";
+
+/// FontId for medium-weight UI text. Pair with `RichText::font(...)`.
+pub fn font_medium(size: f32) -> FontId {
+    FontId::new(size, egui::FontFamily::Name(UI_MEDIUM_FAMILY.into()))
+}
 
 fn parse_hex_or(s: &Option<String>, default: Color32) -> Color32 {
     let [r, g, b] = hex_to_bytes(s.as_deref(), [default.r(), default.g(), default.b()]);
@@ -744,6 +756,18 @@ pub fn font_definitions() -> egui::FontDefinitions {
         ))),
     );
     fonts.font_data.insert(
+        UI_FONT_NAME.to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../../fonts/Inter-Regular.otf"
+        ))),
+    );
+    fonts.font_data.insert(
+        UI_FONT_MEDIUM_NAME.to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../../fonts/Inter-Medium.otf"
+        ))),
+    );
+    fonts.font_data.insert(
         FALLBACK_FONT_NAME.to_owned(),
         Arc::new(egui::FontData::from_static(include_bytes!(
             "../../fonts/DejaVuSans.ttf"
@@ -755,27 +779,26 @@ pub fn font_definitions() -> egui::FontDefinitions {
             "../../fonts/NotoSans-Regular.ttf"
         ))),
     );
-    // Proportional family: DejaVuSans (actually proportional) is primary so
-    // UI text reads like a real app instead of a monospace terminal dump.
-    // JetBrains Mono falls through second — if DejaVuSans lacks a glyph
-    // (nerd-font icons, box drawing), the mono font provides coverage.
-    // BREAKS IF: UI text looks monospace again (priorities swapped back, or
-    // DejaVuSans removed from the bundle).
-    fonts
+    // Proportional family: Inter is primary so UI text reads like a modern
+    // app. JetBrains Mono falls through second for nerd-font icons and box
+    // drawing; DejaVuSans and Noto extend Unicode coverage after that.
+    // BREAKS IF: UI text looks monospace or dated (priorities reordered, or
+    // Inter removed from the bundle).
+    let proportional = fonts
         .families
         .entry(egui::FontFamily::Proportional)
-        .or_default()
-        .insert(0, FALLBACK_FONT_NAME.to_owned());
+        .or_default();
+    proportional.insert(0, UI_FONT_NAME.to_owned());
+    proportional.insert(1, FONT_NAME.to_owned());
+    proportional.insert(2, FALLBACK_FONT_NAME.to_owned());
+    proportional.insert(3, UNICODE_FALLBACK_FONT_NAME.to_owned());
+    // Medium family mirrors Proportional with Inter Medium leading, so
+    // missing glyphs degrade identically instead of swapping families.
+    let mut medium = proportional.clone();
+    medium[0] = UI_FONT_MEDIUM_NAME.to_owned();
     fonts
         .families
-        .entry(egui::FontFamily::Proportional)
-        .or_default()
-        .insert(1, FONT_NAME.to_owned());
-    fonts
-        .families
-        .entry(egui::FontFamily::Proportional)
-        .or_default()
-        .insert(2, UNICODE_FALLBACK_FONT_NAME.to_owned());
+        .insert(egui::FontFamily::Name(UI_MEDIUM_FAMILY.into()), medium);
     fonts
         .families
         .entry(egui::FontFamily::Monospace)

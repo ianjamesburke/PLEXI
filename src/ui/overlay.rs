@@ -79,6 +79,12 @@ impl<'a> ModalShell<'a> {
                     .fill(colors.bg_sidebar)
                     .stroke(egui::Stroke::new(1.0, colors.border))
                     .corner_radius(style::RADIUS_LG)
+                    .shadow(egui::Shadow {
+                        offset: [0, 12],
+                        blur: 32,
+                        spread: 0,
+                        color: Color32::from_black_alpha(96),
+                    })
                     .inner_margin(egui::Margin::symmetric(
                         style::MODAL_PADDING_H,
                         style::MODAL_PADDING_V,
@@ -88,10 +94,10 @@ impl<'a> ModalShell<'a> {
                         if let Some(title) = self.title {
                             ui.label(
                                 egui::RichText::new(title)
-                                    .size(style::TEXT_BODY)
+                                    .font(crate::ui::theme::font_medium(style::TEXT_TITLE))
                                     .color(colors.text_primary),
                             );
-                            ui.add_space(style::SPACE_SM);
+                            ui.add_space(style::SPACE_MD);
                         }
                         add_body(ui)
                     })
