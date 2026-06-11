@@ -331,6 +331,21 @@ mod tests {
         println!("Screenshot saved to /tmp/plexi_shot_file_browser.png");
     }
 
+    /// Headless screenshot of the file browser with the host sidebar open.
+    /// `new_for_test` defaults `sidebar_visible` to false; flip it on to
+    /// capture the full host chrome (sidebar + pane).
+    #[test]
+    fn shot_file_browser_with_sidebar() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
+        h.step();
+        h.open_file_browser(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+        h.with_app_mut(|app| app.sidebar_visible = true);
+        h.run_steps(3);
+        h.save_screenshot("/tmp/plexi_shot_file_browser_sidebar.png")
+            .expect("render failed");
+        println!("Screenshot saved to /tmp/plexi_shot_file_browser_sidebar.png");
+    }
+
     /// Headless screenshot of a subcontext portal: open a file browser pane,
     /// push it into a subcontext, render the resulting portal card.
     #[test]
