@@ -13,11 +13,12 @@ Keys (THREAD): Esc back · o browser
 
 import asyncio
 import json
+from pathlib import Path
 import urllib.parse
 import webbrowser
 
 from plexi_sdk import (
-    App, RenderContext, CapabilityDeniedError,
+    App, RenderContext, CapabilityDeniedError, Arg,
     CAPTION, HINT, PAD,
 )
 from plexi_sdk.ui import (
@@ -52,9 +53,24 @@ def _short_ts(ts: str) -> str:
         return ""
 
 
+def _strip_unrendered_symbols(text: str) -> str:
+    """Drop emoji-style codepoints that currently render as placeholder boxes."""
+    out: list[str] = []
+    for ch in text:
+        cp = ord(ch)
+        if (
+            0x1F000 <= cp <= 0x1FAFF
+            or 0xFE00 <= cp <= 0xFE0F
+            or cp == 0x200D
+        ):
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
 def _author(post: dict) -> str:
     a    = post.get("author") or {}
-    name = a.get("displayName") or ""
+    name = _strip_unrendered_symbols(a.get("displayName") or "")
     hand = a.get("handle") or "?"
     return f"{name} @{hand}" if name and name != hand else f"@{hand}"
 
@@ -68,7 +84,7 @@ def _did(post: dict) -> str:
 
 
 def _text(post: dict) -> str:
-    return (post.get("record") or {}).get("text", "")
+    return _strip_unrendered_symbols((post.get("record") or {}).get("text", ""))
 
 
 def _thumbs(post: dict) -> list[str]:
@@ -128,6 +144,7 @@ def _at_web(uri: str) -> str:
 class BlueskyApp(App):
     VIEW_FEED   = "feed"
     VIEW_THREAD = "thread"
+    fixture: Arg[str | None] = Arg("--fixture", default=None)
 
     def on_init(self) -> None:
         self._view    = self.VIEW_FEED
@@ -157,6 +174,14 @@ class BlueskyApp(App):
 
         # Headless render: --state JSON lands in self._app_state before on_init.
         seeded = self._app_state
+        if self.fixture:
+            fixture_path = Path(__file__).with_name(self.fixture)
+            try:
+                seeded = json.loads(fixture_path.read_text())
+                self.emit.info(f"bluesky: loaded fixture {fixture_path.name}")
+            except Exception as exc:
+                seeded = {"_loading": False, "_error": f"Fixture load failed: {exc}"}
+                self.emit.warn(f"bluesky: fixture load failed {fixture_path}: {exc}")
         if "_feed" in seeded or "_thread" in seeded:
             self._loading = seeded.get("_loading", False)
             self._error   = seeded.get("_error")
@@ -366,19 +391,19 @@ class BlueskyApp(App):
             likes     = post.get("likeCount", 0)
             reposts   = post.get("repostCount", 0)
             a         = post.get("author") or {}
-            name      = a.get("displayName") or ""
+            name      = _strip_unrendered_symbols(a.get("displayName") or "")
             hand      = a.get("handle") or "?"
             text      = _text(post)
 
             # primary: @handle  secondary: Name · text; stats stay visible in trailing.
             parts = [p for p in [name if name != hand else "", text] if p]
             secondary = "  ·  ".join(parts) if parts else None
-            trailing_parts = [f"♥{_fmt_count(likes)}", f"↺{_fmt_count(reposts)}"]
+            trailing_parts = [f"like {_fmt_count(likes)}", f"repost {_fmt_count(reposts)}"]
             if ts:
                 trailing_parts.append(ts)
 
             leading = (
-                LeadingIcon("👤") if (narrow or not av_handle)
+                LeadingIcon("@") if (narrow or not av_handle)
                 else LeadingAvatar(av_handle)
             )
 
@@ -399,7 +424,7 @@ class BlueskyApp(App):
         appbar_h = appbar.measure(ctx.w)
 
         feed_keys = [
-            (["j", "k"], "nav"), ("↩", "thread"),
+            (["j", "k"], "nav"), ("enter", "thread"),
             ("p", "profile"), ("r", "refresh"),
             ("o", "browser"), (["n", "N"], "page"), ("esc", "close"),
         ]
@@ -506,7 +531,7 @@ class BlueskyApp(App):
             reposts = post.get("repostCount", 0)
             replies = post.get("replyCount", 0)
             ctx.text(t_x, y + h - HINT - _TH_BOT + 4,
-                     f"♥ {likes}  ↺ {reposts}  ↩ {replies}",
+                     f"like {likes}  repost {reposts}  reply {replies}",
                      size=HINT, color=ctx.theme.muted)
 
             y += h

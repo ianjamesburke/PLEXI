@@ -1,3 +1,12 @@
+## Non-Negotiable Implementation Workflow
+
+All feature work starts in a worktree from `alpha`, is validated with Plexi's
+testing infrastructure, and lands through a PR back to `alpha`. Direct commits
+to `alpha` are only for explicit emergency reverts or when the user explicitly
+overrides this rule in the current turn. For host UI, PGAP app rendering, or
+visual changes, include a PlexiUiHarness scene/screenshot or explain why the
+behavior cannot be covered there.
+
 ## Source of Truth for Project State
 
 `AGENTS.md` is a symlink to this file. Keep project-agent instructions here so both entry points stay identical.

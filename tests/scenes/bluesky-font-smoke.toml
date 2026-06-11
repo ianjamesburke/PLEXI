@@ -1,0 +1,20 @@
+# Bluesky PGAP smoke test with fixture state. suite = false because it spawns
+# a real child process; run with `just scene tests/scenes/bluesky-font-smoke.toml`.
+size = [1280.0, 800.0]
+suite = false
+
+[[steps]]
+open_app = "apps/dev/bluesky"
+args = ["--fixture", "state.json"]
+
+[[steps]]
+wait_app_frame = { timeout_s = 15.0 }
+
+[[steps]]
+run_steps = 5
+
+[[steps]]
+assert = { pane_count = 1, lifecycle = "running", tree_contains = "Bluesky" }
+
+[[steps]]
+shot = "bluesky-font-smoke.png"

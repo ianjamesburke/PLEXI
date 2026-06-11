@@ -1,0 +1,21 @@
+# Real PGAP app text smoke test: opens an existing app with several labels and
+# text fields so font-stack regressions are visible before install. suite =
+# false because it spawns a real child process; run with
+# `just scene tests/scenes/app-font-smoke.toml`.
+size = [1280.0, 800.0]
+suite = false
+
+[[steps]]
+open_app = "apps/examples/text-edit-demo"
+
+[[steps]]
+wait_app_frame = { timeout_s = 15.0 }
+
+[[steps]]
+run_steps = 5
+
+[[steps]]
+assert = { pane_count = 1, lifecycle = "running", tree_contains = "TextEdit Demo" }
+
+[[steps]]
+shot = "app-font-smoke.png"

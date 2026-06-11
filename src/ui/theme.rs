@@ -880,6 +880,31 @@ pub fn setup_fonts(ctx: &egui::Context) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn proportional_font_stack_keeps_primary_text_before_emoji_fallbacks() {
+        let fonts = font_definitions();
+        let family = fonts
+            .families
+            .get(&egui::FontFamily::Proportional)
+            .expect("proportional font family should be configured");
+
+        let primary_index = family
+            .iter()
+            .position(|font| font == FONT_NAME)
+            .expect("Plexi Nerd Font should remain available");
+
+        for fallback in ["NotoEmoji-Regular", "emoji-icon-font"] {
+            let fallback_index = family
+                .iter()
+                .position(|font| font == fallback)
+                .expect("egui emoji fallback should remain available");
+            assert!(
+                primary_index < fallback_index,
+                "{FONT_NAME} must stay ahead of {fallback} for normal app text"
+            );
+        }
+    }
+
     /// Every preset's accent button must render legible text: text_on must
     /// return a color with at least 3:1 WCAG contrast against the accent and
     /// danger fills. Guards the whole preset table, including future entries.
