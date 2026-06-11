@@ -270,27 +270,39 @@ fn elide_to_width(ui: &egui::Ui, text: &str, font_id: egui::FontId, max_width: f
     out
 }
 
-/// The selection highlight stops 4px short of the row's horizontal edges and
-/// 1px vertically, so adjacent selected rows don't fuse into one slab.
+/// The selection highlight spans the row's full width — flush with the
+/// text fields above it in palettes/pickers — and stops 1px short
+/// vertically so adjacent selected rows don't fuse into one slab.
 fn selection_inset(row_rect: egui::Rect) -> egui::Rect {
     egui::Rect::from_min_max(
-        Pos2::new(row_rect.min.x + 4.0, row_rect.min.y + 1.0),
-        Pos2::new(row_rect.max.x - 4.0, row_rect.max.y - 1.0),
+        Pos2::new(row_rect.min.x, row_rect.min.y + 1.0),
+        Pos2::new(row_rect.max.x, row_rect.max.y - 1.0),
     )
 }
 
-/// Shared selection treatment for the host ListRow and the PGAP ListView
-/// renderer: inset accent-tinted fill with a soft accent outline. One visual
-/// language for "this row is selected" everywhere in the product.
-pub fn paint_selection(painter: &egui::Painter, row_rect: egui::Rect, colors: &Colors) {
+/// The two shapes (tint fill + soft outline) of the shared selection
+/// treatment, for widgets that paint into pre-reserved shape layers
+/// (see `selectable_row`).
+pub fn selection_shapes(row_rect: egui::Rect, colors: &Colors) -> [egui::Shape; 2] {
     let inset = selection_inset(row_rect);
-    painter.rect_filled(inset, style::RADIUS_SM, colors.accent.gamma_multiply(0.14));
-    painter.rect_stroke(
-        inset,
-        style::RADIUS_SM,
-        Stroke::new(1.0, colors.accent.gamma_multiply(0.45)),
-        StrokeKind::Inside,
-    );
+    [
+        egui::Shape::rect_filled(inset, style::RADIUS_SM, colors.accent.gamma_multiply(0.14)),
+        egui::Shape::rect_stroke(
+            inset,
+            style::RADIUS_SM,
+            Stroke::new(1.0, colors.accent.gamma_multiply(0.45)),
+            StrokeKind::Inside,
+        ),
+    ]
+}
+
+/// Shared selection treatment for the host ListRow, `selectable_row`, and
+/// the PGAP ListView renderer: accent-tinted fill with a soft accent
+/// outline. One visual language for "this row is selected" everywhere.
+pub fn paint_selection(painter: &egui::Painter, row_rect: egui::Rect, colors: &Colors) {
+    for shape in selection_shapes(row_rect, colors) {
+        painter.add(shape);
+    }
 }
 
 /// Trailing actions sit further off the row edge than body content — they are

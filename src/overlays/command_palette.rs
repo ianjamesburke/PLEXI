@@ -339,9 +339,12 @@ impl PlexiApp {
         }
 
         // ── Render ─────────────────────────────────────────────────────────
-        let palette_max_list_h = (ctx.screen_rect().height() - 80.0 - 120.0).max(200.0);
+        // 0.8: the palette is a launcher, not a workspace — filling nearly
+        // the whole screen height read as massive.
+        let palette_max_list_h =
+            ((ctx.screen_rect().height() - 80.0 - 120.0) * 0.8).max(200.0);
         let modal_response = ModalShell::centered("command_palette")
-            .width(style::MODAL_WIDTH_MD)
+            .width(style::MODAL_WIDTH_PALETTE)
             .escape(true)
             .show(ctx, &colors, |ui| {
                 let te_id = egui::Id::new("palette_search");
@@ -357,7 +360,7 @@ impl PlexiApp {
 
                 if entries.is_empty() {
                     ui.scope(|ui| {
-                        ui.set_max_width(style::MODAL_WIDTH_MD);
+                        ui.set_max_width(ui.available_width());
                         description_label(ui, "No matching contexts or apps", &colors);
                     });
                     return;
@@ -374,7 +377,10 @@ impl PlexiApp {
                     .min_scrolled_height(palette_max_list_h)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_width(style::MODAL_WIDTH_MD);
+                        // available_width — the scroll area reserves a
+                        // scrollbar gutter; forcing the modal width would
+                        // push rows back under the bar.
+                        ui.set_width(ui.available_width());
 
                         for (i, entry) in entries.iter().enumerate() {
                             let is_selected = i == self.palette_selected;

@@ -3,8 +3,9 @@ use egui::{Align2, Color32, CornerRadius, Pos2, RichText, Vec2};
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
-/// Consistent inner padding applied to every selectable row.
-const ROW_PAD_H: f32 = 10.0;
+/// Consistent inner padding applied to every selectable row. Horizontal
+/// matches `ListRow` so the two row primitives align in mixed lists.
+const ROW_PAD_H: f32 = style::LIST_ROW_PAD_H;
 const ROW_PAD_V: f32 = 8.0;
 
 /// Renders a highlighted selectable row whose height is determined by its
@@ -23,13 +24,11 @@ pub(crate) fn selectable_row<R>(
     colors: &Colors,
     content: impl FnOnce(&mut egui::Ui) -> R,
 ) -> (egui::Response, R) {
-    let fill: Color32 = if is_selected {
-        colors.bg_active
-    } else {
-        Color32::TRANSPARENT
-    };
-
+    // Two reserved layers: selection tint + outline (the shared treatment
+    // from `list::selection_shapes`), painted behind the content after the
+    // row's rect is known.
     let bg_idx = ui.painter().add(egui::Shape::Noop);
+    let outline_idx = ui.painter().add(egui::Shape::Noop);
 
     let scope = ui.scope(|ui| {
         ui.set_width(ui.available_width());
@@ -48,16 +47,11 @@ pub(crate) fn selectable_row<R>(
 
     let row_rect = scope.response.rect;
 
-    // Same inset-highlight language as ListRow: the fill stops 4px short of
-    // each edge so both row primitives carry identical left/right padding.
-    let bg_rect = egui::Rect::from_min_max(
-        Pos2::new(row_rect.min.x + 4.0, row_rect.min.y),
-        Pos2::new(row_rect.max.x - 4.0, row_rect.max.y),
-    );
-    ui.painter().set(
-        bg_idx,
-        egui::Shape::rect_filled(bg_rect, style::RADIUS_SM, fill),
-    );
+    if is_selected {
+        let [fill, outline] = crate::ui::list::selection_shapes(row_rect, colors);
+        ui.painter().set(bg_idx, fill);
+        ui.painter().set(outline_idx, outline);
+    }
 
     let response = ui.interact(
         row_rect,

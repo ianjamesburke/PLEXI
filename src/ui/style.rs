@@ -55,7 +55,8 @@ pub const RADIUS_BADGE: f32 = 6.0;
 // ── Modal widths ───────────────────────────────────────────────────────────
 // Pick the smallest width that fits the content without crowding. Bigger is
 // NOT better — oversized modals feel empty and force eye travel.
-pub const MODAL_WIDTH_MD: f32 = 640.0; // Palettes, compact modals.
+pub const MODAL_WIDTH_MD: f32 = 640.0; // Compact modals.
+pub const MODAL_WIDTH_PALETTE: f32 = 576.0; // Command palette — a launcher, not a document.
 pub const MODAL_WIDTH_NOTIFY: f32 = 760.0; // Notification modal — wider for breathing room.
 
 // ── Button heights ─────────────────────────────────────────────────────────
@@ -63,10 +64,11 @@ pub const BUTTON_H_MD: f32 = 32.0; // Standard form buttons.
 pub const BUTTON_H_LG: f32 = 52.0; // Primary action buttons in modals.
 
 // ── List rows ──────────────────────────────────────────────────────────────
-// 44 gives a two-line row (12pt medium + 11pt secondary) ~7px of air inside
-// the selection highlight — 40 read as cramped once the outline landed.
-pub const LIST_ROW_H: f32 = 44.0;
-pub const LIST_ROW_PAD_H: f32 = 10.0;
+// 48 gives a two-line row (12pt medium + 11pt secondary) ~8px of air inside
+// the selection highlight; 14 horizontal padding keeps the title clear of
+// the highlight's left edge — 10 read as cramped against the outline.
+pub const LIST_ROW_H: f32 = 48.0;
+pub const LIST_ROW_PAD_H: f32 = 14.0;
 pub const LIST_ROW_GAP: f32 = 8.0;
 
 // ── Overlay / modal chrome ─────────────────────────────────────────────────
