@@ -1,0 +1,24 @@
+# Subcontext portal card: push a file browser pane into a child context,
+# switch back to the parent so the portal is the visible pane.
+size = [1280.0, 800.0]
+
+[[steps]]
+open_file_browser = "."
+
+[[steps]]
+run_steps = 2
+
+[[steps]]
+push_to_subcontext = "Subcontext"
+
+[[steps]]
+switch_context = 0
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { portal_count = 1, context_count = 2 }
+
+[[steps]]
+shot = "subcontext-portal.png"

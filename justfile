@@ -243,3 +243,10 @@ ship +issues:
         gh issue edit "$issue" --add-label "in progress" --remove-label "ready" && \
         plexi terminal "c '/ship-issue $issue'" --layout new_window; \
     done
+
+# Run one UI scene file headlessly. Writes screenshots + a SceneReport JSON to
+# the out dir. shots="0" skips screenshot steps (state-only, faster).
+scene FILE out="/tmp/plexi-scenes" shots="1":
+    PLEXI_SCENE={{FILE}} PLEXI_SCENE_OUT={{out}} \
+    {{ if shots == "0" { "PLEXI_SCENE_NO_SHOTS=1" } else { "" } }} \
+    cargo test --bin plexi scene_single -- --ignored --exact scenes::tests::scene_single --nocapture

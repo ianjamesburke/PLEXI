@@ -1,0 +1,14 @@
+# File explorer host app, repo root listing.
+size = [1280.0, 800.0]
+
+[[steps]]
+open_file_browser = "."
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { pane_count = 1 }
+
+[[steps]]
+shot = "file-browser.png"

@@ -144,7 +144,10 @@ impl PlexiUiHarness {
     /// For `.py` entries running outside an installed bundle, the repo SDK at
     /// `sdk/python` is exported via `PLEXI_SDK_PATH` so `plexi_sdk` imports
     /// resolve in the child.
-    pub fn open_app_at(&mut self, app_dir: &Path) -> Result<PaneId, String> {
+    ///
+    /// `args` are forwarded in `PlexiEvent::Init` and surface as `ctx.args` —
+    /// pass JSON state for deterministic scenes.
+    pub fn open_app_at(&mut self, app_dir: &Path, args: &[String]) -> Result<PaneId, String> {
         if std::env::var_os("PLEXI_SDK_PATH").is_none() {
             let dev_sdk = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("sdk")
@@ -162,7 +165,7 @@ impl PlexiUiHarness {
         });
         let path = app_dir.to_string_lossy().into_owned();
         self.with_app_mut(|app| {
-            app.launch_app_by_path_with_layout(&path, Some("split_v".to_string()), None)
+            app.launch_app_by_path_with_layout(&path, Some("split_v".to_string()), None, args)
         })?;
         self.with_app(|app| {
             app.windows[app.active_window]
@@ -316,102 +319,8 @@ mod tests {
         println!("Screenshot saved to /tmp/plexi_init.png");
     }
 
-    // ── Visual smoke: host app, portal, real PGAP app ─────────────────────────
-
-    /// Headless screenshot of the built-in file browser host app.
-    #[test]
-    fn shot_file_browser() {
-        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
-        h.step();
-        h.open_file_browser(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-        h.run_steps(3);
-        assert_eq!(h.pane_count(), 1, "file browser pane must exist");
-        h.save_screenshot("/tmp/plexi_shot_file_browser.png")
-            .expect("render failed");
-        println!("Screenshot saved to /tmp/plexi_shot_file_browser.png");
-    }
-
-    /// Headless screenshot of the file browser with the host sidebar open.
-    /// `new_for_test` defaults `sidebar_visible` to false; flip it on to
-    /// capture the full host chrome (sidebar + pane).
-    #[test]
-    fn shot_file_browser_with_sidebar() {
-        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
-        h.step();
-        h.open_file_browser(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-        h.with_app_mut(|app| app.sidebar_visible = true);
-        h.run_steps(3);
-        h.save_screenshot("/tmp/plexi_shot_file_browser_sidebar.png")
-            .expect("render failed");
-        println!("Screenshot saved to /tmp/plexi_shot_file_browser_sidebar.png");
-    }
-
-    /// Headless screenshot of a subcontext portal: open a file browser pane,
-    /// push it into a subcontext, render the resulting portal card.
-    #[test]
-    fn shot_subcontext_portal() {
-        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
-        h.step();
-        h.open_file_browser(std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")));
-        h.run_steps(2);
-        let parent_idx = h.with_app(|app| app.router.active_idx());
-        h.push_focused_pane_to_subcontext(Some("Subcontext".to_string()));
-        // push_pane_to_subcontext navigates into the child context; switch
-        // back to the parent so the portal card is the visible pane.
-        h.with_app_mut(|app| app.switch_workspace(parent_idx));
-        h.run_steps(3);
-        let has_portal = h.with_app(|app| {
-            app.windows[app.active_window]
-                .panes
-                .values()
-                .any(|p| matches!(p, Pane::Portal(_)))
-        });
-        assert!(has_portal, "expected a portal pane after push_pane_to_subcontext");
-        h.save_screenshot("/tmp/plexi_shot_subcontext_portal.png")
-            .expect("render failed");
-        println!("Screenshot saved to /tmp/plexi_shot_subcontext_portal.png");
-    }
-
-    /// Headless screenshot of the real `apps/balls` PGAP app: spawns the
-    /// actual Python process, waits for its first committed frame, renders.
-    #[test]
-    #[ignore = "spawns a real Python app process — run by name with --ignored"]
-    fn shot_balls_app() {
-        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
-        h.step();
-        let app_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("apps")
-            .join("balls");
-        let pane_id = h.open_app_at(&app_dir).expect("launch balls app");
-        h.wait_for_app_frame(pane_id, std::time::Duration::from_secs(15))
-            .expect("balls app first frame");
-        h.run_steps(5);
-        h.save_screenshot("/tmp/plexi_shot_balls.png")
-            .expect("render failed");
-        println!("Screenshot saved to /tmp/plexi_shot_balls.png");
-    }
-
-    /// Generic screenshot driver for any PGAP app directory — no code change
-    /// needed. Run:
-    /// `PLEXI_SHOT_APP=apps/foo PLEXI_SHOT_OUT=/tmp/foo.png \
-    ///  cargo test --bin plexi shot_app_from_env -- --ignored --nocapture`
-    #[test]
-    #[ignore = "parameterized by PLEXI_SHOT_APP; spawns a real app process"]
-    fn shot_app_from_env() {
-        let app_dir = std::env::var("PLEXI_SHOT_APP")
-            .expect("set PLEXI_SHOT_APP=<path to app dir containing manifest.toml>");
-        let out = std::env::var("PLEXI_SHOT_OUT")
-            .unwrap_or_else(|_| "/tmp/plexi_shot_app.png".to_string());
-        let app_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(app_dir);
-        let mut h = PlexiUiHarness::new_sized(1280.0, 800.0);
-        h.step();
-        let pane_id = h.open_app_at(&app_dir).expect("launch app");
-        h.wait_for_app_frame(pane_id, std::time::Duration::from_secs(15))
-            .expect("app first frame");
-        h.run_steps(5);
-        h.save_screenshot(&out).expect("render failed");
-        println!("Screenshot saved to {out}");
-    }
+    // Visual smoke coverage lives in `tests/scenes/*.toml`, executed by
+    // `scenes::tests::scene_suite`. Run one ad hoc with `just scene <file>`.
 
     /// Render after adding a test pane.
     #[test]

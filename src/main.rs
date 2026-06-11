@@ -27,6 +27,8 @@ mod spatial;
 mod testing;
 mod ui;
 #[cfg(test)]
+mod scenes;
+#[cfg(test)]
 mod ui_tests;
 mod workspace;
 
