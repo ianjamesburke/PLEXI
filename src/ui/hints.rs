@@ -25,21 +25,11 @@ impl<'a> HintBar<'a> {
     pub(crate) fn show(self, ui: &mut egui::Ui, colors: &Colors) {
         let full = ui.available_width();
 
-        // Full-bleed hairline divider between modal body and footer. The
-        // painter is not clipped to the frame interior, so extending past the
-        // modal's inner padding reaches the frame edges.
-        ui.add_space(style::SPACE_SM);
-        let (line_rect, _) =
-            ui.allocate_exact_size(egui::vec2(full, 1.0), egui::Sense::hover());
-        ui.painter().hline(
-            egui::Rangef::new(
-                line_rect.left() - f32::from(style::MODAL_PADDING_H),
-                line_rect.right() + f32::from(style::MODAL_PADDING_H),
-            ),
-            line_rect.center().y,
-            egui::Stroke::new(1.0, colors.border),
-        );
-        ui.add_space(style::SPACE_SM);
+        // No divider above the hints — a hairline here splits a small modal
+        // into a fake "footer zone" and makes the bottom read as dead space.
+        // One MD gap separates the hints from the content above; the modal's
+        // own bottom padding closes them out symmetrically.
+        ui.add_space(style::SPACE_MD);
 
         // Center the hint groups in the footer.
         let total: f32 = self
