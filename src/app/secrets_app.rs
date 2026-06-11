@@ -1,5 +1,5 @@
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
-use crate::ui::{style, widgets};
+use crate::ui::{labels, row, shortcuts, style};
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -352,13 +352,13 @@ impl App for SecretsApp {
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if self.mode == Mode::Adding {
-                    widgets::key_combo_list(ui, &[&["Esc"]], Some("cancel"), colors);
+                    shortcuts::key_combo_list(ui, &[&["Esc"]], Some("cancel"), colors);
                 } else {
                     // RTL: emit rightmost first → visual L→R: [n] new [d] del [c] copy [r] refresh
-                    widgets::key_combo_list(ui, &[&["r"]], Some("refresh"), colors);
-                    widgets::key_combo_list(ui, &[&["c"]], Some("copy"), colors);
-                    widgets::key_combo_list(ui, &[&["d"]], Some("del"), colors);
-                    widgets::key_combo_list(ui, &[&["n"]], Some("new"), colors);
+                    shortcuts::key_combo_list(ui, &[&["r"]], Some("refresh"), colors);
+                    shortcuts::key_combo_list(ui, &[&["c"]], Some("copy"), colors);
+                    shortcuts::key_combo_list(ui, &[&["d"]], Some("del"), colors);
+                    shortcuts::key_combo_list(ui, &[&["n"]], Some("new"), colors);
                 }
             });
         });
@@ -416,20 +416,6 @@ impl App for SecretsApp {
                 );
                 ui.add_space(style::SPACE_SM);
 
-                let styled_input = |ui: &mut egui::Ui, edit: egui::TextEdit| -> egui::Response {
-                    ui.scope(|ui| {
-                        ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                        ui.visuals_mut().text_cursor.stroke.color = colors.accent;
-                        ui.visuals_mut().extreme_bg_color = colors.bg_active;
-                        ui.visuals_mut().widgets.active.bg_stroke =
-                            egui::Stroke::new(1.0, colors.accent);
-                        ui.visuals_mut().widgets.inactive.bg_stroke =
-                            egui::Stroke::new(1.0, colors.border);
-                        ui.add(edit)
-                    })
-                    .inner
-                };
-
                 // Name field
                 ui.horizontal(|ui| {
                     ui.label(
@@ -438,16 +424,11 @@ impl App for SecretsApp {
                             .size(style::TEXT_HINT)
                             .family(egui::FontFamily::Monospace),
                     );
-                    let key_resp = styled_input(
-                        ui,
-                        egui::TextEdit::singleline(&mut self.new_key)
-                            .desired_width(f32::INFINITY)
-                            .font(egui::FontId::monospace(style::TEXT_CAPTION))
-                            .text_color(colors.text_primary)
-                            .frame(true)
-                            .margin(egui::Margin::symmetric(8, 5))
-                            .hint_text("e.g. OPENAI_API_KEY"),
-                    );
+                    let key_resp = crate::ui::text_field::TextField::singleline(
+                        egui::Id::new("secrets_new_key"),
+                        "e.g. OPENAI_API_KEY",
+                    )
+                    .show(ui, &mut self.new_key, colors);
                     if !self.focus_requested {
                         key_resp.request_focus();
                         self.focus_requested = true;
@@ -470,17 +451,12 @@ impl App for SecretsApp {
                             .size(style::TEXT_HINT)
                             .family(egui::FontFamily::Monospace),
                     );
-                    let val_resp = styled_input(
-                        ui,
-                        egui::TextEdit::singleline(&mut self.new_value)
-                            .desired_width(f32::INFINITY)
-                            .font(egui::FontId::monospace(style::TEXT_CAPTION))
-                            .text_color(colors.text_primary)
-                            .password(true)
-                            .frame(true)
-                            .margin(egui::Margin::symmetric(8, 5))
-                            .hint_text("secret value"),
-                    );
+                    let val_resp = crate::ui::text_field::TextField::singleline(
+                        egui::Id::new("secrets_new_value"),
+                        "secret value",
+                    )
+                    .password(true)
+                    .show(ui, &mut self.new_value, colors);
                     if self.form_focus == FormField::Value && !val_resp.has_focus() {
                         val_resp.request_focus();
                     }
@@ -591,7 +567,7 @@ impl SecretsApp {
 
                 for (idx, entry) in self.entries.iter().enumerate() {
                     let is_selected = idx == self.selected;
-                    let (resp, _) = widgets::selectable_row(ui, is_selected, colors, |ui| {
+                    let (resp, _) = row::selectable_row(ui, is_selected, colors, |ui| {
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
                                 ui.label(
@@ -601,7 +577,7 @@ impl SecretsApp {
                                 );
                                 ui.scope(|ui| {
                                     ui.set_max_width(300.0);
-                                    widgets::description_label(ui, &entry.scope, colors);
+                                    labels::description_label(ui, &entry.scope, colors);
                                 });
                             });
                         });

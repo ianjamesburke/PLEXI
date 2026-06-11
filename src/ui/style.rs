@@ -37,10 +37,13 @@ pub const SPACE_XL: f32 = 24.0;
 pub const TEXT_HINT: f32 = 11.0; // Keyboard hints, meta labels.
 pub const TEXT_CAPTION: f32 = 12.0; // Secondary info, small labels.
 pub const TEXT_BODY: f32 = 14.0; // Default body text, button labels.
+pub const TEXT_TITLE: f32 = 16.0; // Modal/section titles — pair with
+                                  // `theme::font_medium` for weight contrast.
 pub const TEXT_TITLE_XL: f32 = 28.0; // Primary modal title — the thing the
                                      // user reads first.
 
 // ── Corner radii ───────────────────────────────────────────────────────────
+pub const RADIUS_SM: CornerRadius = CornerRadius::same(6); // Inline widgets: buttons, inputs, combos.
 pub const RADIUS_MD: CornerRadius = CornerRadius::same(8);
 pub const RADIUS_LG: CornerRadius = CornerRadius::same(12);
 // Badge-specific radius. At TEXT_HINT size the pill height is ~17 px;
@@ -52,16 +55,20 @@ pub const RADIUS_BADGE: f32 = 6.0;
 // ── Modal widths ───────────────────────────────────────────────────────────
 // Pick the smallest width that fits the content without crowding. Bigger is
 // NOT better — oversized modals feel empty and force eye travel.
-pub const MODAL_WIDTH_MD: f32 = 640.0; // Palettes, compact modals.
+pub const MODAL_WIDTH_MD: f32 = 640.0; // Compact modals.
+pub const MODAL_WIDTH_PALETTE: f32 = 576.0; // Command palette — a launcher, not a document.
 pub const MODAL_WIDTH_NOTIFY: f32 = 760.0; // Notification modal — wider for breathing room.
 
 // ── Button heights ─────────────────────────────────────────────────────────
-pub const BUTTON_H_MD: f32 = 40.0; // Standard form buttons.
+pub const BUTTON_H_MD: f32 = 32.0; // Standard form buttons.
 pub const BUTTON_H_LG: f32 = 52.0; // Primary action buttons in modals.
 
 // ── List rows ──────────────────────────────────────────────────────────────
-pub const LIST_ROW_H: f32 = 36.0;
-pub const LIST_ROW_PAD_H: f32 = 10.0;
+// 48 gives a two-line row (12pt medium + 11pt secondary) ~8px of air inside
+// the selection highlight; 14 horizontal padding keeps the title clear of
+// the highlight's left edge — 10 read as cramped against the outline.
+pub const LIST_ROW_H: f32 = 48.0;
+pub const LIST_ROW_PAD_H: f32 = 14.0;
 pub const LIST_ROW_GAP: f32 = 8.0;
 
 // ── Overlay / modal chrome ─────────────────────────────────────────────────
@@ -70,9 +77,11 @@ pub const LIST_ROW_GAP: f32 = 8.0;
 pub const SCRIM_ALPHA: u8 = 190;
 
 /// Inner padding of a modal frame (horizontal, vertical). Applied via
-/// `egui::Margin::symmetric`.
-pub const MODAL_PADDING_H: i8 = 32;
-pub const MODAL_PADDING_V: i8 = 28;
+/// `egui::Margin::symmetric`. Calibrated against the rename-pane popover
+/// (16/12), the tightest modal in the product: ModalShell carries a title
+/// row so it gets slightly more, but anything past 20/16 read as dead air.
+pub const MODAL_PADDING_H: i8 = 20;
+pub const MODAL_PADDING_V: i8 = 16;
 
 // ── Pane ID overlay ────────────────────────────────────────────────────────
 /// Font size for the ⌘-hold pane ID ghost number (large, centered over pane content).

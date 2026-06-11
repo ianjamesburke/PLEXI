@@ -587,7 +587,7 @@ impl CliRendererApp {
             let btn = egui::Button::new(
                 RichText::new(run_text)
                     .size(style::TEXT_BODY)
-                    .color(Color32::WHITE),
+                    .color(colors.text_on(colors.accent)),
             )
             .fill(colors.accent)
             .corner_radius(style::RADIUS_MD)
@@ -689,11 +689,13 @@ impl CliRendererApp {
                     }
                     _ => {
                         let placeholder = arg.placeholder.as_deref().unwrap_or("");
-                        ui.add(
-                            egui::TextEdit::singleline(val)
-                                .desired_width(ui.available_width() - style::SPACE_MD)
-                                .hint_text(placeholder)
-                                .font(egui::TextStyle::Monospace),
+                        ui.set_max_width(ui.available_width() - style::SPACE_MD);
+                        crate::ui::text_field::styled_text_input(
+                            ui,
+                            val,
+                            placeholder,
+                            egui::Id::new(("cli_renderer_field", arg.name.as_str())),
+                            colors,
                         );
                     }
                 }

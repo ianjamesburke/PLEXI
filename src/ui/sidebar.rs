@@ -173,7 +173,6 @@ impl PlexiApp {
                 };
                 let bg_idx = ui.painter().add(egui::Shape::Noop);
                 let te_id = egui::Id::new(("rename_ctx", i));
-                let accent = self.colors.accent;
                 let sidebar_w = sidebar_width;
                 let scope = ui.scope(|ui| {
                     ui.set_width(ui.available_width());
@@ -182,13 +181,11 @@ impl PlexiApp {
                         ui.add_space(20.0);
                         let te = ui
                             .scope(|ui| {
-                                ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                                ui.visuals_mut().text_cursor.stroke.color = accent;
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.rename_buffer)
-                                        .id(te_id)
-                                        .desired_width(sidebar_w - 56.0)
-                                        .font(egui::TextStyle::Body),
+                                ui.set_max_width(sidebar_w - 56.0);
+                                crate::ui::text_field::TextField::singleline(te_id, "").show(
+                                    ui,
+                                    &mut self.rename_buffer,
+                                    &self.colors,
                                 )
                             })
                             .inner;

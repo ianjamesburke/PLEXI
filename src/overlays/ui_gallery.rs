@@ -1,8 +1,14 @@
 use super::*;
 use crate::ui::{
+    button::{chrome_button, ButtonKind},
+    hints::{HintBar, HintGroup},
+    labels::{chrome_section, description_label},
     list::ListRow,
     overlay::ModalShell,
-    widgets::{description_label, key_chip, key_combo_list, selectable_row, TextField},
+    row::selectable_row,
+    shortcuts::key_chip,
+    surface::{color_swatch, empty_state_panel, status_chip},
+    text_field::TextField,
 };
 
 impl PlexiApp {
@@ -12,10 +18,12 @@ impl PlexiApp {
         }
 
         let colors = self.colors.clone();
+        // Escape is gated off while the nested text-entry demo is open so the
+        // nested modal consumes it first — otherwise one press closes both.
         let response = ModalShell::centered("host_ui_gallery")
             .title("Host UI Gallery")
             .width(style::MODAL_WIDTH_NOTIFY)
-            .escape(true)
+            .escape(!self.ui_gallery_show_text_modal)
             .show(ctx, &colors, |ui| {
                 ui.label(
                     RichText::new("Chrome primitives")
@@ -28,27 +36,30 @@ impl PlexiApp {
                     .max_height((ctx.screen_rect().height() - 180.0).max(280.0))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_width(style::MODAL_WIDTH_NOTIFY);
-                        gallery_section(ui, "Modal shell", &colors, |ui| {
+                        // available_width, not MODAL_WIDTH_NOTIFY — the scroll
+                        // area reserves a scrollbar gutter; forcing the full
+                        // modal width would push content back under the bar.
+                        ui.set_width(ui.available_width());
+                        chrome_section(ui, "Modal shell", &colors, |ui| {
                             token_strip(ui, &colors);
                             hint_bar(ui, &colors);
                         });
 
-                        gallery_section(ui, "Rows", &colors, |ui| {
+                        chrome_section(ui, "Rows", &colors, |ui| {
                             ListRow::new("Normal row")
                                 .secondary("Secondary metadata")
-                                .leading_chip("app")
+                                .chip("app")
                                 .trailing_action("Open")
                                 .show(ui, &colors);
                             ListRow::new("Selected row")
                                 .secondary("Keyboard-selected state")
-                                .leading_chip("term")
+                                .chip("term")
                                 .trailing_action("Run")
                                 .selected(true)
                                 .show(ui, &colors);
                             ListRow::new("Danger row")
                                 .secondary("Destructive trailing action")
-                                .leading_chip("ctx")
+                                .chip("ctx")
                                 .trailing_action("Delete")
                                 .danger_trailing(true)
                                 .show(ui, &colors);
@@ -69,7 +80,7 @@ impl PlexiApp {
                             });
                         });
 
-                        gallery_section(ui, "Text fields", &colors, |ui| {
+                        chrome_section(ui, "Text fields", &colors, |ui| {
                             TextField::singleline(
                                 egui::Id::new("host_ui_gallery_text_normal"),
                                 "Normal text field",
@@ -80,11 +91,15 @@ impl PlexiApp {
                                 &colors,
                             );
                             ui.add_space(style::SPACE_SM);
+                            // No `.focused(true)` here — a hardcoded focus
+                            // demo fights the user's clicks (two fields
+                            // re-stealing focus from each other every frame).
+                            // Focus follows clicks; the focused style shows on
+                            // whichever field the user activates.
                             TextField::singleline(
                                 egui::Id::new("host_ui_gallery_text_focused"),
-                                "Focused text field",
+                                "Click to focus — accent ring + cursor",
                             )
-                            .focused(true)
                             .log_name("ui_gallery")
                             .show(
                                 ui,
@@ -93,20 +108,41 @@ impl PlexiApp {
                             );
                         });
 
-                        gallery_section(ui, "Buttons and chips", &colors, |ui| {
+                        chrome_section(ui, "Modal patterns", &colors, |ui| {
+                            if chrome_button(
+                                ui,
+                                "Open text-entry modal",
+                                ButtonKind::Primary,
+                                &colors,
+                                180.0,
+                            )
+                            .clicked()
+                            {
+                                self.ui_gallery_show_text_modal = true;
+                                log::info!("ui_gallery: opened text-entry modal demo");
+                            }
+                        });
+
+                        chrome_section(ui, "Buttons and chips", &colors, |ui| {
                             ui.horizontal(|ui| {
-                                button_sample(ui, "Primary", colors.accent, &colors);
-                                button_sample(ui, "Neutral", colors.bg_active, &colors);
-                                button_sample(ui, "Danger", colors.danger, &colors);
-                                ui.add_enabled(
-                                    false,
-                                    egui::Button::new(
-                                        RichText::new("Disabled")
-                                            .size(style::TEXT_BODY)
-                                            .color(colors.text_dim),
-                                    )
-                                    .min_size(egui::vec2(96.0, style::BUTTON_H_MD)),
+                                chrome_button(ui, "Primary", ButtonKind::Primary, &colors, 80.0);
+                                chrome_button(
+                                    ui,
+                                    "Secondary",
+                                    ButtonKind::Secondary,
+                                    &colors,
+                                    92.0,
                                 );
+                                chrome_button(ui, "Danger", ButtonKind::Danger, &colors, 80.0);
+                                ui.add_enabled_ui(false, |ui| {
+                                    chrome_button(
+                                        ui,
+                                        "Disabled",
+                                        ButtonKind::Secondary,
+                                        &colors,
+                                        80.0,
+                                    );
+                                });
                             });
                             ui.add_space(style::SPACE_SM);
                             ui.horizontal(|ui| {
@@ -122,60 +158,56 @@ impl PlexiApp {
                                     &colors,
                                     egui::FontId::monospace(style::TEXT_HINT),
                                 );
-                                status_chip(ui, "running", colors.accent, &colors);
-                                status_chip(ui, "error", colors.danger, &colors);
-                                status_chip(ui, "empty", colors.text_dim, &colors);
+                                status_chip(ui, "running", &colors);
+                                status_chip(ui, "error", &colors);
+                                status_chip(ui, "empty", &colors);
                             });
                         });
 
-                        gallery_section(ui, "Empty states", &colors, |ui| {
-                            egui::Frame::new()
-                                .fill(colors.bg_toolbar)
-                                .stroke(egui::Stroke::new(1.0, colors.border))
-                                .corner_radius(style::RADIUS_MD)
-                                .inner_margin(egui::Margin::symmetric(12, 10))
-                                .show(ui, |ui| {
-                                    ui.set_width(ui.available_width());
-                                    ui.vertical_centered(|ui| {
-                                        ui.label(
-                                            RichText::new("No matching items")
-                                                .size(style::TEXT_BODY)
-                                                .color(colors.text_primary),
-                                        );
-                                        ui.label(
-                                            RichText::new(
-                                                "Empty chrome should stay compact and quiet.",
-                                            )
-                                            .size(style::TEXT_HINT)
-                                            .color(colors.text_dim),
-                                        );
-                                    });
-                                });
+                        chrome_section(ui, "Empty states", &colors, |ui| {
+                            empty_state_panel(
+                                ui,
+                                "No matching items",
+                                Some("Empty chrome should stay compact and quiet."),
+                                &colors,
+                            );
                         });
                     });
             });
 
-        if response.dismissed {
+        // Ignore gallery click-away while the nested demo is open — a click
+        // inside the nested modal must not tear down the gallery under it.
+        if response.dismissed && !self.ui_gallery_show_text_modal {
             self.show_ui_gallery = false;
             log::info!("ui_gallery: closed by escape or click-away");
         }
-    }
-}
 
-fn gallery_section(
-    ui: &mut egui::Ui,
-    title: &str,
-    colors: &crate::ui::theme::Colors,
-    body: impl FnOnce(&mut egui::Ui),
-) {
-    ui.label(
-        RichText::new(title)
-            .size(style::TEXT_CAPTION)
-            .color(colors.accent),
-    );
-    ui.add_space(style::SPACE_XS);
-    body(ui);
-    ui.add_space(style::SPACE_XL);
+        if self.ui_gallery_show_text_modal {
+            let entry = ModalShell::centered("host_ui_gallery_text_modal")
+                .title("Text entry")
+                .width(style::MODAL_WIDTH_MD)
+                .escape(true)
+                .show(ctx, &colors, |ui| {
+                    TextField::singleline(
+                        egui::Id::new("host_ui_gallery_modal_field"),
+                        "Type something...",
+                    )
+                    .focused(true)
+                    .log_name("ui_gallery_modal")
+                    .show(ui, &mut self.ui_gallery_modal_buf, &colors);
+                    let hints = [
+                        HintGroup::new(&["\u{23ce}"], "save"),
+                        HintGroup::new(&["esc"], "dismiss"),
+                    ];
+                    HintBar::new(&hints).show(ui, &colors);
+                });
+            let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+            if entry.dismissed || enter {
+                self.ui_gallery_show_text_modal = false;
+                log::info!("ui_gallery: text-entry modal demo closed");
+            }
+        }
+    }
 }
 
 fn token_strip(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
@@ -188,77 +220,13 @@ fn token_strip(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
     });
 }
 
-fn color_swatch(
-    ui: &mut egui::Ui,
-    label: &str,
-    fill: egui::Color32,
-    colors: &crate::ui::theme::Colors,
-) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(84.0, 30.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, style::RADIUS_MD, fill);
-    ui.painter().rect_stroke(
-        rect,
-        style::RADIUS_MD,
-        egui::Stroke::new(1.0, colors.border),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        label,
-        egui::FontId::proportional(style::TEXT_HINT),
-        colors.text_primary,
-    );
-}
-
 fn hint_bar(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
-    egui::Frame::new()
-        .fill(colors.bg_toolbar)
-        .stroke(egui::Stroke::new(1.0, colors.border))
-        .corner_radius(style::RADIUS_MD)
-        .inner_margin(egui::Margin::symmetric(12, 8))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                key_combo_list(
-                    ui,
-                    &[&["Cmd", "P"], &["Cmd", "/"], &["Esc"]],
-                    Some("palette, help, dismiss"),
-                    colors,
-                );
-            });
-        });
-}
-
-fn button_sample(
-    ui: &mut egui::Ui,
-    label: &str,
-    fill: egui::Color32,
-    colors: &crate::ui::theme::Colors,
-) {
-    let button = egui::Button::new(
-        RichText::new(label)
-            .size(style::TEXT_BODY)
-            .color(colors.text_primary),
-    )
-    .fill(fill)
-    .stroke(egui::Stroke::new(1.0, colors.border))
-    .min_size(egui::vec2(96.0, style::BUTTON_H_MD));
-    ui.add(button);
-}
-
-fn status_chip(
-    ui: &mut egui::Ui,
-    label: &str,
-    color: egui::Color32,
-    colors: &crate::ui::theme::Colors,
-) {
-    let text = RichText::new(label).size(style::TEXT_HINT).color(color);
-    egui::Frame::new()
-        .fill(colors.bg_active)
-        .stroke(egui::Stroke::new(1.0, color))
-        .corner_radius(style::RADIUS_BADGE)
-        .inner_margin(egui::Margin::symmetric(8, 3))
-        .show(ui, |ui| {
-            ui.label(text);
-        });
+    // The real modal-footer treatment: each label attached to its combo,
+    // centered, divider above.
+    let hints = [
+        HintGroup::new(&["\u{2318}", "P"], "palette"),
+        HintGroup::new(&["\u{2318}", "/"], "help"),
+        HintGroup::new(&["esc"], "dismiss"),
+    ];
+    HintBar::new(&hints).show(ui, colors);
 }

@@ -51,7 +51,7 @@ pub fn render(ui: &mut egui::Ui, app_pane: &mut AppPane, colors: &Colors, is_foc
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(NAV_BAR_PAD);
-                    crate::ui::widgets::key_chip(
+                    crate::ui::shortcuts::key_chip(
                         ui,
                         "Esc",
                         colors,

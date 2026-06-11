@@ -146,7 +146,7 @@ impl PlexiApp {
 
                     for (keys, desc) in shortcuts {
                         ui.horizontal(|ui| {
-                            crate::ui::widgets::key_combo(ui, keys, &colors);
+                            crate::ui::shortcuts::key_combo(ui, keys, &colors);
                             ui.add_space(style::SPACE_SM);
                             ui.label(
                                 RichText::new(*desc)
@@ -198,26 +198,18 @@ impl PlexiApp {
         let colors = self.colors;
         let cmd = crate::cli::setup::INSTALL_COMMAND;
 
-        egui::Area::new(egui::Id::new("cli_setup_modal"))
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(colors.bg_sidebar)
-                    .stroke(Stroke::new(1.0, colors.border))
-                    .corner_radius(R6)
-                    .inner_margin(egui::Margin::symmetric(24, 20))
-                    .show(ui, |ui| {
-                        ui.set_width(400.0);
-
+        let title = format!("Install `{cli_name}`");
+        // No scrim — this prompt floats over the welcome screen at startup
+        // and shouldn't dim it (matches its pre-kit behavior).
+        let response = crate::ui::overlay::ModalShell::centered("cli_setup_modal")
+            .title(&title)
+            .width(400.0)
+            .scrim(false)
+            .escape(true)
+            .show(ctx, &colors, |ui| {
+                {
+                    {
                         ui.vertical_centered(|ui| {
-                            ui.label(
-                                RichText::new(format!("Install `{cli_name}`"))
-                                    .size(style::TEXT_BODY)
-                                    .color(colors.text_primary)
-                                    .strong(),
-                            );
-                            ui.add_space(style::SPACE_SM);
                             ui.label(
                                 RichText::new("Lets shell scripts, agents, and hooks:")
                                     .size(style::TEXT_CAPTION)
@@ -266,7 +258,7 @@ impl PlexiApp {
                                                 .monospace(),
                                         );
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            crate::ui::widgets::copy_button(
+                                            crate::ui::button::copy_button(
                                                 ui,
                                                 egui::Id::new("cli_setup_copy"),
                                                 cmd,
@@ -288,14 +280,12 @@ impl PlexiApp {
                             }
 
                             ui.horizontal(|ui| {
-                                let check_btn = ui.add(
-                                    egui::Button::new(
-                                        RichText::new("Check for success")
-                                            .size(style::TEXT_BODY)
-                                            .color(colors.text_primary),
-                                    )
-                                    .fill(colors.bg_active)
-                                    .min_size(egui::vec2(150.0, 28.0)),
+                                let check_btn = crate::ui::button::chrome_button(
+                                    ui,
+                                    "Check for success",
+                                    crate::ui::button::ButtonKind::Primary,
+                                    &colors,
+                                    150.0,
                                 );
 
                                 if check_btn.clicked() {
@@ -311,13 +301,12 @@ impl PlexiApp {
                                     }
                                 }
 
-                                let skip_btn = ui.add(
-                                    egui::Button::new(
-                                        RichText::new("Not now")
-                                            .size(style::TEXT_BODY)
-                                            .color(colors.text_dim),
-                                    )
-                                    .min_size(egui::vec2(100.0, 28.0)),
+                                let skip_btn = crate::ui::button::chrome_button(
+                                    ui,
+                                    "Not now",
+                                    crate::ui::button::ButtonKind::Secondary,
+                                    &colors,
+                                    100.0,
                                 );
 
                                 if skip_btn.clicked() {
@@ -326,10 +315,11 @@ impl PlexiApp {
                                 }
                             });
                         });
-                    });
+                    }
+                }
             });
 
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        if response.dismissed {
             log::info!("cli_setup: dismissed via Escape — will ask again next launch");
             self.show_cli_setup_prompt = false;
         }
@@ -352,18 +342,33 @@ impl PlexiApp {
                     .corner_radius(R6)
                     .inner_margin(egui::Margin::symmetric(16, 10))
                     .show(ui, |ui| {
+                        // egui's horizontal() centers children against the row
+                        // height at placement time (initially interact_size.y).
+                        // Any child that ends up taller grows the row downward
+                        // WITHOUT re-centering earlier children — so every
+                        // child here must stay <= CONTROL_H or the label drifts
+                        // toward the top. The copy button was the inflator:
+                        // caption text + global 6px button padding ≈ 27px,
+                        // inside a chip frame with 6px margins ≈ 39px.
+                        const CONTROL_H: f32 = 28.0;
+                        ui.spacing_mut().interact_size.y = CONTROL_H;
+                        ui.spacing_mut().item_spacing.x = style::SPACE_MD;
+                        ui.spacing_mut().button_padding = egui::vec2(12.0, 4.0);
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new("Shell completions aren't set up.")
                                     .size(style::TEXT_CAPTION)
                                     .color(colors.text_dim),
                             );
-                            ui.add_space(style::SPACE_SM);
                             egui::Frame::new()
                                 .fill(colors.bg_darkest)
                                 .corner_radius(R6)
-                                .inner_margin(egui::Margin::symmetric(8, 4))
+                                .inner_margin(egui::Margin::symmetric(10, 3))
                                 .show(ui, |ui| {
+                                    // Chip interior: 22 + 3px margins = 28.
+                                    ui.spacing_mut().interact_size.y = CONTROL_H - 6.0;
+                                    ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
+                                    ui.spacing_mut().item_spacing.x = style::SPACE_SM;
                                     ui.horizontal(|ui| {
                                         ui.label(
                                             RichText::new(cmd)
@@ -371,24 +376,20 @@ impl PlexiApp {
                                                 .color(colors.text_primary)
                                                 .monospace(),
                                         );
-                                        ui.add_space(4.0);
-                                        crate::ui::widgets::copy_button(
+                                        crate::ui::button::copy_button(
                                             ui,
                                             egui::Id::new("completions_banner_copy"),
                                             cmd,
                                         );
                                     });
                                 });
-                            ui.add_space(style::SPACE_SM);
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Done")
-                                            .size(style::TEXT_CAPTION)
-                                            .color(colors.text_primary),
-                                    )
-                                    .fill(colors.bg_active)
-                                    .min_size(egui::vec2(50.0, 22.0)),
+                            if crate::ui::button::chrome_button_sized(
+                                ui,
+                                "Done",
+                                crate::ui::button::ButtonKind::Primary,
+                                &colors,
+                                56.0,
+                                CONTROL_H,
                                 )
                                 .clicked()
                             {
@@ -396,14 +397,13 @@ impl PlexiApp {
                                 crate::cli::setup::completions_mark_prompted();
                                 self.show_completions_banner = false;
                             }
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Not now")
-                                            .size(style::TEXT_CAPTION)
-                                            .color(colors.text_dim),
-                                    )
-                                    .min_size(egui::vec2(60.0, 22.0)),
+                            if crate::ui::button::chrome_button_sized(
+                                ui,
+                                "Not now",
+                                crate::ui::button::ButtonKind::Secondary,
+                                &colors,
+                                72.0,
+                                CONTROL_H,
                                 )
                                 .clicked()
                             {
