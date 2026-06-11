@@ -11,6 +11,7 @@ pub(crate) struct ModalShell<'a> {
     offset: Vec2,
     click_away: bool,
     escape: bool,
+    scrim: bool,
 }
 
 impl<'a> ModalShell<'a> {
@@ -23,7 +24,25 @@ impl<'a> ModalShell<'a> {
             offset: Vec2::ZERO,
             click_away: true,
             escape: false,
+            scrim: true,
         }
+    }
+
+    /// Re-anchor the modal (e.g. `Align2::CENTER_TOP` + y-offset for input
+    /// popovers that shouldn't cover the workspace center).
+    pub(crate) fn anchor(mut self, anchor: Align2, offset: Vec2) -> Self {
+        self.anchor = anchor;
+        self.offset = offset;
+        self
+    }
+
+    /// Disable the dimming scrim. Quick inline popovers (rename, edit
+    /// description) keep the workspace visible. Note: click-away dismissal
+    /// is detected via the scrim, so scrim-less modals dismiss only via
+    /// Escape/Enter handled by the caller or `.escape(true)`.
+    pub(crate) fn scrim(mut self, enabled: bool) -> Self {
+        self.scrim = enabled;
+        self
     }
 
     pub(crate) fn title(mut self, title: &'a str) -> Self {
@@ -56,20 +75,22 @@ impl<'a> ModalShell<'a> {
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
 
         let screen = ctx.screen_rect();
-        egui::Area::new(self.id.with("scrim"))
-            .fixed_pos(screen.min)
-            .order(egui::Order::Middle)
-            .show(ctx, |ui| {
-                ui.painter().rect_filled(
-                    screen,
-                    0.0,
-                    Color32::from_black_alpha(style::SCRIM_ALPHA),
-                );
-                let clicked = ui.allocate_rect(screen, egui::Sense::click()).clicked();
-                if self.click_away && clicked {
-                    dismissed = true;
-                }
-            });
+        if self.scrim {
+            egui::Area::new(self.id.with("scrim"))
+                .fixed_pos(screen.min)
+                .order(egui::Order::Middle)
+                .show(ctx, |ui| {
+                    ui.painter().rect_filled(
+                        screen,
+                        0.0,
+                        Color32::from_black_alpha(style::SCRIM_ALPHA),
+                    );
+                    let clicked = ui.allocate_rect(screen, egui::Sense::click()).clicked();
+                    if self.click_away && clicked {
+                        dismissed = true;
+                    }
+                });
+        }
 
         egui::Area::new(self.id.with("overlay"))
             .anchor(self.anchor, self.offset)
