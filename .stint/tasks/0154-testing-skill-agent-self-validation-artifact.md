@@ -1,14 +1,22 @@
 ---
 id: "0154"
 title: "Testing: /testing skill — agent self-validation artifact bridging implement and validate-pr"
-status: backlog
+status: in-progress
+estimate: "12h"
+started_at: "2026-06-11T10:06:01Z"
 sprint: "s8"
-estimate: 12h
-blocked_by_gh: [2162]
-gh_issue: ["2169"]
-area: ["infra/testing", "infra/skills"]
-tags: ["testing", "v1+", "ship-pipeline"]
+blocked_by: []
+gh_issue:
+  - "2169"
+area:
+  - "infra/testing"
+  - "infra/skills"
+tags:
+  - "testing"
+  - "v1+"
+  - "ship-pipeline"
 ---
+
 
 Create the `/testing` skill that the implementing agent runs after writing code, before pushing. Produces a structured test-evidence artifact in the Ship Log that validate-pr reads to decide whether binary install can be skipped.
 
