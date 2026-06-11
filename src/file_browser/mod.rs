@@ -4,6 +4,7 @@ mod icons;
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
 use crate::ui::hints::{HintBar, HintGroup};
 use crate::ui::list::ListRow;
+use crate::ui::overlay::ModalShell;
 use crate::ui::style;
 use crate::ui::theme::Colors;
 use egui::{Color32, CornerRadius, Stroke, StrokeKind};
@@ -12,8 +13,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use helpers::{
-    format_modified, format_size, sort_entries, ColumnConfig, ColumnId, ColumnModel, DirStats,
-    Entry, MediaKind, SortDirection,
+    format_modified, format_size, is_text_preview_candidate, read_text_preview, sort_entries,
+    ColumnConfig, ColumnId, ColumnModel, DirStats, Entry, MediaKind, SortDirection, TextPreview,
 };
 use icons::paint_entry_icon;
 
@@ -23,19 +24,20 @@ const DIR_PREVIEW_CAP: usize = 500;
 const DETAILS_HEADER_H: f32 = 28.0;
 const DETAILS_ROW_H: f32 = style::LIST_ROW_H;
 const STATUS_BAR_H: f32 = 44.0;
+const INSPECTOR_DEFAULT_WIDTH: f32 = 280.0;
+const INSPECTOR_MIN_PANEL_WIDTH: f32 = 220.0;
+const INSPECTOR_SPLITTER_W: f32 = 7.0;
+const QUICK_LOOK_TEXT_LINES: usize = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FileBrowserLayout {
     CompactList,
     DetailsTable,
-    DetailsWithInspector,
 }
 
 impl FileBrowserLayout {
     fn for_width(width: f32) -> Self {
-        if width >= INSPECTOR_MIN_WIDTH {
-            Self::DetailsWithInspector
-        } else if width >= DETAILS_TABLE_MIN_WIDTH {
+        if width >= DETAILS_TABLE_MIN_WIDTH {
             Self::DetailsTable
         } else {
             Self::CompactList
@@ -43,11 +45,7 @@ impl FileBrowserLayout {
     }
 
     fn shows_details(self) -> bool {
-        matches!(self, Self::DetailsTable | Self::DetailsWithInspector)
-    }
-
-    fn shows_inspector(self) -> bool {
-        matches!(self, Self::DetailsWithInspector)
+        matches!(self, Self::DetailsTable)
     }
 }
 
@@ -72,6 +70,8 @@ enum FileBrowserAction {
     Escape,
     EnterSearch,
     ToggleSort,
+    ToggleInspector,
+    ToggleQuickLook,
     Refresh,
     AppendText(String),
 }
@@ -133,6 +133,12 @@ fn classify_key(input: &egui::InputState, in_search: bool) -> Option<FileBrowser
     if !in_search && key_pressed_no_repeat(input, egui::Key::S) && !input.modifiers.any() {
         return Some(FileBrowserAction::ToggleSort);
     }
+    if !in_search && key_pressed_no_repeat(input, egui::Key::I) && !input.modifiers.any() {
+        return Some(FileBrowserAction::ToggleInspector);
+    }
+    if !in_search && key_pressed_no_repeat(input, egui::Key::Space) && !input.modifiers.any() {
+        return Some(FileBrowserAction::ToggleQuickLook);
+    }
     if !in_search && key_pressed_no_repeat(input, egui::Key::R) && !input.modifiers.any() {
         return Some(FileBrowserAction::Refresh);
     }
@@ -162,6 +168,13 @@ pub struct FileBrowserApp {
     // Dir preview
     dir_preview_path: Option<PathBuf>,
     dir_preview_stats: Option<DirStats>,
+    // Text preview
+    text_preview_path: Option<PathBuf>,
+    text_preview: Option<TextPreview>,
+    text_preview_error: Option<String>,
+    inspector_open: bool,
+    inspector_width: f32,
+    quick_look_open: bool,
     pending_cmds: Vec<AppCommand>,
     /// When true, the next draw_list pass will scroll the selected row into view.
     pending_scroll: bool,
@@ -192,6 +205,12 @@ impl FileBrowserApp {
             preview_error: None,
             dir_preview_path: None,
             dir_preview_stats: None,
+            text_preview_path: None,
+            text_preview: None,
+            text_preview_error: None,
+            inspector_open: false,
+            inspector_width: INSPECTOR_DEFAULT_WIDTH,
+            quick_look_open: false,
             pending_cmds: Vec::new(),
             pending_scroll: false,
             directory_selection_memory: std::collections::HashMap::new(),
@@ -518,6 +537,61 @@ impl FileBrowserApp {
         });
     }
 
+    fn ensure_text_preview(&mut self, path: &Path) {
+        if self.text_preview_path.as_deref() == Some(path) {
+            return;
+        }
+        self.text_preview_path = Some(path.to_path_buf());
+        self.text_preview = None;
+        self.text_preview_error = None;
+
+        match read_text_preview(path) {
+            Ok(preview) => self.text_preview = Some(preview),
+            Err(err) => {
+                log::warn!(
+                    "file_browser: text preview failed for '{}': {err}",
+                    path.display()
+                );
+                self.text_preview_error = Some(err);
+            }
+        }
+    }
+
+    fn toggle_inspector(&mut self) {
+        self.inspector_open = !self.inspector_open;
+        log::info!(
+            "file_browser: inspector {}",
+            if self.inspector_open {
+                "opened"
+            } else {
+                "closed"
+            }
+        );
+    }
+
+    fn should_show_inspector(&self, width: f32) -> bool {
+        self.inspector_open && width >= INSPECTOR_MIN_WIDTH
+    }
+
+    fn toggle_quick_look(&mut self) {
+        if self.quick_look_open {
+            self.quick_look_open = false;
+            log::info!("file_browser: quick look dismissed");
+            return;
+        }
+        if let Some(path) = self.selected_entry().map(|entry| entry.path.clone()) {
+            self.quick_look_open = true;
+            log::info!("file_browser: quick look opened for '{}'", path.display());
+        }
+    }
+
+    fn dismiss_quick_look(&mut self) {
+        if self.quick_look_open {
+            self.quick_look_open = false;
+            log::info!("file_browser: quick look dismissed");
+        }
+    }
+
     // ─── Drawing ─────────────────────────────────────────────────────────────
 
     fn visible_entry_count(&self) -> usize {
@@ -841,6 +915,8 @@ impl FileBrowserApp {
             self.draw_image_sidebar(ui, colors, &entry);
         } else if entry.is_dir {
             self.draw_dir_sidebar(ui, colors, &entry);
+        } else if is_text_preview_candidate(&entry.path) {
+            self.draw_text_sidebar(ui, colors, &entry);
         } else {
             self.draw_generic_sidebar(ui, colors, &entry);
         }
@@ -969,6 +1045,34 @@ impl FileBrowserApp {
             });
     }
 
+    fn draw_text_sidebar(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
+        let path = entry.path.clone();
+        self.ensure_text_preview(&path);
+
+        egui::Frame::new()
+            .fill(colors.bg_sidebar)
+            .stroke(Stroke::new(1.0, colors.border))
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(egui::Margin::same(8))
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("Text \u{00b7} {}", entry.name))
+                        .size(10.5)
+                        .color(colors.text_primary)
+                        .strong(),
+                );
+                if let Some(size) = entry.size_bytes {
+                    ui.label(
+                        egui::RichText::new(format_size(Some(size)))
+                            .size(9.5)
+                            .color(colors.text_dim),
+                    );
+                }
+                ui.separator();
+                self.draw_text_preview_body(ui, colors, 150.0, 10);
+            });
+    }
+
     fn draw_generic_sidebar(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
         egui::Frame::new()
             .fill(colors.bg_sidebar)
@@ -1003,7 +1107,225 @@ impl FileBrowserApp {
             });
     }
 
-    fn draw_toolbar(&mut self, ui: &mut egui::Ui, colors: &Colors, layout: FileBrowserLayout) {
+    fn draw_text_preview_body(
+        &self,
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        max_height: f32,
+        max_lines: usize,
+    ) {
+        if let Some(preview) = &self.text_preview {
+            let line_count = preview.body.lines().count();
+            let mut text = preview
+                .body
+                .lines()
+                .take(max_lines)
+                .collect::<Vec<_>>()
+                .join("\n");
+            if preview.truncated || line_count > max_lines {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str("\u{2026}");
+            }
+            egui::ScrollArea::vertical()
+                .max_height(max_height)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(text)
+                                .monospace()
+                                .size(style::TEXT_HINT)
+                                .color(colors.text_primary),
+                        )
+                        .wrap(),
+                    );
+                });
+        } else if let Some(err) = &self.text_preview_error {
+            ui.label(
+                egui::RichText::new(err)
+                    .size(style::TEXT_HINT)
+                    .color(colors.text_dim),
+            );
+        } else {
+            ui.label(
+                egui::RichText::new("Loading\u{2026}")
+                    .size(style::TEXT_HINT)
+                    .color(colors.text_dim),
+            );
+        }
+    }
+
+    fn draw_quick_look_modal(&mut self, ctx: &egui::Context, colors: &Colors) {
+        if !self.quick_look_open {
+            return;
+        }
+        let entry = match self.selected_entry().cloned() {
+            Some(entry) => entry,
+            None => {
+                self.quick_look_open = false;
+                return;
+            }
+        };
+        let title = Self::entry_title(&entry);
+        let response = ModalShell::centered("file_browser_quick_look")
+            .title(&title)
+            .width(style::MODAL_WIDTH_NOTIFY)
+            .escape(true)
+            .show(ctx, colors, |ui| {
+                if entry.is_image {
+                    self.draw_quick_look_image(ui, colors, &entry);
+                } else if entry.is_dir {
+                    self.draw_quick_look_folder(ui, colors, &entry);
+                } else if is_text_preview_candidate(&entry.path) {
+                    self.draw_quick_look_text(ui, colors, &entry);
+                } else {
+                    self.draw_quick_look_generic(ui, colors, &entry);
+                }
+                ui.add_space(style::SPACE_MD);
+                let hints = [
+                    HintGroup::new(&["Space"], "dismiss"),
+                    HintGroup::new(&["Esc"], "dismiss"),
+                    HintGroup::new(&["Enter"], "open selected item"),
+                ];
+                HintBar::new(&hints).show(ui, colors);
+            });
+        if response.dismissed {
+            self.dismiss_quick_look();
+        }
+    }
+
+    fn draw_quick_look_image(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
+        self.ensure_image_preview(ui.ctx(), &entry.path);
+        if let Some([w, h]) = self.preview_size {
+            ui.label(
+                egui::RichText::new(format!("Image \u{00b7} {w}\u{00d7}{h}"))
+                    .size(style::TEXT_HINT)
+                    .color(colors.text_dim),
+            );
+        }
+        ui.add_space(style::SPACE_SM);
+        let slot_size = egui::vec2(ui.available_width(), 420.0);
+        let (slot_rect, _) = ui.allocate_exact_size(slot_size, egui::Sense::hover());
+        ui.painter()
+            .rect_filled(slot_rect, style::RADIUS_MD, colors.bg_darkest);
+        ui.painter().rect_stroke(
+            slot_rect,
+            style::RADIUS_MD,
+            Stroke::new(1.0, colors.border),
+            StrokeKind::Inside,
+        );
+        if let Some(texture) = &self.preview_texture {
+            let tex_size = egui::vec2(texture.size()[0] as f32, texture.size()[1] as f32);
+            let scale = (slot_rect.width() / tex_size.x)
+                .min(slot_rect.height() / tex_size.y)
+                .min(1.0);
+            let draw_size = tex_size * scale.max(0.01);
+            let image_rect = egui::Rect::from_center_size(slot_rect.center(), draw_size);
+            ui.painter().image(
+                texture.id(),
+                image_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        } else if let Some(err) = &self.preview_error {
+            ui.painter().text(
+                slot_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                err,
+                egui::FontId::proportional(style::TEXT_HINT),
+                colors.text_dim,
+            );
+        }
+    }
+
+    fn draw_quick_look_folder(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
+        self.ensure_dir_preview(&entry.path);
+        ui.label(
+            egui::RichText::new(entry.path.display().to_string())
+                .size(style::TEXT_HINT)
+                .monospace()
+                .color(colors.text_dim),
+        );
+        ui.add_space(style::SPACE_SM);
+        if let Some(stats) = self.dir_preview_stats {
+            let suffix = if stats.truncated { "+" } else { "" };
+            ui.label(
+                egui::RichText::new(format!(
+                    "{}{suffix} folders, {}{suffix} files",
+                    stats.dir_count, stats.file_count
+                ))
+                .size(style::TEXT_BODY)
+                .color(colors.text_primary),
+            );
+            ui.label(
+                egui::RichText::new(format!(
+                    "Immediate file size: {}",
+                    format_size(Some(stats.total_bytes))
+                ))
+                .size(style::TEXT_HINT)
+                .color(colors.text_dim),
+            );
+        }
+    }
+
+    fn draw_quick_look_text(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
+        self.ensure_text_preview(&entry.path);
+        ui.label(
+            egui::RichText::new(entry.path.display().to_string())
+                .size(style::TEXT_HINT)
+                .monospace()
+                .color(colors.text_dim),
+        );
+        ui.add_space(style::SPACE_SM);
+        self.draw_text_preview_body(ui, colors, 420.0, QUICK_LOOK_TEXT_LINES);
+    }
+
+    fn draw_quick_look_generic(&mut self, ui: &mut egui::Ui, colors: &Colors, entry: &Entry) {
+        ui.label(
+            egui::RichText::new(entry.path.display().to_string())
+                .size(style::TEXT_HINT)
+                .monospace()
+                .color(colors.text_dim),
+        );
+        ui.add_space(style::SPACE_SM);
+        if let Some(size) = entry.size_bytes {
+            ui.label(
+                egui::RichText::new(format!("Size: {}", format_size(Some(size))))
+                    .size(style::TEXT_BODY)
+                    .color(colors.text_primary),
+            );
+        }
+        ui.label(
+            egui::RichText::new(format!("Kind: {}", Self::entry_kind(entry)))
+                .size(style::TEXT_BODY)
+                .color(colors.text_primary),
+        );
+        if let Some(modified) = entry.modified {
+            ui.label(
+                egui::RichText::new(format!("Modified: {}", format_modified(Some(modified))))
+                    .size(style::TEXT_HINT)
+                    .color(colors.text_dim),
+            );
+        }
+        if MediaKind::for_path(&entry.path).player_app_id().is_some() {
+            ui.add_space(style::SPACE_SM);
+            ui.label(
+                egui::RichText::new("Press Enter to open with the existing Plexi media player.")
+                    .size(style::TEXT_HINT)
+                    .color(colors.text_dim),
+            );
+        }
+    }
+
+    fn draw_toolbar(
+        &mut self,
+        ui: &mut egui::Ui,
+        colors: &Colors,
+        layout: FileBrowserLayout,
+        show_inspector: bool,
+    ) {
         ui.horizontal(|ui| {
             ui.colored_label(
                 colors.accent,
@@ -1059,11 +1381,18 @@ impl FileBrowserApp {
                     egui::RichText::new(match layout {
                         FileBrowserLayout::CompactList => "compact",
                         FileBrowserLayout::DetailsTable => "details",
-                        FileBrowserLayout::DetailsWithInspector => "details + inspector",
                     })
                     .size(style::TEXT_HINT)
                     .color(colors.text_dim),
                 );
+                let inspector_label = if show_inspector {
+                    "Inspector \u{2713}"
+                } else {
+                    "Inspector"
+                };
+                if ui.small_button(inspector_label).clicked() {
+                    self.toggle_inspector();
+                }
             });
         });
     }
@@ -1089,7 +1418,7 @@ impl FileBrowserApp {
         });
     }
 
-    fn draw_status_bar(&self, ui: &mut egui::Ui, colors: &Colors, layout: FileBrowserLayout) {
+    fn draw_status_bar(&self, ui: &mut egui::Ui, colors: &Colors, show_inspector: bool) {
         ui.add_space(style::SPACE_XS);
         ui.separator();
         ui.horizontal_wrapped(|ui| {
@@ -1107,7 +1436,7 @@ impl FileBrowserApp {
                 .size(style::TEXT_HINT)
                 .color(colors.text_dim),
             );
-            if layout.shows_inspector() {
+            if show_inspector {
                 ui.label(
                     egui::RichText::new("\u{00b7} inspector visible")
                         .size(style::TEXT_HINT)
@@ -1118,6 +1447,8 @@ impl FileBrowserApp {
                 let hints = [
                     HintGroup::new(&["/"], "search"),
                     HintGroup::new(&["s"], "sort"),
+                    HintGroup::new(&["i"], "inspector"),
+                    HintGroup::new(&["Space"], "quick look"),
                     HintGroup::new(&["Enter"], "open"),
                     HintGroup::new(&["Esc"], "close"),
                 ];
@@ -1141,13 +1472,14 @@ impl App for FileBrowserApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
         let colors = ctx.colors;
-        let layout = FileBrowserLayout::for_width(ui.available_width());
 
         egui::Frame::new()
             .fill(colors.terminal_bg)
             .inner_margin(egui::Margin::symmetric(12, 8))
             .show(ui, |ui| {
-                self.draw_toolbar(ui, colors, layout);
+                let layout = FileBrowserLayout::for_width(ui.available_width());
+                let show_inspector = self.should_show_inspector(ui.available_width());
+                self.draw_toolbar(ui, colors, layout, show_inspector);
 
                 if self.in_search {
                     self.draw_search_bar(ui, colors);
@@ -1168,17 +1500,60 @@ impl App for FileBrowserApp {
                 let mut navigate_to: Option<(PathBuf, bool)> = None;
                 let body_height = (ui.available_height() - STATUS_BAR_H).max(0.0);
 
-                if layout.shows_inspector() {
-                    ui.columns(2, |columns| {
-                        columns[0].set_min_width(DETAILS_TABLE_MIN_WIDTH);
-                        columns[1].set_min_width(240.0);
-                        egui::ScrollArea::vertical()
-                            .auto_shrink([false, false])
-                            .max_height(body_height)
-                            .show(&mut columns[0], |ui| {
-                                navigate_to = self.draw_details_table(ui, colors);
-                            });
-                        self.draw_sidebar_preview(&mut columns[1], colors);
+                if show_inspector {
+                    let total_width = ui.available_width();
+                    let max_inspector_width =
+                        (total_width - DETAILS_TABLE_MIN_WIDTH - INSPECTOR_SPLITTER_W)
+                            .min(total_width * 0.45)
+                            .max(INSPECTOR_MIN_PANEL_WIDTH);
+                    self.inspector_width = self
+                        .inspector_width
+                        .clamp(INSPECTOR_MIN_PANEL_WIDTH, max_inspector_width);
+                    let list_width = total_width - self.inspector_width - INSPECTOR_SPLITTER_W;
+
+                    ui.horizontal(|ui| {
+                        ui.set_height(body_height);
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(list_width, body_height),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                egui::ScrollArea::vertical()
+                                    .auto_shrink([false, false])
+                                    .max_height(body_height)
+                                    .show(ui, |ui| {
+                                        navigate_to = self.draw_details_table(ui, colors);
+                                    });
+                            },
+                        );
+                        let (splitter_rect, splitter_response) = ui.allocate_exact_size(
+                            egui::vec2(INSPECTOR_SPLITTER_W, body_height),
+                            egui::Sense::drag(),
+                        );
+                        if splitter_response.dragged() {
+                            let delta = ui.input(|input| input.pointer.delta().x);
+                            self.inspector_width = (self.inspector_width - delta)
+                                .clamp(INSPECTOR_MIN_PANEL_WIDTH, max_inspector_width);
+                        }
+                        if splitter_response.drag_stopped() {
+                            log::info!(
+                                "file_browser: inspector resized to {:.1}",
+                                self.inspector_width
+                            );
+                        }
+                        ui.painter().line_segment(
+                            [
+                                egui::pos2(splitter_rect.center().x, splitter_rect.top()),
+                                egui::pos2(splitter_rect.center().x, splitter_rect.bottom()),
+                            ],
+                            Stroke::new(1.0, colors.border),
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(self.inspector_width, body_height),
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                self.draw_sidebar_preview(ui, colors);
+                            },
+                        );
                     });
                 } else {
                     egui::ScrollArea::vertical()
@@ -1193,7 +1568,7 @@ impl App for FileBrowserApp {
                         });
                 }
 
-                self.draw_status_bar(ui, colors, layout);
+                self.draw_status_bar(ui, colors, show_inspector);
 
                 if let Some((path, is_dir)) = navigate_to {
                     if is_dir {
@@ -1203,6 +1578,8 @@ impl App for FileBrowserApp {
                     }
                 }
             });
+
+        self.draw_quick_look_modal(ui.ctx(), colors);
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> crate::app::app_trait::KeyDisposition {
@@ -1216,6 +1593,27 @@ impl App for FileBrowserApp {
         };
         let action = classify_key(input, self.in_search);
         log::debug!("file_browser: handle_key mode={mode:?} action={action:?}");
+
+        if self.quick_look_open {
+            match action {
+                Some(FileBrowserAction::Escape) | Some(FileBrowserAction::ToggleQuickLook) => {
+                    self.dismiss_quick_look();
+                    return KeyDisposition::Consumed;
+                }
+                Some(FileBrowserAction::Activate) => {
+                    if let Some(entry) = self.selected_entry().cloned() {
+                        self.dismiss_quick_look();
+                        if entry.is_dir {
+                            self.navigate_into(entry.path);
+                        } else {
+                            self.open_file(&entry.path);
+                        }
+                    }
+                    return KeyDisposition::Consumed;
+                }
+                _ => return KeyDisposition::Consumed,
+            }
+        }
 
         match (mode, action) {
             // Escape: closes browser in normal/empty, exits search in search mode
@@ -1336,6 +1734,14 @@ impl App for FileBrowserApp {
                 );
                 KeyDisposition::Consumed
             }
+            (Mode::Normal, Some(FileBrowserAction::ToggleInspector)) => {
+                self.toggle_inspector();
+                KeyDisposition::Consumed
+            }
+            (Mode::Normal, Some(FileBrowserAction::ToggleQuickLook)) => {
+                self.toggle_quick_look();
+                KeyDisposition::Consumed
+            }
             (Mode::Normal, Some(FileBrowserAction::Refresh)) => {
                 self.refresh();
                 KeyDisposition::Consumed
@@ -1346,6 +1752,10 @@ impl App for FileBrowserApp {
 
     fn take_pending_commands(&mut self) -> Vec<AppCommand> {
         std::mem::take(&mut self.pending_cmds)
+    }
+
+    fn keyboard_capture(&self) -> bool {
+        self.quick_look_open
     }
 
     fn wants_close(&self) -> bool {
@@ -1443,18 +1853,72 @@ mod tests {
         );
         assert_eq!(
             FileBrowserLayout::for_width(INSPECTOR_MIN_WIDTH),
-            FileBrowserLayout::DetailsWithInspector
+            FileBrowserLayout::DetailsTable
         );
     }
 
     #[test]
     fn layout_policy_exposes_details_and_inspector_separately() {
         assert!(!FileBrowserLayout::CompactList.shows_details());
-        assert!(!FileBrowserLayout::CompactList.shows_inspector());
         assert!(FileBrowserLayout::DetailsTable.shows_details());
-        assert!(!FileBrowserLayout::DetailsTable.shows_inspector());
-        assert!(FileBrowserLayout::DetailsWithInspector.shows_details());
-        assert!(FileBrowserLayout::DetailsWithInspector.shows_inspector());
+    }
+
+    #[test]
+    fn inspector_is_explicit_not_width_triggered() {
+        let (mut app, _dir) = make_populated_dir_app();
+        assert!(!app.inspector_open);
+        assert!(!app.should_show_inspector(INSPECTOR_MIN_WIDTH));
+
+        app.toggle_inspector();
+
+        assert!(app.inspector_open);
+        assert!(app.should_show_inspector(INSPECTOR_MIN_WIDTH));
+        assert!(!app.should_show_inspector(INSPECTOR_MIN_WIDTH - 1.0));
+    }
+
+    #[test]
+    fn i_toggles_inspector_in_normal_mode() {
+        let (mut app, _dir) = make_populated_dir_app();
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::I, Modifiers::default())]);
+        assert!(consumed);
+        assert!(app.inspector_open);
+
+        run_handle_key(&mut app, vec![key_event(Key::I, Modifiers::default())]);
+        assert!(!app.inspector_open);
+    }
+
+    #[test]
+    fn space_opens_quick_look_without_opening_file() {
+        let (mut app, _dir) = make_file_only_dir_app();
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::Space, Modifiers::default())]);
+
+        assert!(consumed);
+        assert!(app.quick_look_open);
+        assert!(app.opened_files.is_empty());
+    }
+
+    #[test]
+    fn escape_dismisses_quick_look_before_closing_browser() {
+        let (mut app, _dir) = make_file_only_dir_app();
+        run_handle_key(&mut app, vec![key_event(Key::Space, Modifiers::default())]);
+        assert!(app.quick_look_open);
+
+        let consumed = run_handle_key(&mut app, vec![key_event(Key::Escape, Modifiers::default())]);
+
+        assert!(consumed);
+        assert!(!app.quick_look_open);
+        assert!(!app.should_close);
+    }
+
+    #[test]
+    fn quick_look_captures_host_app_shortcuts() {
+        let (mut app, _dir) = make_file_only_dir_app();
+        assert!(!app.keyboard_capture());
+
+        run_handle_key(&mut app, vec![key_event(Key::Space, Modifiers::default())]);
+
+        assert!(app.quick_look_open);
+        assert!(app.keyboard_capture());
     }
 
     // ── Regression tests for issue #926 ──────────────────────────────────────
