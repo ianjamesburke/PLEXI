@@ -353,7 +353,7 @@ pub(crate) fn render_component_tree(
             ..
         } => {
             let mut val_buf = value.clone();
-            let response = crate::ui::widgets::styled_text_input(
+            let response = crate::ui::text_field::styled_text_input(
                 ui,
                 &mut val_buf,
                 placeholder.as_str(),
@@ -739,7 +739,7 @@ pub(crate) fn render_component_tree(
                             if ki > 0 {
                                 ui.add_space(2.0);
                             }
-                            crate::ui::widgets::key_chip(ui, key, colors, chip_font.clone());
+                            crate::ui::shortcuts::key_chip(ui, key, colors, chip_font.clone());
                         }
                         ui.add_space(4.0);
                         ui.label(

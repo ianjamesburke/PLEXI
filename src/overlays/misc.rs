@@ -15,25 +15,12 @@ impl PlexiApp {
         if !self.show_shortcuts {
             return;
         }
-        let dismissed = crate::ui::widgets::dismissable_modal(ctx, "shortcuts", |ui| {
-            egui::Frame::new()
-                .fill(self.colors.bg_sidebar.gamma_multiply(0.95))
-                .stroke(Stroke::new(1.0, self.colors.border))
-                .corner_radius(R6)
-                .inner_margin(egui::Margin::symmetric(24, 20))
-                .show(ui, |ui| {
-                    ui.set_width(style::MODAL_WIDTH_MD);
-
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            RichText::new("Keyboard Shortcuts")
-                                .size(13.0)
-                                .color(self.colors.text_primary)
-                                .strong(),
-                        );
-                    });
-                    ui.add_space(style::SPACE_MD);
-
+        let response = crate::ui::overlay::ModalShell::centered("shortcuts")
+            .title("Keyboard Shortcuts")
+            .width(style::MODAL_WIDTH_MD)
+            .escape(true)
+            .show(ctx, &self.colors.clone(), |ui| {
+                {
                     let colors = &self.colors;
 
                     ui.horizontal(|ui| {
@@ -59,7 +46,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "T"], "New tab"),
                                     ];
                                     for (keys, desc) in rows {
-                                        crate::ui::widgets::key_combo(ui, keys, colors);
+                                        crate::ui::shortcuts::key_combo(ui, keys, colors);
                                         ui.label(
                                             RichText::new(*desc)
                                                 .size(style::TEXT_HINT)
@@ -77,7 +64,7 @@ impl PlexiApp {
                                 .min_col_width(80.0)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}"], &["H", "J", "K", "L"]],
                                         None,
@@ -90,7 +77,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[
                                             &["\u{2318}", "\u{21E7}", "L"],
@@ -106,7 +93,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[
                                             &["\u{2318}", "\u{21E7}", "K"],
@@ -122,7 +109,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "["], &["\u{2318}", "]"]],
                                         None,
@@ -135,7 +122,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "1"], &["\u{2318}", "9"]],
                                         None,
@@ -148,7 +135,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::widgets::key_combo(
+                                    crate::ui::shortcuts::key_combo(
                                         ui,
                                         &["\u{2318}", "\u{21A9}"],
                                         colors,
@@ -160,7 +147,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "\u{2303}", "H", "J", "K", "L"]],
                                         None,
@@ -173,7 +160,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&[
                                             "\u{2318}", "\u{2303}", "\u{2325}", "H", "J", "K", "L",
@@ -212,7 +199,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "\u{21E7}", "M"], "Toggle minimap"),
                                     ];
                                     for (keys, desc) in rows {
-                                        crate::ui::widgets::key_combo(ui, keys, colors);
+                                        crate::ui::shortcuts::key_combo(ui, keys, colors);
                                         ui.label(
                                             RichText::new(*desc)
                                                 .size(style::TEXT_HINT)
@@ -230,7 +217,7 @@ impl PlexiApp {
                                 .min_col_width(80.0)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "\u{2191}"], &["\u{2318}", "\u{2193}"]],
                                         None,
@@ -243,7 +230,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "="], &["\u{2318}", "-"]],
                                         None,
@@ -276,7 +263,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "Q"], "Quit"),
                                     ];
                                     for (keys, desc) in rows {
-                                        crate::ui::widgets::key_combo(ui, keys, colors);
+                                        crate::ui::shortcuts::key_combo(ui, keys, colors);
                                         ui.label(
                                             RichText::new(*desc)
                                                 .size(style::TEXT_HINT)
@@ -292,9 +279,9 @@ impl PlexiApp {
                     ui.separator();
                     ui.add_space(style::SPACE_SM);
                     draw_contact_footer(ui, colors);
-                });
-        });
-        if dismissed {
+                }
+            });
+        if response.dismissed {
             self.show_shortcuts = false;
         }
     }
@@ -305,22 +292,13 @@ impl PlexiApp {
         }
         const CHANGELOG: &str = include_str!("../../CHANGELOG.md");
 
-        let dismissed = crate::ui::widgets::dismissable_modal(ctx, "changelog", |ui| {
-            egui::Frame::new()
-                .fill(self.colors.bg_sidebar.gamma_multiply(0.95))
-                .stroke(Stroke::new(1.0, self.colors.border))
-                .corner_radius(R6)
-                .inner_margin(egui::Margin::symmetric(24, 20))
-                .show(ui, |ui| {
-                    ui.set_width(560.0);
+        let response = crate::ui::overlay::ModalShell::centered("changelog")
+            .title("Changelog")
+            .width(560.0)
+            .escape(true)
+            .show(ctx, &self.colors.clone(), |ui| {
+                {
                     ui.set_max_height(480.0);
-
-                    ui.label(
-                        RichText::new("Changelog")
-                            .size(13.0)
-                            .color(self.colors.text_primary)
-                            .strong(),
-                    );
 
                     if let Some(ref latest) = self.update_available.clone() {
                         ui.add_space(8.0);
@@ -341,7 +319,7 @@ impl PlexiApp {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            crate::ui::widgets::copy_button(
+                                            crate::ui::button::copy_button(
                                                 ui,
                                                 egui::Id::new("update_banner_copy"),
                                                 "plexi update",
@@ -394,9 +372,9 @@ impl PlexiApp {
                                 }
                             }
                         });
-                });
-        });
-        if dismissed {
+                }
+            });
+        if response.dismissed {
             self.show_changelog = false;
         }
     }
@@ -442,44 +420,20 @@ impl PlexiApp {
         let show_browse = matches!(target, OverlayTarget::ContextRoot(_));
         let mut browse_clicked = false;
 
-        // Scrim
-        let screen_rect = ctx.screen_rect();
-        egui::Area::new(egui::Id::new("text_input_overlay_scrim"))
-            .fixed_pos(screen_rect.min)
-            .order(egui::Order::Middle)
-            .show(ctx, |ui| {
-                ui.painter().rect_filled(
-                    screen_rect,
-                    0.0,
-                    Color32::from_black_alpha(style::SCRIM_ALPHA),
-                );
-            });
-
-        egui::Area::new(egui::Id::new("text_input_overlay"))
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
-                    .stroke(Stroke::new(1.0, self.colors.border))
-                    .corner_radius(style::RADIUS_MD)
-                    .inner_margin(egui::Margin::symmetric(
-                        style::MODAL_PADDING_H,
-                        style::MODAL_PADDING_V,
-                    ))
-                    .show(ui, |ui| {
-                        ui.set_width(MODAL_WIDTH);
-                        ui.label(
-                            RichText::new(&label)
-                                .size(13.0)
-                                .color(self.colors.text_primary)
-                                .strong(),
-                        );
-                        ui.add_space(6.0);
-
+        // Kit shell. Escape/Enter stay caller-side (consumed above, before
+        // the Area, so they can't bleed into panes); the old scrim had no
+        // click-away either, so keep that off.
+        let colors = self.colors;
+        crate::ui::overlay::ModalShell::centered("text_input_overlay")
+            .title(&label)
+            .width(MODAL_WIDTH)
+            .click_away(false)
+            .show(ctx, &colors, |ui| {
+                {
+                    {
                         let te_id = egui::Id::new("text_input_overlay_field");
                         let (overlay, _target) = self.text_overlay.as_mut().unwrap();
-                        let te = crate::ui::widgets::styled_text_input(
+                        let te = crate::ui::text_field::styled_text_input(
                             ui,
                             &mut overlay.buffer,
                             hint.as_str(),
@@ -528,7 +482,8 @@ impl PlexiApp {
                                 );
                             });
                         }
-                    });
+                    }
+                }
             });
 
         if cancel {
@@ -617,27 +572,19 @@ impl PlexiApp {
             (enter, esc)
         });
 
-        egui::Area::new(egui::Id::new("rename_pane_overlay"))
+        // Top-hung, scrim-less popover: the pane being renamed stays visible.
+        // Enter/Escape stay caller-side (consumed above, before the Area).
+        let colors = self.colors;
+        crate::ui::overlay::ModalShell::centered("rename_pane_overlay")
+            .title("Rename Pane")
+            .width(MODAL_WIDTH)
             .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
-                    .stroke(Stroke::new(1.0, self.colors.border))
-                    .corner_radius(style::RADIUS_LG)
-                    .inner_margin(egui::Margin::symmetric(16, 12))
-                    .show(ui, |ui| {
-                        ui.set_width(MODAL_WIDTH);
-                        ui.label(
-                            RichText::new("Rename Pane")
-                                .size(13.0)
-                                .color(self.colors.text_primary)
-                                .strong(),
-                        );
-                        ui.add_space(6.0);
-
+            .scrim(false)
+            .show(ctx, &colors, |ui| {
+                {
+                    {
                         let te_id = egui::Id::new("rename_pane_input");
-                        let te = crate::ui::widgets::styled_text_input(
+                        let te = crate::ui::text_field::styled_text_input(
                             ui,
                             &mut self.rename_buffer,
                             "Pane name...",
@@ -664,7 +611,8 @@ impl PlexiApp {
                             self.rename_pane_focus_requested = true;
                             log::info!("rename_pane: focus requested for TextEdit");
                         }
-                    });
+                    }
+                }
             });
 
         if cancel {
@@ -703,47 +651,34 @@ impl PlexiApp {
             (enter, esc)
         });
 
-        egui::Area::new(egui::Id::new("rename_context_overlay"))
+        let colors = self.colors;
+        crate::ui::overlay::ModalShell::centered("rename_context_overlay")
+            .title("Name this context")
+            .width(MODAL_WIDTH)
             .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
-                    .stroke(Stroke::new(1.0, self.colors.border))
-                    .corner_radius(style::RADIUS_LG)
-                    .inner_margin(egui::Margin::symmetric(16, 12))
-                    .show(ui, |ui| {
-                        ui.set_width(MODAL_WIDTH);
-                        ui.label(
-                            RichText::new("Name this context")
-                                .size(13.0)
-                                .color(self.colors.text_primary)
-                                .strong(),
-                        );
-                        ui.add_space(6.0);
+            .scrim(false)
+            .show(ctx, &colors, |ui| {
+                let te_id = egui::Id::new("rename_context_input");
+                let te = crate::ui::text_field::styled_text_input(
+                    ui,
+                    &mut self.rename_buffer,
+                    "Context name...",
+                    te_id,
+                    &self.colors,
+                );
 
-                        let te_id = egui::Id::new("rename_context_input");
-                        let te = crate::ui::widgets::styled_text_input(
-                            ui,
-                            &mut self.rename_buffer,
-                            "Context name...",
-                            te_id,
-                            &self.colors,
-                        );
-
-                        if !te.has_focus() {
-                            te.request_focus();
-                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
-                                state
-                                    .cursor
-                                    .set_char_range(Some(egui::text::CCursorRange::two(
-                                        egui::text::CCursor::new(0),
-                                        egui::text::CCursor::new(self.rename_buffer.len()),
-                                    )));
-                                state.store(ui.ctx(), te_id);
-                            }
-                        }
-                    });
+                if !te.has_focus() {
+                    te.request_focus();
+                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::two(
+                                egui::text::CCursor::new(0),
+                                egui::text::CCursor::new(self.rename_buffer.len()),
+                            )));
+                        state.store(ui.ctx(), te_id);
+                    }
+                }
             });
 
         if cancel {
@@ -775,69 +710,57 @@ impl PlexiApp {
             (cmd_enter, esc)
         });
 
-        egui::Area::new(egui::Id::new("edit_description_overlay"))
+        let colors = self.colors;
+        let ctx_name = self.router.get(ctx_idx).name.clone();
+        let title = format!("Description for \"{ctx_name}\"");
+        crate::ui::overlay::ModalShell::centered("edit_description_overlay")
+            .title(&title)
+            .width(MODAL_WIDTH)
             .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
-                    .stroke(Stroke::new(1.0, self.colors.border))
-                    .corner_radius(R6)
-                    .inner_margin(egui::Margin::symmetric(16, 12))
-                    .show(ui, |ui| {
-                        ui.set_width(MODAL_WIDTH);
-                        let ctx_name = self.router.get(ctx_idx).name.clone();
-                        ui.label(
-                            RichText::new(format!("Description for \"{}\"", ctx_name))
-                                .size(13.0)
-                                .color(self.colors.text_primary)
-                                .strong(),
-                        );
-                        ui.add_space(6.0);
+            .scrim(false)
+            .show(ctx, &colors, |ui| {
+                let te_id = egui::Id::new("edit_description_input");
+                let te = ui
+                    .scope(|ui| {
+                        ui.visuals_mut().text_cursor.stroke.width = 1.5;
+                        ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
+                        ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
+                        ui.visuals_mut().widgets.active.bg_stroke =
+                            egui::Stroke::new(1.0, self.colors.accent);
+                        ui.visuals_mut().widgets.inactive.bg_stroke =
+                            egui::Stroke::new(1.0, self.colors.border);
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.description_buffer)
+                                .id(te_id)
+                                .desired_width(MODAL_WIDTH)
+                                .desired_rows(3)
+                                .hint_text("What are you working on in this context?")
+                                .font(egui::TextStyle::Body)
+                                .margin(egui::Margin::symmetric(8, 5)),
+                        )
+                    })
+                    .inner;
 
-                        let te_id = egui::Id::new("edit_description_input");
-                        let te = ui
-                            .scope(|ui| {
-                                ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                                ui.visuals_mut().text_cursor.stroke.color = self.colors.accent;
-                                ui.visuals_mut().extreme_bg_color = self.colors.bg_active;
-                                ui.visuals_mut().widgets.active.bg_stroke =
-                                    egui::Stroke::new(1.0, self.colors.accent);
-                                ui.visuals_mut().widgets.inactive.bg_stroke =
-                                    egui::Stroke::new(1.0, self.colors.border);
-                                ui.add(
-                                    egui::TextEdit::multiline(&mut self.description_buffer)
-                                        .id(te_id)
-                                        .desired_width(MODAL_WIDTH)
-                                        .desired_rows(3)
-                                        .hint_text("What are you working on in this context?")
-                                        .font(egui::TextStyle::Body)
-                                        .margin(egui::Margin::symmetric(8, 5)),
-                                )
-                            })
-                            .inner;
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("Cmd+Enter to save  ·  Esc to cancel")
+                        .size(11.0)
+                        .color(self.colors.text_dim),
+                );
 
-                        ui.add_space(4.0);
-                        ui.label(
-                            RichText::new("Cmd+Enter to save  ·  Esc to cancel")
-                                .size(11.0)
-                                .color(self.colors.text_dim),
-                        );
-
-                        if !self.description_focus_requested {
-                            te.request_focus();
-                            if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
-                                state
-                                    .cursor
-                                    .set_char_range(Some(egui::text::CCursorRange::two(
-                                        egui::text::CCursor::new(0),
-                                        egui::text::CCursor::new(self.description_buffer.len()),
-                                    )));
-                                state.store(ui.ctx(), te_id);
-                            }
-                            self.description_focus_requested = true;
-                        }
-                    });
+                if !self.description_focus_requested {
+                    te.request_focus();
+                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), te_id) {
+                        state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::two(
+                                egui::text::CCursor::new(0),
+                                egui::text::CCursor::new(self.description_buffer.len()),
+                            )));
+                        state.store(ui.ctx(), te_id);
+                    }
+                    self.description_focus_requested = true;
+                }
             });
 
         if cancel {

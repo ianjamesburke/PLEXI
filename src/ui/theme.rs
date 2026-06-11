@@ -6,8 +6,20 @@ use std::sync::Arc;
 
 pub const FONT_SIZE: f32 = 14.0;
 const FONT_NAME: &str = "JetBrainsMono Nerd Font";
+const UI_FONT_NAME: &str = "Inter";
+const UI_FONT_MEDIUM_NAME: &str = "Inter Medium";
 const FALLBACK_FONT_NAME: &str = "DejaVu Sans";
 const UNICODE_FALLBACK_FONT_NAME: &str = "Noto Sans";
+
+/// Named family for medium-weight UI text (titles, section headers). egui has
+/// no weight axis — a second family backed by Inter Medium is how weight
+/// contrast works.
+const UI_MEDIUM_FAMILY: &str = "ui-medium";
+
+/// FontId for medium-weight UI text. Pair with `RichText::font(...)`.
+pub fn font_medium(size: f32) -> FontId {
+    FontId::new(size, egui::FontFamily::Name(UI_MEDIUM_FAMILY.into()))
+}
 
 fn parse_hex_or(s: &Option<String>, default: Color32) -> Color32 {
     let [r, g, b] = hex_to_bytes(s.as_deref(), [default.r(), default.g(), default.b()]);
@@ -41,6 +53,39 @@ pub struct Colors {
 }
 
 impl Colors {
+    /// Readable foreground for text drawn on `fill` (accent buttons, danger
+    /// buttons, swatches). Picks whichever of `text_primary` / `bg_darkest`
+    /// has the higher WCAG contrast ratio against the fill; if neither
+    /// palette color reaches 3:1 (e.g. a mid-luminance accent), falls back to
+    /// pure black/white so text is never illegible on any theme — including
+    /// user-customized accents. Never hard-code WHITE or `bg_darkest` on a
+    /// colored fill.
+    pub fn text_on(&self, fill: Color32) -> Color32 {
+        fn luminance(c: Color32) -> f32 {
+            let rgba = egui::Rgba::from(c);
+            0.2126 * rgba.r() + 0.7152 * rgba.g() + 0.0722 * rgba.b()
+        }
+        fn contrast(a: f32, b: f32) -> f32 {
+            let (hi, lo) = if a > b { (a, b) } else { (b, a) };
+            (hi + 0.05) / (lo + 0.05)
+        }
+        let fill_lum = luminance(fill);
+        let primary_contrast = contrast(luminance(self.text_primary), fill_lum);
+        let darkest_contrast = contrast(luminance(self.bg_darkest), fill_lum);
+        let (best, best_contrast) = if primary_contrast >= darkest_contrast {
+            (self.text_primary, primary_contrast)
+        } else {
+            (self.bg_darkest, darkest_contrast)
+        };
+        if best_contrast >= 3.0 {
+            best
+        } else if contrast(0.0, fill_lum) > contrast(1.0, fill_lum) {
+            Color32::BLACK
+        } else {
+            Color32::WHITE
+        }
+    }
+
     pub fn from_config(cfg: &ThemeConfig) -> Self {
         Self {
             bg_darkest: parse_hex_or(&cfg.bg_darkest, Color32::from_rgb(0x11, 0x11, 0x1b)),
@@ -579,7 +624,12 @@ pub fn apply_preset(preset: &ThemeConfig, user: &ThemeConfig) -> ThemeConfig {
     }
 }
 
+/// Map the full egui `Visuals` + `Spacing` from the Plexi theme. Every raw
+/// egui widget the host still renders (buttons, combos, menus, scroll areas,
+/// text edits) inherits the Plexi look from here instead of stock egui — this
+/// is the single place where the default-egui appearance is retired.
 pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
+    use crate::ui::style as tokens;
     log::info!("theme: setup_style dark_mode={dark_mode}");
     let mut style = (*ctx.style()).clone();
     style.visuals = if dark_mode {
@@ -587,14 +637,89 @@ pub fn setup_style(ctx: &egui::Context, colors: &Colors, dark_mode: bool) {
     } else {
         egui::Visuals::light()
     };
-    style.visuals.panel_fill = colors.bg_darkest;
-    style.visuals.window_fill = colors.bg_sidebar;
-    style.visuals.override_text_color = Some(colors.text_primary);
-    style.visuals.widgets.noninteractive.bg_fill = colors.bg_sidebar;
-    style.visuals.widgets.inactive.bg_fill = colors.bg_sidebar;
-    style.visuals.widgets.hovered.bg_fill = colors.bg_hover;
-    style.visuals.widgets.active.bg_fill = colors.bg_active;
-    style.spacing.item_spacing = egui::vec2(8.0, 4.0);
+    let hairline = egui::Stroke::new(1.0, colors.border);
+    let v = &mut style.visuals;
+
+    // Surfaces — layered from the workspace floor up through raised chrome.
+    v.panel_fill = colors.bg_darkest;
+    v.window_fill = colors.bg_sidebar;
+    v.extreme_bg_color = colors.bg_darkest; // TextEdit / ScrollArea backgrounds.
+    v.faint_bg_color = colors.bg_sidebar; // Striped rows.
+    v.code_bg_color = colors.bg_darkest;
+    v.override_text_color = Some(colors.text_primary);
+
+    // Window / menu / popup chrome: token radii, hairline border, soft
+    // long-throw shadows instead of egui's tight dark halo.
+    v.window_corner_radius = tokens::RADIUS_LG;
+    v.window_stroke = hairline;
+    v.menu_corner_radius = tokens::RADIUS_MD;
+    let shadow = |offset: [i8; 2], blur: u8| egui::Shadow {
+        offset,
+        blur,
+        spread: 0,
+        color: Color32::from_black_alpha(if dark_mode { 96 } else { 40 }),
+    };
+    v.window_shadow = shadow([0, 12], 32);
+    v.popup_shadow = shadow([0, 6], 16);
+
+    // Accent-driven feedback. Default egui ships its own blue selection and
+    // green cursor that ignore the theme entirely.
+    v.hyperlink_color = colors.accent;
+    v.selection.bg_fill = colors.accent.gamma_multiply(0.35);
+    v.selection.stroke = egui::Stroke::new(1.0, colors.accent);
+    v.text_cursor.stroke = egui::Stroke::new(2.0, colors.accent);
+    v.warn_fg_color = colors.warning;
+    v.error_fg_color = colors.danger;
+    v.slider_trailing_fill = true;
+
+    // Widget states. `bg_fill` paints checkbox/radio/slider bodies,
+    // `weak_bg_fill` paints button faces — keep them in lockstep so every
+    // interactive surface steps through the same theme layers.
+    let text = |width: f32| egui::Stroke::new(width, colors.text_primary);
+    let w = &mut v.widgets;
+    w.noninteractive.bg_fill = colors.bg_sidebar;
+    w.noninteractive.weak_bg_fill = colors.bg_sidebar;
+    w.noninteractive.bg_stroke = hairline; // Separators.
+    w.noninteractive.fg_stroke = egui::Stroke::new(1.0, colors.text_dim);
+    w.inactive.bg_fill = colors.bg_hover;
+    w.inactive.weak_bg_fill = colors.bg_hover;
+    w.inactive.bg_stroke = hairline;
+    w.inactive.fg_stroke = text(1.0);
+    w.hovered.bg_fill = colors.bg_sidebar_hover;
+    w.hovered.weak_bg_fill = colors.bg_sidebar_hover;
+    w.hovered.bg_stroke = egui::Stroke::new(1.0, colors.text_section);
+    w.hovered.fg_stroke = text(1.5);
+    w.active.bg_fill = colors.bg_active;
+    w.active.weak_bg_fill = colors.bg_active;
+    w.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
+    w.active.fg_stroke = text(2.0);
+    w.open.bg_fill = colors.bg_active;
+    w.open.weak_bg_fill = colors.bg_active;
+    w.open.bg_stroke = hairline;
+    w.open.fg_stroke = text(1.0);
+    for state in [
+        &mut w.noninteractive,
+        &mut w.inactive,
+        &mut w.hovered,
+        &mut w.active,
+        &mut w.open,
+    ] {
+        state.corner_radius = tokens::RADIUS_SM;
+        // Default egui grows widgets on hover/press; modern chrome stays put.
+        state.expansion = 0.0;
+    }
+
+    style.spacing.item_spacing = egui::vec2(tokens::SPACE_SM, tokens::SPACE_XS);
+    // Default egui button padding is (4, 1) — the single biggest "default
+    // egui" tell. Real apps give labels room to breathe.
+    style.spacing.button_padding = egui::vec2(tokens::SPACE_MD, 6.0);
+    style.spacing.menu_margin = egui::Margin::same(tokens::SPACE_SM as i8);
+    style.spacing.window_margin = egui::Margin::same(tokens::SPACE_MD as i8);
+    // Overlay scrollbars: invisible until the scroll area is hovered.
+    style.spacing.scroll = egui::style::ScrollStyle::floating();
+    // Reserve a gutter for the floating bar so full-width content (text
+    // fields, selectable rows) never runs underneath it at the right edge.
+    style.spacing.scroll.floating_allocated_width = tokens::SPACE_MD;
     ctx.set_style(style);
 }
 
@@ -667,6 +792,18 @@ pub fn font_definitions() -> egui::FontDefinitions {
         ))),
     );
     fonts.font_data.insert(
+        UI_FONT_NAME.to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../../fonts/Inter-Regular.otf"
+        ))),
+    );
+    fonts.font_data.insert(
+        UI_FONT_MEDIUM_NAME.to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(
+            "../../fonts/Inter-Medium.otf"
+        ))),
+    );
+    fonts.font_data.insert(
         FALLBACK_FONT_NAME.to_owned(),
         Arc::new(egui::FontData::from_static(include_bytes!(
             "../../fonts/DejaVuSans.ttf"
@@ -678,27 +815,26 @@ pub fn font_definitions() -> egui::FontDefinitions {
             "../../fonts/NotoSans-Regular.ttf"
         ))),
     );
-    // Proportional family: DejaVuSans (actually proportional) is primary so
-    // UI text reads like a real app instead of a monospace terminal dump.
-    // JetBrains Mono falls through second — if DejaVuSans lacks a glyph
-    // (nerd-font icons, box drawing), the mono font provides coverage.
-    // BREAKS IF: UI text looks monospace again (priorities swapped back, or
-    // DejaVuSans removed from the bundle).
-    fonts
+    // Proportional family: Inter is primary so UI text reads like a modern
+    // app. JetBrains Mono falls through second for nerd-font icons and box
+    // drawing; DejaVuSans and Noto extend Unicode coverage after that.
+    // BREAKS IF: UI text looks monospace or dated (priorities reordered, or
+    // Inter removed from the bundle).
+    let proportional = fonts
         .families
         .entry(egui::FontFamily::Proportional)
-        .or_default()
-        .insert(0, FALLBACK_FONT_NAME.to_owned());
+        .or_default();
+    proportional.insert(0, UI_FONT_NAME.to_owned());
+    proportional.insert(1, FONT_NAME.to_owned());
+    proportional.insert(2, FALLBACK_FONT_NAME.to_owned());
+    proportional.insert(3, UNICODE_FALLBACK_FONT_NAME.to_owned());
+    // Medium family mirrors Proportional with Inter Medium leading, so
+    // missing glyphs degrade identically instead of swapping families.
+    let mut medium = proportional.clone();
+    medium[0] = UI_FONT_MEDIUM_NAME.to_owned();
     fonts
         .families
-        .entry(egui::FontFamily::Proportional)
-        .or_default()
-        .insert(1, FONT_NAME.to_owned());
-    fonts
-        .families
-        .entry(egui::FontFamily::Proportional)
-        .or_default()
-        .insert(2, UNICODE_FALLBACK_FONT_NAME.to_owned());
+        .insert(egui::FontFamily::Name(UI_MEDIUM_FAMILY.into()), medium);
     fonts
         .families
         .entry(egui::FontFamily::Monospace)
@@ -740,4 +876,39 @@ pub fn font_definitions() -> egui::FontDefinitions {
 
 pub fn setup_fonts(ctx: &egui::Context) {
     ctx.set_fonts(font_definitions());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every preset's accent button must render legible text: text_on must
+    /// return a color with at least 3:1 WCAG contrast against the accent and
+    /// danger fills. Guards the whole preset table, including future entries.
+    #[test]
+    fn text_on_is_legible_on_every_preset_accent_and_danger() {
+        fn luminance(c: Color32) -> f32 {
+            let rgba = egui::Rgba::from(c);
+            0.2126 * rgba.r() + 0.7152 * rgba.g() + 0.0722 * rgba.b()
+        }
+        fn contrast(a: Color32, b: Color32) -> f32 {
+            let (hi, lo) = if luminance(a) > luminance(b) {
+                (luminance(a), luminance(b))
+            } else {
+                (luminance(b), luminance(a))
+            };
+            (hi + 0.05) / (lo + 0.05)
+        }
+        for name in preset_names() {
+            let cfg = preset_colors(name).unwrap();
+            let colors = Colors::from_config(&cfg);
+            for fill in [colors.accent, colors.danger] {
+                let text = colors.text_on(fill);
+                assert!(
+                    contrast(text, fill) >= 3.0,
+                    "{name}: text_on({fill:?}) = {text:?} is below 3:1 contrast"
+                );
+            }
+        }
+    }
 }

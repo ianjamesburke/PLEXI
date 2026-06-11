@@ -304,6 +304,8 @@ High-throughput sessions share a pattern: strong initial analysis → user trust
 
 **Subagent for implementation, orchestrator for review.** Sonnet subagents handle multi-file coding (>3 files or multiple subsystems). The orchestrator always reviews diffs before committing, catches mistakes, owns the final commit. Never let a subagent commit directly.
 
+**Sequential sub-agents only — never parallel in one worktree.** One agent's `git stash`/`restore` reverts every sibling's uncommitted work. Run lanes one at a time, commit after each. Agent prompts: no git writes, no edits outside listed files, build failures elsewhere = report, don't fix.
+
 **Ideas become issues, not tangents.** When the user pitches something adjacent mid-stream, file it as an issue and move on in the same breath. Don't explore it, don't ask if they want to explore it.
 
 **Direct-to-alpha when user is watching.** The full pipeline (worktree, PR, validate, merge) is for dispatched/autonomous work. When the user is actively watching every build and giving screenshot feedback, direct commits to alpha are appropriate. The ceremony exists to catch mistakes when nobody's looking; when the user IS looking, ship fast.
