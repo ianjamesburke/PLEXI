@@ -108,6 +108,10 @@ pub fn workspace_clean_cli(dry_run: bool) -> i32 {
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default();
+            if paths.is_empty() {
+                println!("No stale pane slot files found.");
+                return 0;
+            }
             for path in paths {
                 if let Some(path) = path.as_str() {
                     println!("{path}");
