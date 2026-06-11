@@ -6,6 +6,8 @@ sprint: "s29"
 estimate: 12h
 blocked_by:
   - 39
+  - 30
+  - 31
 gh_issue: ["1748"]
 area: ["host/pane-ops", "sdk/pgap", "apps/file-browser", "apps/text-editor"]
 tags: ["v2", "text-editor", "webview"]

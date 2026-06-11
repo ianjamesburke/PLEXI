@@ -7,6 +7,8 @@ estimate: 8h
 blocked_by:
   - 72
   - 74
+  - 30
+  - 31
 gh_issue: ["141"]
 area: ["ui/overlays"]
 tags: ["v2", "ui", "shortcuts"]

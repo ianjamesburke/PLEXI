@@ -6,6 +6,8 @@ sprint: "s15"
 estimate: 12h
 blocked_by:
   - 71
+  - 30
+  - 31
 gh_issue: ["1239"]
 area: ["host/pane-ops"]
 tags: ["v2", "input", "architecture", "blocked"]

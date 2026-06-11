@@ -4,7 +4,9 @@ title: "v2 infra: Gemini code quality check"
 status: backlog
 sprint: "s23"
 estimate: 4h
-blocked_by: []
+blocked_by:
+  - 30
+  - 31
 gh_issue: ["1560"]
 area: ["infra/agents"]
 tags: ["v2", "ci", "agents"]

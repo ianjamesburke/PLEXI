@@ -7,6 +7,8 @@ estimate: 12h
 blocked_by:
   - 54
   - 55
+  - 30
+  - 31
 gh_issue: ["2068"]
 area: ["egui_term"]
 tags: ["v2", "terminal", "renderer"]

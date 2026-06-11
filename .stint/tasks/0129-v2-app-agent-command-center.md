@@ -6,6 +6,8 @@ sprint: "s29"
 estimate: 3h
 blocked_by:
   - 61
+  - 30
+  - 31
 gh_issue: ["1623"]
 area: ["apps/examples"]
 tags: ["v2", "apps", "agents"]

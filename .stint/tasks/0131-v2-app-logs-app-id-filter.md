@@ -4,7 +4,9 @@ title: "v2 app: logs app_id filter"
 status: backlog
 sprint: "s29"
 estimate: 4h
-blocked_by: []
+blocked_by:
+  - 30
+  - 31
 gh_issue: ["1296"]
 area: ["apps/examples"]
 tags: ["v2", "apps", "logs"]

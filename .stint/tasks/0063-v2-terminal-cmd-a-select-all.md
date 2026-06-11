@@ -6,6 +6,8 @@ sprint: "s17"
 estimate: 3h
 blocked_by:
   - "ianjamesburke/PLEXI@1239"
+  - 30
+  - 31
 gh_issue: ["1919"]
 area: ["host/terminal"]
 tags: ["v2", "terminal", "input", "blocked"]

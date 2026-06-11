@@ -4,7 +4,9 @@ title: "v2 CLI: unified run script system"
 status: backlog
 sprint: "s21"
 estimate: 8h
-blocked_by: []
+blocked_by:
+  - 30
+  - 31
 gh_issue: ["1321"]
 area: ["cli/commands", "infra/build"]
 tags: ["v2", "cli", "scripts"]

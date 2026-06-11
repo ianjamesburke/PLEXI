@@ -6,6 +6,8 @@ sprint: "s20"
 estimate: 6h
 blocked_by:
   - 85
+  - 30
+  - 31
 gh_issue: ["1918"]
 area: ["ui/tile-tree", "host/terminal", "host/context"]
 tags: ["v2", "navigation", "portals", "terminal", "status"]

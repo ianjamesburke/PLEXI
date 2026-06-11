@@ -4,7 +4,9 @@ title: "v2 CI: pin GitHub Actions SHAs"
 status: backlog
 sprint: "s24"
 estimate: 4h
-blocked_by: []
+blocked_by:
+  - 30
+  - 31
 gh_issue: ["1605"]
 area: ["infra/build"]
 tags: ["v2", "ci", "security"]

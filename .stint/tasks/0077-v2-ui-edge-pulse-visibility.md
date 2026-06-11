@@ -4,7 +4,9 @@ title: "v2 UI chrome: stronger edge pulse"
 status: backlog
 sprint: "s19"
 estimate: 2h
-blocked_by: []
+blocked_by:
+  - 30
+  - 31
 gh_issue: ["1223"]
 area: ["ui/chrome"]
 tags: ["v2", "ui", "chrome"]

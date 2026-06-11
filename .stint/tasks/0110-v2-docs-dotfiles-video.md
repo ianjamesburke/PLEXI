@@ -6,6 +6,8 @@ sprint: "s24"
 estimate: 3h
 blocked_by:
   - 70
+  - 30
+  - 31
 gh_issue: ["1473"]
 area: ["infra/docs"]
 tags: ["v2", "docs", "onboarding"]

@@ -6,6 +6,8 @@ sprint: "s21"
 estimate: 3h
 blocked_by:
   - 91
+  - 30
+  - 31
 gh_issue: ["787"]
 area: ["cli/commands"]
 tags: ["v2", "cli", "pr-testing"]

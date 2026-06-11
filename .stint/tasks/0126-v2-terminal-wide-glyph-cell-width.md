@@ -6,6 +6,8 @@ sprint: "s28"
 estimate: 4h
 blocked_by:
   - 124
+  - 30
+  - 31
 gh_issue: ["802"]
 area: ["host/terminal"]
 tags: ["v2", "terminal", "glyphs"]

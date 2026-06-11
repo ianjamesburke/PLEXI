@@ -6,6 +6,8 @@ sprint: "s19"
 estimate: 2h
 blocked_by:
   - 74
+  - 30
+  - 31
 gh_issue: ["1244"]
 area: ["ui/overlays"]
 tags: ["v2", "ui", "scratchpad", "input"]

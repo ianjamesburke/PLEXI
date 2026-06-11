@@ -6,6 +6,8 @@ sprint: "s20"
 estimate: 5h
 blocked_by:
   - 81
+  - 30
+  - 31
 gh_issue: ["547"]
 area: ["host/pane-ops"]
 tags: ["v2", "navigation", "pane-ops"]

@@ -6,6 +6,8 @@ sprint: "s19"
 estimate: 8h
 blocked_by:
   - 81
+  - 30
+  - 31
 gh_issue: ["190"]
 area: ["ui/chrome"]
 tags: ["v2", "ui", "chrome", "animation"]

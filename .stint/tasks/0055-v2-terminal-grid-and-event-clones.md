@@ -6,6 +6,8 @@ sprint: "s18"
 estimate: 6h
 blocked_by:
   - 54
+  - 30
+  - 31
 gh_issue: ["2025"]
 area: ["host/terminal"]
 tags: ["v2", "performance", "terminal"]

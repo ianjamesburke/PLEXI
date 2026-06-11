@@ -4,7 +4,9 @@ title: "v2 host architecture: unified FocusOwner stack"
 status: backlog
 sprint: "s15"
 estimate: 8h
-blocked_by: []
+blocked_by:
+  - 30
+  - 31
 gh_issue: ["1238"]
 area: ["host/pane-ops"]
 tags: ["v2", "input", "architecture"]

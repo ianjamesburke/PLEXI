@@ -4,7 +4,9 @@ title: "v2 docs: keyboard shortcut reference rule"
 status: backlog
 sprint: "s24"
 estimate: 1h
-blocked_by: []
+blocked_by:
+  - 30
+  - 31
 gh_issue: ["584"]
 area: ["infra/docs"]
 tags: ["v2", "docs", "shortcuts"]

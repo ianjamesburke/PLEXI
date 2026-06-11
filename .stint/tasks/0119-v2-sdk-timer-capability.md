@@ -4,7 +4,9 @@ title: "v2 SDK: timer capability"
 status: backlog
 sprint: "s26"
 estimate: 4h
-blocked_by: []
+blocked_by:
+  - 30
+  - 31
 gh_issue: ["293"]
 area: ["sdk/pgap"]
 tags: ["v2", "sdk", "timer"]

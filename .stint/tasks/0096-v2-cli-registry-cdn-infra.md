@@ -4,7 +4,9 @@ title: "v2 CLI registry: CDN infrastructure"
 status: backlog
 sprint: "s22"
 estimate: 5h
-blocked_by: []
+blocked_by:
+  - 30
+  - 31
 gh_issue: ["689"]
 area: ["cli/commands"]
 tags: ["v2", "cli-registry", "infra"]

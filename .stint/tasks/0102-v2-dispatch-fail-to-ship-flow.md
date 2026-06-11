@@ -6,6 +6,8 @@ sprint: "s23"
 estimate: 6h
 blocked_by:
   - 101
+  - 30
+  - 31
 gh_issue: ["1552"]
 area: ["infra/agents"]
 tags: ["v2", "dispatch", "agents", "recovery"]
