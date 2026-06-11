@@ -194,7 +194,7 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 Three harnesses are in place — use the right one for the right layer:
 
 - **`HostHarness`** (`src/testing/mod.rs:66`) — drives AppRequest/HostEffect dispatch headlessly. Required for all host logic. No egui context needed.
-- **`PlexiUiHarness`** (`src/ui_tests.rs`) — wraps PlexiApp in `egui_kittest`. Fully headless wgpu Metal rendering on macOS (no display). Use for egui-layer assertions: widget presence, overlay open/close, shortcut hint text.
+- **`PlexiUiHarness`** (`src/ui_tests.rs`) — wraps PlexiApp in `egui_kittest`. Fully headless wgpu Metal rendering on macOS (no display). Use for egui-layer assertions: widget presence, overlay open/close, shortcut hint text. Can also drive **real PGAP app processes** (`open_app_at` + `wait_for_app_frame`), the file browser host app, and subcontext portals — see the `shot_*` tests. Headless screenshot of any app dir with zero code change: `PLEXI_SHOT_APP=apps/<app> cargo test --bin plexi shot_app_from_env -- --ignored --nocapture`. The `/testing` skill (`.agents/skills/testing/SKILL.md`) owns the pre-push evidence workflow built on these.
 - **`#[test]` unit tests** — 784 across `src/`; for pure logic with no egui/host dependency.
 
 **Coverage tooling:** `cargo-llvm-cov` v0.8.7 is installed at `~/.cargo/bin/cargo-llvm-cov`. Run with `cargo llvm-cov --bin plexi`.

@@ -238,6 +238,8 @@ Run the narrower relevant test command too, usually:
 cargo test --bin plexi <test_name>
 ```
 
+Then run the `/testing` skill (`.agents/skills/testing/SKILL.md`) to produce the `**Test evidence:**` block — diff classification, harness tests, headless render screenshots for visual changes. Include the block in the Ship Log entry (or PR body when no issue is linked) during handoff.
+
 ## Phase 5 - Commit, Push, Handoff
 
 Commit from the worktree:

@@ -231,6 +231,10 @@ Report back: `DONE` | `DONE_WITH_CONCERNS <details>` | `NEEDS_CONTEXT <what>` | 
 - `NEEDS_CONTEXT`: provide + redispatch.
 - `BLOCKED`: provide context or escalate.
 
+### Self-validation — /testing
+
+After `cargo build` passes and before pushing, run the `/testing` skill (`.agents/skills/testing/SKILL.md`): classify the diff, run the matching harness tests, generate headless render screenshots for visual changes, and produce the `**Test evidence:**` block. That block goes into the Ship Log entry below and is what lets validate-pr skip binary install for fully-covered PRs.
+
 **Orchestrator owns the commit:**
 ```bash
 git -C worktrees/<branch> add <files>
@@ -265,6 +269,11 @@ Do not run `stint done` in this skill. A pushed implementation is not task compl
 **Stint:** started <task-id> at <UTC ISO-8601 timestamp>, or missing linked task
 **Files changed:** <list key files>
 **Spec summary:** <one-line description of approach>
+
+**Test evidence (attempt <N>):**
+- cargo test: <passed> passed, <failed> failed — filters: <module list or "full bin suite">
+- PlexiUiHarness render: /tmp/plexi-render-<issue>-<name>.png — <what it shows>
+- Conclusion: install skippable — full coverage | binary install required — <why>
 ```
 
 Append with:

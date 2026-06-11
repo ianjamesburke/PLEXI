@@ -127,7 +127,9 @@ gh pr diff $PR_NUMBER
 - The issue's Done When explicitly requires validating the installed PR binary
 - Codex review or a targeted implementation check reports a blocker that requires a rebuilt binary to verify
 
-**Do not run cargo tests in validation unless Codex review finds a specific testable risk.** Implementation already owns the cheapest relevant build/test check before commit. Validation owns diff review and user acceptance.
+**Test evidence gate:** Read the issue Ship Log (or PR body) for a `**Test evidence:**` block from the `/testing` skill. If present and it concludes `install skippable — full coverage`, stay in diff-review mode even when an install trigger above would otherwise fire — unless the trigger is `apps/` file changes or an explicit Done When install requirement, which always install. Evidence concluding `binary install required` means install.
+
+**Do not run cargo tests in validation unless Codex review finds a specific testable risk.** Implementation already owns the cheapest relevant build/test check before commit — and when a `**Test evidence:**` block reports a green run, never re-run the same suite. Validation owns diff review and user acceptance.
 
 If install is not required → skip Step 2 and use the diff-review testing block.
 
@@ -214,6 +216,9 @@ PR: <pr-url>
 
 Issue #<issue-number>: <ISSUE_TITLE>
 What this ships: <ISSUE_WHAT — first non-header paragraph from issue body>
+
+Test evidence (from implementation, when present):
+<test counts + render PNG path + conclusion line from the Ship Log Test evidence block>
 
 Codex review (gpt-5.5 xhigh):
 <AI_FINDINGS verbatim>
@@ -438,6 +443,9 @@ Issue #<issue-number>: <ISSUE_TITLE>
 What this ships: <ISSUE_WHAT — first non-header paragraph from issue body>
 
 No binary install was run; validation is limited to the diff and Codex review.
+
+Test evidence (from implementation, when present):
+<test counts + render PNG path + conclusion line from the Ship Log Test evidence block>
 
 Codex review (gpt-5.5 xhigh):
 <AI_FINDINGS verbatim>
