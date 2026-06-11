@@ -489,14 +489,13 @@ impl PlexiApp {
                                 {
                                     browse_clicked = true;
                                 }
-                                ui.add_space(style::SPACE_SM);
-                                ui.label(
-                                    RichText::new("Enter to confirm, Esc to cancel")
-                                        .size(style::TEXT_CAPTION)
-                                        .color(self.colors.text_dim),
-                                );
                             });
                         }
+                        let hints = [
+                            crate::ui::hints::HintGroup::new(&["Enter"], "confirm"),
+                            crate::ui::hints::HintGroup::new(&["Esc"], "cancel"),
+                        ];
+                        crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
                     }
                 }
             });
@@ -756,12 +755,11 @@ impl PlexiApp {
                     })
                     .inner;
 
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new("Cmd+Enter to save  ·  Esc to cancel")
-                        .size(11.0)
-                        .color(self.colors.text_dim),
-                );
+                let hints = [
+                    crate::ui::hints::HintGroup::new(&["\u{2318}", "Enter"], "save"),
+                    crate::ui::hints::HintGroup::new(&["Esc"], "cancel"),
+                ];
+                crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
 
                 if !self.description_focus_requested {
                     te.request_focus();

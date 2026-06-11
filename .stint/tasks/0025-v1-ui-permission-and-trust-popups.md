@@ -1,9 +1,11 @@
 ---
 id: "0025"
 title: "v1 UI: permission and trust popups"
-status: in-progress
+status: done
 estimate: "16h"
+actual: "13m"
 started_at: "2026-06-11T17:57:59Z"
+completed_at: "2026-06-11T18:10:30Z"
 sprint: "s5"
 blocked_by:
   - 17
@@ -21,6 +23,7 @@ tags:
 ---
 
 
+
 Rework permission grant, package trust, install confirmation, and marketplace warning popups on shared Host UI Kit primitives.
 
 ## Why
@@ -31,3 +34,7 @@ The v1 trust model is only credible if permission and package decisions are clea
 
 - Trust labels must stay blunt: reviewed native process, first-party core, and sandboxed WASM only after enforcement exists.
 - Dangerous or irreversible choices need clear danger-state styling and logging.
+
+## Variance
+
+Completed as part of the 0023-0027 bundled stabilization pass; this pass stabilized existing prompt chrome without adding new marketplace enforcement.
