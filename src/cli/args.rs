@@ -481,11 +481,28 @@ pub enum AppCmd {
         #[arg(long)]
         from_pane_id: Option<u64>,
     },
-    /// Check a Plexi app directory for errors before publishing or installing.
+    /// Check a Plexi app directory or .plexipkg package for errors before publishing or installing.
+    ///
+    /// A directory is validated in place. A `.plexipkg` file is extracted to a
+    /// temp dir with path-safety checks and verified end-to-end: descriptor,
+    /// content hashes, manifest, entry point, and capability strings.
     Validate {
-        /// Path to check (default: current directory)
-        #[arg(default_value = ".", value_hint = ValueHint::DirPath)]
+        /// App directory or .plexipkg file to check (default: current directory)
+        #[arg(default_value = ".", value_hint = ValueHint::AnyPath)]
         path: String,
+    },
+    /// Build a distributable .plexipkg package from an app directory.
+    ///
+    /// Validates the directory first (fail-closed), then writes
+    /// `<id>-<version>.plexipkg` containing the app files plus a generated
+    /// PACKAGE.toml with per-file sha256 checksums.
+    Package {
+        /// App directory to package
+        #[arg(value_hint = ValueHint::DirPath)]
+        path: String,
+        /// Output file path (default: ./<id>-<version>.plexipkg)
+        #[arg(long, value_hint = ValueHint::FilePath)]
+        out: Option<String>,
     },
     /// Export your currently installed apps as a single TOML snapshot for sharing or backup.
     ///

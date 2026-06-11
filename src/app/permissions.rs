@@ -133,28 +133,35 @@ impl Capability {
         }
     }
 
-    pub fn all_str_values() -> &'static [&'static str] {
-        &[
-            "fs.read",
-            "fs.write",
-            "net.http",
-            "secrets.get",
-            "pipe.open",
-            "spawn.app",
-            "audio.record",
-            "audio.playback",
-            "video.playback",
-            "llm",
-            "timer",
-            "ai.query",
-            "midi.in",
-            "midi.out",
-            "terminal.bindings",
-            "fs.pick",
-            "panes.spawn",
-            "panes.read",
-            "panes.control",
-        ]
+    /// Every capability variant. The single source of truth for "all known
+    /// capabilities" — validators iterate this instead of hand-rolling string
+    /// lists. When adding a variant, `as_str`/`try_from` won't compile without
+    /// it, and `capability_all_round_trips` fails if it is missing here.
+    pub const ALL: &'static [Capability] = &[
+        Self::FsRead,
+        Self::FsWrite,
+        Self::NetHttp,
+        Self::SecretsGet,
+        Self::PipeOpen,
+        Self::SpawnApp,
+        Self::AudioRecord,
+        Self::AudioPlayback,
+        Self::VideoPlayback,
+        Self::Llm,
+        Self::Timer,
+        Self::AiQuery,
+        Self::MidiIn,
+        Self::MidiOut,
+        Self::TerminalBindings,
+        Self::FsPick,
+        Self::PanesSpawn,
+        Self::PanesRead,
+        Self::PanesControl,
+    ];
+
+    /// All capability wire strings, derived from [`Capability::ALL`].
+    pub fn all_str_values() -> Vec<&'static str> {
+        Self::ALL.iter().map(|c| c.as_str()).collect()
     }
 
     /// Returns a human-readable description of why this capability cannot be
@@ -617,6 +624,27 @@ impl PermissionStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capability_all_round_trips() {
+        // ALL must contain every variant exactly once, and each variant must
+        // round-trip through as_str / try_from. A variant added to the enum
+        // but not to ALL would silently weaken every ALL-derived validator.
+        let mut seen = HashSet::new();
+        for &cap in Capability::ALL {
+            assert!(seen.insert(cap), "duplicate in Capability::ALL: {cap}");
+            assert_eq!(
+                Capability::try_from(cap.as_str()).expect("must round-trip"),
+                cap
+            );
+        }
+        assert_eq!(
+            Capability::ALL.len(),
+            19,
+            "update Capability::ALL (and this count) when adding a variant"
+        );
+        assert_eq!(Capability::all_str_values().len(), Capability::ALL.len());
+    }
 
     #[test]
     fn ai_query_capability_recognized() {

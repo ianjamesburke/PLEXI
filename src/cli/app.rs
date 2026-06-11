@@ -504,6 +504,73 @@ pub fn app_install_with_pin(path: &str, pin: Option<&str>) -> i32 {
     0
 }
 
+/// `plexi app package <path> [--out <file>]` — build a `.plexipkg` artifact.
+pub fn app_package_cli(path: &str, out: Option<&str>) -> i32 {
+    log::info!("app_package:cli: path={path} out={out:?}");
+    let app_dir = match std::path::Path::new(path).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: could not resolve {path}: {e}");
+            return 1;
+        }
+    };
+    match crate::app::package::build_package(&app_dir, out.map(std::path::Path::new)) {
+        Ok(pkg) => {
+            println!("Built package {}", pkg.display());
+            println!("  Validate with: plexi app validate {}", pkg.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("error: package build failed: {e}");
+            1
+        }
+    }
+}
+
+/// `plexi app install <file.plexipkg>` — validate the package (fail-closed),
+/// then extract to a temp dir and run the standard dir install on it.
+pub fn app_install_package(file: &str, pin: Option<&str>) -> i32 {
+    log::info!("app_install:cli: package file={file} pin={pin:?}");
+    let pkg_path = match std::path::Path::new(file).canonicalize() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: could not resolve {file}: {e}");
+            return 1;
+        }
+    };
+
+    let report = match crate::app::package::validate_package(&pkg_path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: package validation failed — refusing install: {e}");
+            return 1;
+        }
+    };
+
+    // Extract into a unique temp dir and reuse the existing dir-install path.
+    let staging = std::env::temp_dir().join(format!("plexipkg-install-{}", uuid::Uuid::new_v4()));
+    if let Err(e) = crate::app::package::extract_package(&pkg_path, &staging) {
+        eprintln!("error: could not extract {}: {e}", pkg_path.display());
+        let _ = std::fs::remove_dir_all(&staging);
+        return 1;
+    }
+    log::info!(
+        "app_install:cli: validated package id={} v{} ({} files) — installing from {}",
+        report.id,
+        report.version,
+        report.file_count,
+        staging.display()
+    );
+    let code = app_install_with_pin(&staging.to_string_lossy(), pin);
+    if let Err(e) = std::fs::remove_dir_all(&staging) {
+        log::warn!(
+            "app_install:cli: could not clean up staging dir {}: {e}",
+            staging.display()
+        );
+    }
+    code
+}
+
 fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {

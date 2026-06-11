@@ -72,6 +72,10 @@ wgpu = { version = "24", default-features = false, features = ["wgsl", "metal"] 
 egui-wgpu = "0.31"
 png = "0.17"
 taffy = "0.5"
+# Single-app package artifact `.plexipkg` (stint 0015): gzipped tar + sha256 manifest.
+tar = "0.4"
+flate2 = "1"
+sha2 = "0.10"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Keychain access via Security.framework C API — no subprocess, distinct error

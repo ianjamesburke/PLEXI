@@ -5,6 +5,7 @@ mod focus;
 mod lifecycle;
 pub(crate) mod notification_image;
 mod notifications;
+pub mod package;
 pub mod packs;
 pub mod permissions;
 pub mod plexi_descriptor;
