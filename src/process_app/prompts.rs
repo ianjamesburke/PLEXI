@@ -109,7 +109,7 @@ pub(crate) fn show_prompt_modal(
 
     // Detect keys at frame level — before any window or button rendering — so
     // egui button focus cannot intercept Enter and misfire an action.
-    let (mut grant_once, mut grant_forever, mut deny_once, mut deny_forever) = match prompt {
+    let (mut grant_once, grant_forever, mut deny_once, deny_forever) = match prompt {
         PendingPrompt::Capability { .. } => ctx.input_mut(|i| {
             let shift_enter = i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter);
             let key_a = i.consume_key(egui::Modifiers::NONE, egui::Key::A);
@@ -138,18 +138,20 @@ pub(crate) fn show_prompt_modal(
         .scrim_strength(0.85)
         .show(ctx, colors, |ui| match prompt {
             PendingPrompt::Capability { capability, .. } => {
-                ui.label(
-                    egui::RichText::new("Permission request")
-                        .size(crate::ui::style::TEXT_TITLE)
-                        .color(colors.text_primary)
-                        .strong(),
-                );
-                ui.add_space(crate::ui::style::SPACE_SM);
-                ui.label(
-                    egui::RichText::new(format!("\"{}\" is requesting access to:", type_id))
-                        .size(crate::ui::style::TEXT_CAPTION)
-                        .color(colors.text_dim),
-                );
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new("Permission request")
+                            .size(crate::ui::style::TEXT_TITLE)
+                            .color(colors.text_primary)
+                            .strong(),
+                    );
+                    ui.add_space(crate::ui::style::SPACE_SM);
+                    ui.label(
+                        egui::RichText::new(format!("\"{}\" is requesting access to:", type_id))
+                            .size(crate::ui::style::TEXT_CAPTION)
+                            .color(colors.text_dim),
+                    );
+                });
                 ui.add_space(crate::ui::style::SPACE_SM);
                 if let Ok(cap) = crate::app::permissions::Capability::try_from(capability.as_str())
                 {
@@ -170,36 +172,12 @@ pub(crate) fn show_prompt_modal(
                     );
                 }
                 ui.add_space(crate::ui::style::SPACE_SM);
-                ui.label(
-                    egui::RichText::new(format!("Workspace: {}", workspace_root.display()))
-                        .size(crate::ui::style::TEXT_HINT)
-                        .color(colors.text_dim),
-                );
-                ui.add_space(crate::ui::style::SPACE_MD);
-                ui.horizontal(|ui| {
-                    if chrome_button(ui, "Grant once", ButtonKind::Primary, colors, 112.0).clicked()
-                    {
-                        grant_once = true;
-                    }
-                    ui.add_space(crate::ui::style::SPACE_SM);
-                    if chrome_button(ui, "Always allow", ButtonKind::Primary, colors, 128.0)
-                        .clicked()
-                    {
-                        grant_forever = true;
-                    }
-                });
-                ui.add_space(crate::ui::style::SPACE_SM);
-                ui.horizontal(|ui| {
-                    if chrome_button(ui, "Deny once", ButtonKind::Secondary, colors, 112.0)
-                        .clicked()
-                    {
-                        deny_once = true;
-                    }
-                    ui.add_space(crate::ui::style::SPACE_SM);
-                    if chrome_button(ui, "Always deny", ButtonKind::Danger, colors, 128.0).clicked()
-                    {
-                        deny_forever = true;
-                    }
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("Workspace: {}", workspace_root.display()))
+                            .size(crate::ui::style::TEXT_HINT)
+                            .color(colors.text_dim),
+                    );
                 });
                 let hints = [
                     HintGroup::new(&["Enter"], "grant once"),
@@ -207,7 +185,7 @@ pub(crate) fn show_prompt_modal(
                     HintGroup::new(&["Esc"], "deny once"),
                     HintGroup::new(&["Shift", "Esc"], "always deny"),
                 ];
-                HintBar::new(&hints).show(ui, colors);
+                HintBar::new(&hints).columns(2).show(ui, colors);
             }
             PendingPrompt::Secret { key } => {
                 ui.label(

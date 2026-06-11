@@ -50,11 +50,20 @@ impl<'a> HintGroup<'a> {
 
 pub(crate) struct HintBar<'a> {
     groups: &'a [HintGroup<'a>],
+    columns: Option<usize>,
 }
 
 impl<'a> HintBar<'a> {
     pub(crate) fn new(groups: &'a [HintGroup<'a>]) -> Self {
-        Self { groups }
+        Self {
+            groups,
+            columns: None,
+        }
+    }
+
+    pub(crate) fn columns(mut self, columns: usize) -> Self {
+        self.columns = (columns > 0).then_some(columns);
+        self
     }
 
     pub(crate) fn show(self, ui: &mut egui::Ui, colors: &Colors) {
@@ -66,15 +75,27 @@ impl<'a> HintBar<'a> {
         // own bottom padding closes them out symmetrically.
         ui.add_space(style::SPACE_MD);
 
-        // Center the hint groups in the footer.
-        let total: f32 = self.groups.iter().map(|g| g.width(ui)).sum::<f32>()
-            + style::SPACE_MD * self.groups.len().saturating_sub(1) as f32;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = style::SPACE_MD;
-            ui.add_space(((full - total) / 2.0).max(0.0));
-            for group in self.groups {
-                group.show(ui, colors);
+        if let Some(columns) = self.columns {
+            for (i, row) in self.groups.chunks(columns).enumerate() {
+                if i > 0 {
+                    ui.add_space(style::SPACE_SM);
+                }
+                show_centered_row(ui, colors, row, full);
             }
-        });
+        } else {
+            show_centered_row(ui, colors, self.groups, full);
+        }
     }
+}
+
+fn show_centered_row(ui: &mut egui::Ui, colors: &Colors, groups: &[HintGroup<'_>], full: f32) {
+    let total: f32 = groups.iter().map(|g| g.width(ui)).sum::<f32>()
+        + style::SPACE_MD * groups.len().saturating_sub(1) as f32;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = style::SPACE_MD;
+        ui.add_space(((full - total) / 2.0).max(0.0));
+        for group in groups {
+            group.show(ui, colors);
+        }
+    });
 }
