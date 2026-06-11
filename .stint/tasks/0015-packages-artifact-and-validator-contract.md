@@ -1,9 +1,11 @@
 ---
 id: "0015"
 title: "Packages: artifact and validator contract"
-status: in-progress
+status: done
 estimate: "16h"
+actual: "105m"
 started_at: "2026-06-11T17:53:36Z"
+completed_at: "2026-06-11T19:38:06Z"
 sprint: "s3"
 blocked_by:
   - 13
@@ -17,6 +19,7 @@ tags:
   - "validation"
   - "marketplace"
 ---
+
 
 
 Define package artifacts and validation for manifest, contents, checksums, runtime, capabilities, and obvious bypass patterns.

@@ -1,9 +1,11 @@
 ---
 id: "0016"
 title: "Packages: local install inspect and trust sheet"
-status: in-progress
+status: done
 estimate: "12h"
+actual: "104m"
 started_at: "2026-06-11T17:54:22Z"
+completed_at: "2026-06-11T19:38:06Z"
 sprint: "s3"
 blocked_by:
   - 15
@@ -17,6 +19,7 @@ tags:
   - "trust-labels"
   - "install"
 ---
+
 
 
 Show manifest, runtime trust label, and declared capabilities before local package install proceeds.
