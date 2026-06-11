@@ -482,7 +482,13 @@ impl PlexiApp {
                         );
                         continue;
                     };
-                    let existing_path = slots.get(slot_name).cloned().unwrap_or(slot_path.clone());
+                    let tracked_path = slots.get(slot_name).cloned();
+                    let existing_path = tracked_path.clone().unwrap_or(slot_path.clone());
+                    let write_path = if *append {
+                        tracked_path.clone().unwrap_or(slot_path.clone())
+                    } else {
+                        slot_path.clone()
+                    };
                     let exists = existing_path.exists();
                     if exists && !*append && !*replace {
                         slot_error(
@@ -508,12 +514,13 @@ impl PlexiApp {
                             continue;
                         }
                     }
-                    if let Err(e) = std::fs::create_dir_all(&slot_dir) {
+                    let write_dir = write_path.parent().unwrap_or(slot_dir.as_path());
+                    if let Err(e) = std::fs::create_dir_all(write_dir) {
                         slot_error(
                             response_file,
                             format!(
                                 "could not create slot directory {}: {e}",
-                                slot_dir.display()
+                                write_dir.display()
                             ),
                         );
                         continue;
@@ -523,10 +530,10 @@ impl PlexiApp {
                         std::fs::OpenOptions::new()
                             .create(true)
                             .append(true)
-                            .open(&slot_path)
+                            .open(&write_path)
                             .and_then(|mut f| f.write_all(content).map(|_| ()))
                     } else {
-                        std::fs::write(&slot_path, content)
+                        std::fs::write(&write_path, content)
                     };
                     if let Err(e) = write_result {
                         slot_error(
@@ -535,9 +542,9 @@ impl PlexiApp {
                         );
                         continue;
                     }
-                    let absolute = slot_path
+                    let absolute = write_path
                         .canonicalize()
-                        .unwrap_or_else(|_| slot_path.clone());
+                        .unwrap_or_else(|_| write_path.clone());
                     slots.insert(slot_name.clone(), absolute.clone());
                     let size = std::fs::metadata(&absolute).map(|m| m.len()).unwrap_or(0);
                     write_json_response(

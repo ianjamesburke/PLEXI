@@ -719,9 +719,12 @@ pub enum PaneSlotCmd {
     Write {
         /// Slot name
         name: String,
-        /// Optional content and optional pane id: `name [content] [pane_id]`.
-        #[arg(num_args = 0..=2, allow_hyphen_values = true)]
-        args: Vec<String>,
+        /// Optional content. If omitted, stdin is read fully.
+        #[arg(allow_hyphen_values = true)]
+        content: Option<String>,
+        /// Pane id. Defaults to PLEXI_PANE_ID.
+        #[arg(long)]
+        pane_id: Option<u64>,
         /// Append to an existing slot instead of replacing it.
         #[arg(long, conflicts_with = "replace")]
         append: bool,

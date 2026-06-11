@@ -723,30 +723,17 @@ fn main() -> eframe::Result {
                             PaneCmd::Slot { cmd } => match cmd {
                                 PaneSlotCmd::Write {
                                     name,
-                                    args,
+                                    content,
+                                    pane_id,
                                     append,
                                     replace,
                                 } => {
-                                    let (content, pane_id) = match args.as_slice() {
-                                        [] => (None, None),
-                                        [content] => (Some(content.as_str()), None),
-                                        [content, pane] => {
-                                            let pane_id = match pane.parse::<u64>() {
-                                                Ok(id) => id,
-                                                Err(_) => {
-                                                    eprintln!("error: pane_id must be a number, got {pane:?}");
-                                                    std::process::exit(1);
-                                                }
-                                            };
-                                            (Some(content.as_str()), Some(pane_id))
-                                        }
-                                        _ => {
-                                            eprintln!("error: usage: plexi pane slot write <name> [content] [pane_id]");
-                                            std::process::exit(2);
-                                        }
-                                    };
                                     std::process::exit(cli::pane_slot_write_cli(
-                                        &name, content, append, replace, pane_id,
+                                        &name,
+                                        content.as_deref(),
+                                        append,
+                                        replace,
+                                        pane_id,
                                     ));
                                 }
                                 PaneSlotCmd::Read { name, pane_id } => {

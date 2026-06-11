@@ -343,6 +343,50 @@ fn pane_slot_append_rejects_final_file_over_10_mib() {
 }
 
 #[test]
+fn pane_slot_append_uses_tracked_path_after_context_root_changes() {
+    let first_root = tempfile::tempdir().expect("first root");
+    let second_root = tempfile::tempdir().expect("second root");
+    let mut h = HostHarness::new();
+    h.app.set_active_context_root(first_root.path().to_path_buf());
+    let pane = h.add_test_pane();
+
+    let write_file = temp_response(first_root.path(), "slot-root-write");
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id: pane,
+        slot_name: "artifact".to_string(),
+        content: b"hello".to_vec(),
+        append: false,
+        replace: false,
+        response_file: write_file.clone(),
+    });
+    h.run_frames(1);
+    let original_path = read_json_response(&write_file)["path"]
+        .as_str()
+        .expect("slot path")
+        .to_string();
+
+    h.app
+        .set_active_context_root(second_root.path().to_path_buf());
+    let append_file = temp_response(second_root.path(), "slot-root-append");
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id: pane,
+        slot_name: "artifact".to_string(),
+        content: b" world".to_vec(),
+        append: true,
+        replace: false,
+        response_file: append_file.clone(),
+    });
+    h.run_frames(1);
+    let append = read_json_response(&append_file);
+    assert_eq!(append["ok"].as_bool(), Some(true));
+    assert_eq!(append["path"].as_str(), Some(original_path.as_str()));
+    assert_eq!(
+        std::fs::read(&original_path).expect("original slot contents"),
+        b"hello world"
+    );
+}
+
+#[test]
 fn pane_info_and_list_include_slots_object() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();
