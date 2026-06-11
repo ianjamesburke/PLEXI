@@ -1551,6 +1551,12 @@ impl eframe::App for PlexiApp {
         // must reach the queue *now*, not be buffered until the modal
         // closes (which caused the "ghost queue appears on reopen" bug).
         let fresh_cmds = self.drain_all_app_commands();
+        if self.background_processes_need_wake() {
+            crate::platform::frame_diag::note(
+                crate::platform::frame_diag::RepaintCause::AppIdlePoll,
+            );
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
         // When the overlay releases, prepend any held unsafe commands so they
         // execute before new commands this frame (FIFO order preserved).
         let deferred_app_cmds: Vec<_> =

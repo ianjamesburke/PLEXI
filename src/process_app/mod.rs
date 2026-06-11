@@ -1148,6 +1148,10 @@ impl ProcessApp {
             || self.image_cache.has_pending()
     }
 
+    pub(crate) fn needs_headless_wake_poll(&self) -> bool {
+        self.render_in_flight_frame_id.is_some() || self.needs_async_wake_poll()
+    }
+
     /// Drain the MCP call queue and forward each request to the app as a
     /// `PlexiEvent::McpToolCall`. Called each frame (both `ui()` and
     /// `background_tick()`) so tool calls are processed even for background apps.
@@ -1364,7 +1368,19 @@ impl ProcessApp {
                         _ => log::info!(target: &target, "{message}"),
                     }
                 }
-                DrawCommand::Control(_) => {} // Ready/FrameDone/etc. irrelevant without a pane
+                DrawCommand::Control(ControlCommand::FrameDone { frame_id }) => {
+                    let expected_frame_id = self.render_in_flight_frame_id.take();
+                    if expected_frame_id != Some(frame_id) {
+                        log::debug!(
+                            "ProcessApp[{}]: background FrameDone frame_id={frame_id} expected={expected_frame_id:?}",
+                            self.type_id,
+                        );
+                    }
+                    self.pending_frame.clear();
+                    self.click_awaiting_frame = false;
+                    self.lifecycle.on_frame_done();
+                }
+                DrawCommand::Control(_) => {} // Ready/etc. irrelevant without a pane
                 DrawCommand::Render(_) => {}  // No pane to render into
             }
         }

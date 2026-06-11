@@ -129,6 +129,46 @@ fn in_flight_process_app_render_is_not_duplicated_while_host_polls() {
 }
 
 #[test]
+fn background_frame_done_clears_in_flight_render() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    h.run_frames(1);
+    assert!(
+        h.render_payload_take(pane).is_some(),
+        "first visible frame must request an app Render"
+    );
+
+    h.inject(
+        pane,
+        DrawCommand::Control(crate::app_protocol::ControlCommand::FrameDone { frame_id: 1 }),
+    );
+    {
+        let win = &mut h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+            panic!("expected App pane");
+        };
+        let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+            panic!("expected Process runtime");
+        };
+        proc.background_tick();
+    }
+
+    h.inject(
+        pane,
+        DrawCommand::Control(crate::app_protocol::ControlCommand::ScheduleRender { after_ms: 0 }),
+    );
+    h.run_frames(2);
+    let scheduled = h
+        .render_payload_take(pane)
+        .expect("a background-drained FrameDone must allow the next Render");
+    assert!(
+        scheduled.contains("\"frame_id\":2"),
+        "next Render should use frame_id=2 after background FrameDone, got {scheduled}"
+    );
+}
+
+#[test]
 fn schedule_render_requests_next_process_app_render() {
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();
