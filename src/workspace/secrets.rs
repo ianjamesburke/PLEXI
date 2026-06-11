@@ -373,6 +373,20 @@ pub struct WorkspaceSecrets {
     pub apps: HashMap<String, HashMap<String, String>>,
     #[serde(default)]
     pub default: HashMap<String, String>,
+    #[serde(default)]
+    pub terminal: TerminalSecrets,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct TerminalSecrets {
+    #[serde(default)]
+    pub env: TerminalEnvSecrets,
+}
+
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct TerminalEnvSecrets {
+    #[serde(default)]
+    pub inject: Vec<String>,
 }
 
 impl WorkspaceSecrets {
@@ -424,6 +438,19 @@ pub enum ResolveOutcome {
     PromptUser,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedSecretSource {
+    WorkspaceRoute,
+    WorkspaceCanonical,
+    GlobalCanonical,
+}
+
+#[derive(Debug)]
+pub struct ResolvedSecret {
+    pub value: Zeroizing<String>,
+    pub source: ResolvedSecretSource,
+}
+
 /// 4-step runtime resolution. Pure function — no I/O beyond the `SecretStore`
 /// trait calls. Tests use `InMemoryKeychain`; production uses `MacKeychain`.
 pub fn resolve(
@@ -433,33 +460,104 @@ pub fn resolve(
     router: &WorkspaceSecrets,
     store: &dyn SecretStore,
 ) -> ResolveOutcome {
+    match resolve_with_source(workspace_id, app_id, canonical_name, router, store) {
+        ResolveWithSourceOutcome::Found(found) => ResolveOutcome::Found(found.value),
+        ResolveWithSourceOutcome::HardMissing { reason } => ResolveOutcome::HardMissing { reason },
+        ResolveWithSourceOutcome::PromptUser => ResolveOutcome::PromptUser,
+    }
+}
+
+#[derive(Debug)]
+pub enum ResolveWithSourceOutcome {
+    Found(ResolvedSecret),
+    HardMissing { reason: String },
+    PromptUser,
+}
+
+/// Canonical-name resolver used by PGAP, `plexi run`, PTY env injection, and
+/// host integrations. An explicit route remains an alias override; without a
+/// route, the canonical env var name is the workspace Keychain suffix.
+pub fn resolve_with_source(
+    workspace_id: &str,
+    app_id: &str,
+    canonical_name: &str,
+    router: &WorkspaceSecrets,
+    store: &dyn SecretStore,
+) -> ResolveWithSourceOutcome {
     // Step 1+2: workspace route (apps.<id> first, then [default]).
     if let Some(friendly) = router.route_for(app_id, canonical_name) {
         let account = keychain_workspace_name(workspace_id, friendly);
         if let Some(value) = store.get(&account) {
-            return ResolveOutcome::Found(value);
+            return ResolveWithSourceOutcome::Found(ResolvedSecret {
+                value,
+                source: ResolvedSecretSource::WorkspaceRoute,
+            });
         }
         // Route declared but Keychain is empty — prompt the user (don't
         // silently fall through to user-scope; the route was explicit).
-        return ResolveOutcome::PromptUser;
+        return ResolveWithSourceOutcome::PromptUser;
+    }
+
+    // Step 2.5: no alias route means the canonical name is the workspace key.
+    let workspace_account = keychain_workspace_name(workspace_id, canonical_name);
+    if let Some(value) = store.get(&workspace_account) {
+        return ResolveWithSourceOutcome::Found(ResolvedSecret {
+            value,
+            source: ResolvedSecretSource::WorkspaceCanonical,
+        });
     }
 
     // Step 3: user-scope fallback when allowed.
     if router.fallback {
         let user_account = keychain_user_name(canonical_name);
         if let Some(value) = store.get(&user_account) {
-            return ResolveOutcome::Found(value);
+            return ResolveWithSourceOutcome::Found(ResolvedSecret {
+                value,
+                source: ResolvedSecretSource::GlobalCanonical,
+            });
         }
-        return ResolveOutcome::PromptUser;
+        return ResolveWithSourceOutcome::PromptUser;
     }
 
     // Step 4: no route + fallback disabled → hard error.
-    ResolveOutcome::HardMissing {
+    ResolveWithSourceOutcome::HardMissing {
         reason: format!(
-            "no route in .plexi/secrets.toml for app '{app_id}' / secret '{canonical_name}', \
-             and fallback = false"
+            "no workspace or route value in .plexi/secrets.toml for app '{app_id}' / secret \
+             '{canonical_name}', and fallback = false"
         ),
     }
+}
+
+pub fn resolve_terminal_env(
+    workspace_root: &Path,
+    store: &dyn SecretStore,
+) -> Result<HashMap<String, Zeroizing<String>>, String> {
+    let cfg = WorkspaceConfig::load(workspace_root)?
+        .ok_or_else(|| format!("workspace.toml missing at {}", workspace_root.display()))?;
+    let router = WorkspaceSecrets::load(workspace_root)?
+        .ok_or_else(|| format!("secrets.toml missing at {}", workspace_root.display()))?;
+
+    let mut env = HashMap::new();
+    for canonical_name in &router.terminal.env.inject {
+        match resolve_with_source(&cfg.id, "terminal", canonical_name, &router, store) {
+            ResolveWithSourceOutcome::Found(found) => {
+                log::info!(
+                    "workspace_secrets: terminal env injecting {canonical_name} source={:?}",
+                    found.source
+                );
+                env.insert(canonical_name.clone(), found.value);
+            }
+            ResolveWithSourceOutcome::PromptUser => {
+                log::info!(
+                    "workspace_secrets: terminal env skipped missing allowlisted secret {canonical_name}"
+                );
+            }
+            ResolveWithSourceOutcome::HardMissing { reason } => {
+                log::warn!("workspace_secrets: terminal env skipped {canonical_name}: {reason}");
+            }
+        }
+    }
+    Ok(env)
 }
 
 // ── Workspace init helpers ───────────────────────────────────────────────────
@@ -504,7 +602,10 @@ pub fn init_workspace(workspace_root: &Path, channel_dir: &str) -> Result<Worksp
                         # OPENAI_API_KEY = \"openai_personal\"\n\
                         \n\
                         # [default]\n\
-                        # GITHUB_TOKEN = \"github_personal\"\n";
+                        # GITHUB_TOKEN = \"github_personal\"\n\
+                        \n\
+                        # [terminal.env]\n\
+                        # inject = [\"OPENAI_API_KEY\"]\n";
         std::fs::write(&secrets_path, template)
             .map_err(|e| format!("write {}: {e}", secrets_path.display()))?;
     }
@@ -754,6 +855,135 @@ mod tests {
             ResolveOutcome::Found(v) => assert_eq!(v.as_str(), "ghp-user"),
             other => panic!("expected Found, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn canonical_workspace_name_resolves_without_alias_route() {
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:ws-1:OPENROUTER_API_KEY", "sk-workspace")
+            .unwrap();
+        let r = router("fallback = true\n");
+        match resolve("ws-1", "terminal", "OPENROUTER_API_KEY", &r, &store) {
+            ResolveOutcome::Found(v) => assert_eq!(v.as_str(), "sk-workspace"),
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn workspace_canonical_value_overrides_global_fallback() {
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:ws-1:OPENAI_API_KEY", "sk-workspace")
+            .unwrap();
+        store.set("plexi:user:OPENAI_API_KEY", "sk-global").unwrap();
+        let r = router("fallback = true\n");
+        match resolve("ws-1", "terminal", "OPENAI_API_KEY", &r, &store) {
+            ResolveOutcome::Found(v) => assert_eq!(v.as_str(), "sk-workspace"),
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn explicit_alias_route_takes_precedence_over_canonical_workspace_name() {
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:ws-1:OPENAI_API_KEY", "sk-canonical")
+            .unwrap();
+        store.set("plexi:ws-1:openai_personal", "sk-alias").unwrap();
+        let r = router("fallback = true\n[default]\nOPENAI_API_KEY = \"openai_personal\"\n");
+        match resolve_with_source("ws-1", "terminal", "OPENAI_API_KEY", &r, &store) {
+            ResolveWithSourceOutcome::Found(found) => {
+                assert_eq!(found.value.as_str(), "sk-alias");
+                assert_eq!(found.source, ResolvedSecretSource::WorkspaceRoute);
+            }
+            other => panic!("expected Found, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn terminal_env_injects_only_allowlisted_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
+        std::fs::write(
+            tmp.path().join(&channel_dir).join("workspace.toml"),
+            "id = \"ws-1\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join(&channel_dir).join("secrets.toml"),
+            "fallback = true\n\n[terminal.env]\ninject = [\"OPENROUTER_API_KEY\"]\n",
+        )
+        .unwrap();
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:ws-1:OPENROUTER_API_KEY", "sk-openrouter")
+            .unwrap();
+        store.set("plexi:ws-1:OPENAI_API_KEY", "sk-openai").unwrap();
+
+        let env = resolve_terminal_env(tmp.path(), &store).expect("terminal env resolves");
+
+        assert_eq!(
+            env.get("OPENROUTER_API_KEY").map(|v| v.as_str()),
+            Some("sk-openrouter")
+        );
+        assert!(
+            !env.contains_key("OPENAI_API_KEY"),
+            "non-allowlisted secret must not be injected"
+        );
+    }
+
+    #[test]
+    fn terminal_env_uses_global_fallback_when_allowed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
+        std::fs::write(
+            tmp.path().join(&channel_dir).join("workspace.toml"),
+            "id = \"ws-1\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join(&channel_dir).join("secrets.toml"),
+            "fallback = true\n\n[terminal.env]\ninject = [\"OPENAI_API_KEY\"]\n",
+        )
+        .unwrap();
+        let store = InMemoryKeychain::new();
+        store.set("plexi:user:OPENAI_API_KEY", "sk-global").unwrap();
+
+        let env = resolve_terminal_env(tmp.path(), &store).expect("terminal env resolves");
+
+        assert_eq!(
+            env.get("OPENAI_API_KEY").map(|v| v.as_str()),
+            Some("sk-global")
+        );
+    }
+
+    #[test]
+    fn terminal_env_injects_nothing_by_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
+        std::fs::write(
+            tmp.path().join(&channel_dir).join("workspace.toml"),
+            "id = \"ws-1\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join(&channel_dir).join("secrets.toml"),
+            "fallback = true\n",
+        )
+        .unwrap();
+        let store = InMemoryKeychain::new();
+        store
+            .set("plexi:ws-1:OPENROUTER_API_KEY", "sk-workspace")
+            .unwrap();
+        store.set("plexi:user:OPENAI_API_KEY", "sk-global").unwrap();
+
+        let env = resolve_terminal_env(tmp.path(), &store).expect("terminal env resolves");
+
+        assert!(env.is_empty(), "terminal injection must be opt-in");
     }
 
     #[test]

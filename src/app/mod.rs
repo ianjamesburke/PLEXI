@@ -1252,7 +1252,7 @@ impl PlexiApp {
             "make_backend_settings: pane_id={pane_id} context_id={context_id} \
              context_name={context_name:?} context_root={context_root:?} context_depth={context_depth}"
         );
-        let mut env = shell::build_env();
+        let mut env = shell::build_env(working_directory.as_deref());
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
         let socket = crate::config::config_dir()
             .join("notify.sock")

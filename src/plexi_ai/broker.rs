@@ -240,13 +240,13 @@ fn resolve_openrouter_api_key(api_key_env: &str) -> Result<String, String> {
 
     if api_key_env == "OPENROUTER_API_KEY" {
         if let Some(key) = read_global_openrouter_secret() {
-            log::info!("ai_broker: using global Plexi secret openrouter-api-key");
+            log::info!("ai_broker: using global Plexi secret OPENROUTER_API_KEY");
             return Ok(key);
         }
     }
 
     Err(format!(
-        "api_key_missing: {api_key_env} not set — export it in your shell profile or run `plexi secret set openrouter-api-key --global`"
+        "api_key_missing: {api_key_env} not set — export it in your shell profile or run `plexi secret set OPENROUTER_API_KEY --global`"
     ))
 }
 
@@ -254,14 +254,16 @@ fn resolve_openrouter_api_key(api_key_env: &str) -> Result<String, String> {
 fn read_global_openrouter_secret() -> Option<String> {
     use crate::workspace::secrets::{keychain_user_name, MacKeychain, SecretStore};
     let store = MacKeychain::new();
-    let account = keychain_user_name("openrouter-api-key");
-    store.get(&account).and_then(|key| {
-        if key.is_empty() {
-            None
-        } else {
-            Some(key.to_string())
+    for name in ["OPENROUTER_API_KEY", "openrouter-api-key"] {
+        let account = keychain_user_name(name);
+        if let Some(key) = store.get(&account) {
+            if !key.is_empty() {
+                log::info!("ai_broker: resolved OpenRouter key from {name}");
+                return Some(key.to_string());
+            }
         }
-    })
+    }
+    None
 }
 
 #[cfg(not(target_os = "macos"))]

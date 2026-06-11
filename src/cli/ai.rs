@@ -243,8 +243,9 @@ fn check_openrouter_configured() -> bool {
     {
         use crate::workspace::secrets::{keychain_user_name, MacKeychain, SecretStore};
         let store = MacKeychain::new();
-        let account = keychain_user_name("openrouter-api-key");
-        store.get(&account).is_some()
+        ["OPENROUTER_API_KEY", "openrouter-api-key"]
+            .iter()
+            .any(|name| store.get(&keychain_user_name(name)).is_some())
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -376,7 +377,7 @@ fn print_report(hw: &HardwareReport, integrations: &IntegrationReport, rec: &Mod
     let openrouter_status = if integrations.openrouter_configured {
         format!("{ok} OpenRouter API key configured")
     } else {
-        format!("{no} OpenRouter not configured  {dim}(plexi secret set openrouter-api-key --global){reset}")
+        format!("{no} OpenRouter not configured  {dim}(plexi secret set OPENROUTER_API_KEY --global){reset}")
     };
     println!("  {openrouter_status}");
 
@@ -485,7 +486,7 @@ pub fn ai_setup_cli() -> i32 {
         println!("  {dim}{}{reset}", rec.note);
         println!();
         println!("To configure cloud AI instead, run:");
-        println!("  {dim}plexi secret set openrouter-api-key --global{reset}");
+        println!("  {dim}plexi secret set OPENROUTER_API_KEY --global{reset}");
         crate::cli::print_tip(
             "Use `plexi ai doctor` to see your full hardware and integration report.",
         );
@@ -704,7 +705,7 @@ pub fn ai_doctor_cli(json: bool) -> i32 {
         }
     } else {
         print_report(&hw, &integrations, &recommendation);
-        crate::cli::print_tip("Run `plexi secret set openrouter-api-key --global` to configure cloud AI, or `brew install ollama && ollama pull llama3.2:3b` for local AI.");
+        crate::cli::print_tip("Run `plexi secret set OPENROUTER_API_KEY --global` to configure cloud AI, or `brew install ollama && ollama pull llama3.2:3b` for local AI.");
     }
 
     0
