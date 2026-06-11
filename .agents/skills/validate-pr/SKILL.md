@@ -30,6 +30,8 @@ Phase 3 of the ship pipeline. Manages the test loop and all rejection paths.
 > plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · <state>"
 > ```
 > **The status word must never contain a digit** (the PM maps panes to issues via `grep -oE '[0-9]+'` — a PR number in the suffix would corrupt the census). States this skill sets: `validate`, `needs-you` (waiting on the user — the PM surfaces this), `fixing`, `blocked`.
+>
+> **Pane slots.** Source `.agents/skills/_lib/pipeline-slots.sh` and publish `pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" <status> <testing-summary> <last-error>` at every status change.
 
 ---
 
@@ -61,6 +63,7 @@ gh issue edit $ISSUE_NUMBER \
   --remove-label "pipeline:open-pr" \
   --add-label "pipeline:validate" 2>/dev/null || true
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · validate"
+pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" working "" ""
 ```
 
 ---
@@ -245,6 +248,7 @@ VALIDATION_STATE="/tmp/plexi-validate-${PLEXI_PANE_ID:-unknown}.env"
 
 # Flip pane status to needs-you so the PM surfaces this lane as awaiting the user
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
+pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" needs-you "Review the [TESTING] block, then reply pass/fail/modify." ""
 # Route reply to PM pane if PM dispatched this skill, otherwise this pane
 REPLY_PANE="${PM_PANE_ID:-$PLEXI_PANE_ID}"
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} notify --no-wait \
@@ -290,6 +294,7 @@ First run **Step 0b — Resume Guard After User Reply**. Do not inspect or edit 
 Fix the specific change on the feature branch, commit, push:
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · fixing"
+pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" fixing "" ""
 git add <files>
 git commit -m "fix: <description>"
 git push
@@ -324,6 +329,7 @@ First run **Step 0b — Resume Guard After User Reply**. Do not inspect or edit 
 Apply the targeted fix to the feature branch, commit, push:
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · fixing"
+pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" fixing "" "<failure description>"
 git add <files>
 git commit -m "fix: <description from failure>"
 git push
@@ -361,6 +367,7 @@ If `c` → STOP. Leave PR open. Remove attempt limit — user owns it from here.
 1. **Mark the lane blocked and read the PR log:**
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · blocked"
+pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" blocked "" "hard reject after failed validation"
 tail -100 ~/.plexi-pr-$PR_NUMBER/plexi.log
 ```
 
@@ -447,6 +454,7 @@ Reply: "pass" | "fail: <description>" | "modify: <change>"
 Before firing the notification, flip pane status the same as the install path:
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
+pipeline_slots_set validate "$ISSUE_NUMBER" "$PR_NUMBER" needs-you "Review the diff-review [TESTING] block, then reply pass/fail/modify." ""
 ```
 
 ---

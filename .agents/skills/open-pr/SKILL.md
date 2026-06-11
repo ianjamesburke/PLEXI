@@ -29,6 +29,8 @@ Pipeline: pipeline:validate + ready set — invoking /validate-pr inline
 > plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · <state>"
 > ```
 > States this skill sets: `pr-open`.
+>
+> **Pane slots.** Source `.agents/skills/_lib/pipeline-slots.sh` and publish `pipeline_slots_set open-pr <issue> <pr> <status> "" ""` at phase boundaries.
 
 ---
 
@@ -117,6 +119,7 @@ PR_NUMBER=$(echo "$PR_URL" | grep -oE '[0-9]+$')
 Update pane status:
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · pr-open"
+pipeline_slots_set open-pr <n> "$PR_NUMBER" pr-open "" ""
 ```
 
 ---
