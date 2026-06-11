@@ -1,11 +1,11 @@
-use egui::{Align2, Color32, CornerRadius, Pos2, RichText, Stroke, StrokeKind, Vec2};
+use egui::{Align2, Color32, CornerRadius, Pos2, RichText, Vec2};
 
 use crate::ui::style;
 use crate::ui::theme::Colors;
 
 /// Consistent inner padding applied to every selectable row.
 const ROW_PAD_H: f32 = 10.0;
-const ROW_PAD_V: f32 = 6.0;
+const ROW_PAD_V: f32 = 8.0;
 
 /// Renders a highlighted selectable row whose height is determined by its
 /// content. The widget owns horizontal and vertical padding so callers
@@ -78,8 +78,8 @@ pub(crate) fn selectable_row<R>(
 //     key_combo_list(ui, &[["⌘", "["], ["⌘", "]"]], colors, "to cycle");
 
 /// Padding around the key label text inside the chip.
-const KEYCAP_PAD_H: f32 = 5.0;
-const KEYCAP_PAD_V: f32 = 2.0;
+const KEYCAP_PAD_H: f32 = 4.0;
+const KEYCAP_PAD_V: f32 = 1.5;
 
 /// Standard chip font for combos and hint rows. Compact — chips are
 /// annotations, not content.
@@ -98,22 +98,17 @@ pub(crate) fn key_chip(
     colors: &Colors,
     font_id: egui::FontId,
 ) -> egui::Response {
-    let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, colors.text_primary));
+    let galley = ui.fonts(|f| f.layout_no_wrap(label.to_string(), font_id, colors.text_dim));
     let text_w = galley.size().x;
     let text_h = galley.size().y;
     let chip_h = text_h + KEYCAP_PAD_V * 2.0;
     let chip_w = (text_w + KEYCAP_PAD_H * 2.0).max(chip_h);
     let (rect, response) = ui.allocate_exact_size(Vec2::new(chip_w, chip_h), egui::Sense::hover());
+    // Borderless badge-style fill — chips are quiet annotations.
     let painter = ui.painter();
-    painter.rect_filled(rect, CornerRadius::same(3), colors.bg_active);
-    painter.rect_stroke(
-        rect,
-        CornerRadius::same(3),
-        Stroke::new(1.0, colors.border),
-        StrokeKind::Inside,
-    );
+    painter.rect_filled(rect, CornerRadius::same(4), colors.bg_active);
     let text_pos = Pos2::new(rect.center().x - text_w / 2.0, rect.min.y + KEYCAP_PAD_V);
-    painter.galley(text_pos, galley, colors.text_primary);
+    painter.galley(text_pos, galley, colors.text_dim);
     response
 }
 
@@ -273,12 +268,15 @@ impl<'a> TextField<'a> {
         colors: &Colors,
     ) -> egui::Response {
         let response = styled_text_input(ui, buf, self.hint, self.id, colors);
-        if self.focused {
+        if self.focused && !response.has_focus() {
+            response.request_focus();
+            log::info!("{}: focus requested for host TextField", self.log_name);
+        }
+        // Any field that currently owns focus must register with the overlay
+        // focus system — without this, widgets rendered later in the frame
+        // (app panes) steal focus back every frame, even mid-typing.
+        if self.focused || response.has_focus() {
             crate::ui::focus::register_overlay_focus(ui.ctx(), self.id);
-            if !response.has_focus() {
-                response.request_focus();
-                log::info!("{}: focus requested for host TextField", self.log_name);
-            }
         }
         response
     }

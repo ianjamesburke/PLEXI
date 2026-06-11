@@ -1,8 +1,9 @@
 use super::*;
 use crate::ui::{
+    hints::{HintBar, HintGroup},
     list::ListRow,
     overlay::ModalShell,
-    widgets::{description_label, key_chip, key_combo_list, selectable_row, TextField},
+    widgets::{description_label, key_chip, selectable_row, TextField},
 };
 
 impl PlexiApp {
@@ -80,11 +81,15 @@ impl PlexiApp {
                                 &colors,
                             );
                             ui.add_space(style::SPACE_SM);
+                            // No `.focused(true)` here — a hardcoded focus
+                            // demo fights the user's clicks (two fields
+                            // re-stealing focus from each other every frame).
+                            // Focus follows clicks; the focused style shows on
+                            // whichever field the user activates.
                             TextField::singleline(
                                 egui::Id::new("host_ui_gallery_text_focused"),
-                                "Focused text field",
+                                "Click to focus — accent ring + cursor",
                             )
-                            .focused(true)
                             .log_name("ui_gallery")
                             .show(
                                 ui,
@@ -105,7 +110,7 @@ impl PlexiApp {
                                             .size(style::TEXT_BODY)
                                             .color(colors.text_dim),
                                     )
-                                    .min_size(egui::vec2(96.0, style::BUTTON_H_MD)),
+                                    .min_size(egui::vec2(80.0, style::BUTTON_H_MD)),
                                 );
                             });
                             ui.add_space(style::SPACE_SM);
@@ -212,21 +217,14 @@ fn color_swatch(
 }
 
 fn hint_bar(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
-    egui::Frame::new()
-        .fill(colors.bg_toolbar)
-        .stroke(egui::Stroke::new(1.0, colors.border))
-        .corner_radius(style::RADIUS_MD)
-        .inner_margin(egui::Margin::symmetric(12, 8))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                key_combo_list(
-                    ui,
-                    &[&["Cmd", "P"], &["Cmd", "/"], &["Esc"]],
-                    Some("palette, help, dismiss"),
-                    colors,
-                );
-            });
-        });
+    // The real modal-footer treatment: each label attached to its combo,
+    // centered, divider above.
+    let hints = [
+        HintGroup::new(&["\u{2318}", "P"], "palette"),
+        HintGroup::new(&["\u{2318}", "/"], "help"),
+        HintGroup::new(&["esc"], "dismiss"),
+    ];
+    HintBar::new(&hints).show(ui, colors);
 }
 
 fn button_sample(
@@ -242,7 +240,7 @@ fn button_sample(
     )
     .fill(fill)
     .stroke(egui::Stroke::new(1.0, colors.border))
-    .min_size(egui::vec2(96.0, style::BUTTON_H_MD));
+    .min_size(egui::vec2(80.0, style::BUTTON_H_MD));
     ui.add(button);
 }
 
