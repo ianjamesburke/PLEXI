@@ -172,6 +172,10 @@ pub struct ProcessApp {
     /// `[permissions]` table — applied at the actor-default tiers of broker
     /// evaluation. `None` = no posture configured (broker falls back to Ask).
     pub(crate) posture: Option<crate::broker::PermissionPosture>,
+    /// Host-owned app event timeline + undo checkpoints + subscriptions
+    /// (docs/prm/undo-and-app-events.md). Production panes share the global
+    /// instance; tests inject an isolated one.
+    pub(crate) app_timeline: Arc<Mutex<crate::host::app_timeline::AppTimeline>>,
     /// Typed pipe registry.
     pub(crate) pipe_registry: Arc<Mutex<TypedPipeRegistry>>,
     pub(crate) run_registry: RunRegistry,
@@ -664,6 +668,7 @@ impl ProcessApp {
             permission_store: store,
             grant_store,
             posture,
+            app_timeline: crate::host::app_timeline::global(),
             pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new(
                 crate::config::config_dir().join("pipes"),
             ))),
@@ -825,6 +830,9 @@ impl ProcessApp {
             permission_store: crate::app::permissions::PermissionStore::default(),
             grant_store: crate::broker::GrantStore::default(),
             posture: None,
+            app_timeline: Arc::new(Mutex::new(
+                crate::host::app_timeline::AppTimeline::default(),
+            )),
             pipe_registry: Arc::new(Mutex::new(TypedPipeRegistry::new(
                 std::env::temp_dir().join(format!("plexi-pipes-{}", uuid::Uuid::new_v4())),
             ))),
@@ -903,6 +911,193 @@ impl ProcessApp {
             self.nav_stack[len - 2].view_id.clone()
         } else {
             String::new()
+        }
+    }
+
+    // ── App events + undo (docs/prm/undo-and-app-events.md, Phase B) ────────
+
+    /// Subscribe an actor to `publisher_app_id`'s event streams. Gated
+    /// through the unified broker: one `TargetType::AppEventStream`
+    /// evaluation per event name, with target id `"<app_id>::<event>"`
+    /// (`"<app_id>::*"` when subscribing to all streams). Every evaluation
+    /// must come back `Allow`; otherwise the strictest non-allow decision is
+    /// returned and nothing is recorded. Returns the new subscription id on
+    /// success.
+    #[allow(clippy::too_many_arguments)]
+    pub fn subscribe_event_stream(
+        &mut self,
+        publisher_app_id: &str,
+        subscriber_type: crate::broker::ActorType,
+        subscriber_id: &str,
+        event_names: Vec<String>,
+        payload_mode: crate::app_protocol::PayloadMode,
+        trigger_mode: crate::app_protocol::TriggerMode,
+        resource_id: Option<String>,
+        duration: crate::broker::GrantDuration,
+    ) -> Result<String, crate::broker::Decision> {
+        use crate::broker::{Decision, PermissionRequest, TargetType};
+        let targets: Vec<String> = if event_names.is_empty() {
+            vec![format!("{publisher_app_id}::*")]
+        } else {
+            event_names
+                .iter()
+                .map(|n| format!("{publisher_app_id}::{n}"))
+                .collect()
+        };
+        let mut strictest = Decision::Allow;
+        for target in &targets {
+            let req = PermissionRequest::new(
+                subscriber_type,
+                subscriber_id,
+                TargetType::AppEventStream,
+                target,
+                Some(&self.workspace_root),
+            );
+            match self.grant_store.evaluate(&req, self.posture.as_ref()) {
+                Decision::Allow => {}
+                Decision::Deny => strictest = Decision::Deny,
+                Decision::Ask => {
+                    if strictest != Decision::Deny {
+                        strictest = Decision::Ask;
+                    }
+                }
+            }
+        }
+        if strictest != Decision::Allow {
+            log::info!(
+                "ProcessApp[{}]: subscription to '{publisher_app_id}' events for \
+                 {subscriber_type:?} '{subscriber_id}' blocked by broker ({})",
+                self.type_id,
+                strictest.as_str()
+            );
+            return Err(strictest);
+        }
+        let subscription_id = format!("sub-{}", uuid::Uuid::new_v4());
+        let record = crate::host::app_timeline::SubscriptionRecord {
+            subscription_id: subscription_id.clone(),
+            subscriber_type,
+            subscriber_id: subscriber_id.to_string(),
+            app_id: publisher_app_id.to_string(),
+            event_names,
+            payload_mode,
+            trigger_mode,
+            resource_id,
+            duration,
+            created_at: event_log::now_timestamp(),
+        };
+        self.app_timeline.lock().unwrap().add_subscription(record);
+        Ok(subscription_id)
+    }
+
+    /// Request rollback of an undo checkpoint. Gated through the unified
+    /// broker (`TargetType::UndoCheckpoint`, target id = the checkpoint's
+    /// owning app id). On `Allow` the host starts the revision-verification
+    /// round-trip by sending `PlexiEvent::RollbackVerify`; the rollback is
+    /// only applied after `AppRequest::RollbackVerifyResult` confirms the
+    /// app's current revision matches the checkpoint's `revision_after`.
+    ///
+    /// Phase B limitation (seam for the Phase C agent runtime): the verify
+    /// event is delivered through this pane's own outbound channel, so only
+    /// checkpoints owned by this pane's app can be verified. Cross-pane
+    /// delivery needs the host-level routing the agent runtime brings.
+    pub fn request_rollback(
+        &mut self,
+        actor_type: crate::broker::ActorType,
+        actor_id: &str,
+        checkpoint_id: &str,
+    ) -> Result<(), String> {
+        use crate::broker::{Decision, PermissionRequest, TargetType};
+        let owning_app = self
+            .app_timeline
+            .lock()
+            .unwrap()
+            .checkpoints()
+            .iter()
+            .find(|c| c.checkpoint_id == checkpoint_id)
+            .map(|c| c.app_id.clone())
+            .ok_or_else(|| format!("unknown checkpoint '{checkpoint_id}'"))?;
+        if owning_app != self.type_id {
+            return Err(format!(
+                "checkpoint '{checkpoint_id}' belongs to app '{owning_app}' — cross-pane \
+                 rollback delivery requires the agent runtime (Phase C)"
+            ));
+        }
+        let req = PermissionRequest::new(
+            actor_type,
+            actor_id,
+            TargetType::UndoCheckpoint,
+            &owning_app,
+            Some(&self.workspace_root),
+        );
+        match self.grant_store.evaluate(&req, self.posture.as_ref()) {
+            Decision::Allow => {}
+            decision => {
+                let msg = format!(
+                    "rollback of '{checkpoint_id}' blocked by broker for {actor_type:?} \
+                     '{actor_id}': {}",
+                    decision.as_str()
+                );
+                log::info!("ProcessApp[{}]: {msg}", self.type_id);
+                return Err(msg);
+            }
+        }
+        let verify = self
+            .app_timeline
+            .lock()
+            .unwrap()
+            .begin_rollback(checkpoint_id)
+            .map_err(|e| e.to_string())?;
+        log::info!(
+            "ProcessApp[{}]: rollback verification dispatched for {checkpoint_id} \
+             (resource '{}', expect rev '{}')",
+            self.type_id,
+            verify.resource_id,
+            verify.expected_revision
+        );
+        self.outbound_events.push_back(PlexiEvent::RollbackVerify {
+            checkpoint_id: verify.checkpoint_id,
+            resource_id: verify.resource_id,
+            expected_revision: verify.expected_revision,
+        });
+        Ok(())
+    }
+
+    /// Move queued event deliveries addressed to this pane's app (wire
+    /// subscriptions are stamped `ActorType::App` + the subscriber's app id)
+    /// into the outbound channel as `PlexiEvent::AppEvent`. Runs once per
+    /// frame, before the outbound flush. Deliveries addressed to agent
+    /// actors stay queued for the Phase C agent runtime.
+    pub(crate) fn deliver_subscribed_events(&mut self) {
+        let deliveries = {
+            let mut timeline = self.app_timeline.lock().unwrap();
+            if timeline.pending_delivery_count() == 0 {
+                return;
+            }
+            timeline.take_deliveries_for(crate::broker::ActorType::App, &self.type_id)
+        };
+        for d in deliveries {
+            log::info!(
+                "ProcessApp[{}]: delivering app event '{}' (id {}) from '{}' \
+                 (subscription {}, trigger={:?})",
+                self.type_id,
+                d.event,
+                d.event_id,
+                d.app_id,
+                d.subscription_id,
+                d.trigger_mode
+            );
+            self.outbound_events.push_back(PlexiEvent::AppEvent {
+                subscription_id: d.subscription_id,
+                app_id: d.app_id,
+                event: d.event,
+                event_id: d.event_id,
+                resource_id: d.resource_id,
+                trigger_mode: d.trigger_mode,
+                summary: d.summary,
+                payload: d.payload,
+                state_ref: d.state_ref,
+                created_at: d.created_at,
+            });
         }
     }
 
@@ -1916,9 +2111,11 @@ impl App for ProcessApp {
             }
         }
 
-        // Flush events accumulated during this frame (broker AiResponse,
+        // Deliver any subscribed app events queued for this pane, then flush
+        // events accumulated during this frame (broker AiResponse,
         // TextSubmitted, ScrollOffset, etc.) so apps receive them without
         // waiting for the next frame's start-of-ui flush.
+        self.deliver_subscribed_events();
         self.flush_outbound_events();
 
         // Idle polling for async HTTP responses. Apps that need faster repaints

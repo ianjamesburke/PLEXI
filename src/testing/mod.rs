@@ -249,6 +249,19 @@ impl HostHarness {
         process_app.outbound_events.drain(..).collect()
     }
 
+    /// Mutable access to a test pane's `ProcessApp`. Panics when the pane id
+    /// does not name a Process app pane — tests should fail loudly there.
+    pub fn process_app_mut(&mut self, pane_id: PaneId) -> &mut ProcessApp {
+        let win = &mut self.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane_id) else {
+            panic!("pane {pane_id} is not an App pane");
+        };
+        let AppRuntime::Process(process_app) = &mut app_pane.runtime else {
+            panic!("pane {pane_id} is not a Process runtime");
+        };
+        process_app
+    }
+
     /// Take the latest Render payload queued for a test `ProcessApp`.
     ///
     /// Test apps do not spawn the stdin writer thread, so this helper also

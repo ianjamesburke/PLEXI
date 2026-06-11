@@ -207,7 +207,7 @@ mod notify_tests {
         let socket_path = dir.path().join("notify.sock");
         let listener = UnixListener::bind(&socket_path).expect("bind notify socket");
         std::env::set_var("PLEXI_SOCKET", &socket_path);
-        std::env::set_var("PLEXI_CHANNEL", "notify-test");
+        let _channel_guard = crate::config::set_test_channel("notify-test");
 
         let handle = std::thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept notify connection");
@@ -233,7 +233,6 @@ mod notify_tests {
         let choices = vec![("talk".to_string(), "Talk to Claude".to_string(), None)];
         let code = notify_cli("Ready", "Review tests", "info", &choices, true, 1, None);
         std::env::remove_var("PLEXI_SOCKET");
-        std::env::remove_var("PLEXI_CHANNEL");
         let payload = handle.join().expect("payload thread");
 
         assert_eq!(code, 0);

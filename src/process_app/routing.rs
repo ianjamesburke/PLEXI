@@ -1796,6 +1796,268 @@ impl ProcessApp {
                     self.type_id
                 );
             }
+            // ── App events + undo (docs/prm/undo-and-app-events.md, B) ────
+            AppRequest::DeclareEventStreams { streams } => {
+                log::info!(
+                    "ProcessApp[{}]: DeclareEventStreams ({} stream(s))",
+                    self.type_id,
+                    streams.len()
+                );
+                let result = self
+                    .app_timeline
+                    .lock()
+                    .unwrap()
+                    .declare_streams(&self.type_id, streams);
+                if let Err(e) = result {
+                    log::warn!(
+                        "ProcessApp[{}]: DeclareEventStreams rejected — {e}",
+                        self.type_id
+                    );
+                }
+            }
+
+            AppRequest::EmitEvent {
+                event,
+                actor,
+                actor_id,
+                summary,
+                resource_id,
+                resource_scope,
+                revision_after,
+                payload,
+                state_ref,
+                revision_before,
+                rollback_token,
+                changed_resources,
+                suggested_trigger,
+            } => {
+                log::info!(
+                    "ProcessApp[{}]: EmitEvent '{event}' actor={} resource={resource_id} \
+                     rev_after={revision_after} reversible={}",
+                    self.type_id,
+                    actor.as_str(),
+                    rollback_token.is_some()
+                );
+                let emitted = crate::host::app_timeline::EmittedEvent {
+                    event,
+                    actor,
+                    actor_id,
+                    summary,
+                    resource_id,
+                    resource_scope,
+                    revision_after,
+                    payload,
+                    state_ref,
+                    revision_before,
+                    rollback_token,
+                    changed_resources,
+                    suggested_trigger,
+                };
+                let mut timeline = self.app_timeline.lock().unwrap();
+                match timeline.record_event(&self.type_id, self.pane_id, emitted) {
+                    Ok(outcome) => log::info!(
+                        "ProcessApp[{}]: event {} accepted (checkpoint={:?}, \
+                         deliveries={}, timeline_len={})",
+                        self.type_id,
+                        outcome.event_id,
+                        outcome.checkpoint_id,
+                        outcome.deliveries_queued,
+                        timeline.events().len()
+                    ),
+                    Err(e) => {
+                        log::warn!("ProcessApp[{}]: EmitEvent rejected — {e}", self.type_id)
+                    }
+                }
+            }
+
+            AppRequest::RollbackVerifyResult {
+                checkpoint_id,
+                current_revision,
+            } => {
+                log::info!(
+                    "ProcessApp[{}]: RollbackVerifyResult {checkpoint_id} \
+                     current_rev='{current_revision}'",
+                    self.type_id
+                );
+                let verdict = self
+                    .app_timeline
+                    .lock()
+                    .unwrap()
+                    .resolve_rollback_verify(&checkpoint_id, &current_revision);
+                match verdict {
+                    Ok(crate::host::app_timeline::RollbackVerdict::Apply {
+                        checkpoint_id,
+                        resource_id,
+                        rollback_token,
+                    }) => {
+                        log::info!(
+                            "ProcessApp[{}]: rollback apply issued for {checkpoint_id}",
+                            self.type_id
+                        );
+                        self.outbound_events.push_back(PlexiEvent::RollbackApply {
+                            checkpoint_id,
+                            resource_id,
+                            rollback_token,
+                        });
+                    }
+                    Ok(crate::host::app_timeline::RollbackVerdict::Blocked {
+                        checkpoint_id,
+                        expected_revision,
+                        current_revision,
+                    }) => {
+                        log::warn!(
+                            "ProcessApp[{}]: rollback BLOCKED for {checkpoint_id} — app at \
+                             '{current_revision}', checkpoint expects '{expected_revision}'",
+                            self.type_id
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "ProcessApp[{}]: RollbackVerifyResult ignored — {e}",
+                            self.type_id
+                        );
+                    }
+                }
+            }
+
+            AppRequest::SubscribeAppEvents {
+                request_id,
+                app_id,
+                event_names,
+                payload_mode,
+                trigger_mode,
+                resource_id,
+            } => {
+                log::info!(
+                    "ProcessApp[{}]: SubscribeAppEvents '{app_id}' events={event_names:?} \
+                     payload={payload_mode:?} trigger={trigger_mode:?}",
+                    self.type_id
+                );
+                // Subscriber identity is host-stamped from the requesting
+                // pane — apps cannot subscribe as someone else.
+                let subscriber_id = self.type_id.clone();
+                // Requested names must be declared by the publisher.
+                let undeclared: Vec<String> = {
+                    let timeline = self.app_timeline.lock().unwrap();
+                    let declared: Vec<String> = timeline
+                        .declared_streams(&app_id)
+                        .iter()
+                        .map(|d| d.name.clone())
+                        .collect();
+                    event_names
+                        .iter()
+                        .filter(|n| !declared.contains(n))
+                        .cloned()
+                        .collect()
+                };
+                let result = if !undeclared.is_empty() {
+                    Err(format!(
+                        "app '{app_id}' has not declared event stream(s) {undeclared:?}"
+                    ))
+                } else {
+                    self.subscribe_event_stream(
+                        &app_id,
+                        crate::broker::ActorType::App,
+                        &subscriber_id,
+                        event_names,
+                        payload_mode,
+                        trigger_mode,
+                        resource_id,
+                        crate::broker::GrantDuration::Session,
+                    )
+                    .map_err(|decision| {
+                        format!(
+                            "subscription to '{app_id}' events blocked by broker: {}",
+                            decision.as_str()
+                        )
+                    })
+                };
+                let (subscription_id, error) = match result {
+                    Ok(id) => (Some(id), None),
+                    Err(e) => {
+                        log::warn!(
+                            "ProcessApp[{}]: SubscribeAppEvents rejected — {e}",
+                            self.type_id
+                        );
+                        (None, Some(e))
+                    }
+                };
+                self.outbound_events
+                    .push_back(PlexiEvent::AppEventsSubscribed {
+                        request_id,
+                        subscription_id,
+                        error,
+                    });
+            }
+
+            AppRequest::UnsubscribeAppEvents { subscription_id } => {
+                let mut timeline = self.app_timeline.lock().unwrap();
+                let owned = timeline.subscriptions().iter().any(|s| {
+                    s.subscription_id == subscription_id && s.subscriber_id == self.type_id
+                });
+                if owned {
+                    timeline.remove_subscription(&subscription_id);
+                    log::info!(
+                        "ProcessApp[{}]: unsubscribed {subscription_id}",
+                        self.type_id
+                    );
+                } else {
+                    log::warn!(
+                        "ProcessApp[{}]: UnsubscribeAppEvents ignored — '{subscription_id}' \
+                         is not a subscription owned by this app",
+                        self.type_id
+                    );
+                }
+            }
+
+            AppRequest::ListUndoCheckpoints { request_id, app_id } => {
+                let target_app = app_id.unwrap_or_else(|| self.type_id.clone());
+                log::info!(
+                    "ProcessApp[{}]: ListUndoCheckpoints for '{target_app}'",
+                    self.type_id
+                );
+                let checkpoints: Vec<serde_json::Value> = self
+                    .app_timeline
+                    .lock()
+                    .unwrap()
+                    .checkpoints_for_app(&target_app)
+                    .iter()
+                    .filter_map(|c| match serde_json::to_value(c) {
+                        Ok(v) => Some(v),
+                        Err(e) => {
+                            log::warn!(
+                                "ProcessApp[{}]: failed to serialize checkpoint '{}': {e}",
+                                self.type_id,
+                                c.checkpoint_id
+                            );
+                            None
+                        }
+                    })
+                    .collect();
+                self.outbound_events.push_back(PlexiEvent::UndoCheckpoints {
+                    request_id,
+                    checkpoints,
+                });
+            }
+
+            AppRequest::RequestRollback { checkpoint_id } => {
+                log::info!(
+                    "ProcessApp[{}]: RequestRollback {checkpoint_id}",
+                    self.type_id
+                );
+                let actor_id = self.type_id.clone();
+                if let Err(e) = self.request_rollback(
+                    crate::broker::ActorType::App,
+                    &actor_id,
+                    &checkpoint_id,
+                ) {
+                    log::warn!(
+                        "ProcessApp[{}]: RequestRollback rejected — {e}",
+                        self.type_id
+                    );
+                }
+            }
+
             // ── App state save ─────────────────────────────────────────────
             AppRequest::SaveAppState { payload } => {
                 let filename = format!("{}.json", self.type_id);

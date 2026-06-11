@@ -867,6 +867,18 @@ class RenderContext:
         Fire-and-forget — no acknowledgement from host."""
         _emit({"type": "save_app_state", "payload": state})
 
+    def declare_event_streams(self, streams: "list[dict]") -> None:
+        """Declare named app event streams. Delegates to
+        emit.declare_event_streams() — see it for the entry shape."""
+        self.emit.declare_event_streams(streams)
+
+    def emit_event(self, event: str, actor: str, summary: str,
+                   resource_id: str, revision_after: str, **kwargs) -> None:
+        """Emit a semantic app event into the host timeline. Delegates to
+        emit.emit_event() — see it for required/optional fields."""
+        self.emit.emit_event(event, actor, summary, resource_id,
+                             revision_after, **kwargs)
+
     async def http_request(self, url: str, method: str = "GET",
                            headers: "dict[str, str] | None" = None,
                            body: "str | None" = None) -> str:

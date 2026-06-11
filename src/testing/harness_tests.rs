@@ -2101,3 +2101,481 @@ fn capability_request_denied_by_posture() {
         "posture deny must auto-deny without a modal: {events:?}"
     );
 }
+
+// -- App events + undo (docs/prm/undo-and-app-events.md, Phase B) -----------
+
+/// Build a minimal valid EmitEvent host command for the declared
+/// `move.played` stream, optionally carrying rollback metadata.
+fn emit_event_cmd(rollback_token: Option<&str>) -> DrawCommand {
+    DrawCommand::Host(AppRequest::EmitEvent {
+        event: "move.played".to_string(),
+        actor: crate::app_protocol::AppEventActor::User,
+        actor_id: None,
+        summary: "White played e4".to_string(),
+        resource_id: "game-abc".to_string(),
+        resource_scope: Some("game".to_string()),
+        revision_after: "rev-13".to_string(),
+        payload: Some(serde_json::json!({"san": "e4"})),
+        state_ref: Some("chess://game/abc/rev/13".to_string()),
+        revision_before: Some("rev-12".to_string()),
+        rollback_token: rollback_token.map(str::to_string),
+        changed_resources: vec![],
+        suggested_trigger: None,
+    })
+}
+
+fn declare_streams_cmd() -> DrawCommand {
+    DrawCommand::Host(AppRequest::DeclareEventStreams {
+        streams: vec![crate::app_protocol::EventStreamDecl {
+            name: "move.played".to_string(),
+            schema: serde_json::json!({"type": "object"}),
+            description: Some("a chess move".to_string()),
+        }],
+    })
+}
+
+/// A declared + emitted app event enters the host timeline; without rollback
+/// metadata no undo checkpoint is created.
+#[test]
+fn emit_event_enters_host_timeline() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.inject(pane, declare_streams_cmd());
+    h.inject(pane, emit_event_cmd(None));
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+
+    let timeline = proc.app_timeline.lock().unwrap();
+    assert_eq!(timeline.events().len(), 1, "accepted event must be recorded");
+    let rec = &timeline.events()[0];
+    assert_eq!(rec.app_id, "test");
+    assert_eq!(rec.event, "move.played");
+    assert_eq!(rec.summary, "White played e4");
+    assert_eq!(rec.resource_id, "game-abc");
+    assert_eq!(rec.revision_after, "rev-13");
+    assert!(timeline.checkpoints().is_empty(), "no rollback metadata = no checkpoint");
+}
+
+/// EmitEvent with a rollback token also creates an undo checkpoint carrying
+/// the spec's metadata fields.
+#[test]
+fn emit_event_with_rollback_token_creates_checkpoint() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.inject(pane, declare_streams_cmd());
+    h.inject(pane, emit_event_cmd(Some("undo-abc")));
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+
+    let timeline = proc.app_timeline.lock().unwrap();
+    assert_eq!(timeline.checkpoints().len(), 1);
+    let ckpt = &timeline.checkpoints()[0];
+    assert_eq!(ckpt.app_id, "test");
+    assert_eq!(ckpt.rollback_token, "undo-abc");
+    assert_eq!(ckpt.revision_before.as_deref(), Some("rev-12"));
+    assert_eq!(ckpt.revision_after, "rev-13");
+    assert_eq!(ckpt.resource_id, "game-abc");
+    assert_eq!(ckpt.summary, "White played e4");
+}
+
+/// Malformed events (undeclared stream, empty required field) are rejected
+/// and never enter the timeline.
+#[test]
+fn malformed_emit_event_is_rejected() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    // Undeclared stream — no DeclareEventStreams sent.
+    h.inject(pane, emit_event_cmd(None));
+    // Declared, but empty summary.
+    h.inject(pane, declare_streams_cmd());
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::EmitEvent {
+            event: "move.played".to_string(),
+            actor: crate::app_protocol::AppEventActor::App,
+            actor_id: None,
+            summary: "   ".to_string(),
+            resource_id: "game-abc".to_string(),
+            resource_scope: None,
+            revision_after: "rev-2".to_string(),
+            payload: None,
+            state_ref: None,
+            revision_before: None,
+            rollback_token: None,
+            changed_resources: vec![],
+            suggested_trigger: None,
+        }),
+    );
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let timeline = proc.app_timeline.lock().unwrap();
+    assert!(
+        timeline.events().is_empty(),
+        "malformed events must never enter the timeline"
+    );
+}
+
+/// Full rollback round-trip: broker-allowed request → RollbackVerify to the
+/// app → matching RollbackVerifyResult → RollbackApply, checkpoint marked
+/// rolled back.
+#[test]
+fn rollback_round_trip_applies_on_revision_match() {
+    use crate::app_protocol::PlexiEvent;
+    use crate::broker::{
+        ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, ResourceScope,
+        TargetType,
+    };
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.inject(pane, declare_streams_cmd());
+    h.inject(pane, emit_event_cmd(Some("undo-abc")));
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let ckpt_id = proc.app_timeline.lock().unwrap().checkpoints()[0]
+        .checkpoint_id
+        .clone();
+
+    // Gate: allow grant for rollback on this app.
+    proc.grant_store.record(GrantRecord {
+        actor_type: ActorType::App,
+        actor_id: "test".to_string(),
+        actor_scope: ActorScope::User,
+        workspace_root: None,
+        target_type: TargetType::UndoCheckpoint,
+        target_id: "test".to_string(),
+        resource_scope: ResourceScope::Game,
+        resource_id: None,
+        decision: Decision::Allow,
+        duration: GrantDuration::Session,
+        source: GrantSource::User,
+        created_at: 0,
+        expires_at: None,
+    });
+
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::RequestRollback {
+            checkpoint_id: ckpt_id.clone(),
+        }),
+    );
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let events = h.effects_drain(pane);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            PlexiEvent::RollbackVerify { checkpoint_id, expected_revision, .. }
+                if *checkpoint_id == ckpt_id && expected_revision == "rev-13"
+        )),
+        "allowed rollback must dispatch a revision verification: {events:?}"
+    );
+
+    // App confirms it is still at rev-13 → host issues the apply.
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::RollbackVerifyResult {
+            checkpoint_id: ckpt_id.clone(),
+            current_revision: "rev-13".to_string(),
+        }),
+    );
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let events = h.effects_drain(pane);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            PlexiEvent::RollbackApply { checkpoint_id, rollback_token, .. }
+                if *checkpoint_id == ckpt_id && rollback_token == "undo-abc"
+        )),
+        "revision match must issue RollbackApply: {events:?}"
+    );
+    let proc = h.process_app_mut(pane);
+    assert_eq!(
+        proc.app_timeline.lock().unwrap().checkpoints()[0].status,
+        crate::host::app_timeline::CheckpointStatus::RolledBack
+    );
+}
+
+/// Revision mismatch blocks the rollback: no RollbackApply, checkpoint
+/// marked conflict, and further rollback attempts are refused.
+#[test]
+fn rollback_blocked_on_revision_mismatch() {
+    use crate::app_protocol::PlexiEvent;
+    use crate::broker::{
+        ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, ResourceScope,
+        TargetType,
+    };
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.inject(pane, declare_streams_cmd());
+    h.inject(pane, emit_event_cmd(Some("undo-abc")));
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let ckpt_id = proc.app_timeline.lock().unwrap().checkpoints()[0]
+        .checkpoint_id
+        .clone();
+    proc.grant_store.record(GrantRecord {
+        actor_type: ActorType::App,
+        actor_id: "test".to_string(),
+        actor_scope: ActorScope::User,
+        workspace_root: None,
+        target_type: TargetType::UndoCheckpoint,
+        target_id: "test".to_string(),
+        resource_scope: ResourceScope::Game,
+        resource_id: None,
+        decision: Decision::Allow,
+        duration: GrantDuration::Session,
+        source: GrantSource::User,
+        created_at: 0,
+        expires_at: None,
+    });
+
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::RequestRollback {
+            checkpoint_id: ckpt_id.clone(),
+        }),
+    );
+    // App has moved on to rev-99 — verification must fail.
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::RollbackVerifyResult {
+            checkpoint_id: ckpt_id.clone(),
+            current_revision: "rev-99".to_string(),
+        }),
+    );
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let events = h.effects_drain(pane);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, PlexiEvent::RollbackApply { .. })),
+        "revision mismatch must never apply: {events:?}"
+    );
+    let proc = h.process_app_mut(pane);
+    assert_eq!(
+        proc.app_timeline.lock().unwrap().checkpoints()[0].status,
+        crate::host::app_timeline::CheckpointStatus::Conflict
+    );
+}
+
+/// Without a broker allow grant, RequestRollback is blocked (default Ask)
+/// and no verification is dispatched.
+#[test]
+fn rollback_without_grant_is_blocked() {
+    use crate::app_protocol::PlexiEvent;
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.inject(pane, declare_streams_cmd());
+    h.inject(pane, emit_event_cmd(Some("undo-abc")));
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let ckpt_id = proc.app_timeline.lock().unwrap().checkpoints()[0]
+        .checkpoint_id
+        .clone();
+
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::RequestRollback {
+            checkpoint_id: ckpt_id,
+        }),
+    );
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let events = h.effects_drain(pane);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, PlexiEvent::RollbackVerify { .. })),
+        "ungated rollback must not dispatch verification: {events:?}"
+    );
+    let proc = h.process_app_mut(pane);
+    assert_eq!(
+        proc.app_timeline.lock().unwrap().checkpoints()[0].status,
+        crate::host::app_timeline::CheckpointStatus::Active,
+        "blocked rollback must leave the checkpoint untouched"
+    );
+}
+
+/// ListUndoCheckpoints returns the app's checkpoints, newest first.
+#[test]
+fn list_undo_checkpoints_responds_with_serialized_records() {
+    use crate::app_protocol::PlexiEvent;
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.inject(pane, declare_streams_cmd());
+    h.inject(pane, emit_event_cmd(Some("undo-abc")));
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::ListUndoCheckpoints {
+            request_id: "lc-1".to_string(),
+            app_id: None,
+        }),
+    );
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let events = h.effects_drain(pane);
+    let listed = events.iter().find_map(|e| match e {
+        PlexiEvent::UndoCheckpoints { request_id, checkpoints } if request_id == "lc-1" => {
+            Some(checkpoints.clone())
+        }
+        _ => None,
+    });
+    let listed = listed.expect("ListUndoCheckpoints must answer with UndoCheckpoints");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["rollback_token"], "undo-abc");
+    assert_eq!(listed[0]["revision_after"], "rev-13");
+    assert_eq!(listed[0]["status"], "active");
+}
+
+/// Wire subscriptions are broker-gated: without an allow grant the request
+/// is refused; with one, events route to the subscriber pane as
+/// PlexiEvent::AppEvent shaped by the payload mode.
+#[test]
+fn subscribe_app_events_gated_and_delivers() {
+    use crate::app_protocol::{PayloadMode, PlexiEvent, TriggerMode};
+    use crate::broker::{
+        ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, ResourceScope,
+        TargetType,
+    };
+
+    let mut h = HostHarness::new();
+    let publisher = h.add_test_pane();
+    let subscriber = h.add_test_pane();
+
+    // Share one timeline between the two panes and give the subscriber its
+    // own identity.
+    let shared = h.process_app_mut(publisher).app_timeline.clone();
+    {
+        let proc = h.process_app_mut(subscriber);
+        proc.app_timeline = shared;
+        proc.type_id = "agent-app".to_string();
+    }
+
+    h.inject(publisher, declare_streams_cmd());
+    h.process_app_mut(publisher).background_tick();
+
+    let subscribe_cmd = |request_id: &str| {
+        DrawCommand::Host(AppRequest::SubscribeAppEvents {
+            request_id: request_id.to_string(),
+            app_id: "test".to_string(),
+            event_names: vec!["move.played".to_string()],
+            payload_mode: PayloadMode::Summary,
+            trigger_mode: TriggerMode::Conversation,
+            resource_id: None,
+        })
+    };
+
+    // No grant → broker default Ask → refused.
+    h.inject(subscriber, subscribe_cmd("sub-req-1"));
+    h.process_app_mut(subscriber).background_tick();
+    let events = h.effects_drain(subscriber);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            PlexiEvent::AppEventsSubscribed { request_id, subscription_id: None, error: Some(_) }
+                if request_id == "sub-req-1"
+        )),
+        "ungranted subscription must be refused: {events:?}"
+    );
+
+    // Allow grant for this subscriber on the publisher's stream.
+    h.process_app_mut(subscriber).grant_store.record(GrantRecord {
+        actor_type: ActorType::App,
+        actor_id: "agent-app".to_string(),
+        actor_scope: ActorScope::User,
+        workspace_root: None,
+        target_type: TargetType::AppEventStream,
+        target_id: "test::move.played".to_string(),
+        resource_scope: ResourceScope::Game,
+        resource_id: None,
+        decision: Decision::Allow,
+        duration: GrantDuration::Session,
+        source: GrantSource::User,
+        created_at: 0,
+        expires_at: None,
+    });
+    h.inject(subscriber, subscribe_cmd("sub-req-2"));
+    h.process_app_mut(subscriber).background_tick();
+    let events = h.effects_drain(subscriber);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            PlexiEvent::AppEventsSubscribed { request_id, subscription_id: Some(_), error: None }
+                if request_id == "sub-req-2"
+        )),
+        "granted subscription must succeed: {events:?}"
+    );
+
+    // Publisher emits — subscriber receives an AppEvent with summary only.
+    h.inject(publisher, emit_event_cmd(None));
+    h.process_app_mut(publisher).background_tick();
+    let proc = h.process_app_mut(subscriber);
+    proc.deliver_subscribed_events();
+    let events = h.effects_drain(subscriber);
+    let delivered = events.iter().find_map(|e| match e {
+        PlexiEvent::AppEvent {
+            app_id,
+            event,
+            trigger_mode,
+            summary,
+            payload,
+            state_ref,
+            ..
+        } => Some((
+            app_id.clone(),
+            event.clone(),
+            *trigger_mode,
+            summary.clone(),
+            payload.clone(),
+            state_ref.clone(),
+        )),
+        _ => None,
+    });
+    let (app_id, event, trigger, summary, payload, state_ref) =
+        delivered.expect("subscribed event must be delivered to the subscriber pane");
+    assert_eq!(app_id, "test");
+    assert_eq!(event, "move.played");
+    assert_eq!(trigger, TriggerMode::Conversation);
+    assert_eq!(summary.as_deref(), Some("White played e4"));
+    assert!(payload.is_none(), "summary mode must not deliver the payload");
+    assert!(state_ref.is_none(), "summary mode must not deliver the state ref");
+}
+
+/// Subscribing to an undeclared stream name is refused before the broker is
+/// even consulted.
+#[test]
+fn subscribe_undeclared_stream_is_refused() {
+    use crate::app_protocol::{PayloadMode, PlexiEvent, TriggerMode};
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::SubscribeAppEvents {
+            request_id: "sub-req-x".to_string(),
+            app_id: "test".to_string(),
+            event_names: vec!["never.declared".to_string()],
+            payload_mode: PayloadMode::Full,
+            trigger_mode: TriggerMode::Ambient,
+            resource_id: None,
+        }),
+    );
+    let proc = h.process_app_mut(pane);
+    proc.background_tick();
+    let events = h.effects_drain(pane);
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            PlexiEvent::AppEventsSubscribed { request_id, subscription_id: None, error: Some(err) }
+                if request_id == "sub-req-x" && err.contains("never.declared")
+        )),
+        "undeclared stream subscription must be refused: {events:?}"
+    );
+}

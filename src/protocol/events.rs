@@ -422,4 +422,66 @@ pub enum PlexiEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         payload: Option<serde_json::Value>,
     },
+
+    // ── Undo rollback (docs/prm/undo-and-app-events.md, Phase B) ─────────────
+    /// Host asks the app whether `resource_id` is still at
+    /// `expected_revision` before rolling back a checkpoint. The app must
+    /// answer with `AppRequest::RollbackVerifyResult` carrying its current
+    /// revision; rollback only proceeds on an exact match.
+    RollbackVerify {
+        checkpoint_id: String,
+        resource_id: String,
+        expected_revision: String,
+    },
+
+    /// Host instructs the app to roll `resource_id` back using the
+    /// `rollback_token` the app supplied when it emitted the reversible
+    /// event. Sent only after a successful `RollbackVerify` round-trip.
+    RollbackApply {
+        checkpoint_id: String,
+        resource_id: String,
+        rollback_token: String,
+    },
+
+    /// Response to `AppRequest::SubscribeAppEvents`. Exactly one of
+    /// `subscription_id` / `error` is set.
+    AppEventsSubscribed {
+        request_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subscription_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+
+    /// One subscribed app event, delivered to the subscriber pane. Content
+    /// beyond the event identity is shaped by the subscription's
+    /// `payload_mode`; `trigger_mode` tells the subscriber (Phase C: the
+    /// agent runtime) how it is allowed to react.
+    AppEvent {
+        subscription_id: String,
+        /// Publisher app id.
+        app_id: String,
+        /// Stream name, e.g. `"move.played"`.
+        event: String,
+        /// Host-assigned timeline id of the underlying event.
+        event_id: u64,
+        resource_id: String,
+        trigger_mode: crate::protocol::commands::TriggerMode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payload: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state_ref: Option<String>,
+        /// RFC 3339.
+        created_at: String,
+    },
+
+    /// Response to `AppRequest::ListUndoCheckpoints`: undo checkpoints,
+    /// newest first, serialized with the spec's checkpoint metadata fields
+    /// plus `status` (`active | verifying | rolled_back | conflict`).
+    UndoCheckpoints {
+        request_id: String,
+        checkpoints: Vec<serde_json::Value>,
+    },
 }

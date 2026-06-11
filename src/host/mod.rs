@@ -4,6 +4,7 @@
 //! can be regression-tested without the GUI event loop.
 
 pub mod anchor;
+pub mod app_timeline;
 pub mod command;
 pub mod context;
 pub mod context_state;

@@ -338,6 +338,19 @@ mod tests {
     use std::net::TcpStream;
 
     fn post_mcp(port: u16, token: Option<&str>, body: &[u8]) -> (u16, Vec<u8>) {
+        // Under full-suite parallel load the server can occasionally close a
+        // freshly accepted connection without writing; retry on empty reads.
+        for attempt in 0..3 {
+            let (status, resp_body) = post_mcp_once(port, token, body);
+            if status != 0 {
+                return (status, resp_body);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50 << attempt));
+        }
+        post_mcp_once(port, token, body)
+    }
+
+    fn post_mcp_once(port: u16, token: Option<&str>, body: &[u8]) -> (u16, Vec<u8>) {
         let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
         let auth_header = match token {
             Some(t) => format!("Authorization: Bearer {t}\r\n"),

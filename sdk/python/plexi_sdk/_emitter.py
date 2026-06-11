@@ -1383,6 +1383,103 @@ class Emitter:
         """
         _emit({"type": "expose_tools", "tools": tools})
 
+    # ── App events + undo (docs/prm/undo-and-app-events.md) ──────────────────
+
+    def declare_event_streams(self, streams: "list[dict]") -> None:
+        """Declare the named event streams this app may emit on.
+
+        Each entry must have:
+          - ``name`` (str): stream name, e.g. ``"move.played"``.
+          - ``schema`` (dict): JSON Schema object describing the payload.
+          - ``description`` (str, optional): when this event fires.
+
+        Streams MUST be declared before any ``emit_event`` referencing them
+        is accepted — the host rejects events on undeclared streams.
+        """
+        if not streams:
+            raise ValueError("declare_event_streams: 'streams' must be non-empty")
+        for s in streams:
+            if not s.get("name"):
+                raise ValueError("declare_event_streams: every stream needs a 'name'")
+            if not isinstance(s.get("schema"), dict):
+                raise ValueError(
+                    f"declare_event_streams: stream '{s.get('name')}' needs a "
+                    "'schema' dict (JSON Schema object)"
+                )
+        _emit({"type": "declare_event_streams", "streams": streams})
+
+    def emit_event(self, event: str, actor: str, summary: str,
+                   resource_id: str, revision_after: str,
+                   payload: "dict | None" = None,
+                   state_ref: "str | None" = None,
+                   revision_before: "str | None" = None,
+                   rollback_token: "str | None" = None,
+                   changed_resources: "list[str] | None" = None,
+                   suggested_trigger: "str | None" = None,
+                   resource_scope: "str | None" = None,
+                   actor_id: "str | None" = None) -> None:
+        """Emit a semantic app event into the host timeline.
+
+        Required:
+          - ``event``: a stream name previously declared via
+            ``declare_event_streams``.
+          - ``actor``: one of ``"user" | "agent" | "app" | "system"``.
+          - ``summary``: one-line human-readable description.
+          - ``resource_id``: document/game/pane/app-instance id.
+          - ``revision_after``: revision identifier after the change.
+
+        Optional: ``payload`` (must match the declared schema),
+        ``state_ref``, ``revision_before``, ``rollback_token`` (presence
+        makes the event reversible — the host creates an undo checkpoint),
+        ``changed_resources``, ``suggested_trigger`` (one of
+        ``"never" | "conversation" | "ambient" | "ask"``),
+        ``resource_scope`` (e.g. ``"document"``/``"game"``; defaults to
+        ``"pane"``), ``actor_id`` (defaults to this app's id).
+
+        Fire-and-forget — malformed events are rejected and logged by the
+        host, never recorded.
+        """
+        valid_actors = ("user", "agent", "app", "system")
+        if actor not in valid_actors:
+            raise ValueError(
+                f"emit_event: actor must be one of {valid_actors}, got {actor!r}"
+            )
+        for field_name, value in (("event", event), ("summary", summary),
+                                  ("resource_id", resource_id),
+                                  ("revision_after", revision_after)):
+            if not value or not str(value).strip():
+                raise ValueError(f"emit_event: '{field_name}' must be non-empty")
+        valid_triggers = ("never", "conversation", "ambient", "ask")
+        if suggested_trigger is not None and suggested_trigger not in valid_triggers:
+            raise ValueError(
+                f"emit_event: suggested_trigger must be one of {valid_triggers}, "
+                f"got {suggested_trigger!r}"
+            )
+        msg: dict = {
+            "type": "emit_event",
+            "event": event,
+            "actor": actor,
+            "summary": summary,
+            "resource_id": resource_id,
+            "revision_after": revision_after,
+            "changed_resources": changed_resources or [],
+        }
+        if payload is not None:
+            msg["payload"] = payload
+        if state_ref is not None:
+            msg["state_ref"] = state_ref
+        if revision_before is not None:
+            msg["revision_before"] = revision_before
+        if rollback_token is not None:
+            msg["rollback_token"] = rollback_token
+        if suggested_trigger is not None:
+            msg["suggested_trigger"] = suggested_trigger
+        if resource_scope is not None:
+            msg["resource_scope"] = resource_scope
+        if actor_id is not None:
+            msg["actor_id"] = actor_id
+        _emit(msg)
+
     @_blocking_emit_method
     async def list_midi_devices(self, timeout: float = 5.0) -> "MidiDeviceList":
         """Enumerate CoreMIDI input + output ports (#320).
