@@ -151,6 +151,16 @@ pub(crate) fn show_prompt_modal(
                         .monospace()
                         .strong(),
                 );
+                if let Ok(cap) =
+                    crate::app::permissions::Capability::try_from(capability.as_str())
+                {
+                    ui.add_space(2.0);
+                    ui.label(
+                        egui::RichText::new(cap.description())
+                            .size(crate::ui::style::TEXT_CAPTION)
+                            .color(colors.text_primary),
+                    );
+                }
                 ui.add_space(4.0);
                 ui.label(
                     egui::RichText::new(format!("Workspace: {}", workspace_root.display()))

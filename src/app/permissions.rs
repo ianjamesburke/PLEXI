@@ -83,6 +83,32 @@ impl fmt::Display for Capability {
 }
 
 impl Capability {
+    /// One-line human-readable description shown in the permission grant
+    /// modal under the wire-format capability string.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::FsRead => "Read files in this workspace",
+            Self::FsWrite => "Write files in this workspace",
+            Self::NetHttp => "Make outbound HTTP requests",
+            Self::SecretsGet => "Read secrets scoped to this workspace",
+            Self::PipeOpen => "Open data pipes to other panes",
+            Self::SpawnApp => "Launch another app in a new pane",
+            Self::AudioRecord => "Capture microphone audio",
+            Self::AudioPlayback => "Play audio",
+            Self::VideoPlayback => "Decode and display video",
+            Self::Llm => "Make LLM API calls using your API key",
+            Self::Timer => "Schedule timers",
+            Self::AiQuery => "Make AI calls through the Plexi broker",
+            Self::MidiIn => "Receive input from MIDI devices",
+            Self::MidiOut => "Send output to MIDI devices",
+            Self::TerminalBindings => "Drive a linked terminal pane",
+            Self::FsPick => "Show a native file picker",
+            Self::PanesSpawn => "Open new panes in your workspace",
+            Self::PanesRead => "See your open panes and read app or terminal pane state",
+            Self::PanesControl => "Control your panes: focus, close, send input, and drive apps",
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::FsRead => "fs.read",
