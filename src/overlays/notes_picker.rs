@@ -88,6 +88,7 @@ impl PlexiApp {
             Down,
             Up,
             Enter,
+            Delete,
         }
 
         let action = ctx.input_mut(|i| {
@@ -103,6 +104,8 @@ impl PlexiApp {
                 Some(PickerKey::Up)
             } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
                 Some(PickerKey::Enter)
+            } else if i.consume_key(egui::Modifiers::NONE, egui::Key::X) {
+                Some(PickerKey::Delete)
             } else {
                 None
             }
@@ -116,6 +119,13 @@ impl PlexiApp {
                 self.notes_picker_selected = self.notes_picker_selected.saturating_sub(1);
             }
             Some(PickerKey::Enter) => self.notes_picker_open_selected(),
+            Some(PickerKey::Delete) => {
+                log::info!(
+                    "notes_picker: x key — deleting entry at index {}",
+                    self.notes_picker_selected
+                );
+                self.notes_picker_delete_entry(self.notes_picker_selected);
+            }
             None => {}
         }
     }
@@ -215,6 +225,7 @@ impl PlexiApp {
                 let hints = [
                     HintGroup::new(&["j", "k"], "navigate"),
                     HintGroup::new(&["\u{21b5}"], "open"),
+                    HintGroup::new(&["x"], "delete"),
                     HintGroup::new(&["esc"], "dismiss"),
                 ];
                 HintBar::new(&hints).show(ui, &colors);
