@@ -12,4 +12,3 @@ pub mod style;
 pub mod surface;
 pub mod text_field;
 pub mod theme;
-pub mod widgets;

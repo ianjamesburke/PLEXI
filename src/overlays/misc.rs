@@ -46,7 +46,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "T"], "New tab"),
                                     ];
                                     for (keys, desc) in rows {
-                                        crate::ui::widgets::key_combo(ui, keys, colors);
+                                        crate::ui::shortcuts::key_combo(ui, keys, colors);
                                         ui.label(
                                             RichText::new(*desc)
                                                 .size(style::TEXT_HINT)
@@ -64,7 +64,7 @@ impl PlexiApp {
                                 .min_col_width(80.0)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}"], &["H", "J", "K", "L"]],
                                         None,
@@ -77,7 +77,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[
                                             &["\u{2318}", "\u{21E7}", "L"],
@@ -93,7 +93,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[
                                             &["\u{2318}", "\u{21E7}", "K"],
@@ -109,7 +109,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "["], &["\u{2318}", "]"]],
                                         None,
@@ -122,7 +122,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "1"], &["\u{2318}", "9"]],
                                         None,
@@ -135,7 +135,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::widgets::key_combo(
+                                    crate::ui::shortcuts::key_combo(
                                         ui,
                                         &["\u{2318}", "\u{21A9}"],
                                         colors,
@@ -147,7 +147,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "\u{2303}", "H", "J", "K", "L"]],
                                         None,
@@ -160,7 +160,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&[
                                             "\u{2318}", "\u{2303}", "\u{2325}", "H", "J", "K", "L",
@@ -199,7 +199,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "\u{21E7}", "M"], "Toggle minimap"),
                                     ];
                                     for (keys, desc) in rows {
-                                        crate::ui::widgets::key_combo(ui, keys, colors);
+                                        crate::ui::shortcuts::key_combo(ui, keys, colors);
                                         ui.label(
                                             RichText::new(*desc)
                                                 .size(style::TEXT_HINT)
@@ -217,7 +217,7 @@ impl PlexiApp {
                                 .min_col_width(80.0)
                                 .spacing([style::SPACE_SM, 4.0])
                                 .show(ui, |ui| {
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "\u{2191}"], &["\u{2318}", "\u{2193}"]],
                                         None,
@@ -230,7 +230,7 @@ impl PlexiApp {
                                     );
                                     ui.end_row();
 
-                                    crate::ui::widgets::key_combo_list(
+                                    crate::ui::shortcuts::key_combo_list(
                                         ui,
                                         &[&["\u{2318}", "="], &["\u{2318}", "-"]],
                                         None,
@@ -263,7 +263,7 @@ impl PlexiApp {
                                         (&["\u{2318}", "Q"], "Quit"),
                                     ];
                                     for (keys, desc) in rows {
-                                        crate::ui::widgets::key_combo(ui, keys, colors);
+                                        crate::ui::shortcuts::key_combo(ui, keys, colors);
                                         ui.label(
                                             RichText::new(*desc)
                                                 .size(style::TEXT_HINT)
@@ -319,7 +319,7 @@ impl PlexiApp {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            crate::ui::widgets::copy_button(
+                                            crate::ui::button::copy_button(
                                                 ui,
                                                 egui::Id::new("update_banner_copy"),
                                                 "plexi update",
@@ -433,7 +433,7 @@ impl PlexiApp {
                     {
                         let te_id = egui::Id::new("text_input_overlay_field");
                         let (overlay, _target) = self.text_overlay.as_mut().unwrap();
-                        let te = crate::ui::widgets::styled_text_input(
+                        let te = crate::ui::text_field::styled_text_input(
                             ui,
                             &mut overlay.buffer,
                             hint.as_str(),
@@ -584,7 +584,7 @@ impl PlexiApp {
                 {
                     {
                         let te_id = egui::Id::new("rename_pane_input");
-                        let te = crate::ui::widgets::styled_text_input(
+                        let te = crate::ui::text_field::styled_text_input(
                             ui,
                             &mut self.rename_buffer,
                             "Pane name...",
@@ -659,7 +659,7 @@ impl PlexiApp {
             .scrim(false)
             .show(ctx, &colors, |ui| {
                 let te_id = egui::Id::new("rename_context_input");
-                let te = crate::ui::widgets::styled_text_input(
+                let te = crate::ui::text_field::styled_text_input(
                     ui,
                     &mut self.rename_buffer,
                     "Context name...",

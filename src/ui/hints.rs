@@ -1,6 +1,6 @@
+use crate::ui::shortcuts;
 use crate::ui::style;
 use crate::ui::theme::Colors;
-use crate::ui::widgets;
 
 pub(crate) struct HintGroup<'a> {
     keys: &'a [&'a str],
@@ -35,14 +35,14 @@ impl<'a> HintBar<'a> {
         let total: f32 = self
             .groups
             .iter()
-            .map(|g| widgets::key_combo_list_width(ui, &[g.keys], Some(g.label)))
+            .map(|g| shortcuts::key_combo_list_width(ui, &[g.keys], Some(g.label)))
             .sum::<f32>()
             + style::SPACE_MD * self.groups.len().saturating_sub(1) as f32;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = style::SPACE_MD;
             ui.add_space(((full - total) / 2.0).max(0.0));
             for group in self.groups {
-                widgets::key_combo_list(ui, &[group.keys], Some(group.label), colors);
+                shortcuts::key_combo_list(ui, &[group.keys], Some(group.label), colors);
             }
         });
     }

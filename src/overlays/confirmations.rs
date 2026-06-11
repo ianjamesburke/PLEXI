@@ -80,10 +80,10 @@ impl PlexiApp {
                 );
                 ui.add_space(style::SPACE_MD);
                 ui.horizontal(|ui| {
-                    if crate::ui::widgets::chrome_button(
+                    if crate::ui::button::chrome_button(
                         ui,
                         "Close",
-                        crate::ui::widgets::ButtonKind::Danger,
+                        crate::ui::button::ButtonKind::Danger,
                         &self.colors,
                         0.0,
                     )
@@ -92,10 +92,10 @@ impl PlexiApp {
                         *c = true;
                     }
                     ui.add_space(8.0);
-                    if crate::ui::widgets::chrome_button(
+                    if crate::ui::button::chrome_button(
                         ui,
                         "Cancel",
-                        crate::ui::widgets::ButtonKind::Secondary,
+                        crate::ui::button::ButtonKind::Secondary,
                         &self.colors,
                         0.0,
                     )
@@ -104,24 +104,24 @@ impl PlexiApp {
                         *k = true;
                     }
                     ui.add_space(12.0);
-                    crate::ui::widgets::key_chip(
+                    crate::ui::shortcuts::key_chip(
                         ui,
                         "Enter",
                         &self.colors,
                         egui::FontId::monospace(style::TEXT_CAPTION),
                     );
-                    ui.label(crate::ui::widgets::shortcut_hint_label(
+                    ui.label(crate::ui::shortcuts::shortcut_hint_label(
                         "confirm",
                         &self.colors,
                     ));
                     ui.add_space(style::SPACE_SM);
-                    crate::ui::widgets::key_chip(
+                    crate::ui::shortcuts::key_chip(
                         ui,
                         "Esc",
                         &self.colors,
                         egui::FontId::monospace(style::TEXT_CAPTION),
                     );
-                    ui.label(crate::ui::widgets::shortcut_hint_label(
+                    ui.label(crate::ui::shortcuts::shortcut_hint_label(
                         "cancel",
                         &self.colors,
                     ));
@@ -290,10 +290,10 @@ impl PlexiApp {
 
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    if crate::ui::widgets::chrome_button(
+                    if crate::ui::button::chrome_button(
                         ui,
                         "Close all",
-                        crate::ui::widgets::ButtonKind::Danger,
+                        crate::ui::button::ButtonKind::Danger,
                         &colors,
                         0.0,
                     )
@@ -302,10 +302,10 @@ impl PlexiApp {
                         *ca = true;
                     }
                     ui.add_space(6.0);
-                    if crate::ui::widgets::chrome_button(
+                    if crate::ui::button::chrome_button(
                         ui,
                         "Dissolve",
-                        crate::ui::widgets::ButtonKind::Secondary,
+                        crate::ui::button::ButtonKind::Secondary,
                         &colors,
                         0.0,
                     )
@@ -314,10 +314,10 @@ impl PlexiApp {
                         *dv = true;
                     }
                     ui.add_space(6.0);
-                    if crate::ui::widgets::chrome_button(
+                    if crate::ui::button::chrome_button(
                         ui,
                         "Cancel",
-                        crate::ui::widgets::ButtonKind::Secondary,
+                        crate::ui::button::ButtonKind::Secondary,
                         &colors,
                         0.0,
                     )
@@ -329,32 +329,34 @@ impl PlexiApp {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    crate::ui::widgets::key_chip(
+                    crate::ui::shortcuts::key_chip(
                         ui,
                         "Enter",
                         &colors,
                         egui::FontId::monospace(style::TEXT_CAPTION),
                     );
-                    ui.label(crate::ui::widgets::shortcut_hint_label(
+                    ui.label(crate::ui::shortcuts::shortcut_hint_label(
                         "close all",
                         &colors,
                     ));
                     ui.add_space(style::SPACE_SM);
-                    crate::ui::widgets::key_chip(
+                    crate::ui::shortcuts::key_chip(
                         ui,
                         "D",
                         &colors,
                         egui::FontId::monospace(style::TEXT_CAPTION),
                     );
-                    ui.label(crate::ui::widgets::shortcut_hint_label("dissolve", &colors));
+                    ui.label(crate::ui::shortcuts::shortcut_hint_label(
+                        "dissolve", &colors,
+                    ));
                     ui.add_space(style::SPACE_SM);
-                    crate::ui::widgets::key_chip(
+                    crate::ui::shortcuts::key_chip(
                         ui,
                         "Esc",
                         &colors,
                         egui::FontId::monospace(style::TEXT_CAPTION),
                     );
-                    ui.label(crate::ui::widgets::shortcut_hint_label("cancel", &colors));
+                    ui.label(crate::ui::shortcuts::shortcut_hint_label("cancel", &colors));
                 });
             });
         close_all |= btn_close_all;

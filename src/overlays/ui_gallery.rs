@@ -1,12 +1,14 @@
 use super::*;
 use crate::ui::{
+    button::{chrome_button, ButtonKind},
     hints::{HintBar, HintGroup},
+    labels::{chrome_section, description_label},
     list::ListRow,
     overlay::ModalShell,
-    widgets::{
-        chrome_button, chrome_section, color_swatch, description_label, empty_state_panel,
-        key_chip, selectable_row, status_chip, ButtonKind, TextField,
-    },
+    row::selectable_row,
+    shortcuts::key_chip,
+    surface::{color_swatch, empty_state_panel, status_chip},
+    text_field::TextField,
 };
 
 impl PlexiApp {

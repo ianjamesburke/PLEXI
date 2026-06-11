@@ -295,8 +295,8 @@ pub(crate) fn show_prompt_modal(
                     }
                 });
                 ui.add_space(4.0);
-                crate::ui::widgets::key_combo_list(ui, &[&["↵"]], Some("submit"), colors);
-                crate::ui::widgets::key_combo_list(ui, &[&["⎋"]], Some("cancel"), colors);
+                crate::ui::shortcuts::key_combo_list(ui, &[&["↵"]], Some("submit"), colors);
+                crate::ui::shortcuts::key_combo_list(ui, &[&["⎋"]], Some("cancel"), colors);
             }
         });
     if response.dismissed {

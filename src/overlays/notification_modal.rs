@@ -396,12 +396,12 @@ impl PlexiApp {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if queue_len > 1 {
                                     // RTL layout: L first (rightmost), then H.
-                                    crate::ui::widgets::key_chip(
+                                    crate::ui::shortcuts::key_chip(
                                         ui, "L", &self.colors,
                                         egui::FontId::monospace(crate::ui::style::TEXT_CAPTION),
                                     );
                                     ui.add_space(4.0);
-                                    crate::ui::widgets::key_chip(
+                                    crate::ui::shortcuts::key_chip(
                                         ui, "H", &self.colors,
                                         egui::FontId::monospace(crate::ui::style::TEXT_CAPTION),
                                     );
@@ -692,7 +692,7 @@ impl PlexiApp {
                                         };
                                         match notif.kind {
                                             NotifyKind::Message => {
-                                                crate::ui::widgets::key_combo_list(
+                                                crate::ui::shortcuts::key_combo_list(
                                                     ui,
                                                     &[&["Enter"], &["Space"]],
                                                     Some("acknowledge"),
@@ -702,7 +702,7 @@ impl PlexiApp {
                                                     ui.add_space(style::SPACE_SM);
                                                     ui.label(dim("·"));
                                                     ui.add_space(style::SPACE_SM);
-                                                    crate::ui::widgets::key_combo_list(
+                                                    crate::ui::shortcuts::key_combo_list(
                                                         ui,
                                                         &[&["Esc"]],
                                                         Some("dismiss"),
@@ -711,7 +711,7 @@ impl PlexiApp {
                                                 }
                                             }
                                             NotifyKind::Choice => {
-                                                crate::ui::widgets::key_combo_list(
+                                                crate::ui::shortcuts::key_combo_list(
                                                     ui,
                                                     &[&["↑↓"], &["j/k"]],
                                                     Some("navigate"),
@@ -720,7 +720,7 @@ impl PlexiApp {
                                                 ui.add_space(style::SPACE_SM);
                                                 ui.label(dim("·"));
                                                 ui.add_space(style::SPACE_SM);
-                                                crate::ui::widgets::key_combo_list(
+                                                crate::ui::shortcuts::key_combo_list(
                                                     ui,
                                                     &[&["Enter"], &["1-9"]],
                                                     Some("select"),
@@ -730,7 +730,7 @@ impl PlexiApp {
                                                     ui.add_space(style::SPACE_SM);
                                                     ui.label(dim("·"));
                                                     ui.add_space(style::SPACE_SM);
-                                                    crate::ui::widgets::key_combo_list(
+                                                    crate::ui::shortcuts::key_combo_list(
                                                         ui,
                                                         &[&["Esc"]],
                                                         Some("dismiss"),
@@ -739,7 +739,7 @@ impl PlexiApp {
                                                 }
                                             }
                                             NotifyKind::Input => {
-                                                crate::ui::widgets::key_combo_list(
+                                                crate::ui::shortcuts::key_combo_list(
                                                     ui,
                                                     &[&["Enter"]],
                                                     Some("newline"),
@@ -748,7 +748,7 @@ impl PlexiApp {
                                                 ui.add_space(style::SPACE_SM);
                                                 ui.label(dim("·"));
                                                 ui.add_space(style::SPACE_SM);
-                                                crate::ui::widgets::key_combo_list(
+                                                crate::ui::shortcuts::key_combo_list(
                                                     ui,
                                                     &[&["\u{2318}", "\u{21B5}"]],
                                                     Some("submit"),
@@ -758,7 +758,7 @@ impl PlexiApp {
                                                     ui.add_space(style::SPACE_SM);
                                                     ui.label(dim("·"));
                                                     ui.add_space(style::SPACE_SM);
-                                                    crate::ui::widgets::key_combo_list(
+                                                    crate::ui::shortcuts::key_combo_list(
                                                         ui,
                                                         &[&["Esc"]],
                                                         Some("dismiss"),

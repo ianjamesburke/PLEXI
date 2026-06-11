@@ -119,7 +119,7 @@ pub(crate) fn draw_contact_footer(ui: &mut egui::Ui, colors: &Colors) {
                         .color(colors.text_dim),
                     mailto,
                 );
-                crate::ui::widgets::copy_button(
+                crate::ui::button::copy_button(
                     ui,
                     egui::Id::new("shortcuts_email_copy"),
                     "ADHDisntreal@gmail.com",

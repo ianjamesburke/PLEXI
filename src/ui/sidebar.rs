@@ -182,7 +182,7 @@ impl PlexiApp {
                         let te = ui
                             .scope(|ui| {
                                 ui.set_max_width(sidebar_w - 56.0);
-                                crate::ui::widgets::TextField::singleline(te_id, "").show(
+                                crate::ui::text_field::TextField::singleline(te_id, "").show(
                                     ui,
                                     &mut self.rename_buffer,
                                     &self.colors,

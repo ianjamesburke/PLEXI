@@ -224,7 +224,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                 if !preview.context_description.is_empty() {
                     ui.scope(|ui| {
                         ui.set_max_width(inner.width());
-                        crate::ui::widgets::description_label(
+                        crate::ui::labels::description_label(
                             ui,
                             &preview.context_description,
                             &self.colors,

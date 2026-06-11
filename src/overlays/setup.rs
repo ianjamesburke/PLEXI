@@ -146,7 +146,7 @@ impl PlexiApp {
 
                     for (keys, desc) in shortcuts {
                         ui.horizontal(|ui| {
-                            crate::ui::widgets::key_combo(ui, keys, &colors);
+                            crate::ui::shortcuts::key_combo(ui, keys, &colors);
                             ui.add_space(style::SPACE_SM);
                             ui.label(
                                 RichText::new(*desc)
@@ -258,7 +258,7 @@ impl PlexiApp {
                                                 .monospace(),
                                         );
                                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            crate::ui::widgets::copy_button(
+                                            crate::ui::button::copy_button(
                                                 ui,
                                                 egui::Id::new("cli_setup_copy"),
                                                 cmd,
@@ -280,10 +280,10 @@ impl PlexiApp {
                             }
 
                             ui.horizontal(|ui| {
-                                let check_btn = crate::ui::widgets::chrome_button(
+                                let check_btn = crate::ui::button::chrome_button(
                                     ui,
                                     "Check for success",
-                                    crate::ui::widgets::ButtonKind::Primary,
+                                    crate::ui::button::ButtonKind::Primary,
                                     &colors,
                                     150.0,
                                 );
@@ -301,10 +301,10 @@ impl PlexiApp {
                                     }
                                 }
 
-                                let skip_btn = crate::ui::widgets::chrome_button(
+                                let skip_btn = crate::ui::button::chrome_button(
                                     ui,
                                     "Not now",
-                                    crate::ui::widgets::ButtonKind::Secondary,
+                                    crate::ui::button::ButtonKind::Secondary,
                                     &colors,
                                     100.0,
                                 );
@@ -376,17 +376,17 @@ impl PlexiApp {
                                                 .color(colors.text_primary)
                                                 .monospace(),
                                         );
-                                        crate::ui::widgets::copy_button(
+                                        crate::ui::button::copy_button(
                                             ui,
                                             egui::Id::new("completions_banner_copy"),
                                             cmd,
                                         );
                                     });
                                 });
-                            if crate::ui::widgets::chrome_button_sized(
+                            if crate::ui::button::chrome_button_sized(
                                 ui,
                                 "Done",
-                                crate::ui::widgets::ButtonKind::Primary,
+                                crate::ui::button::ButtonKind::Primary,
                                 &colors,
                                 56.0,
                                 CONTROL_H,
@@ -397,10 +397,10 @@ impl PlexiApp {
                                 crate::cli::setup::completions_mark_prompted();
                                 self.show_completions_banner = false;
                             }
-                            if crate::ui::widgets::chrome_button_sized(
+                            if crate::ui::button::chrome_button_sized(
                                 ui,
                                 "Not now",
-                                crate::ui::widgets::ButtonKind::Secondary,
+                                crate::ui::button::ButtonKind::Secondary,
                                 &colors,
                                 72.0,
                                 CONTROL_H,

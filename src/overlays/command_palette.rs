@@ -3,10 +3,11 @@ use egui::RichText;
 use crate::app::PlexiApp;
 use crate::ui::{
     hints::{HintBar, HintGroup},
+    labels::description_label,
     list::ListRow,
     overlay::ModalShell,
     style,
-    widgets::{description_label, TextField},
+    text_field::TextField,
 };
 
 enum PaletteEntry {

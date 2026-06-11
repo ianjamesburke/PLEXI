@@ -690,7 +690,7 @@ impl CliRendererApp {
                     _ => {
                         let placeholder = arg.placeholder.as_deref().unwrap_or("");
                         ui.set_max_width(ui.available_width() - style::SPACE_MD);
-                        crate::ui::widgets::styled_text_input(
+                        crate::ui::text_field::styled_text_input(
                             ui,
                             val,
                             placeholder,
