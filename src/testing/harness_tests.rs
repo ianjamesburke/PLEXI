@@ -1,5 +1,4 @@
 use super::*;
-use crate::app_protocol::PlexiEvent;
 
 // -- DrawCommand routing --------------------------------------------------
 
@@ -74,6 +73,81 @@ fn add_test_pane_appears_in_snapshot() {
     assert_eq!(
         snap.pane_titles.get(&pane).map(|s| s.as_str()),
         Some("Test App")
+    );
+}
+
+#[test]
+fn visible_idle_process_app_does_not_emit_recurring_render_events() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    h.run_frames(1);
+    let first = h
+        .render_payload_take(pane)
+        .expect("first visible frame must request an app Render");
+    assert!(
+        first.contains("\"frame_id\":1"),
+        "first Render should use frame_id=1, got {first}"
+    );
+
+    h.inject(
+        pane,
+        DrawCommand::Control(crate::app_protocol::ControlCommand::FrameDone { frame_id: 1 }),
+    );
+    h.run_frames(1);
+    let second = h.render_payload_take(pane);
+    assert_eq!(
+        second, None,
+        "an idle visible app with a committed frame must not receive another Render just because the host repainted"
+    );
+
+    h.run_frames(2);
+    assert_eq!(
+        h.render_payload_take(pane),
+        None,
+        "idle host repaint cycles must not restart visible app rendering"
+    );
+}
+
+#[test]
+fn schedule_render_requests_next_process_app_render() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    h.run_frames(1);
+    assert!(
+        h.render_payload_take(pane).is_some(),
+        "first visible frame must request an app Render"
+    );
+    h.inject(
+        pane,
+        DrawCommand::Control(crate::app_protocol::ControlCommand::FrameDone { frame_id: 1 }),
+    );
+    h.run_frames(1);
+    assert_eq!(
+        h.render_payload_take(pane),
+        None,
+        "stable idle frame should not render before ScheduleRender"
+    );
+
+    h.inject(
+        pane,
+        DrawCommand::Control(crate::app_protocol::ControlCommand::ScheduleRender { after_ms: 0 }),
+    );
+    h.run_frames(1);
+    assert_eq!(
+        h.render_payload_take(pane),
+        None,
+        "ScheduleRender is handled after the render slot for this host frame"
+    );
+
+    h.run_frames(1);
+    let scheduled = h
+        .render_payload_take(pane)
+        .expect("ScheduleRender must request the next app Render");
+    assert!(
+        scheduled.contains("\"frame_id\":2"),
+        "scheduled Render should use the next frame_id, got {scheduled}"
     );
 }
 

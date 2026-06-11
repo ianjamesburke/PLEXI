@@ -282,6 +282,25 @@ impl HostHarness {
         };
         process_app.outbound_events.drain(..).collect()
     }
+
+    /// Take the latest Render payload queued for a test `ProcessApp`.
+    ///
+    /// Test apps do not spawn the stdin writer thread, so this helper also
+    /// resets `render_in_queue` to simulate that writer consuming the slot.
+    pub fn render_payload_take(&mut self, pane_id: PaneId) -> Option<String> {
+        let win = &mut self.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane_id) else {
+            return None;
+        };
+        let AppRuntime::Process(process_app) = &mut app_pane.runtime else {
+            return None;
+        };
+        let payload = process_app.render_slot.lock().unwrap().take();
+        process_app
+            .render_in_queue
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        payload
+    }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

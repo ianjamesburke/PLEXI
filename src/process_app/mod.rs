@@ -150,6 +150,10 @@ pub struct ProcessApp {
     last_size: egui::Vec2,
     initialized: bool,
     frame_counter: u64,
+    render_needed: bool,
+    render_in_flight_frame_id: Option<u64>,
+    render_not_before: Option<std::time::Instant>,
+    idle_render_poll_logged: bool,
     sdk: Option<String>,
     features_used: Vec<String>,
     /// workspace_root sent in Init — scopes all SecretGet calls.
@@ -706,6 +710,10 @@ impl ProcessApp {
             last_size: egui::Vec2::ZERO,
             initialized: false,
             frame_counter: 0,
+            render_needed: true,
+            render_in_flight_frame_id: None,
+            render_not_before: None,
+            idle_render_poll_logged: false,
             sdk: None,
             features_used: Vec::new(),
             workspace_root,
@@ -861,6 +869,10 @@ impl ProcessApp {
             last_size: egui::Vec2::ZERO,
             initialized: true,
             frame_counter: 0,
+            render_needed: true,
+            render_in_flight_frame_id: None,
+            render_not_before: None,
+            idle_render_poll_logged: false,
             sdk: None,
             features_used: Vec::new(),
             workspace_root: std::env::temp_dir(),
@@ -1018,6 +1030,56 @@ impl ProcessApp {
         }
     }
 
+    fn mark_render_needed(&mut self, reason: &'static str) {
+        if !self.render_needed {
+            log::info!("ProcessApp[{}]: render requested ({reason})", self.type_id);
+        }
+        self.render_needed = true;
+        self.render_not_before = None;
+    }
+
+    fn mark_render_needed_after(&mut self, reason: &'static str, delay: std::time::Duration) {
+        let scheduled_at = std::time::Instant::now() + delay;
+        if !self.render_needed {
+            log::info!(
+                "ProcessApp[{}]: render requested ({reason}, after {}ms)",
+                self.type_id,
+                delay.as_millis()
+            );
+            self.render_needed = true;
+            self.render_not_before = Some(scheduled_at);
+        } else if let Some(existing) = self.render_not_before {
+            self.render_not_before = Some(existing.min(scheduled_at));
+        }
+    }
+
+    fn send_render_if_needed(&mut self, size: egui::Vec2) -> Option<u64> {
+        if !self.render_needed || self.render_in_flight_frame_id.is_some() {
+            return None;
+        }
+        if let Some(not_before) = self.render_not_before {
+            if std::time::Instant::now() < not_before {
+                return None;
+            }
+        }
+
+        self.frame_counter += 1;
+        let frame_id = self.frame_counter;
+        self.send_event(&PlexiEvent::Render {
+            frame_id,
+            rect: crate::app_protocol::Rect {
+                x: 0.0,
+                y: 0.0,
+                w: size.x,
+                h: size.y,
+            },
+        });
+        self.render_needed = false;
+        self.render_not_before = None;
+        self.render_in_flight_frame_id = Some(frame_id);
+        Some(frame_id)
+    }
+
     /// Drain the MCP call queue and forward each request to the app as a
     /// `PlexiEvent::McpToolCall`. Called each frame (both `ui()` and
     /// `background_tick()`) so tool calls are processed even for background apps.
@@ -1052,8 +1114,13 @@ impl ProcessApp {
     }
 
     fn flush_outbound_events(&mut self) {
+        let mut flushed = false;
         while let Some(event) = self.outbound_events.pop_front() {
             self.send_event(&event);
+            flushed = true;
+        }
+        if flushed {
+            self.mark_render_needed("outbound_event");
         }
     }
 
@@ -1243,17 +1310,18 @@ impl ProcessApp {
     /// Dispatch a `ControlCommand` that arrived during `ui()`. Called inline
     /// from the `ui()` dispatch loop; has access to `egui::Ui` for operations
     /// that require UI-thread context (font metrics, clipboard, repaint).
-    fn handle_control_command(&mut self, ui: &mut egui::Ui, frame_id: u64, cmd: ControlCommand) {
+    fn handle_control_command(&mut self, ui: &mut egui::Ui, cmd: ControlCommand) {
         match cmd {
             ControlCommand::Ready { sdk, features_used } => {
                 self.sdk = Some(sdk);
                 self.features_used = features_used;
             }
             ControlCommand::FrameDone { frame_id: done_id } => {
-                if done_id != frame_id {
+                let expected_frame_id = self.render_in_flight_frame_id.take();
+                if expected_frame_id != Some(done_id) {
                     log::debug!(
-                        "ProcessApp[{}]: FrameDone frame_id={done_id} expected={frame_id}",
-                        self.type_id
+                        "ProcessApp[{}]: FrameDone frame_id={done_id} expected={expected_frame_id:?}",
+                        self.type_id,
                     );
                 }
                 std::mem::swap(&mut self.frame, &mut self.pending_frame);
@@ -1261,6 +1329,9 @@ impl ProcessApp {
                 self.click_awaiting_frame = false;
                 // Lifecycle: a frame just landed → Running (unless terminal).
                 self.lifecycle.on_frame_done();
+                if self.render_needed {
+                    ui.ctx().request_repaint();
+                }
             }
             ControlCommand::Log { level, message } => {
                 let target = format!("app::{}", self.type_id);
@@ -1275,8 +1346,9 @@ impl ProcessApp {
                 crate::platform::frame_diag::note(
                     crate::platform::frame_diag::RepaintCause::AppScheduleRender,
                 );
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(after_ms as u64));
+                let delay = std::time::Duration::from_millis(after_ms as u64);
+                self.mark_render_needed_after("schedule_render", delay);
+                ui.ctx().request_repaint_after(delay);
             }
             // CopyToClipboard is handled here (not in routing.rs) because
             // `egui::Context::copy_text` is a UI-context method. The host
@@ -1378,6 +1450,7 @@ impl App for ProcessApp {
 
     fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
         self.outbound_events.push_back(event);
+        self.mark_render_needed("queued_outbound_event");
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
@@ -1445,6 +1518,7 @@ impl App for ProcessApp {
                 width: size.x,
                 height: size.y,
             });
+            self.mark_render_needed("resize");
         }
 
         // Size-class guard: if the pane is below the effective minimum, render a
@@ -1479,17 +1553,7 @@ impl App for ProcessApp {
             return;
         }
 
-        self.frame_counter += 1;
-        let frame_id = self.frame_counter;
-        self.send_event(&PlexiEvent::Render {
-            frame_id,
-            rect: crate::app_protocol::Rect {
-                x: 0.0,
-                y: 0.0,
-                w: size.x,
-                h: size.y,
-            },
-        });
+        self.send_render_if_needed(size);
 
         // Drain async HTTP responses from background request threads.
         while let Ok(event) = self.http_rx.try_recv() {
@@ -1540,7 +1604,7 @@ impl App for ProcessApp {
 
         for cmd in new_cmds {
             match cmd {
-                DrawCommand::Control(c) => self.handle_control_command(ui, frame_id, c),
+                DrawCommand::Control(c) => self.handle_control_command(ui, c),
                 DrawCommand::Host(h) => self.route_command(h),
                 DrawCommand::Render(r) => self.pending_frame.push(r),
             }
@@ -1816,6 +1880,7 @@ impl App for ProcessApp {
                         button: crate::app_protocol::MouseButton::Primary,
                         modifiers: frame_mods.clone(),
                     });
+                    self.mark_render_needed("mouse_down");
                     needs_click_repaint = true;
                 }
                 if is_secondary_down {
@@ -1825,6 +1890,7 @@ impl App for ProcessApp {
                         button: crate::app_protocol::MouseButton::Secondary,
                         modifiers: frame_mods.clone(),
                     });
+                    self.mark_render_needed("mouse_down");
                     needs_click_repaint = true;
                 }
             }
@@ -1851,6 +1917,7 @@ impl App for ProcessApp {
                         y,
                         button: crate::app_protocol::MouseButton::Primary,
                     });
+                    self.mark_render_needed("mouse_up");
                     needs_click_repaint = true;
                 }
                 if secondary_up {
@@ -1865,6 +1932,7 @@ impl App for ProcessApp {
                         y,
                         button: crate::app_protocol::MouseButton::Secondary,
                     });
+                    self.mark_render_needed("mouse_up");
                     needs_click_repaint = true;
                 }
             }
@@ -1893,6 +1961,7 @@ impl App for ProcessApp {
                             buttons,
                             modifiers: frame_mods.clone(),
                         });
+                        self.mark_render_needed("mouse_move");
                         needs_tracking_repaint = true;
                     }
                 }
@@ -1922,10 +1991,25 @@ impl App for ProcessApp {
             frame_diag::note(RepaintCause::PointerTracking);
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
+        } else if self.render_needed && self.render_in_flight_frame_id.is_none() {
+            if let Some(not_before) = self.render_not_before {
+                let now = std::time::Instant::now();
+                if not_before > now {
+                    ui.ctx().request_repaint_after(not_before - now);
+                } else {
+                    ui.ctx().request_repaint();
+                }
+            } else {
+                ui.ctx().request_repaint();
+            }
         } else {
-            frame_diag::note(RepaintCause::AppIdlePoll);
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(100));
+            if !self.idle_render_poll_logged {
+                log::info!(
+                    "ProcessApp[{}]: idle render polling disabled; waiting for input, dirty state, or ScheduleRender",
+                    self.type_id
+                );
+                self.idle_render_poll_logged = true;
+            }
         }
     }
 
@@ -2080,6 +2164,7 @@ impl App for ProcessApp {
             }
         }
         if consumed {
+            self.mark_render_needed("keyboard_input");
             KeyDisposition::Consumed
         } else {
             KeyDisposition::Passthrough
@@ -2094,6 +2179,7 @@ impl App for ProcessApp {
         self.outbound_events.push_back(PlexiEvent::PathChanged {
             cwd: new_cwd.to_path_buf(),
         });
+        self.mark_render_needed("path_changed");
     }
 
     fn serialize_state(&self) -> Option<serde_json::Value> {
