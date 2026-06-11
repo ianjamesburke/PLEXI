@@ -32,6 +32,10 @@ Users need to understand what a package can do before installing it, and marketp
 
 - Trust labels must be blunt: reviewed native process, sandboxed WASM only after WASM exists, or first-party core.
 
+## Variance
+
+Actual time was much lower than estimate because inspect and install could reuse the same validator-backed trust sheet output.
+
 ## References
 
 - `docs/prm/app-framework-marketplace.md`

@@ -33,6 +33,10 @@ Hosted marketplace work should consume the same validator that local package/ins
 - Fail closed on missing manifest, unknown capabilities, path traversal, symlink escapes, unsupported runtime, and mismatched metadata.
 - Keep command names flexible, but preserve validate, inspect, install, run locally.
 
+## Variance
+
+Actual time was much lower than estimate because the package validator and CLI paths shared existing manifest/runtime plumbing.
+
 ## References
 
 - `docs/prm/app-framework-marketplace.md`

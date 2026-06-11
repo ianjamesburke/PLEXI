@@ -32,6 +32,10 @@ Marketplace installs need a visible place to inspect and revise grants, and app 
 - Capability declarations must match actual powers.
 - Brokered network belongs behind explicit host capability paths.
 
+## Variance
+
+Actual time was much lower than estimate because the consent routing already had a gate-then-forward path to extend.
+
 ## References
 
 - `docs/prm/app-framework-marketplace.md`
