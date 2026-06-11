@@ -245,7 +245,7 @@ Install the PLEXI hook script into ~/.claude/settings.json
 
 | Flag / Arg | Type | Required | Description |
 |---|---|---|---|
-| `--claude-code` | flag | no | Install Claude Code hooks (SessionStart, UserPromptSubmit, PermissionRequest, Stop, StopFailure, SessionEnd) |
+| `--claude-code` | flag | no | Install Claude Code hooks (PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, PermissionRequest, Stop, StopFailure, SessionEnd) |
 
 #### `plexi agent hook uninstall`
 
@@ -845,4 +845,3 @@ Example: plexi uninstall
 |---|---|---|---|
 | `--keep-data` | flag | no | Keep your profile directory (~/.plexi/) — your settings, secrets, and app data stay on disk |
 | `--yes` / `-y` | flag | no | Skip the confirmation prompt and proceed immediately (removes data unless --keep-data is set) |
-

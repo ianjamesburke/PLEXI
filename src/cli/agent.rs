@@ -5,6 +5,7 @@ const CLAUDE_CODE_HOOK_EVENTS: &[&str] = &[
     "SessionStart",
     "UserPromptSubmit",
     "PermissionRequest",
+    "PostToolUse",
     "PostToolBatch",
     "Stop",
     "StopFailure",
@@ -456,7 +457,7 @@ case "$EVENT" in
     PreToolUse)                    STATE="working"; DETAIL=$(tool_detail) ;;
     SessionStart|UserPromptSubmit) STATE="working" ;;
     PermissionRequest)             STATE="blocked" ;;
-    PostToolBatch|Stop|StopFailure|SessionEnd) STATE="idle" ;;
+    PostToolUse|PostToolBatch|Stop|StopFailure|SessionEnd) STATE="idle" ;;
     SubagentStop)                  exit 0 ;;
     *)                             exit 0 ;;
 esac

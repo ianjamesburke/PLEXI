@@ -929,7 +929,7 @@ pub enum AgentCmd {
 pub enum HookAction {
     /// Install the PLEXI hook script into ~/.claude/settings.json.
     Install {
-        /// Install Claude Code hooks (SessionStart, UserPromptSubmit, PermissionRequest, Stop, StopFailure, SessionEnd)
+        /// Install Claude Code hooks (PreToolUse, PostToolUse, SessionStart, UserPromptSubmit, PermissionRequest, Stop, StopFailure, SessionEnd)
         #[arg(long = "claude-code")]
         claude_code: bool,
     },
