@@ -195,11 +195,14 @@ impl RenderSession {
                     egui::Stroke::new(1.0, colors.accent);
                 child.visuals_mut().widgets.inactive.bg_stroke =
                     egui::Stroke::new(1.0, colors.border);
+                // TextEdit defaults to the Monospace text style — app input
+                // fields must read as UI chrome (Inter), not terminal text.
                 let output = if *multiline {
                     let edit = egui::TextEdit::multiline(buffer)
                         .id(widget_id)
                         .desired_width(actual_size.x)
                         .hint_text(placeholder.as_str())
+                        .font(egui::TextStyle::Body)
                         .frame(true);
                     egui::ScrollArea::vertical()
                         .max_height(actual_size.y)
@@ -210,9 +213,20 @@ impl RenderSession {
                         .id(widget_id)
                         .desired_width(actual_size.x)
                         .hint_text(placeholder.as_str())
+                        .font(egui::TextStyle::Body)
                         .frame(true);
                     edit.show(&mut child)
                 };
+                if output.response.has_focus() {
+                    // Soft accent glow outside the field — focus reads at a
+                    // glance without a harsh double border.
+                    ui.painter().rect_stroke(
+                        output.response.rect.expand(2.0),
+                        crate::ui::style::RADIUS_MD,
+                        egui::Stroke::new(3.0, colors.accent.gamma_multiply(0.25)),
+                        egui::StrokeKind::Outside,
+                    );
+                }
                 if (newly_visible || self.pane_just_focused) && !focus_granted {
                     output.response.request_focus();
                     focus_granted = true;

@@ -512,9 +512,10 @@ pub(crate) fn render_draw_commands(
                         colors.text_dim,
                     );
                 } else {
-                    // Scrollbar (only when content overflows)
+                    // Scrollbar (only when content overflows): thin floating
+                    // rounded handle, inset from the edge — no track.
                     if total_h > list_h {
-                        let track_x = list_rect.max.x - SCROLLBAR_W;
+                        let track_x = list_rect.max.x - SCROLLBAR_W - 3.0;
                         let thumb_ratio = list_h / total_h;
                         let thumb_h = (thumb_ratio * list_h).max(20.0);
                         let scroll_ratio = scroll_y / (total_h - list_h).max(1.0);
@@ -524,8 +525,8 @@ pub(crate) fn render_draw_commands(
                                 egui::pos2(track_x, thumb_y),
                                 egui::vec2(SCROLLBAR_W, thumb_h),
                             ),
-                            1.5,
-                            colors.border,
+                            SCROLLBAR_W / 2.0,
+                            colors.text_dim.gamma_multiply(0.6),
                         );
                     }
 
@@ -546,14 +547,33 @@ pub(crate) fn render_draw_commands(
                         );
                         let is_sel = i == (*selected).min(items.len().saturating_sub(1));
 
-                        let bg = if is_sel {
-                            colors.bg_active
-                        } else if i % 2 == 0 {
-                            colors.terminal_bg
-                        } else {
-                            colors.bg_darkest
-                        };
-                        painter.rect_filled(row_rect, 0.0, bg);
+                        // Selection: inset rounded accent-tinted highlight with
+                        // an accent rail. Unselected rows stay transparent on
+                        // the pane background — no zebra striping.
+                        if is_sel {
+                            let sel_rect = egui::Rect::from_min_max(
+                                egui::pos2(row_rect.min.x + 4.0, row_rect.min.y + 1.0),
+                                egui::pos2(row_rect.max.x - 4.0, row_rect.max.y - 1.0),
+                            );
+                            painter.rect_filled(
+                                sel_rect,
+                                crate::ui::style::RADIUS_SM,
+                                colors.accent.gamma_multiply(0.14),
+                            );
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(
+                                    sel_rect.min,
+                                    egui::vec2(3.0, sel_rect.height()),
+                                ),
+                                egui::CornerRadius {
+                                    nw: 6,
+                                    sw: 6,
+                                    ne: 0,
+                                    se: 0,
+                                },
+                                colors.accent,
+                            );
+                        }
 
                         match item {
                             LVI::CustomCell { .. } => {

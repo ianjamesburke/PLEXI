@@ -58,14 +58,31 @@ impl<'a> ListRow<'a> {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
 
-        let fill = if self.selected {
-            colors.bg_active
+        // Selection language shared with the PGAP ListView renderer: inset
+        // rounded accent-tinted highlight with an accent rail on the left.
+        let inset = egui::Rect::from_min_max(
+            Pos2::new(rect.min.x + 4.0, rect.min.y + 1.0),
+            Pos2::new(rect.max.x - 4.0, rect.max.y - 1.0),
+        );
+        if self.selected {
+            ui.painter().rect_filled(
+                inset,
+                style::RADIUS_SM,
+                colors.accent.gamma_multiply(0.14),
+            );
+            ui.painter().rect_filled(
+                egui::Rect::from_min_size(inset.min, Vec2::new(3.0, inset.height())),
+                CornerRadius {
+                    nw: 6,
+                    sw: 6,
+                    ne: 0,
+                    se: 0,
+                },
+                colors.accent,
+            );
         } else if response.hovered() {
-            colors.bg_hover
-        } else {
-            Color32::TRANSPARENT
-        };
-        ui.painter().rect_filled(rect, style::RADIUS_MD, fill);
+            ui.painter().rect_filled(inset, style::RADIUS_SM, colors.bg_hover);
+        }
 
         let mut x = rect.left() + style::LIST_ROW_PAD_H;
         let center_y = rect.center().y;
