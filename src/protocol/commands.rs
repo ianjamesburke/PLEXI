@@ -332,10 +332,6 @@ pub enum RenderCommand {
     /// single-line `TextEdit` and Enter submits. When `multiline` is `true`,
     /// the host renders a multi-line `TextEdit`; Enter still submits but
     /// Shift+Enter inserts a newline.
-    ///
-    /// Real-time validation (per-keystroke value access) is intentionally
-    /// out of scope — see issue #283 option A. Apps that need it must
-    /// wait for a future protocol revision.
     TextInput {
         id: String,
         x: f32,
@@ -351,6 +347,10 @@ pub enum RenderCommand {
         /// draw commands without this field continue to work.
         #[serde(default)]
         multiline: bool,
+        /// Optional one-shot value override for host-owned buffers. SDK apps
+        /// use this for completions; ordinary text input leaves it unset.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<String>,
     },
 
     // ── Host-managed scroll regions (#446) ───────────────────────────────
@@ -1487,6 +1487,57 @@ mod tests {
     //! over missing fields.
     use super::*;
     use crate::protocol::events::PlexiEvent;
+
+    #[test]
+    fn text_input_value_override_round_trips_serde() {
+        let json = r#"{"type":"text_input","id":"chat","x":1.0,"y":2.0,"w":320.0,"h":72.0,"placeholder":"Message","multiline":true,"value":"/hello-world "}"#;
+        let cmd: DrawCommand = serde_json::from_str(json).expect("deserialise");
+        match &cmd {
+            DrawCommand::Render(RenderCommand::TextInput {
+                id,
+                multiline,
+                value,
+                ..
+            }) => {
+                assert_eq!(id, "chat");
+                assert!(*multiline);
+                assert_eq!(value.as_deref(), Some("/hello-world "));
+            }
+            other => panic!("expected TextInput, got {other:?}"),
+        }
+        let serialised = serde_json::to_string(&cmd).expect("serialise");
+        assert!(
+            serialised.contains(r#""value":"/hello-world ""#),
+            "value override must stay on the wire: {serialised}"
+        );
+    }
+
+    #[test]
+    fn text_input_live_events_round_trip_serde() {
+        let changed_json = r#"{"type":"text_changed","id":"chat","value":"/hel"}"#;
+        let changed: PlexiEvent = serde_json::from_str(changed_json).expect("deserialise");
+        match &changed {
+            PlexiEvent::TextChanged { id, value } => {
+                assert_eq!(id, "chat");
+                assert_eq!(value, "/hel");
+            }
+            other => panic!("expected TextChanged, got {other:?}"),
+        }
+
+        let key_json = r#"{"type":"text_input_key","id":"chat","key":"tab","modifiers":{"shift":false,"ctrl":false,"alt":false,"cmd":false}}"#;
+        let key: PlexiEvent = serde_json::from_str(key_json).expect("deserialise");
+        match &key {
+            PlexiEvent::TextInputKey { id, key, modifiers } => {
+                assert_eq!(id, "chat");
+                assert_eq!(key, "tab");
+                assert!(!modifiers.shift);
+                assert!(!modifiers.ctrl);
+                assert!(!modifiers.alt);
+                assert!(!modifiers.cmd);
+            }
+            other => panic!("expected TextInputKey, got {other:?}"),
+        }
+    }
 
     #[test]
     fn paste_event_round_trips_serde() {

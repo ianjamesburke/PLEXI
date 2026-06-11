@@ -652,7 +652,8 @@ class RenderContext:
     def text_input(self, id: str, x: float, y: float, w: float,
                    placeholder: str = "",
                    multiline: bool = False,
-                   h: float = 24.0) -> "str | None":
+                   h: float = 24.0,
+                   value: "str | None" = None) -> "str | None":
         """Text input — host-owned buffer, submit-only.
 
         Emits a `DrawCommand::TextInput` and returns the most recently
@@ -676,11 +677,14 @@ class RenderContext:
             if submitted is not None:
                 save_note(submitted)
 
-        Real-time validation (per-keystroke access) is out of scope —
-        see issue #283.
+        If `value` is provided, the host applies it as a one-shot buffer
+        replacement for completions or controlled corrections.
         """
-        self._queue({"type": "text_input", "id": id, "x": x, "y": y, "w": w,
-                     "h": h, "placeholder": placeholder, "multiline": multiline})
+        cmd = {"type": "text_input", "id": id, "x": x, "y": y, "w": w,
+               "h": h, "placeholder": placeholder, "multiline": multiline}
+        if value is not None:
+            cmd["value"] = value
+        self._queue(cmd)
         return self._app._take_text_submission(id)
 
     # Logging helpers (in-frame, forwarded to host logger)

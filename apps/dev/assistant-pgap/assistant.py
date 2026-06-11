@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Assistant — AI chat app powered by Plexi's ai.query broker.
+from __future__ import annotations
+
+"""Assistant PGAP — developer reference chat app powered by Plexi's ai.query broker.
 
 L1 Reference Implementation
 ============================
@@ -10,7 +12,7 @@ Patterns demonstrated:
     on_ai_thinking_chunk + schedule_render
   - Background ai_query with emit.run_sync
   - Column + AppBar + Scrollable + multiline TextInput + FooterKeys
-  - Session persistence via JSON in .plexi/assistant_sessions/
+  - Session persistence via JSON in the workspace channel dir
   - ExposeTools: registers an ask_assistant tool so other workspace apps
     can invoke the assistant programmatically (#2034)
   - Tool consumption: ai_query automatically receives tools exposed by
@@ -31,7 +33,7 @@ PLEXI_BINARY = os.environ.get("PLEXI_BINARY", "plexi-alpha")
 from plexi_sdk import App, Arg
 from plexi_sdk.ui import (
     Column, AppBar, ChatBubble, Scrollable, Spacer,
-    FooterKeys, TextInput, Label,
+    FooterKeys, TextInput, Label, ListItem,
     SPACE_SM, SPACE_MD, SPACE_LG,
 )
 
@@ -58,11 +60,13 @@ class AssistantApp(App):
         self._model_tier = "low"
         self._input = TextInput(
             "chat-input",
-            placeholder="Message assistant…",
+            placeholder="Message assistant PGAP…",
             height=72.0,
             multiline=True,
         )
-        self._scroll = Scrollable(child=Spacer())  # replaced each render
+        self._composer_text = ""
+        self._slash_selected = 0
+        self._scroll = Scrollable(child=Spacer(), align="bottom")  # replaced each render
         self._pin_to_bottom = False
         self._session_id = _new_session_id()
         if self.demo_state:
@@ -71,10 +75,14 @@ class AssistantApp(App):
         else:
             self._sessions_dir = _resolve_sessions_dir(self.workspace_root)
             self._load_latest_session()
+        self._skills_dir = _resolve_skills_dir(self.workspace_root)
+        self._ensure_demo_skill()
+        self._skills = self._load_skills()
         self._register_tools()
         self._register_cli_tools()
         self.emit.info(
-            f"AssistantApp ready — model={self._model_tier} sessions dir: {self._sessions_dir}"
+            f"AssistantApp ready — model={self._model_tier} "
+            f"sessions dir: {self._sessions_dir} skills dir: {self._skills_dir}"
         )
 
     # ── Demo state (scene tests) ───────────────────────────────────────────────
@@ -392,6 +400,11 @@ class AssistantApp(App):
         text = text.strip()
         if not text:
             return
+        if text.startswith("/"):
+            if self._invoke_skill(text):
+                self._composer_text = ""
+                self.emit.schedule_render()
+                return
         self._messages.append({"role": "user", "content": text})
         self._is_streaming = True
         self._streaming_text = ""
@@ -447,38 +460,176 @@ class AssistantApp(App):
             children.append(Label("Ask anything. ⇧↵ for a new line.", tone="hint"))
         return Column(children, padding=SPACE_LG, padding_top=SPACE_MD, gap=SPACE_MD)
 
+    # ── Slash skills ──────────────────────────────────────────────────────────
+
+    def _ensure_demo_skill(self) -> None:
+        """Seed a hello-world skill for a fresh workspace POC."""
+        if self._skills_dir is None:
+            return
+        try:
+            self._skills_dir.mkdir(parents=True, exist_ok=True)
+            if any(self._skills_dir.iterdir()):
+                return
+            demo_dir = self._skills_dir / "hello-world"
+            demo_dir.mkdir(parents=True, exist_ok=True)
+            (demo_dir / "SKILL.md").write_text(
+                "---\n"
+                "name: hello-world\n"
+                "description: Proof-of-concept workspace skill for Plexi slash commands.\n"
+                "---\n\n"
+                "# Hello World\n\n"
+                "When invoked, greet the user and echo any provided arguments.\n",
+                encoding="utf-8",
+            )
+            self.emit.info(f"seeded demo workspace skill at {demo_dir}")
+        except Exception as exc:
+            self.emit.warn(f"could not seed demo skill: {exc}")
+
+    def _load_skills(self) -> list[dict]:
+        if self._skills_dir is None or not self._skills_dir.exists():
+            return []
+        skills: list[dict] = []
+        for skill_file in sorted(self._skills_dir.glob("*/SKILL.md")):
+            try:
+                raw = skill_file.read_text(encoding="utf-8")
+            except Exception as exc:
+                self.emit.warn(f"could not read skill {skill_file}: {exc}")
+                continue
+            slug = skill_file.parent.name
+            name = _frontmatter_value(raw, "name") or slug
+            description = _frontmatter_value(raw, "description") or _first_heading(raw)
+            skills.append({
+                "name": name,
+                "slug": slug,
+                "description": description,
+                "path": str(skill_file),
+                "body": raw,
+            })
+        return skills
+
+    def _slash_parts(self, text: str) -> tuple[str, str] | None:
+        if not text.startswith("/") or text.startswith("//"):
+            return None
+        body = text[1:]
+        first, sep, rest = body.partition(" ")
+        return first.strip(), rest if sep else ""
+
+    def _slash_matches(self) -> list[dict]:
+        parts = self._slash_parts(self._composer_text)
+        if parts is None:
+            return []
+        query, rest = parts
+        exact = next((s for s in self._skills if s["slug"] == query or s["name"] == query), None)
+        if exact and rest:
+            return []
+        scored: list[tuple[int, dict]] = []
+        for skill in self._skills:
+            hay = f"{skill['slug']} {skill['name']} {skill['description']}".lower()
+            score = _fuzzy_score(query.lower(), hay, skill["slug"].lower())
+            if score is not None:
+                scored.append((score, skill))
+        scored.sort(key=lambda item: (item[0], item[1]["slug"]))
+        return [skill for _, skill in scored[:5]]
+
+    def _complete_selected_skill(self) -> None:
+        matches = self._slash_matches()
+        if not matches:
+            return
+        skill = matches[min(self._slash_selected, len(matches) - 1)]
+        parts = self._slash_parts(self._composer_text)
+        args = parts[1] if parts else ""
+        suffix = f" {args}" if args else " "
+        self._composer_text = f"/{skill['slug']}{suffix}"
+        self._input.value = self._composer_text
+        self._slash_selected = 0
+        self.emit.info(f"slash skill completed: /{skill['slug']}")
+        self.emit.schedule_render()
+
+    def _invoke_skill(self, text: str) -> bool:
+        parts = self._slash_parts(text)
+        if parts is None:
+            return False
+        name, args = parts
+        skill = next(
+            (s for s in self._skills if s["slug"] == name or s["name"] == name),
+            None,
+        )
+        if skill is None:
+            matches = self._slash_matches()
+            if not matches:
+                return False
+            skill = matches[0]
+        self.emit.info(f"slash skill invoked: /{skill['slug']} args={args[:80]!r}")
+        self._messages.append({"role": "user", "content": text})
+        response = (
+            f"Loaded workspace skill `/{skill['slug']}`"
+            + (f" with arguments: `{args}`" if args else ".")
+            + f"\n\n{skill['description']}"
+        )
+        self._messages.append({"role": "assistant", "content": response})
+        self._pin_to_bottom = True
+        self._save_session()
+        return True
+
+    def _slash_popup(self) -> Column | None:
+        matches = self._slash_matches()
+        if not matches:
+            return None
+        self._slash_selected = min(self._slash_selected, len(matches) - 1)
+        rows = [
+            ListItem(
+                title=f"/{skill['slug']}",
+                subtitle=skill["description"],
+                trailing="Tab",
+                selected=(idx == self._slash_selected),
+            )
+            for idx, skill in enumerate(matches)
+        ]
+        return Column(rows, padding=0.0, padding_top=0.0, gap=SPACE_SM)
+
     def on_render(self, ctx) -> None:
         self._scroll.child = self._build_chat_column()
-        if self._pin_to_bottom:
-            self._scroll.scroll_offset = max(
-                0.0, self._scroll._child_h - self._scroll._avail_h
-            )
-            if not self._is_streaming:
-                self._pin_to_bottom = False
 
         if self._is_streaming:
-            footer_keys: list[tuple] = [("⌘N", "new")]
+            footer_keys: list[tuple] = []
         else:
             footer_keys = [
                 ("↵", "send"),
                 ("⇧↵", "newline"),
-                ("⌘M", f"model: {self._model_tier}"),
-                ("⌘N", "new"),
+                ("/", "skills"),
+                ("Tab", "complete"),
             ]
 
+        composer_children = []
+        popup = self._slash_popup()
+        if popup is not None:
+            composer_children.append(popup)
+        composer_children.append(self._input)
+
         composer = Column(
-            [self._input],
+            composer_children,
             padding=SPACE_LG,
             padding_top=SPACE_SM,
-            gap=0.0,
+            gap=SPACE_SM,
         )
 
-        ctx.render(Column([
-            AppBar(title="Assistant", subtitle=self._model_tier),
+        root_children = [
+            AppBar(title="Assistant PGAP", subtitle=self._model_tier),
             self._scroll,
             composer,
-            FooterKeys(footer_keys),
-        ], padding=0.0, padding_top=0, gap=0.0))
+        ]
+        if footer_keys:
+            root_children.append(FooterKeys(footer_keys))
+
+        ctx.render(Column(root_children, padding=0.0, padding_top=0, gap=0.0))
+
+        if self._pin_to_bottom:
+            next_offset = max(0.0, self._scroll._child_h - self._scroll._avail_h)
+            if abs(next_offset - self._scroll.scroll_offset) > 0.5:
+                self._scroll.scroll_offset = next_offset
+                self.emit.schedule_render()
+            if not self._is_streaming:
+                self._pin_to_bottom = False
 
         submitted = self._input.submitted
         if submitted is not None:
@@ -500,11 +651,35 @@ class AssistantApp(App):
             self._pin_to_bottom = False
             self.emit.schedule_render()
             return
-        if key == "m" and mods.get("cmd"):
-            self._cycle_model()
+
+    def on_text_changed(self, id: str, text: str) -> None:
+        if id != self._input.id:
             return
-        if key == "n" and mods.get("cmd"):
-            self._new_conversation()
+        self._composer_text = text
+        self._slash_selected = min(self._slash_selected, max(0, len(self._slash_matches()) - 1))
+        self.emit.schedule_render()
+
+    def on_text_input_key(self, id: str, key: str, mods: dict) -> None:
+        if id != self._input.id:
+            return
+        matches = self._slash_matches()
+        if not matches:
+            return
+        if key == "tab":
+            self._complete_selected_skill()
+            return
+        if key == "down":
+            self._slash_selected = (self._slash_selected + 1) % len(matches)
+            self.emit.schedule_render()
+            return
+        if key == "up":
+            self._slash_selected = (self._slash_selected - 1) % len(matches)
+            self.emit.schedule_render()
+            return
+        if key == "escape":
+            self._composer_text = ""
+            self._input.value = ""
+            self.emit.schedule_render()
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -514,18 +689,76 @@ def _new_session_id() -> str:
     return datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
 
 
+def _workspace_channel_dir() -> str:
+    channel = os.environ.get("PLEXI_CHANNEL", "").strip()
+    if channel:
+        return f".plexi-{channel}"
+    binary = Path(PLEXI_BINARY).name
+    if binary.startswith("plexi-") and len(binary) > len("plexi-"):
+        return f".plexi-{binary[len('plexi-'):]}"
+    return ".plexi"
+
+
 def _resolve_sessions_dir(workspace_root: str) -> Path | None:
-    """Return .plexi/assistant_sessions/ under workspace_root, or None if unavailable."""
+    """Return the channel-scoped assistant_sessions dir under workspace_root."""
     if not workspace_root:
         return None
     root = Path(workspace_root)
-    plexi_dir = root / ".plexi"
-    # Only use workspace storage if .plexi/ already exists (i.e. workspace is initialised).
+    plexi_dir = root / _workspace_channel_dir()
+    # Only use workspace storage if the channel dir exists (i.e. workspace is initialised).
     if not plexi_dir.exists():
         # Fall back to a dir next to the script so the app still persists.
         script_dir = Path(os.path.abspath(__file__)).parent
         return script_dir / "sessions"
-    return plexi_dir / "assistant_sessions"
+    return plexi_dir / "assistant_pgap_sessions"
+
+
+def _resolve_skills_dir(workspace_root: str) -> Path | None:
+    if not workspace_root:
+        return None
+    root = Path(workspace_root)
+    return root / _workspace_channel_dir() / "agents" / "skills"
+
+
+def _frontmatter_value(raw: str, key: str) -> str:
+    if not raw.startswith("---"):
+        return ""
+    end = raw.find("\n---", 3)
+    if end < 0:
+        return ""
+    prefix = f"{key}:"
+    for line in raw[3:end].splitlines():
+        if line.strip().startswith(prefix):
+            return line.split(":", 1)[1].strip().strip('"').strip("'")
+    return ""
+
+
+def _first_heading(raw: str) -> str:
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip()
+        if stripped and stripped != "---" and ":" not in stripped:
+            return stripped
+    return "Workspace skill"
+
+
+def _fuzzy_score(query: str, haystack: str, slug: str) -> int | None:
+    if not query:
+        return 0
+    if slug.startswith(query):
+        return 1
+    if query in slug:
+        return 2
+    if query in haystack:
+        return 3
+    pos = 0
+    for ch in query:
+        found = haystack.find(ch, pos)
+        if found < 0:
+            return None
+        pos = found + 1
+    return 4 + pos
 
 
 if __name__ == "__main__":

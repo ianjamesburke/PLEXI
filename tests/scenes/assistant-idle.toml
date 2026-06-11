@@ -1,11 +1,11 @@
-# apps/assistant idle state: settled conversation with a collapsed thinking
+# apps/dev/assistant-pgap idle state: settled conversation with a collapsed thinking
 # marker and the full footer key row. suite = false — spawns a real child
 # process; run with `just scene tests/scenes/assistant-idle.toml`.
 size = [1280.0, 800.0]
 suite = false
 
 [[steps]]
-open_app = "apps/assistant"
+open_app = "apps/dev/assistant-pgap"
 args = ["--demo-state", '{"messages": [{"role": "user", "content": "What is the difference between a git worktree and a branch?"}, {"role": "assistant", "content": "A **branch** is a pointer to a commit. A **worktree** is a separate working directory checked out to a branch, so you can have multiple branches checked out at once.", "thinking": "The user wants a concise comparison.", "thinking_secs": 2.3}, {"role": "user", "content": "And if the network is down?"}, {"role": "error", "content": "ai_query failed: openrouter io error: connection refused"}], "model_tier": "medium"}']
 
 [[steps]]
@@ -15,7 +15,7 @@ wait_app_frame = { timeout_s = 15.0 }
 run_steps = 5
 
 [[steps]]
-assert = { pane_count = 1, lifecycle = "running", tree_contains = "Assistant" }
+assert = { pane_count = 1, lifecycle = "running", tree_contains = "Assistant PGAP" }
 
 [[steps]]
 shot = "assistant-idle.png"

@@ -159,6 +159,8 @@ class App:
         on_paste(text)                              — on Paste event
         on_component_event(node_id, event_type, payload)
                                                     — on L1 ComponentEvent (button click, input change)
+        on_text_changed(id, text)                    — on TextInput live edit
+        on_text_input_key(id, key, mods)             — on TextInput Tab/up/down/Escape
         on_text_submitted(id, text)                  — on TextInput Enter press
         on_pipe_message(pipe_id, payload)            — on PipeMessage
         on_path_changed(cwd)                        — on PathChanged
@@ -376,6 +378,8 @@ class App:
         """Called when Enter is pressed on a selected list_view item."""
         return None
     def on_component_event(self, _node_id: str, _event_type: str, _payload: Any) -> "Coroutine[Any, Any, None] | None": return None
+    def on_text_changed(self, _id: str, _text: str) -> "Coroutine[Any, Any, None] | None": return None
+    def on_text_input_key(self, _id: str, _key: str, _mods: dict) -> "Coroutine[Any, Any, None] | None": return None
     def on_text_submitted(self, _id: str, _text: str) -> "Coroutine[Any, Any, None] | None": return None
     def on_file_picked(self, _request_id: str, _paths: "list[str]") -> "Coroutine[Any, Any, None] | None":
         """Called when the user selected one or more files in the picker.
@@ -1032,6 +1036,23 @@ class App:
                             self._dispatch_hook_task(
                                 self.on_text_submitted, tid, value
                             )
+
+                elif t == "text_changed":
+                    tid = ev.get("id", "")
+                    if tid and type(self).on_text_changed is not App.on_text_changed:
+                        self._dispatch_hook_task(
+                            self.on_text_changed, tid, ev.get("value", "")
+                        )
+
+                elif t == "text_input_key":
+                    tid = ev.get("id", "")
+                    if tid and type(self).on_text_input_key is not App.on_text_input_key:
+                        self._dispatch_hook_task(
+                            self.on_text_input_key,
+                            tid,
+                            _normalize_key(ev.get("key", "")),
+                            ev.get("modifiers", {}),
+                        )
 
                 elif t == "run_update":
                     pass  # apps can override on_run_update if needed

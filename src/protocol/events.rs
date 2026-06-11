@@ -211,6 +211,20 @@ pub enum PlexiEvent {
     /// buffer for `id` after emitting this event so the field is empty for
     /// the next input.
     TextSubmitted { id: String, value: String },
+    /// User edited a `DrawCommand::TextInput` field.
+    ///
+    /// `id` matches the `id` the app supplied on the `TextInput` command.
+    /// `value` is the live buffered text after the edit.
+    TextChanged { id: String, value: String },
+    /// User pressed a control key while focused in a `DrawCommand::TextInput`.
+    ///
+    /// Used for app-owned completion menus without forwarding ordinary typing
+    /// through `on_key`.
+    TextInputKey {
+        id: String,
+        key: String,
+        modifiers: Modifiers,
+    },
     /// Clipboard paste forwarded into the focused app pane.
     ///
     /// Emitted whenever the host observes `egui::Event::Paste(text)` while an

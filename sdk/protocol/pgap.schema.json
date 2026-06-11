@@ -864,6 +864,149 @@
           "type": "object"
         },
         {
+          "description": "Write bytes to a named host-managed pane file slot.",
+          "properties": {
+            "append": {
+              "type": "boolean"
+            },
+            "content": {
+              "items": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "replace": {
+              "type": "boolean"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "slot_name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "slot_write",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "slot_name",
+            "content",
+            "append",
+            "replace",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Read raw bytes from a named host-managed pane file slot.",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "slot_name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "slot_read",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "slot_name",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "List named host-managed pane file slots.",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "slot_list",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Delete a named host-managed pane file slot.",
+          "properties": {
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "slot_name": {
+              "type": "string"
+            },
+            "type": {
+              "const": "slot_delete",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "slot_name",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Remove slot files for pane ids that are no longer live in any window.",
+          "properties": {
+            "dry_run": {
+              "type": "boolean"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "workspace_clean_slots",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "dry_run",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.",
           "properties": {
             "pane_id": {
@@ -3245,6 +3388,52 @@
           "type": "object"
         },
         {
+          "description": "User edited a `DrawCommand::TextInput` field.\n\n`id` matches the `id` the app supplied on the `TextInput` command.\n`value` is the live buffered text after the edit.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "const": "text_changed",
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "value"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "User pressed a control key while focused in a `DrawCommand::TextInput`.\n\nUsed for app-owned completion menus without forwarding ordinary typing\nthrough `on_key`.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "key": {
+              "type": "string"
+            },
+            "modifiers": {
+              "$ref": "#/$defs/Modifiers"
+            },
+            "type": {
+              "const": "text_input_key",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "key",
+            "modifiers"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Clipboard paste forwarded into the focused app pane.\n\nEmitted whenever the host observes `egui::Event::Paste(text)` while an\napp pane has keyboard focus. The text is the OS clipboard contents at\npaste time, already decoded to UTF-8 by egui. Apps receive this both\nfor Cmd+V chords and for OS-menu / right-click → Paste actions.\n\nPre-#200 apps shelled out to `pbpaste` for this; that workaround is\nmacOS-only and races with focus changes. This event is the portable\npath.",
           "properties": {
             "text": {
@@ -3303,7 +3492,7 @@
           "type": "object"
         },
         {
-          "description": "Incremental token chunk from a streaming ai_query response.\nSent before the final `AiResponse` so apps can display tokens as they arrive.\nThe final `AiResponse` is still sent with complete content + token counts.",
+          "description": "Incremental token chunk from a streaming ai_query response.\nSent live while the turn runs, before the final `AiResponse`.\nThe final `AiResponse` is still sent with complete content + token counts.",
           "properties": {
             "delta": {
               "description": "Incremental text delta (may be empty for the final chunk before AiResponse)",
@@ -3313,6 +3502,13 @@
               "default": false,
               "description": "True on the last chunk before AiResponse fires",
               "type": "boolean"
+            },
+            "reasoning": {
+              "description": "Incremental reasoning (\"thinking\") delta from a reasoning model.\nCarried separately from `delta`; a chunk holds one or the other.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "request_id": {
               "type": "string"
@@ -5678,7 +5874,7 @@
           "type": "object"
         },
         {
-          "description": "Text input field (host-owned buffer, submit-only).\n\nEmitted by the app each frame at `(x, y)` with width `w`. The host\nowns the underlying buffer keyed on `id` — typed characters never\nreach the app between frames. On Enter the host emits\n`PlexiEvent::TextSubmitted { id, value }` and clears its buffer.\n\nWhen `multiline` is `false` (the default), the host renders a\nsingle-line `TextEdit` and Enter submits. When `multiline` is `true`,\nthe host renders a multi-line `TextEdit`; Enter still submits but\nShift+Enter inserts a newline.\n\nReal-time validation (per-keystroke value access) is intentionally\nout of scope — see issue #283 option A. Apps that need it must\nwait for a future protocol revision.",
+          "description": "Text input field (host-owned buffer, submit-only).\n\nEmitted by the app each frame at `(x, y)` with width `w`. The host\nowns the underlying buffer keyed on `id` — typed characters never\nreach the app between frames. On Enter the host emits\n`PlexiEvent::TextSubmitted { id, value }` and clears its buffer.\n\nWhen `multiline` is `false` (the default), the host renders a\nsingle-line `TextEdit` and Enter submits. When `multiline` is `true`,\nthe host renders a multi-line `TextEdit`; Enter still submits but\nShift+Enter inserts a newline.",
           "properties": {
             "h": {
               "default": 24.0,
@@ -5700,6 +5896,13 @@
             "type": {
               "const": "text_input",
               "type": "string"
+            },
+            "value": {
+              "description": "Optional one-shot value override for host-owned buffers. SDK apps\nuse this for completions; ordinary text input leaves it unset.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "w": {
               "format": "float",
