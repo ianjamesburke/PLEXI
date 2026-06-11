@@ -1,14 +1,22 @@
 ---
 id: "0044"
 title: "v1 cleanup: terminal glyph padding"
-status: backlog
+status: in-progress
+estimate: "6h"
+started_at: "2026-06-11T08:48:11Z"
 sprint: "s11"
-estimate: 6h
 blocked_by: []
-gh_issue: ["2067"]
-area: ["host/terminal", "egui_term"]
-tags: ["v1", "cleanup", "terminal"]
+gh_issue:
+  - "2067"
+area:
+  - "host/terminal"
+  - "egui_term"
+tags:
+  - "v1"
+  - "cleanup"
+  - "terminal"
 ---
+
 
 Fix left-edge terminal glyph clipping with renderer-level padding that does not corrupt grid sizing or SIGWINCH behavior.
 
