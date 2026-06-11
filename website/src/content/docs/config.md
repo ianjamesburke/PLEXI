@@ -42,11 +42,19 @@ Known color keys: `bg_darkest`, `bg_sidebar`, `bg_toolbar`, `terminal_bg`, `bg_h
 
 ## AI
 
-OpenRouter is the default cloud backend. Store the key in your shell profile, not in `config.toml`:
+OpenRouter is the default cloud backend. Store the key in the global Plexi secret store:
+
+```sh
+plexi secret set openrouter-api-key --global
+```
+
+The broker also reads `OPENROUTER_API_KEY` from the host process environment:
 
 ```sh
 export OPENROUTER_API_KEY=...
 ```
+
+Do not paste API keys into `config.toml`.
 
 ```toml
 [ai]

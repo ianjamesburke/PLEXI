@@ -206,17 +206,11 @@ fn dispatch_openrouter(request: AiBrokerRequest, ai_config: &AiConfig) -> AiBrok
         .api_key_env
         .as_deref()
         .unwrap_or("OPENROUTER_API_KEY");
-    let api_key = match std::env::var(api_key_env) {
-        Ok(k) if !k.is_empty() => k,
-        _ => {
-            log::warn!(
-                "ai_broker[{}]: {} not set — denying ai.query",
-                request.app_id,
-                api_key_env
-            );
-            return AiBrokerResponse::err(format!(
-                "api_key_missing: {api_key_env} not set — export it in your shell profile"
-            ));
+    let api_key = match resolve_openrouter_api_key(api_key_env) {
+        Ok(k) => k,
+        Err(msg) => {
+            log::warn!("ai_broker[{}]: {msg} — denying ai.query", request.app_id);
+            return AiBrokerResponse::err(msg);
         }
     };
 
@@ -226,6 +220,44 @@ fn dispatch_openrouter(request: AiBrokerRequest, ai_config: &AiConfig) -> AiBrok
     };
 
     run_turn_and_respond(request, &backend, BillingModel::Metered, model_id, api_key)
+}
+
+fn resolve_openrouter_api_key(api_key_env: &str) -> Result<String, String> {
+    if let Ok(k) = std::env::var(api_key_env) {
+        if !k.is_empty() {
+            return Ok(k);
+        }
+    }
+
+    if api_key_env == "OPENROUTER_API_KEY" {
+        if let Some(key) = read_global_openrouter_secret() {
+            log::info!("ai_broker: using global Plexi secret openrouter-api-key");
+            return Ok(key);
+        }
+    }
+
+    Err(format!(
+        "api_key_missing: {api_key_env} not set — export it in your shell profile or run `plexi secret set openrouter-api-key --global`"
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn read_global_openrouter_secret() -> Option<String> {
+    use crate::workspace::secrets::{keychain_user_name, MacKeychain, SecretStore};
+    let store = MacKeychain::new();
+    let account = keychain_user_name("openrouter-api-key");
+    store.get(&account).and_then(|key| {
+        if key.is_empty() {
+            None
+        } else {
+            Some(key.to_string())
+        }
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_global_openrouter_secret() -> Option<String> {
+    None
 }
 
 /// Dispatch through the Ollama backend.
@@ -859,10 +891,17 @@ mod tests {
 
     #[test]
     fn live_broker_errors_when_api_key_missing() {
-        let orig = std::env::var("OPENROUTER_API_KEY").ok();
-        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
+        let missing_env = "PLEXI_TEST_OPENROUTER_API_KEY_MISSING";
+        let orig = std::env::var(missing_env).ok();
+        unsafe { std::env::remove_var(missing_env) };
 
-        let broker = LiveAiBroker::new(Some(test_ai_config()));
+        let mut config = test_ai_config();
+        config
+            .openrouter
+            .as_mut()
+            .unwrap()
+            .api_key_env = Some(missing_env.to_string());
+        let broker = LiveAiBroker::new(Some(config));
         let resp = broker.dispatch(AiBrokerRequest {
             app_id: "test".to_string(),
             model_tier: ModelTier::Low,
@@ -878,7 +917,7 @@ mod tests {
         });
 
         if let Some(v) = orig {
-            unsafe { std::env::set_var("OPENROUTER_API_KEY", v) };
+            unsafe { std::env::set_var(missing_env, v) };
         }
 
         assert!(resp.error.is_some());

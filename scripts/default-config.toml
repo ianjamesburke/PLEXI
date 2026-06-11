@@ -88,7 +88,10 @@ osc_pane_title = true
 
 # ── Plexi AI ───────────────────────────────────────────────────
 # Apps with the `ai.query` capability route through this broker.
-# Export OPENROUTER_API_KEY in your shell profile; do not paste keys here.
+# Set the key with either:
+#   plexi secret set openrouter-api-key --global
+#   export OPENROUTER_API_KEY=...  # in your shell profile
+# Do not paste API keys into this file.
 [ai]
 backend = "openrouter"   # "openrouter" (cloud) or "ollama" (local)
 
