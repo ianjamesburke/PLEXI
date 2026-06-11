@@ -1,9 +1,11 @@
 ---
 id: "0048"
 title: "App refresh: Stats idle-aware overhaul"
-status: in-progress
+status: done
 estimate: "8h"
+actual: "8m"
 started_at: "2026-06-10T23:58:36Z"
+completed_at: "2026-06-11T00:06:06Z"
 sprint: "s7"
 blocked_by: []
 gh_issue:
@@ -19,6 +21,7 @@ tags:
 ---
 
 
+
 Refresh the Stats app UI and make its time calculations ignore or clamp idle focus segments caused by leaving a pane open while away.
 
 Use the 15-minute pane-switch heuristic from issue #2144: if no pane switch happens for at least 15 minutes, truncate that stale segment to 1 minute and ignore further stale time until pane switches resume faster than the 15-minute window.
@@ -31,3 +34,7 @@ Stats should report active use, not passive focus ownership. Fake multi-hour pan
 
 - `focus_changed.duration_secs` is focus ownership, not proof of user activity.
 - Do not add new global activity monitoring for this task; use the existing focus event `reason` and duration fields unless implementation proves they are insufficient.
+
+## Variance
+
+Completed under estimate because the fix stayed local to the existing Stats app: host focus events already carried the needed `reason` and `duration_secs` fields, so no host event schema or activity-monitoring work was required.

@@ -22,6 +22,8 @@ STATS_BAR_H = 34.0
 TIMELINE_H = 50.0
 MIN_CELL_W = 60.0
 MIN_CELL_H = 40.0
+IDLE_THRESHOLD_SECS = 15 * 60
+IDLE_CLAMP_SECS = 60
 HOME = str(Path.home())
 UNKNOWN_CONTEXT = "Unknown"
 
@@ -101,6 +103,80 @@ def _fmt_duration(secs: float) -> str:
     if h > 0:
         return f"{h}h {m:02d}m"
     return f"{m}m"
+
+
+def _event_duration(ev: dict, key: str = "duration_secs") -> float:
+    try:
+        return max(0.0, float(ev.get(key, 0) or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _event_ts(ev: dict) -> datetime:
+    ts = ev.get("_ts")
+    if isinstance(ts, datetime):
+        return ts
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _normalize_focus_events(events: list[dict]) -> tuple[list[dict], dict[str, float | int]]:
+    normalized: list[dict] = []
+    stats: dict[str, float | int] = {
+        "raw_secs": 0.0,
+        "counted_secs": 0.0,
+        "clamped_secs": 0.0,
+        "skipped_secs": 0.0,
+        "counted_events": 0,
+        "clamped_events": 0,
+        "skipped_events": 0,
+    }
+    idle_stream = False
+
+    for ev in sorted(events, key=_event_ts):
+        raw = _event_duration(ev)
+        reason = ev.get("reason") or ""
+        counted = raw
+        idle_state = "active"
+        clamped = 0.0
+        skipped = 0.0
+
+        if reason == "pane_switch" and raw < IDLE_THRESHOLD_SECS:
+            idle_stream = False
+        elif raw >= IDLE_THRESHOLD_SECS:
+            if idle_stream:
+                counted = 0.0
+                skipped = raw
+                idle_state = "skipped"
+            else:
+                counted = min(raw, float(IDLE_CLAMP_SECS))
+                clamped = max(0.0, raw - counted)
+                idle_state = "clamped"
+                idle_stream = True
+        elif idle_stream and reason != "pane_switch":
+            counted = 0.0
+            skipped = raw
+            idle_state = "skipped"
+
+        normalized_ev = dict(ev)
+        normalized_ev["_raw_duration_secs"] = raw
+        normalized_ev["_clamped_secs"] = clamped
+        normalized_ev["_skipped_secs"] = skipped
+        normalized_ev["_idle_state"] = idle_state
+        normalized_ev["duration_secs"] = counted
+        normalized.append(normalized_ev)
+
+        stats["raw_secs"] = float(stats["raw_secs"]) + raw
+        stats["counted_secs"] = float(stats["counted_secs"]) + counted
+        stats["clamped_secs"] = float(stats["clamped_secs"]) + clamped
+        stats["skipped_secs"] = float(stats["skipped_secs"]) + skipped
+        if counted > 0:
+            stats["counted_events"] = int(stats["counted_events"]) + 1
+        if clamped > 0:
+            stats["clamped_events"] = int(stats["clamped_events"]) + 1
+        if skipped > 0:
+            stats["skipped_events"] = int(stats["skipped_events"]) + 1
+
+    return normalized, stats
 
 
 def _resolve_events_path() -> Path | None:
@@ -385,16 +461,28 @@ class _StatsCanvas(Component):
                  color=dim(ctx.theme.muted, 60), width=1.0)
 
         stats_text_y = stats_y + (STATS_BAR_H - TEXT_CAPTION) / 2
-        third = w / 3
-        ctx.text(x + third * 0.5, stats_text_y,
-                 f"{_fmt_duration(app.total_time)} active",
+        quarter = w / 4
+        compact = w < 620
+        active_label = f"{_fmt_duration(app.total_time)} {'act' if compact else 'active'}"
+        idle_label = f"{_fmt_duration(app.idle_skipped_time)} {'idle' if compact else 'idle skipped'}"
+        clamped_label = f"{_fmt_duration(app.idle_clamped_time)} {'clamp' if compact else 'clamped'}"
+        visits_label = (
+            f"{app.total_visits}v · {app.total_projects}p"
+            if compact
+            else f"{app.total_visits} visits · {app.total_projects} projects"
+        )
+        ctx.text(x + quarter * 0.5, stats_text_y,
+                 active_label,
                  size=TEXT_CAPTION, color=ctx.theme.accent, bold=True, align="center")
-        ctx.text(x + third * 1.5, stats_text_y,
-                 f"{app.total_visits} visits",
-                 size=TEXT_CAPTION, color=ctx.theme.success, bold=True, align="center")
-        ctx.text(x + third * 2.5, stats_text_y,
-                 f"{app.total_projects} projects",
+        ctx.text(x + quarter * 1.5, stats_text_y,
+                 idle_label,
+                 size=TEXT_CAPTION, color=ctx.theme.muted, bold=True, align="center")
+        ctx.text(x + quarter * 2.5, stats_text_y,
+                 clamped_label,
                  size=TEXT_CAPTION, color=ctx.theme.warning, bold=True, align="center")
+        ctx.text(x + quarter * 3.5, stats_text_y,
+                 visits_label,
+                 size=TEXT_CAPTION, color=ctx.theme.success, bold=True, align="center")
 
         # timeline strip
         tl_y = stats_y + STATS_BAR_H
@@ -402,7 +490,16 @@ class _StatsCanvas(Component):
 
         bar_y = tl_y + 4
         bar_h = TIMELINE_H - 20
-        for start_frac, end_frac, _, _, color_idx in app.timeline:
+        idle_y = bar_y + bar_h * 0.58
+        idle_h = max(4.0, bar_h * 0.32)
+        for raw_start, raw_end, start_frac, end_frac, _, _, color_idx, state in app.timeline:
+            if state in {"clamped", "skipped"} and raw_end > raw_start:
+                bx = x + raw_start * w
+                bw = max(2.0, (raw_end - raw_start) * w)
+                fill = ctx.theme.warning if state == "clamped" else ctx.theme.muted
+                ctx.rect(bx, idle_y, bw, idle_h, fill=dim(fill, 90), radius=2.0)
+            if end_frac <= start_frac:
+                continue
             bx = x + start_frac * w
             bw = max(2.0, (end_frac - start_frac) * w)
             color = PALETTE[color_idx % len(PALETTE)]
@@ -439,8 +536,11 @@ class StatsApp(App):
         self.view_root: TreeNode | None = None
         self.view_stack: list[TreeNode] = []
         self.cells: list[tuple[TreeNode, float, float, float, float]] = []
-        self.timeline: list[tuple[float, float, str, str, int]] = []
+        self.timeline: list[tuple[float, float, float, float, str, str, int, str]] = []
         self.total_time = 0.0
+        self.raw_time = 0.0
+        self.idle_skipped_time = 0.0
+        self.idle_clamped_time = 0.0
         self.total_visits = 0
         self.total_projects = 0
         self.events_path: Path | None = None
@@ -459,20 +559,37 @@ class StatsApp(App):
             self.view_stack = []
             self.timeline = []
             self.total_time = 0.0
+            self.raw_time = 0.0
+            self.idle_skipped_time = 0.0
+            self.idle_clamped_time = 0.0
             self.total_visits = 0
             self.total_projects = 0
             return
 
         events = _parse_events(self.events_path)
         self.emit.info(f"stats: loaded {len(events)} focus events from {self.events_path}")
+        normalized_events, idle_stats = _normalize_focus_events(events)
+        counted_events = [ev for ev in normalized_events if _event_duration(ev) > 0]
+        self.emit.info(
+            "stats: normalized focus events "
+            f"raw={len(events)} counted={idle_stats['counted_events']} "
+            f"clamped={idle_stats['clamped_events']} skipped={idle_stats['skipped_events']} "
+            f"raw_secs={idle_stats['raw_secs']:.0f} "
+            f"counted_secs={idle_stats['counted_secs']:.0f} "
+            f"clamped_secs={idle_stats['clamped_secs']:.0f} "
+            f"skipped_secs={idle_stats['skipped_secs']:.0f}"
+        )
 
-        self.root = _build_tree(events)
+        self.root = _build_tree(counted_events)
         self.view_root = self.root
         self.view_stack = []
 
-        self.total_time = sum(ev.get("duration_secs", 0) for ev in events)
-        self.total_visits = len(events)
-        self.total_projects = len({_event_context_identity(ev)[0] for ev in events})
+        self.total_time = float(idle_stats["counted_secs"])
+        self.raw_time = float(idle_stats["raw_secs"])
+        self.idle_clamped_time = float(idle_stats["clamped_secs"])
+        self.idle_skipped_time = float(idle_stats["skipped_secs"])
+        self.total_visits = int(idle_stats["counted_events"])
+        self.total_projects = len({_event_context_identity(ev)[0] for ev in counted_events})
 
         now = datetime.now(timezone.utc)
         start_window = now - timedelta(hours=24)
@@ -480,25 +597,39 @@ class StatsApp(App):
         context_colors = {}
         if self.root:
             context_colors = {child.path: i for i, child in enumerate(self.root.children)}
-        for ev in events:
+        for ev in normalized_events:
             ts = ev["_ts"]
-            dur = ev.get("duration_secs", 0)
+            dur = _event_duration(ev)
+            raw_dur = _event_duration(ev, "_raw_duration_secs")
             cwd = _clean_text(ev.get("cwd")) or ""
             context_path, _ = _event_context_identity(ev)
             end_frac = (ts - start_window).total_seconds() / 86400.0
             start_frac = ((ts - timedelta(seconds=dur)) - start_window).total_seconds() / 86400.0
+            raw_start_frac = ((ts - timedelta(seconds=raw_dur)) - start_window).total_seconds() / 86400.0
+            raw_end_frac = end_frac
             start_frac = max(0.0, min(1.0, start_frac))
             end_frac = max(0.0, min(1.0, end_frac))
+            raw_start_frac = max(0.0, min(1.0, raw_start_frac))
+            raw_end_frac = max(0.0, min(1.0, raw_end_frac))
             color_idx = context_colors.get(context_path, 0)
-            self.timeline.append((start_frac, end_frac, context_path, cwd, color_idx))
+            self.timeline.append((
+                raw_start_frac,
+                raw_end_frac,
+                start_frac,
+                end_frac,
+                context_path,
+                cwd,
+                color_idx,
+                str(ev.get("_idle_state") or "active"),
+            ))
 
         self.emit.status_summary(f"{_fmt_duration(self.total_time)} active")
 
     def on_render(self, ctx) -> None:
         subtitle = (
             f"{_fmt_duration(self.total_time)} active · "
-            f"{self.total_visits} visits · "
-            f"{self.total_projects} projects"
+            f"{_fmt_duration(self.idle_skipped_time)} idle skipped · "
+            f"{self.total_visits} visits"
         )
         ctx.render(Column(
             [
@@ -544,7 +675,9 @@ class StatsApp(App):
             bar_h = TIMELINE_H - 20
             if bar_local_y <= local_y <= bar_local_y + bar_h:
                 frac = x / w if w > 0 else 0
-                for start_frac, end_frac, context_path, cwd, _ in self.timeline:
+                for _, _, start_frac, end_frac, context_path, cwd, _, state in self.timeline:
+                    if state == "skipped":
+                        continue
                     if start_frac <= frac <= end_frac:
                         if self.view_root and self.view_root.path == context_path and cwd:
                             self.highlight_path = cwd
