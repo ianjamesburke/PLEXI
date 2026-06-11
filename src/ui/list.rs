@@ -95,10 +95,7 @@ impl<'a> ListRow<'a> {
         let trailing_response = self.trailing.map(|label| {
             let size = trailing_size(ui, label);
             let trailing_rect = egui::Rect::from_center_size(
-                Pos2::new(
-                    rect.right() - style::LIST_ROW_PAD_H - size.x / 2.0,
-                    center_y,
-                ),
+                Pos2::new(rect.right() - TRAILING_PAD_H - size.x / 2.0, center_y),
                 size,
             );
             let id = response.id.with("_trailing_action");
@@ -112,7 +109,7 @@ impl<'a> ListRow<'a> {
                 trailing_rect.center(),
                 Align2::CENTER_CENTER,
                 label,
-                egui::FontId::proportional(style::TEXT_BODY),
+                egui::FontId::proportional(style::TEXT_CAPTION),
                 color,
             );
             trailing_response
@@ -121,10 +118,7 @@ impl<'a> ListRow<'a> {
         let text_right = self
             .trailing
             .map(|label| {
-                rect.right()
-                    - style::LIST_ROW_PAD_H
-                    - trailing_size(ui, label).x
-                    - style::LIST_ROW_GAP
+                rect.right() - TRAILING_PAD_H - trailing_size(ui, label).x - style::LIST_ROW_GAP
             })
             .unwrap_or_else(|| rect.right() - style::LIST_ROW_PAD_H);
         let max_text_width = (text_right - x).max(0.0);
@@ -243,11 +237,15 @@ fn elide_to_width(ui: &egui::Ui, text: &str, font_id: egui::FontId, max_width: f
     out
 }
 
+/// Trailing actions sit further off the row edge than body content — they are
+/// peripheral affordances, not content, and need air on the right.
+const TRAILING_PAD_H: f32 = style::LIST_ROW_PAD_H + style::SPACE_SM;
+
 fn trailing_size(ui: &egui::Ui, label: &str) -> Vec2 {
     let galley = ui.fonts(|f| {
         f.layout_no_wrap(
             label.to_string(),
-            egui::FontId::proportional(style::TEXT_BODY),
+            egui::FontId::proportional(style::TEXT_CAPTION),
             Color32::WHITE,
         )
     });

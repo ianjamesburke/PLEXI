@@ -78,8 +78,14 @@ pub(crate) fn selectable_row<R>(
 //     key_combo_list(ui, &[["⌘", "["], ["⌘", "]"]], colors, "to cycle");
 
 /// Padding around the key label text inside the chip.
-const KEYCAP_PAD_H: f32 = 6.0;
-const KEYCAP_PAD_V: f32 = 3.0;
+const KEYCAP_PAD_H: f32 = 5.0;
+const KEYCAP_PAD_V: f32 = 2.0;
+
+/// Standard chip font for combos and hint rows. Compact — chips are
+/// annotations, not content.
+fn combo_chip_font() -> egui::FontId {
+    egui::FontId::monospace(style::TEXT_HINT)
+}
 
 /// Render a single keycap chip. Allocates its own exact-size rect and
 /// returns the egui Response so callers can compose with other widgets.
@@ -131,12 +137,7 @@ pub(crate) fn key_combo(ui: &mut egui::Ui, keys: &[&str], colors: &Colors) {
                         .color(colors.text_dim),
                 );
             }
-            key_chip(
-                ui,
-                key,
-                colors,
-                egui::FontId::monospace(style::TEXT_CAPTION),
-            );
+            key_chip(ui, key, colors, combo_chip_font());
         }
     });
 }
@@ -161,12 +162,7 @@ pub(crate) fn key_combo_list(
                 if j > 0 {
                     ui.add_space(INTRA_COMBO_GAP);
                 }
-                key_chip(
-                    ui,
-                    key,
-                    colors,
-                    egui::FontId::monospace(style::TEXT_CAPTION),
-                );
+                key_chip(ui, key, colors, combo_chip_font());
             }
         }
         if let Some(text) = trailing {
@@ -178,6 +174,39 @@ pub(crate) fn key_combo_list(
             );
         }
     });
+}
+
+/// Measured width of a `key_combo_list` row without rendering it — lets
+/// containers (e.g. `HintBar`) center hint rows. Must mirror the layout
+/// math in `key_combo_list` exactly.
+pub(crate) fn key_combo_list_width(
+    ui: &egui::Ui,
+    combos: &[&[&str]],
+    trailing: Option<&str>,
+) -> f32 {
+    let measure = |text: &str, font: egui::FontId| {
+        ui.fonts(|f| f.layout_no_wrap(text.to_string(), font, Color32::WHITE))
+            .size()
+    };
+    let mut w = 0.0;
+    for (i, keys) in combos.iter().enumerate() {
+        if i > 0 {
+            w += INTER_COMBO_GAP;
+        }
+        for (j, key) in keys.iter().enumerate() {
+            if j > 0 {
+                w += INTRA_COMBO_GAP;
+            }
+            let size = measure(key, combo_chip_font());
+            let chip_h = size.y + KEYCAP_PAD_V * 2.0;
+            w += (size.x + KEYCAP_PAD_H * 2.0).max(chip_h);
+        }
+    }
+    if let Some(text) = trailing {
+        w += TRAILING_GAP;
+        w += measure(text, egui::FontId::proportional(style::TEXT_HINT)).x;
+    }
+    w
 }
 
 /// Renders a styled singleline text input with the standard modal visual treatment:
