@@ -4,14 +4,18 @@ schema_version = 1
 id = "assistant"
 type = "app"
 name = "Assistant"
-version = "0.2.0"
-description = "AI chat assistant powered by Plexi's ai.query broker. Exposes an ask_assistant tool so other workspace apps can invoke it programmatically."
+version = "0.3.0"
+description = "AI chat assistant powered by Plexi's ai.query broker. Can see and drive workspace panes through capability-gated host requests, and exposes an ask_assistant tool so other workspace apps can invoke it programmatically."
 entry = "assistant.py"
 
 [app.capabilities]
 # ai.query: issue brokered LLM calls. The host tool dispatcher automatically
-# injects tools exposed by other workspace panes into each ai_query call, so
-# the assistant can invoke them without any additional capability declaration.
-capabilities = ["ai.query"]
+# injects tools exposed by other workspace panes into each ai_query call.
+# panes.spawn: open_terminal / open_app tools (SpawnPane requests).
+# panes.read: list_panes / get_pane_state / capture_pane tools.
+# panes.control: send_command / send_app_action / focus_pane tools.
+# The pane capabilities are sensitive — the host prompts the user before the
+# first use of each, even though they are declared here.
+capabilities = ["ai.query", "panes.spawn", "panes.read", "panes.control"]
 
 [launch]

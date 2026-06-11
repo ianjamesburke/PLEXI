@@ -42,6 +42,8 @@ the PGAP wire. The host validates the capability before processing the command.
 | Spawning typed pipes | `pipe.open` |
 | Launching another app | `spawn.app` |
 | Spawning panes | `panes.spawn` |
+| Listing panes / reading pane state and content | `panes.read` |
+| Focusing, closing, or sending input to panes | `panes.control` |
 | Microphone capture | `audio.record` |
 | Audio playback | `audio.playback` |
 | Video decode | `video.playback` |
@@ -55,6 +57,21 @@ Commands that require **no capability**: `ListAudioDevices`, `ListMidiDevices`,
 `CopyToClipboard`, `MeasureText`, `StatusSummary`, `SaveAppState`, `Log`,
 `ScheduleRender`, `SetMinSize`, `CloseSelf`, `PushNav`, `PopNav`,
 `SetMouseTracking`.
+
+### No ambient socket access
+
+App subprocesses do **not** inherit `PLEXI_SOCKET`. Only terminal PTY panes get
+it, because a human is typing there. An app that wants to see or drive other
+panes must go through capability-gated PGAP requests (`panes.read` /
+`panes.control`) — there is no ambient `plexi` CLI route from inside an app
+process.
+
+Be clear about what this is: it removes the **ambient grant**, it is not
+isolation. Apps are still reviewed native processes, not sandboxed ones. A
+malicious native process can find the socket path on disk and connect to it
+directly. The socket file itself is the user's, with the user's permissions —
+removing the env var stops well-behaved apps from quietly acquiring host
+control, nothing more.
 
 ---
 
