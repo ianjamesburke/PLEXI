@@ -1,15 +1,23 @@
 ---
 id: "0015"
 title: "Packages: artifact and validator contract"
-status: backlog
+status: in-progress
+estimate: "16h"
+started_at: "2026-06-11T17:53:36Z"
 sprint: "s3"
-estimate: 16h
 blocked_by:
   - 13
 gh_issue: []
-area: ["infra/build", "cli/commands", "sdk/pgap"]
-tags: ["packages", "validation", "marketplace"]
+area:
+  - "infra/build"
+  - "cli/commands"
+  - "sdk/pgap"
+tags:
+  - "packages"
+  - "validation"
+  - "marketplace"
 ---
+
 
 Define package artifacts and validation for manifest, contents, checksums, runtime, capabilities, and obvious bypass patterns.
 
