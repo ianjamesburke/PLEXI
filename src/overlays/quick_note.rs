@@ -84,47 +84,18 @@ impl PlexiApp {
 
         let screen_rect = ctx.screen_rect();
 
-        // Scrim — click-away dismisses the modal (click on modal area is consumed by
-        // Order::Foreground before reaching this allocate_rect, so clicked() only fires
-        // when the pointer lands outside the modal).
-        let scrim_clicked = egui::Area::new(egui::Id::new("quick_note_scrim"))
-            .fixed_pos(screen_rect.min)
-            .order(egui::Order::Middle)
-            .show(ctx, |ui| {
-                ui.painter().rect_filled(
-                    screen_rect,
-                    0.0,
-                    egui::Color32::from_black_alpha(style::SCRIM_ALPHA),
-                );
-                ui.allocate_rect(screen_rect, egui::Sense::click())
-                    .clicked()
-            })
-            .inner;
-        if scrim_clicked {
-            self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
-            self.quick_note_text.clear();
-            log::info!("QuickNote: modal dismissed via click-away");
-            return;
-        }
-
         // Modal — grows from ~25% to ~80% of screen height as the user types.
         let modal_w = (screen_rect.width() * 0.72).min(864.0).max(480.0);
         let max_text_h = (screen_rect.height() * 0.8).max(80.0);
         let line_h = style::TEXT_BODY + 4.0;
         let initial_rows = ((screen_rect.height() * 0.25) / line_h).round() as usize;
         let initial_rows = initial_rows.max(3);
-        egui::Area::new(egui::Id::new("quick_note_modal"))
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
-                    .stroke(egui::Stroke::new(1.0, self.colors.border))
-                    .corner_radius(egui::CornerRadius::same(8))
-                    .inner_margin(egui::Margin::symmetric(24, 20))
-                    .show(ui, |ui| {
-                        ui.set_width(modal_w);
-
+        let colors = self.colors;
+        let response = crate::ui::overlay::ModalShell::centered("quick_note_modal")
+            .width(modal_w)
+            .show(ctx, &colors, |ui| {
+                {
+                    {
                         // Hint
                         ui.label(
                             RichText::new("Enter to pick destination  ·  Shift+Enter for new line  ·  Esc to discard  ·  ⌘, to configure")
@@ -157,8 +128,14 @@ impl PlexiApp {
                                     );
                                 });
                             });
-                    });
+                    }
+                }
             });
+        if response.dismissed {
+            self.pop_focus_layer(&crate::app::FocusLayer::QuickNote);
+            self.quick_note_text.clear();
+            log::info!("QuickNote: modal dismissed via click-away");
+        }
     }
 
     /// Quick note destination picker: digit keys route instantly; arrows/jk navigate.
