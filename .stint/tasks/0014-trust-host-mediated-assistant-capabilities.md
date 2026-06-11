@@ -1,15 +1,23 @@
 ---
 id: "0014"
 title: "Trust: host-mediated Assistant capabilities"
-status: backlog
+status: in-progress
+estimate: "16h"
+started_at: "2026-06-11T10:36:59Z"
 sprint: "s3"
-estimate: 16h
 blocked_by:
   - 13
 gh_issue: []
-area: ["host/permissions", "host/ai", "sdk/pgap"]
-tags: ["trust", "assistant", "capabilities"]
+area:
+  - "host/permissions"
+  - "host/ai"
+  - "sdk/pgap"
+tags:
+  - "trust"
+  - "assistant"
+  - "capabilities"
 ---
+
 
 Replace Assistant CLI subprocess control tools with host-mediated APIs and explicit capability declarations.
 
