@@ -311,32 +311,54 @@ pub fn workspace_secret_set(
     }
 }
 
-/// `plexi secret list` — list friendly names defined under the current
-/// workspace's namespace plus user-scope. Names only, never values.
-pub fn workspace_secret_list() -> i32 {
-    let (_root, cfg) = match require_workspace() {
-        Ok(v) => v,
+enum SecretListScope {
+    WorkspaceAndUser(String),
+    UserOnly,
+}
+
+fn secret_list_scope(global: bool) -> SecretListScope {
+    if global {
+        return SecretListScope::UserOnly;
+    }
+    match require_workspace() {
+        Ok((_root, cfg)) => SecretListScope::WorkspaceAndUser(cfg.id),
         Err(e) => {
-            eprintln!("error: {e}");
-            return 1;
+            log::info!("secret_list:cli: no workspace found, falling back to user scope: {e}");
+            SecretListScope::UserOnly
         }
-    };
+    }
+}
+
+/// `plexi secret list` — list friendly names. Inside a workspace, includes
+/// workspace namespace plus user-scope. Outside a workspace, gracefully falls
+/// back to user-scope. Names only, never values.
+pub fn workspace_secret_list(global: bool) -> i32 {
+    let scope = secret_list_scope(global);
+    log::info!("secret_list:cli: global={global}");
     #[cfg(target_os = "macos")]
     {
         use crate::workspace::secrets::{
             keychain_user_name, keychain_workspace_name, MacKeychain, SecretStore,
         };
         let store = MacKeychain::new();
-        let workspace_prefix = keychain_workspace_name(&cfg.id, "");
         let user_prefix = keychain_user_name("");
-        let workspace_entries = store.list_with_prefix(&workspace_prefix);
+        let (workspace_id, workspace_entries) = match &scope {
+            SecretListScope::WorkspaceAndUser(workspace_id) => {
+                let workspace_prefix = keychain_workspace_name(workspace_id, "");
+                (
+                    Some((workspace_id.as_str(), workspace_prefix.clone())),
+                    store.list_with_prefix(&workspace_prefix),
+                )
+            }
+            SecretListScope::UserOnly => (None, Vec::new()),
+        };
         let user_entries = store.list_with_prefix(&user_prefix);
         if workspace_entries.is_empty() && user_entries.is_empty() {
             eprintln!("No secrets stored.");
             return 0;
         }
-        if !workspace_entries.is_empty() {
-            println!("Workspace ({}):", cfg.id);
+        if let Some((workspace_id, workspace_prefix)) = workspace_id {
+            println!("Workspace ({workspace_id}):");
             for a in &workspace_entries {
                 if let Some(name) = a.strip_prefix(&workspace_prefix) {
                     println!("  {name}");
@@ -358,7 +380,7 @@ pub fn workspace_secret_list() -> i32 {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = cfg;
+        let _ = scope;
         eprintln!("error: keychain not available on this platform");
         1
     }
@@ -506,8 +528,14 @@ pub fn workspace_secret_delete(friendly: &str, global: bool) -> i32 {
 /// Returns false only if python3 is absent or all install attempts fail.
 #[cfg(test)]
 mod secret_set_tests {
+    use super::{secret_list_scope, SecretListScope};
     use std::fs;
     use tempfile::TempDir;
+
+    #[test]
+    fn secret_list_global_uses_user_scope_without_workspace_lookup() {
+        assert!(matches!(secret_list_scope(true), SecretListScope::UserOnly));
+    }
 
     /// Helper: checks whether a given `cwd` path would be rejected by the
     /// workspace_init home/root guard. Mirrors the exact logic in
@@ -590,8 +618,6 @@ mod secret_set_tests {
 }
 #[cfg(test)]
 mod workspace_init_tests {
-    use std::fs;
-
     /// Calls the internal init_workspace logic and then the channel-dir creation
     /// on a temp dir, asserting both `.plexi/` and the channel dir are present.
     #[test]

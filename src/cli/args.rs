@@ -275,8 +275,16 @@ pub enum SecretCmd {
         #[arg(long)]
         global: bool,
     },
-    /// Show all secrets stored for this project.
-    List,
+    /// Show stored secrets.
+    ///
+    /// Inside a workspace, shows project secrets plus user-scope secrets.
+    /// Outside a workspace, falls back to user-scope secrets.
+    /// Use --global to show only user-scope secrets from any directory.
+    List {
+        /// Show only globally-stored user-scope secrets
+        #[arg(long)]
+        global: bool,
+    },
     /// Delete a stored secret.
     ///
     /// Use --global to delete a globally-stored secret (one stored with `secret set --global`).
@@ -1015,4 +1023,23 @@ pub enum AiCmd {
     ///
     /// Example: plexi ai setup
     Setup,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, Commands, SecretCmd};
+    use clap::Parser;
+
+    #[test]
+    fn secret_list_accepts_global_flag() {
+        let cli = Cli::try_parse_from(["plexi", "secret", "list", "--global"]).unwrap();
+
+        let Some(Commands::Secret { cmd }) = cli.command else {
+            panic!("expected secret command");
+        };
+        let SecretCmd::List { global } = cmd else {
+            panic!("expected secret list command");
+        };
+        assert!(global);
+    }
 }
