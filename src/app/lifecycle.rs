@@ -711,20 +711,22 @@ impl PlexiApp {
                     }
                     paths.sort();
                     let mut cleaned = Vec::new();
+                    let mut clean_error = None;
                     for path in paths {
                         if !*dry_run {
                             if let Err(e) = std::fs::remove_dir_all(&path) {
-                                slot_error(
-                                    response_file,
-                                    format!(
-                                        "could not remove slot directory {}: {e}",
-                                        path.display()
-                                    ),
-                                );
-                                continue;
+                                clean_error = Some(format!(
+                                    "could not remove slot directory {}: {e}",
+                                    path.display()
+                                ));
+                                break;
                             }
                         }
                         cleaned.push(path.to_string_lossy().into_owned());
+                    }
+                    if let Some(error) = clean_error {
+                        slot_error(response_file, error);
+                        continue;
                     }
                     write_json_response(
                         response_file,
