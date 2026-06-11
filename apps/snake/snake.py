@@ -6,8 +6,6 @@ separate Rust sub-project. The spec allows either; Python is 80 lines vs a
 new cargo crate + cross-compile setup. This is the intentional choice.
 """
 
-import threading
-import time
 from plexi_sdk import App, RenderContext, Arg, Pipe
 from plexi_sdk.ui import Column, AppBar, FooterKeys, Component
 
@@ -77,10 +75,6 @@ class SnakeApp(App):
             self.emit.info(f"snake: pipe open pipe_id={self.pipe_id}")
         self._reset()
         self._canvas = _SnakeCanvas(self)
-        self._timer_thread = threading.Thread(
-            target=self._tick_loop, daemon=True
-        )
-        self._timer_thread.start()
 
     def _reset(self) -> None:
         mid_r, mid_c = ROWS // 2, COLS // 2
@@ -92,13 +86,17 @@ class SnakeApp(App):
         self._food = (COLS - 3, ROWS // 2)
         self._score = 0
         self._dead = False
-        self._running = True
+        self._tick_accum = 0.0
 
-    def _tick_loop(self) -> None:
-        while self._running:
-            time.sleep(TICK)
-            if not self._dead:
-                self._step()
+    def _advance(self, elapsed: float) -> None:
+        if self._dead:
+            return
+        self._tick_accum += min(elapsed, TICK * 2.0)
+        steps = 0
+        while self._tick_accum >= TICK and steps < 2:
+            self._step()
+            self._tick_accum -= TICK
+            steps += 1
 
     def _step(self) -> None:
         dx, dy = self._next_dir
@@ -134,6 +132,7 @@ class SnakeApp(App):
             self._next_dir = DIR_MAP[key]
 
     def on_render(self, ctx: RenderContext) -> None:
+        self._advance(ctx.elapsed)
         subtitle = "GAME OVER" if self._dead else f"Score: {self._score}"
         shortcuts = (
             [("h/j/k/l", "move"), ("r", "restart")]
@@ -145,10 +144,11 @@ class SnakeApp(App):
             self._canvas,
             FooterKeys(shortcuts),
         ]))
-        ctx.emit.schedule_render(int(TICK * 1000) if not self._dead else 250)
-
-    def on_shutdown(self) -> None:
-        self._running = False
+        if self._dead:
+            ctx.emit.schedule_render(250)
+        else:
+            next_tick_ms = max(1, int((TICK - self._tick_accum) * 1000))
+            ctx.emit.schedule_render(next_tick_ms)
 
 
 if __name__ == "__main__":

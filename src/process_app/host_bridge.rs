@@ -35,7 +35,6 @@ impl ProcessApp {
                 self.pending_frame.clear();
                 self.click_awaiting_frame = false;
                 self.lifecycle.on_frame_done();
-                self.arm_scheduler_after_frame();
                 if self.runtime.has_pending_render() {
                     ui.ctx().request_repaint();
                 }

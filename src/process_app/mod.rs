@@ -939,7 +939,7 @@ impl ProcessApp {
 
     fn mark_render_needed_after(&mut self, reason: &'static str, delay: std::time::Duration) {
         if self.runtime.request_render_after(delay) {
-            if reason != "schedule_render" {
+            if reason != "schedule_render" && reason != "continuous_scheduler" {
                 log::info!(
                     "ProcessApp[{}]: render requested ({reason}, after {}ms)",
                     self.type_id,
@@ -961,6 +961,9 @@ impl ProcessApp {
                         h: size.y,
                     },
                 });
+                if let Some(delay) = self.scheduler_mode.next_frame_delay() {
+                    self.mark_render_needed_after("continuous_scheduler", delay);
+                }
                 Some(frame_id)
             }
             RenderPoll::Waiting { .. }
@@ -1102,12 +1105,6 @@ impl ProcessApp {
                 }
                 buf.push_back(line.to_string());
             }
-        }
-    }
-
-    fn arm_scheduler_after_frame(&mut self) {
-        if let Some(delay) = self.scheduler_mode.next_frame_delay() {
-            self.mark_render_needed_after("continuous_scheduler", delay);
         }
     }
 
@@ -1295,7 +1292,6 @@ impl ProcessApp {
                     self.pending_frame.clear();
                     self.click_awaiting_frame = false;
                     self.lifecycle.on_frame_done();
-                    self.arm_scheduler_after_frame();
                 }
                 DrawCommand::Control(ControlCommand::Ready { sdk, features_used }) => {
                     self.sdk = Some(sdk);
