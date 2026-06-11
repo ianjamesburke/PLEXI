@@ -1601,9 +1601,217 @@ impl PlexiApp {
                 log::info!("pane_ipc: kind=push_pane_to_subcontext name={:?}", name);
                 self.push_pane_to_subcontext(name.clone());
             }
+            crate::app_protocol::AppRequest::ListPermissions { response_file } => {
+                log::info!("pane_ipc: kind=list_permissions response_file={response_file:?}");
+                self.handle_list_permissions(response_file);
+            }
+            crate::app_protocol::AppRequest::SetPermission {
+                app_id,
+                workspace,
+                capability,
+                state,
+                response_file,
+            } => {
+                log::info!(
+                    "pane_ipc: kind=set_permission app_id={app_id} workspace={workspace:?} \
+                     capability={capability} state={state} response_file={response_file:?}"
+                );
+                self.handle_set_permission(
+                    app_id,
+                    workspace.as_deref(),
+                    capability,
+                    state,
+                    response_file,
+                );
+            }
             _ => {
                 log::warn!("pane_ipc: unsupported command kind, dropping");
             }
+        }
+    }
+
+    /// `ListPermissions` host handler (stint 0017). Writes the permission
+    /// inventory JSON documented on the `AppRequest::ListPermissions` variant:
+    /// one row per stored `permissions.toml` entry (`stored: true`) plus one
+    /// row per live granted/blocked capability of a running app that has no
+    /// stored entry (`stored: false`), and the list of running app ids.
+    fn handle_list_permissions(&mut self, response_file: &str) {
+        use crate::app::permissions::PermissionStore;
+        use crate::host::pane::{AppRuntime, Pane};
+
+        let store = PermissionStore::load_or_default(&self.permission_store_dir);
+        let mut rows: Vec<serde_json::Value> = Vec::new();
+        let mut stored_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (app_id, workspace, cap, state) in store.iter_entries() {
+            stored_keys.insert(format!("{app_id}::{workspace}::{}", cap.as_str()));
+            rows.push(serde_json::json!({
+                "app_id": app_id,
+                "workspace": workspace,
+                "capability": cap.as_str(),
+                "state": state.as_str(),
+                "stored": true,
+                "sensitive": cap.is_sensitive(),
+                "description": cap.description(),
+            }));
+        }
+
+        let mut running: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for win in &self.windows {
+            for pane in win.panes.values() {
+                let Pane::App(app_pane) = pane else { continue };
+                let AppRuntime::Process(proc) = &app_pane.runtime else {
+                    continue;
+                };
+                running.insert(proc.type_id.clone());
+                let workspace = proc
+                    .workspace_root
+                    .canonicalize()
+                    .unwrap_or_else(|_| proc.workspace_root.clone())
+                    .display()
+                    .to_string();
+                let live = proc
+                    .permissions
+                    .capabilities
+                    .iter()
+                    .map(|&cap| (cap, "green"))
+                    .chain(proc.permissions.blocked.iter().map(|&cap| (cap, "red")));
+                for (cap, state) in live {
+                    let key = format!("{}::{}::{}", proc.type_id, workspace, cap.as_str());
+                    if !stored_keys.insert(key) {
+                        continue; // already covered by a stored row
+                    }
+                    rows.push(serde_json::json!({
+                        "app_id": proc.type_id,
+                        "workspace": workspace,
+                        "capability": cap.as_str(),
+                        "state": state,
+                        "stored": false,
+                        "sensitive": cap.is_sensitive(),
+                        "description": cap.description(),
+                    }));
+                }
+            }
+        }
+
+        let body = serde_json::json!({
+            "permissions": rows,
+            "running": running.into_iter().collect::<Vec<_>>(),
+        })
+        .to_string();
+        if let Err(e) = std::fs::write(response_file, &body) {
+            log::error!(
+                "pane_ipc: list_permissions: could not write response file {response_file:?}: {e}"
+            );
+        }
+    }
+
+    /// `SetPermission` host handler (stint 0017). Persists the new state to
+    /// `permissions.toml` and live-updates every running app instance with a
+    /// matching (app_id, workspace) so a revocation takes effect on the app's
+    /// next request. Unknown capability/state strings fail closed with an
+    /// error reply; a missing workspace fails unless the app is running.
+    fn handle_set_permission(
+        &mut self,
+        app_id: &str,
+        workspace: Option<&str>,
+        capability: &str,
+        state: &str,
+        response_file: &str,
+    ) {
+        use crate::app::permissions::{Capability, PermissionState, PermissionStore};
+        use crate::host::pane::{AppRuntime, Pane};
+
+        let outcome: Result<(), String> = (|| {
+            let cap = Capability::try_from(capability).map_err(|e| e.to_string())?;
+            let new_state = PermissionState::try_from(state)?;
+
+            let ws: std::path::PathBuf = match workspace {
+                Some(w) => std::path::PathBuf::from(w),
+                None => self
+                    .windows
+                    .iter()
+                    .find_map(|win| {
+                        win.panes.values().find_map(|pane| {
+                            let Pane::App(app_pane) = pane else {
+                                return None;
+                            };
+                            let AppRuntime::Process(proc) = &app_pane.runtime else {
+                                return None;
+                            };
+                            (proc.type_id == app_id).then(|| proc.workspace_root.clone())
+                        })
+                    })
+                    .ok_or_else(|| {
+                        format!(
+                            "workspace required: app '{app_id}' is not running; \
+                             pass workspace explicitly"
+                        )
+                    })?,
+            };
+
+            let mut store = PermissionStore::load_or_default(&self.permission_store_dir);
+            store.set(app_id, &ws, cap, new_state);
+            store.save();
+
+            // Live-update every running instance of this app in this workspace.
+            let ws_canonical = ws.canonicalize().unwrap_or_else(|_| ws.clone());
+            for win in &mut self.windows {
+                for pane in win.panes.values_mut() {
+                    let Pane::App(app_pane) = pane else { continue };
+                    let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+                        continue;
+                    };
+                    if proc.type_id != app_id {
+                        continue;
+                    }
+                    let proc_ws = proc
+                        .workspace_root
+                        .canonicalize()
+                        .unwrap_or_else(|_| proc.workspace_root.clone());
+                    if proc_ws != ws_canonical {
+                        continue;
+                    }
+                    match new_state {
+                        PermissionState::Green => {
+                            proc.permissions.capabilities.insert(cap);
+                            proc.permissions.blocked.remove(&cap);
+                        }
+                        PermissionState::Yellow => {
+                            proc.permissions.capabilities.remove(&cap);
+                            proc.permissions.blocked.remove(&cap);
+                        }
+                        PermissionState::Red => {
+                            proc.permissions.blocked.insert(cap);
+                            proc.permissions.capabilities.remove(&cap);
+                        }
+                    }
+                    // Keep the app's in-memory store copy in sync so a later
+                    // save from its own consent flow doesn't resurrect stale
+                    // state, and mirror onto the AppPane copy.
+                    proc.permission_store.set(app_id, &ws, cap, new_state);
+                    app_pane.permissions = proc.permissions.clone();
+                    log::info!(
+                        "pane_ipc: set_permission: live-updated '{app_id}' pane {} — {} → {}",
+                        app_pane.id,
+                        cap.as_str(),
+                        new_state.as_str()
+                    );
+                }
+            }
+            Ok(())
+        })();
+
+        let body = match &outcome {
+            Ok(()) => "{\"ok\":true}".to_string(),
+            Err(e) => serde_json::json!({ "error": e }).to_string(),
+        };
+        if let Err(e) = std::fs::write(response_file, &body) {
+            log::error!(
+                "pane_ipc: set_permission: could not write response file {response_file:?}: {e}"
+            );
+        }
+        if let Err(e) = outcome {
+            log::warn!("pane_ipc: set_permission failed: {e}");
         }
     }
 

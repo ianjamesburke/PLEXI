@@ -1356,11 +1356,15 @@ fn capability_secret_overlay_focus_wins_after_central_panel_steal() {
 
 // -- Pane read/control over PGAP (stint 0013/0014) --------------------------
 
-/// App WITHOUT `panes.read` sends ListPanes via PGAP: the request must not be
-/// forwarded — instead the capability gate writes a JSON error object to the
-/// response_file so the caller doesn't hang until its poll timeout.
+/// App WITHOUT `panes.read` (yellow/unset, NOT blocked) sends ListPanes via
+/// PGAP: with yellow-state routing (stint 0017) the request is deferred and a
+/// consent prompt is queued — no denial JSON is written and no forward happens
+/// until the user decides.
 #[test]
-fn pgap_list_panes_denied_without_panes_read() {
+fn pgap_list_panes_yellow_queues_prompt_without_panes_read() {
+    use crate::host::pane::AppRuntime;
+    use crate::process_app::PendingPrompt;
+
     let mut h = HostHarness::new();
     let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
 
@@ -1375,18 +1379,27 @@ fn pgap_list_panes_denied_without_panes_read() {
     );
     h.run_frames(2);
 
-    let content =
-        std::fs::read_to_string(&response_file).expect("denial must write the response file");
-    let v: serde_json::Value = serde_json::from_str(&content).expect("response must be JSON");
-    assert_eq!(
-        v["capability"], "panes.read",
-        "denial object must name the missing capability: {content}"
-    );
     assert!(
-        v["error"]
-            .as_str()
-            .is_some_and(|e| e.contains("capability denied")),
-        "denial object must carry an error message: {content}"
+        !response_file.exists(),
+        "yellow-state request must not write a denial or a forward result — it waits on consent"
+    );
+    let win = &h.app.windows[0];
+    let Some(Pane::App(app_pane)) = win.panes.get(&pane) else {
+        panic!("expected App pane");
+    };
+    let AppRuntime::Process(ref proc) = app_pane.runtime else {
+        panic!("expected Process runtime");
+    };
+    assert!(
+        proc.pending_prompts.iter().any(|p| {
+            matches!(p, PendingPrompt::Capability { capability, .. } if capability == "panes.read")
+        }),
+        "a consent prompt for panes.read must be queued"
+    );
+    assert_eq!(
+        proc.deferred_gated_requests.len(),
+        1,
+        "the request must be deferred pending consent"
     );
 }
 
@@ -1422,14 +1435,20 @@ fn pgap_list_panes_forwarded_with_panes_read() {
     );
 }
 
-/// App WITHOUT `panes.control` sends SendToPane via PGAP: the gate must write
-/// the capability-denied error object instead of forwarding.
+/// App with `panes.control` BLOCKED (stored Red) sends SendToPane via PGAP:
+/// the gate must write the capability-denied error object instead of
+/// forwarding — and must not queue a consent prompt (only the yellow/unset
+/// middle state prompts; Red stays flat-denied).
 #[test]
 fn pgap_send_to_pane_denied_without_panes_control() {
     let mut h = HostHarness::new();
-    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[
+    let mut perms = AppPermissions::from_capability_strings(&[
         "panes.read".to_string(), // read alone must NOT grant control
-    ]));
+    ]);
+    perms
+        .blocked
+        .insert(crate::app::permissions::Capability::PanesControl);
+    let pane = h.add_test_pane_with_permissions(perms);
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let response_file = tmp.path().join("send-to-pane.json");
@@ -1487,5 +1506,357 @@ fn pgap_send_to_pane_forwarded_with_panes_control() {
             .as_str()
             .is_some_and(|e| e.contains("not a terminal pane")),
         "host handler must answer with its own pane-type error: {content}"
+    );
+}
+
+// -- Permission management + yellow-state routing (stint 0017) ---------------
+
+/// App WITHOUT `permissions.manage` (yellow/unset) sends ListPermissions via
+/// PGAP: yellow-state routing queues a consent prompt and defers the request —
+/// no denial JSON, no forward.
+#[test]
+fn list_permissions_denied_without_manage() {
+    use crate::host::pane::AppRuntime;
+    use crate::process_app::PendingPrompt;
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let response_file = tmp.path().join("list-permissions.json");
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::ListPermissions {
+            response_file: response_file.to_string_lossy().into_owned(),
+        }),
+    );
+    h.run_frames(2);
+
+    assert!(
+        !response_file.exists(),
+        "ungranted+unblocked permissions.manage must defer, not deny or forward"
+    );
+    let win = &h.app.windows[0];
+    let Some(Pane::App(app_pane)) = win.panes.get(&pane) else {
+        panic!("expected App pane");
+    };
+    let AppRuntime::Process(ref proc) = app_pane.runtime else {
+        panic!("expected Process runtime");
+    };
+    assert!(
+        proc.pending_prompts.iter().any(|p| {
+            matches!(p, PendingPrompt::Capability { capability, .. }
+                if capability == "permissions.manage")
+        }),
+        "a consent prompt for permissions.manage must be queued"
+    );
+    assert_eq!(proc.deferred_gated_requests.len(), 1);
+}
+
+/// App WITH `permissions.manage` sends ListPermissions via PGAP: the request
+/// is forwarded into the host handler, which writes the permission inventory —
+/// stored rows from permissions.toml plus live rows for running apps.
+#[test]
+fn list_permissions_granted() {
+    use crate::app::permissions::{Capability, PermissionState, PermissionStore};
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[
+        "permissions.manage".to_string(),
+    ]));
+
+    // Seed a stored decision for an (unrelated) app.
+    let store_dir = h.app.permission_store_dir.clone();
+    {
+        let mut store = PermissionStore::load_or_default(&store_dir);
+        store.set(
+            "other-app",
+            std::path::Path::new("/test/project"),
+            Capability::NetHttp,
+            PermissionState::Red,
+        );
+        store.save();
+    }
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let response_file = tmp.path().join("list-permissions.json");
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::ListPermissions {
+            response_file: response_file.to_string_lossy().into_owned(),
+        }),
+    );
+    h.run_frames(2);
+
+    let content =
+        std::fs::read_to_string(&response_file).expect("grant must write the response file");
+    let v: serde_json::Value = serde_json::from_str(&content).expect("response must be JSON");
+    let rows = v["permissions"]
+        .as_array()
+        .expect("permissions must be an array");
+    let stored_row = rows
+        .iter()
+        .find(|r| r["app_id"] == "other-app")
+        .unwrap_or_else(|| panic!("stored entry must appear: {content}"));
+    assert_eq!(stored_row["capability"], "net.http");
+    assert_eq!(stored_row["state"], "red");
+    assert_eq!(stored_row["stored"], true);
+    assert_eq!(stored_row["sensitive"], true);
+
+    // The requesting app itself is running with a live (unstored) grant.
+    let live_row = rows
+        .iter()
+        .find(|r| r["app_id"] == "test" && r["capability"] == "permissions.manage")
+        .unwrap_or_else(|| panic!("live capability of running app must appear: {content}"));
+    assert_eq!(live_row["state"], "green");
+    assert_eq!(live_row["stored"], false);
+
+    let running = v["running"].as_array().expect("running must be an array");
+    assert!(
+        running.iter().any(|a| a == "test"),
+        "running list must contain the requesting app: {content}"
+    );
+}
+
+/// SetPermission to red must persist to the store AND live-update the running
+/// app's AppPermissions so the revocation takes effect on its next request.
+#[test]
+fn set_permission_revokes_running_app() {
+    use crate::app::permissions::{Capability, PermissionState, PermissionStore};
+    use crate::host::pane::AppRuntime;
+
+    let mut h = HostHarness::new();
+    let manager = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[
+        "permissions.manage".to_string(),
+    ]));
+    let target = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[
+        "panes.read".to_string(),
+    ]));
+
+    let workspace = std::env::temp_dir();
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let response_file = tmp.path().join("set-permission.json");
+    h.inject(
+        manager,
+        DrawCommand::Host(AppRequest::SetPermission {
+            app_id: "test".to_string(),
+            workspace: Some(workspace.to_string_lossy().into_owned()),
+            capability: "panes.read".to_string(),
+            state: "red".to_string(),
+            response_file: response_file.to_string_lossy().into_owned(),
+        }),
+    );
+    h.run_frames(2);
+
+    let content =
+        std::fs::read_to_string(&response_file).expect("SetPermission must write a reply");
+    let v: serde_json::Value = serde_json::from_str(&content).expect("reply must be JSON");
+    assert_eq!(v["ok"], true, "reply must be ok: {content}");
+
+    // Live AppPermissions of the running target must reflect the revocation.
+    let win = &h.app.windows[0];
+    let Some(Pane::App(app_pane)) = win.panes.get(&target) else {
+        panic!("expected App pane");
+    };
+    let AppRuntime::Process(ref proc) = app_pane.runtime else {
+        panic!("expected Process runtime");
+    };
+    assert!(
+        proc.permissions.blocked.contains(&Capability::PanesRead),
+        "live permissions must have panes.read blocked"
+    );
+    assert!(
+        !proc.permissions.capabilities.contains(&Capability::PanesRead),
+        "live permissions must no longer grant panes.read"
+    );
+
+    // The store must have persisted the Red decision.
+    let store = PermissionStore::load_or_default(&h.app.permission_store_dir);
+    assert_eq!(
+        store.get("test", &workspace, Capability::PanesRead),
+        Some(PermissionState::Red),
+        "permissions.toml must persist the red decision"
+    );
+}
+
+/// SetPermission with an unknown capability or state must fail closed with an
+/// error reply and persist nothing.
+#[test]
+fn set_permission_unknown_capability_fails_closed() {
+    let mut h = HostHarness::new();
+    let manager = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[
+        "permissions.manage".to_string(),
+    ]));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let response_file = tmp.path().join("set-permission.json");
+    h.inject(
+        manager,
+        DrawCommand::Host(AppRequest::SetPermission {
+            app_id: "test".to_string(),
+            workspace: Some(std::env::temp_dir().to_string_lossy().into_owned()),
+            capability: "not.a.capability".to_string(),
+            state: "red".to_string(),
+            response_file: response_file.to_string_lossy().into_owned(),
+        }),
+    );
+    h.run_frames(2);
+
+    let content = std::fs::read_to_string(&response_file).expect("error reply must be written");
+    let v: serde_json::Value = serde_json::from_str(&content).expect("reply must be JSON");
+    assert!(
+        v["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("not.a.capability")),
+        "error must name the unknown capability: {content}"
+    );
+}
+
+/// Yellow-state routing end-to-end: a gated request with no stored decision
+/// queues the consent prompt; granting via the modal forwards the deferred
+/// request into the host handler, which writes the real response.
+#[test]
+fn yellow_capability_queues_prompt_then_grant_forwards() {
+    use crate::app::FocusLayer;
+    use crate::host::pane::AppRuntime;
+    use crate::process_app::PendingPrompt;
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let response_file = tmp.path().join("list-panes.json");
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::ListPanes {
+            response_file: response_file.to_string_lossy().into_owned(),
+            context_id: None,
+        }),
+    );
+    h.focus_pane(pane);
+    h.run_frames(2);
+
+    // Prompt queued, request deferred, nothing written yet.
+    {
+        let win = &h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get(&pane) else {
+            panic!("expected App pane");
+        };
+        let AppRuntime::Process(ref proc) = app_pane.runtime else {
+            panic!("expected Process runtime");
+        };
+        assert!(
+            proc.pending_prompts.iter().any(|p| {
+                matches!(p, PendingPrompt::Capability { capability, .. }
+                    if capability == "panes.read")
+            }),
+            "consent prompt for panes.read must be queued"
+        );
+        assert!(!response_file.exists());
+    }
+    assert!(
+        h.app
+            .focus_stack
+            .iter()
+            .any(|l| *l == FocusLayer::CapabilityModal),
+        "CapabilityModal must be on the focus stack while the prompt is pending"
+    );
+
+    // Grant once via the modal (plain Enter).
+    h.key(egui::Key::Enter, egui::Modifiers::NONE);
+    h.run_frames(2);
+
+    let content = std::fs::read_to_string(&response_file)
+        .expect("granted deferred request must be forwarded and answered");
+    let v: serde_json::Value = serde_json::from_str(&content).expect("response must be JSON");
+    let panes = v
+        .as_array()
+        .expect("ListPanes response must be a JSON array");
+    assert!(
+        panes.iter().any(|p| p["id"].as_u64() == Some(pane)),
+        "pane list must contain the requesting pane: {content}"
+    );
+}
+
+/// Yellow-state routing deny path: denying the consent prompt must answer each
+/// deferred request's response_file with the standard denial JSON.
+#[test]
+fn yellow_capability_deny_writes_denial() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane_with_permissions(AppPermissions::from_capability_strings(&[]));
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let response_file = tmp.path().join("list-panes.json");
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::ListPanes {
+            response_file: response_file.to_string_lossy().into_owned(),
+            context_id: None,
+        }),
+    );
+    h.focus_pane(pane);
+    h.run_frames(2);
+
+    // Deny once via the modal (Escape).
+    h.key(egui::Key::Escape, egui::Modifiers::NONE);
+    h.run_frames(1);
+
+    let content =
+        std::fs::read_to_string(&response_file).expect("deny must write the denial JSON");
+    let v: serde_json::Value = serde_json::from_str(&content).expect("response must be JSON");
+    assert_eq!(
+        v["capability"], "panes.read",
+        "denial must name the capability: {content}"
+    );
+    assert!(
+        v["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("capability denied")),
+        "denial must carry the standard error message: {content}"
+    );
+}
+
+/// A blocked (Red) capability stays flat-denied with no consent prompt — only
+/// the yellow/unset middle state routes through the modal.
+#[test]
+fn red_capability_flat_denies_without_prompt() {
+    use crate::app::permissions::Capability;
+    use crate::host::pane::AppRuntime;
+
+    let mut h = HostHarness::new();
+    let mut perms = AppPermissions::from_capability_strings(&[]);
+    perms.blocked.insert(Capability::PanesRead);
+    let pane = h.add_test_pane_with_permissions(perms);
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let response_file = tmp.path().join("list-panes.json");
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::ListPanes {
+            response_file: response_file.to_string_lossy().into_owned(),
+            context_id: None,
+        }),
+    );
+    h.run_frames(2);
+
+    let content =
+        std::fs::read_to_string(&response_file).expect("blocked cap must write denial JSON");
+    let v: serde_json::Value = serde_json::from_str(&content).expect("response must be JSON");
+    assert_eq!(v["capability"], "panes.read");
+
+    let win = &h.app.windows[0];
+    let Some(Pane::App(app_pane)) = win.panes.get(&pane) else {
+        panic!("expected App pane");
+    };
+    let AppRuntime::Process(ref proc) = app_pane.runtime else {
+        panic!("expected Process runtime");
+    };
+    assert!(
+        proc.pending_prompts.is_empty(),
+        "a blocked capability must not queue a consent prompt"
+    );
+    assert!(
+        proc.deferred_gated_requests.is_empty(),
+        "a blocked capability must not defer the request"
     );
 }

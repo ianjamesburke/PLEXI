@@ -155,6 +155,11 @@ pub struct PlexiApp {
     /// Repaint-cause diagnostics sample window (#2019): start instant and
     /// frame count. `None` until the first frame opens a window.
     pub(crate) frame_diag_window: Option<(std::time::Instant, u32)>,
+    /// Directory holding `permissions.toml` for the host-level permission
+    /// management handlers (`ListPermissions` / `SetPermission`, stint 0017).
+    /// `config_dir()` in production; an isolated temp dir in tests so harness
+    /// runs never read or write the developer's real permission store.
+    pub(crate) permission_store_dir: std::path::PathBuf,
     /// Cached config so confirmation settings are read through the config
     /// tunnel rather than duplicated as individual bool fields.
     pub(crate) config: crate::config::PlexiConfig,
@@ -722,6 +727,7 @@ impl PlexiApp {
                     pending_context_close: None,
                     frame_tick: frame_tick.clone(),
                     frame_diag_window: None,
+                    permission_store_dir: crate::config::config_dir(),
                     renaming_window: None,
                     rename_buffer: String::new(),
                     editing_description: None,
@@ -905,6 +911,7 @@ impl PlexiApp {
             pending_context_close: None,
             frame_tick,
             frame_diag_window: None,
+            permission_store_dir: crate::config::config_dir(),
             renaming_window: None,
             rename_buffer: String::new(),
             editing_description: None,
@@ -1098,6 +1105,12 @@ impl PlexiApp {
                 pending_context_close: None,
                 frame_tick,
                 frame_diag_window: None,
+                permission_store_dir: {
+                    let dir =
+                        std::env::temp_dir().join(format!("plexi-test-perms-{}", uuid::Uuid::new_v4()));
+                    std::fs::create_dir_all(&dir).expect("create test permission store dir");
+                    dir
+                },
                 renaming_window: None,
                 rename_buffer: String::new(),
                 editing_description: None,
