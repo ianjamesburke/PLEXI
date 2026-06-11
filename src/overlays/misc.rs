@@ -460,17 +460,14 @@ impl PlexiApp {
                         if show_browse {
                             ui.add_space(style::SPACE_SM);
                             ui.horizontal(|ui| {
-                                if ui
-                                    .add(
-                                        egui::Button::new(
-                                            RichText::new("Browse\u{2026}")
-                                                .size(style::TEXT_CAPTION)
-                                                .color(self.colors.text_primary),
-                                        )
-                                        .fill(self.colors.bg_active),
-                                    )
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .clicked()
+                                if crate::ui::button::chrome_button(
+                                    ui,
+                                    "Browse\u{2026}",
+                                    crate::ui::button::ButtonKind::Primary,
+                                    &self.colors,
+                                    80.0,
+                                )
+                                .clicked()
                                 {
                                     browse_clicked = true;
                                 }

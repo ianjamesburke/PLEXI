@@ -1,4 +1,5 @@
 use crate::host::context::WindowMenuAction;
+use crate::ui::button;
 use crate::ui::sidebar_row::{ContextItem, PaneDots, SidebarAction};
 use egui::{Align, CornerRadius, Layout, Rect, RichText, Stroke, Vec2};
 use egui_tiles::Tile;
@@ -30,17 +31,7 @@ impl PlexiApp {
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(12.0);
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("+").size(12.0).color(self.colors.text_dim),
-                        )
-                        .frame(false),
-                    )
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text("New context")
-                    .clicked()
-                {
+                if button::icon_button(ui, "+", "New context", &self.colors).clicked() {
                     add_clicked = true;
                 }
             });

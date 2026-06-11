@@ -8,8 +8,8 @@
 use crate::app::app_trait::AppRenderContext;
 use crate::app_protocol::PlexiEvent;
 use crate::host::pane::AppPane;
-use crate::ui::style;
 use crate::ui::theme::Colors;
+use crate::ui::{button, style};
 use egui::RichText;
 
 /// Height of the nav bar shown when the app has pushed at least one view.
@@ -88,13 +88,12 @@ pub fn render(ui: &mut egui::Ui, app_pane: &mut AppPane, colors: &Colors, is_foc
                     ui.add_space(NAV_BAR_PAD);
 
                     // Back arrow button — ‹ (single angle quotation mark, U+2039)
-                    let back_btn = ui.add(
-                        egui::Button::new(
-                            RichText::new("‹")
-                                .size(style::TEXT_BODY + 2.0)
-                                .color(colors.accent),
-                        )
-                        .frame(false),
+                    let back_btn = button::toolbar_button(
+                        ui,
+                        RichText::new("‹")
+                            .size(style::TEXT_BODY + 2.0)
+                            .color(colors.accent),
+                        "Back",
                     );
                     if back_btn.clicked() {
                         app_pane.runtime.queue_outbound_event(PlexiEvent::NavBack {

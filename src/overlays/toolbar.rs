@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::button;
 
 impl PlexiApp {
     pub(crate) fn draw_toolbar(&mut self, ui: &mut egui::Ui) {
@@ -31,17 +32,14 @@ impl PlexiApp {
             // Right side — help button + notification badge
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if host_ui_gallery_available() {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new("UI").size(12.0).color(self.colors.text_dim),
-                            )
-                            .frame(false)
-                            .min_size(egui::vec2(24.0, 0.0)),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text("Host UI gallery")
-                        .clicked()
+                    if button::toolbar_button(
+                        ui,
+                        RichText::new("UI")
+                            .size(style::TEXT_CAPTION)
+                            .color(self.colors.text_dim),
+                        "Host UI gallery",
+                    )
+                    .clicked()
                     {
                         self.show_ui_gallery = !self.show_ui_gallery;
                         log::info!(
@@ -55,16 +53,7 @@ impl PlexiApp {
                     }
                 }
 
-                if ui
-                    .add(
-                        egui::Button::new(
-                            RichText::new("?").size(12.0).color(self.colors.text_dim),
-                        )
-                        .frame(false)
-                        .min_size(egui::vec2(24.0, 0.0)),
-                    )
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text("Keyboard shortcuts (\u{2318}/)")
+                if button::icon_button(ui, "?", "Keyboard shortcuts (\u{2318}/)", &self.colors)
                     .clicked()
                 {
                     self.show_shortcuts = !self.show_shortcuts;
@@ -84,12 +73,7 @@ impl PlexiApp {
                 } else {
                     "Changelog"
                 };
-                if ui
-                    .add(egui::Button::new(version_label).frame(false))
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text(hover_text)
-                    .clicked()
-                {
+                if button::toolbar_button(ui, version_label, hover_text).clicked() {
                     self.show_changelog = !self.show_changelog;
                 }
 
@@ -100,17 +84,14 @@ impl PlexiApp {
                     } else {
                         notif_count.to_string()
                     };
-                    let btn = egui::Button::new(
+                    if button::toolbar_button(
+                        ui,
                         RichText::new(format!("\u{1F514} {badge_text}"))
-                            .size(12.0)
+                            .size(style::TEXT_CAPTION)
                             .color(self.colors.accent),
+                        "Notifications (\u{2318}\u{21E7}A)",
                     )
-                    .frame(false);
-                    if ui
-                        .add(btn)
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text("Notifications (\u{2318}\u{21E7}A)")
-                        .clicked()
+                    .clicked()
                     {
                         self.show_notification_modal = !self.show_notification_modal;
                         if self.show_notification_modal && self.current_notify_id.is_none() {
