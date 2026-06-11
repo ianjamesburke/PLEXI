@@ -6,7 +6,7 @@ Two views:
   - DETAIL: metadata card + scrollable markdown body
 
 Keys: j/k navigate · Enter open detail · Esc back · o open in browser
-      r refresh · n new issue in terminal
+      s sort · f filter · c clear filter · r refresh · n new issue in terminal
 """
 import asyncio
 import json
@@ -74,6 +74,53 @@ def _label_color(name: str) -> str:
     return theme.accent
 
 
+SORT_MODES = ("created_desc", "created_asc", "number_desc", "number_asc")
+
+SORT_LABELS = {
+    "created_desc": "created ↓",
+    "created_asc": "created ↑",
+    "number_desc": "number ↓",
+    "number_asc": "number ↑",
+}
+
+
+def _issue_labels(issue: dict) -> list[str]:
+    return [
+        str(label.get("name", ""))
+        for label in (issue.get("labels") or [])
+        if label and label.get("name")
+    ]
+
+
+def _next_sort_mode(mode: str) -> str:
+    try:
+        idx = SORT_MODES.index(mode)
+    except ValueError:
+        idx = 0
+    return SORT_MODES[(idx + 1) % len(SORT_MODES)]
+
+
+def _sort_key(issue: dict, mode: str) -> tuple:
+    if mode.startswith("number"):
+        return (int(issue.get("number") or 0),)
+    return (str(issue.get("createdAt") or ""), int(issue.get("number") or 0))
+
+
+def _filter_and_sort_issues(
+    issues: list[dict],
+    filter_label: str | None,
+    sort_mode: str,
+) -> list[dict]:
+    visible = list(issues)
+    if filter_label:
+        visible = [
+            issue for issue in visible
+            if any(label == filter_label for label in _issue_labels(issue))
+        ]
+    reverse = sort_mode in ("created_desc", "number_desc")
+    return sorted(visible, key=lambda issue: _sort_key(issue, sort_mode), reverse=reverse)
+
+
 # ── App ───────────────────────────────────────────────────────────────────────
 
 class GhIssues(App):
@@ -91,6 +138,8 @@ class GhIssues(App):
         self._error          : str | None = None
         self._detail         : dict | None = None
         self._root           = self.repo_dir or ""
+        self._filter_label   : str | None = None
+        self._sort_mode      = "created_desc"
         # Stable Scrollable instance — scroll offset persists across renders.
         self._body_scroll    = Scrollable(Label(""))
         self.emit.status_summary("Loading…")
@@ -100,8 +149,9 @@ class GhIssues(App):
     # ── data ──────────────────────────────────────────────────────────────────
 
     def _fetch(self) -> None:
-        self._loading = True
-        self._error   = None
+        self._loading      = True
+        self._error        = None
+        self._filter_label = None
         asyncio.create_task(asyncio.to_thread(self._load_list))
 
     def _load_list(self) -> None:
@@ -119,13 +169,44 @@ class GhIssues(App):
             return
         try:
             self._issues = json.loads(out)
-            self._sel = max(0, min(self._sel, len(self._issues) - 1)) if self._issues else 0
+            self._clamp_selection()
         except Exception as exc:
             self.emit.warn(f"gh issue list json parse error: {exc}")
             self._error = str(exc)
         self._loading = False
         self.emit.info(f"gh-issues loaded {len(self._issues)} open issues")
         self.emit.schedule_render()
+
+    def _visible_issues(self) -> list[dict]:
+        return _filter_and_sort_issues(self._issues, self._filter_label, self._sort_mode)
+
+    def _clamp_selection(self) -> None:
+        visible = self._visible_issues()
+        self._sel = max(0, min(self._sel, len(visible) - 1)) if visible else 0
+
+    def _selected_issue(self) -> dict | None:
+        visible = self._visible_issues()
+        if not visible:
+            return None
+        self._sel = max(0, min(self._sel, len(visible) - 1))
+        return visible[self._sel]
+
+    def _select_issue_number(self, number: int | None) -> None:
+        visible = self._visible_issues()
+        if number is not None:
+            for idx, issue in enumerate(visible):
+                if issue.get("number") == number:
+                    self._sel = idx
+                    return
+        self._clamp_selection()
+
+    def _list_subtitle(self) -> str:
+        count = len(self._visible_issues())
+        parts = [f"{count} open"]
+        if self._filter_label:
+            parts.append(f"label:{self._filter_label}")
+        parts.append(SORT_LABELS.get(self._sort_mode, SORT_LABELS["created_desc"]))
+        return " · ".join(parts)
 
     def _load_detail(self, number: int) -> None:
         rc, out, err = _gh(
@@ -188,12 +269,14 @@ class GhIssues(App):
         # Header: AppBar (title + count). Shortcuts live in a bottom footer.
         appbar = AppBar(
             "Issues",
-            subtitle=f"{len(self._issues)} open" if not self._loading else None,
+            subtitle=self._list_subtitle() if not self._loading else None,
             accent=theme.accent,
         )
         footer = FooterKeys([
-            (["j", "k"], "navigate"),
             ("↩", "detail"),
+            ("s", "sort"),
+            ("f", "filter"),
+            ("c", "clear"),
             ("o", "browser"),
             ("r", "refresh"),
             ("n", "new"),
@@ -217,6 +300,8 @@ class GhIssues(App):
         self._draw_list(ctx, list_top, footer_h)
 
     def _draw_list(self, ctx: RenderContext, list_top: float, footer_h: float) -> None:
+        visible = self._visible_issues()
+        self._clamp_selection()
         rows = [
             ListRow(
                 id=f"issue-{issue['number']}",
@@ -227,7 +312,7 @@ class GhIssues(App):
                     for lbl in (issue.get("labels") or [])[:2]
                 ],
             ).to_dict()
-            for issue in self._issues
+            for issue in visible
         ]
         list_h = max(0.0, ctx.h - list_top - footer_h)
         ctx.list_view("issues", rows, selected=self._sel,
@@ -282,6 +367,12 @@ class GhIssues(App):
         if self._view == self.VIEW_LIST:
             if key == "o":
                 await self._open_browser()
+            elif key == "s":
+                self._cycle_sort()
+            elif key == "f":
+                self._toggle_filter_from_selection()
+            elif key == "c":
+                self._clear_filter()
             elif key == "r":
                 self.emit.info("gh-issues: refresh")
                 self._fetch()
@@ -302,8 +393,9 @@ class GhIssues(App):
 
     def on_list_select(self, _id: str, index: int) -> None:
         self._sel = index
-        if self._issues:
-            self.emit.status_summary(self._issues[self._sel]["title"])
+        issue = self._selected_issue()
+        if issue:
+            self.emit.status_summary(issue["title"])
         self.emit.schedule_render()
 
     def on_list_activate(self, _id: str, _index: int) -> None:
@@ -314,10 +406,45 @@ class GhIssues(App):
 
     # ── actions ───────────────────────────────────────────────────────────────
 
-    def _open_detail(self) -> None:
-        if not self._issues:
+    def _cycle_sort(self) -> None:
+        issue = self._selected_issue()
+        keep_number = issue.get("number") if issue else None
+        self._sort_mode = _next_sort_mode(self._sort_mode)
+        self._select_issue_number(keep_number)
+        self.emit.info(f"gh-issues: sort {SORT_LABELS[self._sort_mode]}")
+        self.emit.schedule_render()
+
+    def _toggle_filter_from_selection(self) -> None:
+        if self._filter_label:
+            self._clear_filter()
             return
-        issue = self._issues[self._sel]
+        issue = self._selected_issue()
+        if not issue:
+            return
+        labels = _issue_labels(issue)
+        if not labels:
+            self.emit.info("gh-issues: selected issue has no labels to filter")
+            return
+        self._filter_label = labels[0]
+        self._select_issue_number(issue.get("number"))
+        self.emit.info(f"gh-issues: filter label:{self._filter_label}")
+        self.emit.schedule_render()
+
+    def _clear_filter(self) -> None:
+        if not self._filter_label:
+            return
+        issue = self._selected_issue()
+        keep_number = issue.get("number") if issue else None
+        cleared = self._filter_label
+        self._filter_label = None
+        self._select_issue_number(keep_number)
+        self.emit.info(f"gh-issues: cleared filter label:{cleared}")
+        self.emit.schedule_render()
+
+    def _open_detail(self) -> None:
+        issue = self._selected_issue()
+        if not issue:
+            return
         self.emit.info(f"gh-issues: open detail #{issue['number']}")
         self._view                      = self.VIEW_DETAIL
         self._detail                    = None
@@ -329,9 +456,10 @@ class GhIssues(App):
         )
 
     async def _open_browser(self) -> None:
-        if not self._issues:
+        issue = self._selected_issue()
+        if not issue:
             return
-        num = self._issues[self._sel]["number"]
+        num = issue["number"]
         rc, _, _ = await asyncio.to_thread(
             _gh, "issue", "view", str(num), "--web", cwd=self._root or None,
         )
@@ -342,4 +470,5 @@ class GhIssues(App):
         self.emit.run_in_terminal("gh issue create")
 
 
-GhIssues().run()
+if __name__ == "__main__":
+    GhIssues().run()
