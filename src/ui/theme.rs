@@ -10,8 +10,6 @@ const UI_FONT_NAME: &str = "Inter";
 const UI_FONT_MEDIUM_NAME: &str = "Inter Medium";
 const FALLBACK_FONT_NAME: &str = "DejaVu Sans";
 const UNICODE_FALLBACK_FONT_NAME: &str = "Noto Sans";
-const DEFAULT_EMOJI_FONT_NAME: &str = "NotoEmoji-Regular";
-const DEFAULT_EMOJI_ICON_FONT_NAME: &str = "emoji-icon-font";
 
 /// Named family for medium-weight UI text (titles, section headers). egui has
 /// no weight axis — a second family backed by Inter Medium is how weight
@@ -785,13 +783,6 @@ pub fn terminal_font(size: f32) -> TerminalFont {
 const SYSTEM_FALLBACK_FONTS: &[(&str, &str)] =
     &[("Apple Symbols", "/System/Library/Fonts/Apple Symbols.ttf")];
 
-fn promote_existing_font(family: &mut Vec<String>, name: &str, index: usize) {
-    if let Some(existing_index) = family.iter().position(|font| font == name) {
-        let font = family.remove(existing_index);
-        family.insert(index.min(family.len()), font);
-    }
-}
-
 pub fn font_definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
@@ -825,18 +816,16 @@ pub fn font_definitions() -> egui::FontDefinitions {
         ))),
     );
     // Proportional family: route UI text through JetBrains Mono Nerd Font so
-    // the host can be evaluated as a fully monospace app. Keep emoji fallbacks
-    // ahead of JetBrains so Private Use / Nerd glyphs do not steal emoji.
+    // the host can be evaluated as a fully monospace app. Inter stays bundled
+    // as fallback while this experiment is active.
     let proportional = fonts
         .families
         .entry(egui::FontFamily::Proportional)
         .or_default();
-    promote_existing_font(proportional, DEFAULT_EMOJI_ICON_FONT_NAME, 0);
-    promote_existing_font(proportional, DEFAULT_EMOJI_FONT_NAME, 0);
-    proportional.insert(2, FONT_NAME.to_owned());
-    proportional.insert(3, UI_FONT_NAME.to_owned());
-    proportional.insert(4, FALLBACK_FONT_NAME.to_owned());
-    proportional.insert(5, UNICODE_FALLBACK_FONT_NAME.to_owned());
+    proportional.insert(0, FONT_NAME.to_owned());
+    proportional.insert(1, UI_FONT_NAME.to_owned());
+    proportional.insert(2, FALLBACK_FONT_NAME.to_owned());
+    proportional.insert(3, UNICODE_FALLBACK_FONT_NAME.to_owned());
     // Medium family mirrors Proportional while the monospace UI experiment is
     // active; egui has no heavier bundled Nerd Font axis to select here.
     let mut medium = proportional.clone();
@@ -890,29 +879,6 @@ pub fn setup_fonts(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn proportional_font_stack_prefers_emoji_before_nerd_font() {
-        let fonts = font_definitions();
-        let family = fonts
-            .families
-            .get(&egui::FontFamily::Proportional)
-            .expect("proportional font family should be configured");
-
-        let emoji_index = family
-            .iter()
-            .position(|font| font == DEFAULT_EMOJI_FONT_NAME)
-            .expect("egui default emoji font should remain available");
-        let nerd_index = family
-            .iter()
-            .position(|font| font == FONT_NAME)
-            .expect("Plexi Nerd Font should remain available");
-
-        assert!(
-            emoji_index < nerd_index,
-            "emoji fallback must precede Nerd Font for app text"
-        );
-    }
 
     /// Every preset's accent button must render legible text: text_on must
     /// return a color with at least 3:1 WCAG contrast against the accent and
