@@ -3,7 +3,7 @@ use crate::ui::{
     hints::{HintBar, HintGroup},
     list::ListRow,
     overlay::ModalShell,
-    widgets::{description_label, key_chip, selectable_row, TextField},
+    widgets::{chrome_button, description_label, key_chip, selectable_row, ButtonKind, TextField},
 };
 
 impl PlexiApp {
@@ -104,17 +104,14 @@ impl PlexiApp {
                         });
 
                         gallery_section(ui, "Modal patterns", &colors, |ui| {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Open text-entry modal")
-                                            .size(style::TEXT_BODY)
-                                            .color(colors.text_primary),
-                                    )
-                                    .fill(colors.bg_active)
-                                    .min_size(egui::vec2(180.0, style::BUTTON_H_MD)),
-                                )
-                                .clicked()
+                            if chrome_button(
+                                ui,
+                                "Open text-entry modal",
+                                ButtonKind::Primary,
+                                &colors,
+                                180.0,
+                            )
+                            .clicked()
                             {
                                 self.ui_gallery_show_text_modal = true;
                                 log::info!("ui_gallery: opened text-entry modal demo");
@@ -123,18 +120,24 @@ impl PlexiApp {
 
                         gallery_section(ui, "Buttons and chips", &colors, |ui| {
                             ui.horizontal(|ui| {
-                                button_sample(ui, "Primary", colors.accent, &colors);
-                                button_sample(ui, "Neutral", colors.bg_active, &colors);
-                                button_sample(ui, "Danger", colors.danger, &colors);
-                                ui.add_enabled(
-                                    false,
-                                    egui::Button::new(
-                                        RichText::new("Disabled")
-                                            .size(style::TEXT_BODY)
-                                            .color(colors.text_dim),
-                                    )
-                                    .min_size(egui::vec2(80.0, style::BUTTON_H_MD)),
+                                chrome_button(ui, "Primary", ButtonKind::Primary, &colors, 80.0);
+                                chrome_button(
+                                    ui,
+                                    "Secondary",
+                                    ButtonKind::Secondary,
+                                    &colors,
+                                    92.0,
                                 );
+                                chrome_button(ui, "Danger", ButtonKind::Danger, &colors, 80.0);
+                                ui.add_enabled_ui(false, |ui| {
+                                    chrome_button(
+                                        ui,
+                                        "Disabled",
+                                        ButtonKind::Secondary,
+                                        &colors,
+                                        80.0,
+                                    );
+                                });
                             });
                             ui.add_space(style::SPACE_SM);
                             ui.horizontal(|ui| {
@@ -276,23 +279,6 @@ fn hint_bar(ui: &mut egui::Ui, colors: &crate::ui::theme::Colors) {
         HintGroup::new(&["esc"], "dismiss"),
     ];
     HintBar::new(&hints).show(ui, colors);
-}
-
-fn button_sample(
-    ui: &mut egui::Ui,
-    label: &str,
-    fill: egui::Color32,
-    colors: &crate::ui::theme::Colors,
-) {
-    let button = egui::Button::new(
-        RichText::new(label)
-            .size(style::TEXT_BODY)
-            .color(colors.text_on(fill)),
-    )
-    .fill(fill)
-    .stroke(egui::Stroke::new(1.0, colors.border))
-    .min_size(egui::vec2(80.0, style::BUTTON_H_MD));
-    ui.add(button);
 }
 
 fn status_chip(
