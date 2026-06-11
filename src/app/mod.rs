@@ -545,79 +545,32 @@ impl PlexiApp {
                             continue;
                         };
                         let app_cwd = saved_pane.cwd.clone();
-                        let builtin_perms = crate::app::permissions::AppPermissions::builtin();
-                        match app_type.as_str() {
-                            "file_browser" => {
-                                let mut app =
-                                    crate::file_browser::FileBrowserApp::new(app_cwd.clone());
-                                if let Some(state) = &saved_pane.app_state {
-                                    use crate::app::app_trait::App;
-                                    app.restore_state(state);
-                                }
+                        pane_entry = crate::pane_ops::restore_builtin_app_pane(
+                            app_type,
+                            saved_pane.id,
+                            app_cwd.clone(),
+                            saved_pane.app_state.as_ref(),
+                        );
+                        if pane_entry.is_none() {
+                            if let Some(process) = registry.launch_process(app_type, &app_cwd, &[])
+                            {
                                 pane_entry =
                                     Some(Pane::App(Box::new(crate::host::pane::AppPane {
                                         id: saved_pane.id,
-                                        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
-                                            app,
+                                        permissions: process.permissions.clone(),
+                                        runtime: crate::host::pane::AppRuntime::Process(Box::new(
+                                            process,
                                         )),
                                         workspace_root: app_cwd,
-                                        permissions: builtin_perms,
-                                        manifest_id: "file_browser".to_string(),
-                                        name: "File Browser".to_string(),
-                                        pane_group: Some("cwd".to_string()),
+                                        manifest_id: app_type.to_string(),
+                                        name: app_type.to_string(),
+                                        pane_group: registry.group_for(app_type),
                                         linked_pane_id: None,
                                         overlay_replaced: None,
                                         hidden: false,
                                         agent: None,
                                         slots: std::collections::HashMap::new(),
                                     })));
-                            }
-                            "secrets_manager" => {
-                                let mut app =
-                                    crate::app::secrets_app::SecretsApp::new(app_cwd.clone());
-                                if let Some(state) = &saved_pane.app_state {
-                                    use crate::app::app_trait::App;
-                                    app.restore_state(state);
-                                }
-                                pane_entry =
-                                    Some(Pane::App(Box::new(crate::host::pane::AppPane {
-                                        id: saved_pane.id,
-                                        runtime: crate::host::pane::AppRuntime::Builtin(Box::new(
-                                            app,
-                                        )),
-                                        workspace_root: app_cwd,
-                                        permissions: builtin_perms,
-                                        manifest_id: "secrets_manager".to_string(),
-                                        name: "Secrets Manager".to_string(),
-                                        pane_group: None,
-                                        linked_pane_id: None,
-                                        overlay_replaced: None,
-                                        hidden: false,
-                                        agent: None,
-                                        slots: std::collections::HashMap::new(),
-                                    })));
-                            }
-                            other => {
-                                if let Some(process) = registry.launch_process(other, &app_cwd, &[])
-                                {
-                                    pane_entry =
-                                        Some(Pane::App(Box::new(crate::host::pane::AppPane {
-                                            id: saved_pane.id,
-                                            permissions: process.permissions.clone(),
-                                            runtime: crate::host::pane::AppRuntime::Process(
-                                                Box::new(process),
-                                            ),
-                                            workspace_root: app_cwd,
-                                            manifest_id: other.to_string(),
-                                            name: other.to_string(),
-                                            pane_group: registry.group_for(other),
-                                            linked_pane_id: None,
-                                            overlay_replaced: None,
-                                            hidden: false,
-                                            agent: None,
-                                            slots: std::collections::HashMap::new(),
-                                        })));
-                                }
                             }
                         }
                     }
