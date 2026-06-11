@@ -1077,6 +1077,9 @@ pub(crate) fn render_draw_commands(
                     fill,
                 );
                 // Drive animation — request repaint at ~20fps while skeleton is visible
+                crate::platform::frame_diag::note(
+                    crate::platform::frame_diag::RepaintCause::SkeletonLoader,
+                );
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(50));
             }

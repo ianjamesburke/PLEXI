@@ -149,6 +149,9 @@ pub struct PlexiApp {
     pub(crate) welcome_delete_press_count: u8,
     pub(crate) welcome_delete_last_press: Option<std::time::Instant>,
     pub(crate) frame_tick: crate::platform::logging::FrameTick,
+    /// Repaint-cause diagnostics sample window (#2019): start instant and
+    /// frame count. `None` until the first frame opens a window.
+    pub(crate) frame_diag_window: Option<(std::time::Instant, u32)>,
     /// Cached config so confirmation settings are read through the config
     /// tunnel rather than duplicated as individual bool fields.
     pub(crate) config: crate::config::PlexiConfig,
@@ -391,6 +394,23 @@ impl PlexiApp {
         crate::platform::macos_menu::customize_app_menu();
         #[cfg(target_os = "macos")]
         crate::platform::finder_service::register();
+
+        // Repaint-cause diagnostics (#2019): route egui_term's repaint labels
+        // into the host counters; `update()` flushes a summary every 10s.
+        egui_term::set_repaint_diag_hook(|label| {
+            use crate::platform::frame_diag::{note, RepaintCause};
+            match label {
+                "terminal_cursor_blink" => note(RepaintCause::TerminalCursorBlink),
+                "terminal_search_blink" => note(RepaintCause::TerminalSearchBlink),
+                "terminal_pty_output" => note(RepaintCause::TerminalPtyOutput),
+                "pointer_tracking" => note(RepaintCause::PointerTracking),
+                other => log::warn!(
+                    target: "plexi::frame_diag",
+                    "unknown egui_term repaint cause label: {other}"
+                ),
+            }
+        });
+        log::info!(target: "plexi::frame_diag", "frame diagnostics active; summary every 10s");
 
         theme::setup_fonts(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
@@ -740,6 +760,7 @@ impl PlexiApp {
                     pending_close: false,
                     pending_context_close: None,
                     frame_tick: frame_tick.clone(),
+                    frame_diag_window: None,
                     renaming_window: None,
                     rename_buffer: String::new(),
                     editing_description: None,
@@ -920,6 +941,7 @@ impl PlexiApp {
             pending_close: false,
             pending_context_close: None,
             frame_tick,
+            frame_diag_window: None,
             renaming_window: None,
             rename_buffer: String::new(),
             editing_description: None,
@@ -1110,6 +1132,7 @@ impl PlexiApp {
                 pending_close: false,
                 pending_context_close: None,
                 frame_tick,
+                frame_diag_window: None,
                 renaming_window: None,
                 rename_buffer: String::new(),
                 editing_description: None,
@@ -1350,6 +1373,35 @@ impl eframe::App for PlexiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_tick
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Repaint-cause diagnostics (#2019): count this frame, attribute
+        // input-carrying frames to UserInput, and flush one summary per
+        // 10s sample window.
+        {
+            let (started, frames) = self
+                .frame_diag_window
+                .get_or_insert_with(|| (std::time::Instant::now(), 0));
+            *frames += 1;
+            let frames = *frames;
+            let elapsed = started.elapsed();
+            if ctx.input(|i| !i.raw.events.is_empty()) {
+                crate::platform::frame_diag::note(
+                    crate::platform::frame_diag::RepaintCause::UserInput,
+                );
+            }
+            if elapsed >= std::time::Duration::from_secs(10) {
+                let counts = crate::platform::frame_diag::snapshot_and_reset();
+                log::info!(
+                    target: "plexi::frame_diag",
+                    "{}",
+                    crate::platform::frame_diag::summary_line(
+                        frames,
+                        elapsed.as_secs_f32(),
+                        &counts
+                    )
+                );
+                self.frame_diag_window = Some((std::time::Instant::now(), 0));
+            }
+        }
         let _frame_start = std::time::Instant::now();
         self.update_preamble(ctx);
 

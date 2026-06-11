@@ -1272,6 +1272,9 @@ impl ProcessApp {
                 }
             }
             ControlCommand::ScheduleRender { after_ms } => {
+                crate::platform::frame_diag::note(
+                    crate::platform::frame_diag::RepaintCause::AppScheduleRender,
+                );
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(after_ms as u64));
             }
@@ -1907,15 +1910,20 @@ impl App for ProcessApp {
         // Pointer-tracking apps are a special case: while the pointer is actively
         // moving we keep the repaint cadence near 60 FPS so host->app hover state
         // does not feel sticky.
+        use crate::platform::frame_diag::{self, RepaintCause};
         if needs_click_repaint {
             self.click_awaiting_frame = true;
+            frame_diag::note(RepaintCause::AppClick);
             ui.ctx().request_repaint();
         } else if self.click_awaiting_frame {
+            frame_diag::note(RepaintCause::AppClick);
             ui.ctx().request_repaint();
         } else if needs_tracking_repaint {
+            frame_diag::note(RepaintCause::PointerTracking);
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(16));
         } else {
+            frame_diag::note(RepaintCause::AppIdlePoll);
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }

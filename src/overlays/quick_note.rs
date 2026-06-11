@@ -555,6 +555,9 @@ impl PlexiApp {
                         path_for_log
                     );
                     self.quick_note_children_rx = Some((node_path, rx));
+                    crate::platform::frame_diag::note(
+                        crate::platform::frame_diag::RepaintCause::WidgetPulse,
+                    );
                     ctx.request_repaint_after(std::time::Duration::from_millis(100));
                 }
             }

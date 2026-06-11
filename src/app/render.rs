@@ -191,6 +191,10 @@ impl PlexiApp {
                             self.welcome_delete_last_press = None;
                         } else {
                             self.draw_welcome_delete_overlay(ctx);
+                            // Same 100ms confirm-timeout poll as the quit overlay.
+                            crate::platform::frame_diag::note(
+                                crate::platform::frame_diag::RepaintCause::QuitConfirm,
+                            );
                             ctx.request_repaint_after(std::time::Duration::from_millis(100));
                         }
                     }
@@ -381,6 +385,9 @@ impl PlexiApp {
                         !i.raw.hovered_files.is_empty() || !i.raw.dropped_files.is_empty()
                     });
                     if has_drag {
+                        crate::platform::frame_diag::note(
+                            crate::platform::frame_diag::RepaintCause::FileDragPoll,
+                        );
                         ui.ctx()
                             .request_repaint_after(std::time::Duration::from_millis(100));
                         use objc2_app_kit::NSApplication;
@@ -792,6 +799,9 @@ impl PlexiApp {
                             egui::CornerRadius::same(4),
                             self.colors.accent.gamma_multiply(0.25),
                         );
+                        crate::platform::frame_diag::note(
+                            crate::platform::frame_diag::RepaintCause::PaneSwapAnim,
+                        );
                         self.ctx.request_repaint();
                     }
 
@@ -819,6 +829,9 @@ impl PlexiApp {
                                 ),
                             };
                             ui.painter().line_segment([p1, p2], egui::Stroke::new(3.0, edge_color));
+                            crate::platform::frame_diag::note(
+                                crate::platform::frame_diag::RepaintCause::EdgePulse,
+                            );
                             self.ctx.request_repaint();
                         }
                     }
@@ -889,6 +902,9 @@ impl PlexiApp {
             } else {
                 self.draw_quit_confirm_overlay(ctx);
                 // Keep repainting so the timeout dismissal fires promptly
+                crate::platform::frame_diag::note(
+                    crate::platform::frame_diag::RepaintCause::QuitConfirm,
+                );
                 ctx.request_repaint_after(std::time::Duration::from_millis(100));
             }
         }
