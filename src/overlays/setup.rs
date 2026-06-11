@@ -280,14 +280,12 @@ impl PlexiApp {
                             }
 
                             ui.horizontal(|ui| {
-                                let check_btn = ui.add(
-                                    egui::Button::new(
-                                        RichText::new("Check for success")
-                                            .size(style::TEXT_BODY)
-                                            .color(colors.text_primary),
-                                    )
-                                    .fill(colors.bg_active)
-                                    .min_size(egui::vec2(150.0, 28.0)),
+                                let check_btn = crate::ui::widgets::chrome_button(
+                                    ui,
+                                    "Check for success",
+                                    crate::ui::widgets::ButtonKind::Primary,
+                                    &colors,
+                                    150.0,
                                 );
 
                                 if check_btn.clicked() {
@@ -303,13 +301,12 @@ impl PlexiApp {
                                     }
                                 }
 
-                                let skip_btn = ui.add(
-                                    egui::Button::new(
-                                        RichText::new("Not now")
-                                            .size(style::TEXT_BODY)
-                                            .color(colors.text_dim),
-                                    )
-                                    .min_size(egui::vec2(100.0, 28.0)),
+                                let skip_btn = crate::ui::widgets::chrome_button(
+                                    ui,
+                                    "Not now",
+                                    crate::ui::widgets::ButtonKind::Secondary,
+                                    &colors,
+                                    100.0,
                                 );
 
                                 if skip_btn.clicked() {
@@ -386,15 +383,13 @@ impl PlexiApp {
                                         );
                                     });
                                 });
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Done")
-                                            .size(style::TEXT_CAPTION)
-                                            .color(colors.text_primary),
-                                    )
-                                    .fill(colors.bg_active)
-                                    .min_size(egui::vec2(56.0, CONTROL_H)),
+                            if crate::ui::widgets::chrome_button_sized(
+                                ui,
+                                "Done",
+                                crate::ui::widgets::ButtonKind::Primary,
+                                &colors,
+                                56.0,
+                                CONTROL_H,
                                 )
                                 .clicked()
                             {
@@ -402,14 +397,13 @@ impl PlexiApp {
                                 crate::cli::setup::completions_mark_prompted();
                                 self.show_completions_banner = false;
                             }
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        RichText::new("Not now")
-                                            .size(style::TEXT_CAPTION)
-                                            .color(colors.text_dim),
-                                    )
-                                    .min_size(egui::vec2(72.0, CONTROL_H)),
+                            if crate::ui::widgets::chrome_button_sized(
+                                ui,
+                                "Not now",
+                                crate::ui::widgets::ButtonKind::Secondary,
+                                &colors,
+                                72.0,
+                                CONTROL_H,
                                 )
                                 .clicked()
                             {

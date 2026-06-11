@@ -95,6 +95,12 @@ fn shortcut_label_color(colors: &Colors) -> egui::Color32 {
     colors.text_primary.gamma_multiply(0.70)
 }
 
+pub(crate) fn shortcut_hint_label(text: &str, colors: &Colors) -> egui::RichText {
+    egui::RichText::new(text)
+        .size(style::TEXT_HINT)
+        .color(shortcut_label_color(colors))
+}
+
 /// Render a single keycap chip. Allocates its own exact-size rect and
 /// returns the egui Response so callers can compose with other widgets.
 ///
@@ -178,6 +184,48 @@ pub(crate) fn key_combo_list(
             );
         }
     });
+}
+
+pub(crate) enum ButtonKind {
+    Primary,
+    Secondary,
+    Danger,
+}
+
+pub(crate) fn chrome_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    kind: ButtonKind,
+    colors: &Colors,
+    min_width: f32,
+) -> egui::Response {
+    chrome_button_sized(ui, label, kind, colors, min_width, style::BUTTON_H_MD)
+}
+
+pub(crate) fn chrome_button_sized(
+    ui: &mut egui::Ui,
+    label: &str,
+    kind: ButtonKind,
+    colors: &Colors,
+    min_width: f32,
+    height: f32,
+) -> egui::Response {
+    let (fill, text_color) = match kind {
+        ButtonKind::Primary => (colors.bg_active, colors.text_primary),
+        ButtonKind::Secondary => (colors.bg_active, colors.text_dim),
+        ButtonKind::Danger => (colors.danger, colors.text_on(colors.danger)),
+    };
+
+    ui.add(
+        egui::Button::new(
+            RichText::new(label)
+                .size(style::TEXT_CAPTION)
+                .color(text_color),
+        )
+        .fill(fill)
+        .min_size(egui::vec2(min_width, height)),
+    )
+    .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Measured width of a `key_combo_list` row without rendering it — lets
