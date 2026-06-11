@@ -1,15 +1,24 @@
 ---
 id: "0003"
 title: "File Explorer: inspector and Quick Look overlay"
-status: backlog
-estimate: 12h
+status: in-progress
+estimate: "12h"
+started_at: "2026-06-11T00:02:05Z"
 sprint: "s1"
 blocked_by:
   - 1
-gh_issue: ["2137"]
-area: ["apps/file-browser", "ui/overlays", "ui/widgets"]
-tags: ["file-explorer", "preview", "quick-look"]
+gh_issue:
+  - "2137"
+area:
+  - "apps/file-browser"
+  - "ui/overlays"
+  - "ui/widgets"
+tags:
+  - "file-explorer"
+  - "preview"
+  - "quick-look"
 ---
+
 
 Replace the fixed preview threshold with an explicit inspector and Space-driven Quick Look overlay.
 
