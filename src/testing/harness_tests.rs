@@ -110,6 +110,25 @@ fn visible_idle_process_app_does_not_emit_recurring_render_events() {
 }
 
 #[test]
+fn in_flight_process_app_render_is_not_duplicated_while_host_polls() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    h.run_frames(1);
+    assert!(
+        h.render_payload_take(pane).is_some(),
+        "first visible frame must request an app Render"
+    );
+
+    h.run_frames(3);
+    assert_eq!(
+        h.render_payload_take(pane),
+        None,
+        "host wake polling while awaiting FrameDone must not send duplicate Render events"
+    );
+}
+
+#[test]
 fn schedule_render_requests_next_process_app_render() {
     let mut h = HostHarness::new();
     let pane = h.add_test_pane();

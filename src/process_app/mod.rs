@@ -2032,6 +2032,10 @@ impl App for ProcessApp {
             } else {
                 ui.ctx().request_repaint();
             }
+        } else if self.render_in_flight_frame_id.is_some() {
+            frame_diag::note(RepaintCause::AppIdlePoll);
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
         } else if self.needs_async_wake_poll() {
             frame_diag::note(RepaintCause::AppIdlePoll);
             ui.ctx()
