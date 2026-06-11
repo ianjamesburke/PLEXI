@@ -63,6 +63,7 @@ impl LifecycleState {
 // the pane transitions to Crashed — prevents silent "starting…" hangs when
 // an app deadlocks during init or never emits Ready.
 pub const HUNG_FRAME_GAP: Duration = Duration::from_secs(5);
+pub const HUNG_INPUT_GRACE: Duration = Duration::from_millis(750);
 pub const BOOT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const PROTOCOL_ERROR_THRESHOLD: u32 = 3;
 pub const PROTOCOL_ERROR_WINDOW: Duration = Duration::from_secs(10);
@@ -240,6 +241,11 @@ impl LifecycleTracker {
             // No interaction since the last frame — just idle.
             return current;
         }
+        if now.saturating_sub(last_input) < HUNG_INPUT_GRACE.as_millis() as u64 {
+            // A long-idle app gets one short chance to answer newly-renewed
+            // input before the pane shows "hung" on focus/click.
+            return current;
+        }
         self.set_state(LifecycleState::Hung)
     }
 }
@@ -385,6 +391,16 @@ mod tests {
         t.set_state(LifecycleState::Running);
         t.last_input_ms.store(50_000, Ordering::Release);
         assert_eq!(t.tick_check_hung(), LifecycleState::Hung);
+    }
+
+    #[test]
+    fn hung_waits_briefly_after_new_input_on_stale_frame() {
+        let origin = Instant::now() - Duration::from_secs(60);
+        let t = LifecycleTracker::with_origin(origin);
+        t.last_frame_done_ms.store(30_000, Ordering::Release);
+        t.set_state(LifecycleState::Running);
+        t.on_user_input();
+        assert_eq!(t.tick_check_hung(), LifecycleState::Running);
     }
 
     #[test]

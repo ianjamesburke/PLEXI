@@ -84,7 +84,7 @@ These are code facts as of 2026-06-09. Re-check before starting an implementatio
 - Local install exists. `plexi app install <path>` copies an app directory into the channel app store, and the top-level install flow can install git sources and packs.
 - App validation exists but is shallow. It is not yet a marketplace package validator.
 - `plexi app publish` is a stub.
-- The Assistant app declares only `ai.query` in `apps/assistant/manifest.toml`, but registers tools that call the Plexi CLI in subprocesses to open terminals, open apps, list panes, and send pane commands. Those subprocesses inherit the app environment, including host routing such as `PLEXI_SOCKET`.
+- The legacy PGAP Assistant now lives as a developer reference app in `apps/dev/assistant-pgap/manifest.toml`. The host-native Assistant is the product path; the PGAP app remains useful for SDK and capability experiments.
 - MCPUI is not implemented in the runtime. It is a v2 runtime lane.
 - WASM/WASI is not an app runtime yet. It is a v2 runtime lane.
 - Bevy has no first implementation path until `Surface` and the WASM lane exist. It is a v2 runtime lane.
@@ -157,8 +157,8 @@ Required work:
 
 - Stop passing ambient host control to app processes, or bind it to app identity and capability checks.
 - Treat `PLEXI_SOCKET` as host routing, not an app permission.
-- Replace Assistant's CLI subprocess control tools with host-mediated PGAP/tool APIs.
-- Add explicit capabilities for every pane/app/terminal power the Assistant can use. Reuse `panes.spawn` and `terminal.bindings` where they fit; add narrower capabilities where they do not.
+- Replace Assistant-style CLI subprocess control tools with host-mediated PGAP/tool APIs before any app becomes a trusted marketplace surface.
+- Add explicit capabilities for every pane/app/terminal power a PGAP assistant-style app can use. Reuse `panes.spawn` and `terminal.bindings` where they fit; add narrower capabilities where they do not.
 - Make capability declarations match actual powers before marketplace trust labels ship.
 - Keep `docs/SECURITY_MODEL.md` honest: Python apps are native processes with consent + audit.
 - Add denial tests for host APIs reachable by apps.
@@ -297,7 +297,7 @@ Permission tests:
 - app without `panes.spawn` cannot spawn panes through host APIs
 - app without `terminal.bindings` cannot drive terminal bindings
 - app without app-opening capability cannot open another app through host APIs
-- Assistant's manifest declares the capabilities used by its tools
+- assistant-style app manifests declare the capabilities used by their tools
 - socket-based host commands cannot bypass app identity checks
 - inherited environment does not grant host control to an app
 
