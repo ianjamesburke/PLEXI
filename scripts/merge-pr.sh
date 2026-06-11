@@ -91,9 +91,76 @@ do_close() {
         "$CURRENT_BODY" "$PR" "$VERSION" "$(date +%Y-%m-%d)")"
 }
 
+resolve_issue() {
+    local PR="$1"
+    local BRANCH="$2"
+    local PR_BODY="${3:-}"
+    local ISSUE
+
+    ISSUE=$(gh pr view "$PR" --json closingIssuesReferences \
+        --jq '.closingIssuesReferences[0].number // empty')
+    if [ -n "$ISSUE" ]; then
+        printf '%s\n' "$ISSUE"
+        return
+    fi
+
+    ISSUE=$(printf '%s\n' "$PR_BODY" \
+        | grep -Eio '(close[sd]?|fix(e[sd])?|resolve[sd]?) +#[0-9]+' \
+        | head -1 \
+        | grep -oE '[0-9]+' || true)
+    if [ -n "$ISSUE" ]; then
+        printf '%s\n' "$ISSUE"
+        return
+    fi
+
+    case "$BRANCH" in
+        feature/[0-9]*-*|fix/[0-9]*-*)
+            printf '%s\n' "$BRANCH" | grep -oE '[0-9]+' | head -1
+            return
+            ;;
+    esac
+
+    echo "ERROR: could not resolve GitHub issue for PR #$PR ($BRANCH)" >&2
+    echo "Add a closing keyword like 'Closes #1234' to the PR body or use a numeric feature/fix branch." >&2
+    return 1
+}
+
+test_resolve_issue() {
+    gh() {
+        if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+            if printf '%s\n' "$*" | grep -q 'closingIssuesReferences'; then
+                printf '\n'
+            else
+                return 1
+            fi
+        fi
+    }
+
+    local actual
+    actual=$(resolve_issue 2171 "feature/stint-0004-file-explorer-multi-select-ops" "Closes #2138")
+    [ "$actual" = "2138" ] || {
+        echo "expected PR body closing issue 2138, got '$actual'" >&2
+        return 1
+    }
+
+    actual=$(resolve_issue 2155 "feature/2155-short-name" "")
+    [ "$actual" = "2155" ] || {
+        echo "expected numeric branch issue 2155, got '$actual'" >&2
+        return 1
+    }
+
+    if resolve_issue 4 "feature/stint-0004-short-name" "" >/dev/null 2>&1; then
+        echo "expected unresolved stint branch without PR body to fail" >&2
+        return 1
+    fi
+
+    echo "resolve_issue tests passed"
+}
+
 # --- Dispatch ---
 CMD="${1:-}"
 case "$CMD" in
+    test-resolve-issue) test_resolve_issue ;;
     rebase)   do_rebase "${2:?BRANCH required}" ;;
     squash)   do_squash "${2:?PR required}" ;;
     sync)     do_sync ;;
@@ -103,10 +170,11 @@ case "$CMD" in
     *)
         PR="${1:?PR number required}"
 
-        INFO=$(gh pr view "$PR" --json headRefName,state --jq '{branch: .headRefName, state: .state}')
+        INFO=$(gh pr view "$PR" --json headRefName,state,body --jq '{branch: .headRefName, state: .state, body: .body}')
         BRANCH=$(echo "$INFO" | jq -r .branch)
         STATE=$(echo "$INFO" | jq -r .state)
-        ISSUE=$(echo "$BRANCH" | grep -oE '[0-9]+' | head -1)
+        PR_BODY=$(echo "$INFO" | jq -r '.body // ""')
+        ISSUE=$(resolve_issue "$PR" "$BRANCH" "$PR_BODY")
 
         echo "==> PR #$PR: $BRANCH (issue #$ISSUE, state: $STATE)"
 
