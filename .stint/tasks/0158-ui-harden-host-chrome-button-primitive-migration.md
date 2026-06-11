@@ -1,14 +1,27 @@
 ---
 id: "0158"
 title: "UI hardening: finish host chrome button primitive migration"
-status: in-progress
+status: done
+estimate: "8h"
+actual: "492m"
 started_at: "2026-06-11T10:05:26Z"
+completed_at: "2026-06-11T18:17:14Z"
 sprint: "s31"
-estimate: 8h
-gh_issue: ["2172"]
-area: ["ui/widgets", "ui/sidebar", "ui/chrome", "cli/commands"]
-tags: ["ui-hardening", "host-ui-kit", "buttons", "chrome"]
+blocked_by: []
+gh_issue:
+  - "2172"
+area:
+  - "ui/widgets"
+  - "ui/sidebar"
+  - "ui/chrome"
+  - "cli/commands"
+tags:
+  - "ui-hardening"
+  - "host-ui-kit"
+  - "buttons"
+  - "chrome"
 ---
+
 
 Finish moving remaining host chrome buttons onto focused `ui::button` primitives.
 
