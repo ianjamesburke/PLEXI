@@ -87,6 +87,300 @@ fn two_test_panes_have_distinct_ids() {
     assert_eq!(snap.open_panes.len(), 2);
 }
 
+fn temp_response(dir: &std::path::Path, name: &str) -> String {
+    dir.join(format!("{name}-{}.json", uuid::Uuid::new_v4()))
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn read_json_response(path: &str) -> serde_json::Value {
+    let content = std::fs::read_to_string(path).expect("response file must exist");
+    serde_json::from_str(&content).expect("response must be valid JSON")
+}
+
+// -- Pane file slots ------------------------------------------------------
+
+#[test]
+fn pane_slots_write_read_list_delete() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.set_active_context_root(tmp.path().to_path_buf());
+    let pane = h.add_test_pane();
+
+    let write_file = temp_response(tmp.path(), "slot-write");
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id: pane,
+        slot_name: "artifact".to_string(),
+        content: b"hello".to_vec(),
+        append: false,
+        replace: false,
+        response_file: write_file.clone(),
+    });
+    h.run_frames(1);
+    let write = read_json_response(&write_file);
+    assert_eq!(write["ok"].as_bool(), Some(true));
+
+    let append_file = temp_response(tmp.path(), "slot-append");
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id: pane,
+        slot_name: "artifact".to_string(),
+        content: b" world".to_vec(),
+        append: true,
+        replace: false,
+        response_file: append_file.clone(),
+    });
+    h.run_frames(1);
+    assert_eq!(read_json_response(&append_file)["ok"].as_bool(), Some(true));
+
+    let read_file = temp_response(tmp.path(), "slot-read");
+    h.inject_ipc(AppRequest::SlotRead {
+        pane_id: pane,
+        slot_name: "artifact".to_string(),
+        response_file: read_file.clone(),
+    });
+    h.run_frames(1);
+    assert_eq!(
+        std::fs::read(&read_file).expect("read response"),
+        b"hello world"
+    );
+
+    let list_file = temp_response(tmp.path(), "slot-list");
+    h.inject_ipc(AppRequest::SlotList {
+        pane_id: pane,
+        response_file: list_file.clone(),
+    });
+    h.run_frames(1);
+    let list = read_json_response(&list_file);
+    let entries = list.as_array().expect("slot list must be an array");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["name"], "artifact");
+    assert_eq!(entries[0]["size"], 11);
+
+    let delete_file = temp_response(tmp.path(), "slot-delete");
+    h.inject_ipc(AppRequest::SlotDelete {
+        pane_id: pane,
+        slot_name: "artifact".to_string(),
+        response_file: delete_file.clone(),
+    });
+    h.run_frames(1);
+    let deleted = read_json_response(&delete_file);
+    assert_eq!(deleted["ok"].as_bool(), Some(true));
+    assert_eq!(deleted["removed"].as_bool(), Some(true));
+}
+
+#[test]
+fn pane_slot_write_requires_replace_or_append_for_existing_slot() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.set_active_context_root(tmp.path().to_path_buf());
+    let pane = h.add_test_pane();
+
+    let first_file = temp_response(tmp.path(), "slot-first");
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id: pane,
+        slot_name: "artifact".to_string(),
+        content: b"first".to_vec(),
+        append: false,
+        replace: false,
+        response_file: first_file.clone(),
+    });
+    h.run_frames(1);
+    assert_eq!(read_json_response(&first_file)["ok"].as_bool(), Some(true));
+
+    let second_file = temp_response(tmp.path(), "slot-second");
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id: pane,
+        slot_name: "artifact".to_string(),
+        content: b"second".to_vec(),
+        append: false,
+        replace: false,
+        response_file: second_file.clone(),
+    });
+    h.run_frames(1);
+    let second = read_json_response(&second_file);
+    assert_eq!(second["ok"].as_bool(), Some(false));
+    assert!(
+        second["error"]
+            .as_str()
+            .expect("error")
+            .contains("already exists"),
+        "unexpected error: {second}"
+    );
+
+    let read_file = temp_response(tmp.path(), "slot-read-after-reject");
+    h.inject_ipc(AppRequest::SlotRead {
+        pane_id: pane,
+        slot_name: "artifact".to_string(),
+        response_file: read_file.clone(),
+    });
+    h.run_frames(1);
+    assert_eq!(std::fs::read(&read_file).expect("read response"), b"first");
+}
+
+#[test]
+fn pane_slot_write_rejects_content_over_10_mib() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.set_active_context_root(tmp.path().to_path_buf());
+    let pane = h.add_test_pane();
+
+    let response_file = temp_response(tmp.path(), "slot-too-large");
+    let too_large = vec![b'x'; 10 * 1024 * 1024 + 1];
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id: pane,
+        slot_name: "big".to_string(),
+        content: too_large,
+        append: false,
+        replace: false,
+        response_file: response_file.clone(),
+    });
+    h.run_frames(1);
+    let response = read_json_response(&response_file);
+    assert_eq!(response["ok"].as_bool(), Some(false));
+    let error = response["error"].as_str().expect("error");
+    assert!(error.contains("slot 'big'"), "unexpected error: {error}");
+    assert!(error.contains("10485761"), "unexpected error: {error}");
+}
+
+#[test]
+fn pane_slot_append_rejects_final_file_over_10_mib() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.set_active_context_root(tmp.path().to_path_buf());
+    let pane = h.add_test_pane();
+
+    let first_file = temp_response(tmp.path(), "slot-first");
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id: pane,
+        slot_name: "artifact".to_string(),
+        content: vec![b'a'; 10 * 1024 * 1024],
+        append: false,
+        replace: false,
+        response_file: first_file.clone(),
+    });
+    h.run_frames(1);
+    assert_eq!(read_json_response(&first_file)["ok"].as_bool(), Some(true));
+
+    let append_file = temp_response(tmp.path(), "slot-too-large-append");
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id: pane,
+        slot_name: "artifact".to_string(),
+        content: b"!".to_vec(),
+        append: true,
+        replace: false,
+        response_file: append_file.clone(),
+    });
+    h.run_frames(1);
+    let response = read_json_response(&append_file);
+    assert_eq!(response["ok"].as_bool(), Some(false));
+    let error = response["error"].as_str().expect("error");
+    assert!(error.contains("slot 'artifact'"), "unexpected error: {error}");
+    assert!(error.contains("10485761"), "unexpected error: {error}");
+}
+
+#[test]
+fn pane_info_and_list_include_slots_object() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.set_active_context_root(tmp.path().to_path_buf());
+    let pane = h.add_test_pane();
+
+    let write_file = temp_response(tmp.path(), "slot-info-write");
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id: pane,
+        slot_name: "artifact".to_string(),
+        content: b"{} ".to_vec(),
+        append: false,
+        replace: false,
+        response_file: write_file.clone(),
+    });
+    h.run_frames(1);
+    let slot_path = read_json_response(&write_file)["path"]
+        .as_str()
+        .expect("slot path")
+        .to_string();
+
+    let info_file = temp_response(tmp.path(), "slot-info");
+    h.inject_ipc(AppRequest::GetPaneInfo {
+        pane_id: pane,
+        response_file: info_file.clone(),
+    });
+    h.run_frames(1);
+    let info = read_json_response(&info_file);
+    assert_eq!(info["slots"]["artifact"].as_str(), Some(slot_path.as_str()));
+
+    let list_file = temp_response(tmp.path(), "slot-pane-list");
+    h.inject_ipc(AppRequest::ListPanes {
+        response_file: list_file.clone(),
+        context_id: None,
+    });
+    h.run_frames(1);
+    let list = read_json_response(&list_file);
+    let pane_entry = list
+        .as_array()
+        .expect("pane list array")
+        .iter()
+        .find(|entry| entry["id"].as_u64() == Some(pane))
+        .expect("pane entry");
+    assert_eq!(
+        pane_entry["slots"]["artifact"].as_str(),
+        Some(slot_path.as_str())
+    );
+}
+
+#[test]
+fn workspace_clean_slots_lists_and_removes_dead_pane_slot_dirs() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.set_active_context_root(tmp.path().to_path_buf());
+    let pane = h.add_test_pane();
+
+    let write_file = temp_response(tmp.path(), "slot-clean-write");
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id: pane,
+        slot_name: "artifact".to_string(),
+        content: b"done".to_vec(),
+        append: false,
+        replace: false,
+        response_file: write_file.clone(),
+    });
+    h.run_frames(1);
+    assert_eq!(read_json_response(&write_file)["ok"].as_bool(), Some(true));
+
+    let slot_dir = tmp
+        .path()
+        .join(crate::config::workspace_channel_dir())
+        .join("slots")
+        .join(pane.to_string());
+    assert!(slot_dir.exists(), "slot dir should exist before clean");
+
+    h.app.windows[0].panes.remove(&pane);
+
+    let dry_run_file = temp_response(tmp.path(), "slot-clean-dry-run");
+    h.inject_ipc(AppRequest::WorkspaceCleanSlots {
+        dry_run: true,
+        response_file: dry_run_file.clone(),
+    });
+    h.run_frames(1);
+    let dry_run = read_json_response(&dry_run_file);
+    assert_eq!(dry_run["ok"].as_bool(), Some(true));
+    let dry_run_paths = dry_run["paths"].as_array().expect("paths array");
+    assert!(dry_run_paths.iter().any(|path| {
+        path.as_str()
+            .is_some_and(|path| path == slot_dir.to_string_lossy())
+    }));
+    assert!(slot_dir.exists(), "dry-run must not remove slot dir");
+
+    let clean_file = temp_response(tmp.path(), "slot-clean");
+    h.inject_ipc(AppRequest::WorkspaceCleanSlots {
+        dry_run: false,
+        response_file: clean_file.clone(),
+    });
+    h.run_frames(1);
+    assert_eq!(read_json_response(&clean_file)["ok"].as_bool(), Some(true));
+    assert!(!slot_dir.exists(), "clean should remove dead pane slot dir");
+}
+
 // -- Nav stack ------------------------------------------------------------
 
 /// Regression guard for PR #392: `push_nav` and `pop_nav` commands must be

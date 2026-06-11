@@ -2,6 +2,7 @@ use crate::app::app_trait::{App, AppCommand, AppRenderContext};
 use crate::app::permissions::AppPermissions;
 use crate::spatial::tiling::PaneId;
 use egui_term::{BackendSettings, PtyEvent, TerminalBackend};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
@@ -124,6 +125,22 @@ impl Pane {
         }
     }
 
+    pub fn slots(&self) -> Option<&HashMap<String, PathBuf>> {
+        match self {
+            Pane::Terminal(t) => Some(&t.slots),
+            Pane::App(a) => Some(&a.slots),
+            Pane::Portal(_) => None,
+        }
+    }
+
+    pub fn slots_mut(&mut self) -> Option<&mut HashMap<String, PathBuf>> {
+        match self {
+            Pane::Terminal(t) => Some(&mut t.slots),
+            Pane::App(a) => Some(&mut a.slots),
+            Pane::Portal(_) => None,
+        }
+    }
+
     /// Returns the target context_id if this is a Portal pane.
     pub fn portal_target(&self) -> Option<u64> {
         match self {
@@ -160,6 +177,7 @@ pub struct TerminalPane {
     /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
     pub hidden: bool,
     pub agent: Option<crate::app_protocol::PaneAgentState>,
+    pub slots: HashMap<String, PathBuf>,
 }
 
 impl TerminalPane {
@@ -191,6 +209,7 @@ impl TerminalPane {
             outside_workspace_root: None,
             hidden: false,
             agent: None,
+            slots: HashMap::new(),
         })
     }
 }
@@ -348,4 +367,5 @@ pub struct AppPane {
     /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
     pub hidden: bool,
     pub agent: Option<crate::app_protocol::PaneAgentState>,
+    pub slots: HashMap<String, PathBuf>,
 }

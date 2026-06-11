@@ -567,6 +567,7 @@ impl PlexiApp {
                                         overlay_replaced: None,
                                         hidden: false,
                                         agent: None,
+                                        slots: std::collections::HashMap::new(),
                                     })));
                             }
                             "secrets_manager" => {
@@ -591,6 +592,7 @@ impl PlexiApp {
                                         overlay_replaced: None,
                                         hidden: false,
                                         agent: None,
+                                        slots: std::collections::HashMap::new(),
                                     })));
                             }
                             other => {
@@ -611,6 +613,7 @@ impl PlexiApp {
                                             overlay_replaced: None,
                                             hidden: false,
                                             agent: None,
+                                            slots: std::collections::HashMap::new(),
                                         })));
                                 }
                             }
@@ -1235,6 +1238,7 @@ impl PlexiApp {
             overlay_replaced: None,
             hidden: false,
             agent: None,
+            slots: std::collections::HashMap::new(),
         };
 
         let win = &mut self.windows[0];

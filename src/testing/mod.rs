@@ -121,6 +121,7 @@ impl HostHarness {
             overlay_replaced: None,
             hidden: false,
             agent: None,
+            slots: HashMap::new(),
         };
 
         let win = &mut self.app.windows[0];

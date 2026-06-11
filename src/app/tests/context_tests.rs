@@ -948,6 +948,7 @@ fn test_app_pane(pane_id: u64) -> crate::host::pane::Pane {
         overlay_replaced: None,
         hidden: false,
         agent: None,
+        slots: std::collections::HashMap::new(),
     }))
 }
 

@@ -1883,6 +1883,32 @@ impl ProcessApp {
                     self.type_id
                 );
             }
+            AppRequest::SlotWrite {
+                pane_id, slot_name, ..
+            }
+            | AppRequest::SlotRead {
+                pane_id, slot_name, ..
+            }
+            | AppRequest::SlotDelete {
+                pane_id, slot_name, ..
+            } => {
+                log::warn!(
+                    "ProcessApp[{}]: pane slot command ignored — pane_id={pane_id} slot={slot_name:?} (host socket only)",
+                    self.type_id
+                );
+            }
+            AppRequest::SlotList { pane_id, .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: SlotList ignored — pane_id={pane_id} (host socket only)",
+                    self.type_id
+                );
+            }
+            AppRequest::WorkspaceCleanSlots { dry_run, .. } => {
+                log::warn!(
+                    "ProcessApp[{}]: WorkspaceCleanSlots ignored — dry_run={dry_run} (host socket only)",
+                    self.type_id
+                );
+            }
         }
     }
 

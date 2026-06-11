@@ -98,6 +98,213 @@ fn print_json_output(json_str: &str) -> i32 {
     }
 }
 
+fn resolve_pane_id(pane_id: Option<u64>) -> Result<u64, i32> {
+    match pane_id {
+        Some(id) => Ok(id),
+        None => {
+            let raw = match std::env::var("PLEXI_PANE_ID") {
+                Ok(v) => v,
+                Err(_) => {
+                    eprintln!("error: pane_id not provided and PLEXI_PANE_ID is not set — run inside a Plexi pane or pass a pane ID");
+                    return Err(1);
+                }
+            };
+            match raw.parse::<u64>() {
+                Ok(id) => Ok(id),
+                Err(_) => {
+                    eprintln!("error: PLEXI_PANE_ID is not a valid number: {raw}");
+                    Err(1)
+                }
+            }
+        }
+    }
+}
+
+fn response_file(prefix: &str) -> String {
+    let id = uuid::Uuid::new_v4();
+    crate::config::config_dir()
+        .join(format!("{prefix}-{id}.json"))
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn wait_for_response_bytes(response_file: &str, label: &str) -> Result<Vec<u8>, i32> {
+    let response_path = std::path::PathBuf::from(response_file);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if response_path.exists() {
+            match std::fs::read(&response_path) {
+                Ok(content) => {
+                    let _ = std::fs::remove_file(&response_path);
+                    return Ok(content);
+                }
+                Err(e) => {
+                    log::warn!("{label}:cli: could not read response file: {e}");
+                    eprintln!("error: could not read response file: {e}");
+                    return Err(1);
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!("error: timed out waiting for {label} response");
+            return Err(1);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+fn response_error(content: &[u8]) -> Option<String> {
+    let value = serde_json::from_slice::<serde_json::Value>(content).ok()?;
+    if value.get("ok").and_then(|v| v.as_bool()) != Some(false) {
+        return None;
+    }
+    value.get("error")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+}
+
+/// `plexi pane slot write <name> [content] [pane_id]`
+pub fn pane_slot_write_cli(
+    name: &str,
+    content: Option<&str>,
+    append: bool,
+    replace: bool,
+    pane_id: Option<u64>,
+) -> i32 {
+    let resolved_pane_id = match resolve_pane_id(pane_id) {
+        Ok(id) => id,
+        Err(code) => return code,
+    };
+    let mut bytes = Vec::new();
+    if let Some(content) = content {
+        bytes.extend_from_slice(content.as_bytes());
+    } else {
+        use std::io::Read as _;
+        if let Err(e) = std::io::stdin().read_to_end(&mut bytes) {
+            eprintln!("error: could not read stdin: {e}");
+            return 1;
+        }
+    }
+    let response_file = response_file("pane-slot-write-response");
+    log::info!(
+        "pane_slot_write:cli: pane_id={resolved_pane_id} slot={name:?} bytes={} append={append} replace={replace} response_file={response_file:?}",
+        bytes.len()
+    );
+    let code = send_to_socket(serde_json::json!({
+        "type": "slot_write",
+        "pane_id": resolved_pane_id,
+        "slot_name": name,
+        "content": bytes,
+        "append": append,
+        "replace": replace,
+        "response_file": response_file,
+    }));
+    if code != 0 {
+        return code;
+    }
+    let content = match wait_for_response_bytes(&response_file, "pane slot write") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if let Some(err) = response_error(&content) {
+        eprintln!("error: {err}");
+        return 1;
+    }
+    0
+}
+
+/// `plexi pane slot read <name> [pane_id]`
+pub fn pane_slot_read_cli(name: &str, pane_id: Option<u64>) -> i32 {
+    let resolved_pane_id = match resolve_pane_id(pane_id) {
+        Ok(id) => id,
+        Err(code) => return code,
+    };
+    let response_file = response_file("pane-slot-read-response");
+    log::info!(
+        "pane_slot_read:cli: pane_id={resolved_pane_id} slot={name:?} response_file={response_file:?}"
+    );
+    let code = send_to_socket(serde_json::json!({
+        "type": "slot_read",
+        "pane_id": resolved_pane_id,
+        "slot_name": name,
+        "response_file": response_file,
+    }));
+    if code != 0 {
+        return code;
+    }
+    let content = match wait_for_response_bytes(&response_file, "pane slot read") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if let Some(err) = response_error(&content) {
+        eprintln!("error: {err}");
+        return 1;
+    }
+    use std::io::Write as _;
+    if let Err(e) = std::io::stdout().write_all(&content) {
+        eprintln!("error: could not write stdout: {e}");
+        return 1;
+    }
+    0
+}
+
+/// `plexi pane slot list [pane_id]`
+pub fn pane_slot_list_cli(pane_id: Option<u64>) -> i32 {
+    let resolved_pane_id = match resolve_pane_id(pane_id) {
+        Ok(id) => id,
+        Err(code) => return code,
+    };
+    let response_file = response_file("pane-slot-list-response");
+    log::info!("pane_slot_list:cli: pane_id={resolved_pane_id} response_file={response_file:?}");
+    let code = send_to_socket(serde_json::json!({
+        "type": "slot_list",
+        "pane_id": resolved_pane_id,
+        "response_file": response_file,
+    }));
+    if code != 0 {
+        return code;
+    }
+    let content = match wait_for_response_bytes(&response_file, "pane slot list") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if let Some(err) = response_error(&content) {
+        eprintln!("error: {err}");
+        return 1;
+    }
+    print_json_output(&String::from_utf8_lossy(&content))
+}
+
+/// `plexi pane slot delete <name> [pane_id]`
+pub fn pane_slot_delete_cli(name: &str, pane_id: Option<u64>) -> i32 {
+    let resolved_pane_id = match resolve_pane_id(pane_id) {
+        Ok(id) => id,
+        Err(code) => return code,
+    };
+    let response_file = response_file("pane-slot-delete-response");
+    log::info!(
+        "pane_slot_delete:cli: pane_id={resolved_pane_id} slot={name:?} response_file={response_file:?}"
+    );
+    let code = send_to_socket(serde_json::json!({
+        "type": "slot_delete",
+        "pane_id": resolved_pane_id,
+        "slot_name": name,
+        "response_file": response_file,
+    }));
+    if code != 0 {
+        return code;
+    }
+    let content = match wait_for_response_bytes(&response_file, "pane slot delete") {
+        Ok(content) => content,
+        Err(code) => return code,
+    };
+    if let Some(err) = response_error(&content) {
+        eprintln!("error: {err}");
+        return 1;
+    }
+    0
+}
+
 /// `plexi pane list`
 ///
 /// Sends a `list_panes` command to PLEXI_SOCKET. The host writes a JSON array
