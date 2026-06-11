@@ -5,6 +5,10 @@ use crate::app::permissions::{AppPermissions, Capability};
 use crate::app_protocol::{AppRequest, PlexiEvent};
 use crate::host::event_log::{self, HostEvent};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest};
+use crate::ui::button::{chrome_button, ButtonKind};
+use crate::ui::hints::{HintBar, HintGroup};
+use crate::ui::surface::{trust_decision_panel, TrustTone};
+use crate::ui::text_field::TextField;
 use crate::workspace::secrets::SecretStore;
 use std::collections::VecDeque;
 use std::path::Path;
@@ -136,35 +140,36 @@ pub(crate) fn show_prompt_modal(
             PendingPrompt::Capability { capability, .. } => {
                 ui.label(
                     egui::RichText::new("Permission request")
-                        .size(13.0)
+                        .size(crate::ui::style::TEXT_TITLE)
                         .color(colors.text_primary)
                         .strong(),
                 );
-                ui.add_space(4.0);
+                ui.add_space(crate::ui::style::SPACE_SM);
                 ui.label(
                     egui::RichText::new(format!("\"{}\" is requesting access to:", type_id))
                         .size(crate::ui::style::TEXT_CAPTION)
                         .color(colors.text_dim),
                 );
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(capability)
-                        .size(crate::ui::style::TEXT_CAPTION)
-                        .color(colors.text_primary)
-                        .monospace()
-                        .strong(),
-                );
-                if let Ok(cap) =
-                    crate::app::permissions::Capability::try_from(capability.as_str())
+                ui.add_space(crate::ui::style::SPACE_SM);
+                if let Ok(cap) = crate::app::permissions::Capability::try_from(capability.as_str())
                 {
-                    ui.add_space(2.0);
-                    ui.label(
-                        egui::RichText::new(cap.description())
-                            .size(crate::ui::style::TEXT_CAPTION)
-                            .color(colors.text_primary),
+                    trust_decision_panel(
+                        ui,
+                        capability,
+                        cap.description(),
+                        TrustTone::Warning,
+                        colors,
+                    );
+                } else {
+                    trust_decision_panel(
+                        ui,
+                        capability,
+                        "Unknown capability. Grant only if you trust this app.",
+                        TrustTone::Danger,
+                        colors,
                     );
                 }
-                ui.add_space(4.0);
+                ui.add_space(crate::ui::style::SPACE_SM);
                 ui.label(
                     egui::RichText::new(format!("Workspace: {}", workspace_root.display()))
                         .size(crate::ui::style::TEXT_HINT)
@@ -172,144 +177,84 @@ pub(crate) fn show_prompt_modal(
                 );
                 ui.add_space(crate::ui::style::SPACE_MD);
                 ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Grant Once")
-                                    .size(crate::ui::style::TEXT_CAPTION)
-                                    .color(colors.text_on(colors.accent)),
-                            )
-                            .fill(colors.accent),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
+                    if chrome_button(ui, "Grant once", ButtonKind::Primary, colors, 112.0).clicked()
                     {
                         grant_once = true;
                     }
-                    ui.add_space(4.0);
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Grant Forever")
-                                    .size(crate::ui::style::TEXT_CAPTION)
-                                    .color(colors.text_on(colors.accent)),
-                            )
-                            .fill(colors.accent),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    ui.add_space(crate::ui::style::SPACE_SM);
+                    if chrome_button(ui, "Always allow", ButtonKind::Primary, colors, 128.0)
                         .clicked()
                     {
                         grant_forever = true;
                     }
                 });
-                ui.add_space(4.0);
+                ui.add_space(crate::ui::style::SPACE_SM);
                 ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Deny Once")
-                                    .size(crate::ui::style::TEXT_CAPTION)
-                                    .color(colors.text_dim),
-                            )
-                            .fill(colors.bg_active),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    if chrome_button(ui, "Deny once", ButtonKind::Secondary, colors, 112.0)
                         .clicked()
                     {
                         deny_once = true;
                     }
-                    ui.add_space(4.0);
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Deny Forever")
-                                    .size(crate::ui::style::TEXT_CAPTION)
-                                    .color(colors.text_on(colors.danger)),
-                            )
-                            .fill(colors.danger),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
+                    ui.add_space(crate::ui::style::SPACE_SM);
+                    if chrome_button(ui, "Always deny", ButtonKind::Danger, colors, 128.0).clicked()
                     {
                         deny_forever = true;
                     }
                 });
+                let hints = [
+                    HintGroup::new(&["Enter"], "grant once"),
+                    HintGroup::new(&["Shift", "Enter"], "always allow"),
+                    HintGroup::new(&["Esc"], "deny once"),
+                    HintGroup::new(&["Shift", "Esc"], "always deny"),
+                ];
+                HintBar::new(&hints).show(ui, colors);
             }
             PendingPrompt::Secret { key } => {
                 ui.label(
                     egui::RichText::new("Secret required")
-                        .size(13.0)
+                        .size(crate::ui::style::TEXT_TITLE)
                         .color(colors.text_primary)
                         .strong(),
                 );
-                ui.add_space(4.0);
+                ui.add_space(crate::ui::style::SPACE_SM);
                 ui.label(
                     egui::RichText::new(format!("\"{}\" needs a secret value for:", type_id))
                         .size(crate::ui::style::TEXT_CAPTION)
                         .color(colors.text_dim),
                 );
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(key)
-                        .size(crate::ui::style::TEXT_CAPTION)
-                        .color(colors.text_primary)
-                        .monospace()
-                        .strong(),
+                ui.add_space(crate::ui::style::SPACE_SM);
+                trust_decision_panel(
+                    ui,
+                    key,
+                    "Value is stored in the workspace/user keychain route.",
+                    TrustTone::Neutral,
+                    colors,
                 );
                 ui.add_space(crate::ui::style::SPACE_SM);
-                ui.scope(|ui| {
-                    ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                    ui.visuals_mut().text_cursor.stroke.color = colors.accent;
-                    ui.visuals_mut().extreme_bg_color = colors.bg_active;
-                    ui.visuals_mut().widgets.active.bg_stroke =
-                        egui::Stroke::new(1.0, colors.accent);
-                    ui.visuals_mut().widgets.inactive.bg_stroke =
-                        egui::Stroke::new(1.0, colors.border);
-                    let response = ui.add(
-                        egui::TextEdit::singleline(secret_input_buf)
-                            .id(egui::Id::new("capability_secret_input"))
-                            .password(true)
-                            .margin(egui::Margin::symmetric(8, 5)),
-                    );
-                    if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        grant_once = true;
-                    }
-                });
+                let response =
+                    TextField::singleline(egui::Id::new("capability_secret_input"), "Secret value")
+                        .password(true)
+                        .focused(true)
+                        .log_name("secret_prompt")
+                        .show(ui, secret_input_buf, colors);
+                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    grant_once = true;
+                }
                 ui.add_space(crate::ui::style::SPACE_SM);
                 ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Submit")
-                                    .size(crate::ui::style::TEXT_CAPTION)
-                                    .color(colors.text_on(colors.accent)),
-                            )
-                            .fill(colors.accent),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
+                    if chrome_button(ui, "Submit", ButtonKind::Primary, colors, 96.0).clicked() {
                         grant_once = true;
                     }
-                    ui.add_space(4.0);
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Cancel")
-                                    .size(crate::ui::style::TEXT_CAPTION)
-                                    .color(colors.text_dim),
-                            )
-                            .fill(colors.bg_active),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .clicked()
-                    {
+                    ui.add_space(crate::ui::style::SPACE_SM);
+                    if chrome_button(ui, "Cancel", ButtonKind::Secondary, colors, 96.0).clicked() {
                         deny_once = true;
                     }
                 });
-                ui.add_space(4.0);
-                crate::ui::shortcuts::key_combo_list(ui, &[&["↵"]], Some("submit"), colors);
-                crate::ui::shortcuts::key_combo_list(ui, &[&["⎋"]], Some("cancel"), colors);
+                let hints = [
+                    HintGroup::new(&["Enter"], "submit"),
+                    HintGroup::new(&["Esc"], "cancel"),
+                ];
+                HintBar::new(&hints).show(ui, colors);
             }
         });
     if response.dismissed {

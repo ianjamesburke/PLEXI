@@ -334,6 +334,55 @@ mod tests {
         println!("Screenshot saved to /tmp/plexi_with_pane.png");
     }
 
+    #[test]
+    fn screenshot_host_ui_gallery_trust_states() {
+        let mut h = PlexiUiHarness::new_sized(1280.0, 900.0);
+        add_focused_pane(&mut h);
+        h.step();
+        h.with_app_mut(|app| {
+            app.show_ui_gallery = true;
+        });
+        h.run_steps(2);
+        h.save_screenshot("/tmp/plexi_host_ui_gallery_trust.png")
+            .expect("render failed");
+        assert!(
+            h.with_app(|app| app.show_ui_gallery),
+            "gallery should remain open for screenshot"
+        );
+        println!("Screenshot saved to /tmp/plexi_host_ui_gallery_trust.png");
+    }
+
+    #[test]
+    fn screenshot_permission_prompt_uses_host_chrome() {
+        let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
+        let pane_id = add_focused_pane(&mut h);
+        h.step();
+        h.with_app_mut(|app| {
+            let win = &mut app.windows[app.active_window];
+            let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane_id) else {
+                panic!("test pane missing");
+            };
+            let AppRuntime::Process(process) = &mut app_pane.runtime else {
+                panic!("test pane is not process app");
+            };
+            process
+                .pending_prompts
+                .push_back(crate::process_app::PendingPrompt::Capability {
+                    request_id: "test-permission".to_string(),
+                    capability: "fs.read".to_string(),
+                });
+            app.focus_stack.push(FocusLayer::CapabilityModal);
+        });
+        h.run_steps(2);
+        h.save_screenshot("/tmp/plexi_permission_prompt_chrome.png")
+            .expect("render failed");
+        assert!(
+            h.with_app(|app| matches!(app.focus_stack.last(), Some(FocusLayer::CapabilityModal))),
+            "capability modal should own focus for screenshot"
+        );
+        println!("Screenshot saved to /tmp/plexi_permission_prompt_chrome.png");
+    }
+
     // ── Regression: layout flows ──────────────────────────────────────────────
 
     #[test]

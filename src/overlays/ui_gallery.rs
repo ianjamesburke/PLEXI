@@ -7,7 +7,7 @@ use crate::ui::{
     overlay::ModalShell,
     row::selectable_row,
     shortcuts::key_chip,
-    surface::{color_swatch, empty_state_panel, status_chip},
+    surface::{color_swatch, empty_state_panel, status_chip, trust_decision_panel, TrustTone},
     text_field::TextField,
 };
 
@@ -43,6 +43,49 @@ impl PlexiApp {
                         chrome_section(ui, "Modal shell", &colors, |ui| {
                             token_strip(ui, &colors);
                             hint_bar(ui, &colors);
+                        });
+
+                        chrome_section(ui, "Trust and confirmations", &colors, |ui| {
+                            ui.horizontal(|ui| {
+                                chrome_button(ui, "Install", ButtonKind::Primary, &colors, 88.0);
+                                chrome_button(ui, "Cancel", ButtonKind::Secondary, &colors, 88.0);
+                                chrome_button(
+                                    ui,
+                                    "Deny forever",
+                                    ButtonKind::Danger,
+                                    &colors,
+                                    116.0,
+                                );
+                            });
+                            let hints = [
+                                HintGroup::new(&["Enter"], "confirm"),
+                                HintGroup::new(&["Esc"], "cancel"),
+                                HintGroup::new(&["Shift", "Esc"], "deny forever"),
+                            ];
+                            HintBar::new(&hints).show(ui, &colors);
+                            trust_decision_panel(
+                                ui,
+                                "first-party core",
+                                "Built into Plexi and installed with the host.",
+                                TrustTone::Neutral,
+                                &colors,
+                            );
+                            ui.add_space(style::SPACE_SM);
+                            trust_decision_panel(
+                                ui,
+                                "fs.read",
+                                "Reads files selected by the user or workspace policy.",
+                                TrustTone::Warning,
+                                &colors,
+                            );
+                            ui.add_space(style::SPACE_SM);
+                            trust_decision_panel(
+                                ui,
+                                "terminal.spawn",
+                                "Can start local processes. Grant only to apps you trust.",
+                                TrustTone::Danger,
+                                &colors,
+                            );
                         });
 
                         chrome_section(ui, "Rows", &colors, |ui| {

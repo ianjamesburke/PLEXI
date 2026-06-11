@@ -3,13 +3,48 @@ use crate::ui::style;
 use crate::ui::theme::Colors;
 
 pub(crate) struct HintGroup<'a> {
-    keys: &'a [&'a str],
+    combos: HintCombos<'a>,
     label: &'a str,
+}
+
+enum HintCombos<'a> {
+    One(&'a [&'a str]),
+    Many(&'a [&'a [&'a str]]),
 }
 
 impl<'a> HintGroup<'a> {
     pub(crate) fn new(keys: &'a [&'a str], label: &'a str) -> Self {
-        Self { keys, label }
+        Self {
+            combos: HintCombos::One(keys),
+            label,
+        }
+    }
+
+    pub(crate) fn alternatives(combos: &'a [&'a [&'a str]], label: &'a str) -> Self {
+        Self {
+            combos: HintCombos::Many(combos),
+            label,
+        }
+    }
+
+    fn width(&self, ui: &egui::Ui) -> f32 {
+        match self.combos {
+            HintCombos::One(keys) => shortcuts::key_combo_list_width(ui, &[keys], Some(self.label)),
+            HintCombos::Many(combos) => {
+                shortcuts::key_combo_list_width(ui, combos, Some(self.label))
+            }
+        }
+    }
+
+    fn show(&self, ui: &mut egui::Ui, colors: &Colors) {
+        match self.combos {
+            HintCombos::One(keys) => {
+                shortcuts::key_combo_list(ui, &[keys], Some(self.label), colors)
+            }
+            HintCombos::Many(combos) => {
+                shortcuts::key_combo_list(ui, combos, Some(self.label), colors);
+            }
+        }
     }
 }
 
@@ -32,17 +67,13 @@ impl<'a> HintBar<'a> {
         ui.add_space(style::SPACE_MD);
 
         // Center the hint groups in the footer.
-        let total: f32 = self
-            .groups
-            .iter()
-            .map(|g| shortcuts::key_combo_list_width(ui, &[g.keys], Some(g.label)))
-            .sum::<f32>()
+        let total: f32 = self.groups.iter().map(|g| g.width(ui)).sum::<f32>()
             + style::SPACE_MD * self.groups.len().saturating_sub(1) as f32;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = style::SPACE_MD;
             ui.add_space(((full - total) / 2.0).max(0.0));
             for group in self.groups {
-                shortcuts::key_combo_list(ui, &[group.keys], Some(group.label), colors);
+                group.show(ui, colors);
             }
         });
     }

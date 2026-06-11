@@ -83,3 +83,57 @@ pub(crate) fn empty_state_panel(
         })
         .response
 }
+
+pub(crate) enum TrustTone {
+    Neutral,
+    Warning,
+    Danger,
+}
+
+pub(crate) fn trust_decision_panel(
+    ui: &mut egui::Ui,
+    title: &str,
+    detail: &str,
+    tone: TrustTone,
+    colors: &Colors,
+) -> egui::Response {
+    let accent = match tone {
+        TrustTone::Neutral => colors.accent,
+        TrustTone::Warning => colors.warning,
+        TrustTone::Danger => colors.danger,
+    };
+    egui::Frame::new()
+        .fill(colors.bg_toolbar)
+        .stroke(egui::Stroke::new(1.0, accent.gamma_multiply(0.45)))
+        .corner_radius(style::RADIUS_MD)
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (dot_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
+                ui.painter().circle_filled(dot_rect.center(), 4.5, accent);
+                ui.add_space(style::SPACE_SM);
+                ui.vertical(|ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(title)
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.text_primary)
+                                .strong(),
+                        )
+                        .wrap(),
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(detail)
+                                .size(style::TEXT_HINT)
+                                .color(colors.text_dim),
+                        )
+                        .wrap(),
+                    );
+                });
+            });
+        })
+        .response
+}
