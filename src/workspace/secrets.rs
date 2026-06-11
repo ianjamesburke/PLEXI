@@ -720,6 +720,53 @@ pub fn write_default_route(
         .map_err(|e| format!("write {}: {e}", secrets_path.display()))
 }
 
+/// Update `[terminal.env] inject = [...]` in workspace `secrets.toml`.
+///
+/// Workspace-scoped secrets default to terminal injection on when created by
+/// the native Secrets app or CLI. This helper is also used by the native app
+/// toggle so the TOML file remains the durable source of policy.
+pub fn write_terminal_env_inject(
+    workspace_root: &Path,
+    canonical: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    let secrets_path = workspace_root
+        .join(crate::config::workspace_channel_dir())
+        .join("secrets.toml");
+
+    if !secrets_path.exists() {
+        let dir = workspace_root.join(crate::config::workspace_channel_dir());
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        let inject = if enabled {
+            format!("  \"{canonical}\",\n")
+        } else {
+            String::new()
+        };
+        let content = format!("fallback = true\n\n[terminal.env]\ninject = [\n{inject}]\n");
+        return std::fs::write(&secrets_path, content)
+            .map_err(|e| format!("write {}: {e}", secrets_path.display()));
+    }
+
+    let raw = std::fs::read_to_string(&secrets_path)
+        .map_err(|e| format!("read {}: {e}", secrets_path.display()))?;
+
+    let mut names = WorkspaceSecrets::parse(&raw)
+        .map(|router| router.terminal.env.inject)
+        .unwrap_or_default();
+    let already_present = names.iter().any(|name| name == canonical);
+    if enabled && !already_present {
+        names.push(canonical.to_string());
+    } else if !enabled && already_present {
+        names.retain(|name| name != canonical);
+    } else {
+        return Ok(());
+    }
+
+    let updated = upsert_terminal_env_inject_section(&raw, &names);
+    std::fs::write(&secrets_path, updated)
+        .map_err(|e| format!("write {}: {e}", secrets_path.display()))
+}
+
 /// Insert or update `canonical = "friendly"` in the `[default]` section of a
 /// raw `secrets.toml` string, creating the section if absent.
 /// If an existing `canonical = "..."` line is found, it is replaced in-place.
@@ -776,6 +823,61 @@ fn upsert_default_route_line(raw: &str, canonical: &str, friendly: &str) -> Stri
         let base = raw.trim_end_matches('\n');
         format!("{base}\n\n[default]\n{entry_line}\n")
     }
+}
+
+fn upsert_terminal_env_inject_section(raw: &str, names: &[String]) -> String {
+    let mut names = names.to_vec();
+    names.sort();
+    names.dedup();
+
+    let section = render_terminal_env_inject_section(&names);
+    let lines: Vec<&str> = raw.lines().collect();
+    let trailing_newline = raw.ends_with('\n');
+
+    if let Some(start) = lines.iter().position(|line| {
+        let trimmed = line.trim();
+        trimmed == "[terminal.env]"
+            || (trimmed.starts_with("[terminal.env]")
+                && trimmed[14..].trim_start().starts_with('#'))
+    }) {
+        let end = lines[start + 1..]
+            .iter()
+            .position(|line| {
+                let trimmed = line.trim();
+                trimmed.starts_with('[') && !trimmed.starts_with('#')
+            })
+            .map(|pos| start + 1 + pos)
+            .unwrap_or(lines.len());
+
+        let mut parts: Vec<&str> = Vec::with_capacity(lines.len() + section.lines().count());
+        parts.extend_from_slice(&lines[..start]);
+        parts.extend(section.trim_end_matches('\n').lines());
+        parts.extend_from_slice(&lines[end..]);
+        let joined = parts.join("\n");
+        if trailing_newline {
+            format!("{joined}\n")
+        } else {
+            joined
+        }
+    } else {
+        let base = raw.trim_end_matches('\n');
+        if base.is_empty() {
+            section
+        } else {
+            format!("{base}\n\n{section}")
+        }
+    }
+}
+
+fn render_terminal_env_inject_section(names: &[String]) -> String {
+    let mut out = String::from("[terminal.env]\ninject = [\n");
+    for name in names {
+        out.push_str("  \"");
+        out.push_str(name);
+        out.push_str("\",\n");
+    }
+    out.push_str("]\n");
+    out
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1216,6 +1318,68 @@ mod tests {
         );
         assert!(!raw.contains("old_alias"), "stale entry not removed: {raw}");
         WorkspaceSecrets::parse(&raw).expect("must parse");
+    }
+
+    #[test]
+    fn write_terminal_env_inject_creates_file_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
+
+        write_terminal_env_inject(tmp.path(), "OPENROUTER_API_KEY", true).expect("should succeed");
+
+        let raw =
+            std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
+        let parsed = WorkspaceSecrets::parse(&raw).expect("must parse");
+        assert!(parsed.fallback);
+        assert_eq!(
+            parsed.terminal.env.inject,
+            vec!["OPENROUTER_API_KEY".to_string()]
+        );
+    }
+
+    #[test]
+    fn write_terminal_env_inject_adds_and_removes_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
+        let initial = "fallback = true\n\n[default]\nOPENAI_API_KEY = \"openai\"\n";
+        std::fs::write(tmp.path().join(&channel_dir).join("secrets.toml"), initial).unwrap();
+
+        write_terminal_env_inject(tmp.path(), "OPENAI_API_KEY", true).expect("enable");
+        write_terminal_env_inject(tmp.path(), "OPENROUTER_API_KEY", true).expect("enable");
+        write_terminal_env_inject(tmp.path(), "OPENAI_API_KEY", false).expect("disable");
+
+        let raw =
+            std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
+        let parsed = WorkspaceSecrets::parse(&raw).expect("must parse");
+        assert_eq!(
+            parsed.default.get("OPENAI_API_KEY").map(String::as_str),
+            Some("openai")
+        );
+        assert_eq!(
+            parsed.terminal.env.inject,
+            vec!["OPENROUTER_API_KEY".to_string()]
+        );
+    }
+
+    #[test]
+    fn write_terminal_env_inject_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let channel_dir = crate::config::workspace_channel_dir();
+        std::fs::create_dir_all(tmp.path().join(&channel_dir)).unwrap();
+        let initial = "fallback = true\n\n[terminal.env]\ninject = [\n  \"OPENAI_API_KEY\",\n]\n";
+        std::fs::write(tmp.path().join(&channel_dir).join("secrets.toml"), initial).unwrap();
+
+        write_terminal_env_inject(tmp.path(), "OPENAI_API_KEY", true).expect("enable");
+
+        let raw =
+            std::fs::read_to_string(tmp.path().join(&channel_dir).join("secrets.toml")).unwrap();
+        assert_eq!(
+            raw.matches("OPENAI_API_KEY").count(),
+            1,
+            "duplicate entry: {raw}"
+        );
     }
 
     #[test]
