@@ -43,57 +43,6 @@ use crate::app::PlexiApp;
 pub(crate) const MODAL_WIDTH: f32 = 400.0;
 pub(crate) const R6: CornerRadius = CornerRadius::same(6);
 
-/// Render a centered modal with scrim, cancel-on-click-outside, and consistent chrome.
-/// Returns `Some(R)` with the content's return value, or `None` if the scrim was clicked
-/// (in which case `*cancelled` is set to `true`).
-pub(crate) fn modal_shell<R>(
-    ctx: &egui::Context,
-    id: &str,
-    colors: &crate::ui::theme::Colors,
-    cancelled: &mut bool,
-    content: impl FnOnce(&mut egui::Ui) -> R,
-) -> Option<R> {
-    let screen_rect = ctx.screen_rect();
-
-    // Scrim
-    egui::Area::new(egui::Id::new(format!("{id}_scrim")))
-        .fixed_pos(screen_rect.min)
-        .order(egui::Order::Middle)
-        .show(ctx, |ui| {
-            ui.painter().rect_filled(
-                screen_rect,
-                0.0,
-                egui::Color32::from_black_alpha(style::SCRIM_ALPHA),
-            );
-            let scrim_response = ui.allocate_rect(screen_rect, egui::Sense::click());
-            if scrim_response.clicked() {
-                *cancelled = true;
-            }
-        });
-
-    // Modal
-    let resp = egui::Area::new(egui::Id::new(id))
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            egui::Frame::new()
-                .fill(colors.bg_sidebar)
-                .stroke(egui::Stroke::new(1.0, colors.border))
-                .corner_radius(style::RADIUS_LG)
-                .inner_margin(egui::Margin::symmetric(
-                    style::MODAL_PADDING_H,
-                    style::MODAL_PADDING_V,
-                ))
-                .show(ui, |ui| {
-                    ui.set_width(MODAL_WIDTH);
-                    content(ui)
-                })
-                .inner
-        });
-
-    Some(resp.inner)
-}
-
 /// Show a native macOS folder picker using rfd's async API.
 /// Blocks the calling (background) thread; must NOT be called on the main thread.
 pub(crate) fn pick_folder() -> Option<std::path::PathBuf> {

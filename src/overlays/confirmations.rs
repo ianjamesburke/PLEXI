@@ -12,38 +12,34 @@ impl PlexiApp {
 
     pub(crate) fn draw_quit_confirm_overlay(&self, ctx: &egui::Context) {
         let count = self.quit_press_count;
-        egui::Area::new(egui::Id::new("quit_confirm_overlay"))
+        // Bottom-hung progress toast, not a blocking dialog: no scrim, and
+        // width follows content rather than the modal default.
+        crate::ui::overlay::ModalShell::centered("quit_confirm_overlay")
             .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -40.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
-                    .stroke(Stroke::new(1.0, self.colors.border))
-                    .corner_radius(crate::ui::style::RADIUS_LG)
-                    .inner_margin(egui::Margin::symmetric(16, 10))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(format!(
-                                    "\u{2318}Q pressed {} of 3 — press again to quit",
-                                    count
-                                ))
-                                .size(12.0)
-                                .color(self.colors.text_dim),
-                            );
-                            ui.add_space(8.0);
-                            for i in 1u8..=3 {
-                                let color = if i <= count {
-                                    self.colors.accent
-                                } else {
-                                    self.colors.bg_active
-                                };
-                                let (rect, _) = ui
-                                    .allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
-                                ui.painter().circle_filled(rect.center(), 4.0, color);
-                            }
-                        });
-                    });
+            .scrim(false)
+            .width(0.0)
+            .show(ctx, &self.colors, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "\u{2318}Q pressed {} of 3 — press again to quit",
+                            count
+                        ))
+                        .size(style::TEXT_CAPTION)
+                        .color(self.colors.text_dim),
+                    );
+                    ui.add_space(style::SPACE_SM);
+                    for i in 1u8..=3 {
+                        let color = if i <= count {
+                            self.colors.accent
+                        } else {
+                            self.colors.bg_active
+                        };
+                        let (rect, _) =
+                            ui.allocate_exact_size(Vec2::new(8.0, 8.0), egui::Sense::hover());
+                        ui.painter().circle_filled(rect.center(), 4.0, color);
+                    }
+                });
             });
     }
 
@@ -67,33 +63,22 @@ impl PlexiApp {
             }
         });
 
-        // Scrim + centered modal with consistent chrome.
-        // `scrim_cancelled`: set by modal_shell when user clicks outside the modal.
-        // `btn_cancelled`: set by the Cancel button inside the closure.
-        // `btn_confirmed`: set by the Close button inside the closure.
-        // All three are merged into `confirmed`/`cancelled` after the call.
-        let mut scrim_cancelled = false;
-        let (btn_confirmed, btn_cancelled) = modal_shell(
-            ctx,
-            "confirm_close_overlay",
-            &self.colors,
-            &mut scrim_cancelled,
-            |ui| {
-                let mut c = false;
-                let mut k = false;
-                ui.label(
-                    RichText::new("Close pane?")
-                        .size(13.0)
-                        .color(self.colors.text_primary)
-                        .strong(),
-                );
-                ui.add_space(6.0);
+        // Centered kit modal. Click-away sets `dismissed` (the old scrim
+        // cancel); button results come out via the captured locals.
+        let mut btn_confirmed = false;
+        let mut btn_cancelled = false;
+        let response = crate::ui::overlay::ModalShell::centered("confirm_close_overlay")
+            .title("Close pane?")
+            .width(super::MODAL_WIDTH)
+            .show(ctx, &self.colors, |ui| {
+                let c = &mut btn_confirmed;
+                let k = &mut btn_cancelled;
                 ui.label(
                     RichText::new("The running process will be terminated.")
-                        .size(12.0)
+                        .size(style::TEXT_CAPTION)
                         .color(self.colors.text_dim),
                 );
-                ui.add_space(12.0);
+                ui.add_space(style::SPACE_MD);
                 ui.horizontal(|ui| {
                     if ui
                         .add(
@@ -107,7 +92,7 @@ impl PlexiApp {
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {
-                        c = true;
+                        *c = true;
                     }
                     ui.add_space(8.0);
                     if ui
@@ -122,7 +107,7 @@ impl PlexiApp {
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {
-                        k = true;
+                        *k = true;
                     }
                     ui.add_space(12.0);
                     crate::ui::widgets::key_chip(
@@ -149,12 +134,9 @@ impl PlexiApp {
                             .color(self.colors.text_dim),
                     );
                 });
-                (c, k)
-            },
-        )
-        .unwrap_or((false, false));
+            });
         confirmed |= btn_confirmed;
-        cancelled |= scrim_cancelled | btn_cancelled;
+        cancelled |= response.dismissed | btn_cancelled;
 
         if confirmed {
             self.pending_close = false;
@@ -289,29 +271,21 @@ impl PlexiApp {
         });
 
         let colors = self.colors;
-        // Scrim + centered modal with consistent chrome.
-        let mut scrim_cancelled = false;
-        let (btn_close_all, btn_dissolve, btn_cancelled) = modal_shell(
-            ctx,
-            "ctx_close_confirm_modal",
-            &colors,
-            &mut scrim_cancelled,
-            |ui| {
-                let mut ca = false;
-                let mut dv = false;
-                let mut ck = false;
-                let title = if state.context_name.is_empty() {
-                    "Close context?".to_string()
-                } else {
-                    format!("Close \"{}\"?", state.context_name)
-                };
-                ui.label(
-                    RichText::new(&title)
-                        .size(13.0)
-                        .color(colors.text_primary)
-                        .strong(),
-                );
-                ui.add_space(8.0);
+        let title = if state.context_name.is_empty() {
+            "Close context?".to_string()
+        } else {
+            format!("Close \"{}\"?", state.context_name)
+        };
+        let mut btn_close_all = false;
+        let mut btn_dissolve = false;
+        let mut btn_cancelled = false;
+        let response = crate::ui::overlay::ModalShell::centered("ctx_close_confirm_modal")
+            .title(&title)
+            .width(super::MODAL_WIDTH)
+            .show(ctx, &colors, |ui| {
+                let ca = &mut btn_close_all;
+                let dv = &mut btn_dissolve;
+                let ck = &mut btn_cancelled;
 
                 for item in &state.items {
                     let label = format!("{} — {}", item.kind, item.name);
@@ -336,7 +310,7 @@ impl PlexiApp {
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {
-                        ca = true;
+                        *ca = true;
                     }
                     ui.add_space(6.0);
                     if ui
@@ -349,7 +323,7 @@ impl PlexiApp {
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {
-                        dv = true;
+                        *dv = true;
                     }
                     ui.add_space(6.0);
                     if ui
@@ -362,7 +336,7 @@ impl PlexiApp {
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                     {
-                        ck = true;
+                        *ck = true;
                     }
                 });
 
@@ -404,13 +378,10 @@ impl PlexiApp {
                             .color(colors.text_dim),
                     );
                 });
-                (ca, dv, ck)
-            },
-        )
-        .unwrap_or((false, false, false));
+            });
         close_all |= btn_close_all;
         dissolve |= btn_dissolve;
-        cancelled |= scrim_cancelled | btn_cancelled;
+        cancelled |= response.dismissed | btn_cancelled;
 
         if close_all {
             let idx = self
