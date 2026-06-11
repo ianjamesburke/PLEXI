@@ -53,6 +53,39 @@ pub struct Colors {
 }
 
 impl Colors {
+    /// Readable foreground for text drawn on `fill` (accent buttons, danger
+    /// buttons, swatches). Picks whichever of `text_primary` / `bg_darkest`
+    /// has the higher WCAG contrast ratio against the fill; if neither
+    /// palette color reaches 3:1 (e.g. a mid-luminance accent), falls back to
+    /// pure black/white so text is never illegible on any theme — including
+    /// user-customized accents. Never hard-code WHITE or `bg_darkest` on a
+    /// colored fill.
+    pub fn text_on(&self, fill: Color32) -> Color32 {
+        fn luminance(c: Color32) -> f32 {
+            let rgba = egui::Rgba::from(c);
+            0.2126 * rgba.r() + 0.7152 * rgba.g() + 0.0722 * rgba.b()
+        }
+        fn contrast(a: f32, b: f32) -> f32 {
+            let (hi, lo) = if a > b { (a, b) } else { (b, a) };
+            (hi + 0.05) / (lo + 0.05)
+        }
+        let fill_lum = luminance(fill);
+        let primary_contrast = contrast(luminance(self.text_primary), fill_lum);
+        let darkest_contrast = contrast(luminance(self.bg_darkest), fill_lum);
+        let (best, best_contrast) = if primary_contrast >= darkest_contrast {
+            (self.text_primary, primary_contrast)
+        } else {
+            (self.bg_darkest, darkest_contrast)
+        };
+        if best_contrast >= 3.0 {
+            best
+        } else if contrast(0.0, fill_lum) > contrast(1.0, fill_lum) {
+            Color32::BLACK
+        } else {
+            Color32::WHITE
+        }
+    }
+
     pub fn from_config(cfg: &ThemeConfig) -> Self {
         Self {
             bg_darkest: parse_hex_or(&cfg.bg_darkest, Color32::from_rgb(0x11, 0x11, 0x1b)),
@@ -843,4 +876,39 @@ pub fn font_definitions() -> egui::FontDefinitions {
 
 pub fn setup_fonts(ctx: &egui::Context) {
     ctx.set_fonts(font_definitions());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every preset's accent button must render legible text: text_on must
+    /// return a color with at least 3:1 WCAG contrast against the accent and
+    /// danger fills. Guards the whole preset table, including future entries.
+    #[test]
+    fn text_on_is_legible_on_every_preset_accent_and_danger() {
+        fn luminance(c: Color32) -> f32 {
+            let rgba = egui::Rgba::from(c);
+            0.2126 * rgba.r() + 0.7152 * rgba.g() + 0.0722 * rgba.b()
+        }
+        fn contrast(a: Color32, b: Color32) -> f32 {
+            let (hi, lo) = if luminance(a) > luminance(b) {
+                (luminance(a), luminance(b))
+            } else {
+                (luminance(b), luminance(a))
+            };
+            (hi + 0.05) / (lo + 0.05)
+        }
+        for name in preset_names() {
+            let cfg = preset_colors(name).unwrap();
+            let colors = Colors::from_config(&cfg);
+            for fill in [colors.accent, colors.danger] {
+                let text = colors.text_on(fill);
+                assert!(
+                    contrast(text, fill) >= 3.0,
+                    "{name}: text_on({fill:?}) = {text:?} is below 3:1 contrast"
+                );
+            }
+        }
+    }
 }

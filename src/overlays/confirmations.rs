@@ -100,7 +100,7 @@ impl PlexiApp {
                             egui::Button::new(
                                 RichText::new("Close")
                                     .size(12.0)
-                                    .color(self.colors.bg_darkest),
+                                    .color(self.colors.text_on(self.colors.danger)),
                             )
                             .fill(self.colors.danger),
                         )
@@ -329,7 +329,7 @@ impl PlexiApp {
                             egui::Button::new(
                                 RichText::new("Close all")
                                     .size(12.0)
-                                    .color(colors.bg_darkest),
+                                    .color(colors.text_on(colors.danger)),
                             )
                             .fill(colors.danger),
                         )

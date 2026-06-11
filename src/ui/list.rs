@@ -72,28 +72,9 @@ impl<'a> ListRow<'a> {
         let trailing_hovered =
             trailing_rect.is_some_and(|r| ui.rect_contains_pointer(r));
 
-        // Selection language shared with the PGAP ListView renderer: inset
-        // rounded accent-tinted highlight with an accent rail on the left.
-        let inset = egui::Rect::from_min_max(
-            Pos2::new(rect.min.x + 4.0, rect.min.y + 1.0),
-            Pos2::new(rect.max.x - 4.0, rect.max.y - 1.0),
-        );
+        let inset = selection_inset(rect);
         if self.selected {
-            ui.painter().rect_filled(
-                inset,
-                style::RADIUS_SM,
-                colors.accent.gamma_multiply(0.14),
-            );
-            ui.painter().rect_filled(
-                egui::Rect::from_min_size(inset.min, Vec2::new(3.0, inset.height())),
-                CornerRadius {
-                    nw: 6,
-                    sw: 6,
-                    ne: 0,
-                    se: 0,
-                },
-                colors.accent,
-            );
+            paint_selection(ui.painter(), rect, colors);
         } else if self.danger_trailing && trailing_hovered {
             // Hovering a destructive action warns at row level: soft danger
             // tint + hairline danger outline before anything is clicked.
@@ -287,6 +268,29 @@ fn elide_to_width(ui: &egui::Ui, text: &str, font_id: egui::FontId, max_width: f
     }
     out.push_str(ELLIPSIS);
     out
+}
+
+/// The selection highlight stops 4px short of the row's horizontal edges and
+/// 1px vertically, so adjacent selected rows don't fuse into one slab.
+fn selection_inset(row_rect: egui::Rect) -> egui::Rect {
+    egui::Rect::from_min_max(
+        Pos2::new(row_rect.min.x + 4.0, row_rect.min.y + 1.0),
+        Pos2::new(row_rect.max.x - 4.0, row_rect.max.y - 1.0),
+    )
+}
+
+/// Shared selection treatment for the host ListRow and the PGAP ListView
+/// renderer: inset accent-tinted fill with a soft accent outline. One visual
+/// language for "this row is selected" everywhere in the product.
+pub fn paint_selection(painter: &egui::Painter, row_rect: egui::Rect, colors: &Colors) {
+    let inset = selection_inset(row_rect);
+    painter.rect_filled(inset, style::RADIUS_SM, colors.accent.gamma_multiply(0.14));
+    painter.rect_stroke(
+        inset,
+        style::RADIUS_SM,
+        Stroke::new(1.0, colors.accent.gamma_multiply(0.45)),
+        StrokeKind::Inside,
+    );
 }
 
 /// Trailing actions sit further off the row edge than body content — they are

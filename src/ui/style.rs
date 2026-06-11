@@ -63,7 +63,9 @@ pub const BUTTON_H_MD: f32 = 32.0; // Standard form buttons.
 pub const BUTTON_H_LG: f32 = 52.0; // Primary action buttons in modals.
 
 // ── List rows ──────────────────────────────────────────────────────────────
-pub const LIST_ROW_H: f32 = 40.0;
+// 44 gives a two-line row (12pt medium + 11pt secondary) ~7px of air inside
+// the selection highlight — 40 read as cramped once the outline landed.
+pub const LIST_ROW_H: f32 = 44.0;
 pub const LIST_ROW_PAD_H: f32 = 10.0;
 pub const LIST_ROW_GAP: f32 = 8.0;
 

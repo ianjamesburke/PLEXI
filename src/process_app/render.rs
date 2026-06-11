@@ -547,32 +547,11 @@ pub(crate) fn render_draw_commands(
                         );
                         let is_sel = i == (*selected).min(items.len().saturating_sub(1));
 
-                        // Selection: inset rounded accent-tinted highlight with
-                        // an accent rail. Unselected rows stay transparent on
+                        // Selection: shared host treatment (inset accent tint
+                        // + soft outline). Unselected rows stay transparent on
                         // the pane background — no zebra striping.
                         if is_sel {
-                            let sel_rect = egui::Rect::from_min_max(
-                                egui::pos2(row_rect.min.x + 4.0, row_rect.min.y + 1.0),
-                                egui::pos2(row_rect.max.x - 4.0, row_rect.max.y - 1.0),
-                            );
-                            painter.rect_filled(
-                                sel_rect,
-                                crate::ui::style::RADIUS_SM,
-                                colors.accent.gamma_multiply(0.14),
-                            );
-                            painter.rect_filled(
-                                egui::Rect::from_min_size(
-                                    sel_rect.min,
-                                    egui::vec2(3.0, sel_rect.height()),
-                                ),
-                                egui::CornerRadius {
-                                    nw: 6,
-                                    sw: 6,
-                                    ne: 0,
-                                    se: 0,
-                                },
-                                colors.accent,
-                            );
+                            crate::ui::list::paint_selection(&painter, row_rect, colors);
                         }
 
                         match item {

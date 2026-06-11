@@ -192,7 +192,7 @@ pub(crate) fn show_prompt_modal(
                                         egui::Button::new(
                                             egui::RichText::new("Grant Once")
                                                 .size(crate::ui::style::TEXT_CAPTION)
-                                                .color(colors.bg_darkest),
+                                                .color(colors.text_on(colors.accent)),
                                         )
                                         .fill(colors.accent),
                                     )
@@ -207,7 +207,7 @@ pub(crate) fn show_prompt_modal(
                                         egui::Button::new(
                                             egui::RichText::new("Grant Forever")
                                                 .size(crate::ui::style::TEXT_CAPTION)
-                                                .color(colors.bg_darkest),
+                                                .color(colors.text_on(colors.accent)),
                                         )
                                         .fill(colors.accent),
                                     )
@@ -239,7 +239,7 @@ pub(crate) fn show_prompt_modal(
                                         egui::Button::new(
                                             egui::RichText::new("Deny Forever")
                                                 .size(crate::ui::style::TEXT_CAPTION)
-                                                .color(colors.bg_darkest),
+                                                .color(colors.text_on(colors.danger)),
                                         )
                                         .fill(colors.danger),
                                     )
@@ -302,7 +302,7 @@ pub(crate) fn show_prompt_modal(
                                         egui::Button::new(
                                             egui::RichText::new("Submit")
                                                 .size(crate::ui::style::TEXT_CAPTION)
-                                                .color(colors.bg_darkest),
+                                                .color(colors.text_on(colors.accent)),
                                         )
                                         .fill(colors.accent),
                                     )

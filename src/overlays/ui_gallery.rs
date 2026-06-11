@@ -13,10 +13,12 @@ impl PlexiApp {
         }
 
         let colors = self.colors.clone();
+        // Escape is gated off while the nested text-entry demo is open so the
+        // nested modal consumes it first — otherwise one press closes both.
         let response = ModalShell::centered("host_ui_gallery")
             .title("Host UI Gallery")
             .width(style::MODAL_WIDTH_NOTIFY)
-            .escape(true)
+            .escape(!self.ui_gallery_show_text_modal)
             .show(ctx, &colors, |ui| {
                 ui.label(
                     RichText::new("Chrome primitives")
@@ -101,6 +103,24 @@ impl PlexiApp {
                             );
                         });
 
+                        gallery_section(ui, "Modal patterns", &colors, |ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Open text-entry modal")
+                                            .size(style::TEXT_BODY)
+                                            .color(colors.text_primary),
+                                    )
+                                    .fill(colors.bg_active)
+                                    .min_size(egui::vec2(180.0, style::BUTTON_H_MD)),
+                                )
+                                .clicked()
+                            {
+                                self.ui_gallery_show_text_modal = true;
+                                log::info!("ui_gallery: opened text-entry modal demo");
+                            }
+                        });
+
                         gallery_section(ui, "Buttons and chips", &colors, |ui| {
                             ui.horizontal(|ui| {
                                 button_sample(ui, "Primary", colors.accent, &colors);
@@ -163,9 +183,38 @@ impl PlexiApp {
                     });
             });
 
-        if response.dismissed {
+        // Ignore gallery click-away while the nested demo is open — a click
+        // inside the nested modal must not tear down the gallery under it.
+        if response.dismissed && !self.ui_gallery_show_text_modal {
             self.show_ui_gallery = false;
             log::info!("ui_gallery: closed by escape or click-away");
+        }
+
+        if self.ui_gallery_show_text_modal {
+            let entry = ModalShell::centered("host_ui_gallery_text_modal")
+                .title("Text entry")
+                .width(style::MODAL_WIDTH_MD)
+                .escape(true)
+                .show(ctx, &colors, |ui| {
+                    TextField::singleline(
+                        egui::Id::new("host_ui_gallery_modal_field"),
+                        "Type something...",
+                    )
+                    .focused(true)
+                    .log_name("ui_gallery_modal")
+                    .show(ui, &mut self.ui_gallery_modal_buf, &colors);
+                    let hints = [
+                        HintGroup::new(&["\u{23ce}"], "save"),
+                        HintGroup::new(&["esc"], "dismiss"),
+                    ];
+                    HintBar::new(&hints).show(ui, &colors);
+                });
+            let enter =
+                ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+            if entry.dismissed || enter {
+                self.ui_gallery_show_text_modal = false;
+                log::info!("ui_gallery: text-entry modal demo closed");
+            }
         }
     }
 }
@@ -215,7 +264,7 @@ fn color_swatch(
         Align2::CENTER_CENTER,
         label,
         egui::FontId::proportional(style::TEXT_HINT),
-        colors.text_primary,
+        colors.text_on(fill),
     );
 }
 
@@ -239,7 +288,7 @@ fn button_sample(
     let button = egui::Button::new(
         RichText::new(label)
             .size(style::TEXT_BODY)
-            .color(colors.text_primary),
+            .color(colors.text_on(fill)),
     )
     .fill(fill)
     .stroke(egui::Stroke::new(1.0, colors.border))

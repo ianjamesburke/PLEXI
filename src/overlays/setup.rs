@@ -352,13 +352,18 @@ impl PlexiApp {
                     .corner_radius(R6)
                     .inner_margin(egui::Margin::symmetric(16, 10))
                     .show(ui, |ui| {
-                        // All controls share one height; the initial row height
-                        // must match it (egui's horizontal() centers children
-                        // against interact_size.y — if a later child is taller,
-                        // earlier children end up visibly above center).
+                        // egui's horizontal() centers children against the row
+                        // height at placement time (initially interact_size.y).
+                        // Any child that ends up taller grows the row downward
+                        // WITHOUT re-centering earlier children — so every
+                        // child here must stay <= CONTROL_H or the label drifts
+                        // toward the top. The copy button was the inflator:
+                        // caption text + global 6px button padding ≈ 27px,
+                        // inside a chip frame with 6px margins ≈ 39px.
                         const CONTROL_H: f32 = 28.0;
                         ui.spacing_mut().interact_size.y = CONTROL_H;
                         ui.spacing_mut().item_spacing.x = style::SPACE_MD;
+                        ui.spacing_mut().button_padding = egui::vec2(12.0, 4.0);
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new("Shell completions aren't set up.")
@@ -368,8 +373,11 @@ impl PlexiApp {
                             egui::Frame::new()
                                 .fill(colors.bg_darkest)
                                 .corner_radius(R6)
-                                .inner_margin(egui::Margin::symmetric(10, 6))
+                                .inner_margin(egui::Margin::symmetric(10, 3))
                                 .show(ui, |ui| {
+                                    // Chip interior: 22 + 3px margins = 28.
+                                    ui.spacing_mut().interact_size.y = CONTROL_H - 6.0;
+                                    ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
                                     ui.spacing_mut().item_spacing.x = style::SPACE_SM;
                                     ui.horizontal(|ui| {
                                         ui.label(

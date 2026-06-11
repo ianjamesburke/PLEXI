@@ -587,7 +587,7 @@ impl CliRendererApp {
             let btn = egui::Button::new(
                 RichText::new(run_text)
                     .size(style::TEXT_BODY)
-                    .color(Color32::WHITE),
+                    .color(colors.text_on(colors.accent)),
             )
             .fill(colors.accent)
             .corner_radius(style::RADIUS_MD)
