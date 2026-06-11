@@ -6,7 +6,10 @@
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext, KeyDisposition};
 use crate::app::plexi_descriptor::{ArgSpec, ArgType, Command, PlexiDescriptor};
-use crate::ui::style;
+use crate::ui::{
+    button::{self, ButtonKind},
+    style,
+};
 use egui::{self, Color32, RichText, Vec2};
 use std::collections::HashMap;
 
@@ -527,16 +530,14 @@ impl CliRendererApp {
         // Back button
         ui.horizontal(|ui| {
             ui.add_space(style::SPACE_MD);
-            if ui
-                .add(
-                    egui::Button::new(
-                        RichText::new("← Back")
-                            .size(style::TEXT_CAPTION)
-                            .color(colors.text_dim),
-                    )
-                    .frame(false),
-                )
-                .clicked()
+            if button::toolbar_button(
+                ui,
+                RichText::new("← Back")
+                    .size(style::TEXT_CAPTION)
+                    .color(colors.text_dim),
+                "Back",
+            )
+            .clicked()
             {
                 self.navigate_back();
             }
@@ -584,16 +585,7 @@ impl CliRendererApp {
             } else {
                 "▶  Run"
             };
-            let btn = egui::Button::new(
-                RichText::new(run_text)
-                    .size(style::TEXT_BODY)
-                    .color(colors.text_on(colors.accent)),
-            )
-            .fill(colors.accent)
-            .corner_radius(style::RADIUS_MD)
-            .min_size(Vec2::new(120.0, style::BUTTON_H_MD));
-
-            if ui.add(btn).clicked() {
+            if button::chrome_button(ui, run_text, ButtonKind::Accent, colors, 120.0).clicked() {
                 self.execute();
             }
         });

@@ -1,6 +1,6 @@
 use super::*;
 use crate::ui::{
-    button::{chrome_button, ButtonKind},
+    button::{chrome_button, icon_button, toolbar_button, ButtonKind},
     hints::{HintBar, HintGroup},
     labels::{chrome_section, description_label},
     list::ListRow,
@@ -134,6 +134,7 @@ impl PlexiApp {
                                     92.0,
                                 );
                                 chrome_button(ui, "Danger", ButtonKind::Danger, &colors, 80.0);
+                                chrome_button(ui, "Accent", ButtonKind::Accent, &colors, 80.0);
                                 ui.add_enabled_ui(false, |ui| {
                                     chrome_button(
                                         ui,
@@ -143,6 +144,17 @@ impl PlexiApp {
                                         80.0,
                                     );
                                 });
+                            });
+                            ui.add_space(style::SPACE_SM);
+                            ui.horizontal(|ui| {
+                                icon_button(ui, "+", "Icon button", &colors);
+                                toolbar_button(
+                                    ui,
+                                    RichText::new("Toolbar")
+                                        .size(style::TEXT_CAPTION)
+                                        .color(colors.text_dim),
+                                    "Toolbar button",
+                                );
                             });
                             ui.add_space(style::SPACE_SM);
                             ui.horizontal(|ui| {
