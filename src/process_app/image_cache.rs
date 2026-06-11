@@ -188,6 +188,9 @@ impl ImageCache {
                         log::info!("ImageCache: loaded '{key}'");
                     }
                     self.cache.insert(key, CachedImage::Loaded(handle));
+                    crate::platform::frame_diag::note(
+                        crate::platform::frame_diag::RepaintCause::ImageCacheCompletion,
+                    );
                     egui_ctx.request_repaint();
                 }
                 Err(e) => {
@@ -199,6 +202,9 @@ impl ImageCache {
                         self.warned.insert(key.clone());
                     }
                     self.cache.insert(key, CachedImage::Error(e));
+                    crate::platform::frame_diag::note(
+                        crate::platform::frame_diag::RepaintCause::ImageCacheCompletion,
+                    );
                     egui_ctx.request_repaint();
                 }
             }

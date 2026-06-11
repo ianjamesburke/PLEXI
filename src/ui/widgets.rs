@@ -271,6 +271,7 @@ pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::
         ui.ctx().memory_mut(|m| m.data.insert_temp(id, now));
     }
     if just_copied {
+        crate::platform::frame_diag::note(crate::platform::frame_diag::RepaintCause::WidgetPulse);
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
     }

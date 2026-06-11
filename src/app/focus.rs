@@ -1072,6 +1072,9 @@ impl PlexiApp {
                         y += 3.0;
                     }
 
+                    crate::platform::frame_diag::note(
+                        crate::platform::frame_diag::RepaintCause::CrtEffect,
+                    );
                     ctx.request_repaint_after(std::time::Duration::from_millis(16));
                 });
         }

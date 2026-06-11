@@ -234,6 +234,7 @@ impl TerminalBackend {
                     {
                         break;
                     }
+                    crate::diag::diag_note("terminal_pty_output");
                     app_context.clone().request_repaint();
                     if let Event::Exit = event {
                         break;

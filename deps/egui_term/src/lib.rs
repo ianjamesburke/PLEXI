@@ -1,5 +1,6 @@
 mod backend;
 mod bindings;
+mod diag;
 mod font;
 mod graphics;
 mod theme;
@@ -9,6 +10,7 @@ mod view;
 pub use backend::settings::BackendSettings;
 pub use backend::{BackendCommand, PtyEvent, TerminalBackend, TerminalMode};
 pub use bindings::{Binding, BindingAction, InputKind, KeyboardBinding};
+pub use diag::set_repaint_diag_hook;
 pub use font::{FontSettings, TerminalFont};
 pub use theme::{ColorPalette, TerminalTheme};
 pub use view::TerminalView;

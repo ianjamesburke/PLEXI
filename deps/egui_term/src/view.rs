@@ -518,6 +518,7 @@ impl<'a> TerminalView<'a> {
                 if scroll_lines != 0 {
                     self.backend
                         .process_command(BackendCommand::Scroll(scroll_lines));
+                    crate::diag::diag_note("pointer_tracking");
                     layout
                         .ctx
                         .request_repaint_after(Duration::from_millis(150));
@@ -726,6 +727,7 @@ impl<'a> TerminalView<'a> {
                     }
                     let remaining = blink_interval
                         .saturating_sub(state.last_cursor_toggle.elapsed());
+                    crate::diag::diag_note("terminal_cursor_blink");
                     painter.ctx().request_repaint_after(remaining);
                 } else {
                     // Unfocused: hollow outline, no blink
@@ -1008,6 +1010,7 @@ impl<'a> TerminalView<'a> {
                     ),
                 );
             }
+            crate::diag::diag_note("terminal_search_blink");
             painter
                 .ctx()
                 .request_repaint_after(Duration::from_millis(530));
