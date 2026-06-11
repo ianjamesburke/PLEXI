@@ -1,7 +1,8 @@
 ---
 id: "0151"
 title: "UI hardening: finish host chrome button primitive migration"
-status: backlog
+status: in-progress
+started_at: "2026-06-11T10:05:26Z"
 sprint: "s31"
 estimate: 8h
 gh_issue: ["2172"]
