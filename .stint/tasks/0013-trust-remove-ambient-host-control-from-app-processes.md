@@ -1,9 +1,11 @@
 ---
 id: "0013"
 title: "Trust: remove ambient host control from app processes"
-status: in-progress
+status: done
 estimate: "16h"
+actual: "4h"
 started_at: "2026-06-11T10:36:59Z"
+completed_at: "2026-06-11T17:53:10Z"
 sprint: "s3"
 blocked_by: []
 gh_issue: []
@@ -16,6 +18,7 @@ tags:
   - "capabilities"
   - "marketplace"
 ---
+
 
 
 Stop app subprocesses from gaining unmediated host control through inherited routing such as `PLEXI_SOCKET`, or bind that routing to app identity and capability checks.

@@ -1,9 +1,11 @@
 ---
 id: "0014"
 title: "Trust: host-mediated Assistant capabilities"
-status: in-progress
+status: done
 estimate: "16h"
+actual: "4h"
 started_at: "2026-06-11T10:36:59Z"
+completed_at: "2026-06-11T17:53:10Z"
 sprint: "s3"
 blocked_by:
   - 13
@@ -17,6 +19,7 @@ tags:
   - "assistant"
   - "capabilities"
 ---
+
 
 
 Replace Assistant CLI subprocess control tools with host-mediated APIs and explicit capability declarations.
