@@ -20,7 +20,8 @@ The design mirrors Claude Code where the model fits Plexi:
 - Claude Code hooks run at lifecycle points such as session start, prompt submit, command expansion, pre-tool-use, permission request, post-tool-use, compaction, and session end. Source: <https://code.claude.com/docs/en/hooks>
 - Claude Code plugins package skills, commands, agents, hooks, MCP servers, LSP servers, monitors, and themes. Plexi needs the same package shape, but with app connectors and host tools as first-class components. Source: <https://code.claude.com/docs/en/plugins-reference>
 - Claude Code uses MCP for external tools and data sources. Plexi should support MCP, but Plexi apps should expose typed host-mediated capabilities directly instead of pretending every local app is an MCP server. Source: <https://code.claude.com/docs/en/mcp>
-- Claude Code can start from its own system prompt preset, append product-specific instructions, or replace the prompt entirely. Plexi needs named Assistant profiles with system prompts, model settings, tools, and permission posture. Source: <https://code.claude.com/docs/en/agent-sdk/modifying-system-prompts>
+- Claude Code can start from its own system prompt preset, append product-specific instructions, or replace the prompt entirely. Plexi needs named agents with system prompts, model settings, tools, and permission posture. Source: <https://code.claude.com/docs/en/agent-sdk/modifying-system-prompts>
+- OpenClaude adds a useful prior for Plexi's agent registry: agents are markdown files with frontmatter for name, description, tools, model, effort, permission mode, MCP servers, hooks, max turns, skills, background behavior, isolation, and optional memory. It also supports per-agent model routing through `agentModels` and `agentRouting`. Source: <https://github.com/Gitlawb/openclaude>
 
 ## Product Goal
 
@@ -51,16 +52,16 @@ The Assistant is a first-party host app. It appears as a pane and uses host UI p
 
 It should be implemented as a host module with pure state and effects:
 
-- `AssistantModel`: conversations, input, selected command, active profile, selected tools, transient thinking/streaming state.
+- `AssistantModel`: conversations, input, selected command, active agent, selected tools, transient thinking/streaming state.
 - `AssistantEffect`: AI query, tool call, app action, pane action, permission prompt, package install, session write.
-- `AssistantStore`: local transcripts, compaction summaries, installed skill index, prompt profiles, tool collection index.
+- `AssistantStore`: local transcripts, compaction summaries, installed skill index, agent index, tool collection index.
 - `AssistantRenderer`: host UI kit rendering for chat, command picker, tool call rows, permission sheets, settings, and audit links.
 
 The model must be testable without egui. Rendering gets smoke coverage through `PlexiUiHarness`.
 
 ## Core Concepts
 
-**Assistant profile**: A named configuration for model tier, system prompt, output style, enabled tools, enabled skills, and permission posture. Examples: Default, Builder, Spreadsheet Analyst, Writing Partner.
+**Agent**: A named Assistant persona with a system prompt, when-to-use description, model tier policy, optional exact model pointers, enabled tools, enabled skills, app connectors, permission posture, hooks, max-turn limits, and background/isolation behavior. Examples: Default, Builder, Spreadsheet Analyst, Writing Partner.
 
 **Skill**: A prompt-backed workflow with optional supporting files and scripts. A skill can be invoked manually with `/skill-name` or auto-selected when its description matches the task.
 
@@ -72,6 +73,10 @@ The model must be testable without egui. Rendering gets smoke coverage through `
 
 **Hook**: A user, project, marketplace, or managed callback that observes or controls Assistant lifecycle events.
 
+**Model tier**: A user-facing intelligence level: `low`, `medium`, or `high`. Tiers are stable product concepts; the concrete model behind a tier can differ by agent and can change as providers improve.
+
+**Model pointer**: An advanced setting that points an agent or tier to a concrete provider/model/backend configuration, such as OpenRouter model id, Ollama model id, local provider, or Plexi AI subscription route.
+
 ## Settings
 
 Plexi Assistant needs its own settings tree. It should not reuse app settings or raw `config.toml` keys without a schema.
@@ -79,9 +84,9 @@ Plexi Assistant needs its own settings tree. It should not reuse app settings or
 Settings scopes:
 
 - Managed: future organization or device policy. Highest priority.
-- User: `~/.plexi-<channel>/assistant/settings.toml`, applies across contexts in that channel.
-- Workspace: `<workspace_channel_dir>/assistant/settings.toml`, shared with the project/workspace if the user chooses to commit it.
-- Local workspace: `<workspace_channel_dir>/assistant/settings.local.toml`, ignored by default.
+- User: `~/.plexi-<channel>/agents/settings.toml`, applies across contexts in that channel.
+- Workspace: `<workspace_channel_dir>/agents/settings.toml`.
+- Local workspace: `<workspace_channel_dir>/agents/settings.local.toml`, ignored by default.
 - Session: temporary overrides from slash commands or UI controls.
 
 The exact path helper must be channel-aware. Do not hardcode `.plexi/`.
@@ -89,7 +94,7 @@ The exact path helper must be channel-aware. Do not hardcode `.plexi/`.
 Settings groups:
 
 - `model`: default backend, model tier, fallback behavior, thinking display, cost budget.
-- `profiles`: named Assistant profiles and selected default.
+- `agents`: selected default agent, palette visibility, and agent source ordering.
 - `permissions`: default permission posture, grant rules, denied tools, protected paths, protected apps.
 - `skills`: enabled skill sources, disabled bundled skills, skill listing budget.
 - `tool_collections`: enabled packs, source marketplace, local enablement state.
@@ -99,32 +104,201 @@ Settings groups:
 
 Settings reload while the host is running where practical. A settings change emits an event and records the source file.
 
-## Directory-Scoped Memory
+## Agent Registry
 
-The Assistant loads directory-scoped instructions on startup and when the active context changes. This is Plexi's equivalent of project memory.
+Agents are the primary user-facing unit. The host Assistant is the app surface; agents are the selectable workers inside it.
 
-Memory files:
+Agent locations:
 
-- User memory: `~/.plexi-<channel>/assistant/AGENT.md`.
-- Workspace memory: `<workspace_channel_dir>/AGENT.md`.
-- Local workspace memory: `<workspace_channel_dir>/AGENT.local.md`.
-- Directory memory: nearest parent `<workspace_channel_dir>/AGENT.md` for the active pane or app document, walking upward until the workspace root.
+- Built-in agents: compiled into Plexi and always available unless managed policy disables them.
+- User agents: `~/.plexi-<channel>/agents/<agent-id>/`.
+- Workspace agents: `<workspace_channel_dir>/agents/<agent-id>/`.
+- Marketplace agents: installed packages copied into the channel or workspace agent store.
+- Managed agents: future organization policy.
 
-`AGENT.md` is instructions, not task state. It should contain durable preferences, project rules, app usage notes, and workflow conventions. It must not be treated as the source of truth for in-flight work.
+Agent file layout:
 
-Load order:
+```text
+agents/
+  builder/
+    AGENT.md
+    settings.toml
+  spreadsheet/
+    AGENT.md
+    settings.toml
+  writing/
+    AGENT.md
+    settings.toml
+```
 
-1. Managed Assistant instructions.
-2. User memory.
-3. Workspace memory.
-4. Directory memory from workspace root to nearest active directory.
-5. Local workspace memory.
-6. Active Assistant profile prompt.
-7. Session append text.
+`AGENT.md` holds the durable agent prompt and frontmatter. `settings.toml` holds mutable local configuration: model routing, enabled tools, permission posture, hooks, and UI metadata. Keep settings in TOML because Plexi's workspace config is TOML and because agents need a typed config file agents can edit safely.
 
-Later items add context; they do not silently erase earlier managed policy. The context drawer must show exactly which memory files were loaded, their scope, and their last modified time. `/memory` opens the loaded memory list and lets the user create or edit the applicable `AGENT.md`.
+Agent metadata:
 
-The workspace filename is uppercase `AGENT.md` inside the channel workspace directory, for example `.plexi-alpha/AGENT.md`. It matches common agent instruction files and keeps Assistant memory beside other Plexi workspace state. The location is still channel-aware through `workspace_channel_dir()`, so alpha, beta, main, and PR builds do not share workspace memory unless the user copies it.
+- id and display name
+- description / when-to-use
+- color/icon
+- system prompt
+- model tier defaults
+- exact model pointers for advanced users
+- allowed tools and denied tools
+- enabled skills
+- enabled app connectors
+- MCP servers
+- permission posture
+- permission grants scoped to this agent
+- hooks
+- max turns
+- background behavior
+- isolation mode
+
+Agents can be global or workspace-scoped in the same way apps can. The Assistant palette shows both, grouped by scope:
+
+- Built-in
+- User
+- Workspace
+- Marketplace
+- Managed
+
+If two agents share an id, higher-priority scopes shadow lower-priority scopes. The palette must show that shadowing instead of silently hiding it.
+
+### Agents, Skills, And App Connectors
+
+Do not turn every workflow into an agent.
+
+- Use an agent when the work needs a distinct role, prompt, model policy, tool set, permission posture, or background/isolation behavior.
+- Use a skill when the work is a reusable procedure the current agent can run.
+- Use an app connector when the Assistant needs to read or mutate state owned by a Plexi app.
+- Use a tool collection when several tools/connectors should install and enable together.
+
+A spreadsheet agent makes sense if it is a specialized worker with spreadsheet-specific reasoning, model tier policy, and a constrained connector/tool set. CSV import cleanup, pivot-table creation, formula auditing, or "normalize this sheet" should usually be skills. `csv.read_range` and `csv.write_range` are app connector tools.
+
+## Model Routing
+
+Most users should never choose exact model ids. They choose `low`, `medium`, or `high` intelligence, and the active agent maps that tier to a concrete model pointer.
+
+Model tier semantics:
+
+- `low`: cheap, fast, good for simple edits, summaries, routing, and app state reads.
+- `medium`: default work tier for normal multi-step tasks.
+- `high`: expensive, slower, used for planning, ambiguous work, code generation, data repair, or destructive changes.
+
+Resolution order:
+
+1. Managed policy.
+2. Session override from `/model` or `/effort`.
+3. Active agent `settings.toml`.
+4. Workspace `agents/settings.toml`.
+5. User `agents/settings.toml`.
+6. Built-in Plexi defaults.
+
+Advanced users can define model pointers:
+
+```toml
+[models.local-qwen]
+provider = "ollama"
+model = "qwen2.5-coder:7b"
+
+[models.openrouter-sonnet]
+provider = "openrouter"
+model = "anthropic/claude-sonnet-4.5"
+
+[models.plexi-high]
+provider = "plexi-ai"
+tier = "high"
+```
+
+Agents map tiers to pointers:
+
+```toml
+[agent.default.tiers]
+low = "local-qwen"
+medium = "openrouter-sonnet"
+high = "plexi-high"
+
+[agent.spreadsheet.tiers]
+low = "local-qwen"
+medium = "openrouter-sonnet"
+high = "openrouter-sonnet"
+```
+
+The UI should expose the simple control first: `low`, `medium`, `high`. Advanced model pointers live behind an advanced settings panel.
+
+Agents can switch tiers during a task when policy allows it. A switch from `low` to `high` should be visible in the transcript and audit log, with a short reason. Switching concrete providers or using a more expensive tier may require confirmation if cost settings require it.
+
+Exact model pointers are for power users and package authors. Marketplace packages may recommend tier mappings but cannot silently write API keys or force a paid provider.
+
+## Unified Permissions
+
+Agents have individual permission scoping, but Plexi has one permission system.
+
+An agent is a first-class actor in the host permission broker. The Assistant does not own a parallel grant engine. Every agent tool call, app connector call, file write, secret access, terminal input, package install, and model-cost escalation is checked by the same permission broker used for PGAP capabilities and host APIs.
+
+Grant record shape:
+
+```text
+actor_type: app | agent | system
+actor_id: app id or agent id
+actor_scope: built-in | user | workspace | marketplace | managed
+target_type: host_tool | app_connector | mcp_tool | file_scope | secret | package | model_pointer
+target_id: stable capability/tool id
+scope: call | session | workspace | document | path | package_identity | always
+decision: allow | ask | deny
+source: managed | user | workspace | session
+```
+
+Agent permission config lives in the agent's `settings.toml`, but persisted grants and audit events go through the unified Plexi permission store. The settings file expresses defaults and requested posture; the permission store records user decisions.
+
+Example:
+
+```toml
+[permissions]
+default_posture = "review"
+
+allow = [
+  "host.panes.read",
+  "app.csv.describe_table",
+]
+
+ask = [
+  "app.csv.write_range",
+  "host.terminal.send_input",
+]
+
+deny = [
+  "host.secrets.read",
+]
+```
+
+Evaluation order:
+
+1. Managed deny.
+2. User/workspace/session deny.
+3. Agent-specific deny.
+4. Managed ask.
+5. User/workspace/session ask.
+6. Agent-specific ask.
+7. Existing persisted grant.
+8. Agent-specific allow.
+9. User/workspace allow.
+10. Default posture.
+
+The UI must expose this as one permissions surface. `/permissions` can filter by agent, app, connector, tool, workspace, or recent denial, but it edits the same underlying permission model.
+
+Agent-specific permissions are how a spreadsheet agent can be trusted to edit a focused CSV document while a general writing agent cannot. The grant should bind as narrowly as possible: agent id, app package identity, connector id, document/path, workspace, and duration.
+
+## Memory Scope
+
+Durable memory is not a v1 implementation target. The Assistant should be future-compatible with memory, but the first implementation should not depend on automatic memory discovery.
+
+For now:
+
+- `AGENT.md` is the durable prompt for one agent.
+- `settings.toml` is the mutable config for that agent.
+- Conversation persistence, compaction, and history are required.
+- Learned long-term memory, directory walking, and automatic memory snapshots are deferred.
+
+When memory lands, it must remain channel-aware and must not create a second task-state source of truth.
 
 ## Slash Commands
 
@@ -139,22 +313,23 @@ Built-in commands:
 | `/resume` | Open a previous Assistant session. |
 | `/compact` | Summarize older turns and keep the active task context. |
 | `/context` | Show token use, loaded instructions, active pane/app context, and enabled tools. |
-| `/memory` | Show and edit loaded `AGENT.md` files. |
-| `/model` | Switch model tier or backend for this session/profile. |
-| `/effort` | Switch reasoning effort for this session/profile when the backend supports it. |
-| `/profile` | Switch Assistant profile. |
+| `/memory` | Show agent prompt files and future memory state. |
+| `/model` | Switch model tier or backend for this session/agent. |
+| `/effort` | Switch reasoning effort for this session/agent when the backend supports it. |
+| `/agent` | Switch, inspect, create, or edit agents. |
 | `/settings` | Open Assistant settings. |
 | `/config` | Alias for `/settings` for Claude Code muscle memory. |
 | `/permissions` | Open grant rules, pending grants, denied tools, and audit history. |
 | `/tools` | Show enabled host tools, app connectors, MCP tools, and tool collections. |
 | `/apps` | Show app connectors available in the workspace. |
 | `/skills` | Show installed skills and marketplace skill packs. |
-| `/install` | Install a local or marketplace skill/tool/profile package. |
+| `/install` | Install a local or marketplace skill/tool/agent package. |
 | `/hooks` | Show lifecycle hooks and their source. |
 | `/audit` | Show recent Assistant tool calls, grants, app writes, and denied attempts. |
 | `/export` | Export the current transcript and tool-call log. |
 | `/rewind` | Restore the conversation to an earlier checkpoint; code/app state rollback is separate and must be explicit. |
 | `/new` | Create a new named conversation without deleting the current one. |
+| `/history` | Open conversation history and checkpoint browser. |
 
 Skill commands:
 
@@ -179,11 +354,11 @@ The command picker must show source and trust:
 - MCP server
 - Managed policy
 
-Essential commands should exist before marketplace packages depend on the Assistant. Users coming from Claude Code should not have to relearn the basics: clear, compact, resume, context, memory, model, effort, settings/config, permissions, tools, skills, hooks, audit, export, and rewind.
+Essential commands should exist before marketplace packages depend on the Assistant. Users coming from Claude Code should not have to relearn the basics: clear, compact, resume, context, memory, model, effort, settings/config, permissions, tools, skills, hooks, audit, export, history, and rewind.
 
 ## Conversation Persistence
 
-Opening and closing the Assistant pane does not start over. The Assistant resumes the same conversation at the same scroll position, selected profile, loaded memory set, active tool pins, and pending permission state.
+Opening and closing the Assistant pane does not start over. The Assistant resumes the same conversation at the same scroll position, selected agent, loaded prompt set, active tool pins, and pending permission state.
 
 Rules:
 
@@ -197,12 +372,53 @@ Rules:
 
 The active conversation id is workspace-scoped and channel-aware. Multiple windows or panes in the same workspace attach to the same active conversation unless the user explicitly opens another one.
 
+## History And Rewind
+
+Double-tapping `Escape` opens the Assistant history surface. This is the fast path for "go back" without requiring the user to remember `/history` or `/rewind`.
+
+The history surface shows:
+
+- user prompts
+- assistant responses
+- compaction boundaries
+- tool calls
+- permission decisions
+- model tier switches
+- app connector calls
+- file/app/code checkpoints
+- interrupted turns
+
+Actions:
+
+- Jump conversation view to a prior turn.
+- Fork from a prior turn into a new conversation.
+- Revert conversation context to a prior turn while leaving files/apps untouched.
+- Revert conversation plus host-managed changes when a checkpoint supports rollback.
+- Export a selected range.
+- Inspect the audit trail for a selected turn.
+
+Checkpoint model:
+
+- Conversation checkpoints are always available.
+- Host-managed state checkpoints are available for app connector calls that return changed-resource metadata or reversible operations.
+- Code/file checkpoints are available only when the Assistant made the change through host-mediated file tools or a VCS-backed operation the host can prove.
+- Terminal commands are not automatically reversible. They can appear in history, but rollback requires an explicit reversible checkpoint or VCS state.
+- App connector authors should provide preview and rollback metadata for mutating tools where practical.
+
+`Escape` behavior:
+
+- Single `Escape`: cancel menus, close overlays, or stop current composition.
+- Double `Escape` within a short timeout: open history.
+- If a tool call or model turn is running, double `Escape` opens history in read-only mode and offers interrupt separately.
+
+Rewind must never silently undo code or app data. The UI must distinguish "conversation only" from "conversation + state rollback" and show the exact files, app documents, panes, or connector resources that will be affected.
+
 ## Skill And Tool Marketplace
 
 The marketplace must support four Assistant package component types:
 
 - Skills: prompt workflows, supporting files, optional scripts.
-- System prompts/profiles: named Assistant profiles with prompt text, model preferences, and enabled tools.
+- Agents: named Assistant agents with prompt text, model tier policy, permission posture, and enabled tools.
 - Tool collections: grouped host tools, MCP tools, app connectors, and permission hints.
 - App connector templates: schemas and instructions for working with apps that expose a known capability family.
 
@@ -273,16 +489,16 @@ Grant flow:
 5. User can choose:
    - Allow once.
    - Allow for this document this session.
-   - Always allow this signed app package to let this Assistant profile write this document.
+   - Always allow this signed app package to let this agent write this document.
    - Deny.
 6. The write call includes the grant id. The CSV app applies the change and returns changed ranges.
 7. The audit log records the request, grant, input summary, changed ranges, and package identities.
 
-The "always" option is never global by default. It must bind to the narrowest meaningful scope: tool collection, Assistant profile, app package identity, document id/path, workspace, and user.
+The "always" option is never global by default. It must bind to the narrowest meaningful scope: tool collection, agent, app package identity, document id/path, workspace, and user.
 
 ## Permission Model
 
-Assistant permissions are enforced by the host, not by prompt text.
+Assistant permissions are enforced by the host, not by prompt text. This section describes the user-facing behavior of the unified broker above.
 
 Rule types:
 
@@ -332,7 +548,7 @@ Protected actions always ask unless managed policy says deny:
 
 Permission prompts must show:
 
-- who is asking: Assistant profile and model backend
+- who is asking: agent and model backend
 - what will run: tool/app connector name
 - who receives it: app package identity, MCP server, or host API
 - what it can touch: file, document, pane, account, workspace, or app state
@@ -376,7 +592,7 @@ The Assistant pane uses host UI kit primitives:
 
 - chat transcript with user, assistant, tool, error, and permission rows
 - composer with slash command picker
-- active profile/model/tool summary
+- active agent/model/tool summary
 - context drawer for panes, files, apps, and loaded instructions
 - permission sheet for tool calls
 - settings view
@@ -400,6 +616,9 @@ All state lives on disk in channel-aware paths:
 
 - transcripts
 - compaction summaries
+- history index
+- conversation checkpoints
+- reversible host-state checkpoints
 - installed Assistant packages
 - enabled component indexes
 - settings
@@ -438,7 +657,7 @@ Phase 3:
 - `/settings`, `/permissions`, `/skills`, `/tools`, and `/audit` are real host views.
 - Assistant settings support user, workspace, local workspace, and session scope.
 - Skills can be invoked manually and auto-selected by description.
-- Tool collections and system prompt profiles can be installed locally and inspected before enablement.
+- Tool collections and agents can be installed locally and inspected before enablement.
 - A running PGAP app can expose a read-only connector and a mutating connector.
 - The Assistant can call the read-only connector without write grants.
 - A mutating connector prompts before it runs, supports allow-once and persisted narrow grants, and writes an audit event.
