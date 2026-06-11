@@ -136,13 +136,9 @@ just pr-install $PR_NUMBER
 
 > **Compile check:** If no `Compiling plexi` line in output, the binary was cached. `touch src/<changed-file>.rs` then re-run.
 
-Wait for completion. Read the log to confirm the build landed:
-```bash
-# Only read a runtime log if the PR app has already launched and created one.
-# A fresh install does not create plexi.log. Do not block testing on this.
-LOG_PATH="$HOME/.plexi-pr-$PR_NUMBER/plexi.log"
-[ -f "$LOG_PATH" ] && tail -20 "$LOG_PATH" || true
-```
+Wait for completion. The binary is now installed. Move immediately to Step 2b.
+
+> **HARD STOP — do not launch the PR binary.** Do not tail logs waiting for app output. Do not poll, watch, or sleep. The full sequence after install is: codex review → write testing block → notify → stop. The user launches and exercises the app; that is not the agent's job.
 
 ---
 
