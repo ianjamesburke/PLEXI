@@ -15,25 +15,12 @@ impl PlexiApp {
         if !self.show_shortcuts {
             return;
         }
-        let dismissed = crate::ui::widgets::dismissable_modal(ctx, "shortcuts", |ui| {
-            egui::Frame::new()
-                .fill(self.colors.bg_sidebar.gamma_multiply(0.95))
-                .stroke(Stroke::new(1.0, self.colors.border))
-                .corner_radius(R6)
-                .inner_margin(egui::Margin::symmetric(24, 20))
-                .show(ui, |ui| {
-                    ui.set_width(style::MODAL_WIDTH_MD);
-
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            RichText::new("Keyboard Shortcuts")
-                                .size(13.0)
-                                .color(self.colors.text_primary)
-                                .strong(),
-                        );
-                    });
-                    ui.add_space(style::SPACE_MD);
-
+        let response = crate::ui::overlay::ModalShell::centered("shortcuts")
+            .title("Keyboard Shortcuts")
+            .width(style::MODAL_WIDTH_MD)
+            .escape(true)
+            .show(ctx, &self.colors.clone(), |ui| {
+                {
                     let colors = &self.colors;
 
                     ui.horizontal(|ui| {
@@ -292,9 +279,9 @@ impl PlexiApp {
                     ui.separator();
                     ui.add_space(style::SPACE_SM);
                     draw_contact_footer(ui, colors);
-                });
-        });
-        if dismissed {
+                }
+            });
+        if response.dismissed {
             self.show_shortcuts = false;
         }
     }
@@ -305,22 +292,13 @@ impl PlexiApp {
         }
         const CHANGELOG: &str = include_str!("../../CHANGELOG.md");
 
-        let dismissed = crate::ui::widgets::dismissable_modal(ctx, "changelog", |ui| {
-            egui::Frame::new()
-                .fill(self.colors.bg_sidebar.gamma_multiply(0.95))
-                .stroke(Stroke::new(1.0, self.colors.border))
-                .corner_radius(R6)
-                .inner_margin(egui::Margin::symmetric(24, 20))
-                .show(ui, |ui| {
-                    ui.set_width(560.0);
+        let response = crate::ui::overlay::ModalShell::centered("changelog")
+            .title("Changelog")
+            .width(560.0)
+            .escape(true)
+            .show(ctx, &self.colors.clone(), |ui| {
+                {
                     ui.set_max_height(480.0);
-
-                    ui.label(
-                        RichText::new("Changelog")
-                            .size(13.0)
-                            .color(self.colors.text_primary)
-                            .strong(),
-                    );
 
                     if let Some(ref latest) = self.update_available.clone() {
                         ui.add_space(8.0);
@@ -394,9 +372,9 @@ impl PlexiApp {
                                 }
                             }
                         });
-                });
-        });
-        if dismissed {
+                }
+            });
+        if response.dismissed {
             self.show_changelog = false;
         }
     }
@@ -442,41 +420,17 @@ impl PlexiApp {
         let show_browse = matches!(target, OverlayTarget::ContextRoot(_));
         let mut browse_clicked = false;
 
-        // Scrim
-        let screen_rect = ctx.screen_rect();
-        egui::Area::new(egui::Id::new("text_input_overlay_scrim"))
-            .fixed_pos(screen_rect.min)
-            .order(egui::Order::Middle)
-            .show(ctx, |ui| {
-                ui.painter().rect_filled(
-                    screen_rect,
-                    0.0,
-                    Color32::from_black_alpha(style::SCRIM_ALPHA),
-                );
-            });
-
-        egui::Area::new(egui::Id::new("text_input_overlay"))
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
-                    .stroke(Stroke::new(1.0, self.colors.border))
-                    .corner_radius(style::RADIUS_MD)
-                    .inner_margin(egui::Margin::symmetric(
-                        style::MODAL_PADDING_H,
-                        style::MODAL_PADDING_V,
-                    ))
-                    .show(ui, |ui| {
-                        ui.set_width(MODAL_WIDTH);
-                        ui.label(
-                            RichText::new(&label)
-                                .size(13.0)
-                                .color(self.colors.text_primary)
-                                .strong(),
-                        );
-                        ui.add_space(6.0);
-
+        // Kit shell. Escape/Enter stay caller-side (consumed above, before
+        // the Area, so they can't bleed into panes); the old scrim had no
+        // click-away either, so keep that off.
+        let colors = self.colors;
+        crate::ui::overlay::ModalShell::centered("text_input_overlay")
+            .title(&label)
+            .width(MODAL_WIDTH)
+            .click_away(false)
+            .show(ctx, &colors, |ui| {
+                {
+                    {
                         let te_id = egui::Id::new("text_input_overlay_field");
                         let (overlay, _target) = self.text_overlay.as_mut().unwrap();
                         let te = crate::ui::widgets::styled_text_input(
@@ -528,7 +482,8 @@ impl PlexiApp {
                                 );
                             });
                         }
-                    });
+                    }
+                }
             });
 
         if cancel {
@@ -617,25 +572,17 @@ impl PlexiApp {
             (enter, esc)
         });
 
-        egui::Area::new(egui::Id::new("rename_pane_overlay"))
+        // Top-hung, scrim-less popover: the pane being renamed stays visible.
+        // Enter/Escape stay caller-side (consumed above, before the Area).
+        let colors = self.colors;
+        crate::ui::overlay::ModalShell::centered("rename_pane_overlay")
+            .title("Rename Pane")
+            .width(MODAL_WIDTH)
             .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
-                    .stroke(Stroke::new(1.0, self.colors.border))
-                    .corner_radius(style::RADIUS_LG)
-                    .inner_margin(egui::Margin::symmetric(16, 12))
-                    .show(ui, |ui| {
-                        ui.set_width(MODAL_WIDTH);
-                        ui.label(
-                            RichText::new("Rename Pane")
-                                .size(13.0)
-                                .color(self.colors.text_primary)
-                                .strong(),
-                        );
-                        ui.add_space(6.0);
-
+            .scrim(false)
+            .show(ctx, &colors, |ui| {
+                {
+                    {
                         let te_id = egui::Id::new("rename_pane_input");
                         let te = crate::ui::widgets::styled_text_input(
                             ui,
@@ -664,7 +611,8 @@ impl PlexiApp {
                             self.rename_pane_focus_requested = true;
                             log::info!("rename_pane: focus requested for TextEdit");
                         }
-                    });
+                    }
+                }
             });
 
         if cancel {
@@ -703,25 +651,15 @@ impl PlexiApp {
             (enter, esc)
         });
 
-        egui::Area::new(egui::Id::new("rename_context_overlay"))
+        let colors = self.colors;
+        crate::ui::overlay::ModalShell::centered("rename_context_overlay")
+            .title("Name this context")
+            .width(MODAL_WIDTH)
             .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
-                    .stroke(Stroke::new(1.0, self.colors.border))
-                    .corner_radius(style::RADIUS_LG)
-                    .inner_margin(egui::Margin::symmetric(16, 12))
-                    .show(ui, |ui| {
-                        ui.set_width(MODAL_WIDTH);
-                        ui.label(
-                            RichText::new("Name this context")
-                                .size(13.0)
-                                .color(self.colors.text_primary)
-                                .strong(),
-                        );
-                        ui.add_space(6.0);
-
+            .scrim(false)
+            .show(ctx, &colors, |ui| {
+                {
+                    {
                         let te_id = egui::Id::new("rename_context_input");
                         let te = crate::ui::widgets::styled_text_input(
                             ui,
@@ -743,7 +681,8 @@ impl PlexiApp {
                                 state.store(ui.ctx(), te_id);
                             }
                         }
-                    });
+                    }
+                }
             });
 
         if cancel {
@@ -775,26 +714,17 @@ impl PlexiApp {
             (cmd_enter, esc)
         });
 
-        egui::Area::new(egui::Id::new("edit_description_overlay"))
+        let colors = self.colors;
+        let ctx_name = self.router.get(ctx_idx).name.clone();
+        let title = format!("Description for \"{ctx_name}\"");
+        crate::ui::overlay::ModalShell::centered("edit_description_overlay")
+            .title(&title)
+            .width(MODAL_WIDTH)
             .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 80.0))
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
-                    .stroke(Stroke::new(1.0, self.colors.border))
-                    .corner_radius(R6)
-                    .inner_margin(egui::Margin::symmetric(16, 12))
-                    .show(ui, |ui| {
-                        ui.set_width(MODAL_WIDTH);
-                        let ctx_name = self.router.get(ctx_idx).name.clone();
-                        ui.label(
-                            RichText::new(format!("Description for \"{}\"", ctx_name))
-                                .size(13.0)
-                                .color(self.colors.text_primary)
-                                .strong(),
-                        );
-                        ui.add_space(6.0);
-
+            .scrim(false)
+            .show(ctx, &colors, |ui| {
+                {
+                    {
                         let te_id = egui::Id::new("edit_description_input");
                         let te = ui
                             .scope(|ui| {
@@ -837,7 +767,8 @@ impl PlexiApp {
                             }
                             self.description_focus_requested = true;
                         }
-                    });
+                    }
+                }
             });
 
         if cancel {
