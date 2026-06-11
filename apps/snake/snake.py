@@ -145,6 +145,7 @@ class SnakeApp(App):
             self._canvas,
             FooterKeys(shortcuts),
         ]))
+        ctx.emit.schedule_render(int(TICK * 1000) if not self._dead else 250)
 
     def on_shutdown(self) -> None:
         self._running = False

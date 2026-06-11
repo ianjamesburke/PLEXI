@@ -1068,11 +1068,13 @@ impl ProcessApp {
     fn mark_render_needed_after(&mut self, reason: &'static str, delay: std::time::Duration) {
         let scheduled_at = std::time::Instant::now() + delay;
         if !self.render_needed {
-            log::info!(
-                "ProcessApp[{}]: render requested ({reason}, after {}ms)",
-                self.type_id,
-                delay.as_millis()
-            );
+            if reason != "schedule_render" {
+                log::info!(
+                    "ProcessApp[{}]: render requested ({reason}, after {}ms)",
+                    self.type_id,
+                    delay.as_millis()
+                );
+            }
             self.render_needed = true;
             self.render_not_before = Some(scheduled_at);
         } else if let Some(existing) = self.render_not_before {
