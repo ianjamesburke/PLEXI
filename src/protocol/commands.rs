@@ -686,6 +686,53 @@ pub enum AppRequest {
     /// Sent by `plexi pane info --previous`.
     GetPreviousPaneInfo { response_file: String },
 
+    /// List permission state across apps (stint 0017). Gated on
+    /// `permissions.manage` when arriving over PGAP. Host writes a JSON object
+    /// to `response_file`:
+    ///
+    /// ```json
+    /// {
+    ///   "permissions": [
+    ///     {
+    ///       "app_id": "...",
+    ///       "workspace": "/abs/path",
+    ///       "capability": "panes.read",
+    ///       "state": "green" | "yellow" | "red",
+    ///       "stored": true | false,
+    ///       "sensitive": true | false,
+    ///       "description": "..."
+    ///     }
+    ///   ],
+    ///   "running": ["app_id", ...]
+    /// }
+    /// ```
+    ///
+    /// One row per entry persisted in `permissions.toml` (`stored: true`),
+    /// plus one row per live capability of a currently-running app that has
+    /// no stored entry (`stored: false` — granted → "green", blocked →
+    /// "red"). Live capabilities in the effective yellow state (declared but
+    /// neither granted nor blocked) are not retained by the host after
+    /// launch and only appear once a decision is stored.
+    ListPermissions { response_file: String },
+
+    /// Set the stored permission state for an (app, workspace, capability)
+    /// triple (stint 0017). Gated on `permissions.manage` when arriving over
+    /// PGAP. `state` is one of "green" | "yellow" | "red". When `workspace`
+    /// is omitted, the workspace root of a running app with `app_id` is used;
+    /// if no such app is running the request fails. Persists to
+    /// `permissions.toml` AND live-updates any running app's permission set,
+    /// so a revocation takes effect on the app's next request. Host writes
+    /// `{"ok":true}` or `{"error":"..."}` to `response_file`. Unknown
+    /// capability or state strings fail closed with an error reply.
+    SetPermission {
+        app_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workspace: Option<String>,
+        capability: String,
+        state: String,
+        response_file: String,
+    },
+
     /// Write bytes to a named host-managed pane file slot.
     SlotWrite {
         pane_id: u64,

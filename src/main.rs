@@ -417,6 +417,7 @@ fn main() -> eframe::Result {
                                 spec_or_path,
                                 pack,
                                 version,
+                                yes,
                             } => {
                                 if let Some(p) = pack {
                                     log::info!("app_install:cli: pack={p}");
@@ -428,6 +429,16 @@ fn main() -> eframe::Result {
                                         std::process::exit(cli::install_workspace_pack_cli());
                                     }
                                     Some(s) => {
+                                        // .plexipkg artifact: validate fail-closed, then install (stint 0015).
+                                        if s.ends_with(".plexipkg") {
+                                            log::info!("app_install:cli: package={s} version={version:?}");
+                                            std::process::exit(cli::app_install_package(
+                                                &s,
+                                                version.as_deref(),
+                                                cli::InstallConfirm::Interactive,
+                                                yes,
+                                            ));
+                                        }
                                         // Local path: contains a path separator, starts with . or /, or is an existing directory.
                                         // Using is_dir() (not exists()) avoids misrouting bare app IDs that happen
                                         // to match a file in the current directory.
@@ -439,6 +450,8 @@ fn main() -> eframe::Result {
                                             std::process::exit(cli::app_install_with_pin(
                                                 &s,
                                                 version.as_deref(),
+                                                cli::InstallConfirm::Interactive,
+                                                yes,
                                             ));
                                         } else {
                                             log::info!("app_install:cli: remote spec={s} version={version:?}");
@@ -493,6 +506,14 @@ fn main() -> eframe::Result {
                             AppCmd::Validate { path } => {
                                 log::info!("app_validate:cli: path={path}");
                                 std::process::exit(cli::validate_cli(&path));
+                            }
+                            AppCmd::Inspect { path } => {
+                                log::info!("app_inspect:cli: path={path}");
+                                std::process::exit(cli::app_inspect_cli(&path));
+                            }
+                            AppCmd::Package { path, out } => {
+                                log::info!("app_package:cli: path={path} out={out:?}");
+                                std::process::exit(cli::app_package_cli(&path, out.as_deref()));
                             }
                             AppCmd::Freeze { path } => {
                                 log::info!("app_freeze:cli: path={path}");

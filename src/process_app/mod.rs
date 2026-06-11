@@ -36,7 +36,8 @@ pub(crate) use transport::StdinItem;
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
 use crate::app::permissions::{AppPermissions, Capability};
 use crate::app_protocol::{
-    AiMessage, AiTool, ControlCommand, DrawCommand, ModelTier, Modifiers, PlexiEvent, RenderCommand,
+    AiMessage, AiTool, AppRequest, ControlCommand, DrawCommand, ModelTier, Modifiers, PlexiEvent,
+    RenderCommand,
 };
 use crate::host::event_log::{self, HostEvent};
 use crate::host::runs::RunRegistry;
@@ -167,6 +168,12 @@ pub struct ProcessApp {
     /// AiQuery requests withheld pending first-run `ai.query` consent.
     /// Drained on consent resolution — dispatched if granted, errored if denied.
     pub(crate) deferred_ai_queries: VecDeque<DeferredAiQuery>,
+    /// Capability-gated pane/permission requests withheld pending consent
+    /// (yellow-state routing, stint 0017). Each entry pairs the gating
+    /// capability with the original request. Drained on consent resolution —
+    /// forwarded via `AppCommand::ForwardPaneRequest` if granted, answered
+    /// with the standard denial JSON on the request's response_file if denied.
+    pub(crate) deferred_gated_requests: Vec<(Capability, AppRequest)>,
     pub(crate) status_summary: Option<String>,
     /// Navigation stack maintained by `DrawCommand::PushNav` / `PopNav`.
     /// Each entry carries a stable `view_id` and a display `title`. When the
@@ -634,6 +641,7 @@ impl ProcessApp {
             run_registry: RunRegistry::new(),
             pending_prompts: VecDeque::new(),
             deferred_ai_queries: VecDeque::new(),
+            deferred_gated_requests: Vec::new(),
             status_summary: None,
             nav_stack: Vec::new(),
             outbound_events: VecDeque::new(),
@@ -792,6 +800,7 @@ impl ProcessApp {
             run_registry: RunRegistry::new(),
             pending_prompts: VecDeque::new(),
             deferred_ai_queries: VecDeque::new(),
+            deferred_gated_requests: Vec::new(),
             status_summary: None,
             nav_stack: Vec::new(),
             outbound_events: VecDeque::new(),

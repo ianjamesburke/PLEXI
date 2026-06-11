@@ -173,6 +173,8 @@ impl PlexiApp {
             mut secret_input_buf,
             mut permission_store,
             mut deferred_ai_queries,
+            mut deferred_gated_requests,
+            mut pending_commands,
             type_id,
             workspace_root,
             ai_broker,
@@ -196,6 +198,8 @@ impl PlexiApp {
                 std::mem::take(&mut proc.secret_input_buf),
                 std::mem::take(&mut proc.permission_store),
                 std::mem::take(&mut proc.deferred_ai_queries),
+                std::mem::take(&mut proc.deferred_gated_requests),
+                std::mem::take(&mut proc.pending_commands),
                 proc.type_id.clone(),
                 proc.workspace_root.clone(),
                 std::sync::Arc::clone(&proc.ai_broker),
@@ -217,6 +221,8 @@ impl PlexiApp {
             &mut permission_store,
             &colors,
             &mut deferred_ai_queries,
+            &mut deferred_gated_requests,
+            &mut pending_commands,
             ai_broker,
             http_tx,
             proc_pane_id,
@@ -236,6 +242,13 @@ impl PlexiApp {
         proc.secret_input_buf = secret_input_buf;
         proc.permission_store = permission_store;
         proc.deferred_ai_queries = deferred_ai_queries;
+        proc.deferred_gated_requests = deferred_gated_requests;
+        // The modal may have appended ForwardPaneRequest commands for
+        // deferred gated requests; anything routed onto proc.pending_commands
+        // between take and restore would be lost, so append rather than
+        // overwrite.
+        pending_commands.append(&mut proc.pending_commands);
+        proc.pending_commands = pending_commands;
     }
 
     /// Context-close confirmation dialog. Shows pane inventory with three choices:

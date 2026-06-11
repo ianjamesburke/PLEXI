@@ -1,7 +1,8 @@
 //! Capability and secret prompt modals — shown when an app requests access.
 
-use crate::app::permissions::AppPermissions;
-use crate::app_protocol::PlexiEvent;
+use crate::app::app_trait::AppCommand;
+use crate::app::permissions::{AppPermissions, Capability};
+use crate::app_protocol::{AppRequest, PlexiEvent};
 use crate::host::event_log::{self, HostEvent};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest};
 use crate::workspace::secrets::SecretStore;
@@ -92,6 +93,8 @@ pub(crate) fn show_prompt_modal(
     permission_store: &mut crate::app::permissions::PermissionStore,
     colors: &crate::ui::theme::Colors,
     deferred_ai_queries: &mut VecDeque<DeferredAiQuery>,
+    deferred_gated_requests: &mut Vec<(Capability, AppRequest)>,
+    pending_commands: &mut Vec<AppCommand>,
     ai_broker: Arc<dyn AiBroker>,
     http_tx: Sender<PlexiEvent>,
     pane_id: u64,
@@ -314,7 +317,6 @@ pub(crate) fn show_prompt_modal(
     }
 
     if grant_once || grant_forever || deny_once || deny_forever {
-        use crate::app::permissions::Capability;
         let actually_granted = grant_once || grant_forever;
         match pending_prompts.pop_front() {
             Some(PendingPrompt::Capability {
@@ -469,6 +471,46 @@ pub(crate) fn show_prompt_modal(
                                 tokens_out: 0,
                                 error: Some("capability denied by user".to_string()),
                             });
+                        }
+                    }
+                }
+                // Drain capability-gated pane/permission requests that were
+                // withheld pending this consent (yellow-state routing, stint
+                // 0017). Granted → forward into the host pane-IPC handler;
+                // denied → answer each response_file with the standard
+                // denial JSON so blocking callers unblock immediately.
+                if let Ok(cap) = Capability::try_from(capability.as_str()) {
+                    let mut drained: Vec<AppRequest> = Vec::new();
+                    deferred_gated_requests.retain_mut(|(c, request)| {
+                        if *c == cap {
+                            drained.push(request.clone());
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                    if !drained.is_empty() {
+                        log::info!(
+                            "prompts: '{}' {} for {} — {} {} deferred gated request(s)",
+                            cap,
+                            if actually_granted { "granted" } else { "denied" },
+                            type_id,
+                            if actually_granted {
+                                "forwarding"
+                            } else {
+                                "denying"
+                            },
+                            drained.len()
+                        );
+                        for request in drained {
+                            if actually_granted {
+                                pending_commands
+                                    .push(AppCommand::ForwardPaneRequest { request });
+                            } else {
+                                super::routing::write_pane_request_denial(
+                                    type_id, &request, cap,
+                                );
+                            }
                         }
                     }
                 }

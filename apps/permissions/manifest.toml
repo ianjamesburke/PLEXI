@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "permissions"
+type = "app"
+name = "Permissions"
+entry = "main.py"
+version = "0.1.0"
+description = "View and manage capability permissions for every app"
+watch = true
+
+[app.capabilities]
+capabilities = ["permissions.manage"]
+
+[launch]

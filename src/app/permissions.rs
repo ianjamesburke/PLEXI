@@ -74,6 +74,11 @@ pub enum Capability {
     /// and `SendAppAction` — the same host handlers the `plexi pane` CLI
     /// commands use over PLEXI_SOCKET.
     PanesControl,
+    /// Inspect and mutate other apps' permission state (stint 0017). Gates
+    /// the PGAP path for `ListPermissions` and `SetPermission`, the host-
+    /// mediated surface a permission-manager app uses to list, grant, and
+    /// revoke capabilities.
+    PermissionsManage,
 }
 
 impl fmt::Display for Capability {
@@ -106,6 +111,7 @@ impl Capability {
             Self::PanesSpawn => "Open new panes in your workspace",
             Self::PanesRead => "See your open panes and read app or terminal pane state",
             Self::PanesControl => "Control your panes: focus, close, send input, and drive apps",
+            Self::PermissionsManage => "See and change what other apps are allowed to do",
         }
     }
 
@@ -130,31 +136,40 @@ impl Capability {
             Self::PanesSpawn => "panes.spawn",
             Self::PanesRead => "panes.read",
             Self::PanesControl => "panes.control",
+            Self::PermissionsManage => "permissions.manage",
         }
     }
 
-    pub fn all_str_values() -> &'static [&'static str] {
-        &[
-            "fs.read",
-            "fs.write",
-            "net.http",
-            "secrets.get",
-            "pipe.open",
-            "spawn.app",
-            "audio.record",
-            "audio.playback",
-            "video.playback",
-            "llm",
-            "timer",
-            "ai.query",
-            "midi.in",
-            "midi.out",
-            "terminal.bindings",
-            "fs.pick",
-            "panes.spawn",
-            "panes.read",
-            "panes.control",
-        ]
+    /// Every capability variant. The single source of truth for "all known
+    /// capabilities" — validators iterate this instead of hand-rolling string
+    /// lists. When adding a variant, `as_str`/`try_from` won't compile without
+    /// it, and `capability_all_round_trips` fails if it is missing here.
+    pub const ALL: &'static [Capability] = &[
+        Self::FsRead,
+        Self::FsWrite,
+        Self::NetHttp,
+        Self::SecretsGet,
+        Self::PipeOpen,
+        Self::SpawnApp,
+        Self::AudioRecord,
+        Self::AudioPlayback,
+        Self::VideoPlayback,
+        Self::Llm,
+        Self::Timer,
+        Self::AiQuery,
+        Self::MidiIn,
+        Self::MidiOut,
+        Self::TerminalBindings,
+        Self::FsPick,
+        Self::PanesSpawn,
+        Self::PanesRead,
+        Self::PanesControl,
+        Self::PermissionsManage,
+    ];
+
+    /// All capability wire strings, derived from [`Capability::ALL`].
+    pub fn all_str_values() -> Vec<&'static str> {
+        Self::ALL.iter().map(|c| c.as_str()).collect()
     }
 
     /// Returns a human-readable description of why this capability cannot be
@@ -184,6 +199,7 @@ impl Capability {
             Self::PanesSpawn
                 | Self::PanesRead
                 | Self::PanesControl
+                | Self::PermissionsManage
                 | Self::SpawnApp
                 | Self::AiQuery
                 | Self::Llm
@@ -222,6 +238,32 @@ pub enum PermissionState {
     Red,
 }
 
+impl PermissionState {
+    /// Wire string for this state — matches the serde `lowercase` rename.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Green => "green",
+            Self::Yellow => "yellow",
+            Self::Red => "red",
+        }
+    }
+}
+
+impl<'a> TryFrom<&'a str> for PermissionState {
+    type Error = String;
+
+    fn try_from(s: &'a str) -> Result<Self, Self::Error> {
+        match s {
+            "green" => Ok(Self::Green),
+            "yellow" => Ok(Self::Yellow),
+            "red" => Ok(Self::Red),
+            other => Err(format!(
+                "unknown permission state: '{other}' (expected green | yellow | red)"
+            )),
+        }
+    }
+}
+
 impl<'a> TryFrom<&'a str> for Capability {
     type Error = UnknownCapability;
 
@@ -246,6 +288,7 @@ impl<'a> TryFrom<&'a str> for Capability {
             "panes.spawn" => Ok(Self::PanesSpawn),
             "panes.read" => Ok(Self::PanesRead),
             "panes.control" => Ok(Self::PanesControl),
+            "permissions.manage" => Ok(Self::PermissionsManage),
             other => Err(UnknownCapability(other.to_string())),
         }
     }
@@ -386,30 +429,46 @@ impl PermissionStore {
         format!("{}::{}::{}", app_id, canonical.display(), cap.as_str())
     }
 
+    /// Split a store key (`app_id::workspace_path::capability_str`) into its
+    /// parts. Uses rsplitn so workspace paths containing `::` parse correctly.
+    /// Returns `None` for malformed keys.
+    fn parse_entry_key(key: &str) -> Option<(&str, &str, &str)> {
+        let mut right = key.rsplitn(2, "::");
+        let cap_str = right.next()?;
+        let left = right.next()?;
+        let mut left_parts = left.splitn(2, "::");
+        let app_id = left_parts.next()?;
+        let workspace = left_parts.next()?;
+        Some((app_id, workspace, cap_str))
+    }
+
+    /// Iterate all stored entries as `(app_id, workspace_path, capability, state)`.
+    /// Entries with malformed keys or unknown capability strings are skipped
+    /// (logged at warn). Used by the `ListPermissions` host handler.
+    pub fn iter_entries(
+        &self,
+    ) -> impl Iterator<Item = (&str, &str, Capability, PermissionState)> + '_ {
+        self.data.entries.iter().filter_map(|(key, &state)| {
+            let Some((app_id, workspace, cap_str)) = Self::parse_entry_key(key) else {
+                log::warn!("permission_store: skipping malformed entry key '{key}'");
+                return None;
+            };
+            let Ok(cap) = Capability::try_from(cap_str) else {
+                log::warn!("permission_store: skipping entry with unknown capability '{cap_str}'");
+                return None;
+            };
+            Some((app_id, workspace, cap, state))
+        })
+    }
+
     /// Re-key any entries whose workspace path component resolves to a different canonical path.
     /// Returns the number of entries migrated.
     fn migrate_raw_path_keys(data: &mut PermissionStoreData) -> usize {
         let mut to_rekey: Vec<(String, String, PermissionState)> = Vec::new();
         for (key, &state) in &data.entries {
             // key format: "app_id::workspace_path::cap_str"
-            // Use rsplitn to correctly handle workspace paths that contain "::".
-            let mut right = key.rsplitn(2, "::");
-            let cap_str = match right.next() {
-                Some(s) => s,
-                None => continue,
-            };
-            let left = match right.next() {
-                Some(s) => s,
-                None => continue,
-            };
-            let mut left_parts = left.splitn(2, "::");
-            let app_id = match left_parts.next() {
-                Some(s) => s,
-                None => continue,
-            };
-            let workspace_raw = match left_parts.next() {
-                Some(s) => s,
-                None => continue,
+            let Some((app_id, workspace_raw, cap_str)) = Self::parse_entry_key(key) else {
+                continue;
             };
 
             let raw_path = Path::new(workspace_raw);
@@ -619,6 +678,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn capability_all_round_trips() {
+        // ALL must contain every variant exactly once, and each variant must
+        // round-trip through as_str / try_from. A variant added to the enum
+        // but not to ALL would silently weaken every ALL-derived validator.
+        let mut seen = HashSet::new();
+        for &cap in Capability::ALL {
+            assert!(seen.insert(cap), "duplicate in Capability::ALL: {cap}");
+            assert_eq!(
+                Capability::try_from(cap.as_str()).expect("must round-trip"),
+                cap
+            );
+        }
+        assert_eq!(
+            Capability::ALL.len(),
+            20,
+            "update Capability::ALL (and this count) when adding a variant"
+        );
+        assert_eq!(Capability::all_str_values().len(), Capability::ALL.len());
+    }
+
+    #[test]
     fn ai_query_capability_recognized() {
         // Manifest validator must accept "ai.query" and round-trip through
         // Capability::try_from / as_str without truncation or coercion.
@@ -754,6 +834,72 @@ mod tests {
             }
             PermissionCheck::Allowed => panic!("must be denied without declaration"),
         }
+    }
+
+    #[test]
+    fn permissions_manage_capability_recognized() {
+        let parsed =
+            Capability::try_from("permissions.manage").expect("permissions.manage must parse");
+        assert_eq!(parsed, Capability::PermissionsManage);
+        assert_eq!(parsed.as_str(), "permissions.manage");
+        assert!(parsed.is_sensitive(), "permissions.manage must be sensitive");
+        let perms = AppPermissions::from_capability_strings(&["permissions.manage".to_string()]);
+        assert!(perms.capabilities.contains(&Capability::PermissionsManage));
+        assert!(matches!(
+            check(&perms, Capability::PermissionsManage),
+            PermissionCheck::Allowed
+        ));
+        match check(
+            &AppPermissions::from_capability_strings(&[]),
+            Capability::PermissionsManage,
+        ) {
+            PermissionCheck::Denied(reason) => {
+                assert!(
+                    reason.contains("permissions.manage"),
+                    "denial must name capability: {reason}"
+                );
+            }
+            PermissionCheck::Allowed => panic!("must be denied without declaration"),
+        }
+    }
+
+    #[test]
+    fn permission_state_string_round_trips() {
+        for state in [
+            PermissionState::Green,
+            PermissionState::Yellow,
+            PermissionState::Red,
+        ] {
+            assert_eq!(
+                PermissionState::try_from(state.as_str()).expect("must round-trip"),
+                state
+            );
+        }
+        assert!(
+            PermissionState::try_from("purple").is_err(),
+            "unknown state strings must fail closed"
+        );
+    }
+
+    #[test]
+    fn iter_entries_parses_stored_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = std::path::Path::new("/test/project");
+        let mut store = PermissionStore::load_or_default(tmp.path());
+        store.set(
+            "my-app",
+            workspace,
+            Capability::NetHttp,
+            PermissionState::Red,
+        );
+
+        let entries: Vec<_> = store.iter_entries().collect();
+        assert_eq!(entries.len(), 1);
+        let (app_id, ws, cap, state) = entries[0];
+        assert_eq!(app_id, "my-app");
+        assert_eq!(ws, "/test/project");
+        assert_eq!(cap, Capability::NetHttp);
+        assert_eq!(state, PermissionState::Red);
     }
 
     #[test]

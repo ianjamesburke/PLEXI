@@ -1703,6 +1703,14 @@ impl ProcessApp {
                 self.gate_and_forward_pane_request(request, Capability::PanesControl);
             }
 
+            // ── Permission management over PGAP (stint 0017) ───────────────
+            // A manager app may inspect and mutate other apps' permission
+            // state through the same host pane-IPC path, gated on the
+            // `permissions.manage` capability.
+            request @ (AppRequest::ListPermissions { .. } | AppRequest::SetPermission { .. }) => {
+                self.gate_and_forward_pane_request(request, Capability::PermissionsManage);
+            }
+
             // Context commands are only valid over PLEXI_SOCKET; log and drop
             // when sent via PGAP.
             AppRequest::CreateContext { .. } => {
@@ -1860,42 +1868,72 @@ impl ProcessApp {
         }
     }
 
-    /// Capability gate for pane read/control requests arriving over PGAP
-    /// (stint 0013/0014). On grant the original request is forwarded into the
-    /// host's pane-IPC handler — the same path `plexi pane ...` CLI commands
-    /// take over PLEXI_SOCKET. On denial, callers waiting on a response_file
-    /// get a JSON error object so they don't hang until their poll timeout;
-    /// fire-and-forget requests just log.
+    /// Capability gate for pane read/control and permission-management
+    /// requests arriving over PGAP (stint 0013/0014/0017). On grant the
+    /// original request is forwarded into the host's pane-IPC handler — the
+    /// same path `plexi pane ...` CLI commands take over PLEXI_SOCKET.
+    ///
+    /// Yellow-state routing (stint 0017): a capability that is neither
+    /// granted nor blocked (stored Yellow, or sensitive-and-unset) defers the
+    /// request and queues the runtime consent prompt instead of flat-denying.
+    /// Only a stored Red (blocked) decision denies without a prompt — callers
+    /// waiting on a response_file get a JSON error object so they don't hang
+    /// until their poll timeout; fire-and-forget requests just log.
     fn gate_and_forward_pane_request(&mut self, request: AppRequest, cap: Capability) {
         let kind = pane_request_kind(&request);
-        if let PermissionCheck::Denied(reason) = check(&self.permissions, cap) {
-            log::warn!(
-                "ProcessApp[{}]: {kind} denied — missing capability '{}': {reason}",
+        if let PermissionCheck::Allowed = check(&self.permissions, cap) {
+            log::info!(
+                "ProcessApp[{}]: forwarding {kind} to host pane-IPC handler (capability '{}')",
                 self.type_id,
                 cap.as_str()
             );
-            if let Some(response_file) = pane_request_response_file(&request) {
-                let body = serde_json::json!({
-                    "error": format!("capability denied: {}", cap.as_str()),
-                    "capability": cap.as_str(),
-                })
-                .to_string();
-                if let Err(e) = std::fs::write(response_file, body) {
-                    log::warn!(
-                        "ProcessApp[{}]: {kind} denial — could not write response file {response_file:?}: {e}",
-                        self.type_id
-                    );
-                }
-            }
+            self.pending_commands
+                .push(AppCommand::ForwardPaneRequest { request });
+            return;
+        }
+
+        if is_blocked(&self.permissions, cap) {
+            log::warn!(
+                "ProcessApp[{}]: {kind} denied — capability '{}' permanently blocked",
+                self.type_id,
+                cap.as_str()
+            );
+            write_pane_request_denial(&self.type_id, &request, cap);
+            return;
+        }
+
+        // Yellow / unset: defer the request and queue the consent prompt.
+        // Cap the deferred queue (mirrors deferred_ai_queries) so an app
+        // firing many requests before the modal resolves can't grow it
+        // unboundedly.
+        const MAX_DEFERRED_GATED: usize = 16;
+        if self.deferred_gated_requests.len() >= MAX_DEFERRED_GATED {
+            log::warn!(
+                "ProcessApp[{}]: {kind} dropped — deferred gated queue full (>={MAX_DEFERRED_GATED} pending consent)",
+                self.type_id
+            );
+            write_pane_request_denial(&self.type_id, &request, cap);
             return;
         }
         log::info!(
-            "ProcessApp[{}]: forwarding {kind} to host pane-IPC handler (capability '{}')",
+            "ProcessApp[{}]: {kind} withheld — queuing for '{}' consent",
             self.type_id,
             cap.as_str()
         );
-        self.pending_commands
-            .push(AppCommand::ForwardPaneRequest { request });
+        self.deferred_gated_requests.push((cap, request));
+        // Deduplicate: only push a prompt if one isn't already pending for
+        // this capability.
+        let already_pending = self.pending_prompts.iter().any(|p| {
+            matches!(p, super::PendingPrompt::Capability { capability, .. }
+                if capability == cap.as_str())
+        });
+        if !already_pending {
+            self.pending_prompts
+                .push_back(super::PendingPrompt::Capability {
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    capability: cap.as_str().to_string(),
+                });
+        }
     }
 
     /// Allocate a binary pipe for `pipe_id`, spin up the audio capture
@@ -2310,8 +2348,8 @@ impl ProcessApp {
     }
 }
 
-/// Wire name of a pane read/control request, for capability-gate log lines.
-fn pane_request_kind(request: &AppRequest) -> &'static str {
+/// Wire name of a capability-gated pane/permission request, for gate log lines.
+pub(crate) fn pane_request_kind(request: &AppRequest) -> &'static str {
     match request {
         AppRequest::ListPanes { .. } => "ListPanes",
         AppRequest::ListContexts { .. } => "ListContexts",
@@ -2325,24 +2363,49 @@ fn pane_request_kind(request: &AppRequest) -> &'static str {
         AppRequest::SendToPane { .. } => "SendToPane",
         AppRequest::KeyPane { .. } => "KeyPane",
         AppRequest::SendAppAction { .. } => "SendAppAction",
+        AppRequest::ListPermissions { .. } => "ListPermissions",
+        AppRequest::SetPermission { .. } => "SetPermission",
         _ => "unknown pane request",
     }
 }
 
-/// The response_file path a pane read/control request carries, if any.
+/// The response_file path a capability-gated request carries, if any.
 /// Used to write a capability-denied error object so callers don't hang.
-fn pane_request_response_file(request: &AppRequest) -> Option<&str> {
+pub(crate) fn pane_request_response_file(request: &AppRequest) -> Option<&str> {
     match request {
         AppRequest::ListPanes { response_file, .. }
         | AppRequest::ListContexts { response_file }
         | AppRequest::GetPaneInfo { response_file, .. }
         | AppRequest::GetPreviousPaneInfo { response_file }
         | AppRequest::GetPaneState { response_file, .. }
-        | AppRequest::CapturePane { response_file, .. } => Some(response_file),
+        | AppRequest::CapturePane { response_file, .. }
+        | AppRequest::ListPermissions { response_file }
+        | AppRequest::SetPermission { response_file, .. } => Some(response_file),
         AppRequest::SendToPane { response_file, .. }
         | AppRequest::KeyPane { response_file, .. }
         | AppRequest::SendAppAction { response_file, .. } => response_file.as_deref(),
         _ => None,
+    }
+}
+
+/// Write the standard capability-denial JSON object to a gated request's
+/// response_file (when it carries one) so blocking SDK callers unblock
+/// immediately instead of hitting their poll timeout. Shared by the routing
+/// gate (blocked / queue-full paths) and the consent-deny drain in prompts.rs.
+pub(crate) fn write_pane_request_denial(type_id: &str, request: &AppRequest, cap: Capability) {
+    let kind = pane_request_kind(request);
+    let Some(response_file) = pane_request_response_file(request) else {
+        return;
+    };
+    let body = serde_json::json!({
+        "error": format!("capability denied: {}", cap.as_str()),
+        "capability": cap.as_str(),
+    })
+    .to_string();
+    if let Err(e) = std::fs::write(response_file, body) {
+        log::warn!(
+            "ProcessApp[{type_id}]: {kind} denial — could not write response file {response_file:?}: {e}"
+        );
     }
 }
 

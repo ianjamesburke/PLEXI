@@ -25,3 +25,8 @@ version = "bundled"
 id      = "calc"
 source  = "local:calc"
 version = "bundled"
+
+[[app]]
+id      = "permissions"
+source  = "local:permissions"
+version = "bundled"

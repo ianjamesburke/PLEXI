@@ -45,6 +45,8 @@ CAPABILITY_REGISTRY: dict[str, str] = {
     "close_pane": "panes.control",
     "set_pane_title": "panes.control",
     "send_app_action": "panes.control",
+    "list_permissions": "permissions.manage",
+    "set_permission": "permissions.manage",
     "open_midi_input": "midi.in",
     "send_midi": "midi.out",
     "open_video": "video.playback",
@@ -882,6 +884,71 @@ class Emitter:
         if args:
             cmd["args"] = list(args)
         _emit(cmd)
+
+    # ── Permission management (stint 0017) ──────────────────────────────────
+    #
+    # Host-mediated equivalents of the permission manager surface. Both gate
+    # on `permissions.manage` — a sensitive capability, so the host may show
+    # a consent modal before replying. The response-file poll therefore uses
+    # a 60s timeout (vs. the 10s pane-IPC default) to leave room for the
+    # user to answer the modal.
+
+    @_blocking_emit_method
+    async def list_permissions(self) -> dict:
+        """List permission state across apps. Requires ``permissions.manage``.
+
+        Returns ``{"permissions": [...], "running": [...]}`` — one row per
+        stored `permissions.toml` entry plus one row per live capability of a
+        running app with no stored entry. Each row has ``app_id``,
+        ``workspace``, ``capability``, ``state`` ("green"|"yellow"|"red"),
+        ``stored``, ``sensitive``, and ``description``.
+
+        Raises ``CapabilityDeniedError`` if the host denies
+        ``permissions.manage``.
+        """
+        response_file = self._pane_response_file("list-permissions")
+        _emit({
+            "type": "list_permissions",
+            "response_file": response_file,
+        })
+        return await self._await_pane_response(
+            response_file, "list_permissions", timeout=60.0)
+
+    @_blocking_emit_method
+    async def set_permission(self, app_id: str, capability: str, state: str,
+                             workspace: "str | None" = None) -> dict:
+        """Set the stored permission state for an (app, workspace, capability)
+        triple. Requires ``permissions.manage``.
+
+        Args:
+            app_id: Target app id.
+            capability: Capability string, e.g. "panes.read".
+            state: One of "green" (allow), "yellow" (ask), "red" (block).
+            workspace: Workspace root the entry applies to. When omitted, the
+                workspace of a running app with ``app_id`` is used; fails if
+                no such app is running.
+
+        Returns ``{"ok": True}``. Raises ``CapabilityDeniedError`` if the
+        host denies ``permissions.manage``, and ``RuntimeError`` when the
+        host replies with any other error (unknown capability/state strings
+        fail closed).
+        """
+        response_file = self._pane_response_file("set-permission")
+        cmd: "dict[str, object]" = {
+            "type": "set_permission",
+            "app_id": app_id,
+            "capability": capability,
+            "state": state,
+            "response_file": response_file,
+        }
+        if workspace is not None:
+            cmd["workspace"] = workspace
+        _emit(cmd)
+        data = await self._await_pane_response(
+            response_file, "set_permission", timeout=60.0)
+        if isinstance(data, dict) and "error" in data:
+            raise RuntimeError(f"set_permission: {data['error']}")
+        return data
 
     def query_context_state(self, context_id: int) -> None:
         """Query the state of a context (#1518).
