@@ -1,0 +1,15 @@
+schema_version = 1
+
+[app]
+id = "flow"
+type = "app"
+name = "Flow"
+entry = "main.py"
+version = "0.1.0"
+description = "Node-based workflow canvas (n8n-style POC): wire prompts, files, and shell commands."
+watch = true
+
+[app.capabilities]
+capabilities = ["fs.read", "fs.write"]
+
+[launch]
