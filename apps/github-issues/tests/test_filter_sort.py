@@ -69,7 +69,34 @@ def test_sort_cycle_uses_documented_order():
     assert order == ["created ↓", "created ↑", "number ↓", "number ↑"]
 
 
-def test_app_filter_and_sort_preserve_selected_issue():
+def test_issue_list_limit_is_large_enough_for_active_repos():
+    app = _load_app_module()
+
+    assert app.ISSUE_LIST_LIMIT == "500"
+
+
+def test_app_sort_preserves_selected_index():
+    app = _load_app_module()
+    gh = app.GhIssues()
+    gh._issues = _issues()
+    gh._sel = 0
+    gh._filter_label = None
+    gh._sort_mode = "created_desc"
+
+    gh._cycle_sort()
+
+    assert gh._sort_mode == "created_asc"
+    assert gh._sel == 0
+    assert gh._selected_issue()["number"] == 1
+
+    gh._cycle_sort()
+
+    assert gh._sort_mode == "number_desc"
+    assert gh._sel == 0
+    assert gh._selected_issue()["number"] == 9
+
+
+def test_app_filter_cycles_selected_issue_labels_then_clears():
     app = _load_app_module()
     gh = app.GhIssues()
     gh._issues = _issues()
@@ -77,18 +104,19 @@ def test_app_filter_and_sort_preserve_selected_issue():
     gh._filter_label = None
     gh._sort_mode = "created_desc"
 
-    gh._cycle_sort()
+    gh._toggle_filter_from_selection()
 
-    assert gh._sort_mode == "created_asc"
+    assert gh._filter_label == "bug"
+    assert [issue["number"] for issue in gh._visible_issues()] == [5, 1]
     assert gh._selected_issue()["number"] == 5
 
     gh._toggle_filter_from_selection()
 
-    assert gh._filter_label == "bug"
-    assert [issue["number"] for issue in gh._visible_issues()] == [1, 5]
+    assert gh._filter_label == "P1"
+    assert [issue["number"] for issue in gh._visible_issues()] == [5]
     assert gh._selected_issue()["number"] == 5
 
-    gh._clear_filter()
+    gh._toggle_filter_from_selection()
 
     assert gh._filter_label is None
     assert gh._selected_issue()["number"] == 5

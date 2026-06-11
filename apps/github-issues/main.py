@@ -75,6 +75,7 @@ def _label_color(name: str) -> str:
 
 
 SORT_MODES = ("created_desc", "created_asc", "number_desc", "number_asc")
+ISSUE_LIST_LIMIT = "500"
 
 SORT_LABELS = {
     "created_desc": "created ↓",
@@ -158,7 +159,7 @@ class GhIssues(App):
         rc, out, err = _gh(
             "issue", "list", "--state", "open",
             "--json", "number,title,state,labels,assignees,createdAt",
-            "--limit", "100",
+            "--limit", ISSUE_LIST_LIMIT,
             cwd=self._root or None,
         )
         if rc != 0:
@@ -407,17 +408,12 @@ class GhIssues(App):
     # ── actions ───────────────────────────────────────────────────────────────
 
     def _cycle_sort(self) -> None:
-        issue = self._selected_issue()
-        keep_number = issue.get("number") if issue else None
         self._sort_mode = _next_sort_mode(self._sort_mode)
-        self._select_issue_number(keep_number)
+        self._clamp_selection()
         self.emit.info(f"gh-issues: sort {SORT_LABELS[self._sort_mode]}")
         self.emit.schedule_render()
 
     def _toggle_filter_from_selection(self) -> None:
-        if self._filter_label:
-            self._clear_filter()
-            return
         issue = self._selected_issue()
         if not issue:
             return
@@ -425,8 +421,20 @@ class GhIssues(App):
         if not labels:
             self.emit.info("gh-issues: selected issue has no labels to filter")
             return
-        self._filter_label = labels[0]
-        self._select_issue_number(issue.get("number"))
+        keep_number = issue.get("number")
+        if self._filter_label in labels:
+            idx = labels.index(self._filter_label)
+            if idx == len(labels) - 1:
+                cleared = self._filter_label
+                self._filter_label = None
+                self._select_issue_number(keep_number)
+                self.emit.info(f"gh-issues: cleared filter label:{cleared}")
+                self.emit.schedule_render()
+                return
+            self._filter_label = labels[idx + 1]
+        else:
+            self._filter_label = labels[0]
+        self._select_issue_number(keep_number)
         self.emit.info(f"gh-issues: filter label:{self._filter_label}")
         self.emit.schedule_render()
 
