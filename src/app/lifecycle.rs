@@ -5,6 +5,117 @@ use egui_term::PtyEvent;
 use super::PendingNotification;
 use super::PlexiApp;
 
+const MAX_SLOT_CONTENT_SIZE: usize = 10 * 1024 * 1024;
+
+fn write_json_response(response_file: &str, value: serde_json::Value) {
+    match serde_json::to_string(&value) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(response_file, json) {
+                log::error!("pane_ipc: could not write response file {response_file:?}: {e}");
+            }
+        }
+        Err(e) => {
+            log::error!("pane_ipc: could not serialize response for {response_file:?}: {e}");
+        }
+    }
+}
+
+fn slot_error(response_file: &str, message: impl Into<String>) {
+    write_json_response(
+        response_file,
+        serde_json::json!({
+            "ok": false,
+            "error": message.into(),
+        }),
+    );
+}
+
+fn slot_read_error(response_file: &str, message: impl Into<String>) {
+    write_json_response(
+        &format!("{response_file}.err"),
+        serde_json::json!({
+            "ok": false,
+            "error": message.into(),
+        }),
+    );
+}
+
+fn write_bytes_response_atomic(response_file: &str, bytes: &[u8]) {
+    let temp_file = format!("{response_file}.tmp");
+    if let Err(e) = std::fs::write(&temp_file, bytes) {
+        log::error!("pane_ipc: could not write temp response file {temp_file:?}: {e}");
+    } else if let Err(e) = std::fs::rename(&temp_file, response_file) {
+        log::error!("pane_ipc: could not rename temp response file to {response_file:?}: {e}");
+        let _ = std::fs::remove_file(&temp_file);
+    }
+}
+
+fn validate_slot_name(slot_name: &str) -> Result<(), String> {
+    if slot_name.is_empty() {
+        return Err("slot name cannot be empty".to_string());
+    }
+    if slot_name == "." || slot_name == ".." || slot_name.contains('/') || slot_name.contains('\\')
+    {
+        return Err(format!("invalid slot name '{slot_name}'"));
+    }
+    Ok(())
+}
+
+fn slot_base_dir(context_root: Option<&std::path::Path>) -> std::path::PathBuf {
+    match context_root {
+        Some(root) => root
+            .join(crate::config::workspace_channel_dir())
+            .join("slots"),
+        None => crate::config::config_dir().join("slots"),
+    }
+}
+
+fn pane_slots_json(pane: &crate::host::pane::Pane) -> serde_json::Value {
+    match pane.slots() {
+        Some(slots) => {
+            let obj = slots
+                .iter()
+                .map(|(name, path)| {
+                    (
+                        name.clone(),
+                        serde_json::Value::String(path.to_string_lossy().into_owned()),
+                    )
+                })
+                .collect();
+            serde_json::Value::Object(obj)
+        }
+        None => serde_json::Value::Object(serde_json::Map::new()),
+    }
+}
+
+fn slot_list_entries(
+    slots: &std::collections::HashMap<String, std::path::PathBuf>,
+) -> Vec<serde_json::Value> {
+    let mut entries: Vec<serde_json::Value> = slots
+        .iter()
+        .map(|(name, path)| {
+            let metadata = std::fs::metadata(path).ok();
+            let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+            let modified = metadata
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs());
+            serde_json::json!({
+                "name": name,
+                "path": path.to_string_lossy(),
+                "size": size,
+                "modified": modified,
+            })
+        })
+        .collect();
+    entries.sort_by(|a, b| {
+        a.get("name")
+            .and_then(|v| v.as_str())
+            .cmp(&b.get("name").and_then(|v| v.as_str()))
+    });
+    entries
+}
+
 impl PlexiApp {
     pub(super) fn drain_pane_cmd_channel(&mut self) {
         while let Ok(cmd) = self.pane_ipc_rx.try_recv() {
@@ -104,6 +215,7 @@ impl PlexiApp {
                                 "window_id": win.window_id,
                                 "cwd": cwd,
                                 "agent": pane.agent(),
+                                "slots": pane_slots_json(pane),
                             }));
                         }
                     }
@@ -184,6 +296,7 @@ impl PlexiApp {
                                         "window_id": win.window_id,
                                         "cwd": cwd,
                                         "agent": agent,
+                                        "slots": pane_slots_json(pane),
                                     })
                                 }
                                 crate::host::pane::Pane::App(a) => {
@@ -197,6 +310,7 @@ impl PlexiApp {
                                         "cwd": a.workspace_root.to_string_lossy().as_ref(),
                                         "manifest_id": a.manifest_id.clone(),
                                         "agent": agent,
+                                        "slots": pane_slots_json(pane),
                                     })
                                 }
                                 crate::host::pane::Pane::Portal(p) => {
@@ -253,6 +367,7 @@ impl PlexiApp {
                                                 "context_id": win.context_id,
                                                 "window_id": win.window_id,
                                                 "cwd": cwd,
+                                                "slots": pane_slots_json(pane),
                                             })
                                         }
                                         crate::host::pane::Pane::App(a) => {
@@ -265,6 +380,7 @@ impl PlexiApp {
                                                 "window_id": win.window_id,
                                                 "cwd": a.workspace_root.to_string_lossy().as_ref(),
                                                 "manifest_id": a.manifest_id.clone(),
+                                                "slots": pane_slots_json(pane),
                                             })
                                         }
                                         crate::host::pane::Pane::Portal(p) => {
@@ -306,6 +422,348 @@ impl PlexiApp {
                             let _ = std::fs::remove_file(&temp_file);
                         }
                     }
+                }
+                crate::app_protocol::AppRequest::SlotWrite {
+                    pane_id,
+                    slot_name,
+                    content,
+                    append,
+                    replace,
+                    response_file,
+                } => {
+                    log::info!(
+                        "pane_ipc: kind=slot_write pane_id={pane_id} slot={slot_name:?} bytes={} append={append} replace={replace}",
+                        content.len()
+                    );
+                    if let Err(msg) = validate_slot_name(slot_name) {
+                        slot_error(response_file, msg);
+                        continue;
+                    }
+                    if *append && *replace {
+                        slot_error(response_file, "use only one of append or replace");
+                        continue;
+                    }
+                    if content.len() > MAX_SLOT_CONTENT_SIZE {
+                        slot_error(
+                            response_file,
+                            format!(
+                                "slot '{slot_name}' content size {} exceeds 10485760 bytes",
+                                content.len()
+                            ),
+                        );
+                        continue;
+                    }
+                    let target = self.windows.iter().enumerate().find_map(|(idx, win)| {
+                        if win.panes.contains_key(pane_id) {
+                            Some((idx, win.context_id))
+                        } else {
+                            None
+                        }
+                    });
+                    let Some((win_idx, context_id)) = target else {
+                        slot_error(response_file, format!("pane {pane_id} not found"));
+                        continue;
+                    };
+                    let context_root = self
+                        .router
+                        .iter()
+                        .find(|ctx| ctx.context_id == context_id)
+                        .and_then(|ctx| ctx.root.clone());
+                    let slot_dir = slot_base_dir(context_root.as_deref()).join(pane_id.to_string());
+                    let slot_path = slot_dir.join(slot_name);
+                    let Some(pane) = self.windows[win_idx].panes.get_mut(pane_id) else {
+                        slot_error(response_file, format!("pane {pane_id} not found"));
+                        continue;
+                    };
+                    let Some(slots) = pane.slots_mut() else {
+                        slot_error(
+                            response_file,
+                            format!("pane {pane_id} does not support slots"),
+                        );
+                        continue;
+                    };
+                    let tracked_path = slots.get(slot_name).cloned();
+                    let existing_path = tracked_path.clone().unwrap_or(slot_path.clone());
+                    let write_path = if *append {
+                        tracked_path.clone().unwrap_or(slot_path.clone())
+                    } else {
+                        slot_path.clone()
+                    };
+                    let exists = tracked_path.as_ref().is_some_and(|path| path.exists());
+                    if exists && !*append && !*replace {
+                        slot_error(
+                            response_file,
+                            format!(
+                                "slot '{slot_name}' already exists — use --append to add to it or --replace to overwrite it"
+                            ),
+                        );
+                        continue;
+                    }
+                    if *append {
+                        let existing_size = std::fs::metadata(&existing_path)
+                            .map(|m| m.len())
+                            .unwrap_or(0);
+                        let final_size = existing_size.saturating_add(content.len() as u64);
+                        if final_size > MAX_SLOT_CONTENT_SIZE as u64 {
+                            slot_error(
+                                response_file,
+                                format!(
+                                    "slot '{slot_name}' content size {final_size} exceeds 10485760 bytes"
+                                ),
+                            );
+                            continue;
+                        }
+                    }
+                    let write_dir = write_path.parent().unwrap_or(slot_dir.as_path());
+                    if let Err(e) = std::fs::create_dir_all(write_dir) {
+                        slot_error(
+                            response_file,
+                            format!(
+                                "could not create slot directory {}: {e}",
+                                write_dir.display()
+                            ),
+                        );
+                        continue;
+                    }
+                    let write_result = if *append {
+                        use std::io::Write as _;
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&write_path)
+                            .and_then(|mut f| f.write_all(content).map(|_| ()))
+                    } else {
+                        std::fs::write(&write_path, content)
+                    };
+                    if let Err(e) = write_result {
+                        slot_error(
+                            response_file,
+                            format!("could not write slot '{slot_name}': {e}"),
+                        );
+                        continue;
+                    }
+                    let absolute = write_path
+                        .canonicalize()
+                        .unwrap_or_else(|_| write_path.clone());
+                    slots.insert(slot_name.clone(), absolute.clone());
+                    let size = std::fs::metadata(&absolute).map(|m| m.len()).unwrap_or(0);
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({
+                            "ok": true,
+                            "name": slot_name,
+                            "path": absolute.to_string_lossy(),
+                            "size": size,
+                        }),
+                    );
+                }
+                crate::app_protocol::AppRequest::SlotRead {
+                    pane_id,
+                    slot_name,
+                    response_file,
+                } => {
+                    log::info!("pane_ipc: kind=slot_read pane_id={pane_id} slot={slot_name:?}");
+                    if let Err(msg) = validate_slot_name(slot_name) {
+                        slot_read_error(response_file, msg);
+                        continue;
+                    }
+                    let path = self
+                        .windows
+                        .iter()
+                        .find_map(|win| win.panes.get(pane_id))
+                        .and_then(|pane| pane.slots())
+                        .and_then(|slots| slots.get(slot_name).cloned());
+                    let Some(path) = path else {
+                        slot_read_error(response_file, format!("slot '{slot_name}' not found"));
+                        continue;
+                    };
+                    match std::fs::read(&path) {
+                        Ok(bytes) => write_bytes_response_atomic(response_file, &bytes),
+                        Err(e) => {
+                            slot_read_error(
+                                response_file,
+                                format!("could not read slot '{slot_name}': {e}"),
+                            );
+                        }
+                    }
+                }
+                crate::app_protocol::AppRequest::SlotList {
+                    pane_id,
+                    response_file,
+                } => {
+                    log::info!("pane_ipc: kind=slot_list pane_id={pane_id}");
+                    let slots = self
+                        .windows
+                        .iter()
+                        .find_map(|win| win.panes.get(pane_id))
+                        .and_then(|pane| pane.slots());
+                    match slots {
+                        Some(slots) => {
+                            write_json_response(
+                                response_file,
+                                serde_json::Value::Array(slot_list_entries(slots)),
+                            );
+                        }
+                        None => slot_error(response_file, format!("pane {pane_id} not found")),
+                    }
+                }
+                crate::app_protocol::AppRequest::SlotDelete {
+                    pane_id,
+                    slot_name,
+                    response_file,
+                } => {
+                    log::info!("pane_ipc: kind=slot_delete pane_id={pane_id} slot={slot_name:?}");
+                    if let Err(msg) = validate_slot_name(slot_name) {
+                        slot_error(response_file, msg);
+                        continue;
+                    }
+                    let target = self.windows.iter().enumerate().find_map(|(idx, win)| {
+                        if win.panes.contains_key(pane_id) {
+                            Some((idx, win.context_id))
+                        } else {
+                            None
+                        }
+                    });
+                    let Some((win_idx, context_id)) = target else {
+                        slot_error(response_file, format!("pane {pane_id} not found"));
+                        continue;
+                    };
+                    let context_root = self
+                        .router
+                        .iter()
+                        .find(|ctx| ctx.context_id == context_id)
+                        .and_then(|ctx| ctx.root.clone());
+                    let fallback_path = slot_base_dir(context_root.as_deref())
+                        .join(pane_id.to_string())
+                        .join(slot_name);
+                    let Some(pane) = self.windows[win_idx].panes.get_mut(pane_id) else {
+                        slot_error(response_file, format!("pane {pane_id} not found"));
+                        continue;
+                    };
+                    let Some(slots) = pane.slots_mut() else {
+                        slot_error(
+                            response_file,
+                            format!("pane {pane_id} does not support slots"),
+                        );
+                        continue;
+                    };
+                    let path = slots.remove(slot_name).unwrap_or(fallback_path);
+                    let removed = if path.exists() {
+                        match std::fs::remove_file(&path) {
+                            Ok(()) => true,
+                            Err(e) => {
+                                slot_error(
+                                    response_file,
+                                    format!("could not delete slot '{slot_name}': {e}"),
+                                );
+                                continue;
+                            }
+                        }
+                    } else {
+                        false
+                    };
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({
+                            "ok": true,
+                            "name": slot_name,
+                            "removed": removed,
+                        }),
+                    );
+                }
+                crate::app_protocol::AppRequest::WorkspaceCleanSlots {
+                    dry_run,
+                    response_file,
+                } => {
+                    log::info!("pane_ipc: kind=workspace_clean_slots dry_run={dry_run}");
+                    let live_panes: std::collections::HashSet<u64> = self
+                        .windows
+                        .iter()
+                        .flat_map(|win| win.panes.keys().copied())
+                        .collect();
+                    let live_slot_paths: std::collections::HashSet<std::path::PathBuf> = self
+                        .windows
+                        .iter()
+                        .flat_map(|win| win.panes.values())
+                        .filter_map(|pane| pane.slots())
+                        .flat_map(|slots| slots.values().cloned())
+                        .collect();
+                    let mut roots = vec![crate::config::config_dir().join("slots")];
+                    for root in self.router.iter().filter_map(|ctx| ctx.root.as_ref()) {
+                        roots.push(slot_base_dir(Some(root)));
+                    }
+                    roots.sort();
+                    roots.dedup();
+
+                    let mut paths = Vec::new();
+                    for root in roots {
+                        let Ok(entries) = std::fs::read_dir(&root) else {
+                            continue;
+                        };
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if !path.is_dir() {
+                                continue;
+                            }
+                            let Some(pane_id) =
+                                entry.file_name().to_string_lossy().parse::<u64>().ok()
+                            else {
+                                continue;
+                            };
+                            if !live_panes.contains(&pane_id) {
+                                paths.push(path);
+                                continue;
+                            }
+                            let has_live_slots = live_slot_paths
+                                .iter()
+                                .any(|slot_path| slot_path.parent() == Some(path.as_path()));
+                            if !has_live_slots {
+                                paths.push(path);
+                                continue;
+                            }
+                            let Ok(slot_entries) = std::fs::read_dir(&path) else {
+                                continue;
+                            };
+                            for slot_entry in slot_entries.flatten() {
+                                let slot_path = slot_entry.path();
+                                if !live_slot_paths.contains(&slot_path) {
+                                    paths.push(slot_path);
+                                }
+                            }
+                        }
+                    }
+                    paths.sort();
+                    let mut cleaned = Vec::new();
+                    let mut clean_error = None;
+                    for path in paths {
+                        if !*dry_run {
+                            let remove_result = if path.is_dir() {
+                                std::fs::remove_dir_all(&path)
+                            } else {
+                                std::fs::remove_file(&path)
+                            };
+                            if let Err(e) = remove_result {
+                                clean_error = Some(format!(
+                                    "could not remove slot path {}: {e}",
+                                    path.display()
+                                ));
+                                break;
+                            }
+                        }
+                        cleaned.push(path.to_string_lossy().into_owned());
+                    }
+                    if let Some(error) = clean_error {
+                        slot_error(response_file, error);
+                        continue;
+                    }
+                    write_json_response(
+                        response_file,
+                        serde_json::json!({
+                            "ok": true,
+                            "dry_run": dry_run,
+                            "paths": cleaned,
+                        }),
+                    );
                 }
                 crate::app_protocol::AppRequest::FocusPane { pane_id } => {
                     log::info!("pane_ipc: kind=focus_pane pane_id={pane_id}");

@@ -143,6 +143,7 @@ mod tests {
                 overlay_replaced: None,
                 hidden: false,
                 agent: None,
+                slots: std::collections::HashMap::new(),
             };
             let win = &mut app.windows[app.active_window];
             win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));

@@ -160,6 +160,7 @@ impl PlexiApp {
                 overlay_replaced,
                 hidden: false,
                 agent: None,
+                slots: std::collections::HashMap::new(),
             }))
         };
 
@@ -287,6 +288,7 @@ impl PlexiApp {
                 overlay_replaced: None,
                 hidden: false,
                 agent: None,
+                slots: std::collections::HashMap::new(),
             })),
         );
         if self.windows[active].focused_pane.is_none() {
@@ -523,6 +525,7 @@ impl PlexiApp {
                 overlay_replaced,
                 hidden: false,
                 agent: None,
+                slots: std::collections::HashMap::new(),
             }))
         };
 

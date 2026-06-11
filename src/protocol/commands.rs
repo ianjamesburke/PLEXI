@@ -686,6 +686,39 @@ pub enum AppRequest {
     /// Sent by `plexi pane info --previous`.
     GetPreviousPaneInfo { response_file: String },
 
+    /// Write bytes to a named host-managed pane file slot.
+    SlotWrite {
+        pane_id: u64,
+        slot_name: String,
+        content: Vec<u8>,
+        append: bool,
+        replace: bool,
+        response_file: String,
+    },
+
+    /// Read raw bytes from a named host-managed pane file slot.
+    SlotRead {
+        pane_id: u64,
+        slot_name: String,
+        response_file: String,
+    },
+
+    /// List named host-managed pane file slots.
+    SlotList { pane_id: u64, response_file: String },
+
+    /// Delete a named host-managed pane file slot.
+    SlotDelete {
+        pane_id: u64,
+        slot_name: String,
+        response_file: String,
+    },
+
+    /// Remove slot files for pane ids that are no longer live in any window.
+    WorkspaceCleanSlots {
+        dry_run: bool,
+        response_file: String,
+    },
+
     /// Move UI focus to a pane by PaneId. Sent by `plexi pane focus`. Fire-and-forget.
     FocusPane { pane_id: u64 },
 

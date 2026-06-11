@@ -159,6 +159,7 @@ fn send_to_pane_searches_all_windows() {
             overlay_replaced: None,
             hidden: false,
             agent: None,
+            slots: std::collections::HashMap::new(),
         }
     };
     win1.panes.insert(
@@ -232,6 +233,7 @@ fn pane_list_excludes_orphaned_panes_and_navigate_succeeds() {
         overlay_replaced: None,
         hidden: false,
         agent: None,
+        slots: std::collections::HashMap::new(),
     }));
     h.app.windows[0].panes.insert(orphan_id, orphan_pane);
     assert!(
@@ -392,6 +394,7 @@ fn overlay_panes_preserve_replaced_pane_agent_state() {
             overlay_replaced: Some(Box::new(replaced)),
             hidden: false,
             agent: None,
+            slots: std::collections::HashMap::new(),
         })),
     );
 

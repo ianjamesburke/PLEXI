@@ -61,6 +61,72 @@ pub fn workspace_init() -> i32 {
     }
 }
 
+pub fn workspace_clean_cli(dry_run: bool) -> i32 {
+    let id = uuid::Uuid::new_v4();
+    let response_file = crate::config::config_dir()
+        .join(format!("workspace-clean-response-{id}.json"))
+        .to_string_lossy()
+        .into_owned();
+    log::info!("workspace_clean:cli: dry_run={dry_run} response_file={response_file:?}");
+    let code = super::send_to_socket(serde_json::json!({
+        "type": "workspace_clean_slots",
+        "dry_run": dry_run,
+        "response_file": response_file,
+    }));
+    if code != 0 {
+        return code;
+    }
+
+    let response_path = std::path::PathBuf::from(&response_file);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if response_path.exists() {
+            let content = match std::fs::read_to_string(&response_path) {
+                Ok(content) => {
+                    let _ = std::fs::remove_file(&response_path);
+                    content
+                }
+                Err(e) => {
+                    log::warn!("workspace_clean:cli: could not read response file: {e}");
+                    eprintln!("error: could not read response file: {e}");
+                    return 1;
+                }
+            };
+            let value = match serde_json::from_str::<serde_json::Value>(&content) {
+                Ok(value) => value,
+                Err(e) => {
+                    eprintln!("error: invalid workspace clean response: {e}");
+                    return 1;
+                }
+            };
+            if let Some(err) = value.get("error").and_then(|v| v.as_str()) {
+                eprintln!("error: {err}");
+                return 1;
+            }
+            let paths = value
+                .get("paths")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if paths.is_empty() {
+                println!("No stale pane slot files found.");
+                return 0;
+            }
+            for path in paths {
+                if let Some(path) = path.as_str() {
+                    println!("{path}");
+                }
+            }
+            return 0;
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!("error: timed out waiting for workspace clean response");
+            return 1;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 // ── plexi secret subcommands (workspace-aware, issue #322) ───────────────────
 
 /// Resolve the current workspace and config. Errors out with a helpful

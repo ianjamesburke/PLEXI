@@ -231,6 +231,12 @@ pub enum WorkspaceCmd {
     /// Run this once inside your project folder. It creates a .plexi/workspace.toml
     /// so that secrets and commands are scoped to this project.
     Init,
+    /// Remove pane slot files for panes that are no longer open.
+    Clean {
+        /// Print slot directories that would be removed without deleting them.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -699,6 +705,51 @@ pub enum PaneCmd {
     State {
         /// Pane id to query (from `plexi pane list`)
         pane_id: u64,
+    },
+    /// Manage host-managed named file slots for a pane.
+    Slot {
+        #[command(subcommand)]
+        cmd: PaneSlotCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PaneSlotCmd {
+    /// Write bytes to a named pane slot. If content is omitted, stdin is read fully.
+    Write {
+        /// Slot name
+        name: String,
+        /// Optional content. If omitted, stdin is read fully.
+        #[arg(allow_hyphen_values = true)]
+        content: Option<String>,
+        /// Pane id. Defaults to PLEXI_PANE_ID.
+        #[arg(long)]
+        pane_id: Option<u64>,
+        /// Append to an existing slot instead of replacing it.
+        #[arg(long, conflicts_with = "replace")]
+        append: bool,
+        /// Replace an existing slot.
+        #[arg(long, conflicts_with = "append")]
+        replace: bool,
+    },
+    /// Print raw bytes from a named pane slot.
+    Read {
+        /// Slot name
+        name: String,
+        /// Pane id. Defaults to PLEXI_PANE_ID.
+        pane_id: Option<u64>,
+    },
+    /// List slots for a pane as JSON.
+    List {
+        /// Pane id. Defaults to PLEXI_PANE_ID.
+        pane_id: Option<u64>,
+    },
+    /// Delete a named pane slot.
+    Delete {
+        /// Slot name
+        name: String,
+        /// Pane id. Defaults to PLEXI_PANE_ID.
+        pane_id: Option<u64>,
     },
 }
 

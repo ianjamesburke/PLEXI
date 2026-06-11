@@ -265,6 +265,7 @@ mod tests {
             overlay_replaced: None,
             hidden: false,
             agent: None,
+            slots: std::collections::HashMap::new(),
         };
 
         app.windows[0]

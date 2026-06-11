@@ -191,7 +191,8 @@ fn main() -> eframe::Result {
         .collect();
     use crate::cli::args::{
         AgentCmd, AiCmd, AppCmd, Cli, Commands, ConfigCmd, ContextCmd, DescriptorCmd, HookAction,
-        NotesCmd, PaneCmd, RegistryCmd, RoutineCmd, SecretCmd, UpdateCmd, WorkspaceCmd,
+        NotesCmd, PaneCmd, PaneSlotCmd, RegistryCmd, RoutineCmd, SecretCmd, UpdateCmd,
+        WorkspaceCmd,
     };
     use clap::Parser;
 
@@ -205,6 +206,9 @@ fn main() -> eframe::Result {
                     },
                     Commands::Workspace { cmd } => match cmd {
                         WorkspaceCmd::Init => std::process::exit(cli::workspace_init()),
+                        WorkspaceCmd::Clean { dry_run } => {
+                            std::process::exit(cli::workspace_clean_cli(dry_run))
+                        }
                     },
                     Commands::Routine { cmd } => match cmd {
                         RoutineCmd::List => std::process::exit(cli::routine_list()),
@@ -716,6 +720,32 @@ fn main() -> eframe::Result {
                             PaneCmd::State { pane_id } => {
                                 std::process::exit(cli::pane_state_cli(pane_id))
                             }
+                            PaneCmd::Slot { cmd } => match cmd {
+                                PaneSlotCmd::Write {
+                                    name,
+                                    content,
+                                    pane_id,
+                                    append,
+                                    replace,
+                                } => {
+                                    std::process::exit(cli::pane_slot_write_cli(
+                                        &name,
+                                        content.as_deref(),
+                                        append,
+                                        replace,
+                                        pane_id,
+                                    ));
+                                }
+                                PaneSlotCmd::Read { name, pane_id } => {
+                                    std::process::exit(cli::pane_slot_read_cli(&name, pane_id))
+                                }
+                                PaneSlotCmd::List { pane_id } => {
+                                    std::process::exit(cli::pane_slot_list_cli(pane_id))
+                                }
+                                PaneSlotCmd::Delete { name, pane_id } => {
+                                    std::process::exit(cli::pane_slot_delete_cli(&name, pane_id))
+                                }
+                            },
                             PaneCmd::New {
                                 cmd,
                                 name,
