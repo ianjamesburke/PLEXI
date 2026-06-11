@@ -11,7 +11,9 @@ pub(crate) struct ModalShell<'a> {
     offset: Vec2,
     click_away: bool,
     escape: bool,
-    scrim: bool,
+    /// Scrim darkness, 0.0..=1.0. 0.0 = no scrim (and no click-away
+    /// detection); 1.0 = pure black. Default maps `style::SCRIM_ALPHA`.
+    scrim_strength: f32,
 }
 
 impl<'a> ModalShell<'a> {
@@ -24,7 +26,7 @@ impl<'a> ModalShell<'a> {
             offset: Vec2::ZERO,
             click_away: true,
             escape: false,
-            scrim: true,
+            scrim_strength: f32::from(style::SCRIM_ALPHA) / 255.0,
         }
     }
 
@@ -41,7 +43,18 @@ impl<'a> ModalShell<'a> {
     /// is detected via the scrim, so scrim-less modals dismiss only via
     /// Escape/Enter handled by the caller or `.escape(true)`.
     pub(crate) fn scrim(mut self, enabled: bool) -> Self {
-        self.scrim = enabled;
+        self.scrim_strength = if enabled {
+            f32::from(style::SCRIM_ALPHA) / 255.0
+        } else {
+            0.0
+        };
+        self
+    }
+
+    /// Set scrim darkness explicitly (0.0 = none, 1.0 = black). Use for
+    /// modals that should dim more or less than the product default.
+    pub(crate) fn scrim_strength(mut self, strength: f32) -> Self {
+        self.scrim_strength = strength.clamp(0.0, 1.0);
         self
     }
 
@@ -75,16 +88,14 @@ impl<'a> ModalShell<'a> {
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
 
         let screen = ctx.screen_rect();
-        if self.scrim {
+        if self.scrim_strength > 0.0 {
+            let alpha = (self.scrim_strength * 255.0).round() as u8;
             egui::Area::new(self.id.with("scrim"))
                 .fixed_pos(screen.min)
                 .order(egui::Order::Middle)
                 .show(ctx, |ui| {
-                    ui.painter().rect_filled(
-                        screen,
-                        0.0,
-                        Color32::from_black_alpha(style::SCRIM_ALPHA),
-                    );
+                    ui.painter()
+                        .rect_filled(screen, 0.0, Color32::from_black_alpha(alpha));
                     let clicked = ui.allocate_rect(screen, egui::Sense::click()).clicked();
                     if self.click_away && clicked {
                         dismissed = true;
@@ -111,7 +122,10 @@ impl<'a> ModalShell<'a> {
                         style::MODAL_PADDING_V,
                     ))
                     .show(ui, |ui| {
-                        ui.set_width(self.width);
+                        // width(0.0) = auto-size to content (toasts, pills).
+                        if self.width > 0.0 {
+                            ui.set_width(self.width);
+                        }
                         if let Some(title) = self.title {
                             ui.label(
                                 egui::RichText::new(title)
