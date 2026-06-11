@@ -864,6 +864,58 @@
           "type": "object"
         },
         {
+          "description": "List permission state across apps (stint 0017). Gated on\n`permissions.manage` when arriving over PGAP. Host writes a JSON object\nto `response_file`:\n\n```json\n{\n  \"permissions\": [\n    {\n      \"app_id\": \"...\",\n      \"workspace\": \"/abs/path\",\n      \"capability\": \"panes.read\",\n      \"state\": \"green\" | \"yellow\" | \"red\",\n      \"stored\": true | false,\n      \"sensitive\": true | false,\n      \"description\": \"...\"\n    }\n  ],\n  \"running\": [\"app_id\", ...]\n}\n```\n\nOne row per entry persisted in `permissions.toml` (`stored: true`),\nplus one row per live capability of a currently-running app that has\nno stored entry (`stored: false` — granted → \"green\", blocked →\n\"red\"). Live capabilities in the effective yellow state (declared but\nneither granted nor blocked) are not retained by the host after\nlaunch and only appear once a decision is stored.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "list_permissions",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Set the stored permission state for an (app, workspace, capability)\ntriple (stint 0017). Gated on `permissions.manage` when arriving over\nPGAP. `state` is one of \"green\" | \"yellow\" | \"red\". When `workspace`\nis omitted, the workspace root of a running app with `app_id` is used;\nif no such app is running the request fails. Persists to\n`permissions.toml` AND live-updates any running app's permission set,\nso a revocation takes effect on the app's next request. Host writes\n`{\"ok\":true}` or `{\"error\":\"...\"}` to `response_file`. Unknown\ncapability or state strings fail closed with an error reply.",
+          "properties": {
+            "app_id": {
+              "type": "string"
+            },
+            "capability": {
+              "type": "string"
+            },
+            "response_file": {
+              "type": "string"
+            },
+            "state": {
+              "type": "string"
+            },
+            "type": {
+              "const": "set_permission",
+              "type": "string"
+            },
+            "workspace": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "app_id",
+            "capability",
+            "state",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Write bytes to a named host-managed pane file slot.",
           "properties": {
             "append": {
