@@ -1,9 +1,11 @@
 ---
 id: "0042"
 title: "Secrets CLI: plural command alias"
-status: in-progress
+status: done
 estimate: "1h"
+actual: "66m"
 started_at: "2026-06-11T22:10:03Z"
+completed_at: "2026-06-11T23:15:45Z"
 sprint: "s10"
 blocked_by:
   - 147
@@ -18,6 +20,7 @@ tags:
   - "cli"
   - "bundle"
 ---
+
 
 
 Add `plexi secrets` as an alias for `plexi secret`.

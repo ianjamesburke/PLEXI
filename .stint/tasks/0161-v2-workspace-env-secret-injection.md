@@ -1,9 +1,11 @@
 ---
 id: "0161"
 title: "v2 secrets: workspace-scoped PTY env injection"
-status: in-progress
+status: done
 estimate: "8h"
+actual: "66m"
 started_at: "2026-06-11T22:10:16Z"
+completed_at: "2026-06-11T23:15:48Z"
 sprint: "s30"
 blocked_by:
   - 41
@@ -19,6 +21,7 @@ tags:
   - "terminal"
   - "config"
 ---
+
 
 
 Implement the [`workspace environment secrets PRM`](../../docs/prm/workspace-env-secrets.md): canonical env-var secret names, workspace-vs-global resolution, and allowlisted PTY environment injection.
@@ -44,3 +47,7 @@ Implement the [`workspace environment secrets PRM`](../../docs/prm/workspace-env
 - A global `OPENAI_API_KEY` can fall back into any workspace that has `fallback = true` and no workspace value.
 - `plexi run`, PGAP apps, PTY env, and host AI broker resolve through the same code path.
 - Tests cover workspace override, global fallback, no-inject-by-default, and OpenRouter canonical-key migration.
+
+## Variance
+
+Actual time was under estimate because the existing workspace secret resolver, Keychain index, and route-writing path already covered much of the expected infrastructure.
