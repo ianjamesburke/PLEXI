@@ -158,6 +158,8 @@ Wait for completion. The binary is now installed. Move immediately to Step 2b.
 
 When in doubt, run Codex review. Do not expand to broad cargo tests or binary install from doubt alone.
 
+**Review-run cap:** Run `codex review` at most twice for one validation attempt without checking with Ian. The first run is the normal review. If it finds issues and you push fixes, one rerun is allowed to verify those fixes. If the second run finds more issues, stop, report the remaining findings, and ask Ian before running review again.
+
 **If running — rigorous Codex review (gpt-5.5, xhigh reasoning):**
 
 ```bash
@@ -453,6 +455,7 @@ plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
 
 - Diff-review validation is the default. `just pr-install` is an exception, not the normal Rust-file path.
 - Step 2b quality checks (Codex diff review) run unless the PR is exclusively cosmetic/style — assess the diff, then decide
+- Do not run `codex review` more than twice in one validation attempt without checking with Ian
 - Cosmetic = colors, spacing, font sizes, help strings, markdown, config values, UI copy — anything where human visual verification is the only meaningful check
 - Do not run cargo tests during validation unless Codex review names a specific risk that needs a specific test command
 - AI_FINDINGS is always shown verbatim — never summarized or filtered
