@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import json
 import sys
+import traceback
 from typing import Any, Coroutine
 
 from ._protocol import PROTOCOL_VERSION
@@ -63,6 +64,17 @@ def _log_task_exception(task: asyncio.Task) -> None:
         return
     if exc is not None:
         sys.stderr.write(f"plexi_sdk: unhandled exception in background task: {exc}\n")
+
+
+def _emit_fatal_error(exc: BaseException) -> None:
+    """Report an unrecoverable SDK/app exception over PGAP before exiting."""
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    message = f"{type(exc).__name__}: {exc}"
+    try:
+        _emit({"type": "fatal_error", "message": message, "traceback": tb})
+    finally:
+        sys.stderr.write(tb)
+        sys.stderr.flush()
 
 
 # Map egui's Debug-format key names to the documented canonical SDK names.
@@ -1287,8 +1299,16 @@ class App:
                     self._dispatch_hook_task(self._handle_mcp_tool_call, ev)
 
         reader_task = asyncio.create_task(_reader())
+        exit_code = 0
         try:
             await _dispatcher()
+        except SystemExit as e:
+            exit_code = int(e.code) if isinstance(e.code, int) else 1
+            if exit_code != 0:
+                _emit_fatal_error(e)
+        except BaseException as e:
+            exit_code = 1
+            _emit_fatal_error(e)
         finally:
             reader_task.cancel()
             for p in self._pipes.values():
@@ -1299,7 +1319,7 @@ class App:
             # the 2s shutdown window. os._exit() terminates immediately without
             # waiting for threads, avoiding the SIGTERM that would otherwise fire.
             import os as _os
-            _os._exit(0)
+            _os._exit(exit_code)
 
     async def _dispatch_hook(self, hook: "Any", *args: Any) -> None:
         """Dispatch a lifecycle hook and await its completion.

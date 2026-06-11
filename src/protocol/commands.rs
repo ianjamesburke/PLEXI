@@ -1164,11 +1164,23 @@ pub enum ControlCommand {
         level: String,
         message: String,
     },
+    /// Terminal SDK failure with traceback text. Sent before the app exits
+    /// nonzero so the host never has to infer Python hook failures from EOF.
+    FatalError { message: String, traceback: String },
     /// Ask the host to trigger a new Render event after `after_ms` milliseconds.
     /// Intended for game loops and animations — emit once per frame to sustain a
     /// tick rate without relying on egui's unconditional repaint cadence.
     /// Apps that do not emit this will still repaint on keyboard/inject events.
     ScheduleRender { after_ms: u32 },
+    /// Declare app render cadence so the host owns recurring animation ticks.
+    /// `mode="idle"` disables recurring renders, `mode="scheduled"` means the
+    /// app will emit ScheduleRender manually, and `mode="continuous"` asks the
+    /// host to render at `fps`.
+    SetSchedulerMode {
+        mode: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fps: Option<u32>,
+    },
     /// Write `text` to the OS clipboard.
     ///
     /// Routed through `egui::Context::copy_text`, which handles platform-

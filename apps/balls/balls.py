@@ -147,8 +147,6 @@ class _BallCanvas(Component):
             hi_y = ball.y - ball.r * 0.28
             ctx.circle(hi_x, hi_y, hi_r, dim("#ffffff", 90))
 
-        ctx.emit.schedule_render(16)   # 60 fps
-
 
 class BallsApp(App):
     default_background = "#0d0d1a"
@@ -164,6 +162,7 @@ class BallsApp(App):
             ball.y = random.uniform(ball.r, h * 0.6)
             self.balls.append(ball)
         self._canvas = _BallCanvas(self)
+        self.emit.continuous(60)
         self.emit.info(f"balls: init complete, spawned {count} balls")
 
     def on_render(self, ctx: RenderContext) -> None:

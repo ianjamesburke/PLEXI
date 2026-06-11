@@ -257,7 +257,7 @@ def _draw_cell(ctx: RenderContext, x: float, y: float, size: float, color: str) 
 
 
 class TetrisApp(App):
-    def on_init(self, _ctx: RenderContext) -> None:
+    def on_init(self) -> None:
         self._canvas = _TetrisCanvas(self)
         self._new_game()
 
@@ -382,7 +382,7 @@ class TetrisApp(App):
 
     # ── Input ─────────────────────────────────────────────────────────────────
 
-    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
+    def on_key(self, key: str, _mods: dict) -> None:
         if self.game_over:
             if key == "r":
                 self._new_game()

@@ -3,6 +3,15 @@
   "definitions": {
     "AppRequest": {
       "$defs": {
+        "AgentState": {
+          "description": "Agent state reported by a hook script.",
+          "enum": [
+            "working",
+            "blocked",
+            "idle"
+          ],
+          "type": "string"
+        },
         "AiMessage": {
           "description": "One message in an `AiQuery` conversation. Wire shape mirrors Anthropic\nMessages API: `role` ∈ {\"user\", \"assistant\"}, `content` is plain text.\n(Multimodal content blocks are future-scope.)",
           "properties": {
@@ -477,6 +486,63 @@
           "type": "object"
         },
         {
+          "description": "Report agent state for a pane. Called by hook scripts via `plexi agent report`.",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "session_id": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/$defs/AgentState"
+            },
+            "type": {
+              "const": "set_agent_state",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pane_id",
+            "state",
+            "agent"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Get all tracked pane agent states. Writes JSON array to response_file.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "get_agent_states",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Open a typed pipe.\nmode: \"json\" | \"binary\"\ndirection: \"in\" | \"out\" | \"duplex\"",
           "properties": {
             "direction": {
@@ -741,6 +807,23 @@
           "type": "object"
         },
         {
+          "description": "List all open contexts. Host writes a JSON array to `response_file`.\nSent by `plexi context list`.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "list_contexts",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Query info for a specific pane by ID. Host writes JSON object to `response_file`.\nSent by `plexi pane info`.",
           "properties": {
             "pane_id": {
@@ -759,6 +842,23 @@
           "required": [
             "type",
             "pane_id",
+            "response_file"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Query info for the previously focused pane. Host walks `pane_focus_history`\nfrom the end, finds the last entry whose tile resolves to a live pane, and\nwrites the same JSON shape as `GetPaneInfo` to `response_file`.\nReturns `{\"error\":\"...\"}` if history is empty or no valid pane found.\nSent by `plexi pane info --previous`.",
+          "properties": {
+            "response_file": {
+              "type": "string"
+            },
+            "type": {
+              "const": "get_previous_pane_info",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
             "response_file"
           ],
           "type": "object"
@@ -965,6 +1065,11 @@
         {
           "description": "Create a new context. Sent by `plexi context new` over PLEXI_SOCKET.",
           "properties": {
+            "focus": {
+              "default": false,
+              "description": "Zoom into the new sub-context after creation. Default false (stay in parent).",
+              "type": "boolean"
+            },
             "name": {
               "type": [
                 "string",
@@ -972,6 +1077,20 @@
               ]
             },
             "parent_name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "portal_direction": {
+              "description": "Direction the portal tile splits in the parent window: \"right\" | \"down\" | \"left\" | \"up\".",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "response_file": {
+              "description": "If set, the host writes a JSON response (context_id, windows) to this path.",
               "type": [
                 "string",
                 "null"
@@ -986,6 +1105,12 @@
             "type": {
               "const": "create_context",
               "type": "string"
+            },
+            "windows": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
             }
           },
           "required": [
@@ -1914,6 +2039,27 @@
           "type": "object"
         },
         {
+          "description": "Terminal SDK failure with traceback text. Sent before the app exits\nnonzero so the host never has to infer Python hook failures from EOF.",
+          "properties": {
+            "message": {
+              "type": "string"
+            },
+            "traceback": {
+              "type": "string"
+            },
+            "type": {
+              "const": "fatal_error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "message",
+            "traceback"
+          ],
+          "type": "object"
+        },
+        {
           "description": "Ask the host to trigger a new Render event after `after_ms` milliseconds.\nIntended for game loops and animations — emit once per frame to sustain a\ntick rate without relying on egui's unconditional repaint cadence.\nApps that do not emit this will still repaint on keyboard/inject events.",
           "properties": {
             "after_ms": {
@@ -1929,6 +2075,31 @@
           "required": [
             "type",
             "after_ms"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Declare app render cadence so the host owns recurring animation ticks.\n`mode=\"idle\"` disables recurring renders, `mode=\"scheduled\"` means the\napp will emit ScheduleRender manually, and `mode=\"continuous\"` asks the\nhost to render at `fps`.",
+          "properties": {
+            "fps": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "mode": {
+              "type": "string"
+            },
+            "type": {
+              "const": "set_scheduler_mode",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "mode"
           ],
           "type": "object"
         },
@@ -2306,6 +2477,9 @@
               "default": 480.0,
               "format": "float",
               "type": "number"
+            },
+            "state": {
+              "description": "Pre-seeded app state for headless rendering (--state flag).\nWhen present, the SDK populates self.state before calling on_init.\nOmitted in live (non-headless) Init events."
             },
             "theme": {
               "additionalProperties": {
@@ -2880,7 +3054,7 @@
           "type": "object"
         },
         {
-          "description": "Sent by the headless renderer to seed app state before the first render.\nUnlike InjectState (which fires on_inject as a background task and is a live\nprotocol event), RenderSeed fires on_render_seed awaited, so state is applied\nbefore the Render event arrives. Live app behavior is completely unaffected.",
+          "description": "DEPRECATED: superseded by the `state` field on Init.\nKept for backwards compatibility with older SDK versions. The headless\nrenderer no longer sends this event.",
           "properties": {
             "payload": true,
             "type": {
@@ -3748,6 +3922,25 @@
     },
     "RenderCommand": {
       "$defs": {
+        "FooterKeyEntry": {
+          "description": "Single shortcut entry for `UiNode::FooterKeys`.",
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "keys": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "keys",
+            "description"
+          ],
+          "type": "object"
+        },
         "LayoutChild": {},
         "LayoutDirection": {
           "description": "Direction of a flex layout node.",
@@ -3959,6 +4152,16 @@
           ],
           "type": "object"
         },
+        "PinnedEdge": {
+          "description": "Which edge to pin a child against within a vertical Stack.",
+          "enum": [
+            "bottom",
+            "top",
+            "left",
+            "right"
+          ],
+          "type": "string"
+        },
         "Rect": {
           "description": "A simple rectangle (logical coordinates).",
           "properties": {
@@ -4019,6 +4222,30 @@
           ],
           "type": "object"
         },
+        "SelectListItem": {
+          "description": "Item in a `UiNode::SelectList`.",
+          "properties": {
+            "description": {
+              "default": "",
+              "type": "string"
+            },
+            "leading": {
+              "default": "",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "trailing": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        },
         "ShortcutPair": {
           "description": "One group inside a `DrawCommand::Shortcuts`. Renders as `keys` chips\nfollowed by `description` text.",
           "properties": {
@@ -4037,6 +4264,14 @@
             "description"
           ],
           "type": "object"
+        },
+        "StackDirection": {
+          "description": "Flex direction for a `UiNode::Stack`.",
+          "enum": [
+            "vertical",
+            "horizontal"
+          ],
+          "type": "string"
         },
         "TextRowItem": {
           "description": "One text segment inside a `DrawCommand::TextRow`.",
@@ -4063,7 +4298,621 @@
           ],
           "type": "object"
         },
-        "UiNode": {}
+        "UiNode": {
+          "description": "Component tree node. L0 primitives compose into rich UI; L1 sugar variants\nare rendered natively by the host.",
+          "oneOf": [
+            {
+              "description": "Flex container — vertical or horizontal.",
+              "properties": {
+                "children": {
+                  "items": {
+                    "$ref": "#/$defs/UiNode"
+                  },
+                  "type": "array"
+                },
+                "direction": {
+                  "$ref": "#/$defs/StackDirection",
+                  "default": "vertical"
+                },
+                "gap": {
+                  "default": 0.0,
+                  "format": "float",
+                  "type": "number"
+                },
+                "padding": {
+                  "$ref": "#/$defs/UiPadding",
+                  "default": {
+                    "bottom": 0.0,
+                    "left": 0.0,
+                    "right": 0.0,
+                    "top": 0.0
+                  }
+                },
+                "type": {
+                  "const": "stack",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "children"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Scrollable single-child container.",
+              "properties": {
+                "child": {
+                  "$ref": "#/$defs/UiNode"
+                },
+                "horizontal": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "scroll",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "child"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Z-stack overlay — children rendered back-to-front at the same position.",
+              "properties": {
+                "children": {
+                  "items": {
+                    "$ref": "#/$defs/UiNode"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "layer",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "children"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Inline text node.",
+              "properties": {
+                "bold": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "color": {
+                  "default": "",
+                  "type": "string"
+                },
+                "monospace": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "size": {
+                  "default": 0.0,
+                  "description": "0.0 means inherit from context.",
+                  "format": "float",
+                  "type": "number"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "text",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Interaction wrapper — host fires `ComponentEvent` for click/hover.",
+              "properties": {
+                "child": {
+                  "$ref": "#/$defs/UiNode"
+                },
+                "node_id": {
+                  "type": "string"
+                },
+                "on_click": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "on_hover": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "type": {
+                  "const": "interactive",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "node_id",
+                "child"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Escape hatch: embed a flat `RenderCommand` inside the tree.",
+              "properties": {
+                "command": {
+                  "$ref": "#"
+                },
+                "type": {
+                  "const": "raw",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "command"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Future GPU surface placeholder — reserved, not yet rendered.",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "surface",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Pinned layout wrapper. In a vertical Stack, `Pinned { edge: Bottom }` children\nare rendered flush to the available rect bottom regardless of body content height.",
+              "properties": {
+                "child": {
+                  "$ref": "#/$defs/UiNode"
+                },
+                "edge": {
+                  "$ref": "#/$defs/PinnedEdge"
+                },
+                "type": {
+                  "const": "pinned",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "edge",
+                "child"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Semantic column container with sticky-footer host contract.\n`padding` sets left/right/bottom margins (default SPACE_XL); `padding_top`\nsets the top margin independently. Emitted by `Column.to_node()` in the SDK.",
+              "properties": {
+                "children": {
+                  "items": {
+                    "$ref": "#/$defs/UiNode"
+                  },
+                  "type": "array"
+                },
+                "gap": {
+                  "default": 0.0,
+                  "format": "float",
+                  "type": "number"
+                },
+                "padding": {
+                  "default": 24.0,
+                  "format": "float",
+                  "type": "number"
+                },
+                "padding_top": {
+                  "default": 0.0,
+                  "format": "float",
+                  "type": "number"
+                },
+                "type": {
+                  "const": "column",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "children"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Host-rendered button.",
+              "properties": {
+                "disabled": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "node_id": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "button",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "node_id",
+                "label"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Host-rendered text input.",
+              "properties": {
+                "node_id": {
+                  "type": "string"
+                },
+                "placeholder": {
+                  "default": "",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "input",
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "node_id",
+                "value"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Host-rendered text editor with multiline and max_length support.\n\nThe host maintains a persistent buffer keyed on `node_id`. On each\nframe the app sends its last-known `value`; the host seeds the buffer\nfrom it only when a new `node_id` appears. Typing fires\n`ComponentEvent { event_type: \"change\", payload: { value } }` and\nEnter (single-line) or Cmd+Enter (multiline) fires\n`ComponentEvent { event_type: \"submit\", payload: { value } }`.",
+              "properties": {
+                "max_length": {
+                  "default": 0,
+                  "description": "0 means no limit.",
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "multiline": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "node_id": {
+                  "type": "string"
+                },
+                "placeholder": {
+                  "default": "",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "text_edit",
+                  "type": "string"
+                },
+                "value": {
+                  "default": "",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "node_id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Host-rendered pill badge.",
+              "properties": {
+                "fg": {
+                  "default": "",
+                  "type": "string"
+                },
+                "fill": {
+                  "default": "",
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "badge",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "label"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Coloured dot indicator.",
+              "properties": {
+                "color": {
+                  "type": "string"
+                },
+                "size": {
+                  "default": 0.0,
+                  "description": "0.0 means default size.",
+                  "format": "float",
+                  "type": "number"
+                },
+                "type": {
+                  "const": "dot",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "color"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "App title bar with optional subtitle.",
+              "properties": {
+                "subtitle": {
+                  "default": "",
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "app_bar",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "title"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Keyboard shortcut hints row at bottom of pane.",
+              "properties": {
+                "divider": {
+                  "default": true,
+                  "type": "boolean"
+                },
+                "entries": {
+                  "items": {
+                    "$ref": "#/$defs/FooterKeyEntry"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "footer_keys",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "entries"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Single-line status footer with optional color.",
+              "properties": {
+                "color": {
+                  "default": "",
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "footer",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Section header label (small, uppercase, with rule below).",
+              "properties": {
+                "title": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "section",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "title"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Themed text label with semantic tone.",
+              "properties": {
+                "bold": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "color": {
+                  "default": "",
+                  "type": "string"
+                },
+                "max_lines": {
+                  "default": 0,
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "monospace": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "size": {
+                  "default": 0.0,
+                  "format": "float",
+                  "type": "number"
+                },
+                "text": {
+                  "type": "string"
+                },
+                "tone": {
+                  "default": "",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "label",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Flexible space between siblings.",
+              "properties": {
+                "grow": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "size": {
+                  "default": 0.0,
+                  "format": "float",
+                  "type": "number"
+                },
+                "type": {
+                  "const": "spacer",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Horizontal divider rule.",
+              "properties": {
+                "color": {
+                  "default": "",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "divider",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Bordered card container.",
+              "properties": {
+                "children": {
+                  "items": {
+                    "$ref": "#/$defs/UiNode"
+                  },
+                  "type": "array"
+                },
+                "padding": {
+                  "default": 0.0,
+                  "format": "float",
+                  "type": "number"
+                },
+                "type": {
+                  "const": "card",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "children"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Keyboard-navigable scrollable list (selection managed by app).",
+              "properties": {
+                "items": {
+                  "items": {
+                    "$ref": "#/$defs/SelectListItem"
+                  },
+                  "type": "array"
+                },
+                "selected_idx": {
+                  "default": 0,
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": {
+                  "const": "select_list",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "items"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "UiPadding": {
+          "description": "Per-side padding for a `UiNode::Stack`.",
+          "properties": {
+            "bottom": {
+              "default": 0.0,
+              "format": "float",
+              "type": "number"
+            },
+            "left": {
+              "default": 0.0,
+              "format": "float",
+              "type": "number"
+            },
+            "right": {
+              "default": 0.0,
+              "format": "float",
+              "type": "number"
+            },
+            "top": {
+              "default": 0.0,
+              "format": "float",
+              "type": "number"
+            }
+          },
+          "type": "object"
+        }
       },
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "description": "Render primitives — go to `pending_frame` → drawn to screen.",

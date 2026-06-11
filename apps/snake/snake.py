@@ -70,7 +70,7 @@ class _SnakeCanvas(Component):
 class SnakeApp(App):
     pipe_id: Arg[str | None] = Arg("--pipe", default=None)
 
-    def on_init(self, _ctx: RenderContext) -> None:
+    def on_init(self) -> None:
         self._pipe: "Pipe | None" = None
         if self.pipe_id:
             self._pipe = self.emit.pipe_open(self.pipe_id, mode="json", direction="out")
@@ -126,7 +126,7 @@ class SnakeApp(App):
         else:
             self._snake.pop()
 
-    def on_key(self, _ctx: RenderContext, key: str, _mods: dict) -> None:
+    def on_key(self, key: str, _mods: dict) -> None:
         if self._dead and key in ("r", "Enter", " "):
             self._reset()
             return

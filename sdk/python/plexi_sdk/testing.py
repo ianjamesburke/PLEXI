@@ -323,6 +323,7 @@ class AppHarness:
         self._draw_commands: "list[dict]" = []
         self._frame_id = 0
         self._stdout_q: "queue.Queue[str | None]" = queue.Queue()
+        self._events_seen: "list[dict]" = []
 
         import os
         import subprocess as _subprocess
@@ -347,9 +348,16 @@ class AppHarness:
         ev = self._wait_for(lambda e: e.get("type") == "ready")
         if ev is None:
             stderr = self._proc.stderr.read() if self._proc.stderr else ""
+            fatal = next((e for e in reversed(self._events_seen) if e.get("type") == "fatal_error"), None)
+            fatal_msg = ""
+            if fatal is not None:
+                fatal_msg = (
+                    f" fatal_error={fatal.get('message', '')!r} "
+                    f"traceback={fatal.get('traceback', '')[:500]!r}"
+                )
             raise RuntimeError(
                 f"AppHarness: app did not send 'ready' within {timeout}s. "
-                f"stderr: {stderr[:500]!r}"
+                f"stderr: {stderr[:500]!r}{fatal_msg}"
             )
 
     def _read_stdout(self) -> None:
@@ -372,19 +380,52 @@ class AppHarness:
         except json.JSONDecodeError:
             return None
 
+    def _fatal_event(self) -> "dict | None":
+        while True:
+            try:
+                line = self._stdout_q.get_nowait()
+            except queue.Empty:
+                break
+            if line is None:
+                break
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            self._events_seen.append(ev)
+            if ev.get("type") == "fatal_error":
+                return ev
+        return next((e for e in reversed(self._events_seen) if e.get("type") == "fatal_error"), None)
+
+    def _raise_fatal(self, ev: dict) -> None:
+        raise RuntimeError(
+            f"AppHarness: fatal_error: {ev.get('message', '')}\n"
+            f"{ev.get('traceback', '')}"
+        )
+
     def _wait_for(self, predicate, timeout=None) -> "dict | None":
         deadline = time.monotonic() + (timeout if timeout is not None else self._timeout)
         while time.monotonic() < deadline:
             remaining = deadline - time.monotonic()
             ev = self._next_event(timeout=max(0.05, remaining))
-            if ev is not None and predicate(ev):
-                return ev
+            if ev is not None:
+                self._events_seen.append(ev)
+                if ev.get("type") == "fatal_error":
+                    return ev if predicate(ev) else None
+                if predicate(ev):
+                    return ev
         return None
 
     def _send(self, event: dict) -> None:
         assert self._proc.stdin is not None
-        self._proc.stdin.write(json.dumps(event) + "\n")
-        self._proc.stdin.flush()
+        try:
+            self._proc.stdin.write(json.dumps(event) + "\n")
+            self._proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            fatal = self._fatal_event()
+            if fatal is not None:
+                self._raise_fatal(fatal)
+            raise
 
     def run(self, n_frames: int = 1) -> "list[dict]":
         """Step N render frames. Returns draw commands from the last frame."""
@@ -398,14 +439,37 @@ class AppHarness:
             })
             cmds = []
             deadline = time.monotonic() + self._timeout
+            saw_frame_done = False
             while time.monotonic() < deadline:
                 remaining = deadline - time.monotonic()
                 ev = self._next_event(timeout=max(0.05, remaining))
                 if ev is None:
+                    if self._proc.poll() is not None:
+                        fatal = self._fatal_event()
+                        if fatal is not None:
+                            self._raise_fatal(fatal)
+                        stderr = self._proc.stderr.read() if self._proc.stderr else ""
+                        raise RuntimeError(
+                            f"AppHarness: app exited before frame_done. "
+                            f"returncode={self._proc.returncode} stderr={stderr[:500]!r}"
+                        )
                     continue
+                self._events_seen.append(ev)
+                if ev.get("type") == "fatal_error":
+                    self._raise_fatal(ev)
                 if ev.get("type") == "frame_done":
+                    saw_frame_done = True
                     break
                 cmds.append(ev)
+            if not saw_frame_done:
+                fatal = self._fatal_event()
+                if fatal is not None:
+                    self._raise_fatal(fatal)
+                stderr = self._proc.stderr.read() if self._proc.stderr and self._proc.poll() is not None else ""
+                raise RuntimeError(
+                    f"AppHarness: app did not emit frame_done within {self._timeout}s. "
+                    f"stderr={stderr[:500]!r}"
+                )
         self._draw_commands = cmds
         return cmds
 
