@@ -1,15 +1,25 @@
 ---
 id: "0161"
 title: "v2 secrets: workspace-scoped PTY env injection"
-status: backlog
+status: in-progress
+estimate: "8h"
+started_at: "2026-06-11T22:10:16Z"
 sprint: "s30"
-estimate: 8h
 blocked_by:
   - 41
   - 42
-area: ["host/secrets", "host/terminal", "host/config"]
-tags: ["v2", "secrets", "terminal", "config"]
+gh_issue: []
+area:
+  - "host/secrets"
+  - "host/terminal"
+  - "host/config"
+tags:
+  - "v2"
+  - "secrets"
+  - "terminal"
+  - "config"
 ---
+
 
 Implement the [`workspace environment secrets PRM`](../../docs/prm/workspace-env-secrets.md): canonical env-var secret names, workspace-vs-global resolution, and allowlisted PTY environment injection.
 
