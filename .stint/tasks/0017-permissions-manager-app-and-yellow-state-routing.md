@@ -1,15 +1,22 @@
 ---
 id: "0017"
 title: "Permissions: manager app and yellow-state routing"
-status: backlog
+status: in-progress
+estimate: "16h"
+started_at: "2026-06-11T17:54:22Z"
 sprint: "s3"
-estimate: 16h
 blocked_by:
   - 16
 gh_issue: []
-area: ["host/permissions", "sdk/pgap"]
-tags: ["permissions", "trust", "capabilities"]
+area:
+  - "host/permissions"
+  - "sdk/pgap"
+tags:
+  - "permissions"
+  - "trust"
+  - "capabilities"
 ---
+
 
 Bring permission management and yellow-state routing into the trust foundation so package installs and app runtime decisions are auditable.
 

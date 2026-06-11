@@ -1,15 +1,23 @@
 ---
 id: "0016"
 title: "Packages: local install inspect and trust sheet"
-status: backlog
+status: in-progress
+estimate: "12h"
+started_at: "2026-06-11T17:54:22Z"
 sprint: "s3"
-estimate: 12h
 blocked_by:
   - 15
 gh_issue: []
-area: ["host/permissions", "ui/overlays", "cli/commands"]
-tags: ["packages", "trust-labels", "install"]
+area:
+  - "host/permissions"
+  - "ui/overlays"
+  - "cli/commands"
+tags:
+  - "packages"
+  - "trust-labels"
+  - "install"
 ---
+
 
 Show manifest, runtime trust label, and declared capabilities before local package install proceeds.
 
