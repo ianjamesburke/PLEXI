@@ -3,6 +3,9 @@
 use crate::platform::frame_diag::{self, RepaintCause};
 use std::time::Duration;
 
+const RENDER_IN_FLIGHT_POLL: Duration = Duration::from_millis(16);
+const ASYNC_WAKE_POLL: Duration = Duration::from_millis(100);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppSchedulerMode {
     Idle,
@@ -74,10 +77,62 @@ pub(crate) fn decide_repaint(input: RepaintInputs) -> RepaintDecision {
         return RepaintDecision::After(delay);
     }
 
-    if input.render_in_flight || input.async_wake {
+    if input.render_in_flight {
         frame_diag::note(RepaintCause::AppIdlePoll);
-        return RepaintDecision::After(Duration::from_millis(100));
+        return RepaintDecision::After(RENDER_IN_FLIGHT_POLL);
+    }
+
+    if input.async_wake {
+        frame_diag::note(RepaintCause::AppIdlePoll);
+        return RepaintDecision::After(ASYNC_WAKE_POLL);
     }
 
     RepaintDecision::None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn idle_inputs() -> RepaintInputs {
+        RepaintInputs {
+            click_now: false,
+            click_awaiting_frame: false,
+            pointer_tracking: false,
+            render_delay: None,
+            render_in_flight: false,
+            async_wake: false,
+        }
+    }
+
+    #[test]
+    fn render_delay_takes_precedence_over_in_flight_poll() {
+        let mut input = idle_inputs();
+        input.render_delay = Some(Duration::from_millis(8));
+        input.render_in_flight = true;
+        assert_eq!(
+            decide_repaint(input),
+            RepaintDecision::After(Duration::from_millis(8))
+        );
+    }
+
+    #[test]
+    fn in_flight_render_polls_at_frame_cadence() {
+        let mut input = idle_inputs();
+        input.render_in_flight = true;
+        assert_eq!(
+            decide_repaint(input),
+            RepaintDecision::After(RENDER_IN_FLIGHT_POLL)
+        );
+    }
+
+    #[test]
+    fn generic_async_wake_uses_idle_poll_cadence() {
+        let mut input = idle_inputs();
+        input.async_wake = true;
+        assert_eq!(
+            decide_repaint(input),
+            RepaintDecision::After(ASYNC_WAKE_POLL)
+        );
+    }
 }

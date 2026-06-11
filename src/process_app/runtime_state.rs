@@ -229,6 +229,17 @@ impl PgapRuntime {
             RuntimeState::Waiting { next_deadline } => {
                 Some(next_deadline.saturating_duration_since(Instant::now()))
             }
+            RuntimeState::Rendering {
+                followup_deadline: Some(next_deadline),
+                ..
+            } => {
+                let delay = next_deadline.saturating_duration_since(Instant::now());
+                if delay.is_zero() {
+                    None
+                } else {
+                    Some(delay)
+                }
+            }
             _ => None,
         }
     }
