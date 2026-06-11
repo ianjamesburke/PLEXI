@@ -10,6 +10,21 @@ pub(super) fn section_label(ui: &mut egui::Ui, title: &str, colors: &Colors) {
     ui.add_space(2.0);
 }
 
+fn should_show_changelog_line(line: &str) -> bool {
+    let Some(entry) = line
+        .trim_start()
+        .strip_prefix("- ")
+        .or_else(|| line.trim_start().strip_prefix("* "))
+    else {
+        return true;
+    };
+    let entry = entry
+        .trim_start_matches("**")
+        .trim_start()
+        .to_ascii_lowercase();
+    !entry.starts_with("chore:") && !entry.starts_with("chore(")
+}
+
 impl PlexiApp {
     pub(crate) fn draw_shortcuts_overlay(&mut self, ctx: &egui::Context) {
         if !self.show_shortcuts {
@@ -338,6 +353,9 @@ impl PlexiApp {
                         .show(ui, |ui| {
                             ui.set_width(512.0);
                             for line in CHANGELOG.lines() {
+                                if !should_show_changelog_line(line) {
+                                    continue;
+                                }
                                 let clean = |s: &str| s.replace("**", "");
                                 if line.starts_with("## ") {
                                     ui.add_space(6.0);
@@ -813,5 +831,27 @@ impl PlexiApp {
         _ctx: &egui::Context,
     ) -> crate::app::app_trait::KeyDisposition {
         crate::app::app_trait::KeyDisposition::Consumed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_show_changelog_line;
+
+    #[test]
+    fn changelog_filter_hides_chore_entries() {
+        assert!(!should_show_changelog_line("- chore: claim stint 0015"));
+        assert!(!should_show_changelog_line("- chore(stint): close task 0154"));
+        assert!(!should_show_changelog_line(
+            "* **chore(website): regenerate CLI reference docs"
+        ));
+    }
+
+    #[test]
+    fn changelog_filter_keeps_non_chore_entries_and_headings() {
+        assert!(should_show_changelog_line("## [0.1.0] — 2026-06-11"));
+        assert!(should_show_changelog_line("### Changes"));
+        assert!(should_show_changelog_line("- fix: route update checks"));
+        assert!(should_show_changelog_line("- feature: add app launcher"));
     }
 }
