@@ -153,6 +153,51 @@ fn wait_for_response_bytes(response_file: &str, label: &str) -> Result<Vec<u8>, 
     }
 }
 
+fn wait_for_slot_read_response(response_file: &str) -> Result<Vec<u8>, i32> {
+    let response_path = std::path::PathBuf::from(response_file);
+    let error_path = std::path::PathBuf::from(format!("{response_file}.err"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if error_path.exists() {
+            let content = match std::fs::read(&error_path) {
+                Ok(content) => {
+                    let _ = std::fs::remove_file(&error_path);
+                    content
+                }
+                Err(e) => {
+                    log::warn!("pane_slot_read:cli: could not read error response file: {e}");
+                    eprintln!("error: could not read response file: {e}");
+                    return Err(1);
+                }
+            };
+            if let Some(err) = response_error(&content) {
+                eprintln!("error: {err}");
+                return Err(1);
+            }
+            eprintln!("error: invalid slot read error response");
+            return Err(1);
+        }
+        if response_path.exists() {
+            match std::fs::read(&response_path) {
+                Ok(content) => {
+                    let _ = std::fs::remove_file(&response_path);
+                    return Ok(content);
+                }
+                Err(e) => {
+                    log::warn!("pane_slot_read:cli: could not read response file: {e}");
+                    eprintln!("error: could not read response file: {e}");
+                    return Err(1);
+                }
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            eprintln!("error: timed out waiting for pane slot read response");
+            return Err(1);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 fn response_error(content: &[u8]) -> Option<String> {
     let value = serde_json::from_slice::<serde_json::Value>(content).ok()?;
     if value.get("ok").and_then(|v| v.as_bool()) != Some(false) {
@@ -232,14 +277,10 @@ pub fn pane_slot_read_cli(name: &str, pane_id: Option<u64>) -> i32 {
     if code != 0 {
         return code;
     }
-    let content = match wait_for_response_bytes(&response_file, "pane slot read") {
+    let content = match wait_for_slot_read_response(&response_file) {
         Ok(content) => content,
         Err(code) => return code,
     };
-    if let Some(err) = response_error(&content) {
-        eprintln!("error: {err}");
-        return 1;
-    }
     use std::io::Write as _;
     if let Err(e) = std::io::stdout().write_all(&content) {
         eprintln!("error: could not write stdout: {e}");

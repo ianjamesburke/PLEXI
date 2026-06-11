@@ -169,6 +169,70 @@ fn pane_slots_write_read_list_delete() {
 }
 
 #[test]
+fn pane_slot_read_preserves_error_like_json_content() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.set_active_context_root(tmp.path().to_path_buf());
+    let pane = h.add_test_pane();
+    let raw_json = br#"{"ok":false,"error":"stored artifact"}"#;
+
+    let write_file = temp_response(tmp.path(), "slot-json-write");
+    h.inject_ipc(AppRequest::SlotWrite {
+        pane_id: pane,
+        slot_name: "artifact".to_string(),
+        content: raw_json.to_vec(),
+        append: false,
+        replace: false,
+        response_file: write_file.clone(),
+    });
+    h.run_frames(1);
+    assert_eq!(read_json_response(&write_file)["ok"].as_bool(), Some(true));
+
+    let read_file = temp_response(tmp.path(), "slot-json-read");
+    h.inject_ipc(AppRequest::SlotRead {
+        pane_id: pane,
+        slot_name: "artifact".to_string(),
+        response_file: read_file.clone(),
+    });
+    h.run_frames(1);
+    assert_eq!(std::fs::read(&read_file).expect("read response"), raw_json);
+    assert!(
+        !std::path::PathBuf::from(format!("{read_file}.err")).exists(),
+        "successful raw reads must not write the error sidecar"
+    );
+}
+
+#[test]
+fn pane_slot_read_errors_use_sidecar_file() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut h = HostHarness::new();
+    h.app.set_active_context_root(tmp.path().to_path_buf());
+    let pane = h.add_test_pane();
+
+    let read_file = temp_response(tmp.path(), "slot-missing-read");
+    h.inject_ipc(AppRequest::SlotRead {
+        pane_id: pane,
+        slot_name: "missing".to_string(),
+        response_file: read_file.clone(),
+    });
+    h.run_frames(1);
+
+    assert!(
+        !std::path::Path::new(&read_file).exists(),
+        "read error must not occupy the raw response path"
+    );
+    let error_file = format!("{read_file}.err");
+    let response = read_json_response(&error_file);
+    assert_eq!(response["ok"].as_bool(), Some(false));
+    assert!(
+        response["error"]
+            .as_str()
+            .expect("error")
+            .contains("slot 'missing' not found")
+    );
+}
+
+#[test]
 fn pane_slot_write_requires_replace_or_append_for_existing_slot() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut h = HostHarness::new();

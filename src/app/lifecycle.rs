@@ -30,6 +30,26 @@ fn slot_error(response_file: &str, message: impl Into<String>) {
     );
 }
 
+fn slot_read_error(response_file: &str, message: impl Into<String>) {
+    write_json_response(
+        &format!("{response_file}.err"),
+        serde_json::json!({
+            "ok": false,
+            "error": message.into(),
+        }),
+    );
+}
+
+fn write_bytes_response_atomic(response_file: &str, bytes: &[u8]) {
+    let temp_file = format!("{response_file}.tmp");
+    if let Err(e) = std::fs::write(&temp_file, bytes) {
+        log::error!("pane_ipc: could not write temp response file {temp_file:?}: {e}");
+    } else if let Err(e) = std::fs::rename(&temp_file, response_file) {
+        log::error!("pane_ipc: could not rename temp response file to {response_file:?}: {e}");
+        let _ = std::fs::remove_file(&temp_file);
+    }
+}
+
 fn validate_slot_name(slot_name: &str) -> Result<(), String> {
     if slot_name.is_empty() {
         return Err("slot name cannot be empty".to_string());
@@ -537,7 +557,7 @@ impl PlexiApp {
                 } => {
                     log::info!("pane_ipc: kind=slot_read pane_id={pane_id} slot={slot_name:?}");
                     if let Err(msg) = validate_slot_name(slot_name) {
-                        slot_error(response_file, msg);
+                        slot_read_error(response_file, msg);
                         continue;
                     }
                     let path = self
@@ -547,19 +567,13 @@ impl PlexiApp {
                         .and_then(|pane| pane.slots())
                         .and_then(|slots| slots.get(slot_name).cloned());
                     let Some(path) = path else {
-                        slot_error(response_file, format!("slot '{slot_name}' not found"));
+                        slot_read_error(response_file, format!("slot '{slot_name}' not found"));
                         continue;
                     };
                     match std::fs::read(&path) {
-                        Ok(bytes) => {
-                            if let Err(e) = std::fs::write(response_file, bytes) {
-                                log::error!(
-                                    "pane_ipc: slot_read: could not write response file {response_file:?}: {e}"
-                                );
-                            }
-                        }
+                        Ok(bytes) => write_bytes_response_atomic(response_file, &bytes),
                         Err(e) => {
-                            slot_error(
+                            slot_read_error(
                                 response_file,
                                 format!("could not read slot '{slot_name}': {e}"),
                             );
