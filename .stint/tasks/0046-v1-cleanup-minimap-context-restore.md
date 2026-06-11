@@ -1,14 +1,22 @@
 ---
 id: "0046"
 title: "v1 cleanup: minimap context restore"
-status: backlog
+status: in-progress
+estimate: "3h"
+started_at: "2026-06-11T08:48:56Z"
 sprint: "s11"
-estimate: 3h
 blocked_by: []
-gh_issue: ["2052"]
-area: ["host/navigation", "host/context"]
-tags: ["v1", "cleanup", "minimap"]
+gh_issue:
+  - "2052"
+area:
+  - "host/navigation"
+  - "host/context"
+tags:
+  - "v1"
+  - "cleanup"
+  - "minimap"
 ---
+
 
 Restore each context's saved minimap visibility when focus-history traversal crosses context boundaries.
 
