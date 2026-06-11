@@ -788,7 +788,7 @@ pub fn font_definitions() -> egui::FontDefinitions {
     fonts.font_data.insert(
         FONT_NAME.to_owned(),
         Arc::new(egui::FontData::from_static(include_bytes!(
-            "../../fonts/JetBrainsMonoNerdFont-Light.ttf"
+            "../../fonts/JetBrainsMonoNerdFont-Regular.ttf"
         ))),
     );
     fonts.font_data.insert(
@@ -827,7 +827,7 @@ pub fn font_definitions() -> egui::FontDefinitions {
     proportional.insert(2, FALLBACK_FONT_NAME.to_owned());
     proportional.insert(3, UNICODE_FALLBACK_FONT_NAME.to_owned());
     // Medium family mirrors Proportional while the monospace UI experiment is
-    // active; egui has no weight axis for this bundled Nerd Font.
+    // active; egui has no heavier bundled Nerd Font axis to select here.
     let mut medium = proportional.clone();
     medium.insert(2, UI_FONT_MEDIUM_NAME.to_owned());
     fonts
