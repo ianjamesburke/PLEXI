@@ -1,7 +1,7 @@
 # Host Assistant App Spec
 
 Status: product and architecture spec.
-Parent: [`app-framework-marketplace.md`](app-framework-marketplace.md).
+Parent: [`agent-platform.md`](agent-platform.md).
 Last updated: 2026-06-11.
 
 This document defines the first-party Plexi Assistant as a host app, not a PGAP app. It is the workspace operator: it can reason about panes, apps, files, permissions, installed skills, and app-exposed tools because the host owns those things.
