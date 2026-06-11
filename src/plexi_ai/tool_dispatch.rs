@@ -176,6 +176,31 @@ pub(crate) fn unregister(pane_id: u64) {
     global_registry().lock().unwrap().unregister(pane_id);
 }
 
+/// True when `pane_id` has a registry entry (it exposed tools and is still
+/// open) — i.e. host-routed events can reach it.
+pub(crate) fn pane_reachable(pane_id: u64) -> bool {
+    global_registry().lock().unwrap().sender_for(pane_id).is_some()
+}
+
+/// Send a `PlexiEvent` to a registered pane's stdin channel (Phase C: the
+/// host agent runtime delivers cross-pane `RollbackVerify` this way).
+/// Returns false when the pane has no registry entry (closed, or it never
+/// exposed tools).
+pub(crate) fn send_event_to_pane(pane_id: u64, event: &PlexiEvent) -> bool {
+    let registry = global_registry().lock().unwrap();
+    match registry.sender_for(pane_id) {
+        Some(sender) => {
+            log::info!("tool_dispatch: host-routed event to pane {pane_id}");
+            sender.send_event(event);
+            true
+        }
+        None => {
+            log::warn!("tool_dispatch: no registered sender for pane {pane_id} — event dropped");
+            false
+        }
+    }
+}
+
 // ── Pending calls ────────────────────────────────────────────────────────────
 
 /// Result returned to the broker by a completed tool call.
@@ -256,6 +281,24 @@ impl ToolDispatcher {
     /// All tools visible at snapshot time, for injection into the LLM request.
     pub fn all_tools(&self) -> Vec<AiTool> {
         self.tools.values().map(|(_, t)| t.clone()).collect()
+    }
+
+    /// Restrict the snapshot to `allowed` tool names (Phase C: the agent
+    /// runtime applies broker `app_connector` decisions here). Removed tools
+    /// are invisible to the model and `dispatch_call` returns
+    /// `tool_not_found` for them — gating both visibility and invocation.
+    pub fn retain_allowed(&mut self, allowed: &std::collections::HashSet<String>) {
+        let before: Vec<String> = self.tools.keys().cloned().collect();
+        self.tools.retain(|name, _| allowed.contains(name));
+        for name in before {
+            if !self.tools.contains_key(&name) {
+                log::info!(
+                    "tool_dispatch: caller={} pane={} — tool '{name}' removed by broker gate",
+                    self.caller_app_id,
+                    self.caller_pane_id
+                );
+            }
+        }
     }
 
     /// Dispatch a single tool call. Blocks until the app responds or times out.

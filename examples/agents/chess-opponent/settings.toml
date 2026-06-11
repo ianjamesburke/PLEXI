@@ -1,0 +1,36 @@
+# Chess Opponent — example agent definition (docs/prm/chess-agent-poc.md).
+#
+# Install: copy this directory to
+#   <workspace>/<workspace channel dir>/agents/chess-opponent/
+# e.g. on the alpha channel: <workspace>/.plexi-alpha/agents/chess-opponent/
+#
+# This file REQUESTS behavior. The permission broker stores what the user
+# actually grants:
+#   - `allow` tools work without a grant (actor-posture allow tier).
+#   - `ask` tools and ALL event subscriptions need a user grant record
+#     (grants.toml) before the agent can use them.
+
+[agent]
+id = "chess-opponent"
+display_name = "Chess Opponent"
+default_tier = "medium"
+
+[permissions]
+default_posture = "review"
+
+allow = [
+  "app.chess.current_state",
+  "app.chess.legal_moves",
+]
+
+ask = [
+  "app.chess.make_move",
+  "app.chess.undo_move",
+]
+
+[[subscriptions]]
+app = "chess"
+events = ["game.started", "turn.ready", "move.played", "move.undone", "game.ended"]
+payload = "full"
+trigger = "conversation"
+default = "ask"

@@ -1480,6 +1480,20 @@ class Emitter:
             msg["actor_id"] = actor_id
         _emit(msg)
 
+    def rollback_verify_result(self, checkpoint_id: str, current_revision: str) -> None:
+        """Answer a ``rollback_verify`` question with the resource's current
+        revision. Normally sent automatically by the SDK from
+        ``App.on_rollback_verify`` — call directly only when answering
+        asynchronously. ``current_revision`` may be empty to report
+        "unknown" (the host then blocks the rollback)."""
+        if not checkpoint_id or not checkpoint_id.strip():
+            raise ValueError("rollback_verify_result: 'checkpoint_id' must be non-empty")
+        _emit({
+            "type": "rollback_verify_result",
+            "checkpoint_id": checkpoint_id,
+            "current_revision": current_revision,
+        })
+
     @_blocking_emit_method
     async def list_midi_devices(self, timeout: float = 5.0) -> "MidiDeviceList":
         """Enumerate CoreMIDI input + output ports (#320).

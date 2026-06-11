@@ -493,8 +493,46 @@ class App:
     def on_resume(self) -> None: pass
     def on_shutdown(self) -> None: pass
 
+    # ── Undo flow (docs/prm/undo-and-app-events.md) ─────────────────────────
+
+    def on_rollback_verify(self, _checkpoint_id: str, _resource_id: str,
+                           _expected_revision: str) -> "str | None":
+        """Answer a host rollback verification with the resource's *current*
+        revision string. Apps that emit reversible events (``rollback_token``)
+        MUST override this; returning ``None`` (the default) reports an empty
+        revision, which never matches — rollback is safely blocked."""
+        return None
+
+    def on_rollback_apply(self, _checkpoint_id: str, _resource_id: str,
+                          _rollback_token: str) -> "Coroutine[Any, Any, None] | None":
+        """Apply a verified rollback: undo the mutation identified by
+        ``rollback_token`` and emit the matching reversal event
+        (e.g. ``move.undone``). Default: no-op."""
+        return None
+
     # ── Internal ────────────────────────────────────────────────────────────
 
+    async def _handle_rollback_verify(self, ev: dict) -> None:
+        """Dispatch ``PlexiEvent::RollbackVerify`` and answer the host with
+        ``AppRequest::RollbackVerifyResult``."""
+        checkpoint_id = str(ev.get("checkpoint_id", ""))
+        resource_id = str(ev.get("resource_id", ""))
+        expected = str(ev.get("expected_revision", ""))
+        try:
+            import inspect as _inspect
+            result = self.on_rollback_verify(checkpoint_id, resource_id, expected)
+            if _inspect.iscoroutine(result):
+                result = await result
+        except Exception as exc:
+            self.emit.error(f"on_rollback_verify failed: {exc}")
+            result = None
+        if result is None:
+            self.emit.warn(
+                f"rollback_verify for {checkpoint_id!r}: on_rollback_verify not "
+                "implemented — reporting empty revision (rollback will be blocked)"
+            )
+            result = ""
+        self.emit.rollback_verify_result(checkpoint_id, str(result))
 
     async def _handle_tool_call(self, ev: dict) -> None:
         """Dispatch a ``PlexiEvent::ToolCall`` to the registered handler.
@@ -1297,6 +1335,22 @@ class App:
                 elif t == "mcp_tool_call":
                     # MCP bridge (#958). External MCP client called a tool — dispatch to on_mcp_call.
                     self._dispatch_hook_task(self._handle_mcp_tool_call, ev)
+
+                elif t == "rollback_verify":
+                    # Undo flow (docs/prm/undo-and-app-events.md). Host asks
+                    # whether the resource is still at the checkpoint's
+                    # expected revision; the answer gates RollbackApply.
+                    self._dispatch_hook_task(self._handle_rollback_verify, ev)
+
+                elif t == "rollback_apply":
+                    # Verified rollback instruction — apply the app-owned
+                    # rollback identified by rollback_token.
+                    self._dispatch_hook_task(
+                        self.on_rollback_apply,
+                        ev.get("checkpoint_id", ""),
+                        ev.get("resource_id", ""),
+                        ev.get("rollback_token", ""),
+                    )
 
         reader_task = asyncio.create_task(_reader())
         exit_code = 0

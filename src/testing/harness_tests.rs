@@ -2579,3 +2579,481 @@ fn subscribe_undeclared_stream_is_refused() {
         "undeclared stream subscription must be refused: {events:?}"
     );
 }
+
+// -- Phase C: host agent runtime (docs/prm/chess-agent-poc.md) ---------------
+
+mod agent_runtime {
+    use super::*;
+    use crate::agent::{AgentDefinition, AgentHost};
+    use crate::app_protocol::{AiTool, PlexiEvent};
+    use crate::broker::{
+        ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, ResourceScope,
+        TargetType,
+    };
+    use crate::host::app_timeline::{AppTimeline, EmittedEvent};
+    use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, AiBrokerResponse};
+    use crate::plexi_ai::tool_dispatch;
+    use std::sync::{Arc, Mutex};
+
+    const CHESS_PANE: u64 = 7001;
+
+    const AGENT_SETTINGS: &str = r#"
+[agent]
+id = "chess-opponent"
+display_name = "Chess Opponent"
+default_tier = "low"
+
+[permissions]
+default_posture = "review"
+allow = ["app.chess.current_state", "app.chess.legal_moves"]
+ask = ["app.chess.make_move", "app.chess.undo_move"]
+
+[[subscriptions]]
+app = "chess"
+events = ["turn.ready", "move.played"]
+payload = "full"
+trigger = "conversation"
+default = "ask"
+"#;
+
+    fn chess_def() -> AgentDefinition {
+        AgentDefinition::parse("You are a chess opponent.", AGENT_SETTINGS).unwrap()
+    }
+
+    fn chess_timeline() -> Arc<Mutex<AppTimeline>> {
+        let mut t = AppTimeline::default();
+        t.declare_streams(
+            "chess",
+            ["turn.ready", "move.played"]
+                .into_iter()
+                .map(|name| crate::app_protocol::EventStreamDecl {
+                    name: name.to_string(),
+                    schema: serde_json::json!({"type": "object"}),
+                    description: None,
+                })
+                .collect(),
+        )
+        .unwrap();
+        Arc::new(Mutex::new(t))
+    }
+
+    fn turn_ready() -> EmittedEvent {
+        EmittedEvent {
+            event: "turn.ready".to_string(),
+            actor: crate::app_protocol::AppEventActor::App,
+            actor_id: None,
+            summary: "black to move in game-1".to_string(),
+            resource_id: "game-1".to_string(),
+            resource_scope: Some("game".to_string()),
+            revision_after: "rev-1".to_string(),
+            payload: Some(serde_json::json!({"legal_moves": ["Nf6", "e5"]})),
+            state_ref: None,
+            revision_before: None,
+            rollback_token: None,
+            changed_resources: vec![],
+            suggested_trigger: None,
+        }
+    }
+
+    fn subscription_grant(event: &str) -> GrantRecord {
+        GrantRecord {
+            actor_type: ActorType::Agent,
+            actor_id: "chess-opponent".to_string(),
+            actor_scope: ActorScope::Workspace,
+            workspace_root: None,
+            target_type: TargetType::AppEventStream,
+            target_id: format!("chess::{event}"),
+            resource_scope: ResourceScope::Game,
+            resource_id: None,
+            decision: Decision::Allow,
+            duration: GrantDuration::Session,
+            source: GrantSource::User,
+            created_at: 0,
+            expires_at: None,
+        }
+    }
+
+    fn make_move_grant() -> GrantRecord {
+        GrantRecord {
+            actor_type: ActorType::Agent,
+            actor_id: "chess-opponent".to_string(),
+            actor_scope: ActorScope::Workspace,
+            workspace_root: None,
+            target_type: TargetType::AppConnector,
+            target_id: "app.chess.make_move".to_string(),
+            resource_scope: ResourceScope::Game,
+            resource_id: Some("game-1".to_string()),
+            decision: Decision::Allow,
+            duration: GrantDuration::Session,
+            source: GrantSource::User,
+            created_at: 0,
+            expires_at: None,
+        }
+    }
+
+    fn chess_tools() -> Vec<AiTool> {
+        ["chess.current_state", "chess.legal_moves", "chess.make_move"]
+            .into_iter()
+            .map(|name| AiTool {
+                name: name.to_string(),
+                description: format!("test {name}"),
+                input_schema: serde_json::json!({"type": "object", "properties": {}}),
+                timeout_ms: Some(2_000),
+            })
+            .collect()
+    }
+
+    /// Register the chess tools and spawn a thread acting as the chess app:
+    /// it answers `ToolCall`s for `chess.make_move` with the spec's output
+    /// shape and records the resulting reversible `move.played` event on the
+    /// shared timeline (what the real app's emit_event would do).
+    fn register_chess_app(timeline: Arc<Mutex<AppTimeline>>, workspace: std::path::PathBuf) {
+        let (tx, rx) = std::sync::mpsc::channel::<crate::process_app::StdinItem>();
+        tool_dispatch::register(
+            CHESS_PANE,
+            chess_tools(),
+            tool_dispatch::AppEventSender { tx },
+            workspace,
+        );
+        std::thread::spawn(move || {
+            while let Ok(item) = rx.recv() {
+                let crate::process_app::StdinItem::Event(json) = item else {
+                    continue;
+                };
+                let Ok(ev) = serde_json::from_str::<PlexiEvent>(&json) else {
+                    continue;
+                };
+                if let PlexiEvent::ToolCall { call_id, name, .. } = ev {
+                    assert_eq!(name, "chess.make_move");
+                    // The app validates and applies the move…
+                    let mut move_played = turn_ready();
+                    move_played.event = "move.played".to_string();
+                    move_played.actor = crate::app_protocol::AppEventActor::Agent;
+                    move_played.summary = "Black played Nf6".to_string();
+                    move_played.revision_before = Some("rev-1".to_string());
+                    move_played.revision_after = "rev-2".to_string();
+                    move_played.rollback_token = Some("move-2".to_string());
+                    timeline
+                        .lock()
+                        .unwrap()
+                        .record_event("chess", CHESS_PANE, move_played)
+                        .expect("app's move.played must be accepted");
+                    // …and answers the tool call with the spec output shape.
+                    tool_dispatch::resolve_pending(
+                        &call_id,
+                        tool_dispatch::ToolCallResult {
+                            output_json: Some(
+                                serde_json::json!({
+                                    "ok": true,
+                                    "summary": "Black played Nf6",
+                                    "revision_before": "rev-1",
+                                    "revision_after": "rev-2",
+                                    "rollback_token": "move-2",
+                                    "changed_resources": ["game-1"],
+                                })
+                                .to_string(),
+                            ),
+                            error: None,
+                        },
+                    );
+                }
+            }
+        });
+    }
+
+    /// Mock model: calls `chess.make_move` through the gated dispatcher when
+    /// it is visible, otherwise replies with commentary only.
+    struct MoveMakingBroker;
+
+    impl AiBroker for MoveMakingBroker {
+        fn dispatch(&self, request: AiBrokerRequest) -> AiBrokerResponse {
+            let dispatcher = request
+                .tool_dispatcher
+                .as_ref()
+                .expect("agent turns must carry a tool dispatcher");
+            let visible: Vec<String> =
+                dispatcher.all_tools().into_iter().map(|t| t.name).collect();
+            if visible.iter().any(|n| n == "chess.make_move") {
+                let result = dispatcher.dispatch_call(
+                    "call-1".to_string(),
+                    "chess.make_move",
+                    serde_json::json!({"game_id": "game-1", "move": "Nf6", "notation": "san"})
+                        .to_string(),
+                );
+                assert!(
+                    result.error.is_none(),
+                    "granted make_move must dispatch: {:?}",
+                    result.error
+                );
+                AiBrokerResponse::ok_with_deltas("I play Nf6.".to_string(), 1, 1, Vec::new())
+            } else {
+                // Denied: prove invocation is blocked too, not just hidden.
+                let result = dispatcher.dispatch_call(
+                    "call-x".to_string(),
+                    "chess.make_move",
+                    "{}".to_string(),
+                );
+                assert!(
+                    result
+                        .error
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("tool_not_found"),
+                    "denied tool must be uninvocable: {result:?}"
+                );
+                AiBrokerResponse::ok_with_deltas(
+                    "A fine position. I would play Nf6, but I am not allowed to move."
+                        .to_string(),
+                    1,
+                    1,
+                    Vec::new(),
+                )
+            }
+        }
+    }
+
+    fn wait_for_agent_reply(host: &mut AgentHost) -> Vec<crate::agent::TranscriptEntry> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            host.tick();
+            let agent = &host.agents[0];
+            if agent.transcript.iter().any(|e| e.role == "agent" || e.role == "error") {
+                return agent.transcript.clone();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for agent reply; transcript: {:?}",
+                agent.transcript
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    /// End-to-end happy path: turn.ready delivery → conversation turn →
+    /// mocked model calls chess.make_move → broker allows → app applies and
+    /// emits move.played → checkpoint exists → reply lands in the transcript.
+    #[test]
+    fn agent_turn_makes_granted_move_and_checkpoints() {
+        // Each test gets its own workspace dir — the tool registry is a
+        // process-global filtered by workspace, and tests run in parallel.
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        register_chess_app(Arc::clone(&timeline), ws.path().to_path_buf());
+        let mut host = AgentHost::new_for_test(
+            Arc::clone(&timeline),
+            Arc::new(MoveMakingBroker),
+            ws.path().to_path_buf(),
+        );
+        host.grant_store.record(subscription_grant("turn.ready"));
+        host.grant_store.record(subscription_grant("move.played"));
+        host.grant_store.record(make_move_grant());
+        host.attach(chess_def());
+        assert_eq!(
+            host.agents[0].subscription_ids.len(),
+            1,
+            "granted subscription must be created"
+        );
+
+        // The chess app emits turn.ready → queued for the agent.
+        let outcome = timeline
+            .lock()
+            .unwrap()
+            .record_event("chess", CHESS_PANE, turn_ready())
+            .unwrap();
+        assert_eq!(outcome.deliveries_queued, 1);
+
+        let transcript = wait_for_agent_reply(&mut host);
+        assert!(
+            transcript
+                .iter()
+                .any(|e| e.role == "event" && e.text.contains("turn.ready")),
+            "injected event must be in the transcript: {transcript:?}"
+        );
+        assert!(
+            transcript
+                .iter()
+                .any(|e| e.role == "agent" && e.text == "I play Nf6."),
+            "agent reply must land in the transcript: {transcript:?}"
+        );
+
+        let t = timeline.lock().unwrap();
+        assert!(
+            t.events().iter().any(|e| e.event == "move.played"),
+            "the app must have applied the move"
+        );
+        assert_eq!(t.checkpoints().len(), 1, "reversible move must checkpoint");
+        assert_eq!(t.checkpoints()[0].rollback_token, "move-2");
+
+        tool_dispatch::unregister(CHESS_PANE);
+    }
+
+    /// Denied `chess.make_move` (posture ask, no user grant): the agent can
+    /// comment but the tool is invisible and uninvocable — no move, no
+    /// checkpoint.
+    #[test]
+    fn denied_make_move_lets_agent_comment_but_not_move() {
+        const PANE: u64 = 7002;
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        // Register tools on a different pane id with no app thread — a
+        // dispatch attempt would time out, but the broker gate must prevent
+        // it from ever being sent.
+        let (tx, _rx) = std::sync::mpsc::channel::<crate::process_app::StdinItem>();
+        tool_dispatch::register(
+            PANE,
+            chess_tools(),
+            tool_dispatch::AppEventSender { tx },
+            ws.path().to_path_buf(),
+        );
+
+        let mut host = AgentHost::new_for_test(
+            Arc::clone(&timeline),
+            Arc::new(MoveMakingBroker),
+            ws.path().to_path_buf(),
+        );
+        host.grant_store.record(subscription_grant("turn.ready"));
+        host.grant_store.record(subscription_grant("move.played"));
+        // No make_move grant — the settings put it in `ask`.
+        host.attach(chess_def());
+
+        timeline
+            .lock()
+            .unwrap()
+            .record_event("chess", PANE, turn_ready())
+            .unwrap();
+
+        let transcript = wait_for_agent_reply(&mut host);
+        assert!(
+            transcript
+                .iter()
+                .any(|e| e.role == "agent" && e.text.contains("not allowed to move")),
+            "agent must still be able to comment: {transcript:?}"
+        );
+        let t = timeline.lock().unwrap();
+        assert!(
+            !t.events().iter().any(|e| e.event == "move.played"),
+            "denied make_move must not produce a move"
+        );
+        assert!(t.checkpoints().is_empty());
+
+        tool_dispatch::unregister(PANE);
+    }
+
+    /// Denied subscription: no grant records → attach creates no
+    /// subscription → emitted events are never delivered to the agent.
+    #[test]
+    fn denied_subscription_means_agent_sees_nothing() {
+        let timeline = chess_timeline();
+        let mut host = AgentHost::new_for_test(
+            Arc::clone(&timeline),
+            Arc::new(MoveMakingBroker),
+            std::env::temp_dir(),
+        );
+        host.attach(chess_def());
+        assert!(
+            host.agents[0].subscription_ids.is_empty(),
+            "ungranted subscription must not be created"
+        );
+
+        let outcome = timeline
+            .lock()
+            .unwrap()
+            .record_event("chess", CHESS_PANE, turn_ready())
+            .unwrap();
+        assert_eq!(outcome.deliveries_queued, 0, "no subscription = no delivery");
+
+        host.tick();
+        assert!(
+            host.agents[0].transcript.is_empty(),
+            "agent must see nothing without a subscription grant"
+        );
+        assert!(!host.turns_in_flight());
+    }
+
+    /// Cross-pane rollback (Phase B's deferred seam): another pane's
+    /// RequestRollback for a chess checkpoint routes RollbackVerify to the
+    /// chess pane through the tool registry sender.
+    #[test]
+    fn cross_pane_rollback_routes_verify_to_owning_pane() {
+        const PANE: u64 = 7003;
+        let mut h = HostHarness::new();
+        let requester = h.add_test_pane();
+        let timeline = h.process_app_mut(requester).app_timeline.clone();
+
+        // Chess app: declared stream + reversible event recorded from PANE,
+        // reachable through the registry.
+        timeline
+            .lock()
+            .unwrap()
+            .declare_streams(
+                "chess",
+                vec![crate::app_protocol::EventStreamDecl {
+                    name: "move.played".to_string(),
+                    schema: serde_json::json!({"type": "object"}),
+                    description: None,
+                }],
+            )
+            .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<crate::process_app::StdinItem>();
+        tool_dispatch::register(
+            PANE,
+            chess_tools(),
+            tool_dispatch::AppEventSender { tx },
+            std::env::temp_dir(),
+        );
+        let mut reversible = turn_ready();
+        reversible.event = "move.played".to_string();
+        reversible.rollback_token = Some("move-1".to_string());
+        reversible.revision_before = Some("rev-0".to_string());
+        let ckpt_id = timeline
+            .lock()
+            .unwrap()
+            .record_event("chess", PANE, reversible)
+            .unwrap()
+            .checkpoint_id
+            .unwrap();
+
+        // Allow the requesting app to roll back chess checkpoints.
+        h.process_app_mut(requester).grant_store.record(GrantRecord {
+            actor_type: ActorType::App,
+            actor_id: "test".to_string(),
+            actor_scope: ActorScope::User,
+            workspace_root: None,
+            target_type: TargetType::UndoCheckpoint,
+            target_id: "chess".to_string(),
+            resource_scope: ResourceScope::Game,
+            resource_id: None,
+            decision: Decision::Allow,
+            duration: GrantDuration::Session,
+            source: GrantSource::User,
+            created_at: 0,
+            expires_at: None,
+        });
+
+        h.process_app_mut(requester)
+            .request_rollback(ActorType::App, "test", &ckpt_id)
+            .expect("cross-pane rollback must route through the registry");
+
+        // The verify event must arrive on the chess pane's channel.
+        let verify = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("RollbackVerify must be delivered to the owning pane");
+        let crate::process_app::StdinItem::Event(json) = verify else {
+            panic!("expected an Event item");
+        };
+        let ev: PlexiEvent = serde_json::from_str(&json).unwrap();
+        match ev {
+            PlexiEvent::RollbackVerify {
+                checkpoint_id,
+                expected_revision,
+                ..
+            } => {
+                assert_eq!(checkpoint_id, ckpt_id);
+                assert_eq!(expected_revision, "rev-1");
+            }
+            other => panic!("expected RollbackVerify, got {other:?}"),
+        }
+
+        tool_dispatch::unregister(PANE);
+    }
+}

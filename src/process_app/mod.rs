@@ -996,10 +996,10 @@ impl ProcessApp {
     /// only applied after `AppRequest::RollbackVerifyResult` confirms the
     /// app's current revision matches the checkpoint's `revision_after`.
     ///
-    /// Phase B limitation (seam for the Phase C agent runtime): the verify
-    /// event is delivered through this pane's own outbound channel, so only
-    /// checkpoints owned by this pane's app can be verified. Cross-pane
-    /// delivery needs the host-level routing the agent runtime brings.
+    /// Checkpoints owned by this pane's app are verified through this pane's
+    /// own outbound channel. Cross-pane checkpoints (Phase C) are delivered
+    /// to the owning pane through the tool registry sender — the owning app
+    /// must be running and have exposed tools to be reachable.
     pub fn request_rollback(
         &mut self,
         actor_type: crate::broker::ActorType,
@@ -1007,21 +1007,15 @@ impl ProcessApp {
         checkpoint_id: &str,
     ) -> Result<(), String> {
         use crate::broker::{Decision, PermissionRequest, TargetType};
-        let owning_app = self
+        let (owning_app, owning_pane) = self
             .app_timeline
             .lock()
             .unwrap()
             .checkpoints()
             .iter()
             .find(|c| c.checkpoint_id == checkpoint_id)
-            .map(|c| c.app_id.clone())
+            .map(|c| (c.app_id.clone(), c.pane_id))
             .ok_or_else(|| format!("unknown checkpoint '{checkpoint_id}'"))?;
-        if owning_app != self.type_id {
-            return Err(format!(
-                "checkpoint '{checkpoint_id}' belongs to app '{owning_app}' — cross-pane \
-                 rollback delivery requires the agent runtime (Phase C)"
-            ));
-        }
         let req = PermissionRequest::new(
             actor_type,
             actor_id,
@@ -1041,6 +1035,16 @@ impl ProcessApp {
                 return Err(msg);
             }
         }
+        // Cross-pane checkpoints must be deliverable before mutating the
+        // checkpoint state — fail fast when the owning pane is unreachable.
+        let cross_pane = owning_app != self.type_id;
+        if cross_pane && !crate::plexi_ai::tool_dispatch::pane_reachable(owning_pane) {
+            return Err(format!(
+                "checkpoint '{checkpoint_id}' belongs to app '{owning_app}' in pane \
+                 {owning_pane}, which is not reachable — the owning app must be running \
+                 and have exposed tools"
+            ));
+        }
         let verify = self
             .app_timeline
             .lock()
@@ -1049,16 +1053,26 @@ impl ProcessApp {
             .map_err(|e| e.to_string())?;
         log::info!(
             "ProcessApp[{}]: rollback verification dispatched for {checkpoint_id} \
-             (resource '{}', expect rev '{}')",
+             (resource '{}', expect rev '{}', cross_pane={cross_pane})",
             self.type_id,
             verify.resource_id,
             verify.expected_revision
         );
-        self.outbound_events.push_back(PlexiEvent::RollbackVerify {
+        let event = PlexiEvent::RollbackVerify {
             checkpoint_id: verify.checkpoint_id,
             resource_id: verify.resource_id,
             expected_revision: verify.expected_revision,
-        });
+        };
+        if cross_pane {
+            if !crate::plexi_ai::tool_dispatch::send_event_to_pane(owning_pane, &event) {
+                return Err(format!(
+                    "checkpoint '{checkpoint_id}': pane {owning_pane} went away before \
+                     the verification could be delivered"
+                ));
+            }
+        } else {
+            self.outbound_events.push_back(event);
+        }
         Ok(())
     }
 

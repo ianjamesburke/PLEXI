@@ -5,6 +5,7 @@
 // PLEXI_AUDIO=mock://. Stubs must return `Err(NotImplemented)` instead.
 #![deny(clippy::todo, clippy::unimplemented)]
 
+mod agent;
 mod app;
 mod app_protocol;
 mod broker;
