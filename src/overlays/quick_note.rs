@@ -4,7 +4,7 @@ impl PlexiApp {
     /// Quick note compose phase: full-screen scrim + centered text input.
     pub(crate) fn draw_quick_note_modal(&mut self, ctx: &egui::Context) {
         use crate::ui::style;
-        use egui::{Align2, RichText, Vec2};
+        use egui::RichText;
 
         // Consume Esc to close.
         let esc = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));

@@ -1,4 +1,4 @@
-use egui::{Align2, Color32, CornerRadius, Pos2, RichText, Vec2};
+use egui::{Color32, CornerRadius, Pos2, RichText, Vec2};
 
 use crate::ui::style;
 use crate::ui::theme::Colors;
@@ -216,6 +216,17 @@ pub(crate) fn styled_text_input(
     id: egui::Id,
     colors: &Colors,
 ) -> egui::Response {
+    styled_text_input_inner(ui, buf, hint, id, colors, false)
+}
+
+fn styled_text_input_inner(
+    ui: &mut egui::Ui,
+    buf: &mut String,
+    hint: impl Into<egui::WidgetText>,
+    id: egui::Id,
+    colors: &Colors,
+    password: bool,
+) -> egui::Response {
     // Placeholder at half strength — the theme sets `override_text_color`,
     // which makes egui's default hint color (weak_text_color) near-white.
     let hint: egui::WidgetText = hint.into();
@@ -226,14 +237,14 @@ pub(crate) fn styled_text_input(
         ui.visuals_mut().extreme_bg_color = colors.bg_active;
         ui.visuals_mut().widgets.active.bg_stroke = egui::Stroke::new(1.0, colors.accent);
         ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::new(1.0, colors.border);
-        ui.add(
-            egui::TextEdit::singleline(buf)
-                .id(id)
-                .desired_width(f32::INFINITY)
-                .hint_text(hint)
-                .font(egui::TextStyle::Body)
-                .margin(egui::Margin::symmetric(8, 5)),
-        )
+        let edit = egui::TextEdit::singleline(buf)
+            .id(id)
+            .desired_width(f32::INFINITY)
+            .hint_text(hint)
+            .font(egui::TextStyle::Body)
+            .margin(egui::Margin::symmetric(8, 5))
+            .password(password);
+        ui.add(edit)
     })
     .inner
 }
@@ -242,6 +253,7 @@ pub(crate) struct TextField<'a> {
     id: egui::Id,
     hint: egui::WidgetText,
     focused: bool,
+    password: bool,
     log_name: &'a str,
 }
 
@@ -251,12 +263,18 @@ impl<'a> TextField<'a> {
             id,
             hint: hint.into(),
             focused: false,
+            password: false,
             log_name: "text_field",
         }
     }
 
     pub(crate) fn focused(mut self, focused: bool) -> Self {
         self.focused = focused;
+        self
+    }
+
+    pub(crate) fn password(mut self, password: bool) -> Self {
+        self.password = password;
         self
     }
 
@@ -271,7 +289,7 @@ impl<'a> TextField<'a> {
         buf: &mut String,
         colors: &Colors,
     ) -> egui::Response {
-        let response = styled_text_input(ui, buf, self.hint, self.id, colors);
+        let response = styled_text_input_inner(ui, buf, self.hint, self.id, colors, self.password);
         if self.focused && !response.has_focus() {
             response.request_focus();
             log::info!("{}: focus requested for host TextField", self.log_name);
@@ -334,44 +352,4 @@ pub(crate) fn description_label(ui: &mut egui::Ui, text: &str, colors: &Colors) 
         )
         .truncate(),
     );
-}
-
-/// Renders a dismissable centered modal overlay. Handles Escape and click-outside.
-/// Returns `true` if the user dismissed it this frame. Callers guard with
-/// `if !open { return; }` and apply `if dismissed { open = false; }` after.
-pub fn dismissable_modal(
-    ctx: &egui::Context,
-    id: &str,
-    add_contents: impl FnOnce(&mut egui::Ui),
-) -> bool {
-    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-        return true;
-    }
-
-    let screen_rect = ctx.screen_rect();
-    let mut dismissed = false;
-
-    let base_id = egui::Id::new(id);
-    egui::Area::new(base_id.with("scrim"))
-        .fixed_pos(screen_rect.min)
-        .order(egui::Order::Middle)
-        .show(ctx, |ui| {
-            ui.painter()
-                .rect_filled(screen_rect, 0.0, Color32::from_black_alpha(80));
-            if ui
-                .allocate_rect(screen_rect, egui::Sense::click())
-                .clicked()
-            {
-                dismissed = true;
-            }
-        });
-
-    egui::Area::new(base_id.with("overlay"))
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            add_contents(ui);
-        });
-
-    dismissed
 }

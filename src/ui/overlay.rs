@@ -14,6 +14,7 @@ pub(crate) struct ModalShell<'a> {
     /// Scrim darkness, 0.0..=1.0. 0.0 = no scrim (and no click-away
     /// detection); 1.0 = pure black. Default maps `style::SCRIM_ALPHA`.
     scrim_strength: f32,
+    order: egui::Order,
 }
 
 impl<'a> ModalShell<'a> {
@@ -27,7 +28,15 @@ impl<'a> ModalShell<'a> {
             click_away: true,
             escape: false,
             scrim_strength: f32::from(style::SCRIM_ALPHA) / 255.0,
+            order: egui::Order::Foreground,
         }
+    }
+
+    /// Render the modal above other Foreground overlays (e.g. notifications
+    /// that must outrank any open modal). The scrim rises with it.
+    pub(crate) fn order(mut self, order: egui::Order) -> Self {
+        self.order = order;
+        self
     }
 
     /// Re-anchor the modal (e.g. `Align2::CENTER_TOP` + y-offset for input
@@ -90,9 +99,16 @@ impl<'a> ModalShell<'a> {
         let screen = ctx.screen_rect();
         if self.scrim_strength > 0.0 {
             let alpha = (self.scrim_strength * 255.0).round() as u8;
+            // Scrim sits one layer below the modal so an elevated modal
+            // (Order::Tooltip) still dims ordinary Foreground overlays.
+            let scrim_order = if self.order == egui::Order::Foreground {
+                egui::Order::Middle
+            } else {
+                egui::Order::Foreground
+            };
             egui::Area::new(self.id.with("scrim"))
                 .fixed_pos(screen.min)
-                .order(egui::Order::Middle)
+                .order(scrim_order)
                 .show(ctx, |ui| {
                     ui.painter()
                         .rect_filled(screen, 0.0, Color32::from_black_alpha(alpha));
@@ -105,7 +121,7 @@ impl<'a> ModalShell<'a> {
 
         egui::Area::new(self.id.with("overlay"))
             .anchor(self.anchor, self.offset)
-            .order(egui::Order::Foreground)
+            .order(self.order)
             .show(ctx, |ui| {
                 egui::Frame::new()
                     .fill(colors.bg_sidebar)

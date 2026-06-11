@@ -169,44 +169,21 @@ impl PlexiApp {
         // index into the Vec.
         if self.pending_notifications.is_empty() {
             // Show an empty-state card so Cmd+Shift+A always gives feedback.
-            let screen_rect = ctx.screen_rect();
-            egui::Area::new(egui::Id::new("notification_modal_scrim"))
-                .order(egui::Order::Foreground)
-                .fixed_pos(screen_rect.min)
-                .interactable(true)
-                .show(ctx, |ui| {
-                    let (rect, _) =
-                        ui.allocate_exact_size(screen_rect.size(), egui::Sense::click());
-                    ui.painter().rect_filled(
-                        rect,
-                        CornerRadius::ZERO,
-                        Color32::from_black_alpha(style::SCRIM_ALPHA),
-                    );
-                });
-            egui::Area::new(egui::Id::new("notification_modal"))
+            let colors = self.colors;
+            crate::ui::overlay::ModalShell::centered("notification_modal")
+                .width(style::MODAL_WIDTH_NOTIFY)
                 .order(egui::Order::Tooltip)
-                .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-                .show(ctx, |ui| {
-                    egui::Frame::new()
-                        .fill(self.colors.bg_sidebar)
-                        .stroke(Stroke::new(1.0, self.colors.border))
-                        .corner_radius(style::RADIUS_LG)
-                        .inner_margin(egui::Margin::symmetric(
-                            style::MODAL_PADDING_H,
-                            style::MODAL_PADDING_V,
-                        ))
-                        .show(ui, |ui| {
-                            ui.set_width(style::MODAL_WIDTH_NOTIFY);
-                            ui.vertical_centered(|ui| {
-                                ui.add_space(style::SPACE_MD);
-                                ui.label(
-                                    RichText::new("No notifications")
-                                        .size(style::TEXT_BODY)
-                                        .color(self.colors.text_dim),
-                                );
-                                ui.add_space(style::SPACE_MD);
-                            });
-                        });
+                .click_away(false)
+                .show(ctx, &colors, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(style::SPACE_MD);
+                        ui.label(
+                            RichText::new("No notifications")
+                                .size(style::TEXT_BODY)
+                                .color(self.colors.text_dim),
+                        );
+                        ui.add_space(style::SPACE_MD);
+                    });
                 });
             let esc_pressed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
             if esc_pressed {
@@ -261,23 +238,6 @@ impl PlexiApp {
         // is idempotent — it caches into `self.notification_images` keyed by
         // `notify_id`, so subsequent frames reuse the same TextureHandle.
         let image_state = notification_image::resolve(self, ctx, &notif);
-
-        let screen_rect = ctx.screen_rect();
-
-        // Dim the whole work area. The scrim swallows clicks so UI behind can't
-        // accidentally eat them.
-        egui::Area::new(egui::Id::new("notification_modal_scrim"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(screen_rect.min)
-            .interactable(true)
-            .show(ctx, |ui| {
-                let (rect, _) = ui.allocate_exact_size(screen_rect.size(), egui::Sense::click());
-                ui.painter().rect_filled(
-                    rect,
-                    CornerRadius::ZERO,
-                    Color32::from_black_alpha(style::SCRIM_ALPHA),
-                );
-            });
 
         let level_color = match notif.level.as_str() {
             "error" => Color32::from_rgb(0xff, 0x55, 0x55),
@@ -402,29 +362,21 @@ impl PlexiApp {
             _ => {}
         }
 
-        egui::Area::new(egui::Id::new("notification_modal"))
+        // Kit shell, elevated above other Foreground overlays; the scrim
+        // swallows clicks (no click-away — notifications are dismissed
+        // explicitly) and Escape stays with the key logic above.
+        let colors = self.colors;
+        crate::ui::overlay::ModalShell::centered("notification_modal")
+            .width(style::MODAL_WIDTH_NOTIFY)
             .order(egui::Order::Tooltip)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(ctx, |ui| {
-                egui::Frame::new()
-                    .fill(self.colors.bg_sidebar)
-                    .stroke(Stroke::new(1.0, self.colors.border))
-                    .corner_radius(style::RADIUS_LG)
-                    .inner_margin(egui::Margin::symmetric(
-                        style::MODAL_PADDING_H,
-                        style::MODAL_PADDING_V,
-                    ))
-                    .show(ui, |ui| {
-                        ui.set_width(style::MODAL_WIDTH_NOTIFY);
-
-                        // Header: level dot + kind label · queue indicator.
-                        ui.horizontal(|ui| {
-                            let (dot_rect, _) = ui.allocate_exact_size(
-                                Vec2::new(10.0, 10.0),
-                                egui::Sense::hover(),
-                            );
-                            ui.painter()
-                                .circle_filled(dot_rect.center(), 5.0, level_color);
+            .click_away(false)
+            .show(ctx, &colors, |ui| {
+                // Header: level dot + kind label · queue indicator.
+                ui.horizontal(|ui| {
+                    let (dot_rect, _) =
+                        ui.allocate_exact_size(Vec2::new(10.0, 10.0), egui::Sense::hover());
+                    ui.painter()
+                        .circle_filled(dot_rect.center(), 5.0, level_color);
                             ui.add_space(style::SPACE_SM);
                             let kind_label = match notif.kind {
                                 NotifyKind::Message => "MESSAGE",
@@ -819,7 +771,6 @@ impl PlexiApp {
                                 );
                             });
                         } // end !tombstoned keyboard hint
-                    });
             });
 
         // ── Resolve keyboard input into an action_cmd (only if not already

@@ -416,20 +416,6 @@ impl App for SecretsApp {
                 );
                 ui.add_space(style::SPACE_SM);
 
-                let styled_input = |ui: &mut egui::Ui, edit: egui::TextEdit| -> egui::Response {
-                    ui.scope(|ui| {
-                        ui.visuals_mut().text_cursor.stroke.width = 1.5;
-                        ui.visuals_mut().text_cursor.stroke.color = colors.accent;
-                        ui.visuals_mut().extreme_bg_color = colors.bg_active;
-                        ui.visuals_mut().widgets.active.bg_stroke =
-                            egui::Stroke::new(1.0, colors.accent);
-                        ui.visuals_mut().widgets.inactive.bg_stroke =
-                            egui::Stroke::new(1.0, colors.border);
-                        ui.add(edit)
-                    })
-                    .inner
-                };
-
                 // Name field
                 ui.horizontal(|ui| {
                     ui.label(
@@ -438,16 +424,11 @@ impl App for SecretsApp {
                             .size(style::TEXT_HINT)
                             .family(egui::FontFamily::Monospace),
                     );
-                    let key_resp = styled_input(
-                        ui,
-                        egui::TextEdit::singleline(&mut self.new_key)
-                            .desired_width(f32::INFINITY)
-                            .font(egui::FontId::monospace(style::TEXT_CAPTION))
-                            .text_color(colors.text_primary)
-                            .frame(true)
-                            .margin(egui::Margin::symmetric(8, 5))
-                            .hint_text("e.g. OPENAI_API_KEY"),
-                    );
+                    let key_resp = crate::ui::widgets::TextField::singleline(
+                        egui::Id::new("secrets_new_key"),
+                        "e.g. OPENAI_API_KEY",
+                    )
+                    .show(ui, &mut self.new_key, colors);
                     if !self.focus_requested {
                         key_resp.request_focus();
                         self.focus_requested = true;
@@ -470,17 +451,12 @@ impl App for SecretsApp {
                             .size(style::TEXT_HINT)
                             .family(egui::FontFamily::Monospace),
                     );
-                    let val_resp = styled_input(
-                        ui,
-                        egui::TextEdit::singleline(&mut self.new_value)
-                            .desired_width(f32::INFINITY)
-                            .font(egui::FontId::monospace(style::TEXT_CAPTION))
-                            .text_color(colors.text_primary)
-                            .password(true)
-                            .frame(true)
-                            .margin(egui::Margin::symmetric(8, 5))
-                            .hint_text("secret value"),
-                    );
+                    let val_resp = crate::ui::widgets::TextField::singleline(
+                        egui::Id::new("secrets_new_value"),
+                        "secret value",
+                    )
+                    .password(true)
+                    .show(ui, &mut self.new_value, colors);
                     if self.form_focus == FormField::Value && !val_resp.has_focus() {
                         val_resp.request_focus();
                     }
