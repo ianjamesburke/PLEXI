@@ -9,6 +9,7 @@
 #   scripts/merge-pr.sh cleanup <PR> <BRANCH>  channel-clean + wtp remove + remote branch delete
 #   scripts/merge-pr.sh bump                   just bump + git push
 #   scripts/merge-pr.sh close <ISSUE> <PR>     strip pipeline labels + close issue + append ship log
+#   scripts/merge-pr.sh close-stints <PR> <ID...>
 #
 # Call sub-steps directly to resume after a failure (e.g. rebase conflict).
 set -euo pipefail
@@ -91,6 +92,60 @@ do_close() {
         "$CURRENT_BODY" "$PR" "$VERSION" "$(date +%Y-%m-%d)")"
 }
 
+task_file_for_stint() {
+    local STINT="$1"
+    find .stint/tasks -maxdepth 1 -name "${STINT}-*.md" -print -quit
+}
+
+resolve_stints() {
+    local BRANCH="$1"
+    local PR_BODY="${2:-}"
+    local STINT
+    {
+        printf '%s\n' "$BRANCH" | grep -Eo 'stint-[0-9-]+' | grep -Eo '[0-9]{4}' || true
+        printf '%s\n' "$PR_BODY" | grep -Ei 'stint' | grep -Eo '[0-9]{4}' || true
+    } | sort -u | while IFS= read -r STINT; do
+        [ -n "$STINT" ] || continue
+        if [ -z "$(task_file_for_stint "$STINT")" ]; then
+            echo "ERROR: PR references stint task $STINT, but no .stint/tasks/${STINT}-*.md exists" >&2
+            return 1
+        fi
+        printf '%s\n' "$STINT"
+    done
+}
+
+join_by() {
+    local IFS="$1"
+    shift
+    printf '%s\n' "$*"
+}
+
+do_close_stints() {
+    local PR="$1"
+    shift
+    local VERSION
+    local STINTS
+    local STINT
+
+    VERSION=$(grep '^version' Cargo.toml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+    STINTS=$(join_by ", " "$@")
+
+    echo "==> Closing stint task(s): $STINTS"
+    for STINT in "$@"; do
+        stint done "$STINT"
+    done
+
+    if git diff --quiet -- .stint/tasks; then
+        echo "==> No stint task changes to commit"
+        return
+    fi
+
+    git add .stint/tasks
+    git commit -m "chore(stint): close tasks $STINTS after PR #$PR"
+    git push
+    echo "==> Closed stint task(s) $STINTS on alpha v$VERSION"
+}
+
 resolve_issue() {
     local PR="$1"
     local BRANCH="$2"
@@ -120,8 +175,6 @@ resolve_issue() {
             ;;
     esac
 
-    echo "ERROR: could not resolve GitHub issue for PR #$PR ($BRANCH)" >&2
-    echo "Add a closing keyword like 'Closes #1234' to the PR body or use a numeric feature/fix branch." >&2
     return 1
 }
 
@@ -157,16 +210,48 @@ test_resolve_issue() {
     echo "resolve_issue tests passed"
 }
 
+test_resolve_stints() {
+    local actual
+    actual=$(resolve_stints "feature/stint-0015-0016-0017-packages-trust" "")
+    [ "$actual" = "$(printf '0015\n0016\n0017')" ] || {
+        echo "expected stint ids from branch, got '$actual'" >&2
+        return 1
+    }
+
+    actual=$(resolve_stints "feature/packages-trust" "Stint tasks 0015, 0016, 0017")
+    [ "$actual" = "$(printf '0015\n0016\n0017')" ] || {
+        echo "expected stint ids from PR body, got '$actual'" >&2
+        return 1
+    }
+
+    if resolve_stints "feature/stint-9999-missing" "" >/dev/null 2>&1; then
+        echo "expected missing stint task to fail" >&2
+        return 1
+    fi
+
+    echo "resolve_stints tests passed"
+}
+
 # --- Dispatch ---
 CMD="${1:-}"
 case "$CMD" in
     test-resolve-issue) test_resolve_issue ;;
+    test-resolve-stints) test_resolve_stints ;;
     rebase)   do_rebase "${2:?BRANCH required}" ;;
     squash)   do_squash "${2:?PR required}" ;;
     sync)     do_sync ;;
     cleanup)  do_cleanup "${2:?PR required}" "${3:?BRANCH required}" ;;
     bump)     do_bump ;;
     close)    do_close "${2:?ISSUE required}" "${3:?PR required}" ;;
+    close-stints)
+        PR="${2:?PR required}"
+        shift 2
+        [ "$#" -gt 0 ] || {
+            echo "ERROR: at least one stint task id is required" >&2
+            exit 1
+        }
+        do_close_stints "$PR" "$@"
+        ;;
     *)
         PR="${1:?PR number required}"
 
@@ -174,9 +259,26 @@ case "$CMD" in
         BRANCH=$(echo "$INFO" | jq -r .branch)
         STATE=$(echo "$INFO" | jq -r .state)
         PR_BODY=$(echo "$INFO" | jq -r '.body // ""')
-        ISSUE=$(resolve_issue "$PR" "$BRANCH" "$PR_BODY")
+        ISSUE=$(resolve_issue "$PR" "$BRANCH" "$PR_BODY" || true)
+        STINTS=""
+        STINT_ARGS=()
+        if [ -z "$ISSUE" ]; then
+            STINTS=$(resolve_stints "$BRANCH" "$PR_BODY")
+            if [ -z "$STINTS" ]; then
+                echo "ERROR: could not resolve GitHub issue or stint tasks for PR #$PR ($BRANCH)" >&2
+                echo "Add a closing keyword like 'Closes #1234', use a numeric feature/fix branch, or include stint ids in the branch/body." >&2
+                exit 1
+            fi
+            while IFS= read -r STINT; do
+                [ -n "$STINT" ] && STINT_ARGS+=("$STINT")
+            done <<< "$STINTS"
+        fi
 
-        echo "==> PR #$PR: $BRANCH (issue #$ISSUE, state: $STATE)"
+        if [ -n "$ISSUE" ]; then
+            echo "==> PR #$PR: $BRANCH (issue #$ISSUE, state: $STATE)"
+        else
+            echo "==> PR #$PR: $BRANCH (stint tasks: $(join_by ", " "${STINT_ARGS[@]}"), state: $STATE)"
+        fi
 
         # Fail fast if root worktree has uncommitted changes
         DIRTY=$(git status --porcelain | grep -v "^??" || true)
@@ -196,10 +298,18 @@ case "$CMD" in
         do_sync
         do_cleanup "$PR" "$BRANCH"
         do_bump
-        do_close "$ISSUE" "$PR"
+        if [ -n "$ISSUE" ]; then
+            do_close "$ISSUE" "$PR"
+        else
+            do_close_stints "$PR" "${STINT_ARGS[@]}"
+        fi
 
         VERSION=$(grep '^version' Cargo.toml | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
         echo ""
-        echo "==> Done: PR #$PR merged → alpha v$VERSION, issue #$ISSUE closed"
+        if [ -n "$ISSUE" ]; then
+            echo "==> Done: PR #$PR merged → alpha v$VERSION, issue #$ISSUE closed"
+        else
+            echo "==> Done: PR #$PR merged → alpha v$VERSION, stint task(s) $(join_by ", " "${STINT_ARGS[@]}") closed"
+        fi
         ;;
 esac

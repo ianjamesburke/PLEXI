@@ -216,6 +216,7 @@ merge-pr PR:
 #   just merge-cleanup 2155 feature/2155-foo
 #   just merge-bump
 #   just merge-close 2144 2155
+#   just merge-close-stints 2186 0015 0016
 merge-rebase BRANCH:
     bash scripts/merge-pr.sh rebase {{BRANCH}}
 
@@ -233,6 +234,9 @@ merge-bump:
 
 merge-close ISSUE PR:
     bash scripts/merge-pr.sh close {{ISSUE}} {{PR}}
+
+merge-close-stints PR +STINTS:
+    bash scripts/merge-pr.sh close-stints {{PR}} {{STINTS}}
 
 # Dispatch Claude agents at one or more issues. Labels each "in progress" first
 # to prevent double-claiming when multiple dispatches run close together.
