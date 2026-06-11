@@ -162,7 +162,7 @@ class BallsApp(App):
             ball.y = random.uniform(ball.r, h * 0.6)
             self.balls.append(ball)
         self._canvas = _BallCanvas(self)
-        self.emit.continuous(60)
+        self.emit.continuous(120)
         self.emit.info(f"balls: init complete, spawned {count} balls")
 
     def on_render(self, ctx: RenderContext) -> None:
