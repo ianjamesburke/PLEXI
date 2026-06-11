@@ -41,18 +41,18 @@ impl PlexiApp {
                         gallery_section(ui, "Rows", &colors, |ui| {
                             ListRow::new("Normal row")
                                 .secondary("Secondary metadata")
-                                .leading_chip("app")
+                                .chip("app")
                                 .trailing_action("Open")
                                 .show(ui, &colors);
                             ListRow::new("Selected row")
                                 .secondary("Keyboard-selected state")
-                                .leading_chip("term")
+                                .chip("term")
                                 .trailing_action("Run")
                                 .selected(true)
                                 .show(ui, &colors);
                             ListRow::new("Danger row")
                                 .secondary("Destructive trailing action")
-                                .leading_chip("ctx")
+                                .chip("ctx")
                                 .trailing_action("Delete")
                                 .danger_trailing(true)
                                 .show(ui, &colors);

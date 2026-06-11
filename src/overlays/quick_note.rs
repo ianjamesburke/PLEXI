@@ -395,7 +395,7 @@ impl PlexiApp {
                 ui.add_space(style::SPACE_MD);
 
                 ListRow::new("Backlog (global)")
-                    .leading_chip("0")
+                    .chip("0")
                     .selected(cursor == 0)
                     .show(ui, &colors);
 
@@ -403,7 +403,7 @@ impl PlexiApp {
                     let row_idx = idx + 1;
                     let key = dest.key.to_string();
                     let row = ListRow::new(&dest.label)
-                        .leading_chip(&key)
+                        .chip(&key)
                         .selected(cursor == row_idx);
                     if dest.options.is_some() || dest.children_cmd.is_some() {
                         row.trailing_action("›").show(ui, &colors);
@@ -695,7 +695,7 @@ impl PlexiApp {
                     for (idx, child) in children.iter().enumerate() {
                         let key = child.key.to_string();
                         let row = ListRow::new(&child.label)
-                            .leading_chip(&key)
+                            .chip(&key)
                             .selected(sub_cursor == idx);
                         if child.options.is_some() || child.children_cmd.is_some() {
                             row.trailing_action("›").show(ui, &colors);

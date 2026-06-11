@@ -205,7 +205,7 @@ impl PlexiApp {
                                 .unwrap_or_default();
                             let truncated: String = preview.chars().take(50).collect();
                             let row_response = ListRow::new(&filename)
-                                .leading_chip("note")
+                                .chip("note")
                                 .secondary(&truncated)
                                 .trailing_action("×")
                                 .danger_trailing(true)

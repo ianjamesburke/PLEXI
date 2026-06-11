@@ -6,7 +6,7 @@ use crate::ui::theme::Colors;
 pub struct ListRow<'a> {
     body: &'a str,
     secondary: Option<&'a str>,
-    leading_chip: Option<&'a str>,
+    chip: Option<&'a str>,
     trailing: Option<&'a str>,
     selected: bool,
     danger_trailing: bool,
@@ -17,7 +17,7 @@ impl<'a> ListRow<'a> {
         Self {
             body,
             secondary: None,
-            leading_chip: None,
+            chip: None,
             trailing: None,
             selected: false,
             danger_trailing: false,
@@ -29,8 +29,8 @@ impl<'a> ListRow<'a> {
         self
     }
 
-    pub fn leading_chip(mut self, label: &'a str) -> Self {
-        self.leading_chip = Some(label);
+    pub fn chip(mut self, label: &'a str) -> Self {
+        self.chip = Some(label);
         self
     }
 
@@ -112,12 +112,7 @@ impl<'a> ListRow<'a> {
             ui.painter().rect_filled(inset, style::RADIUS_SM, colors.bg_hover);
         }
 
-        let mut x = rect.left() + style::LIST_ROW_PAD_H;
-
-        if let Some(label) = self.leading_chip {
-            let chip = chip_rect(ui, label, colors, x, center_y);
-            x = chip.right() + style::LIST_ROW_GAP;
-        }
+        let x = rect.left() + style::LIST_ROW_PAD_H;
 
         let trailing_response = self.trailing.zip(trailing_rect).map(|(label, trailing_rect)| {
             let id = response.id.with("_trailing_action");
@@ -149,8 +144,27 @@ impl<'a> ListRow<'a> {
                 rect.right() - TRAILING_PAD_H - trailing_size(ui, label).x - style::LIST_ROW_GAP
             })
             .unwrap_or_else(|| rect.right() - style::LIST_ROW_PAD_H);
-        let max_text_width = (text_right - x).max(0.0);
-        draw_text_block(ui, &self, colors, x, center_y, max_text_width);
+        // The chip trails the title so every row's title starts at the same
+        // x — variable-width leading chips made list starts ragged. Reserve
+        // its width out of the primary line's budget only; secondary metadata
+        // gets the full width.
+        let chip_reserved = self
+            .chip
+            .map(|label| chip_size(ui, label).x + style::LIST_ROW_GAP)
+            .unwrap_or(0.0);
+        let primary_max = (text_right - x - chip_reserved).max(0.0);
+        let secondary_max = (text_right - x).max(0.0);
+        let (primary_end_x, primary_center_y) =
+            draw_text_block(ui, &self, colors, x, center_y, primary_max, secondary_max);
+        if let Some(label) = self.chip {
+            draw_chip(
+                ui,
+                label,
+                colors,
+                primary_end_x + style::LIST_ROW_GAP,
+                primary_center_y,
+            );
+        }
 
         ListRowResponse {
             row: response,
@@ -186,35 +200,45 @@ impl ListRowResponse {
     }
 }
 
+/// Paints the primary title (and optional secondary line) and returns the
+/// primary line's end x and vertical center, so the trailing chip can be
+/// placed right after the title text.
 fn draw_text_block(
     ui: &mut egui::Ui,
     row: &ListRow<'_>,
     colors: &Colors,
     x: f32,
     center_y: f32,
-    max_width: f32,
-) {
+    primary_max: f32,
+    secondary_max: f32,
+) -> (f32, f32) {
     // Primary is always full-strength — selection is conveyed by the accent
     // rail and tint, not by dimming unselected titles into the metadata.
     let primary_color = colors.text_primary;
     // Primary reads one step above secondary metadata — both size and weight,
     // otherwise the two lines collapse into one undifferentiated block.
     let primary_font = crate::ui::theme::font_medium(style::TEXT_CAPTION);
-    let primary = elided_galley(ui, row.body, primary_font, primary_color, max_width);
+    let primary = elided_galley(ui, row.body, primary_font, primary_color, primary_max);
+    let primary_size = primary.size();
 
     if let Some(secondary) = row.secondary {
         let secondary_font = egui::FontId::proportional(style::TEXT_HINT);
         let secondary_galley =
-            elided_galley(ui, secondary, secondary_font, colors.text_dim, max_width);
-        let total_h = primary.size().y + 2.0 + secondary_galley.size().y;
+            elided_galley(ui, secondary, secondary_font, colors.text_dim, secondary_max);
+        let total_h = primary_size.y + 2.0 + secondary_galley.size().y;
         let primary_pos = Pos2::new(x, center_y - total_h / 2.0);
-        let secondary_pos = Pos2::new(x, primary_pos.y + primary.size().y + 2.0);
+        let secondary_pos = Pos2::new(x, primary_pos.y + primary_size.y + 2.0);
         ui.painter().galley(primary_pos, primary, primary_color);
         ui.painter()
             .galley(secondary_pos, secondary_galley, colors.text_dim);
+        (
+            primary_pos.x + primary_size.x,
+            primary_pos.y + primary_size.y / 2.0,
+        )
     } else {
-        let pos = Pos2::new(x, center_y - primary.size().y / 2.0);
+        let pos = Pos2::new(x, center_y - primary_size.y / 2.0);
         ui.painter().galley(pos, primary, primary_color);
+        (pos.x + primary_size.x, center_y)
     }
 }
 
@@ -280,36 +304,47 @@ fn trailing_size(ui: &egui::Ui, label: &str) -> Vec2 {
     Vec2::new(galley.size().x.max(24.0), style::LIST_ROW_H)
 }
 
-fn chip_rect(ui: &egui::Ui, label: &str, colors: &Colors, x: f32, center_y: f32) -> egui::Rect {
+// Row chips share the key-chip visual language: borderless bg_active fill,
+// dim monospace text, quiet annotations — never louder than the title.
+const CHIP_PAD_H: f32 = 4.0;
+const CHIP_PAD_V: f32 = 1.5;
+
+fn chip_galley(ui: &egui::Ui, label: &str, colors: &Colors) -> std::sync::Arc<egui::Galley> {
+    ui.fonts(|f| {
+        f.layout_no_wrap(
+            label.to_string(),
+            egui::FontId::monospace(style::TEXT_HINT),
+            colors.text_dim,
+        )
+    })
+}
+
+fn chip_size(ui: &egui::Ui, label: &str) -> Vec2 {
     let galley = ui.fonts(|f| {
         f.layout_no_wrap(
             label.to_string(),
-            egui::FontId::proportional(style::TEXT_HINT),
-            colors.text_primary,
+            egui::FontId::monospace(style::TEXT_HINT),
+            Color32::WHITE,
         )
     });
-    let size = Vec2::new(
-        galley.size().x + style::SPACE_SM,
-        galley.size().y + style::SPACE_XS,
-    );
+    let h = galley.size().y + CHIP_PAD_V * 2.0;
+    Vec2::new((galley.size().x + CHIP_PAD_H * 2.0).max(h), h)
+}
+
+fn draw_chip(ui: &egui::Ui, label: &str, colors: &Colors, x: f32, center_y: f32) {
+    let galley = chip_galley(ui, label, colors);
+    let size = chip_size(ui, label);
     let rect = egui::Rect::from_min_size(Pos2::new(x, center_y - size.y / 2.0), size);
     ui.painter()
         .rect_filled(rect, CornerRadius::same(4), colors.bg_active);
-    ui.painter().rect_stroke(
-        rect,
-        CornerRadius::same(4),
-        Stroke::new(1.0, colors.border),
-        StrokeKind::Inside,
-    );
     ui.painter().galley(
         Pos2::new(
             rect.center().x - galley.size().x / 2.0,
             rect.center().y - galley.size().y / 2.0,
         ),
         galley,
-        colors.text_primary,
+        colors.text_dim,
     );
-    rect
 }
 
 #[cfg(test)]
@@ -318,10 +353,10 @@ mod tests {
 
     #[test]
     fn list_row_builder_keeps_optional_secondary_empty_by_default() {
-        let row = ListRow::new("note").secondary("").leading_chip("app");
+        let row = ListRow::new("note").secondary("").chip("app");
         assert_eq!(row.body, "note");
         assert!(row.secondary.is_none());
-        assert_eq!(row.leading_chip, Some("app"));
+        assert_eq!(row.chip, Some("app"));
         assert!(!row.selected);
     }
 

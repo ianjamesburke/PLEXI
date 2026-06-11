@@ -388,7 +388,7 @@ impl PlexiApp {
                                     pane_id,
                                 } => {
                                     let row = ListRow::new(name.as_str())
-                                        .leading_chip("ctx")
+                                        .chip("ctx")
                                         .secondary(workspace_name.as_str())
                                         .selected(is_selected);
                                     let row_response = row.show(ui, &colors);
@@ -440,7 +440,7 @@ impl PlexiApp {
                                     }
 
                                     let row = ListRow::new(name.as_str())
-                                        .leading_chip("app")
+                                        .chip("app")
                                         .secondary(&secondary)
                                         .selected(is_selected);
 

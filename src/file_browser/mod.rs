@@ -1149,7 +1149,7 @@ impl FileBrowserApp {
             let title = Self::entry_title(&entry);
             let response = ListRow::new(&title)
                 .secondary(&secondary)
-                .leading_chip(Self::entry_chip(&entry))
+                .chip(Self::entry_chip(&entry))
                 .selected(is_selected)
                 .show(ui, colors);
             if is_selected && should_scroll {

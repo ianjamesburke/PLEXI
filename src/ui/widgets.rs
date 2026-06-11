@@ -48,9 +48,15 @@ pub(crate) fn selectable_row<R>(
 
     let row_rect = scope.response.rect;
 
+    // Same inset-highlight language as ListRow: the fill stops 4px short of
+    // each edge so both row primitives carry identical left/right padding.
+    let bg_rect = egui::Rect::from_min_max(
+        Pos2::new(row_rect.min.x + 4.0, row_rect.min.y),
+        Pos2::new(row_rect.max.x - 4.0, row_rect.max.y),
+    );
     ui.painter().set(
         bg_idx,
-        egui::Shape::rect_filled(row_rect, CornerRadius::same(4), fill),
+        egui::Shape::rect_filled(bg_rect, style::RADIUS_SM, fill),
     );
 
     let response = ui.interact(
@@ -286,13 +292,15 @@ impl<'a> TextField<'a> {
     }
 }
 
-/// 📋 / ✓ copy-to-clipboard button. Shows the clipboard icon normally; switches
-/// to ✓ for 2 seconds after a successful copy. `id` must be unique per call site.
+/// Copy-to-clipboard button. Shows a nerd-font copy icon normally; switches
+/// to ✓ for 2 seconds after a successful copy. `id` must be unique per call
+/// site. U+F0C5 (nf-fa-copy) is verified present in the bundled JetBrainsMono
+/// Nerd Font — 📋 is NOT, and renders as an ugly fallback glyph.
 pub(crate) fn copy_button(ui: &mut egui::Ui, id: egui::Id, text: &str) -> egui::Response {
     let now = ui.ctx().input(|i| i.time);
     let copied_at: Option<f64> = ui.ctx().memory(|m| m.data.get_temp(id));
     let just_copied = copied_at.map_or(false, |t| now - t < 2.0);
-    let icon = if just_copied { "✓" } else { "📋" };
+    let icon = if just_copied { "✓" } else { "\u{f0c5}" };
     let resp = ui
         .add(egui::Button::new(RichText::new(icon).size(style::TEXT_CAPTION)).frame(false))
         .on_hover_cursor(egui::CursorIcon::PointingHand)

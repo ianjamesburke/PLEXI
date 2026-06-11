@@ -352,18 +352,25 @@ impl PlexiApp {
                     .corner_radius(R6)
                     .inner_margin(egui::Margin::symmetric(16, 10))
                     .show(ui, |ui| {
+                        // All controls share one height; the initial row height
+                        // must match it (egui's horizontal() centers children
+                        // against interact_size.y — if a later child is taller,
+                        // earlier children end up visibly above center).
+                        const CONTROL_H: f32 = 28.0;
+                        ui.spacing_mut().interact_size.y = CONTROL_H;
+                        ui.spacing_mut().item_spacing.x = style::SPACE_MD;
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new("Shell completions aren't set up.")
                                     .size(style::TEXT_CAPTION)
                                     .color(colors.text_dim),
                             );
-                            ui.add_space(style::SPACE_SM);
                             egui::Frame::new()
                                 .fill(colors.bg_darkest)
                                 .corner_radius(R6)
-                                .inner_margin(egui::Margin::symmetric(8, 4))
+                                .inner_margin(egui::Margin::symmetric(10, 6))
                                 .show(ui, |ui| {
+                                    ui.spacing_mut().item_spacing.x = style::SPACE_SM;
                                     ui.horizontal(|ui| {
                                         ui.label(
                                             RichText::new(cmd)
@@ -371,7 +378,6 @@ impl PlexiApp {
                                                 .color(colors.text_primary)
                                                 .monospace(),
                                         );
-                                        ui.add_space(4.0);
                                         crate::ui::widgets::copy_button(
                                             ui,
                                             egui::Id::new("completions_banner_copy"),
@@ -379,7 +385,6 @@ impl PlexiApp {
                                         );
                                     });
                                 });
-                            ui.add_space(style::SPACE_SM);
                             if ui
                                 .add(
                                     egui::Button::new(
@@ -388,7 +393,7 @@ impl PlexiApp {
                                             .color(colors.text_primary),
                                     )
                                     .fill(colors.bg_active)
-                                    .min_size(egui::vec2(50.0, 22.0)),
+                                    .min_size(egui::vec2(56.0, CONTROL_H)),
                                 )
                                 .clicked()
                             {
@@ -403,7 +408,7 @@ impl PlexiApp {
                                             .size(style::TEXT_CAPTION)
                                             .color(colors.text_dim),
                                     )
-                                    .min_size(egui::vec2(60.0, 22.0)),
+                                    .min_size(egui::vec2(72.0, CONTROL_H)),
                                 )
                                 .clicked()
                             {
