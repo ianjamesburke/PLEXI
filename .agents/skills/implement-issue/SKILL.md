@@ -185,8 +185,10 @@ Files NOT to touch:
 CLI rename check:
   - grep -rn "<old-command>" .claude/skills/ if renaming a subcommand
 
-Test that must pass:
-  - cargo test <test_name>
+Cheapest verification before commit:
+  - <specific command, e.g. cargo test --bin plexi <test_name>, cargo build, or diff-only review>
+  - Prefer a targeted test when one already exists or the change adds logic with a clear test seam.
+  - For tiny, one-file UI wiring or copy changes with no practical harness coverage, use `cargo build` or a diff review instead of starting a broad cargo test run.
 
 Invariants to preserve:
   - <constraints from GOTCHAS.md or CLAUDE.md>
@@ -208,7 +210,7 @@ Logging plan (required):
 > **Worktree path rule:** All Read/Edit/Write tool calls must target the WORKTREE absolute path. Never the repo root.
 
 **Scope gate:**
-- ≤ 3 files: implement inline. Write tests first, run `cargo test`.
+- ≤ 3 files: implement inline. Add/update a focused test when the change has host logic, a new branch, a bug fix with a reproducible condition, or an existing nearby test seam. Run the cheapest verification from the spec, not a reflexive broad test.
 - > 3 files or multiple subsystems: dispatch Sonnet subagent.
 
 ### Subagent dispatch
@@ -217,7 +219,7 @@ Prompt must include: full implementation spec, contents of every file it will to
 
 Report back: `DONE` | `DONE_WITH_CONCERNS <details>` | `NEEDS_CONTEXT <what>` | `BLOCKED <reason>`
 
-- `DONE`: review staged diff, run `cargo test`, commit.
+- `DONE`: review staged diff, run the cheapest verification from the spec, commit.
 - `DONE_WITH_CONCERNS`: read concerns first.
 - `NEEDS_CONTEXT`: provide + redispatch.
 - `BLOCKED`: provide context or escalate.

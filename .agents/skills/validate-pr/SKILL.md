@@ -104,22 +104,29 @@ While handling validation feedback, `just install` is banned. Reinstall only wit
 
 ---
 
-## Step 1 — Install Gate
+## Step 1 — Validation Mode Gate
 
-Check if a binary install is needed:
+Check changed files and classify the validation mode:
 ```bash
 gh pr diff $PR_NUMBER --name-only
+gh pr diff $PR_NUMBER
 ```
 
-**Skip install if all changed files are:**
-- Non-Rust: justfile, TOML config, scripts, docs, skills, completion files, markdown
-- Rust with pure code deletion and no behavioral change
-- Rust test-only additions (`#[cfg(test)]` or `tests/` only)
-- CLI output changes verifiable without a running host
+**Default mode: diff review only.** Do not install the PR build just because a Rust file changed. For small or obvious diffs, especially one-file edits, validation is:
+1. Codex review against `alpha`
+2. Testing block whose pass/fail criteria map to the issue checklist
+3. User manual exercise if the issue is visual or interactive
 
-**Never skip install if any changed file is under `apps/` or `apps/dev/`** — Python apps are copied to the profile dir on install, not served from source. Skipping install means the old version runs.
+**Install only when the diff requires a runnable PR build**, such as:
+- Changed files under `apps/` or `apps/dev/` — Python apps are copied to the profile dir on install, not served from source
+- Packaging, bundle, channel, profile-dir, app-copy, or runtime asset changes
+- Behavior cannot be judged from diff and needs the user to launch `plexi-pr-$PR_NUMBER`
+- The issue's Done When explicitly requires validating the installed PR binary
+- Codex review or a targeted implementation check reports a blocker that requires a rebuilt binary to verify
 
-If install not needed → use diff-review testing block (see below). Skip install steps.
+**Do not run cargo tests in validation unless Codex review finds a specific testable risk.** Implementation already owns the cheapest relevant build/test check before commit. Validation owns diff review and user acceptance.
+
+If install is not required → skip Step 2 and use the diff-review testing block.
 
 ---
 
@@ -149,7 +156,7 @@ Wait for completion. The binary is now installed. Move immediately to Step 2b.
 - **Run checks** if any changed file contains: new logic, new branches, new error paths, behavioral changes, new API surface, bug fixes, or anything systemic that could break silently.
 - **Skip checks** if ALL changes are exclusively: color/spacing/font-size constants, help/doc strings, markdown files, config TOML values, label/copy text, or UI layout values that require human eyes to verify anyway. When skipping, set `AI_FINDINGS="skipped — cosmetic/style change, user verifies visually"`.
 
-When in doubt, run. Skipping is only correct when you are confident a human looking at the UI is the only meaningful verification.
+When in doubt, run Codex review. Do not expand to broad cargo tests or binary install from doubt alone.
 
 **If running — rigorous Codex review (gpt-5.5, xhigh reasoning):**
 
@@ -176,7 +183,7 @@ fi
 
 Only surface `AI_FINDINGS` in the testing block. Do not paste the raw `codex review` transcript into chat; it can be thousands of lines of tool output. If you need to inspect raw output, read the temp file narrowly with `tail`, `rg`, or `sed`.
 
-After the PR is installed, mergeable, and the review summary is available, surface the testing block immediately. Do not launch the PR app, browse logs, run broad full-suite tests, or keep investigating unless the install, build, targeted tests, or Codex findings show a real blocker.
+After the optional PR install, mergeable check, and review summary are available, surface the testing block immediately. Do not launch the PR app, browse logs, run broad full-suite tests, or keep investigating unless the install, build, targeted tests, or Codex findings show a real blocker.
 
 ---
 
@@ -410,9 +417,9 @@ Issue re-labeled ready for next attempt
 
 ---
 
-## Diff-Review Testing Block (no install)
+## Diff-Review Testing Block (default)
 
-Still run Step 2b (automated quality checks) even when install is skipped. Then surface:
+Still run Step 2b (automated quality checks) unless the diff is exclusively cosmetic/style. Then surface:
 
 ```
 [TESTING] PR #<n> — <title> (diff review only)
@@ -421,7 +428,7 @@ PR: <pr-url>
 Issue #<issue-number>: <ISSUE_TITLE>
 What this ships: <ISSUE_WHAT — first non-header paragraph from issue body>
 
-No binary install needed for this change.
+No binary install was run; validation is limited to the diff and Codex review.
 
 Codex review (gpt-5.5 xhigh):
 <AI_FINDINGS verbatim>
@@ -444,8 +451,10 @@ plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
 
 ## Rules
 
+- Diff-review validation is the default. `just pr-install` is an exception, not the normal Rust-file path.
 - Step 2b quality checks (Codex diff review) run unless the PR is exclusively cosmetic/style — assess the diff, then decide
 - Cosmetic = colors, spacing, font sizes, help strings, markdown, config values, UI copy — anything where human visual verification is the only meaningful check
+- Do not run cargo tests during validation unless Codex review names a specific risk that needs a specific test command
 - AI_FINDINGS is always shown verbatim — never summarized or filtered
 - Issue brief (ISSUE_TITLE + ISSUE_WHAT) must appear at the top of every testing block
 - `fail` without description: ask for it before taking any action
