@@ -388,6 +388,9 @@ impl PlexiApp {
                 log::info!("focus_history: skipping stale entry window={window_id} tile={tile_id:?} (tile gone)");
                 continue;
             }
+            let ctx_id = self.windows[idx].context_id;
+            self.save_minimap_before_context_navigation(ctx_id);
+
             // Save current focus to future stack before navigating.
             let current_window_id = self.windows[self.active_window].window_id;
             if let Some(current_tile) = self.windows[self.active_window].focused_pane {
@@ -400,11 +403,16 @@ impl PlexiApp {
             self.windows[idx].navigate_to(tile_id);
             self.active_window = idx;
             // Sync sidebar: router active must match the context of the window we navigated to.
-            let ctx_id = self.windows[idx].context_id;
             if let Some(ctx_idx) = self.router.position(|c| c.context_id == ctx_id) {
                 self.router.set_active(ctx_idx);
             }
-            log::info!("focus_history: back — to window={window_id} tile={tile_id:?} ctx={ctx_id} history_len={}", self.pane_focus_history.len());
+            self.context_active_window.insert(ctx_id, window_id);
+            self.restore_minimap_for_context(ctx_id);
+            log::info!(
+                "focus_history: back — to window={window_id} tile={tile_id:?} ctx={ctx_id} minimap_visible={} history_len={}",
+                self.minimap.visible,
+                self.pane_focus_history.len()
+            );
             break;
         }
         self.navigating_history = false;
@@ -429,6 +437,9 @@ impl PlexiApp {
                 log::info!("focus_history: skipping stale entry window={window_id} tile={tile_id:?} (tile gone)");
                 continue;
             }
+            let ctx_id = self.windows[idx].context_id;
+            self.save_minimap_before_context_navigation(ctx_id);
+
             // Save current focus to history stack before navigating.
             let current_window_id = self.windows[self.active_window].window_id;
             if let Some(current_tile) = self.windows[self.active_window].focused_pane {
@@ -441,14 +452,38 @@ impl PlexiApp {
             self.windows[idx].navigate_to(tile_id);
             self.active_window = idx;
             // Sync sidebar: router active must match the context of the window we navigated to.
-            let ctx_id = self.windows[idx].context_id;
             if let Some(ctx_idx) = self.router.position(|c| c.context_id == ctx_id) {
                 self.router.set_active(ctx_idx);
             }
-            log::info!("focus_history: forward — to window={window_id} tile={tile_id:?} ctx={ctx_id} future_len={}", self.pane_focus_future.len());
+            self.context_active_window.insert(ctx_id, window_id);
+            self.restore_minimap_for_context(ctx_id);
+            log::info!(
+                "focus_history: forward — to window={window_id} tile={tile_id:?} ctx={ctx_id} minimap_visible={} future_len={}",
+                self.minimap.visible,
+                self.pane_focus_future.len()
+            );
             break;
         }
         self.navigating_history = false;
+    }
+
+    fn save_minimap_before_context_navigation(&mut self, target_ctx_id: u64) {
+        let old_ctx_id = self.windows[self.active_window].context_id;
+        if old_ctx_id != target_ctx_id {
+            self.context_active_window
+                .insert(old_ctx_id, self.windows[self.active_window].window_id);
+        }
+        self.minimap_visible_per_context
+            .insert(old_ctx_id, self.minimap.visible);
+    }
+
+    fn restore_minimap_for_context(&mut self, ctx_id: u64) {
+        let page_count = self.windows.iter().filter(|w| w.context_id == ctx_id).count();
+        self.minimap.visible = self
+            .minimap_visible_per_context
+            .get(&ctx_id)
+            .copied()
+            .unwrap_or(page_count > 1);
     }
 
     /// Re-read configuration from disk and apply changes that can take
@@ -844,6 +879,7 @@ impl PlexiApp {
             self.windows[idx].clear_zoom();
             log::info!("notify:action: pane_navigate cleared stale zoom on window={idx}");
         }
+        self.save_minimap_before_context_navigation(ctx_id);
         // navigate_to sets focused_pane and activates the ancestor Tabs container.
         self.windows[idx].navigate_to(tile_id);
         self.push_focus_history(old_window_id, old_focus);
@@ -853,8 +889,12 @@ impl PlexiApp {
         // new active context immediately (router.active_idx() drives the highlight).
         if let Some(ctx_idx) = self.router.position(|ctx| ctx.context_id == ctx_id) {
             self.router.set_active(ctx_idx);
+            self.context_active_window
+                .insert(ctx_id, self.windows[idx].window_id);
+            self.restore_minimap_for_context(ctx_id);
             log::info!(
-                "notify:action: pane_navigate active_window {prev}→{idx} ctx_idx={ctx_idx} pane_id={pane_id}"
+                "notify:action: pane_navigate active_window {prev}→{idx} ctx_idx={ctx_idx} pane_id={pane_id} minimap_visible={}",
+                self.minimap.visible
             );
         } else {
             log::warn!(

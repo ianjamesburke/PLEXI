@@ -452,6 +452,124 @@ fn switch_workspace_no_double_push_during_history_navigation() {
     );
 }
 
+/// Regression guard for #2052: focus-history traversal across contexts must
+/// restore the destination context's saved minimap visibility.
+#[test]
+fn focus_history_restores_context_minimap_visibility() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let (tile_a, pane_a_id) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_a);
+    let ctx_a_id = app.router.active().context_id;
+
+    let ctx_b_id = app.next_window_id;
+    app.next_window_id += 1;
+    let win_b_id = app.next_window_id;
+    app.next_window_id += 1;
+    app.router.push(crate::host::context::Context {
+        name: "ctx-b".into(),
+        path: std::path::PathBuf::from("/tmp"),
+        root: None,
+        description: None,
+        context_id: ctx_b_id,
+        parent_id: None,
+        depth: 0,
+        parked: false,
+    });
+    app.windows.push(crate::host::context::Window {
+        name: String::new(),
+        path: std::path::PathBuf::from("/tmp"),
+        tree: egui_tiles::Tree::empty("test_ctx_b_minimap"),
+        panes: std::collections::HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 0,
+        window_id: win_b_id,
+        context_id: ctx_b_id,
+    });
+    app.context_active_window.insert(ctx_b_id, win_b_id);
+    let ctx_b_idx = app.router.len() - 1;
+
+    app.minimap.visible = false;
+    app.minimap_visible_per_context.insert(ctx_a_id, false);
+    app.switch_workspace(ctx_b_idx);
+
+    let pane_b_id = 424242;
+    let tile_b = app.windows[app.active_window].tree.tiles.insert_pane(pane_b_id);
+    app.windows[app.active_window].tree.root = Some(tile_b);
+    app.windows[app.active_window].focused_pane = Some(tile_b);
+    app.minimap.visible = true;
+    app.minimap_visible_per_context.insert(ctx_b_id, true);
+
+    app.step_focus_history_back();
+    assert_eq!(app.router.active().context_id, ctx_a_id);
+    assert!(
+        !app.minimap.visible,
+        "history back must restore context A's hidden minimap state"
+    );
+
+    app.step_focus_history_forward();
+    assert_eq!(app.router.active().context_id, ctx_b_id);
+    assert!(
+        app.minimap.visible,
+        "history forward must restore context B's visible minimap state"
+    );
+
+    app.pane_navigate(pane_a_id);
+    assert_eq!(app.router.active().context_id, ctx_a_id);
+    assert!(
+        !app.minimap.visible,
+        "pane_navigate must restore context A's hidden minimap state"
+    );
+
+    app.pane_navigate(pane_b_id);
+    assert_eq!(app.router.active().context_id, ctx_b_id);
+    assert!(
+        app.minimap.visible,
+        "pane_navigate must restore context B's visible minimap state"
+    );
+}
+
+#[test]
+fn pane_navigate_same_context_records_destination_active_window() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let (tile_a, _) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(tile_a);
+    let ctx_id = app.router.active().context_id;
+    let win_b_id = app.next_window_id;
+    app.next_window_id += 1;
+    let pane_b_id = 525252;
+    let mut tree = egui_tiles::Tree::empty("same_context_second_window");
+    let tile_b = tree.tiles.insert_pane(pane_b_id);
+    tree.root = Some(tile_b);
+    app.windows.push(crate::host::context::Window {
+        name: String::new(),
+        path: std::path::PathBuf::from("/tmp"),
+        tree,
+        panes: std::collections::HashMap::new(),
+        focused_pane: Some(tile_b),
+        zoomed_pane: None,
+        grid_x: 1,
+        grid_y: 0,
+        window_id: win_b_id,
+        context_id: ctx_id,
+    });
+
+    assert!(app.pane_navigate(pane_b_id));
+
+    assert_eq!(
+        app.context_active_window.get(&ctx_id),
+        Some(&win_b_id),
+        "same-context pane_navigate must remember the destination window"
+    );
+}
+
 /// Regression guard for #2054: navigate_to activates ancestor Tabs so focused_pane
 /// is never pointing at a tab-hidden tile, and assert_focus_invariants catches
 /// zoom/focus desync.
