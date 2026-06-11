@@ -1,16 +1,25 @@
 ---
 id: "0004"
 title: "File Explorer: multi-select and safe file operations"
-status: backlog
+status: in-progress
+estimate: "16h"
+started_at: "2026-06-11T07:26:08Z"
 sprint: "s1"
-estimate: 16h
 blocked_by:
   - 2
   - 3
-gh_issue: ["2138"]
-area: ["apps/file-browser", "ui/overlays", "ui/widgets"]
-tags: ["file-explorer", "selection", "file-ops"]
+gh_issue:
+  - "2138"
+area:
+  - "apps/file-browser"
+  - "ui/overlays"
+  - "ui/widgets"
+tags:
+  - "file-explorer"
+  - "selection"
+  - "file-ops"
 ---
+
 
 Add multi-select and common file operations with confirmation UI and logging.
 
