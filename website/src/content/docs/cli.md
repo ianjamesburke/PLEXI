@@ -1,7 +1,7 @@
 ---
 title: CLI Reference
 description: Complete reference for all plexi subcommands and flags.
-verified_version: "0.0.689"
+verified_version: "0.0.699"
 order: 7
 ---
 
@@ -208,6 +208,7 @@ Example: plexi agent report --state working --agent claude-code
 |---|---|---|---|
 | `--state` | string | yes | State to report: working, blocked, or idle |
 | `--agent` | string | no | Agent name (e.g. "claude-code") Default: `unknown`. |
+| `--detail` | string | no | Active tool detail (optional, from hook event JSON) |
 | `--session-id` | string | no | Session ID (optional, from hook event JSON) |
 
 ### `plexi agent status`
@@ -699,6 +700,7 @@ Send a notification to the Plexi UI
 | `--level` | string | no | Severity level: info, warn, or error Default: `info`. |
 | `--choice` | string (repeatable) | no | Add a clickable button to the notification. Format: `key:Label` (returns key when clicked) or `Label:pane_focus:<pane_id>` (switches focus to that pane when clicked). Repeatable |
 | `--host-action` | string (repeatable) | no | Action to perform on the host when a button is clicked. Format: `key:action_type:action_arg`. Repeatable. The host runs this even after the process that sent the notification has exited |
+| `--no-wait` | flag | no | Queue choice buttons without waiting for a selected value |
 | `--timeout` | string | no | How many seconds before the notification disappears (0 = stays until dismissed) Default: `0`. |
 | `--scope` | string | no | Which panes see this notification: window, context, or global (default: global) Default: `global`. |
 
@@ -845,3 +847,4 @@ Example: plexi uninstall
 |---|---|---|---|
 | `--keep-data` | flag | no | Keep your profile directory (~/.plexi/) — your settings, secrets, and app data stay on disk |
 | `--yes` / `-y` | flag | no | Skip the confirmation prompt and proceed immediately (removes data unless --keep-data is set) |
+

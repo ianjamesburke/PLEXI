@@ -457,7 +457,8 @@ case "$EVENT" in
     PreToolUse)                    STATE="working"; DETAIL=$(tool_detail) ;;
     SessionStart|UserPromptSubmit) STATE="working" ;;
     PermissionRequest)             STATE="blocked" ;;
-    PostToolUse|PostToolBatch|Stop|StopFailure|SessionEnd) STATE="idle" ;;
+    PostToolUse|PostToolBatch)       STATE="working" ;;
+    Stop|StopFailure|SessionEnd)     STATE="idle" ;;
     SubagentStop)                  exit 0 ;;
     *)                             exit 0 ;;
 esac

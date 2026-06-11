@@ -79,7 +79,8 @@ case "$EVENT" in
     PreToolUse)                       STATE="working"; DETAIL=$(tool_detail) ;;
     SessionStart|UserPromptSubmit)    STATE="working" ;;
     PermissionRequest)                STATE="blocked" ;;
-    PostToolUse|PostToolBatch|Stop|StopFailure|SessionEnd) STATE="idle" ;;
+    PostToolUse|PostToolBatch)          STATE="working" ;;
+    Stop|StopFailure|SessionEnd)        STATE="idle" ;;
     SubagentStop)                     exit 0 ;;  # skip — avoid false idle
     *)                                exit 0 ;;  # unknown event, skip
 esac
