@@ -115,16 +115,22 @@ pub(crate) fn trust_decision_panel(
                 ui.painter().circle_filled(dot_rect.center(), 4.5, accent);
                 ui.add_space(style::SPACE_SM);
                 ui.vertical(|ui| {
-                    ui.label(
-                        RichText::new(title)
-                            .size(style::TEXT_CAPTION)
-                            .color(colors.text_primary)
-                            .strong(),
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(title)
+                                .size(style::TEXT_CAPTION)
+                                .color(colors.text_primary)
+                                .strong(),
+                        )
+                        .wrap(),
                     );
-                    ui.label(
-                        RichText::new(detail)
-                            .size(style::TEXT_HINT)
-                            .color(colors.text_dim),
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(detail)
+                                .size(style::TEXT_HINT)
+                                .color(colors.text_dim),
+                        )
+                        .wrap(),
                     );
                 });
             });

@@ -614,12 +614,8 @@ impl PlexiApp {
                             match notif.kind {
                                 NotifyKind::Message if notif.required => {
                                     let hints = [
-                                        crate::ui::hints::HintGroup::new(
-                                            &["Enter"],
-                                            "acknowledge",
-                                        ),
-                                        crate::ui::hints::HintGroup::new(
-                                            &["Space"],
+                                        crate::ui::hints::HintGroup::alternatives(
+                                            &[&["Enter"], &["Space"]],
                                             "acknowledge",
                                         ),
                                     ];
@@ -627,12 +623,8 @@ impl PlexiApp {
                                 }
                                 NotifyKind::Message => {
                                     let hints = [
-                                        crate::ui::hints::HintGroup::new(
-                                            &["Enter"],
-                                            "acknowledge",
-                                        ),
-                                        crate::ui::hints::HintGroup::new(
-                                            &["Space"],
+                                        crate::ui::hints::HintGroup::alternatives(
+                                            &[&["Enter"], &["Space"]],
                                             "acknowledge",
                                         ),
                                         crate::ui::hints::HintGroup::new(&["Esc"], "dismiss"),
@@ -641,19 +633,27 @@ impl PlexiApp {
                                 }
                                 NotifyKind::Choice if notif.required => {
                                     let hints = [
-                                        crate::ui::hints::HintGroup::new(&["↑↓"], "navigate"),
-                                        crate::ui::hints::HintGroup::new(&["j/k"], "navigate"),
-                                        crate::ui::hints::HintGroup::new(&["Enter"], "select"),
-                                        crate::ui::hints::HintGroup::new(&["1-9"], "select"),
+                                        crate::ui::hints::HintGroup::alternatives(
+                                            &[&["↑↓"], &["j/k"]],
+                                            "navigate",
+                                        ),
+                                        crate::ui::hints::HintGroup::alternatives(
+                                            &[&["Enter"], &["1-9"]],
+                                            "select",
+                                        ),
                                     ];
                                     crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
                                 }
                                 NotifyKind::Choice => {
                                     let hints = [
-                                        crate::ui::hints::HintGroup::new(&["↑↓"], "navigate"),
-                                        crate::ui::hints::HintGroup::new(&["j/k"], "navigate"),
-                                        crate::ui::hints::HintGroup::new(&["Enter"], "select"),
-                                        crate::ui::hints::HintGroup::new(&["1-9"], "select"),
+                                        crate::ui::hints::HintGroup::alternatives(
+                                            &[&["↑↓"], &["j/k"]],
+                                            "navigate",
+                                        ),
+                                        crate::ui::hints::HintGroup::alternatives(
+                                            &[&["Enter"], &["1-9"]],
+                                            "select",
+                                        ),
                                         crate::ui::hints::HintGroup::new(&["Esc"], "dismiss"),
                                     ];
                                     crate::ui::hints::HintBar::new(&hints).show(ui, &self.colors);
