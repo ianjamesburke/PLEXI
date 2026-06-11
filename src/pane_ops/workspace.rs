@@ -975,8 +975,8 @@ impl PlexiApp {
     /// context's minimap state and restoring the target context's saved state.
     /// Falls back to `visible = (page count > 1)` on first visit.
     ///
-    /// This is the **only** place context navigation should be performed —
-    /// calling `router.set_active` directly bypasses the minimap save/restore.
+    /// This is the standard path for context navigation. Focus-history traversal
+    /// has its own save/restore path because it targets a specific pane tile.
     pub(crate) fn switch_workspace(&mut self, new_ctx_idx: usize) {
         // Record the outgoing focus so Cmd+[ can return here from any context.
         if let Some(w) = self.windows.get(self.active_window) {
