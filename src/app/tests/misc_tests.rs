@@ -1,7 +1,4 @@
 use super::super::*;
-use crate::app::app_trait::AppCommand;
-use crate::host::context::Window;
-use crate::testing::HostHarness;
 
 #[test]
 fn test_spawn_pane_targets_correct_window_with_from_pane_id() {

@@ -953,8 +953,12 @@ impl PlexiApp {
                         } else {
                             (active, self.windows[active].focused_pane)
                         };
-                        launch_result =
-                            self.launch_app_by_path_with_layout(path_str, layout.clone(), ws_root);
+                        launch_result = self.launch_app_by_path_with_layout(
+                            path_str,
+                            layout.clone(),
+                            ws_root,
+                            &args,
+                        );
                         if from_pane_id.is_some() {
                             self.active_window = active;
                             // Undo the temporary focus redirect when launch failed.
@@ -1810,7 +1814,7 @@ impl PlexiApp {
             } else if let Some(ref path_str) = path {
                 let original_focused = self.windows[active].focused_pane;
                 if let Err(e) =
-                    self.launch_app_by_path_with_layout(path_str, layout, ws_root_override)
+                    self.launch_app_by_path_with_layout(path_str, layout, ws_root_override, &args)
                 {
                     log::warn!("spawn-queue: launch_app_by_path_with_layout failed for path={path_str:?}: {e}");
                 }

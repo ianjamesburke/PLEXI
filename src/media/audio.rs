@@ -205,7 +205,12 @@ impl std::fmt::Debug for PlaybackSession {
 }
 
 #[cfg(test)]
-pub fn start_playback(_request: PlaybackRequest) -> Result<PlaybackSession, AudioError> {
+pub fn start_playback(request: PlaybackRequest) -> Result<PlaybackSession, AudioError> {
+    log::info!(
+        "audio(mock): start_playback source={} volume={}",
+        request.source,
+        request.volume
+    );
     Ok(PlaybackSession { _phantom: () })
 }
 
@@ -577,6 +582,12 @@ impl AudioDevice for MockAudioDevice {
         let frames_per = self.frames_per_callback;
         let rate = self.sample_rate;
         let channels = self.channels;
+        log::info!(
+            "audio(mock): capture requested rate={} buffer={}, serving rate={rate} \
+             frames_per_callback={frames_per}",
+            request.requested_sample_rate,
+            request.requested_buffer_size,
+        );
         let stop = Arc::new(Mutex::new(false));
         let stop_t = Arc::clone(&stop);
         let handle = std::thread::Builder::new()

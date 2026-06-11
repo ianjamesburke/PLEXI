@@ -956,6 +956,7 @@ impl PlexiApp {
         app_path: &str,
         layout: Option<String>,
         workspace_root_override: Option<std::path::PathBuf>,
+        args: &[String],
     ) -> Result<(), String> {
         let app_dir = PathBuf::from(app_path);
         log::info!("launch_app_by_path_with_layout: path={app_path}");
@@ -991,7 +992,7 @@ impl PlexiApp {
             installed.manifest.name.clone(),
             &installed.bin_path,
             &cwd,
-            &[],
+            args,
             workspace_root,
             caps,
             keyboard_capture,

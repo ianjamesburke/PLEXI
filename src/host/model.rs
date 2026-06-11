@@ -284,7 +284,6 @@ impl HostModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::command::ShareRatio;
     use crate::host::services::{EventSink, HostServices};
 
     /// Test sink that drops every effect — no audit trail required for unit tests.

@@ -1,0 +1,20 @@
+# Real apps/balls PGAP app: spawns the actual Python process through the
+# production launch path. suite = false — spawns a real child process; run
+# with `just scene tests/scenes/balls.toml`.
+size = [1280.0, 800.0]
+suite = false
+
+[[steps]]
+open_app = "apps/balls"
+
+[[steps]]
+wait_app_frame = { timeout_s = 15.0 }
+
+[[steps]]
+run_steps = 5
+
+[[steps]]
+assert = { pane_count = 1, lifecycle = "running", tree_contains = "balls" }
+
+[[steps]]
+shot = "balls.png"

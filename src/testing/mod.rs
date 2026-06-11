@@ -162,33 +162,6 @@ impl HostHarness {
         self
     }
 
-    /// Inject a pointer click at `pos` on the next frame.
-    pub fn click(&mut self, pos: impl Into<egui::Pos2>) -> &mut Self {
-        let pos = pos.into();
-        self.frame(RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(1280.0, 800.0),
-            )),
-            events: vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed: true,
-                    modifiers: Default::default(),
-                },
-                egui::Event::PointerButton {
-                    pos,
-                    button: egui::PointerButton::Primary,
-                    pressed: false,
-                    modifiers: Default::default(),
-                },
-            ],
-            ..Default::default()
-        })
-    }
-
     /// Inject a key press on the next frame.
     pub fn key(&mut self, key: egui::Key, modifiers: egui::Modifiers) -> &mut Self {
         self.frame(RawInput {
@@ -205,13 +178,6 @@ impl HostHarness {
             }],
             ..Default::default()
         })
-    }
-
-    // ── Context management ────────────────────────────────────────────────────
-
-    /// Add a sub-context under the given parent context in the host model.
-    pub fn add_sub_context(&mut self, context_id: u64, parent_id: u64) {
-        self.app.host.add_context(context_id, Some(parent_id));
     }
 
     // ── State inspection ─────────────────────────────────────────────────────

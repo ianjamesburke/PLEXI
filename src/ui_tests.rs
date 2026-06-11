@@ -29,10 +29,14 @@
 //! `split_focused` and `new_context` spawn real terminal panes. Pass on macOS
 //! local dev; tag `#[ignore]` for headless CI without PTY support.
 
+use std::path::Path;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::app::PlexiApp;
+use crate::host::pane::{AppRuntime, Pane};
+use crate::spatial::tiling::PaneId;
 
 // ─── PlexiUiHarness ──────────────────────────────────────────────────────────
 
@@ -51,6 +55,21 @@ impl PlexiUiHarness {
             let (app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick.clone());
             app
         });
+        Self { inner: harness }
+    }
+
+    /// Create a harness with an explicit surface size. Use for screenshot
+    /// tests — the default kittest surface is too small for pane chrome and
+    /// app content to be legible in the saved PNG.
+    pub fn new_sized(width: f32, height: f32) -> Self {
+        let frame_tick = Arc::new(AtomicU64::new(0));
+        let harness = egui_kittest::Harness::builder()
+            .with_size(egui::Vec2::new(width, height))
+            .build_eframe(move |cc| {
+                let (app, _ipc_tx) =
+                    PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick.clone());
+                app
+            });
         Self { inner: harness }
     }
 
@@ -114,6 +133,139 @@ impl PlexiUiHarness {
     {
         f(self.inner.state())
     }
+
+    // ── Real app / host app / portal drivers ─────────────────────────────────
+
+    /// Launch a real PGAP app process from `app_dir` (a directory containing
+    /// `manifest.toml`) — the same production path as `plexi app open <path>`.
+    /// The child process, IPC threads, and L1 render pipeline are all real.
+    /// Returns the new pane's id.
+    ///
+    /// For `.py` entries running outside an installed bundle, the repo SDK at
+    /// `sdk/python` is exported via `PLEXI_SDK_PATH` so `plexi_sdk` imports
+    /// resolve in the child.
+    ///
+    /// `args` are forwarded in `PlexiEvent::Init` and surface as `ctx.args` —
+    /// pass JSON state for deterministic scenes.
+    pub fn open_app_at(&mut self, app_dir: &Path, args: &[String]) -> Result<PaneId, String> {
+        if std::env::var_os("PLEXI_SDK_PATH").is_none() {
+            let dev_sdk = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("sdk")
+                .join("python");
+            if dev_sdk.join("plexi_sdk").join("__init__.py").is_file() {
+                std::env::set_var("PLEXI_SDK_PATH", &dev_sdk);
+            }
+        }
+        let before: std::collections::HashSet<PaneId> = self.with_app(|app| {
+            app.windows[app.active_window]
+                .panes
+                .keys()
+                .copied()
+                .collect()
+        });
+        let path = app_dir.to_string_lossy().into_owned();
+        self.with_app_mut(|app| {
+            app.launch_app_by_path_with_layout(&path, Some("split_v".to_string()), None, args)
+        })?;
+        self.with_app(|app| {
+            app.windows[app.active_window]
+                .panes
+                .keys()
+                .find(|id| !before.contains(id))
+                .copied()
+                .ok_or_else(|| format!("no new pane appeared after launching {path}"))
+        })
+    }
+
+    /// Step frames until the real app process behind `pane_id` commits its
+    /// first rendered frame (FrameDone observed), sleeping between steps to
+    /// give the child process wall-clock time. Fails with the app's recent
+    /// stderr on crash or timeout.
+    pub fn wait_for_app_frame(&mut self, pane_id: PaneId, timeout: Duration) -> Result<(), String> {
+        enum Probe {
+            Rendered,
+            Waiting,
+            Dead(String),
+        }
+        let start = Instant::now();
+        loop {
+            self.step();
+            let probe = self.with_app(|app| {
+                let win = &app.windows[app.active_window];
+                let Some(Pane::App(app_pane)) = win.panes.get(&pane_id) else {
+                    return Probe::Dead(format!("pane {pane_id} is not an app pane"));
+                };
+                let AppRuntime::Process(p) = &app_pane.runtime else {
+                    return Probe::Dead(format!("pane {pane_id} is not a process app"));
+                };
+                if !p.frame.is_empty() {
+                    return Probe::Rendered;
+                }
+                let state = p.lifecycle.state();
+                if state.is_terminal() {
+                    return Probe::Dead(format!(
+                        "app reached {state:?} before first frame; stderr:\n{}",
+                        Self::drain_stderr(p)
+                    ));
+                }
+                Probe::Waiting
+            });
+            match probe {
+                Probe::Rendered => return Ok(()),
+                Probe::Dead(msg) => return Err(msg),
+                Probe::Waiting => {}
+            }
+            if start.elapsed() > timeout {
+                let stderr = self.with_app(|app| {
+                    let win = &app.windows[app.active_window];
+                    match win.panes.get(&pane_id) {
+                        Some(Pane::App(app_pane)) => match &app_pane.runtime {
+                            AppRuntime::Process(p) => Self::drain_stderr(p),
+                            _ => String::new(),
+                        },
+                        _ => String::new(),
+                    }
+                });
+                return Err(format!(
+                    "timed out after {timeout:?} waiting for first app frame; stderr:\n{stderr}"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn drain_stderr(p: &crate::process_app::ProcessApp) -> String {
+        p.recent_stderr
+            .lock()
+            .map(|q| q.iter().cloned().collect::<Vec<_>>().join("\n"))
+            .unwrap_or_default()
+    }
+
+    /// Open the built-in file browser host app rooted at `cwd`. Uses the
+    /// production `open_builtin_app_pane` path with a `split_v` hint, which
+    /// installs as the root pane when the context is empty (the ⌘O shortcut's
+    /// `overlay` hint requires an existing focused pane).
+    pub fn open_file_browser(&mut self, cwd: std::path::PathBuf) {
+        self.with_app_mut(|app| {
+            let fb: Box<dyn crate::app::app_trait::App> =
+                Box::new(crate::file_browser::FileBrowserApp::new(cwd.clone()));
+            let perms = crate::app::permissions::AppPermissions::builtin();
+            app.open_builtin_app_pane(
+                fb,
+                perms,
+                cwd,
+                Some("cwd".to_string()),
+                Some("split_v"),
+                None,
+            );
+        });
+    }
+
+    /// Convert the focused pane into a subcontext portal — same path as the
+    /// push-pane-to-subcontext host shortcut and CLI command.
+    pub fn push_focused_pane_to_subcontext(&mut self, name: Option<String>) {
+        self.with_app_mut(|app| app.push_pane_to_subcontext(name));
+    }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -122,7 +274,7 @@ impl PlexiUiHarness {
 mod tests {
     use super::*;
     use crate::app::permissions::AppPermissions;
-    use crate::app::{FocusLayer, PlexiApp};
+    use crate::app::FocusLayer;
     use crate::host::pane::{AppPane, AppRuntime, Pane};
     use crate::process_app::ProcessApp;
 
@@ -166,6 +318,9 @@ mod tests {
             .expect("render failed");
         println!("Screenshot saved to /tmp/plexi_init.png");
     }
+
+    // Visual smoke coverage lives in `tests/scenes/*.toml`, executed by
+    // `scenes::tests::scene_suite`. Run one ad hoc with `just scene <file>`.
 
     /// Render after adding a test pane.
     #[test]

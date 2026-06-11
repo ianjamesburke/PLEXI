@@ -1,0 +1,17 @@
+# File explorer with the host sidebar open — full host chrome.
+size = [1280.0, 800.0]
+
+[[steps]]
+open_file_browser = "."
+
+[[steps]]
+sidebar = true
+
+[[steps]]
+run_steps = 3
+
+[[steps]]
+assert = { pane_count = 1, sidebar = true }
+
+[[steps]]
+shot = "file-browser-sidebar.png"

@@ -191,17 +191,9 @@ If you can't reproduce it or instrument it, stop and flag it. A fix written agai
 
 ## Test Infrastructure
 
-Three harnesses are in place — use the right one for the right layer:
-
-- **`HostHarness`** (`src/testing/mod.rs:66`) — drives AppRequest/HostEffect dispatch headlessly. Required for all host logic. No egui context needed.
-- **`PlexiUiHarness`** (`src/ui_tests.rs`) — wraps PlexiApp in `egui_kittest`. Fully headless wgpu Metal rendering on macOS (no display). Use for egui-layer assertions: widget presence, overlay open/close, shortcut hint text.
-- **`#[test]` unit tests** — 784 across `src/`; for pure logic with no egui/host dependency.
-
-**Coverage tooling:** `cargo-llvm-cov` v0.8.7 is installed at `~/.cargo/bin/cargo-llvm-cov`. Run with `cargo llvm-cov --bin plexi`.
+**Full reference: [`docs/TESTING.md`](docs/TESTING.md).** The rule: observable state (pane tree, app UI, pixels) → TOML scene in `tests/scenes/` (`just scene <file>`, runner `src/scenes.rs`); return value or internal invariant → Rust test (`HostHarness` in `src/testing/mod.rs` for host logic, plain `#[test]` for pure logic). `PlexiUiHarness` (`src/ui_tests.rs`) is the headless engine under scenes — wgpu Metal, no display, drives real PGAP app processes. The `/testing` skill owns pre-push evidence.
 
 **In progress (epic #2162):** wiring `cargo test --bin plexi` and `cargo llvm-cov` into the ship cycle so validate-pr can skip binary install for PRs with full coverage. Not yet active — for now, always run manually.
-
-**PTY tests** require a real terminal; tag `#[ignore = "requires-pty"]` so they can be excluded from CI when added.
 
 ## Implementation Discipline (no half-refactors)
 
