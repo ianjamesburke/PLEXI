@@ -189,11 +189,27 @@ Before making any progress on a bug or issue, establish visibility of the proble
 
 If you can't reproduce it or instrument it, stop and flag it. A fix written against an unconfirmed symptom is a guess. This check belongs at the triage step — before the issue is labeled `in progress` and before any worktree is created.
 
+## Test Infrastructure
+
+Three harnesses are in place — use the right one for the right layer:
+
+- **`HostHarness`** (`src/testing/mod.rs:66`) — drives AppRequest/HostEffect dispatch headlessly. Required for all host logic. No egui context needed.
+- **`PlexiUiHarness`** (`src/ui_tests.rs`) — wraps PlexiApp in `egui_kittest`. Fully headless wgpu Metal rendering on macOS (no display). Use for egui-layer assertions: widget presence, overlay open/close, shortcut hint text.
+- **`#[test]` unit tests** — 784 across `src/`; for pure logic with no egui/host dependency.
+
+**Coverage tooling:** `cargo-llvm-cov` v0.8.7 is installed at `~/.cargo/bin/cargo-llvm-cov`. Run with `cargo llvm-cov --bin plexi`.
+
+**In progress (epic #2162):** wiring `cargo test --bin plexi` and `cargo llvm-cov` into the ship cycle so validate-pr can skip binary install for PRs with full coverage. Not yet active — for now, always run manually.
+
+**PTY tests** require a real terminal; tag `#[ignore = "requires-pty"]` so they can be excluded from CI when added.
+
 ## Implementation Discipline (no half-refactors)
 
 **Define done by the test, not the code.** Before writing any new module or refactoring an existing one, write the test that must pass when the work is complete. A PR is done when `cargo test --bin plexi` is green — not when the code looks right.
 
 **Test-first for host logic.** Any new `AppRequest` or `HostEffect` gets a `HostHarness` test written before the implementation. The test failing is the starting state; making it pass is the work. This prevents stubs: a stub that makes the test pass is an implementation.
+
+**New host UI component or overlay** → add a `PlexiUiHarness` smoke test in `src/ui_tests.rs` (open → step → assert visible).
 
 **No partial merges.** A PR that adds a new capability, module, or feature must be complete end-to-end. If it's too large to complete in one pass, scope it down — don't merge half of it. Split at natural seams where each piece is independently testable and independently useful.
 
