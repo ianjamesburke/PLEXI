@@ -1,6 +1,11 @@
 """Integration tests for AppHarness — headless Python app subprocess runner."""
 
+import json
+import os
+import subprocess
+import sys
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -67,3 +72,69 @@ def test_appharness_context_manager_closes_cleanly(counter_app: Path) -> None:
         proc = h._proc
     # After __exit__, process should be terminated
     assert proc.poll() is not None, "Subprocess should have exited after close()"
+
+
+def test_appharness_reports_sdk_fatal_errors(tmp_path: Path) -> None:
+    """Hook contract mismatches surface as fatal_error instead of silent EOF."""
+    bad_app = tmp_path / "bad_app.py"
+    bad_app.write_text(textwrap.dedent("""
+        from plexi_sdk import App
+
+        class BadApp(App):
+            def on_init(self, stale_ctx):
+                pass
+
+        BadApp().run()
+    """).lstrip())
+
+    repo_root = Path(__file__).resolve().parents[3]
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(repo_root / "sdk/python")
+    proc = subprocess.Popen(
+        [sys.executable, str(bad_app)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    proc.stdin.write(json.dumps({
+        "type": "init",
+        "protocol": "pgap/3",
+        "app_id": "fatal-test",
+        "workspace_root": "/tmp",
+        "capabilities": [],
+        "feature_flags": [],
+    }) + "\n")
+    proc.stdin.flush()
+
+    deadline = time.monotonic() + 2.0
+    seen = []
+    try:
+        while time.monotonic() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            ev = json.loads(line)
+            seen.append(ev)
+            if ev.get("type") == "fatal_error":
+                assert "BadApp.on_init" in ev.get("traceback", "")
+                return
+    finally:
+        proc.kill()
+    pytest.fail(f"expected fatal_error, saw {seen}")
+
+
+@pytest.mark.parametrize("relative_path", [
+    "apps/balls/balls.py",
+    "apps/snake/snake.py",
+    "apps/tetris/tetris.py",
+])
+def test_core_game_apps_boot_and_render(relative_path: str) -> None:
+    """Core game apps must satisfy Init -> Ready -> Render -> FrameDone."""
+    repo_root = Path(__file__).resolve().parents[3]
+    with AppHarness(repo_root / relative_path, timeout=2.0) as h:
+        cmds = h.run(1)
+    assert cmds, f"{relative_path} should emit draw/control commands for first frame"

@@ -835,6 +835,25 @@ class Emitter:
         16 ms ≈ 60 fps.  32 ms ≈ 30 fps."""
         _emit({"type": "schedule_render", "after_ms": after_ms})
 
+    def set_scheduler_mode(self, mode: str, fps: int | None = None) -> None:
+        """Declare how the host should schedule recurring renders.
+
+        Modes:
+          - ``"idle"``: no recurring renders
+          - ``"scheduled"``: app emits schedule_render manually
+          - ``"continuous"``: host renders at ``fps`` after each FrameDone
+        """
+        if mode not in ("idle", "scheduled", "continuous"):
+            raise ValueError("scheduler mode must be idle, scheduled, or continuous")
+        payload: dict[str, Any] = {"type": "set_scheduler_mode", "mode": mode}
+        if fps is not None:
+            payload["fps"] = int(fps)
+        _emit(payload)
+
+    def continuous(self, fps: int = 60) -> None:
+        """Render continuously at ``fps``. Intended for animations/games."""
+        self.set_scheduler_mode("continuous", fps=fps)
+
     # Runs
     def run_get(self, intent: str, payload: Any = None) -> str:
         run_id = str(uuid.uuid4())

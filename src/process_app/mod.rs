@@ -6,21 +6,32 @@
 //! would — the rest of Plexi doesn't know or care that it's an external process.
 //!
 //! Internal layout:
-//! - `mod.rs`      — struct, lifecycle (launch/drop), App trait impl
-//! - `routing.rs`  — `route_command()`: dispatch DrawCommands to subsystems
-//! - `render.rs`   — `render_draw_commands()`: paint committed frames into egui
-//! - `prompts.rs`  — `show_prompt_modal()`: capability/secret grant UI
+//! - `mod.rs`          — struct, launch/drop, App trait impl
+//! - `transport.rs`    — stdin/stdout/stderr/reaper threads
+//! - `runtime_state.rs` — PGAP render transaction state machine
+//! - `scheduler.rs`    — host repaint policy
+//! - `routing.rs`      — `route_command()`: dispatch DrawCommands to subsystems
+//! - `render.rs`       — `render_draw_commands()`: paint committed frames into egui
+//! - `prompts.rs`      — `show_prompt_modal()`: capability/secret grant UI
 
+mod host_bridge;
 pub(crate) mod image_cache;
 mod lifecycle;
 pub(crate) mod mcp_server;
 pub(crate) mod prompts;
 pub(crate) mod render;
+mod render_diag;
 mod render_session;
 mod routing;
+mod runtime_state;
+mod scheduler;
+mod transport;
 
 pub(crate) use lifecycle::{LifecycleState, LifecycleTracker};
+use render_diag::RenderDiagnostics;
 use render_session::RenderSession;
+use runtime_state::{FrameDoneOutcome, PgapRuntime, RenderPoll};
+pub(crate) use transport::StdinItem;
 
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
 use crate::app::permissions::{AppPermissions, Capability};
@@ -36,15 +47,13 @@ use crate::media::midi::{MidiDevice, MidiInputSession, MidiOutputHandle};
 use crate::media::video::{VideoDecoder, VideoHandle};
 use crate::plexi_ai::broker::{AiBroker, LiveAiBroker};
 use std::collections::{HashMap, VecDeque};
-use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdout, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc::{self, Receiver, Sender, TryRecvError},
     Arc, Mutex,
 };
-use std::thread;
 
 // ---------------------------------------------------------------------------
 // PendingPrompt — capability / secret prompts queued for modal presentation
@@ -74,22 +83,6 @@ pub(crate) struct DeferredAiQuery {
     pub(crate) system: String,
     pub(crate) messages: Vec<AiMessage>,
     pub(crate) tools: Vec<AiTool>,
-}
-
-// ---------------------------------------------------------------------------
-// StdinItem — typed messages for the stdin-writer channel
-// ---------------------------------------------------------------------------
-
-/// Messages sent from the GUI thread to the stdin-writer background thread.
-///
-/// `Render` events are coalesced: only the latest matters, so we store it in
-/// `render_slot` and send a single `FlushRender` token. Non-render events are
-/// queued in order and never dropped.
-pub(crate) enum StdinItem {
-    /// A non-render event serialised as a newline-terminated JSON string.
-    Event(String),
-    /// Consume and write the latest render payload from the render slot.
-    FlushRender,
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +142,13 @@ pub struct ProcessApp {
     pub(crate) pending_commands: Vec<AppCommand>,
     last_size: egui::Vec2,
     initialized: bool,
-    frame_counter: u64,
+    runtime: PgapRuntime,
+    scheduler_mode: scheduler::AppSchedulerMode,
+    /// Absolute frame clock — `Some` iff `scheduler_mode` is `Continuous`.
+    animation_clock: Option<scheduler::AnimationClock>,
+    render_diag: RenderDiagnostics,
+    pending_async_completions: usize,
+    idle_render_poll_logged: bool,
     sdk: Option<String>,
     features_used: Vec<String>,
     /// workspace_root sent in Init — scopes all SecretGet calls.
@@ -306,6 +305,10 @@ pub struct ProcessApp {
     /// Key = call_id, value = channel to the blocked HTTP handler thread.
     pub(crate) mcp_pending:
         std::collections::HashMap<String, std::sync::mpsc::SyncSender<mcp_server::McpToolResponse>>,
+    /// Last egui context seen by `ui()`. Background stdout/stderr/reaper
+    /// threads use this to wake the host when they enqueue work or flip
+    /// lifecycle state.
+    repaint_ctx: Arc<Mutex<Option<egui::Context>>>,
     /// Set to true when the app emits ControlCommand::CloseSelf. The host
     /// checks wants_close() each frame and calls close_pane gracefully,
     /// avoiding the crash-restart path that sys.exit() would trigger.
@@ -518,7 +521,7 @@ impl ProcessApp {
         let mut child = cmd.spawn()?;
 
         let stdin = child.stdin.take().expect("stdin piped");
-        let stdout: ChildStdout = child.stdout.take().expect("stdout piped");
+        let stdout = child.stdout.take().expect("stdout piped");
         let stderr = child.stderr.take().expect("stderr piped");
 
         // Stdin writer thread — owns the pipe and blocks on write_all.
@@ -530,145 +533,52 @@ impl ProcessApp {
         let render_slot: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
         let render_in_queue: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
         let (event_tx, event_rx) = mpsc::channel::<StdinItem>();
-        let stdin_type_id = type_id.clone();
-        {
-            use std::io::Write as _;
-            let render_slot_writer = Arc::clone(&render_slot);
-            let render_in_queue_writer = Arc::clone(&render_in_queue);
-            thread::Builder::new()
-                .name(format!("app-stdin-{stdin_type_id}"))
-                .spawn(move || {
-                let mut stdin = stdin;
-                for item in event_rx {
-                    match item {
-                        StdinItem::Event(line) => {
-                            if stdin.write_all(line.as_bytes()).is_err() {
-                                log::debug!("ProcessApp[{stdin_type_id}]: stdin write failed — writer thread exiting");
-                                break;
-                            }
-                        }
-                        StdinItem::FlushRender => {
-                            // Clear the flag *before* reading the slot so that
-                            // a concurrent send_event can enqueue a new token
-                            // if a fresh Render arrives while we're writing.
-                            render_in_queue_writer.store(false, Ordering::Relaxed);
-                            let line = render_slot_writer.lock().unwrap().take();
-                            if let Some(line) = line {
-                                if stdin.write_all(line.as_bytes()).is_err() {
-                                    log::debug!("ProcessApp[{stdin_type_id}]: stdin write failed — writer thread exiting");
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }).expect("failed to spawn app-stdin thread");
-        }
+        transport::spawn_stdin_writer(
+            type_id.clone(),
+            stdin,
+            event_rx,
+            Arc::clone(&render_slot),
+            Arc::clone(&render_in_queue),
+        );
 
         // Background thread: forward subprocess stderr to Plexi's logger,
         // capture into the recent-stderr ring buffer used by the in-pane
         // error fallback, AND scan each line for `Traceback` / `PANIC` /
         // `panicked at` so the lifecycle pill flips to Crashed without
         // waiting for `try_wait` to observe the eventual exit.
-        let stderr_type_id = type_id.clone();
         let recent_stderr_capture = Arc::new(Mutex::new(VecDeque::<String>::new()));
-        let recent_stderr_thread = Arc::clone(&recent_stderr_capture);
         let lifecycle_tracker = Arc::new(LifecycleTracker::new());
-        let lifecycle_stderr = Arc::clone(&lifecycle_tracker);
-        thread::Builder::new()
-            .name(format!("app-stderr-{stderr_type_id}"))
-            .spawn(move || {
-                const STDERR_RING_CAP: usize = 32;
-                let reader = std::io::BufReader::new(stderr);
-                for line in std::io::BufRead::lines(reader) {
-                    match line {
-                        Ok(l) if !l.trim().is_empty() => {
-                            let target = format!("app::{stderr_type_id}");
-                            log::warn!(target: &target, "stderr: {l}");
-                            lifecycle_stderr.observe_stderr_line(&l);
-                            if let Ok(mut buf) = recent_stderr_thread.lock() {
-                                if buf.len() >= STDERR_RING_CAP {
-                                    buf.pop_front();
-                                }
-                                buf.push_back(l);
-                            }
-                        }
-                        Err(_) => break,
-                        _ => {}
-                    }
-                }
-            })
-            .expect("failed to spawn app-stderr thread");
+        let repaint_ctx = Arc::new(Mutex::new(None));
+        transport::spawn_stderr_reader(
+            type_id.clone(),
+            stderr,
+            Arc::clone(&recent_stderr_capture),
+            Arc::clone(&lifecycle_tracker),
+            Arc::clone(&repaint_ctx),
+        );
 
         // Background thread: read draw commands line-by-line and forward via channel.
         // Also feeds the lifecycle tracker:
         //   - Malformed JSON → on_parse_error() (counts toward ProtocolError).
         //   - Stdout EOF / read error → on_stdout_closed() (sticky Crashed).
         let (draw_tx, draw_rx) = mpsc::channel::<DrawCommand>();
-        let lifecycle_stdout = Arc::clone(&lifecycle_tracker);
-        let stdout_type_id = type_id.clone();
-        thread::Builder::new()
-            .name(format!("app-stdout-{stdout_type_id}"))
-            .spawn(move || {
-            let reader = BufReader::new(stdout);
-            for line in reader.lines() {
-                match line {
-                    Ok(l) if !l.trim().is_empty() => {
-                        match serde_json::from_str::<DrawCommand>(&l) {
-                            Ok(cmd) => {
-                                if draw_tx.send(cmd).is_err() {
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                log::warn!(
-                                    "ProcessApp[{stdout_type_id}]: malformed draw command: {e} — line: {l}"
-                                );
-                                if lifecycle_stdout.on_parse_error() {
-                                    log::error!(
-                                        "ProcessApp[{stdout_type_id}]: protocol-error threshold reached — flipping pane state"
-                                    );
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        log::debug!("ProcessApp[{stdout_type_id}] stdout closed: {e}");
-                        lifecycle_stdout.on_stdout_closed();
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            // Natural EOF (loop exit without an Err) also signals the
-            // subprocess closed its stdout — flip Crashed unless already
-            // terminal.
-            lifecycle_stdout.on_stdout_closed();
-        }).expect("failed to spawn app-stdout thread");
+        transport::spawn_stdout_reader(
+            type_id.clone(),
+            stdout,
+            draw_tx,
+            Arc::clone(&lifecycle_tracker),
+            Arc::clone(&repaint_ctx),
+        );
 
         // Background reaper: blocks on waitpid so the UI thread never polls try_wait.
         // Fires on_process_exited() exactly once when the child exits — replaces the
         // per-frame try_wait() poll that was causing 600 syscalls/sec with 10 panes open.
-        let reaper_pid = child.id();
-        let lifecycle_reaper = Arc::clone(&lifecycle_tracker);
-        let reaper_type_id = type_id.clone();
-        thread::Builder::new()
-            .name(format!("app-reaper-{reaper_type_id}"))
-            .spawn(move || {
-                let mut status = 0i32;
-                // SAFETY: reaper_pid is a valid child PID obtained from Command::spawn().
-                // We block until the child exits. The shutdown path's child.wait() may
-                // race and get ECHILD if we win — that's harmless since shutdown discards
-                // the result with `let _ = child.wait()`.
-                unsafe {
-                    libc::waitpid(reaper_pid as libc::pid_t, &mut status, 0);
-                }
-                log::info!(
-                    "ProcessApp[{reaper_type_id}]: child exited — reaper signaling lifecycle"
-                );
-                lifecycle_reaper.on_process_exited();
-            })
-            .expect("failed to spawn app-reaper thread");
+        transport::spawn_reaper(
+            type_id.clone(),
+            child.id(),
+            Arc::clone(&lifecycle_tracker),
+            Arc::clone(&repaint_ctx),
+        );
 
         let config_dir = crate::config::config_dir();
         let store = crate::app::permissions::PermissionStore::load_or_default(&config_dir);
@@ -705,7 +615,12 @@ impl ProcessApp {
             pending_commands: Vec::new(),
             last_size: egui::Vec2::ZERO,
             initialized: false,
-            frame_counter: 0,
+            runtime: PgapRuntime::spawned_with_initial_render(),
+            scheduler_mode: scheduler::AppSchedulerMode::default(),
+            animation_clock: None,
+            render_diag: RenderDiagnostics::new(),
+            pending_async_completions: 0,
+            idle_render_poll_logged: false,
             sdk: None,
             features_used: Vec::new(),
             workspace_root,
@@ -764,6 +679,7 @@ impl ProcessApp {
             active_stream_threads: Arc::new(AtomicUsize::new(0)),
             mcp_server: mcp_server_handle,
             mcp_pending: std::collections::HashMap::new(),
+            repaint_ctx,
             wants_close_self: false,
             click_awaiting_frame: false,
             launch_args: args.to_vec(),
@@ -860,7 +776,12 @@ impl ProcessApp {
             pending_commands: Vec::new(),
             last_size: egui::Vec2::ZERO,
             initialized: true,
-            frame_counter: 0,
+            runtime: PgapRuntime::ready_for_test_with_initial_render(),
+            scheduler_mode: scheduler::AppSchedulerMode::default(),
+            animation_clock: None,
+            render_diag: RenderDiagnostics::new(),
+            pending_async_completions: 0,
+            idle_render_poll_logged: false,
             sdk: None,
             features_used: Vec::new(),
             workspace_root: std::env::temp_dir(),
@@ -916,6 +837,7 @@ impl ProcessApp {
             file_picker_rx,
             mcp_server: None,
             mcp_pending: std::collections::HashMap::new(),
+            repaint_ctx: Arc::new(Mutex::new(None)),
             wants_close_self: false,
             click_awaiting_frame: false,
             launch_args: Vec::new(),
@@ -1018,6 +940,101 @@ impl ProcessApp {
         }
     }
 
+    fn mark_render_needed(&mut self, reason: &'static str) {
+        if self.runtime.request_render_now() {
+            log::info!("ProcessApp[{}]: render requested ({reason})", self.type_id);
+        }
+    }
+
+    fn mark_render_needed_after(&mut self, reason: &'static str, delay: std::time::Duration) {
+        if self.runtime.request_render_after(delay) {
+            if reason != "schedule_render" {
+                log::info!(
+                    "ProcessApp[{}]: render requested ({reason}, after {}ms)",
+                    self.type_id,
+                    delay.as_millis()
+                );
+            }
+        }
+    }
+
+    fn send_render_if_needed(&mut self, size: egui::Vec2) -> Option<u64> {
+        let now = std::time::Instant::now();
+        match self.runtime.poll_render(now) {
+            RenderPoll::Send { frame_id } => {
+                self.send_event(&PlexiEvent::Render {
+                    frame_id,
+                    rect: crate::app_protocol::Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: size.x,
+                        h: size.y,
+                    },
+                });
+                self.render_diag.record_render_sent(
+                    frame_id,
+                    self.scheduler_mode.next_frame_delay(),
+                    now,
+                );
+                if let Some(clock) = self.animation_clock.as_mut() {
+                    self.runtime
+                        .request_render_at(clock.deadline_after_send(now));
+                }
+                Some(frame_id)
+            }
+            RenderPoll::Waiting { .. }
+            | RenderPoll::InFlight
+            | RenderPoll::NotReady
+            | RenderPoll::Idle
+            | RenderPoll::Terminal => None,
+        }
+    }
+
+    fn arm_async_completion_wake(&mut self, reason: &'static str) {
+        self.pending_async_completions = self.pending_async_completions.saturating_add(1);
+        log::info!(
+            "ProcessApp[{}]: async wake armed ({reason}); pending={}",
+            self.type_id,
+            self.pending_async_completions
+        );
+    }
+
+    fn complete_async_wake(&mut self) {
+        self.pending_async_completions = self.pending_async_completions.saturating_sub(1);
+    }
+
+    fn drain_async_events(&mut self) {
+        while let Ok(event) = self.http_rx.try_recv() {
+            match &event {
+                PlexiEvent::Timer { timer_id } => {
+                    self.pending_timers.remove(timer_id);
+                }
+                PlexiEvent::AiStreamChunk { .. } | PlexiEvent::StreamChunk { .. } => {}
+                PlexiEvent::StreamEnd { .. } => self.complete_async_wake(),
+                _ => self.complete_async_wake(),
+            }
+            self.outbound_events.push_back(event);
+            self.mark_render_needed("async_completion");
+        }
+        while let Ok(event) = self.file_picker_rx.try_recv() {
+            self.complete_async_wake();
+            self.outbound_events.push_back(event);
+            self.mark_render_needed("async_completion");
+        }
+    }
+
+    fn needs_async_wake_poll(&self) -> bool {
+        self.pending_async_completions > 0
+            || !self.pending_timers.is_empty()
+            || self.active_stream_threads.load(Ordering::Relaxed) > 0
+            || self.mcp_server.is_some()
+            || self.image_cache.has_pending()
+    }
+
+    pub(crate) fn needs_headless_wake_poll(&self) -> bool {
+        self.runtime.is_rendering() || self.needs_async_wake_poll()
+    }
+
     /// Drain the MCP call queue and forward each request to the app as a
     /// `PlexiEvent::McpToolCall`. Called each frame (both `ui()` and
     /// `background_tick()`) so tool calls are processed even for background apps.
@@ -1052,8 +1069,13 @@ impl ProcessApp {
     }
 
     fn flush_outbound_events(&mut self) {
+        let mut flushed = false;
         while let Some(event) = self.outbound_events.pop_front() {
             self.send_event(&event);
+            flushed = true;
+        }
+        if flushed {
+            self.mark_render_needed("outbound_event");
         }
     }
 
@@ -1067,9 +1089,10 @@ impl ProcessApp {
                 Ok(cmd) => cmds.push(cmd),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
+                    let reason = self.runtime.mark_stdout_closed();
                     log::error!(
-                        "ProcessApp[{}]: subprocess stdout closed — process crashed or exited",
-                        self.type_id
+                        "ProcessApp[{}]: subprocess stdout closed — {reason:?}",
+                        self.type_id,
                     );
                     self.draw_rx = None;
                     break;
@@ -1077,6 +1100,60 @@ impl ProcessApp {
             }
         }
         cmds
+    }
+
+    fn record_fatal_error(&mut self, message: String, traceback: String) {
+        log::error!(
+            "ProcessApp[{}]: fatal SDK error: {message}\n{traceback}",
+            self.type_id
+        );
+        self.runtime.mark_fatal_error();
+        self.lifecycle.on_process_exited();
+        if let Ok(mut buf) = self.recent_stderr.lock() {
+            const STDERR_RING_CAP: usize = 32;
+            if buf.len() >= STDERR_RING_CAP {
+                buf.pop_front();
+            }
+            buf.push_back(format!("fatal_error: {message}"));
+            for line in traceback.lines().take(STDERR_RING_CAP) {
+                if buf.len() >= STDERR_RING_CAP {
+                    buf.pop_front();
+                }
+                buf.push_back(line.to_string());
+            }
+        }
+    }
+
+    fn set_scheduler_mode(&mut self, mode: &str, fps: Option<u32>) {
+        match scheduler::AppSchedulerMode::from_wire(mode, fps) {
+            Ok(parsed) => {
+                self.scheduler_mode = parsed;
+                self.animation_clock = match parsed {
+                    scheduler::AppSchedulerMode::Continuous { interval } => {
+                        // Anchor the clock and kick the cadence — switching to
+                        // continuous while Idle must start animating without
+                        // waiting for an unrelated render request.
+                        self.mark_render_needed("continuous_mode");
+                        Some(scheduler::AnimationClock::new(
+                            interval,
+                            std::time::Instant::now(),
+                        ))
+                    }
+                    scheduler::AppSchedulerMode::Idle | scheduler::AppSchedulerMode::Scheduled => {
+                        None
+                    }
+                };
+                log::info!(
+                    "ProcessApp[{}]: scheduler mode set to {parsed:?}",
+                    self.type_id
+                );
+            }
+            Err(e) => {
+                log::error!("ProcessApp[{}]: {e}", self.type_id);
+                self.runtime.mark_protocol_error(e);
+                self.lifecycle.on_parse_error();
+            }
+        }
     }
 
     /// Draw the lifecycle pill in the top-right corner of `pane_rect` and
@@ -1214,12 +1291,7 @@ impl ProcessApp {
     ///
     /// Visual draw commands are discarded — there is no pane to render into.
     pub(crate) fn background_tick(&mut self) {
-        while let Ok(event) = self.http_rx.try_recv() {
-            self.outbound_events.push_back(event);
-        }
-        while let Ok(event) = self.file_picker_rx.try_recv() {
-            self.outbound_events.push_back(event);
-        }
+        self.drain_async_events();
         self.poll_mcp_calls();
         self.flush_outbound_events();
         for cmd in self.drain_draw_commands() {
@@ -1234,126 +1306,34 @@ impl ProcessApp {
                         _ => log::info!(target: &target, "{message}"),
                     }
                 }
-                DrawCommand::Control(_) => {} // Ready/FrameDone/etc. irrelevant without a pane
+                DrawCommand::Control(ControlCommand::FatalError { message, traceback }) => {
+                    self.record_fatal_error(message, traceback);
+                }
+                DrawCommand::Control(ControlCommand::FrameDone { frame_id }) => {
+                    match self.runtime.complete_frame(frame_id) {
+                        FrameDoneOutcome::Matched => {}
+                        FrameDoneOutcome::Unexpected { expected, got } => {
+                            log::error!(
+                                "ProcessApp[{}]: background FrameDone frame_id={got} expected={expected:?}",
+                                self.type_id,
+                            );
+                            self.lifecycle.on_parse_error();
+                        }
+                    }
+                    self.pending_frame.clear();
+                    self.click_awaiting_frame = false;
+                    self.lifecycle.on_frame_done();
+                }
+                DrawCommand::Control(ControlCommand::Ready { sdk, features_used }) => {
+                    self.sdk = Some(sdk);
+                    self.features_used = features_used;
+                    self.runtime.mark_ready();
+                }
+                DrawCommand::Control(ControlCommand::SetSchedulerMode { mode, fps }) => {
+                    self.set_scheduler_mode(&mode, fps);
+                }
+                DrawCommand::Control(_) => {} // Ready/etc. irrelevant without a pane
                 DrawCommand::Render(_) => {}  // No pane to render into
-            }
-        }
-    }
-
-    /// Dispatch a `ControlCommand` that arrived during `ui()`. Called inline
-    /// from the `ui()` dispatch loop; has access to `egui::Ui` for operations
-    /// that require UI-thread context (font metrics, clipboard, repaint).
-    fn handle_control_command(&mut self, ui: &mut egui::Ui, frame_id: u64, cmd: ControlCommand) {
-        match cmd {
-            ControlCommand::Ready { sdk, features_used } => {
-                self.sdk = Some(sdk);
-                self.features_used = features_used;
-            }
-            ControlCommand::FrameDone { frame_id: done_id } => {
-                if done_id != frame_id {
-                    log::debug!(
-                        "ProcessApp[{}]: FrameDone frame_id={done_id} expected={frame_id}",
-                        self.type_id
-                    );
-                }
-                std::mem::swap(&mut self.frame, &mut self.pending_frame);
-                self.pending_frame.clear();
-                self.click_awaiting_frame = false;
-                // Lifecycle: a frame just landed → Running (unless terminal).
-                self.lifecycle.on_frame_done();
-            }
-            ControlCommand::Log { level, message } => {
-                let target = format!("app::{}", self.type_id);
-                match level.as_str() {
-                    "error" => log::error!(target: &target, "{message}"),
-                    "warn" => log::warn!(target: &target, "{message}"),
-                    "debug" => log::debug!(target: &target, "{message}"),
-                    _ => log::info!(target: &target, "{message}"),
-                }
-            }
-            ControlCommand::ScheduleRender { after_ms } => {
-                crate::platform::frame_diag::note(
-                    crate::platform::frame_diag::RepaintCause::AppScheduleRender,
-                );
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(after_ms as u64));
-            }
-            // CopyToClipboard is handled here (not in routing.rs) because
-            // `egui::Context::copy_text` is a UI-context method. The host
-            // owns the clipboard backend selection (pasteboard / X11 /
-            // Wayland / Win32) — we just hand egui the string.
-            ControlCommand::CopyToClipboard { text } => {
-                let preview = text.chars().take(80).collect::<String>();
-                log::info!(target: &format!("app::{}", self.type_id), "copy_to_clipboard: {} chars: {:?}", text.len(), preview);
-                ui.ctx().copy_text(text);
-            }
-            // MeasureText is handled here (not in routing.rs) because it
-            // needs `ui` to access egui font metrics on the UI thread.
-            ControlCommand::MeasureText {
-                request_id,
-                text,
-                font_size,
-                monospace,
-            } => {
-                let family = if monospace {
-                    egui::FontFamily::Monospace
-                } else {
-                    egui::FontFamily::Proportional
-                };
-                let font_id = egui::FontId::new(font_size, family);
-                let galley = ui.fonts(|f| f.layout_no_wrap(text, font_id, egui::Color32::WHITE));
-                let sz = galley.size();
-                self.outbound_events
-                    .push_back(crate::app_protocol::PlexiEvent::TextMeasured {
-                        request_id,
-                        width: sz.x,
-                        height: sz.y,
-                    });
-            }
-            ControlCommand::MeasureTextWrapped {
-                request_id,
-                text,
-                font_size,
-                max_width,
-                max_lines,
-            } => {
-                let font_id = egui::FontId::proportional(font_size);
-                let galley =
-                    ui.fonts(|f| f.layout(text.clone(), font_id, egui::Color32::WHITE, max_width));
-                let n_rows = max_lines
-                    .map(|n| (n as usize).min(galley.rows.len()))
-                    .unwrap_or(galley.rows.len());
-                let height = if n_rows == 0 {
-                    0.0
-                } else {
-                    galley.rows[n_rows - 1].rect.max.y
-                };
-                log::debug!(
-                    "ProcessApp[{}]: MeasureTextWrapped request_id={} max_width={:.1} max_lines={:?} rows={} height={:.1}",
-                    self.type_id, request_id, max_width, max_lines, n_rows, height
-                );
-                self.outbound_events.push_back(
-                    crate::app_protocol::PlexiEvent::TextWrappedMeasured {
-                        request_id: request_id.clone(),
-                        height,
-                    },
-                );
-            }
-            ControlCommand::SetMinSize { width, height } => {
-                self.live_min_size = Some((width, height));
-                log::info!(
-                    "ProcessApp[{}]: live min size set to {:.0}×{:.0}",
-                    self.type_id,
-                    width,
-                    height
-                );
-            }
-            ControlCommand::CloseSelf => {
-                log::info!(
-                    "ProcessApp[{}]: CloseSelf — pane will close on next frame",
-                    self.type_id
-                );
-                self.wants_close_self = true;
             }
         }
     }
@@ -1378,10 +1358,14 @@ impl App for ProcessApp {
 
     fn queue_outbound_event(&mut self, event: crate::app_protocol::PlexiEvent) {
         self.outbound_events.push_back(event);
+        self.mark_render_needed("queued_outbound_event");
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
         let size = ui.available_size();
+        if let Ok(mut repaint_ctx) = self.repaint_ctx.lock() {
+            *repaint_ctx = Some(ui.ctx().clone());
+        }
 
         self.poll_mcp_calls();
         self.flush_outbound_events();
@@ -1445,6 +1429,7 @@ impl App for ProcessApp {
                 width: size.x,
                 height: size.y,
             });
+            self.mark_render_needed("resize");
         }
 
         // Size-class guard: if the pane is below the effective minimum, render a
@@ -1479,26 +1464,9 @@ impl App for ProcessApp {
             return;
         }
 
-        self.frame_counter += 1;
-        let frame_id = self.frame_counter;
-        self.send_event(&PlexiEvent::Render {
-            frame_id,
-            rect: crate::app_protocol::Rect {
-                x: 0.0,
-                y: 0.0,
-                w: size.x,
-                h: size.y,
-            },
-        });
+        self.send_render_if_needed(size);
 
-        // Drain async HTTP responses from background request threads.
-        while let Ok(event) = self.http_rx.try_recv() {
-            self.outbound_events.push_back(event);
-        }
-        // Drain file picker results from background dialog threads.
-        while let Ok(event) = self.file_picker_rx.try_recv() {
-            self.outbound_events.push_back(event);
-        }
+        self.drain_async_events();
 
         // Per-frame: detect audio capture pipes whose drain thread exited due
         // to a write error (e.g. Broken pipe when the app-side socket closed
@@ -1540,11 +1508,17 @@ impl App for ProcessApp {
 
         for cmd in new_cmds {
             match cmd {
-                DrawCommand::Control(c) => self.handle_control_command(ui, frame_id, c),
+                DrawCommand::Control(c) => self.handle_control_command(ui, c),
                 DrawCommand::Host(h) => self.route_command(h),
                 DrawCommand::Render(r) => self.pending_frame.push(r),
             }
         }
+
+        // A continuous app often completes its render transaction during this
+        // drain. Send the next due Render immediately instead of waiting for a
+        // separate host repaint; otherwise a 60Hz host loop can only drive
+        // one app frame every two host frames.
+        self.send_render_if_needed(size);
 
         // Render the current committed frame.
         //
@@ -1816,6 +1790,7 @@ impl App for ProcessApp {
                         button: crate::app_protocol::MouseButton::Primary,
                         modifiers: frame_mods.clone(),
                     });
+                    self.mark_render_needed("mouse_down");
                     needs_click_repaint = true;
                 }
                 if is_secondary_down {
@@ -1825,6 +1800,7 @@ impl App for ProcessApp {
                         button: crate::app_protocol::MouseButton::Secondary,
                         modifiers: frame_mods.clone(),
                     });
+                    self.mark_render_needed("mouse_down");
                     needs_click_repaint = true;
                 }
             }
@@ -1851,6 +1827,7 @@ impl App for ProcessApp {
                         y,
                         button: crate::app_protocol::MouseButton::Primary,
                     });
+                    self.mark_render_needed("mouse_up");
                     needs_click_repaint = true;
                 }
                 if secondary_up {
@@ -1865,6 +1842,7 @@ impl App for ProcessApp {
                         y,
                         button: crate::app_protocol::MouseButton::Secondary,
                     });
+                    self.mark_render_needed("mouse_up");
                     needs_click_repaint = true;
                 }
             }
@@ -1893,6 +1871,7 @@ impl App for ProcessApp {
                             buttons,
                             modifiers: frame_mods.clone(),
                         });
+                        self.mark_render_needed("mouse_move");
                         needs_tracking_repaint = true;
                     }
                 }
@@ -1910,22 +1889,29 @@ impl App for ProcessApp {
         // Pointer-tracking apps are a special case: while the pointer is actively
         // moving we keep the repaint cadence near 60 FPS so host->app hover state
         // does not feel sticky.
-        use crate::platform::frame_diag::{self, RepaintCause};
         if needs_click_repaint {
             self.click_awaiting_frame = true;
-            frame_diag::note(RepaintCause::AppClick);
-            ui.ctx().request_repaint();
-        } else if self.click_awaiting_frame {
-            frame_diag::note(RepaintCause::AppClick);
-            ui.ctx().request_repaint();
-        } else if needs_tracking_repaint {
-            frame_diag::note(RepaintCause::PointerTracking);
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(16));
-        } else {
-            frame_diag::note(RepaintCause::AppIdlePoll);
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
+
+        match scheduler::decide_repaint(scheduler::RepaintInputs {
+            click_now: needs_click_repaint,
+            click_awaiting_frame: self.click_awaiting_frame,
+            pointer_tracking: needs_tracking_repaint,
+            render_delay: self.runtime.pending_repaint_delay(),
+            render_in_flight: self.runtime.is_rendering(),
+            async_wake: self.needs_async_wake_poll(),
+        }) {
+            scheduler::RepaintDecision::Now => ui.ctx().request_repaint(),
+            scheduler::RepaintDecision::After(delay) => ui.ctx().request_repaint_after(delay),
+            scheduler::RepaintDecision::None => {
+                if !self.idle_render_poll_logged {
+                    log::info!(
+                        "ProcessApp[{}]: idle render polling disabled; waiting for input, dirty state, or ScheduleRender",
+                        self.type_id
+                    );
+                    self.idle_render_poll_logged = true;
+                }
+            }
         }
     }
 
@@ -2080,6 +2066,7 @@ impl App for ProcessApp {
             }
         }
         if consumed {
+            self.mark_render_needed("keyboard_input");
             KeyDisposition::Consumed
         } else {
             KeyDisposition::Passthrough
@@ -2094,6 +2081,7 @@ impl App for ProcessApp {
         self.outbound_events.push_back(PlexiEvent::PathChanged {
             cwd: new_cwd.to_path_buf(),
         });
+        self.mark_render_needed("path_changed");
     }
 
     fn serialize_state(&self) -> Option<serde_json::Value> {
@@ -2458,6 +2446,13 @@ mod tests;
 
 impl Drop for ProcessApp {
     fn drop(&mut self) {
+        self.render_diag.flush_if_nonempty(
+            &self.type_id,
+            self.scheduler_mode.next_frame_delay(),
+            std::time::Instant::now(),
+            "drop",
+        );
+        self.runtime.mark_closing();
         // Cancel active StreamProcess children (#675) — same escalation as
         // CancelProcess: SIGTERM, then SIGKILL after 1s on a background thread.
         for (corr_id, handle) in self.stream_handles.drain() {
@@ -2513,6 +2508,7 @@ impl Drop for ProcessApp {
             while std::time::Instant::now() < shutdown_deadline {
                 match child.try_wait() {
                     Ok(Some(_)) => {
+                        self.runtime.mark_process_exited();
                         exited = true;
                         break;
                     }
@@ -2522,6 +2518,7 @@ impl Drop for ProcessApp {
                     Err(e) if e.raw_os_error() == Some(libc::ECHILD) => {
                         // Background reaper already called waitpid and won the
                         // race — ECHILD means the child is gone. Treat as clean exit.
+                        self.runtime.mark_process_exited();
                         exited = true;
                         break;
                     }
@@ -2543,7 +2540,10 @@ impl Drop for ProcessApp {
                 let kill_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
                 while std::time::Instant::now() < kill_deadline {
                     match child.try_wait() {
-                        Ok(Some(_)) => break,
+                        Ok(Some(_)) => {
+                            self.runtime.mark_process_exited();
+                            break;
+                        }
                         Ok(None) => {
                             std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
                         }
@@ -2555,6 +2555,7 @@ impl Drop for ProcessApp {
                 // `Child::kill` already SIGKILL-equivalents in `std`, so
                 // the process should be dead.
                 let _ = child.wait();
+                self.runtime.mark_process_exited();
             }
         }
     }

@@ -69,8 +69,7 @@ const ALL_CAUSES: [RepaintCause; 16] = [
     RepaintCause::UserInput,
 ];
 
-static COUNTERS: [AtomicU32; ALL_CAUSES.len()] =
-    [const { AtomicU32::new(0) }; ALL_CAUSES.len()];
+static COUNTERS: [AtomicU32; ALL_CAUSES.len()] = [const { AtomicU32::new(0) }; ALL_CAUSES.len()];
 
 impl RepaintCause {
     /// Stable snake_case label for log output.
@@ -201,9 +200,15 @@ mod tests {
             summary_line(102, 10.0, &counts),
             "frames=102 window=10.0s fps=10.2 causes: app_idle_poll=95 user_input=12"
         );
-        assert_eq!(summary_line(0, 10.0, &[]), "frames=0 window=10.0s fps=0.0 causes: none");
+        assert_eq!(
+            summary_line(0, 10.0, &[]),
+            "frames=0 window=10.0s fps=0.0 causes: none"
+        );
         // Zero-length window must not divide by zero.
-        assert_eq!(summary_line(5, 0.0, &[]), "frames=5 window=0.0s fps=0.0 causes: none");
+        assert_eq!(
+            summary_line(5, 0.0, &[]),
+            "frames=5 window=0.0s fps=0.0 causes: none"
+        );
     }
 
     #[test]

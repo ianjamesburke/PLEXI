@@ -1,6 +1,7 @@
 //! App command dispatch — keyboard routing + command drain from app panes.
 
 use crate::app::app_trait::{App, AppCommand};
+use crate::host::pane::AppRuntime;
 
 use super::PlexiApp;
 
@@ -65,6 +66,25 @@ mod tests {
         assert_eq!(
             *source_context_id, park_context_id,
             "source_context_id should be the park-time context_id ({park_context_id}), not hardcoded 0"
+        );
+    }
+
+    #[test]
+    fn parked_process_with_pending_headless_work_requests_host_wake() {
+        let mut h = HostHarness::new();
+        let (mut process_app, _draw_tx) = ProcessApp::new_for_test(999, AppPermissions::builtin());
+        process_app.pending_timers.insert(
+            "timer-1".to_string(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+
+        h.app
+            .background_apps
+            .insert("test-app".to_string(), (42, Box::new(process_app)));
+
+        assert!(
+            h.app.background_processes_need_wake(),
+            "parked process apps with pending timers/async work must keep the host wake loop alive"
         );
     }
 
@@ -177,6 +197,28 @@ impl PlexiApp {
                 i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
             });
         }
+    }
+
+    pub(crate) fn background_processes_need_wake(&self) -> bool {
+        let active = self.active_window;
+        let inactive_context_needs_wake =
+            self.windows.iter().enumerate().any(|(ctx_idx, context)| {
+                ctx_idx != active
+                    && context.panes.values().any(|pane| {
+                        pane.as_app()
+                            .and_then(|app_pane| match &app_pane.runtime {
+                                AppRuntime::Process(app) => Some(app.needs_headless_wake_poll()),
+                                AppRuntime::Builtin(_) => None,
+                            })
+                            .unwrap_or(false)
+                    })
+            });
+
+        inactive_context_needs_wake
+            || self
+                .background_apps
+                .values()
+                .any(|(_, app)| app.needs_headless_wake_poll())
     }
 
     /// Drain `pending_commands` from **every** app pane in **every** context,

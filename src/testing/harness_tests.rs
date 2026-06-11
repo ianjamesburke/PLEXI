@@ -1,5 +1,4 @@
 use super::*;
-use crate::app_protocol::PlexiEvent;
 
 // -- DrawCommand routing --------------------------------------------------
 
@@ -74,6 +73,188 @@ fn add_test_pane_appears_in_snapshot() {
     assert_eq!(
         snap.pane_titles.get(&pane).map(|s| s.as_str()),
         Some("Test App")
+    );
+}
+
+#[test]
+fn visible_idle_process_app_does_not_emit_recurring_render_events() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    h.run_frames(1);
+    let first = h
+        .render_payload_take(pane)
+        .expect("first visible frame must request an app Render");
+    assert!(
+        first.contains("\"frame_id\":1"),
+        "first Render should use frame_id=1, got {first}"
+    );
+
+    h.inject(
+        pane,
+        DrawCommand::Control(crate::app_protocol::ControlCommand::FrameDone { frame_id: 1 }),
+    );
+    h.run_frames(1);
+    let second = h.render_payload_take(pane);
+    assert_eq!(
+        second, None,
+        "an idle visible app with a committed frame must not receive another Render just because the host repainted"
+    );
+
+    h.run_frames(2);
+    assert_eq!(
+        h.render_payload_take(pane),
+        None,
+        "idle host repaint cycles must not restart visible app rendering"
+    );
+}
+
+#[test]
+fn in_flight_process_app_render_is_not_duplicated_while_host_polls() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    h.run_frames(1);
+    assert!(
+        h.render_payload_take(pane).is_some(),
+        "first visible frame must request an app Render"
+    );
+
+    h.run_frames(3);
+    assert_eq!(
+        h.render_payload_take(pane),
+        None,
+        "host wake polling while awaiting FrameDone must not send duplicate Render events"
+    );
+}
+
+#[test]
+fn background_frame_done_clears_in_flight_render() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    h.run_frames(1);
+    assert!(
+        h.render_payload_take(pane).is_some(),
+        "first visible frame must request an app Render"
+    );
+
+    h.inject(
+        pane,
+        DrawCommand::Control(crate::app_protocol::ControlCommand::FrameDone { frame_id: 1 }),
+    );
+    {
+        let win = &mut h.app.windows[0];
+        let Some(Pane::App(app_pane)) = win.panes.get_mut(&pane) else {
+            panic!("expected App pane");
+        };
+        let AppRuntime::Process(proc) = &mut app_pane.runtime else {
+            panic!("expected Process runtime");
+        };
+        proc.background_tick();
+    }
+
+    h.inject(
+        pane,
+        DrawCommand::Control(crate::app_protocol::ControlCommand::ScheduleRender { after_ms: 0 }),
+    );
+    h.run_frames(2);
+    let scheduled = h
+        .render_payload_take(pane)
+        .expect("a background-drained FrameDone must allow the next Render");
+    assert!(
+        scheduled.contains("\"frame_id\":2"),
+        "next Render should use frame_id=2 after background FrameDone, got {scheduled}"
+    );
+}
+
+#[test]
+fn schedule_render_requests_next_process_app_render() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    h.run_frames(1);
+    assert!(
+        h.render_payload_take(pane).is_some(),
+        "first visible frame must request an app Render"
+    );
+    h.inject(
+        pane,
+        DrawCommand::Control(crate::app_protocol::ControlCommand::FrameDone { frame_id: 1 }),
+    );
+    h.run_frames(1);
+    assert_eq!(
+        h.render_payload_take(pane),
+        None,
+        "stable idle frame should not render before ScheduleRender"
+    );
+
+    h.inject(
+        pane,
+        DrawCommand::Control(crate::app_protocol::ControlCommand::ScheduleRender { after_ms: 0 }),
+    );
+    h.run_frames(1);
+    let scheduled = h
+        .render_payload_take(pane)
+        .expect("a due ScheduleRender drained this pass must send the Render in the same pass");
+    assert!(
+        scheduled.contains("\"frame_id\":2"),
+        "scheduled Render should use the next frame_id, got {scheduled}"
+    );
+}
+
+#[test]
+fn pending_async_completion_keeps_host_wake_without_idle_render() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    h.run_frames(1);
+    assert!(
+        h.render_payload_take(pane).is_some(),
+        "first visible frame must request an app Render"
+    );
+    h.inject(
+        pane,
+        DrawCommand::Control(crate::app_protocol::ControlCommand::FrameDone { frame_id: 1 }),
+    );
+    h.run_frames(1);
+    assert_eq!(
+        h.render_payload_take(pane),
+        None,
+        "stable app must not render before async work starts"
+    );
+
+    h.inject(
+        pane,
+        DrawCommand::Host(AppRequest::HttpRequest {
+            request_id: "http-1".to_string(),
+            url: "https://example.com/".to_string(),
+            method: "GET".to_string(),
+            headers: std::collections::HashMap::new(),
+            body: None,
+        }),
+    );
+    h.run_frames(1);
+    assert_eq!(
+        h.render_payload_take(pane),
+        None,
+        "arming async work must wake the host without sending an app Render"
+    );
+
+    let mut scheduled_render = None;
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        h.run_frames(1);
+        if let Some(payload) = h.render_payload_take(pane) {
+            scheduled_render = Some(payload);
+            break;
+        }
+    }
+
+    let scheduled = scheduled_render.expect("async completion must trigger the next app Render");
+    assert!(
+        scheduled.contains("\"frame_id\":2"),
+        "async-triggered Render should use the next frame_id, got {scheduled}"
     );
 }
 

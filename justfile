@@ -110,12 +110,16 @@ install: fetch-python-runtime regen-if-stale
 sdk-dev:
     uv pip install -e sdk/python
 
+# Headless SDK/app contract smoke: Init -> Ready -> Render -> FrameDone.
+sdk-smoke:
+    uv run --project sdk/python pytest sdk/python/tests/test_app_harness.py -q
+
 # Build and install the current worktree as a testable PR build.
 # Installs as "Plexi PR<number>.app" with isolated profile ~/.plexi-pr-<number>/.
 # Run from inside the feature worktree: just pr-install 123
 # Always cleans the previous PR build first for a fully fresh install.
 # Alias for: just channel-install pr-<number>
-pr-install number: fetch-python-runtime
+pr-install number: fetch-python-runtime sdk-smoke
     #!/usr/bin/env bash
     set -euo pipefail
     # Preflight: confirm we're running from a valid repo worktree with Cargo.toml present.
