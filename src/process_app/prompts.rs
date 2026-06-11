@@ -123,34 +123,15 @@ pub(crate) fn show_prompt_modal(
         }
     };
 
-    // Scrim
-    let screen_rect = ctx.screen_rect();
-    egui::Area::new(egui::Id::new("prompt_modal_scrim"))
-        .fixed_pos(screen_rect.min)
-        .order(egui::Order::Middle)
-        .show(ctx, |ui| {
-            ui.painter().rect_filled(
-                screen_rect,
-                0.0,
-                egui::Color32::from_black_alpha(crate::ui::style::SCRIM_ALPHA),
-            );
-            let scrim_resp = ui.allocate_rect(screen_rect, egui::Sense::click());
-            if scrim_resp.clicked() {
-                deny_once = true;
-            }
-        });
-
-    egui::Area::new(egui::Id::new("prompt_modal_overlay"))
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            egui::Frame::new()
-                .fill(colors.bg_sidebar)
-                .stroke(egui::Stroke::new(1.0, colors.border))
-                .corner_radius(crate::ui::style::RADIUS_LG)
-                .inner_margin(egui::Margin::symmetric(20, 16))
-                .show(ui, |ui| {
-                    ui.set_width(crate::overlays::MODAL_WIDTH);
+    // Consent prompts dim harder than ordinary modals — the user must make a
+    // security decision, so the workspace recedes. Click-away = deny once
+    // (handled via `dismissed` below), preserving the old scrim behavior.
+    let response = crate::ui::overlay::ModalShell::centered("prompt_modal_overlay")
+        .width(crate::overlays::MODAL_WIDTH)
+        .scrim_strength(0.85)
+        .show(ctx, colors, |ui| {
+            {
+                {
                     match prompt {
                         PendingPrompt::Capability { capability, .. } => {
                             ui.label(
@@ -342,8 +323,12 @@ pub(crate) fn show_prompt_modal(
                             );
                         }
                     }
-                });
+                }
+            }
         });
+    if response.dismissed {
+        deny_once = true;
+    }
 
     if grant_once || grant_forever || deny_once || deny_forever {
         use crate::app::permissions::Capability;
