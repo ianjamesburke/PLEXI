@@ -25,3 +25,4 @@ Apps should call `ai.query`; the host decides whether the backend is local Ollam
 ## References
 
 - `docs/prm/app-framework-marketplace.md`
+- `docs/prm/marketplace-hosted.md`

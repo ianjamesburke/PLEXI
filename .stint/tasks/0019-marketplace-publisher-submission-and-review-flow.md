@@ -25,3 +25,4 @@ Marketplace trust depends on a real review lane, especially while Python apps ar
 ## References
 
 - `docs/prm/app-framework-marketplace.md`
+- `docs/prm/marketplace-hosted.md`

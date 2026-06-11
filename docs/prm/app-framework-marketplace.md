@@ -202,7 +202,7 @@ The exact command names can change during implementation, but the user workflow 
 
 ### 4. Add Marketplace
 
-Hosted marketplace work starts after local packages are useful.
+Hosted marketplace work starts after local packages are useful. The detailed S4 spec lives in [`marketplace-hosted.md`](marketplace-hosted.md), covering tasks `0018`-`0022`.
 
 Marketplace surfaces:
 

@@ -26,3 +26,4 @@ This is the concrete Marketplace-up moment: a reviewed app can be discovered, in
 ## References
 
 - `docs/prm/app-framework-marketplace.md`
+- `docs/prm/marketplace-hosted.md`

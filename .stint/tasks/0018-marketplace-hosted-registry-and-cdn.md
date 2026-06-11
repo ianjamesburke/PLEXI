@@ -24,3 +24,4 @@ The marketplace can only be up when users can fetch reviewed app metadata from a
 ## References
 
 - `docs/prm/app-framework-marketplace.md`
+- `docs/prm/marketplace-hosted.md`

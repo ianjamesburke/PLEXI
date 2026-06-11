@@ -24,3 +24,4 @@ The marketplace business model needs to be coherent before paid submissions star
 ## References
 
 - `docs/prm/app-framework-marketplace.md`
+- `docs/prm/marketplace-hosted.md`
