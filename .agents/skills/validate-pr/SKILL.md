@@ -223,7 +223,7 @@ Reply: "pass" | "fail: <description>" | "modify: <bounded change>"
 
 After printing the testing block in the final response, send a best-effort notification. The notification is only an attention cue; the testing block is the source of truth.
 
-Until `plexi notify --no-wait` is available, do not use `plexi notify --choice` in this handoff path. A blocking choice notification keeps the agent process alive and can corrupt the final validation handoff. Use a plain fire-and-forget notification instead:
+Use a non-blocking choice notification so the user can focus the reply pane without leaving the agent process blocked on a response file:
 ```bash
 # Persist enough state for a later user reply to survive context compaction.
 ALPHA_ROOT=$(git worktree list --porcelain | awk '
@@ -242,14 +242,7 @@ VALIDATION_STATE="/tmp/plexi-validate-${PLEXI_PANE_ID:-unknown}.env"
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · needs-you"
 # Route reply to PM pane if PM dispatched this skill, otherwise this pane
 REPLY_PANE="${PM_PANE_ID:-$PLEXI_PANE_ID}"
-plexi notify \
-  --title "PR #<n> quality checks done (attempt $((ATTEMPT_COUNT+1))/3)" \
-  --body "<title>. Review the [TESTING] block in pane $REPLY_PANE, then reply pass/fail/modify."
-```
-
-After `plexi notify --no-wait` lands, use this non-blocking choice notification:
-```bash
-plexi notify --no-wait \
+plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} notify --no-wait \
   --title "PR #<n> quality checks done (attempt $((ATTEMPT_COUNT+1))/3)" \
   --body "<title>. Review the [TESTING] block, then reply pass/fail/modify." \
   --choice "talk:Talk to Claude:pane_focus:$REPLY_PANE"

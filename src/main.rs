@@ -520,6 +520,7 @@ fn main() -> eframe::Result {
                         level,
                         choices,
                         host_actions,
+                        no_wait,
                         timeout,
                         scope,
                     } => {
@@ -599,6 +600,7 @@ fn main() -> eframe::Result {
                             &body,
                             &level,
                             &parsed_choices,
+                            !no_wait,
                             timeout,
                             parsed_scope,
                         ));

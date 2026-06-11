@@ -3,6 +3,7 @@ pub fn notify_cli(
     body: &str,
     level: &str,
     choices: &[(String, String, Option<String>)],
+    wait_for_response: bool,
     timeout_secs: u64,
     scope: Option<crate::app_protocol::NotifyScope>,
 ) -> i32 {
@@ -27,14 +28,19 @@ pub fn notify_cli(
         })
         .collect();
 
-    let (kind, response_file_str) = if choices.is_empty() {
-        ("message".to_string(), None)
+    let kind = if choices.is_empty() {
+        "message".to_string()
     } else {
+        "choice".to_string()
+    };
+    let response_file_str = if !choices.is_empty() && wait_for_response {
         let rf = crate::config::config_dir()
             .join(format!("notify-response-{id}.txt"))
             .to_string_lossy()
             .into_owned();
-        ("choice".to_string(), Some(rf))
+        Some(rf)
+    } else {
+        None
     };
 
     let mut payload = serde_json::json!({
@@ -59,8 +65,9 @@ pub fn notify_cli(
     }
 
     log::info!(
-        "notify:cli: sending via socket choices={} scope={:?} response_file={:?}",
+        "notify:cli: sending via socket choices={} wait_for_response={} scope={:?} response_file={:?}",
         choices.len(),
+        wait_for_response,
         scope,
         response_file_str
     );
@@ -83,7 +90,9 @@ pub fn notify_cli(
     // Fire-and-forget path — command is delivered, nothing to wait for.
     let Some(response_file) = response_file_str else {
         if timeout_secs > 0 {
-            eprintln!("warning: --timeout has no effect without --choice (notification queued without auto-dismiss)");
+            eprintln!(
+                "warning: --timeout only limits waiting for a choice response; notification queued"
+            );
         }
         println!("notification queued");
         return 0;
@@ -127,13 +136,112 @@ pub fn notify_cli(
 mod notify_tests {
     use super::notify_cli;
     use crate::cli::parse_notify_choice;
+    use serde_json::Value;
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn capture_notify_payload<F>(run_cli: F) -> (i32, Value)
+    where
+        F: FnOnce() -> i32,
+    {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("notify.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind notify socket");
+        std::env::set_var("PLEXI_SOCKET", &socket_path);
+
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept notify connection");
+            let mut line = String::new();
+            BufReader::new(stream)
+                .read_line(&mut line)
+                .expect("read notify payload");
+            serde_json::from_str::<Value>(&line).expect("notify payload json")
+        });
+
+        let code = run_cli();
+        std::env::remove_var("PLEXI_SOCKET");
+        let payload = handle.join().expect("payload thread");
+        (code, payload)
+    }
 
     /// Without PLEXI_SOCKET set, notify_cli must fail fast (exit 1) rather than panic.
     #[test]
     fn notify_cli_no_socket_returns_one() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("PLEXI_SOCKET");
-        let code = notify_cli("Test title", "Test body", "info", &[], 0, None);
+        let code = notify_cli("Test title", "Test body", "info", &[], true, 0, None);
         assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn notify_cli_nonblocking_choice_omits_response_file() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let choices = vec![(
+            "talk".to_string(),
+            "Talk to Claude".to_string(),
+            Some("pane_focus:188".to_string()),
+        )];
+
+        let (code, payload) = capture_notify_payload(|| {
+            notify_cli("Ready", "Review tests", "info", &choices, false, 0, None)
+        });
+
+        assert_eq!(code, 0);
+        assert_eq!(payload["kind"], "choice");
+        assert!(
+            payload.get("response_file").is_none(),
+            "non-blocking choice must not create a response file: {payload}"
+        );
+        assert_eq!(payload["options"][0]["value"], "talk");
+        assert_eq!(payload["options"][0]["label"], "Talk to Claude");
+        assert_eq!(payload["options"][0]["host_action"], "pane_focus:188");
+    }
+
+    #[test]
+    fn notify_cli_blocking_choice_sends_response_file() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket_path = dir.path().join("notify.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind notify socket");
+        std::env::set_var("PLEXI_SOCKET", &socket_path);
+        std::env::set_var("PLEXI_CHANNEL", "notify-test");
+
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept notify connection");
+            let mut line = String::new();
+            BufReader::new(stream)
+                .read_line(&mut line)
+                .expect("read notify payload");
+            let payload: Value = serde_json::from_str(&line).expect("notify payload json");
+            let response_file = payload["response_file"]
+                .as_str()
+                .expect("blocking choice response_file")
+                .to_string();
+            std::fs::create_dir_all(
+                std::path::Path::new(&response_file)
+                    .parent()
+                    .expect("response file parent"),
+            )
+            .expect("create response dir");
+            std::fs::write(&response_file, "talk").expect("write response");
+            payload
+        });
+
+        let choices = vec![("talk".to_string(), "Talk to Claude".to_string(), None)];
+        let code = notify_cli("Ready", "Review tests", "info", &choices, true, 1, None);
+        std::env::remove_var("PLEXI_SOCKET");
+        std::env::remove_var("PLEXI_CHANNEL");
+        let payload = handle.join().expect("payload thread");
+
+        assert_eq!(code, 0);
+        assert_eq!(payload["kind"], "choice");
+        assert!(
+            payload["response_file"].as_str().is_some(),
+            "blocking choice must include a response file: {payload}"
+        );
     }
 
     #[test]
