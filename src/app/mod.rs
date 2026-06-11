@@ -1106,8 +1106,8 @@ impl PlexiApp {
                 frame_tick,
                 frame_diag_window: None,
                 permission_store_dir: {
-                    let dir =
-                        std::env::temp_dir().join(format!("plexi-test-perms-{}", uuid::Uuid::new_v4()));
+                    let dir = std::env::temp_dir()
+                        .join(format!("plexi-test-perms-{}", uuid::Uuid::new_v4()));
                     std::fs::create_dir_all(&dir).expect("create test permission store dir");
                     dir
                 },
@@ -1252,7 +1252,7 @@ impl PlexiApp {
             "make_backend_settings: pane_id={pane_id} context_id={context_id} \
              context_name={context_name:?} context_root={context_root:?} context_depth={context_depth}"
         );
-        let mut env = shell::build_env();
+        let mut env = shell::build_env(working_directory.as_deref());
         env.insert("PLEXI_PANE_ID".into(), pane_id.to_string());
         let socket = crate::config::config_dir()
             .join("notify.sock")
@@ -3036,15 +3036,6 @@ impl eframe::App for PlexiApp {
                 self.save_workspace();
             }
         }
-
-        // Temporary diagnostic: check if Key::A is still in events before render_panels.
-        ctx.input(|i| {
-            for event in &i.events {
-                if let egui::Event::Key { key: egui::Key::A, pressed: true, modifiers: m, .. } = event {
-                    log::info!("[diag-pre-render] Key::A still alive before render_panels: cmd={} shift={}", m.command, m.shift);
-                }
-            }
-        });
 
         self.render_panels(ctx);
 

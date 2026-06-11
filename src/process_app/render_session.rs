@@ -159,6 +159,7 @@ impl RenderSession {
                 h,
                 placeholder,
                 multiline,
+                value,
             } = cmd
             else {
                 continue;
@@ -181,8 +182,14 @@ impl RenderSession {
 
             let widget_id = ui.id().with(("text_input", pane_id, id.as_str()));
 
-            let (resp, cursor_char_idx) = {
+            let (resp, cursor_char_idx, changed_value) = {
                 let buffer = self.text_input_buffers.entry(id.clone()).or_default();
+                if let Some(value) = value {
+                    if buffer != value {
+                        *buffer = value.clone();
+                    }
+                }
+                let prev_value = buffer.clone();
                 let mut child = ui.new_child(
                     egui::UiBuilder::new()
                         .max_rect(widget_rect)
@@ -195,6 +202,15 @@ impl RenderSession {
                     egui::Stroke::new(1.0, colors.accent);
                 child.visuals_mut().widgets.inactive.bg_stroke =
                     egui::Stroke::new(1.0, colors.border);
+                if *multiline {
+                    child.painter().rect(
+                        widget_rect,
+                        crate::ui::style::RADIUS_MD,
+                        colors.bg_active,
+                        egui::Stroke::new(1.0, colors.border),
+                        egui::StrokeKind::Outside,
+                    );
+                }
                 // Placeholder at half strength — the theme's override_text_color
                 // makes egui's default hint color near-white otherwise.
                 let hint = egui::RichText::new(placeholder.as_str())
@@ -236,8 +252,25 @@ impl RenderSession {
                     focus_granted = true;
                 }
                 let cursor_idx = output.cursor_range.map(|cr| cr.primary.ccursor.index);
-                (output.response, cursor_idx)
+                let changed_value = if *buffer != prev_value {
+                    Some(buffer.clone())
+                } else {
+                    None
+                };
+                (output.response, cursor_idx, changed_value)
             };
+
+            if let Some(value) = changed_value {
+                log::info!(
+                    "render_session: TextInput changed id={} len={}",
+                    id,
+                    value.len()
+                );
+                self.outbound_events.push(PlexiEvent::TextChanged {
+                    id: id.clone(),
+                    value,
+                });
+            }
 
             let pointer_pressed_inside = ui
                 .input(|i| i.pointer.button_pressed(egui::PointerButton::Primary))
@@ -252,6 +285,32 @@ impl RenderSession {
 
             if resp.has_focus() {
                 any_has_focus = true;
+                let control_key = ui.input(|i| {
+                    if i.key_pressed(egui::Key::Tab) {
+                        Some("tab")
+                    } else if i.key_pressed(egui::Key::ArrowDown) {
+                        Some("down")
+                    } else if i.key_pressed(egui::Key::ArrowUp) {
+                        Some("up")
+                    } else if i.key_pressed(egui::Key::Escape) {
+                        Some("escape")
+                    } else {
+                        None
+                    }
+                });
+                if let Some(key) = control_key {
+                    let modifiers = ui.input(|i| crate::app_protocol::Modifiers {
+                        shift: i.modifiers.shift,
+                        ctrl: i.modifiers.ctrl,
+                        alt: i.modifiers.alt,
+                        cmd: i.modifiers.command,
+                    });
+                    self.outbound_events.push(PlexiEvent::TextInputKey {
+                        id: id.clone(),
+                        key: key.to_string(),
+                        modifiers,
+                    });
+                }
             }
 
             if *multiline {

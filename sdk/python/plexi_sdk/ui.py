@@ -558,6 +558,7 @@ class Scrollable(Component):
     """
     child: Component
     scroll_offset: float = field(default=0.0, repr=False)
+    align: str = "top"
     # How many pixels j/k advances per keypress.
     key_step: float = 20.0
 
@@ -567,6 +568,8 @@ class Scrollable(Component):
                 f"Scrollable child must subclass Component, got {type(self.child).__name__}. "
                 "Ad-hoc widget classes missing _render_clipped will crash at render time."
             )
+        if self.align not in ("top", "bottom"):
+            raise ValueError("Scrollable align must be 'top' or 'bottom'")
 
     # Width of the scrollbar indicator drawn when content overflows.
     _SCROLLBAR_W: float = field(default=3.0, init=False, repr=False)
@@ -648,7 +651,10 @@ class Scrollable(Component):
         # Clip to our allocated rect, then render child offset upward.
         ctx.push_clip(x, y, w, h)
         try:
-            child_y = y - self.scroll_offset
+            short_content_offset = (
+                max(0.0, h - self._child_h) if self.align == "bottom" else 0.0
+            )
+            child_y = y + short_content_offset - self.scroll_offset
             self.child.render(ctx, x, child_y, content_w, self._child_h)
         finally:
             ctx.pop_clip()
@@ -1137,6 +1143,7 @@ class TextInput(Component):
     placeholder: str = ""
     height: float = 48.0
     multiline: bool = False
+    value: Optional[str] = None
 
     _submitted: Optional[str] = field(default=None, init=False, repr=False)
 
@@ -1146,7 +1153,9 @@ class TextInput(Component):
     def render(self, ctx, x: float, y: float, w: float, h: float) -> None:
         self._submitted = ctx.text_input(self.id, x=x, y=y, w=w,
                                          placeholder=self.placeholder, h=h,
-                                         multiline=self.multiline)
+                                         multiline=self.multiline,
+                                         value=self.value)
+        self.value = None
 
     @property
     def submitted(self) -> Optional[str]:

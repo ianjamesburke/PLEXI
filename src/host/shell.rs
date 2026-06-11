@@ -198,7 +198,7 @@ fn fallback_path_with_homebrew() -> Option<String> {
     }
 }
 
-pub fn build_env() -> HashMap<String, String> {
+pub fn build_env(working_directory: Option<&Path>) -> HashMap<String, String> {
     let mut env = HashMap::new();
 
     env.insert("TERM".into(), "xterm-256color".into());
@@ -223,17 +223,31 @@ pub fn build_env() -> HashMap<String, String> {
     // startup (see `install_login_shell_path`), so inheriting it here is
     // enough — no per-shell augmentation needed.
 
-    // Inject user-flagged secrets as env vars
-    for entry in crate::secrets::list_inject_secrets() {
-        #[cfg(target_os = "macos")]
-        if let Some(value) =
-            crate::secrets::retrieve_secret(&entry.key, &entry.app_id, &entry.directory)
-        {
-            log::info!(
-                "shell::build_env: injecting secret '{}' into pane env",
-                entry.key
-            );
-            env.insert(entry.key.clone(), value.to_string());
+    #[cfg(target_os = "macos")]
+    {
+        let workspace_root = working_directory
+            .and_then(crate::app::registry::resolve_workspace_root)
+            .or_else(crate::config::active_workspace_root);
+        if let Some(root) = workspace_root {
+            let store = crate::workspace::secrets::MacKeychain::new();
+            match crate::workspace::secrets::resolve_terminal_env(&root, &store) {
+                Ok(resolved) => {
+                    log::info!(
+                        "shell::build_env: resolved {} allowlisted terminal env secrets for workspace {}",
+                        resolved.len(),
+                        root.display()
+                    );
+                    for (key, value) in resolved {
+                        env.insert(key, value.to_string());
+                    }
+                }
+                Err(e) => {
+                    log::warn!(
+                        "shell::build_env: terminal env secret resolution skipped for {}: {e}",
+                        root.display()
+                    );
+                }
+            }
         }
     }
 

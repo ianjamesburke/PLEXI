@@ -211,6 +211,20 @@ pub enum PlexiEvent {
     /// buffer for `id` after emitting this event so the field is empty for
     /// the next input.
     TextSubmitted { id: String, value: String },
+    /// User edited a `DrawCommand::TextInput` field.
+    ///
+    /// `id` matches the `id` the app supplied on the `TextInput` command.
+    /// `value` is the live buffered text after the edit.
+    TextChanged { id: String, value: String },
+    /// User pressed a control key while focused in a `DrawCommand::TextInput`.
+    ///
+    /// Used for app-owned completion menus without forwarding ordinary typing
+    /// through `on_key`.
+    TextInputKey {
+        id: String,
+        key: String,
+        modifiers: Modifiers,
+    },
     /// Clipboard paste forwarded into the focused app pane.
     ///
     /// Emitted whenever the host observes `egui::Event::Paste(text)` while an
@@ -238,12 +252,16 @@ pub enum PlexiEvent {
         error: Option<String>,
     },
     /// Incremental token chunk from a streaming ai_query response.
-    /// Sent before the final `AiResponse` so apps can display tokens as they arrive.
+    /// Sent live while the turn runs, before the final `AiResponse`.
     /// The final `AiResponse` is still sent with complete content + token counts.
     AiStreamChunk {
         request_id: String,
         /// Incremental text delta (may be empty for the final chunk before AiResponse)
         delta: String,
+        /// Incremental reasoning ("thinking") delta from a reasoning model.
+        /// Carried separately from `delta`; a chunk holds one or the other.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning: Option<String>,
         /// True on the last chunk before AiResponse fires
         #[serde(default)]
         done: bool,

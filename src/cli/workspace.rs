@@ -294,6 +294,16 @@ pub fn workspace_secret_set(
                         ));
                     }
                 }
+                match crate::workspace::secrets::write_terminal_env_inject(&root, friendly, true) {
+                    Ok(()) => {
+                        log::info!(
+                            "secret_set:cli: enabled terminal env injection for {friendly} in secrets.toml"
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!("secret_set:cli: write_terminal_env_inject failed: {e}");
+                    }
+                }
                 0
             }
             Err(e) => {

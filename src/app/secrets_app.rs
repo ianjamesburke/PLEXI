@@ -1,5 +1,6 @@
 use crate::app::app_trait::{App, AppCommand, AppRenderContext};
 use crate::ui::{labels, row, shortcuts, style};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -45,6 +46,24 @@ fn load_entries() -> Vec<ManagedSecret> {
     }
 }
 
+fn load_workspace_policy(
+    cwd: &std::path::Path,
+) -> (Option<PathBuf>, Option<String>, HashSet<String>) {
+    let Some(root) = crate::app::registry::resolve_workspace_root(cwd) else {
+        return (None, None, HashSet::new());
+    };
+    let workspace_id = crate::workspace::secrets::WorkspaceConfig::load(&root)
+        .ok()
+        .flatten()
+        .map(|cfg| cfg.id);
+    let inject = crate::workspace::secrets::WorkspaceSecrets::load(&root)
+        .ok()
+        .flatten()
+        .map(|router| router.terminal.env.inject.into_iter().collect())
+        .unwrap_or_default();
+    (Some(root), workspace_id, inject)
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
     List,
@@ -61,6 +80,9 @@ pub struct SecretsApp {
     entries: Vec<ManagedSecret>,
     selected: usize,
     cwd: PathBuf,
+    workspace_root: Option<PathBuf>,
+    workspace_id: Option<String>,
+    terminal_inject: HashSet<String>,
 
     mode: Mode,
     new_key: String,
@@ -80,10 +102,14 @@ pub struct SecretsApp {
 impl SecretsApp {
     pub fn new(cwd: PathBuf) -> Self {
         let entries = load_entries();
+        let (workspace_root, workspace_id, terminal_inject) = load_workspace_policy(&cwd);
         Self {
             entries,
             selected: 0,
             cwd,
+            workspace_root,
+            workspace_id,
+            terminal_inject,
             mode: Mode::List,
             new_key: String::new(),
             new_value: String::new(),
@@ -98,6 +124,10 @@ impl SecretsApp {
 
     fn refresh(&mut self) {
         self.entries = load_entries();
+        let (workspace_root, workspace_id, terminal_inject) = load_workspace_policy(&self.cwd);
+        self.workspace_root = workspace_root;
+        self.workspace_id = workspace_id;
+        self.terminal_inject = terminal_inject;
         self.selected = self.selected.min(self.entries.len().saturating_sub(1));
         log::info!(
             "secrets_manager: refreshed — {} entries",
@@ -156,6 +186,29 @@ impl SecretsApp {
                         name: name.clone(),
                         scope: scope.clone(),
                     });
+                    if let Some((root, _)) = workspace.as_ref() {
+                        match crate::workspace::secrets::write_default_route(root, &name, &name) {
+                            Ok(()) => log::info!(
+                                "secrets_manager: wrote default route for '{name}' scope={scope}"
+                            ),
+                            Err(e) => {
+                                log::warn!("secrets_manager: failed to write default route: {e}")
+                            }
+                        }
+                        match crate::workspace::secrets::write_terminal_env_inject(
+                            root, &name, true,
+                        ) {
+                            Ok(()) => {
+                                self.terminal_inject.insert(name.clone());
+                                log::info!(
+                                    "secrets_manager: enabled terminal env injection for '{name}'"
+                                );
+                            }
+                            Err(e) => log::warn!(
+                                "secrets_manager: failed to enable terminal env injection: {e}"
+                            ),
+                        }
+                    }
                     self.selected = self.entries.len().saturating_sub(1);
                     self.mode = Mode::List;
                     self.status_msg = Some(format!("Stored '{name}'."));
@@ -201,6 +254,34 @@ impl SecretsApp {
             }
         }
     }
+
+    fn toggle_terminal_env(&mut self, name: String) {
+        let Some(root) = self.workspace_root.clone() else {
+            return;
+        };
+        let enabled = !self.terminal_inject.contains(&name);
+        match crate::workspace::secrets::write_terminal_env_inject(&root, &name, enabled) {
+            Ok(()) => {
+                if enabled {
+                    self.terminal_inject.insert(name.clone());
+                    self.status_msg =
+                        Some(format!("'{name}' will be injected into new terminals."));
+                } else {
+                    self.terminal_inject.remove(&name);
+                    self.status_msg =
+                        Some(format!("'{name}' will not be injected into new terminals."));
+                }
+                log::info!("secrets_manager: terminal env injection {enabled} for '{name}'");
+            }
+            Err(e) => {
+                self.status_msg =
+                    Some("Failed to update terminal env policy — check logs.".to_string());
+                log::warn!(
+                    "secrets_manager: failed to update terminal env policy for '{name}': {e}"
+                );
+            }
+        }
+    }
 }
 
 impl App for SecretsApp {
@@ -214,6 +295,10 @@ impl App for SecretsApp {
 
     fn sync_cwd(&mut self, new_cwd: &std::path::Path) {
         self.cwd = new_cwd.to_path_buf();
+        let (workspace_root, workspace_id, terminal_inject) = load_workspace_policy(&self.cwd);
+        self.workspace_root = workspace_root;
+        self.workspace_id = workspace_id;
+        self.terminal_inject = terminal_inject;
     }
 
     fn handle_key(&mut self, input: &egui::InputState) -> crate::app::app_trait::KeyDisposition {
@@ -564,9 +649,13 @@ impl SecretsApp {
                 }
 
                 let mut clicked_idx: Option<usize> = None;
+                let mut toggle_terminal_env: Option<String> = None;
 
                 for (idx, entry) in self.entries.iter().enumerate() {
                     let is_selected = idx == self.selected;
+                    let is_current_workspace_secret =
+                        self.workspace_id.as_deref() == Some(entry.scope.as_str());
+                    let env_enabled = self.terminal_inject.contains(&entry.name);
                     let (resp, _) = row::selectable_row(ui, is_selected, colors, |ui| {
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
@@ -580,6 +669,28 @@ impl SecretsApp {
                                     labels::description_label(ui, &entry.scope, colors);
                                 });
                             });
+                            if is_current_workspace_secret {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let label = if env_enabled { "env on" } else { "env off" };
+                                        if ui
+                                            .button(
+                                                egui::RichText::new(label)
+                                                    .color(if env_enabled {
+                                                        colors.accent
+                                                    } else {
+                                                        colors.text_dim
+                                                    })
+                                                    .size(style::TEXT_CAPTION),
+                                            )
+                                            .clicked()
+                                        {
+                                            toggle_terminal_env = Some(entry.name.clone());
+                                        }
+                                    },
+                                );
+                            }
                         });
                     });
 
@@ -602,6 +713,9 @@ impl SecretsApp {
                 if let Some(idx) = clicked_idx {
                     self.selected = idx;
                     self.pending_delete = false;
+                }
+                if let Some(name) = toggle_terminal_env {
+                    self.toggle_terminal_env(name);
                 }
             });
     }

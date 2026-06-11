@@ -60,6 +60,7 @@ pub enum Commands {
     ///
     /// Secrets are saved to your system keychain and injected as environment variables when you run commands.
     /// Use `plexi workspace init` first to scope secrets to a project.
+    #[command(alias = "secrets")]
     Secret {
         #[command(subcommand)]
         cmd: SecretCmd,
@@ -1073,5 +1074,15 @@ mod tests {
             panic!("expected secret list command");
         };
         assert!(global);
+    }
+
+    #[test]
+    fn secrets_alias_routes_to_secret_command() {
+        let cli = Cli::try_parse_from(["plexi", "secrets", "list"]).unwrap();
+
+        let Some(Commands::Secret { cmd }) = cli.command else {
+            panic!("expected secret command");
+        };
+        assert!(matches!(cmd, SecretCmd::List { global: false }));
     }
 }
