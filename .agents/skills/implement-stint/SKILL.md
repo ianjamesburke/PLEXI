@@ -42,6 +42,7 @@ This skill is not complete when the worktree exists. Completion means the task w
   ```
 - Worktree path rule: after creation, all implementation reads, edits, tests, and commits run from the worktree path, not the repo root.
 - If the task links a GitHub issue, keep issue labels as the live PR pipeline state. If it does not, still open a PR; just skip issue labels and Ship Log updates.
+- Publish phase handoff state with `. .agents/skills/_lib/pipeline-slots.sh` and `pipeline_slots_set implement <issue-or-task> "" <status> "" ""` whenever pane title state changes.
 
 ## Phase 0 - Resolve Task
 
@@ -164,6 +165,7 @@ Name the pane:
 
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "stint-<task-id> · impl"
+pipeline_slots_set implement <issue-or-task> "" working "" ""
 ```
 
 If the task links a GitHub issue, mark the issue in progress after the worktree exists:
@@ -268,6 +270,7 @@ Rename the pane:
 
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "stint-<task-id> · pushed"
+pipeline_slots_set implement <issue-or-task> "" pushed "" ""
 ```
 
 Then invoke `/open-pr` inline for the branch. Do not run `stint done` here; `/merge-pr` closes the task after the PR merges and alpha is verified.
@@ -282,4 +285,5 @@ Record the blocker in the task body and linked issue if one exists. Rename the p
 
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "stint-<task-id> · blocked"
+pipeline_slots_set implement <issue-or-task> "" blocked "" "<blocker summary>"
 ```

@@ -38,6 +38,12 @@ This skill is not complete when the branch is merely pushed. Completion includes
 
 > **Stint timing is mandatory.** This skill opens linked stint work with `stint start <task-id>`. Do not close stint tasks here; `/merge-pr` runs `stint done <task-id>` after the PR merges and alpha is verified. Use `stint start --help` / `stint done --help` for exact flags instead of manually editing timing fields.
 
+> **Pane slots.** Publish pipeline state with the shared helper whenever phase, issue, PR, status, testing instructions, or last error changes:
+> ```bash
+> . .agents/skills/_lib/pipeline-slots.sh
+> pipeline_slots_set implement <issue-number> "" working "" ""
+> ```
+
 ---
 
 ## Phase 0 — Find the Issue
@@ -113,6 +119,7 @@ If ls-remote is non-empty: another agent owns this branch. Surface it and any ex
 ```bash
 gh issue edit <number> --add-label "in progress" --add-label "pipeline:implement"
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<number> · impl"
+pipeline_slots_set implement <number> "" working "" ""
 IMPL_PANE=$PLEXI_PANE_ID
 wtp add -b feature/<issue-number>-short-description HEAD  # origin/alpha when in sync; local HEAD when ahead
 ```
@@ -292,6 +299,7 @@ gh issue edit <N> \
 Set the pane status to `pushed`, then invoke `/open-pr` inline in the same pane — do not spawn a new pane or wait for PM to dispatch:
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · pushed"   # bundle: "#<n1>+<n2> · pushed"
+pipeline_slots_set implement <n> "" pushed "" ""
 # Next action in this same pane:
 /open-pr <branch-or-issue>
 ```
@@ -315,4 +323,4 @@ plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · pushed"   # bundle: "#
 - `cargo build --manifest-path <worktree>/Cargo.toml` — never rely on CWD
 - Start linked stint tasks here; never mark them done here. `/merge-pr` owns completion timing.
 - After pushing, always invoke `/open-pr` inline before considering this skill complete.
-- On unrecoverable failure: set `plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · blocked"`, close PR if open, comment on issue under `## Prior Attempts`, remove `in progress`, add `ready`, exit
+- On unrecoverable failure: set `plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · blocked"`, run `pipeline_slots_set implement <n> "" blocked "" "<error summary>"`, close PR if open, comment on issue under `## Prior Attempts`, remove `in progress`, add `ready`, exit

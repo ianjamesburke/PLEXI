@@ -80,12 +80,12 @@ The pipeline self-orchestrates inline from there:
 implement-issue → open-pr → validate-pr (notify user, wait) → merge-pr
 ```
 
-All phases run in the same window. Each window closes itself at the end of merge-pr and fires a notify.
+All phases run in the same window. Each successful window closes itself at the end of merge-pr without firing a redundant success notification; failures and user-action states still notify.
 
 ---
 
 ## Notes
 
-- Dispatch is fire-and-forget after lanes are open. You will be notified when each pipeline completes via `plexi notify`.
+- Dispatch is fire-and-forget after lanes are open. You will be notified for validation handoffs, failures, and user-action states; successful merge panes close quietly.
 - If a pane crashes mid-pipeline: re-run `/dispatch N` for that issue. implement-issue will detect the in-progress state and ask for takeover confirmation, or open-pr/validate-pr will resume from the Ship Log.
 - To add a lane to an existing dispatch: `bash .claude/skills/dispatch/scripts/add-to-dispatch.sh <pane_id> <issue>`

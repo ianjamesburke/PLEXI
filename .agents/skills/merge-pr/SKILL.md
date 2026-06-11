@@ -13,6 +13,8 @@ Phase 4 of the ship pipeline. Input: approved PR number. Output: clean alpha at 
 > **Labels are the live state.** On success, all `pipeline:*` labels are removed when the issue closes. On failure, remove all `pipeline:*` labels and `in progress`, add `ready`.
 
 > **Stint timing closure.** Close linked stint tasks with `stint done <task-id>` after the script exits 0.
+>
+> **Pane slots.** Source `.agents/skills/_lib/pipeline-slots.sh` and publish `pipeline_slots_set merge "$ISSUE" "$PR_NUMBER" <status> "" <last-error>` at status changes.
 
 **Entry:** `/merge-pr <pr-number>`
 
@@ -23,6 +25,7 @@ Phase 4 of the ship pipeline. Input: approved PR number. Output: clean alpha at 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · merging"
+pipeline_slots_set merge "$ISSUE" "$PR_NUMBER" merging "" ""
 ```
 
 > Labels are already correct when invoked inline from validate-pr. No label edit needed here.
@@ -97,12 +100,7 @@ git status  # must be clean
 
 ```bash
 plexi${PLEXI_CHANNEL:+-$PLEXI_CHANNEL} pane name "#<n> · done"
-(RESULT=$(plexi notify \
-  --title "Shipped #$ISSUE" \
-  --body "<title> — v$VERSION" \
-  --choice "ok:Dismiss" \
-  --choice "open:Open PR")
- [ "$RESULT" = "open" ] && open "<pr-url>") &
+pipeline_slots_set merge "$ISSUE" "$PR_NUMBER" done "" ""
 plexi pane close
 ```
 
@@ -118,4 +116,4 @@ plexi pane close
 - Never commit directly to alpha, beta, or main
 - Alpha must be clean when this skill exits
 - Never close a linked stint task until `just merge-pr` exits 0
-- On unrecoverable failure: set pane to `blocked`, comment on issue, remove `in progress` + all `pipeline:*` labels, add `ready`, exit
+- On unrecoverable failure: set pane to `blocked`, run `pipeline_slots_set merge "$ISSUE" "$PR_NUMBER" blocked "" "<error summary>"`, comment on issue, remove `in progress` + all `pipeline:*` labels, add `ready`, exit
