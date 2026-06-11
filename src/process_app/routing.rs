@@ -616,6 +616,7 @@ impl ProcessApp {
                     });
                     return;
                 }
+                self.arm_async_completion_wake("stream_process");
                 let thread_name = format!("stream-reader-{}-{}", type_id, corr_id);
                 std::thread::Builder::new()
                     .name(thread_name)

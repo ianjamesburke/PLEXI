@@ -76,6 +76,14 @@ pub(crate) struct DeferredAiQuery {
     pub(crate) tools: Vec<AiTool>,
 }
 
+fn request_repaint_from_thread(repaint_ctx: &Arc<Mutex<Option<egui::Context>>>) {
+    if let Ok(ctx) = repaint_ctx.lock() {
+        if let Some(ctx) = ctx.as_ref() {
+            ctx.request_repaint();
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // StdinItem — typed messages for the stdin-writer channel
 // ---------------------------------------------------------------------------
@@ -311,6 +319,10 @@ pub struct ProcessApp {
     /// Key = call_id, value = channel to the blocked HTTP handler thread.
     pub(crate) mcp_pending:
         std::collections::HashMap<String, std::sync::mpsc::SyncSender<mcp_server::McpToolResponse>>,
+    /// Last egui context seen by `ui()`. Background stdout/stderr/reaper
+    /// threads use this to wake the host when they enqueue work or flip
+    /// lifecycle state.
+    repaint_ctx: Arc<Mutex<Option<egui::Context>>>,
     /// Set to true when the app emits ControlCommand::CloseSelf. The host
     /// checks wants_close() each frame and calls close_pane gracefully,
     /// avoiding the crash-restart path that sys.exit() would trigger.
@@ -579,7 +591,9 @@ impl ProcessApp {
         let recent_stderr_capture = Arc::new(Mutex::new(VecDeque::<String>::new()));
         let recent_stderr_thread = Arc::clone(&recent_stderr_capture);
         let lifecycle_tracker = Arc::new(LifecycleTracker::new());
+        let repaint_ctx = Arc::new(Mutex::new(None));
         let lifecycle_stderr = Arc::clone(&lifecycle_tracker);
+        let repaint_stderr = Arc::clone(&repaint_ctx);
         thread::Builder::new()
             .name(format!("app-stderr-{stderr_type_id}"))
             .spawn(move || {
@@ -591,6 +605,7 @@ impl ProcessApp {
                             let target = format!("app::{stderr_type_id}");
                             log::warn!(target: &target, "stderr: {l}");
                             lifecycle_stderr.observe_stderr_line(&l);
+                            request_repaint_from_thread(&repaint_stderr);
                             if let Ok(mut buf) = recent_stderr_thread.lock() {
                                 if buf.len() >= STDERR_RING_CAP {
                                     buf.pop_front();
@@ -611,6 +626,7 @@ impl ProcessApp {
         //   - Stdout EOF / read error → on_stdout_closed() (sticky Crashed).
         let (draw_tx, draw_rx) = mpsc::channel::<DrawCommand>();
         let lifecycle_stdout = Arc::clone(&lifecycle_tracker);
+        let repaint_stdout = Arc::clone(&repaint_ctx);
         let stdout_type_id = type_id.clone();
         thread::Builder::new()
             .name(format!("app-stdout-{stdout_type_id}"))
@@ -624,6 +640,7 @@ impl ProcessApp {
                                 if draw_tx.send(cmd).is_err() {
                                     break;
                                 }
+                                request_repaint_from_thread(&repaint_stdout);
                             }
                             Err(e) => {
                                 log::warn!(
@@ -633,6 +650,7 @@ impl ProcessApp {
                                     log::error!(
                                         "ProcessApp[{stdout_type_id}]: protocol-error threshold reached — flipping pane state"
                                     );
+                                    request_repaint_from_thread(&repaint_stdout);
                                 }
                             }
                         }
@@ -640,6 +658,7 @@ impl ProcessApp {
                     Err(e) => {
                         log::debug!("ProcessApp[{stdout_type_id}] stdout closed: {e}");
                         lifecycle_stdout.on_stdout_closed();
+                        request_repaint_from_thread(&repaint_stdout);
                         break;
                     }
                     _ => {}
@@ -649,6 +668,7 @@ impl ProcessApp {
             // subprocess closed its stdout — flip Crashed unless already
             // terminal.
             lifecycle_stdout.on_stdout_closed();
+            request_repaint_from_thread(&repaint_stdout);
         }).expect("failed to spawn app-stdout thread");
 
         // Background reaper: blocks on waitpid so the UI thread never polls try_wait.
@@ -656,6 +676,7 @@ impl ProcessApp {
         // per-frame try_wait() poll that was causing 600 syscalls/sec with 10 panes open.
         let reaper_pid = child.id();
         let lifecycle_reaper = Arc::clone(&lifecycle_tracker);
+        let repaint_reaper = Arc::clone(&repaint_ctx);
         let reaper_type_id = type_id.clone();
         thread::Builder::new()
             .name(format!("app-reaper-{reaper_type_id}"))
@@ -672,6 +693,7 @@ impl ProcessApp {
                     "ProcessApp[{reaper_type_id}]: child exited — reaper signaling lifecycle"
                 );
                 lifecycle_reaper.on_process_exited();
+                request_repaint_from_thread(&repaint_reaper);
             })
             .expect("failed to spawn app-reaper thread");
 
@@ -774,6 +796,7 @@ impl ProcessApp {
             active_stream_threads: Arc::new(AtomicUsize::new(0)),
             mcp_server: mcp_server_handle,
             mcp_pending: std::collections::HashMap::new(),
+            repaint_ctx,
             wants_close_self: false,
             click_awaiting_frame: false,
             launch_args: args.to_vec(),
@@ -931,6 +954,7 @@ impl ProcessApp {
             file_picker_rx,
             mcp_server: None,
             mcp_pending: std::collections::HashMap::new(),
+            repaint_ctx: Arc::new(Mutex::new(None)),
             wants_close_self: false,
             click_awaiting_frame: false,
             launch_args: Vec::new(),
@@ -1102,7 +1126,8 @@ impl ProcessApp {
                 PlexiEvent::Timer { timer_id } => {
                     self.pending_timers.remove(timer_id);
                 }
-                PlexiEvent::AiStreamChunk { .. } => {}
+                PlexiEvent::AiStreamChunk { .. } | PlexiEvent::StreamChunk { .. } => {}
+                PlexiEvent::StreamEnd { .. } => self.complete_async_wake(),
                 _ => self.complete_async_wake(),
             }
             self.outbound_events.push_back(event);
@@ -1119,6 +1144,7 @@ impl ProcessApp {
         self.pending_async_completions > 0
             || !self.pending_timers.is_empty()
             || self.active_stream_threads.load(Ordering::Relaxed) > 0
+            || self.mcp_server.is_some()
             || self.image_cache.has_pending()
     }
 
@@ -1492,6 +1518,9 @@ impl App for ProcessApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
         let size = ui.available_size();
+        if let Ok(mut repaint_ctx) = self.repaint_ctx.lock() {
+            *repaint_ctx = Some(ui.ctx().clone());
+        }
 
         self.poll_mcp_calls();
         self.flush_outbound_events();
