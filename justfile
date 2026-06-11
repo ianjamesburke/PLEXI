@@ -199,6 +199,37 @@ promote to="":
 uninstall channel="all":
     bash scripts/uninstall.sh {{channel}}
 
+# Squash-merge a validated PR to alpha: rebase, merge, sync, cleanup, bump, close issue.
+# Intended for the merge-pr skill — run from repo root.
+#   just merge-pr 2155
+merge-pr PR:
+    bash scripts/merge-pr.sh {{PR}}
+
+# Sub-steps for conflict recovery. Call individually to resume a failed merge-pr.
+#   just merge-rebase feature/2155-foo   — rebase + force-push feature branch
+#   just merge-squash 2155               — squash-merge only
+#   just merge-sync                      — reset local alpha to origin/alpha
+#   just merge-cleanup 2155 feature/2155-foo
+#   just merge-bump
+#   just merge-close 2144 2155
+merge-rebase BRANCH:
+    bash scripts/merge-pr.sh rebase {{BRANCH}}
+
+merge-squash PR:
+    bash scripts/merge-pr.sh squash {{PR}}
+
+merge-sync:
+    bash scripts/merge-pr.sh sync
+
+merge-cleanup PR BRANCH:
+    bash scripts/merge-pr.sh cleanup {{PR}} {{BRANCH}}
+
+merge-bump:
+    bash scripts/merge-pr.sh bump
+
+merge-close ISSUE PR:
+    bash scripts/merge-pr.sh close {{ISSUE}} {{PR}}
+
 # Dispatch Claude agents at one or more issues. Labels each "in progress" first
 # to prevent double-claiming when multiple dispatches run close together.
 # TODO: replace `c` with `claude --dangerously-skip-permissions` once this flow
