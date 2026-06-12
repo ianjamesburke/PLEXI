@@ -87,6 +87,7 @@ impl AssistantRenderer {
             TurnRole::Assistant => "assistant",
             TurnRole::Tool => "tool",
             TurnRole::Error => "error",
+            TurnRole::Event => "event",
         }
     }
 
@@ -96,6 +97,7 @@ impl AssistantRenderer {
             TurnRole::Assistant => colors.text_dim,
             TurnRole::Tool => colors.text_dim,
             TurnRole::Error => colors.danger,
+            TurnRole::Event => colors.accent,
         }
     }
 
@@ -106,6 +108,20 @@ impl AssistantRenderer {
         text: &str,
         status: Option<ToolStatus>,
     ) {
+        // Delivered app events are compact single-line rows.
+        if role == TurnRole::Event {
+            ui.horizontal(|ui| {
+                ui.add_space(style::SPACE_SM);
+                ui.label(
+                    RichText::new(text)
+                        .size(style::TEXT_CAPTION)
+                        .monospace()
+                        .color(colors.accent),
+                );
+            });
+            ui.add_space(style::SPACE_SM);
+            return;
+        }
         // Completed tool calls are compact single-line rows.
         if role == TurnRole::Tool {
             let (icon, color) = match status {

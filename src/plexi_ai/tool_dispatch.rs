@@ -266,6 +266,13 @@ pub struct ToolDispatcher {
     /// Snapshot: tool_name → (provider_pane_id, AiTool).
     /// Already filtered to the caller's workspace.
     tools: HashMap<String, (u64, AiTool)>,
+    /// Caller-local host tools (Phase D3: the Assistant's
+    /// `host.events.subscribe`/`unsubscribe`). Dispatched through
+    /// `host_handler`, never sent to a pane. Unaffected by `retain_allowed`
+    /// — the registering caller owns their gating.
+    host_tools: HashMap<String, AiTool>,
+    /// Handler for `host_tools` calls. Runs on the broker worker thread.
+    host_handler: Option<HostToolHandler>,
     /// Caller identity for audit logging.
     caller_app_id: String,
     /// Caller pane id for audit logging.
@@ -274,10 +281,14 @@ pub struct ToolDispatcher {
     hooks: Option<Arc<dyn ToolCallHooks>>,
 }
 
+/// Handler for caller-local host tools: `(tool_name, input_json) → result`.
+pub type HostToolHandler = Arc<dyn Fn(&str, &str) -> ToolCallResult + Send + Sync>;
+
 impl std::fmt::Debug for ToolDispatcher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolDispatcher")
             .field("tools", &self.tools.keys().collect::<Vec<_>>())
+            .field("host_tools", &self.host_tools.keys().collect::<Vec<_>>())
             .field("caller_app_id", &self.caller_app_id)
             .field("caller_pane_id", &self.caller_pane_id)
             .field("hooks", &self.hooks.is_some())
@@ -303,10 +314,27 @@ impl ToolDispatcher {
         );
         Self {
             tools,
+            host_tools: HashMap::new(),
+            host_handler: None,
             caller_app_id,
             caller_pane_id,
             hooks: None,
         }
+    }
+
+    /// Register caller-local host tools (Phase D3). They are visible in
+    /// `all_tools()` and dispatched through `handler` on the broker worker
+    /// thread — never routed to a pane. Hooks still observe these calls.
+    pub fn add_host_tools(&mut self, tools: Vec<AiTool>, handler: HostToolHandler) {
+        for tool in tools {
+            log::info!(
+                "tool_dispatch: caller={} registered host tool '{}'",
+                self.caller_app_id,
+                tool.name
+            );
+            self.host_tools.insert(tool.name.clone(), tool);
+        }
+        self.host_handler = Some(handler);
     }
 
     /// Install per-call hooks (Phase D: the Assistant's ask-gate). Hooks see
@@ -317,7 +345,11 @@ impl ToolDispatcher {
 
     /// All tools visible at snapshot time, for injection into the LLM request.
     pub fn all_tools(&self) -> Vec<AiTool> {
-        self.tools.values().map(|(_, t)| t.clone()).collect()
+        self.tools
+            .values()
+            .map(|(_, t)| t.clone())
+            .chain(self.host_tools.values().cloned())
+            .collect()
     }
 
     /// Restrict the snapshot to `allowed` tool names (Phase C: the agent
@@ -342,6 +374,37 @@ impl ToolDispatcher {
     /// out. When hooks are installed, `before_call` runs first (and may block
     /// the call) and `after_call` observes the outcome.
     pub fn dispatch_call(&self, call_id: String, name: &str, input_json: String) -> ToolCallResult {
+        // Host tools never reach a pane: hooks observe them, the caller's
+        // host handler resolves them in-process.
+        if self.host_tools.contains_key(name) {
+            let Some(handler) = &self.host_handler else {
+                return ToolCallResult {
+                    output_json: None,
+                    error: Some(format!("host_tool_unhandled: no handler for {name:?}")),
+                };
+            };
+            if let Some(hooks) = &self.hooks {
+                if let Err(reason) = hooks.before_call(name, &input_json) {
+                    log::info!(
+                        "tool_dispatch: caller={} — host tool '{name}' blocked by hook: {reason}",
+                        self.caller_app_id
+                    );
+                    return ToolCallResult {
+                        output_json: None,
+                        error: Some(reason),
+                    };
+                }
+            }
+            log::info!(
+                "tool_dispatch: caller={} → host tool {name:?} call_id={call_id:?}",
+                self.caller_app_id
+            );
+            let result = handler(name, &input_json);
+            if let Some(hooks) = &self.hooks {
+                hooks.after_call(name, result.error.as_deref());
+            }
+            return result;
+        }
         if !self.tools.contains_key(name) {
             // Fall through to dispatch_inner's tool_not_found path without
             // invoking hooks for tools the snapshot does not contain.

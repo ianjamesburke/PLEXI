@@ -14,6 +14,8 @@ pub enum TurnRole {
     Assistant,
     Tool,
     Error,
+    /// An app event delivered through a granted subscription (Phase D3).
+    Event,
 }
 
 /// Final state of a tool-call transcript row. In-flight states (pending,

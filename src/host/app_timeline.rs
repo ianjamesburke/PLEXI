@@ -298,6 +298,18 @@ impl AppTimeline {
         Ok(accepted)
     }
 
+    /// Every declared `(app_id, stream_name)` pair, sorted — the discovery
+    /// surface for actors that subscribe at runtime (Phase D Assistant).
+    pub fn all_declared_streams(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .streams
+            .iter()
+            .flat_map(|(app, m)| m.keys().map(move |name| (app.clone(), name.clone())))
+            .collect();
+        out.sort();
+        out
+    }
+
     /// Declared streams for an app (empty when none declared).
     pub fn declared_streams(&self, app_id: &str) -> Vec<&EventStreamDecl> {
         self.streams

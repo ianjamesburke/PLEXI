@@ -19,13 +19,16 @@ use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 
 use crate::app::app_trait::{App, AppRenderContext};
-use crate::app_protocol::{AiMessage, ModelTier};
+use crate::app_protocol::{AiMessage, AiTool, ModelTier, PayloadMode, TriggerMode};
 use crate::broker::{
     ActorScope, ActorType, Decision, GrantDuration, GrantRecord, GrantSource, GrantStore,
     PermissionRequest, ResourceScope, TargetType,
 };
+use crate::host::app_timeline::{AppTimeline, SubscriptionRecord};
 use crate::plexi_ai::broker::{AiBroker, AiBrokerRequest, StreamDelta, StreamSink};
-use crate::plexi_ai::tool_dispatch::{ToolCallHooks, ToolDispatcher};
+use crate::plexi_ai::tool_dispatch::{
+    HostToolHandler, ToolCallHooks, ToolCallResult, ToolDispatcher,
+};
 
 use audit::{AuditEvent, AuditLog};
 use model::{AssistantEffect, AssistantModel, PermissionChoice, TurnRole};
@@ -35,8 +38,16 @@ use store::AssistantStore;
 const ASSISTANT_SYSTEM_PROMPT: &str = "You are the Plexi Assistant, the workspace \
 operator inside the Plexi terminal environment. Answer concisely. Tools exposed \
 by running apps are available to you when listed; calls may pause for the user's \
-permission. Pane and terminal control arrives in a later phase — when asked to \
-act on panes, explain that those tools are not wired up yet.";
+permission. You can subscribe to app event streams with the host tool \
+host.events.subscribe (input: {\"app\": \"<app_id>\", \"event\": \"<event name or *>\"}) \
+and stop with host.events.unsubscribe — subscribing may pause for the user's \
+permission. Once subscribed, delivered events appear in this conversation and you \
+should respond to them. Pane and terminal control arrives in a later phase — when \
+asked to act on panes, explain that those tools are not wired up yet.";
+
+/// Host tool names the Assistant injects into its dispatcher snapshot.
+const HOST_TOOL_SUBSCRIBE: &str = "host.events.subscribe";
+const HOST_TOOL_UNSUBSCRIBE: &str = "host.events.unsubscribe";
 
 /// Broker identity for the Assistant: actor id at the permission tiers,
 /// `agent:assistant` as the `ToolDispatcher` caller id (Phase C convention).
@@ -69,6 +80,15 @@ enum ToolFlowEvent {
         tool: String,
         input_json: String,
         reply: SyncSender<PermissionReply>,
+    },
+    /// A host tool call (`host.events.*`) for the pane to execute on the UI
+    /// thread, where the grant store and timeline live. The worker blocks on
+    /// `reply`; an ask-gated subscribe holds the reply until the sheet
+    /// resolves.
+    HostCall {
+        tool: String,
+        input_json: String,
+        reply: SyncSender<ToolCallResult>,
     },
 }
 
@@ -158,6 +178,25 @@ pub struct AssistantApp {
     flow_rx: Receiver<ToolFlowEvent>,
     /// Reply channel for the worker blocked on the pending permission sheet.
     pending_reply: Option<SyncSender<PermissionReply>>,
+    /// Shared app event timeline (production: the global instance).
+    timeline: Arc<Mutex<AppTimeline>>,
+    /// Live event-stream subscriptions: `(target_id, subscription_id)` where
+    /// `target_id` is `"<app>::<event>"`.
+    live_subs: Vec<(String, String)>,
+    /// Pending ask-gated `host.events.subscribe`: the stream target plus the
+    /// blocked worker's reply channel. Resolved by the permission sheet.
+    pending_subscribe: Option<PendingSubscribe>,
+    /// Trigger lines for non-self-caused deliveries that arrived while a
+    /// turn was in flight — folded into the next dispatched turn.
+    queued_event_lines: Vec<String>,
+}
+
+/// An ask-gated subscribe waiting on the permission sheet.
+struct PendingSubscribe {
+    app: String,
+    event: String,
+    target: String,
+    reply: SyncSender<ToolCallResult>,
 }
 
 impl AssistantApp {
@@ -166,6 +205,21 @@ impl AssistantApp {
     /// config dir — grants load from `<profile_dir>/grants.toml` and audit
     /// events append to `<profile_dir>/audit.jsonl`.
     pub fn new(workspace_root: PathBuf, broker: Arc<dyn AiBroker>, profile_dir: &Path) -> Self {
+        Self::new_with_timeline(
+            workspace_root,
+            broker,
+            profile_dir,
+            crate::host::app_timeline::global(),
+        )
+    }
+
+    /// `new` with an explicit timeline — tests inject an isolated instance.
+    pub fn new_with_timeline(
+        workspace_root: PathBuf,
+        broker: Arc<dyn AiBroker>,
+        profile_dir: &Path,
+        timeline: Arc<Mutex<AppTimeline>>,
+    ) -> Self {
         let store = AssistantStore::new(&workspace_root);
         let model = match store.active_conversation() {
             Some(id) => {
@@ -206,11 +260,96 @@ impl AssistantApp {
             flow_tx,
             flow_rx,
             pending_reply: None,
+            timeline,
+            live_subs: Vec::new(),
+            pending_subscribe: None,
+            queued_event_lines: Vec::new(),
         };
         // Persist the active id immediately so close-then-reopen resumes
         // this conversation even before the first turn.
         app.session_write();
+        // Persisted event-stream grants survive restarts: resubscribe them.
+        app.resubscribe_granted_streams();
         app
+    }
+
+    /// Re-create timeline subscriptions for every persisted `Allow` grant on
+    /// an event stream — same semantics as `AgentHost::attach`'s seeded
+    /// grants. Runs on pane open so subscriptions survive restarts.
+    fn resubscribe_granted_streams(&mut self) {
+        let targets: Vec<String> = self
+            .grant_store
+            .records()
+            .iter()
+            .filter(|r| {
+                r.actor_type == ActorType::Agent
+                    && r.actor_id == ASSISTANT_ACTOR_ID
+                    && r.target_type == TargetType::AppEventStream
+                    && r.decision == Decision::Allow
+            })
+            .map(|r| r.target_id.clone())
+            .collect();
+        for target in targets {
+            let Some((app, event)) = target.split_once("::") else {
+                log::warn!("assistant: malformed event-stream grant target '{target}' — skipping");
+                continue;
+            };
+            let (app, event) = (app.to_string(), event.to_string());
+            self.subscribe_stream(&app, &event);
+        }
+        log::info!(
+            "assistant: event-stream discovery — {} persisted subscription(s) restored",
+            self.live_subs.len()
+        );
+    }
+
+    /// Add a live timeline subscription for `<app>::<event>` (`*` = all
+    /// streams the app declares). Caller must have established the grant.
+    fn subscribe_stream(&mut self, app: &str, event: &str) {
+        let target = format!("{app}::{event}");
+        if self.live_subs.iter().any(|(t, _)| *t == target) {
+            log::info!("assistant: already subscribed to '{target}'");
+            return;
+        }
+        let subscription_id = format!("assistant-sub-{}", uuid::Uuid::new_v4());
+        self.timeline.lock().unwrap().add_subscription(SubscriptionRecord {
+            subscription_id: subscription_id.clone(),
+            subscriber_type: ActorType::Agent,
+            subscriber_id: ASSISTANT_ACTOR_ID.to_string(),
+            app_id: app.to_string(),
+            event_names: if event == "*" {
+                Vec::new()
+            } else {
+                vec![event.to_string()]
+            },
+            payload_mode: PayloadMode::Full,
+            trigger_mode: TriggerMode::Conversation,
+            resource_id: None,
+            duration: GrantDuration::Session,
+            created_at: crate::host::event_log::now_timestamp(),
+        });
+        log::info!("assistant: subscribed to '{target}' ({subscription_id})");
+        self.live_subs.push((target, subscription_id));
+    }
+
+    /// Remove live subscription(s) for one target. Returns how many.
+    fn unsubscribe_stream(&mut self, target: &str) -> usize {
+        let mut removed = 0;
+        let mut timeline = self.timeline.lock().unwrap();
+        self.live_subs.retain(|(t, sub_id)| {
+            if t == target {
+                timeline.remove_subscription(sub_id);
+                removed += 1;
+                false
+            } else {
+                true
+            }
+        });
+        drop(timeline);
+        if removed > 0 {
+            log::info!("assistant: unsubscribed {removed} subscription(s) for '{target}'");
+        }
+        removed
     }
 
     /// Execute the effects a model transition returned.
@@ -289,7 +428,60 @@ impl AssistantApp {
             session_allowed: Mutex::new(HashSet::new()),
             flow_tx: self.flow_tx.clone(),
         }));
+        // Host event tools: always visible; subscribing is ask-gated
+        // per-stream inside the pane's host-call handler, not here.
+        let flow_tx = self.flow_tx.clone();
+        let handler: HostToolHandler = Arc::new(move |name, input_json| {
+            let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+            let sent = flow_tx.send(ToolFlowEvent::HostCall {
+                tool: name.to_string(),
+                input_json: input_json.to_string(),
+                reply: reply_tx,
+            });
+            if sent.is_err() {
+                return ToolCallResult {
+                    output_json: None,
+                    error: Some("host_tool_failed: assistant pane closed".to_string()),
+                };
+            }
+            reply_rx.recv().unwrap_or(ToolCallResult {
+                output_json: None,
+                error: Some("host_tool_failed: assistant pane closed".to_string()),
+            })
+        });
+        dispatcher.add_host_tools(Self::host_event_tools(), handler);
         dispatcher
+    }
+
+    /// Declarations for the Assistant's host event tools.
+    fn host_event_tools() -> Vec<AiTool> {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "app": {"type": "string", "description": "App id, e.g. 'chess'"},
+                "event": {
+                    "type": "string",
+                    "description": "Declared event stream name, or '*' for all"
+                },
+            },
+            "required": ["app", "event"],
+        });
+        vec![
+            AiTool {
+                name: HOST_TOOL_SUBSCRIBE.to_string(),
+                description: "Subscribe to an app's event stream so its events \
+                    appear in this conversation. May pause for the user's permission."
+                    .to_string(),
+                input_schema: schema.clone(),
+                timeout_ms: Some(120_000),
+            },
+            AiTool {
+                name: HOST_TOOL_UNSUBSCRIBE.to_string(),
+                description: "Stop receiving an app's event stream.".to_string(),
+                input_schema: schema,
+                timeout_ms: Some(30_000),
+            },
+        ]
     }
 
     /// Persist the active conversation id and any turns not yet on disk.
@@ -315,7 +507,8 @@ impl AssistantApp {
         self.persisted_turns = self.model.turns.len();
     }
 
-    /// Conversation history for the broker: user/assistant turns only.
+    /// Conversation history for the broker: user/assistant turns plus
+    /// delivered app events (as user-role context lines).
     fn history_messages(&self) -> Vec<AiMessage> {
         self.model
             .turns
@@ -325,6 +518,10 @@ impl AssistantApp {
                     role: "user".to_string(),
                     content: turn.text.clone(),
                 }),
+                TurnRole::Event => Some(AiMessage {
+                    role: "user".to_string(),
+                    content: format!("App event delivered to you: {}", turn.text),
+                }),
                 TurnRole::Assistant => Some(AiMessage {
                     role: "assistant".to_string(),
                     content: turn.text.clone(),
@@ -332,6 +529,96 @@ impl AssistantApp {
                 TurnRole::Tool | TurnRole::Error => None,
             })
             .collect()
+    }
+
+    /// Execute one `host.events.*` call on the UI thread. Replies on the
+    /// worker's channel — except an ask-gated subscribe, which parks the
+    /// reply in `pending_subscribe` until the permission sheet resolves.
+    fn handle_host_call(&mut self, tool: &str, input_json: &str, reply: SyncSender<ToolCallResult>) {
+        let err = |msg: String| ToolCallResult {
+            output_json: None,
+            error: Some(msg),
+        };
+        let ok = |msg: String| ToolCallResult {
+            output_json: Some(serde_json::json!({"ok": true, "detail": msg}).to_string()),
+            error: None,
+        };
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(input_json);
+        let (app, event) = match &parsed {
+            Ok(v) => (
+                v.get("app").and_then(|a| a.as_str()).unwrap_or("").to_string(),
+                v.get("event").and_then(|e| e.as_str()).unwrap_or("").to_string(),
+            ),
+            Err(e) => {
+                let _ = reply.send(err(format!("invalid_input: {e}")));
+                return;
+            }
+        };
+        if app.trim().is_empty() || event.trim().is_empty() {
+            let _ = reply.send(err(
+                "invalid_input: 'app' and 'event' must be non-empty".to_string(),
+            ));
+            return;
+        }
+        let target = format!("{app}::{event}");
+        match tool {
+            HOST_TOOL_SUBSCRIBE => {
+                if self.live_subs.iter().any(|(t, _)| *t == target) {
+                    let _ = reply.send(ok(format!("already subscribed to {target}")));
+                    return;
+                }
+                let req = PermissionRequest::new(
+                    ActorType::Agent,
+                    ASSISTANT_ACTOR_ID,
+                    TargetType::AppEventStream,
+                    &target,
+                    Some(&self.workspace_root),
+                );
+                match self.grant_store.evaluate(&req, None) {
+                    Decision::Allow => {
+                        self.subscribe_stream(&app, &event);
+                        self.audit
+                            .append(&AuditEvent::now("subscribe", &target, "ok", "granted"));
+                        let _ = reply.send(ok(format!("subscribed to {target}")));
+                    }
+                    Decision::Deny => {
+                        log::info!("assistant: subscribe to '{target}' denied by grant");
+                        self.audit
+                            .append(&AuditEvent::now("subscribe", &target, "deny", "grant"));
+                        let _ = reply.send(err(format!(
+                            "permission_denied: subscription to {target} is denied"
+                        )));
+                    }
+                    Decision::Ask => {
+                        log::info!("assistant: permission sheet shown for stream '{target}'");
+                        self.model.permission_requested(HOST_TOOL_SUBSCRIBE, &target);
+                        self.pending_subscribe = Some(PendingSubscribe {
+                            app,
+                            event,
+                            target,
+                            reply,
+                        });
+                    }
+                }
+            }
+            HOST_TOOL_UNSUBSCRIBE => {
+                let removed = self.unsubscribe_stream(&target);
+                self.audit.append(&AuditEvent::now(
+                    "unsubscribe",
+                    &target,
+                    if removed > 0 { "ok" } else { "noop" },
+                    &format!("{removed} subscription(s) removed"),
+                ));
+                if removed > 0 {
+                    let _ = reply.send(ok(format!("unsubscribed from {target}")));
+                } else {
+                    let _ = reply.send(err(format!("not_subscribed: no subscription to {target}")));
+                }
+            }
+            other => {
+                let _ = reply.send(err(format!("host_tool_unknown: {other:?}")));
+            }
+        }
     }
 
     /// Run one model turn on a worker thread (the broker blocks on network).
@@ -376,8 +663,10 @@ impl AssistantApp {
         }
     }
 
-    /// Per-frame pump: tool-flow events, live stream deltas, finished turns.
+    /// Per-frame pump: tool-flow events, live stream deltas, finished turns,
+    /// and queued app-event deliveries.
     fn pump_turn_io(&mut self) {
+        self.pump_deliveries();
         let flow_events: Vec<ToolFlowEvent> = self.flow_rx.try_iter().collect();
         for event in flow_events {
             match event {
@@ -409,6 +698,11 @@ impl AssistantApp {
                         .permission_requested(&tool, &summarize_input(&input_json));
                     self.pending_reply = Some(reply);
                 }
+                ToolFlowEvent::HostCall {
+                    tool,
+                    input_json,
+                    reply,
+                } => self.handle_host_call(&tool, &input_json, reply),
             }
         }
         if let Some(rx) = &self.delta_rx {
@@ -431,11 +725,113 @@ impl AssistantApp {
             let effects = self.model.finish_turn(&outcome.conversation_id, result);
             self.execute_effects(effects);
         }
+        // Events that arrived mid-turn trigger one follow-up turn that folds
+        // their lines in (they are already in the transcript history).
+        if !self.model.streaming.in_flight
+            && self.pending_subscribe.is_none()
+            && !self.queued_event_lines.is_empty()
+        {
+            let lines = std::mem::take(&mut self.queued_event_lines);
+            log::info!(
+                "assistant: dispatching follow-up turn for {} queued event line(s)",
+                lines.len()
+            );
+            self.start_event_turn(lines.len());
+        }
+    }
+
+    /// Drain queued event deliveries: append visible event rows, then
+    /// auto-start a turn for non-self-caused deliveries (queue them when a
+    /// turn is already in flight).
+    fn pump_deliveries(&mut self) {
+        if self.live_subs.is_empty() {
+            return;
+        }
+        if self.timeline.lock().unwrap().pending_delivery_count() == 0 {
+            return;
+        }
+        let deliveries = self
+            .timeline
+            .lock()
+            .unwrap()
+            .take_deliveries_for(ActorType::Agent, ASSISTANT_ACTOR_ID);
+        if deliveries.is_empty() {
+            return;
+        }
+        // Same self-caused rule as `AgentHost::handle_deliveries`: never
+        // trigger on events the assistant emitted as the actor or caused via
+        // one of its tool calls — only record them.
+        let self_id = format!("agent:{ASSISTANT_ACTOR_ID}");
+        let mut trigger_lines = Vec::new();
+        for d in deliveries {
+            let self_caused =
+                d.actor_id == self_id || d.caused_by.as_deref() == Some(self_id.as_str());
+            let line = format!(
+                "⚡ {}: {} — {}{}",
+                d.app_id,
+                d.event,
+                d.summary.as_deref().unwrap_or("(no summary)"),
+                d.payload
+                    .as_ref()
+                    .map(|p| format!(" payload={p}"))
+                    .unwrap_or_default(),
+            );
+            log::info!(
+                "assistant: delivery {} of '{}' from '{}'{}",
+                d.delivery_id,
+                d.event,
+                d.app_id,
+                if self_caused {
+                    " is self-caused — recorded, no turn"
+                } else {
+                    ""
+                }
+            );
+            self.model.turns.push(model::Turn::now(TurnRole::Event, line.clone()));
+            if !self_caused {
+                trigger_lines.push(line);
+            }
+        }
+        self.session_write();
+        if trigger_lines.is_empty() {
+            return;
+        }
+        if self.model.streaming.in_flight {
+            log::info!(
+                "assistant: {} event line(s) queued — turn in flight",
+                trigger_lines.len()
+            );
+            self.queued_event_lines.extend(trigger_lines);
+        } else {
+            self.start_event_turn(trigger_lines.len());
+        }
+    }
+
+    /// Auto-dispatch a turn in response to delivered events. The event rows
+    /// are already in the transcript, so the turn's history ends with them.
+    fn start_event_turn(&mut self, line_count: usize) {
+        log::info!("assistant: auto-starting turn for {line_count} delivered event(s)");
+        self.audit.append(&AuditEvent::now(
+            "auto_turn",
+            "app_events",
+            "ok",
+            &format!("{line_count} event line(s)"),
+        ));
+        self.model.streaming = model::StreamingState {
+            in_flight: true,
+            ..Default::default()
+        };
+        let conversation_id = self.model.conversation_id.clone();
+        self.start_turn(conversation_id, String::new());
     }
 
     /// Apply the user's permission-sheet decision: record the grant per its
     /// duration, audit it, and unblock the worker thread.
     fn resolve_permission(&mut self, choice: PermissionChoice) {
+        if self.pending_subscribe.is_some() {
+            self.resolve_subscribe_permission(choice);
+            return;
+        }
         let Some(pending) = self.model.pending_permission.clone() else {
             return;
         };
@@ -444,11 +840,21 @@ impl AssistantApp {
             PermissionChoice::Deny => ("deny", PermissionReply::Deny),
             PermissionChoice::AllowOnce => ("allow_once", PermissionReply::Allow { remember: false }),
             PermissionChoice::AllowSession => {
-                self.record_assistant_grant(&target, GrantDuration::Session, GrantSource::Session);
+                self.record_assistant_grant(
+                    TargetType::AppConnector,
+                    &target,
+                    GrantDuration::Session,
+                    GrantSource::Session,
+                );
                 ("allow_session", PermissionReply::Allow { remember: true })
             }
             PermissionChoice::AllowAlways => {
-                self.record_assistant_grant(&target, GrantDuration::Always, GrantSource::User);
+                self.record_assistant_grant(
+                    TargetType::AppConnector,
+                    &target,
+                    GrantDuration::Always,
+                    GrantSource::User,
+                );
                 self.grant_store.save();
                 ("allow_always", PermissionReply::Allow { remember: true })
             }
@@ -473,9 +879,77 @@ impl AssistantApp {
         self.execute_effects(effects);
     }
 
+    /// Apply the user's permission-sheet decision for an ask-gated
+    /// `host.events.subscribe`: record the grant per its duration, create
+    /// the live subscription, audit it, and unblock the worker thread.
+    fn resolve_subscribe_permission(&mut self, choice: PermissionChoice) {
+        let Some(pending) = self.pending_subscribe.take() else {
+            return;
+        };
+        let PendingSubscribe {
+            app,
+            event,
+            target,
+            reply,
+        } = pending;
+        let decision_str = match choice {
+            PermissionChoice::Deny => "deny",
+            PermissionChoice::AllowOnce => "allow_once",
+            PermissionChoice::AllowSession => {
+                self.record_assistant_grant(
+                    TargetType::AppEventStream,
+                    &target,
+                    GrantDuration::Session,
+                    GrantSource::Session,
+                );
+                "allow_session"
+            }
+            PermissionChoice::AllowAlways => {
+                self.record_assistant_grant(
+                    TargetType::AppEventStream,
+                    &target,
+                    GrantDuration::Always,
+                    GrantSource::User,
+                );
+                self.grant_store.save();
+                "allow_always"
+            }
+        };
+        log::info!("assistant: permission sheet decision for stream '{target}' = {decision_str}");
+        self.audit.append(&AuditEvent::now(
+            "permission_decision",
+            &target,
+            decision_str,
+            "event stream subscription",
+        ));
+        let result = if choice == PermissionChoice::Deny {
+            ToolCallResult {
+                output_json: None,
+                error: Some(format!(
+                    "permission_denied: the user denied the subscription to {target}"
+                )),
+            }
+        } else {
+            self.subscribe_stream(&app, &event);
+            self.audit
+                .append(&AuditEvent::now("subscribe", &target, "ok", decision_str));
+            ToolCallResult {
+                output_json: Some(
+                    serde_json::json!({"ok": true, "detail": format!("subscribed to {target}")})
+                        .to_string(),
+                ),
+                error: None,
+            }
+        };
+        let _ = reply.send(result);
+        let effects = self.model.permission_resolved(choice);
+        self.execute_effects(effects);
+    }
+
     /// Record an Allow grant for the assistant actor on `target`.
     fn record_assistant_grant(
         &mut self,
+        target_type: TargetType,
         target: &str,
         duration: GrantDuration,
         source: GrantSource,
@@ -491,7 +965,7 @@ impl AssistantApp {
             actor_id: ASSISTANT_ACTOR_ID.to_string(),
             actor_scope: ActorScope::BuiltIn,
             workspace_root: Some(workspace_root),
-            target_type: TargetType::AppConnector,
+            target_type,
             target_id: target.to_string(),
             resource_scope: ResourceScope::Workspace,
             resource_id: None,
@@ -515,9 +989,14 @@ impl AssistantApp {
         );
         let mut tools = dispatcher.all_tools();
         tools.sort_by(|a, b| a.name.cmp(&b.name));
-        log::info!("assistant: /tools — {} connector tool(s) discovered", tools.len());
-        let text = if tools.is_empty() {
-            "No app connector tools are exposed in this workspace.".to_string()
+        let streams = self.timeline.lock().unwrap().all_declared_streams();
+        log::info!(
+            "assistant: /tools — {} connector tool(s), {} declared event stream(s) discovered",
+            tools.len(),
+            streams.len()
+        );
+        let mut text = if tools.is_empty() {
+            "No app connector tools are exposed in this workspace.\n".to_string()
         } else {
             let mut out = String::from("App connector tools:\n");
             for tool in tools {
@@ -529,6 +1008,28 @@ impl AssistantApp {
             }
             out
         };
+        if streams.is_empty() {
+            text.push_str("\nNo app event streams declared in this workspace.");
+        } else {
+            text.push_str("\nApp event streams (host.events.subscribe / unsubscribe):\n");
+            for (app, event) in streams {
+                let target = format!("{app}::{event}");
+                let req = PermissionRequest::new(
+                    ActorType::Agent,
+                    ASSISTANT_ACTOR_ID,
+                    TargetType::AppEventStream,
+                    &target,
+                    Some(&self.workspace_root),
+                );
+                let decision = self.grant_store.evaluate(&req, None);
+                let subscribed = self.live_subs.iter().any(|(t, _)| *t == target);
+                text.push_str(&format!(
+                    "{target} — {}{}\n",
+                    decision.as_str(),
+                    if subscribed { ", subscribed" } else { "" }
+                ));
+            }
+        }
         let effects = self.model.push_info(text);
         self.execute_effects(effects);
     }
@@ -563,22 +1064,33 @@ impl AssistantApp {
         self.execute_effects(effects);
     }
 
-    /// `/revoke <target_id>`: remove persisted grants for one target.
+    /// `/revoke <target_id>`: remove persisted grants for one target. Event
+    /// stream targets also lose their live timeline subscription.
     fn cmd_revoke(&mut self, target_id: &str) {
         let removed = self
             .grant_store
             .revoke(ActorType::Agent, ASSISTANT_ACTOR_ID, target_id);
-        let text = if removed == 0 {
+        let unsubscribed = self.unsubscribe_stream(target_id);
+        let text = if removed == 0 && unsubscribed == 0 {
             format!("No grants found for '{target_id}'. See /permissions for target ids.")
         } else {
-            self.grant_store.save();
+            if removed > 0 {
+                self.grant_store.save();
+            }
             self.audit.append(&AuditEvent::now(
                 "revoke",
                 target_id,
                 "revoked",
-                &format!("{removed} grant(s) removed"),
+                &format!("{removed} grant(s), {unsubscribed} subscription(s) removed"),
             ));
-            format!("Revoked {removed} grant(s) for '{target_id}'.")
+            format!(
+                "Revoked {removed} grant(s) for '{target_id}'.{}",
+                if unsubscribed > 0 {
+                    format!(" Removed {unsubscribed} live subscription(s).")
+                } else {
+                    String::new()
+                }
+            )
         };
         let effects = self.model.push_info(text);
         self.execute_effects(effects);
@@ -830,11 +1342,20 @@ mod tests {
         dispatcher: Arc<ToolDispatcher>,
         tool: &str,
     ) -> Receiver<ToolCallResult> {
+        dispatch_on_worker_with_input(dispatcher, tool, "{\"x\": 1}")
+    }
+
+    fn dispatch_on_worker_with_input(
+        dispatcher: Arc<ToolDispatcher>,
+        tool: &str,
+        input_json: &str,
+    ) -> Receiver<ToolCallResult> {
         let (tx, rx) = std::sync::mpsc::channel();
         let tool = tool.to_string();
+        let input_json = input_json.to_string();
         let call_id = format!("call-{}", uuid::Uuid::new_v4());
         std::thread::spawn(move || {
-            let result = dispatcher.dispatch_call(call_id, &tool, "{\"x\": 1}".to_string());
+            let result = dispatcher.dispatch_call(call_id, &tool, input_json);
             let _ = tx.send(result);
         });
         rx
@@ -857,7 +1378,16 @@ mod tests {
         let mut visible: Vec<String> =
             dispatcher.all_tools().into_iter().map(|t| t.name).collect();
         visible.sort();
-        assert_eq!(visible, vec!["t_allow", "t_ask"], "denied tool must be invisible");
+        assert_eq!(
+            visible,
+            vec![
+                HOST_TOOL_SUBSCRIBE,
+                HOST_TOOL_UNSUBSCRIBE,
+                "t_allow",
+                "t_ask"
+            ],
+            "denied tool must be invisible; host tools always visible"
+        );
 
         // Denied tool is also uninvocable.
         let result = dispatcher.dispatch_call("c-deny".to_string(), "t_deny", "{}".to_string());
@@ -1022,5 +1552,305 @@ mod tests {
         assert!(audit_row.contains("revoke"), "revoke must be audited: {audit_row}");
 
         tool_dispatch::unregister(9104);
+    }
+
+    // ── Phase D3: event subscriptions + delivery bridge ───────────────────────
+
+    use crate::app_protocol::{AppEventActor, EventStreamDecl};
+    use crate::host::app_timeline::EmittedEvent;
+
+    fn chess_timeline() -> Arc<Mutex<AppTimeline>> {
+        let timeline = Arc::new(Mutex::new(AppTimeline::default()));
+        timeline
+            .lock()
+            .unwrap()
+            .declare_streams(
+                "chess",
+                vec![EventStreamDecl {
+                    name: "move.played".to_string(),
+                    schema: serde_json::json!({"type": "object"}),
+                    description: None,
+                }],
+            )
+            .unwrap();
+        timeline
+    }
+
+    fn test_app_with_timeline(ws: &Path, timeline: Arc<Mutex<AppTimeline>>) -> AssistantApp {
+        AssistantApp::new_with_timeline(ws.to_path_buf(), Arc::new(EchoBroker), ws, timeline)
+    }
+
+    fn emit_move(
+        timeline: &Arc<Mutex<AppTimeline>>,
+        actor: AppEventActor,
+        actor_id: Option<&str>,
+        caused_by: Option<&str>,
+    ) -> usize {
+        timeline
+            .lock()
+            .unwrap()
+            .record_event(
+                "chess",
+                1,
+                EmittedEvent {
+                    event: "move.played".to_string(),
+                    actor,
+                    actor_id: actor_id.map(str::to_string),
+                    caused_by: caused_by.map(str::to_string),
+                    summary: "White played e4".to_string(),
+                    resource_id: "game-1".to_string(),
+                    resource_scope: Some("game".to_string()),
+                    revision_after: "rev-2".to_string(),
+                    payload: Some(serde_json::json!({"san": "e4"})),
+                    state_ref: None,
+                    revision_before: None,
+                    rollback_token: None,
+                    changed_resources: vec![],
+                    suggested_trigger: None,
+                },
+            )
+            .expect("event must record")
+            .deliveries_queued
+    }
+
+    fn event_rows(app: &AssistantApp) -> usize {
+        app.model
+            .turns
+            .iter()
+            .filter(|t| t.role == TurnRole::Event)
+            .count()
+    }
+
+    #[test]
+    fn persisted_stream_grant_resubscribes_and_user_event_auto_triggers_turn() {
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        // Persist an event-stream grant, as allow-always would.
+        {
+            let mut first = test_app_with_timeline(ws.path(), timeline.clone());
+            assert!(first.live_subs.is_empty(), "no grant yet = no subscription");
+            first.record_assistant_grant(
+                TargetType::AppEventStream,
+                "chess::move.played",
+                GrantDuration::Always,
+                GrantSource::User,
+            );
+            first.grant_store.save();
+        }
+        assert!(ws.path().join("grants.toml").is_file());
+
+        // Restart: a fresh AssistantApp over the same store resubscribes.
+        let mut app = test_app_with_timeline(ws.path(), timeline.clone());
+        assert_eq!(app.live_subs.len(), 1, "persisted grant must resubscribe");
+        assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
+
+        // A user-actor event lands as a visible row and auto-starts a turn.
+        assert_eq!(emit_move(&timeline, AppEventActor::User, None, None), 1);
+        app.pump_turn_io();
+        assert_eq!(event_rows(&app), 1);
+        let row = app
+            .model
+            .turns
+            .iter()
+            .find(|t| t.role == TurnRole::Event)
+            .unwrap();
+        assert!(row.text.contains("chess: move.played"), "{}", row.text);
+        assert!(row.text.contains("White played e4"), "{}", row.text);
+        assert!(app.model.streaming.in_flight, "user event must auto-start a turn");
+        wait_for_turn(&mut app);
+        assert_eq!(app.model.turns.last().unwrap().role, TurnRole::Assistant);
+        assert_eq!(app.model.turns.last().unwrap().text, "echo: ok");
+
+        // The event row is persisted: reopen and find it.
+        drop(app);
+        let reopened = test_app_with_timeline(ws.path(), timeline);
+        assert_eq!(event_rows(&reopened), 1, "event row must persist");
+    }
+
+    #[test]
+    fn self_caused_deliveries_record_rows_without_turns() {
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        let mut app = test_app_with_timeline(ws.path(), timeline.clone());
+        app.subscribe_stream("chess", "move.played");
+
+        // The assistant as the event actor: row, no turn.
+        emit_move(&timeline, AppEventActor::Agent, Some("agent:assistant"), None);
+        app.pump_turn_io();
+        assert_eq!(event_rows(&app), 1);
+        assert!(!app.model.streaming.in_flight, "own action must not trigger");
+
+        // App-emitted event caused by the assistant's tool call: row, no turn.
+        emit_move(&timeline, AppEventActor::App, None, Some("agent:assistant"));
+        app.pump_turn_io();
+        assert_eq!(event_rows(&app), 2);
+        assert!(!app.model.streaming.in_flight, "caused-by-self must not trigger");
+        assert!(app.queued_event_lines.is_empty());
+    }
+
+    #[test]
+    fn event_during_in_flight_turn_is_queued_into_next_turn() {
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        let mut app = test_app_with_timeline(ws.path(), timeline.clone());
+        app.subscribe_stream("chess", "move.played");
+
+        // Simulate an in-flight turn; the event must queue, not dispatch.
+        app.model.streaming.in_flight = true;
+        emit_move(&timeline, AppEventActor::User, None, None);
+        app.pump_turn_io();
+        assert_eq!(event_rows(&app), 1, "row appended even while in flight");
+        assert_eq!(app.queued_event_lines.len(), 1);
+
+        // The turn ends: the queued event triggers the follow-up turn.
+        app.model.streaming = model::StreamingState::default();
+        app.pump_turn_io();
+        assert!(app.model.streaming.in_flight, "queued event must start the next turn");
+        assert!(app.queued_event_lines.is_empty());
+        // The event line is folded into the dispatched history.
+        let history = app.history_messages();
+        assert!(
+            history
+                .iter()
+                .any(|m| m.role == "user" && m.content.contains("App event delivered")),
+            "event line must be in the turn history"
+        );
+        wait_for_turn(&mut app);
+        assert_eq!(app.model.turns.last().unwrap().text, "echo: ok");
+    }
+
+    #[test]
+    fn subscribe_host_tool_ask_allow_always_persists_grant_and_revoke_unsubscribes() {
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        let mut app = test_app_with_timeline(ws.path(), timeline.clone());
+
+        // Host event tools are visible in the turn snapshot.
+        let dispatcher = Arc::new(app.gated_dispatcher());
+        let names: HashSet<String> = dispatcher
+            .all_tools()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert!(names.contains(HOST_TOOL_SUBSCRIBE));
+        assert!(names.contains(HOST_TOOL_UNSUBSCRIBE));
+
+        // Ungranted subscribe asks via the permission sheet.
+        let result_rx = dispatch_on_worker_with_input(
+            dispatcher,
+            HOST_TOOL_SUBSCRIBE,
+            r#"{"app": "chess", "event": "move.played"}"#,
+        );
+        pump_until(&mut app, "subscribe permission sheet", |a| {
+            a.model.pending_permission.is_some()
+        });
+        let pending = app.model.pending_permission.as_ref().unwrap();
+        assert_eq!(pending.tool, HOST_TOOL_SUBSCRIBE);
+        assert_eq!(pending.input_summary, "chess::move.played");
+
+        app.resolve_permission(PermissionChoice::AllowAlways);
+        let result = result_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("subscribe must complete");
+        assert!(result.error.is_none(), "{:?}", result.error);
+
+        // Grant persisted on disk; live subscription created.
+        let record = app
+            .grant_store
+            .records()
+            .iter()
+            .find(|r| r.target_id == "chess::move.played")
+            .expect("allow-always must persist the stream grant");
+        assert_eq!(record.target_type, TargetType::AppEventStream);
+        assert_eq!(record.duration, GrantDuration::Always);
+        assert!(ws.path().join("grants.toml").is_file());
+        assert_eq!(app.live_subs.len(), 1);
+        assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
+
+        // Deliveries now flow and trigger turns.
+        assert_eq!(emit_move(&timeline, AppEventActor::User, None, None), 1);
+        app.pump_turn_io();
+        assert_eq!(event_rows(&app), 1);
+        wait_for_turn(&mut app);
+
+        // /revoke removes the grant AND the live subscription.
+        app.model.composer = "/revoke chess::move.played".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        assert!(
+            app.model.turns.last().unwrap().text.contains("live subscription"),
+            "{}",
+            app.model.turns.last().unwrap().text
+        );
+        assert!(app
+            .grant_store
+            .records()
+            .iter()
+            .all(|r| r.target_type != TargetType::AppEventStream));
+        assert!(app.live_subs.is_empty());
+        assert!(timeline.lock().unwrap().subscriptions().is_empty());
+
+        // No further deliveries reach the assistant.
+        assert_eq!(emit_move(&timeline, AppEventActor::User, None, None), 0);
+        app.pump_turn_io();
+        assert_eq!(event_rows(&app), 1, "revoked stream must deliver nothing");
+    }
+
+    #[test]
+    fn subscribe_denied_by_user_returns_tool_error_without_subscription() {
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        let mut app = test_app_with_timeline(ws.path(), timeline.clone());
+
+        let dispatcher = Arc::new(app.gated_dispatcher());
+        let result_rx = dispatch_on_worker_with_input(
+            dispatcher,
+            HOST_TOOL_SUBSCRIBE,
+            r#"{"app": "chess", "event": "move.played"}"#,
+        );
+        pump_until(&mut app, "subscribe permission sheet", |a| {
+            a.model.pending_permission.is_some()
+        });
+        app.resolve_permission(PermissionChoice::Deny);
+        let result = result_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("denied subscribe must still return");
+        assert!(
+            result.error.as_deref().unwrap_or("").contains("permission_denied"),
+            "{:?}",
+            result.error
+        );
+        assert!(app.live_subs.is_empty());
+        assert!(timeline.lock().unwrap().subscriptions().is_empty());
+        assert!(app.grant_store.records().is_empty(), "deny persists nothing");
+    }
+
+    #[test]
+    fn host_unsubscribe_removes_live_subscription() {
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+        let mut app = test_app_with_timeline(ws.path(), timeline.clone());
+        app.subscribe_stream("chess", "move.played");
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        app.handle_host_call(
+            HOST_TOOL_UNSUBSCRIBE,
+            r#"{"app": "chess", "event": "move.played"}"#,
+            tx,
+        );
+        let result = rx.try_recv().expect("unsubscribe replies synchronously");
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert!(app.live_subs.is_empty());
+        assert!(timeline.lock().unwrap().subscriptions().is_empty());
+
+        // Unsubscribing again is a named error, not a crash.
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        app.handle_host_call(
+            HOST_TOOL_UNSUBSCRIBE,
+            r#"{"app": "chess", "event": "move.played"}"#,
+            tx,
+        );
+        let result = rx.try_recv().unwrap();
+        assert!(result.error.as_deref().unwrap_or("").contains("not_subscribed"));
     }
 }
