@@ -34,7 +34,7 @@ If you run into any issues, don't hesitate to reach out directly: adhdisntreal@g
 ### One-liner
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ianjamesburke/PLEXI/main/scripts/user-install.sh | sh
+curl -fsSL https://plexiapp.com/install | sh
 ```
 
 Downloads the latest release, installs to `/Applications`, sets up the `plexi` CLI, and wires ZSH integration. Restart your terminal when done.

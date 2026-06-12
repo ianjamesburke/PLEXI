@@ -5,7 +5,7 @@ export async function GET() {
     status: 302,
     headers: {
       Location:
-        "https://raw.githubusercontent.com/ianjamesburke/PLEXI/main/scripts/user-install.sh",
+        "https://raw.githubusercontent.com/ianjamesburke/PLEXI/main/install.sh",
     },
   });
 }
