@@ -731,18 +731,21 @@ impl AssistantApp {
             let effects = self.model.finish_turn(&outcome.conversation_id, result);
             self.execute_effects(effects);
         }
-        // Events that arrived mid-turn trigger one follow-up turn that folds
-        // their lines in (they are already in the transcript history).
+        // Events and user messages that arrived mid-turn trigger one
+        // follow-up turn that folds them in (they are already in the
+        // transcript history).
         if !self.model.streaming.in_flight
             && self.pending_subscribe.is_none()
-            && !self.queued_event_lines.is_empty()
+            && (!self.queued_event_lines.is_empty() || self.model.queued_user_turns > 0)
         {
             let lines = std::mem::take(&mut self.queued_event_lines);
+            let users = std::mem::take(&mut self.model.queued_user_turns);
             log::info!(
-                "assistant: dispatching follow-up turn for {} queued event line(s)",
-                lines.len()
+                "assistant: dispatching follow-up turn ({} queued event line(s), {} queued user message(s))",
+                lines.len(),
+                users
             );
-            self.start_event_turn(lines.len());
+            self.start_event_turn(lines.len() + users);
         }
     }
 

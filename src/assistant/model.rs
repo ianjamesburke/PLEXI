@@ -132,6 +132,10 @@ pub struct AssistantModel {
     /// Permission sheet awaiting a decision; the in-flight turn's worker
     /// thread is blocked until it resolves.
     pub pending_permission: Option<PendingPermission>,
+    /// User messages submitted while a turn was in flight. They are already
+    /// appended to `turns`; this count tells the pump to dispatch one
+    /// follow-up turn that folds them in.
+    pub queued_user_turns: usize,
 }
 
 impl AssistantModel {
@@ -145,6 +149,7 @@ impl AssistantModel {
             picker_selected: 0,
             active_tools: Vec::new(),
             pending_permission: None,
+            queued_user_turns: 0,
         }
     }
 
@@ -167,11 +172,28 @@ impl AssistantModel {
             .to_string()
     }
 
-    /// Submit the composer. Returns the effects to execute. No-op while a
-    /// turn is in flight or when the composer is blank.
+    /// Submit the composer. Returns the effects to execute. Blank input is a
+    /// no-op. While a turn is in flight, plain messages are appended to the
+    /// transcript and queued for one follow-up turn; slash commands stay
+    /// no-ops until the turn finishes.
     pub fn submit(&mut self) -> Vec<AssistantEffect> {
         if self.streaming.in_flight {
-            return Vec::new();
+            let input = self.composer.trim().to_string();
+            if input.is_empty() || commands::parse_slash_command(&input).is_some() {
+                return Vec::new();
+            }
+            self.composer.clear();
+            self.picker_selected = 0;
+            log::info!(
+                "assistant[{}]: message queued — turn in flight ({} chars)",
+                self.conversation_id,
+                input.len()
+            );
+            self.turns.push(Turn::now(TurnRole::User, input));
+            self.queued_user_turns += 1;
+            return vec![AssistantEffect::SessionWrite {
+                conversation_id: self.conversation_id.clone(),
+            }];
         }
         let input = self.composer.trim().to_string();
         if input.is_empty() {
@@ -452,16 +474,29 @@ mod tests {
     }
 
     #[test]
-    fn submit_is_noop_while_streaming_or_blank() {
+    fn submit_queues_message_while_streaming_and_skips_blank() {
         let mut m = AssistantModel::fresh();
         assert!(submitted(&mut m, "   ").is_empty());
         assert!(m.turns.is_empty());
 
         submitted(&mut m, "question");
         assert!(m.streaming.in_flight);
-        m.composer = "second question".to_string();
-        assert!(m.submit().is_empty());
-        assert_eq!(m.turns.len(), 1, "no turn appended while in flight");
+
+        // A plain message mid-turn lands in the transcript and queues for a
+        // follow-up turn, persisting but not dispatching.
+        let effects = submitted(&mut m, "second question");
+        assert_eq!(effects.len(), 1);
+        assert!(matches!(effects[0], AssistantEffect::SessionWrite { .. }));
+        assert_eq!(m.turns.len(), 2);
+        assert_eq!(m.turns[1].text, "second question");
+        assert_eq!(m.queued_user_turns, 1);
+        assert!(m.composer.is_empty());
+        assert!(m.streaming.in_flight, "in-flight turn unaffected");
+
+        // Slash commands stay no-ops mid-turn.
+        assert!(submitted(&mut m, "/clear").is_empty());
+        assert_eq!(m.turns.len(), 2);
+        assert_eq!(m.queued_user_turns, 1);
     }
 
     #[test]
