@@ -626,6 +626,37 @@ impl AppTimeline {
         &self.subscriptions
     }
 
+    /// Remove every subscription owned by one subscriber and drop its queued
+    /// deliveries. Returns `(subscriptions_removed, deliveries_dropped)`.
+    /// Used when a subscriber instance re-registers from persisted grants
+    /// (e.g. the Assistant pane reopening) so subscriptions leaked by a
+    /// previous instance never duplicate deliveries.
+    pub fn clear_subscriber(
+        &mut self,
+        subscriber_type: ActorType,
+        subscriber_id: &str,
+    ) -> (usize, usize) {
+        let subs_before = self.subscriptions.len();
+        self.subscriptions
+            .retain(|s| !(s.subscriber_type == subscriber_type && s.subscriber_id == subscriber_id));
+        let dels_before = self.deliveries.len();
+        self.deliveries
+            .retain(|d| !(d.subscriber_type == subscriber_type && d.subscriber_id == subscriber_id));
+        let removed = (
+            subs_before - self.subscriptions.len(),
+            dels_before - self.deliveries.len(),
+        );
+        if removed != (0, 0) {
+            log::info!(
+                "app_timeline: cleared subscriber {subscriber_type:?} '{subscriber_id}' — \
+                 {} subscription(s) removed, {} queued delivery(ies) dropped",
+                removed.0,
+                removed.1
+            );
+        }
+        removed
+    }
+
     /// Remove a subscription by id. Returns true when one was removed.
     pub fn remove_subscription(&mut self, subscription_id: &str) -> bool {
         let before = self.subscriptions.len();

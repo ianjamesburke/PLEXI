@@ -274,6 +274,15 @@ impl AssistantApp {
         // Persist the active id immediately so close-then-reopen resumes
         // this conversation even before the first turn.
         app.session_write();
+        // A previous pane instance may have leaked its subscriptions into the
+        // shared timeline (close drops the pane without unsubscribing) —
+        // clear them before re-registering, or every reopen duplicates each
+        // delivery. Stale queued deliveries are dropped with them; the model
+        // can read current app state instead of replaying history.
+        app.timeline
+            .lock()
+            .unwrap()
+            .clear_subscriber(ActorType::Agent, ASSISTANT_ACTOR_ID);
         // Persisted event-stream grants survive restarts: resubscribe them.
         app.resubscribe_granted_streams();
         app
@@ -1674,6 +1683,55 @@ mod tests {
         drop(app);
         let reopened = test_app_with_timeline(ws.path(), timeline);
         assert_eq!(event_rows(&reopened), 1, "event row must persist");
+    }
+
+    #[test]
+    fn reopen_never_duplicates_subscriptions_or_deliveries() {
+        let ws = tempfile::tempdir().unwrap();
+        let timeline = chess_timeline();
+
+        // First instance subscribes live and records the grant, then the
+        // pane closes without unsubscribing (the leak this guards against).
+        {
+            let mut first = test_app_with_timeline(ws.path(), timeline.clone());
+            first.subscribe_stream("chess", "*");
+            first.grant_store.record(GrantRecord {
+                actor_type: ActorType::Agent,
+                actor_id: ASSISTANT_ACTOR_ID.to_string(),
+                actor_scope: ActorScope::BuiltIn,
+                workspace_root: Some(ws.path().canonicalize().unwrap()),
+                target_type: TargetType::AppEventStream,
+                target_id: "chess::*".to_string(),
+                resource_scope: ResourceScope::Workspace,
+                resource_id: None,
+                decision: Decision::Allow,
+                duration: GrantDuration::Always,
+                source: GrantSource::User,
+                created_at: 0,
+                expires_at: None,
+            });
+            first.grant_store.save();
+        }
+        assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
+        // An event lands while no pane is open: queued against the leaked sub.
+        emit_move(&timeline, AppEventActor::User, None, None);
+        assert_eq!(timeline.lock().unwrap().pending_delivery_count(), 1);
+
+        // Reopen: leaked subscription + stale delivery are cleared, exactly
+        // one live subscription remains.
+        let mut app = test_app_with_timeline(ws.path(), timeline.clone());
+        assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
+        assert_eq!(app.live_subs.len(), 1);
+        assert_eq!(
+            timeline.lock().unwrap().pending_delivery_count(),
+            0,
+            "stale deliveries from the leaked subscription must be dropped"
+        );
+
+        // A fresh event is delivered exactly once.
+        assert_eq!(emit_move(&timeline, AppEventActor::User, None, None), 1);
+        app.pump_turn_io();
+        assert_eq!(event_rows(&app), 1, "one event row, not duplicates");
     }
 
     #[test]
