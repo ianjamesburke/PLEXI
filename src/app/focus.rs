@@ -562,6 +562,16 @@ impl PlexiApp {
 
         let fresh = crate::config::PlexiConfig::load_with_workspace(active_workspace.as_deref());
 
+        // Log level — applies live; the fern filter reads it atomically per record.
+        let new_level = fresh
+            .log
+            .as_ref()
+            .and_then(|l| l.level_filter())
+            .unwrap_or(log::LevelFilter::Info);
+        if crate::platform::logging::set_level(new_level) {
+            log::warn!("log: level changed to {new_level} (config reload)");
+        }
+
         // Theme
         let theme_cfg = Self::resolve_theme_config(&fresh);
         let new_colors = crate::ui::theme::Colors::from_config(&theme_cfg);
