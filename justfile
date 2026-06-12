@@ -158,6 +158,17 @@ channel-clean channel:
 channel-clean-merged:
     bash scripts/channel-clean-merged.sh
 
+# Remove target/ from worktrees whose branch is already merged to alpha.
+# Safe: never touches active branches.
+clean-stale-targets:
+    bash scripts/clean-stale-targets.sh
+
+# Run `cargo clean` in every worktree to reclaim incremental/debug artifacts.
+# Deps cache is preserved (only removes target/debug and incremental/).
+# Use when disk is low and you don't want to full-clean.
+trim-targets:
+    bash scripts/trim-targets.sh
+
 # List all installed Plexi channels with tier, binary path, and profile dir.
 channel-list:
     bash scripts/channel-list.sh
