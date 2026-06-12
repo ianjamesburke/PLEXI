@@ -804,10 +804,7 @@ impl PlexiApp {
                     focus_started_at: None,
                     last_system_theme: None,
                     overlay_held_cmds: Vec::new(),
-                    agent_host: crate::agent::AgentHost::production(
-                        config.ai.clone(),
-                        active_workspace.clone(),
-                    ),
+                    agent_host: crate::agent::AgentHost::production(config.ai.clone()),
                 };
                 app.apply_context_transition_effects();
                 return app;
@@ -863,8 +860,7 @@ impl PlexiApp {
                 None => (None, None),
             };
 
-        let agent_host =
-            crate::agent::AgentHost::production(config.ai.clone(), active_workspace.clone());
+        let agent_host = crate::agent::AgentHost::production(config.ai.clone());
         let mut app = Self {
             pty_event_rx: rx,
             pty_event_tx: tx,

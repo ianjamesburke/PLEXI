@@ -296,6 +296,11 @@ pub struct AgentHost {
     timeline: Arc<Mutex<AppTimeline>>,
     ai_broker: Arc<dyn AiBroker>,
     workspace_root: PathBuf,
+    /// Where to re-read `grants.toml` from on workspace reload (`Some` in
+    /// production). Until the Phase D grant sheet lands, grants are edited on
+    /// disk, so a reload must pick them up. `None` (tests) keeps the
+    /// in-memory store.
+    grants_dir: Option<PathBuf>,
     outcome_tx: Sender<TurnOutcome>,
     outcome_rx: Receiver<TurnOutcome>,
 }
@@ -316,9 +321,45 @@ impl AgentHost {
             timeline,
             ai_broker,
             workspace_root,
+            grants_dir: None,
             outcome_tx,
             outcome_rx,
         }
+    }
+
+    /// Re-point the host at a (possibly different or newly active) workspace.
+    /// Called from `apply_context_transition_effects` — the same choke point
+    /// that rescans the app registry — so agents defined in a workspace that
+    /// becomes active after boot are picked up. Detaches every current agent
+    /// (removing its timeline subscriptions), re-reads grants from disk when
+    /// `grants_dir` is set, and attaches the new root's agents. `None` =
+    /// no active workspace = no agents.
+    pub fn reload_workspace(&mut self, workspace_root: Option<PathBuf>) {
+        if !self.agents.is_empty() {
+            let mut timeline = self.timeline.lock().unwrap();
+            for agent in &self.agents {
+                for sub_id in &agent.subscription_ids {
+                    timeline.remove_subscription(sub_id);
+                }
+            }
+        }
+        self.agents.clear();
+        if let Some(dir) = &self.grants_dir {
+            self.grant_store = GrantStore::load_or_default(dir);
+        }
+        let Some(root) = workspace_root else {
+            log::info!("agent: no active workspace — no agents attached");
+            return;
+        };
+        self.workspace_root = root.clone();
+        for def in load_workspace_agents(&root) {
+            self.attach(def);
+        }
+        log::info!(
+            "agent: workspace reload — {} agent(s) attached for {}",
+            self.agents.len(),
+            root.display()
+        );
     }
 
     /// Attach an agent: register it as an `ActorType::Agent` actor and create
@@ -577,28 +618,22 @@ impl AgentHost {
     }
 
     /// Production constructor: grants from the channel config dir, the
-    /// global shared timeline, the live AI broker, and every agent defined
-    /// under the active workspace's `agents/` dir attached.
-    pub fn production(
-        ai_config: Option<crate::config::AiConfig>,
-        workspace_root: Option<PathBuf>,
-    ) -> Self {
+    /// global shared timeline, and the live AI broker. Agents are NOT loaded
+    /// here — `apply_context_transition_effects` runs at the end of every
+    /// `PlexiApp` constructor and on every context change, and its
+    /// `reload_workspace` call is the single owner of agent loading.
+    pub fn production(ai_config: Option<crate::config::AiConfig>) -> Self {
         let config_dir = crate::config::config_dir();
         let grant_store = GrantStore::load_or_default(&config_dir);
-        // No active workspace → no agents and an inert root that matches no
-        // pane's workspace (agents are a workspace-scoped concept).
-        let root = workspace_root.clone().unwrap_or(config_dir);
+        // The config dir is an inert root that matches no pane's workspace —
+        // replaced by the first `reload_workspace` with an active workspace.
         let mut host = Self::new(
             grant_store,
             crate::host::app_timeline::global(),
             Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(ai_config)),
-            root,
+            config_dir.clone(),
         );
-        if let Some(ws) = workspace_root {
-            for def in load_workspace_agents(&ws) {
-                host.attach(def);
-            }
-        }
+        host.grants_dir = Some(config_dir);
         host
     }
 
@@ -756,5 +791,75 @@ default_tier = "low"
         // No agents dir at all → empty, not an error.
         let empty_ws = tempfile::tempdir().unwrap();
         assert!(load_workspace_agents(empty_ws.path()).is_empty());
+    }
+
+    /// Context transitions must reload agents: a host built before the
+    /// workspace became active picks its agents up on the next transition,
+    /// and switching away detaches them and removes their subscriptions.
+    #[test]
+    fn reload_workspace_attaches_and_detaches_agents() {
+        use crate::broker::{
+            ActorScope, GrantRecord, GrantSource, ResourceScope,
+        };
+
+        let ws = tempfile::tempdir().unwrap();
+        let agent_dir = ws
+            .path()
+            .join(crate::config::workspace_channel_dir())
+            .join("agents")
+            .join("chess-opponent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("AGENT.md"), "You are a chess opponent.").unwrap();
+        std::fs::write(agent_dir.join("settings.toml"), SETTINGS).unwrap();
+
+        let timeline = Arc::new(Mutex::new(AppTimeline::default()));
+        // Host built with NO workspace — the boot-before-workspace case.
+        let mut host = AgentHost::new_for_test(
+            timeline.clone(),
+            Arc::new(InertAiBroker),
+            std::env::temp_dir(),
+        );
+        // Persisted user grants for every requested stream so the
+        // subscription attaches.
+        for event in [
+            "game.started",
+            "turn.ready",
+            "move.played",
+            "move.undone",
+            "game.ended",
+        ] {
+            host.grant_store.record(GrantRecord {
+                actor_type: ActorType::Agent,
+                actor_id: "chess-opponent".to_string(),
+                actor_scope: ActorScope::User,
+                workspace_root: None,
+                target_type: TargetType::AppEventStream,
+                target_id: format!("chess::{event}"),
+                resource_scope: ResourceScope::Game,
+                resource_id: None,
+                decision: Decision::Allow,
+                duration: GrantDuration::Session,
+                source: GrantSource::User,
+                created_at: 0,
+                expires_at: None,
+            });
+        }
+        assert!(host.agents.is_empty());
+
+        // Workspace becomes active → agent attaches with its subscription.
+        host.reload_workspace(Some(ws.path().to_path_buf()));
+        assert_eq!(host.agents.len(), 1);
+        assert_eq!(host.agents[0].subscription_ids.len(), 1);
+        assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
+
+        // Reload onto the same workspace must not duplicate.
+        host.reload_workspace(Some(ws.path().to_path_buf()));
+        assert_eq!(host.agents.len(), 1);
+        assert_eq!(timeline.lock().unwrap().subscriptions().len(), 1);
+
+        // Switching to no workspace detaches and removes subscriptions.
+        host.reload_workspace(None);
+        assert!(host.agents.is_empty());
+        assert!(timeline.lock().unwrap().subscriptions().is_empty());
     }
 }

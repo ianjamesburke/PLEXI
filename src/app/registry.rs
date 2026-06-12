@@ -427,7 +427,19 @@ impl AppRegistry {
                     );
                 }
                 Err(e) => {
-                    log::warn!("AppRegistry: skipping {:?}: {e}", entry_dir.file_name());
+                    // Runtime agents (AGENT.md + settings.toml, no manifest)
+                    // legitimately share `<channel_dir>/agents/` with
+                    // manifest-bearing pane agents — not a broken app.
+                    if !entry_dir.join("manifest.toml").is_file()
+                        && entry_dir.join("settings.toml").is_file()
+                    {
+                        log::debug!(
+                            "AppRegistry: {:?} is a runtime agent dir, not an app — skipping",
+                            entry_dir.file_name()
+                        );
+                    } else {
+                        log::warn!("AppRegistry: skipping {:?}: {e}", entry_dir.file_name());
+                    }
                 }
             }
         }

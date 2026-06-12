@@ -1102,6 +1102,9 @@ impl PlexiApp {
     ///   1. Rescan the AppRegistry for the new context root.
     ///   2. Restart the app_registry_watcher on the new root's watch dirs.
     ///   3. Palette scope follows implicitly — the palette reads `self.registry` directly.
+    ///   4. Reload workspace agents into the AgentHost — agents are
+    ///      workspace-scoped, so a workspace that becomes active after boot
+    ///      must still get its agents attached.
     pub(crate) fn apply_context_transition_effects(&mut self) {
         let root = self.router.active().root.clone().unwrap_or_else(|| {
             std::env::current_dir()
@@ -1113,6 +1116,10 @@ impl PlexiApp {
             root.display()
         );
         self.registry = crate::app::registry::AppRegistry::load(&root);
+        // Same workspace resolution the registry just performed (cwd-walk to
+        // the channel dir) — agents live in that workspace's `agents/` dir.
+        self.agent_host
+            .reload_workspace(self.registry.loaded_workspace.clone());
         let watch_dirs = crate::app::registry::registry_watch_dirs(&root);
         match crate::app::registry_watcher::start(watch_dirs) {
             Some((watcher, rx)) => {
