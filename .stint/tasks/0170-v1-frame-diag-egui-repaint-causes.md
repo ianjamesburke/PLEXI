@@ -1,8 +1,11 @@
 ---
 id: "0170"
 title: "v1 PGAP perf: back frame_diag with egui repaint_causes()"
-status: backlog
+status: done
 estimate: "2h"
+actual: "10m"
+started_at: "2026-06-12T18:25:15Z"
+completed_at: "2026-06-12T18:32:03Z"
 sprint: "s13"
 blocked_by: []
 gh_issue:
@@ -15,6 +18,8 @@ tags:
   - "performance"
   - "instrumentation"
 ---
+
+
 
 
 ## What

@@ -1,9 +1,11 @@
 ---
 id: "0169"
 title: "v1 PGAP perf: bound render-in-flight poll and time out hung renders"
-status: in-progress
+status: done
 estimate: "4h"
+actual: "15m"
 started_at: "2026-06-12T18:09:49Z"
+completed_at: "2026-06-12T18:25:08Z"
 sprint: "s13"
 blocked_by: []
 gh_issue:
@@ -16,6 +18,7 @@ tags:
   - "performance"
   - "rendering"
 ---
+
 
 
 
