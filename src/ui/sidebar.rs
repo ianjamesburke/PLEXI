@@ -148,8 +148,8 @@ impl PlexiApp {
                     }
                     activities.push(
                         pane_opt
-                            .and_then(|p| p.agent())
-                            .map(|a| a.state.clone()),
+                            .and_then(|p| p.effective_activity())
+                            .cloned(),
                     );
                 }
                 Some(PaneDots {

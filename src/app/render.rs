@@ -36,6 +36,7 @@ impl PlexiApp {
             self.drain_spawn_queue();
             self.tick_scheduler();
             self.tick_notification_timeouts();
+            self.tick_terminal_activity();
         }
         self.drain_pane_cmd_channel();
         if let Some(rx) = &self.update_rx {
@@ -314,8 +315,8 @@ impl PlexiApp {
                                     .map(|pid| {
                                         w.panes
                                             .get(&pid)
-                                            .and_then(|p| p.agent())
-                                            .map(|a| a.state.clone())
+                                            .and_then(|p| p.effective_activity())
+                                            .cloned()
                                     })
                                     .collect::<Vec<_>>()
                                 } else {

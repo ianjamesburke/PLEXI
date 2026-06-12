@@ -151,6 +151,11 @@ pub struct TerminalBackend {
     notifier: Notifier,
     last_content: RenderableContent,
     child_pid: u32,
+    /// Raw fd of the PTY master, captured at spawn. Used only for
+    /// `tcgetpgrp` foreground-process queries; the EventLoop owns the
+    /// actual File. A query on a closed fd returns -1 and maps to `None`.
+    #[cfg(unix)]
+    master_fd: i32,
     pub lines_written: AtomicU64,
     /// (prev_total, oldest_row_snapshot) — grouped to avoid nested lock acquisitions.
     capture_state: Mutex<(usize, String)>,
@@ -175,6 +180,11 @@ impl TerminalBackend {
         let terminal_size = TerminalSize::default();
         let pty = tty::new(&pty_config, terminal_size.into(), id)?;
         let child_pid = pty.child().id();
+        #[cfg(unix)]
+        let master_fd = {
+            use std::os::fd::AsRawFd;
+            pty.file().as_raw_fd()
+        };
         let (event_sender, event_receiver) = mpsc::channel();
         let event_proxy = EventProxy(event_sender);
         let mut term = Term::new(config, &terminal_size, event_proxy.clone());
@@ -251,6 +261,8 @@ impl TerminalBackend {
             notifier,
             last_content: initial_content,
             child_pid,
+            #[cfg(unix)]
+            master_fd,
             lines_written: AtomicU64::new(0),
             capture_state: Mutex::new((0usize, String::new())),
             max_scroll_limit: 10_000,
@@ -410,6 +422,21 @@ impl TerminalBackend {
 
     pub fn child_pid(&self) -> u32 {
         self.child_pid
+    }
+
+    /// Process-group id currently in the foreground of this PTY, via
+    /// `tcgetpgrp` on the master fd. `None` when the query fails (e.g.
+    /// the PTY has been closed) or on non-unix platforms.
+    pub fn foreground_pid(&self) -> Option<i32> {
+        #[cfg(unix)]
+        {
+            let pgid = unsafe { libc::tcgetpgrp(self.master_fd) };
+            (pgid > 0).then_some(pgid)
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     }
 
     /// Advance `lines_written` to account for newly written terminal lines.

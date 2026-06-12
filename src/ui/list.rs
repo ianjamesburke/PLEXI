@@ -551,13 +551,12 @@ fn draw_pips(
         );
         let hidden = pips.hidden_indices.contains(&dot_i);
         let agent_state = pips.activities.get(dot_i).and_then(|s| s.as_ref());
-        let color = if let Some(state) = agent_state {
-            crate::ui::activity::dot_color_from_time(state, colors, time)
-        } else if pips.focused_idx == Some(dot_i) {
-            colors.accent
-        } else {
-            colors.text_dim.gamma_multiply(0.45)
-        };
+        let color = crate::ui::activity::pip_color(
+            agent_state,
+            pips.focused_idx == Some(dot_i),
+            colors,
+            time,
+        );
         if hidden {
             ui.painter()
                 .circle_stroke(center, PANE_PIP_RADIUS, Stroke::new(1.0, color));

@@ -1838,6 +1838,45 @@ impl PlexiApp {
         }
     }
 
+    /// Poll host-observed terminal activity for every terminal pane (1 Hz,
+    /// called from the throttled block in the render loop). Working = a
+    /// foreground process other than the shell holds the PTY (`tcgetpgrp`),
+    /// Blocked = the shell exited, None = shell sitting at its prompt.
+    pub(super) fn tick_terminal_activity(&mut self) {
+        use crate::app_protocol::AgentState;
+        for window in self.windows.iter_mut() {
+            for (pane_id, pane) in window.panes.iter_mut() {
+                let Some(t) = pane.as_terminal_mut() else {
+                    continue;
+                };
+                let shell_pid = t.backend.child_pid();
+                let fg = t.backend.foreground_pid();
+                let new = if t.exited {
+                    Some(AgentState::Blocked)
+                } else {
+                    // Two independent signals; either one means a command is
+                    // running. fg pgid covers foreground jobs; the children
+                    // check covers shells whose job-control behavior doesn't
+                    // move the fg pgid, plus backgrounded servers.
+                    let running = fg.is_some_and(|fg| fg != shell_pid as i32)
+                        || crate::host::shell::pid_has_children(shell_pid);
+                    running.then_some(AgentState::Working)
+                };
+                if new != t.activity {
+                    log::info!(
+                        "terminal activity: pane {} {:?} -> {:?} (shell_pid={}, fg_pgid={:?})",
+                        pane_id,
+                        t.activity,
+                        new,
+                        shell_pid,
+                        fg
+                    );
+                    t.activity = new;
+                }
+            }
+        }
+    }
+
     pub(super) fn tick_scheduler(&mut self) {
         // Load routines from every context that has a root set
         let roots: Vec<std::path::PathBuf> = self

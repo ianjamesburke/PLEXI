@@ -295,15 +295,14 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         }
                         const PIP_R: f32 = 3.0;
                         for state_opt in &preview.pane_activities {
-                            let color = if let Some(state) = state_opt {
-                                crate::ui::activity::dot_color_from_time(
-                                    state,
-                                    &colors_for_portal,
-                                    t,
-                                )
-                            } else {
-                                colors_for_portal.text_dim.gamma_multiply(0.35)
-                            };
+                            // Portals have no focused pane; activity pips render at
+                            // full strength, neutral pips at the shared unfocused dim.
+                            let color = crate::ui::activity::pip_color(
+                                state_opt.as_ref(),
+                                state_opt.is_some(),
+                                &colors_for_portal,
+                                t,
+                            );
                             let (rect, _) =
                                 ui.allocate_exact_size(egui::vec2(PIP_R * 2.0, PIP_R * 2.0), egui::Sense::hover());
                             ui.painter().circle_filled(rect.center(), PIP_R, color);

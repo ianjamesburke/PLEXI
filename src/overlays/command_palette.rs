@@ -115,8 +115,8 @@ fn palette_pips_for_context(
                 .iter()
                 .filter(|w| w.context_id == ctx_id)
                 .find_map(|w| w.panes.get(pane_id))
-                .and_then(|pane| pane.agent())
-                .map(|a| a.state.clone())
+                .and_then(|pane| pane.effective_activity())
+                .cloned()
         })
         .collect();
 

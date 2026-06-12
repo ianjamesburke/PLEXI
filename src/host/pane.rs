@@ -107,6 +107,24 @@ impl Pane {
         }
     }
 
+    /// Activity state for the unified activity dot. Hook-reported agent
+    /// state wins; otherwise falls back to host-observed terminal activity
+    /// (foreground process running / exited). Apps and portals have no
+    /// host-observed fallback yet.
+    pub fn effective_activity(&self) -> Option<&crate::app_protocol::AgentState> {
+        if let Some(a) = self.agent() {
+            return Some(&a.state);
+        }
+        match self {
+            Pane::Terminal(t) => t.activity.as_ref(),
+            Pane::App(a) => a
+                .overlay_replaced
+                .as_deref()
+                .and_then(Pane::effective_activity),
+            Pane::Portal(_) => None,
+        }
+    }
+
     pub fn set_agent(&mut self, agent: Option<crate::app_protocol::PaneAgentState>) -> bool {
         match self {
             Pane::Terminal(t) => {
@@ -177,6 +195,10 @@ pub struct TerminalPane {
     /// When true, the pane is visually deprioritized (outline dot, dimmed tab title).
     pub hidden: bool,
     pub agent: Option<crate::app_protocol::PaneAgentState>,
+    /// Host-observed terminal activity (foreground process running, exited),
+    /// polled via `tcgetpgrp` in `tick_terminal_activity`. Separate from
+    /// `agent`, which is hook-reported; `agent` wins when both are present.
+    pub activity: Option<crate::app_protocol::AgentState>,
     pub slots: HashMap<String, PathBuf>,
 }
 
@@ -209,6 +231,7 @@ impl TerminalPane {
             outside_workspace_root: None,
             hidden: false,
             agent: None,
+            activity: None,
             slots: HashMap::new(),
         })
     }

@@ -207,22 +207,14 @@ impl ContextItem {
                                 rect.min.x + (dot_i as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS;
                             let is_hidden = dots.hidden_set.contains(&dot_i);
                             let agent_state = dots.activities.get(dot_i).and_then(|s| s.as_ref());
-                            let color = if let Some(state) = agent_state {
-                                use crate::app_protocol::AgentState;
-                                match state {
-                                    AgentState::Working => {
-                                        let alpha = 0.45 + 0.55 * (0.5 + 0.5 * (t * std::f64::consts::PI).sin()) as f32;
-                                        let c = colors.success;
-                                        with_alpha(c, alpha * row_alpha)
-                                    }
-                                    AgentState::Idle => with_alpha(colors.warning, row_alpha),
-                                    AgentState::Blocked => with_alpha(colors.danger, row_alpha),
-                                }
-                            } else if dots.focused_idx == Some(dot_i) {
-                                with_alpha(accent_color, row_alpha)
-                            } else {
-                                with_alpha(text_dim, if is_dragging { 0.15 } else { 0.35 })
-                            };
+                            let focused = dots.focused_idx == Some(dot_i);
+                            let mut color = crate::ui::activity::pip_color(
+                                agent_state, focused, colors, t,
+                            )
+                            .gamma_multiply(row_alpha);
+                            if is_dragging && agent_state.is_none() && !focused {
+                                color = color.gamma_multiply(0.4);
+                            }
                             let center = egui::pos2(cx, cy);
                             if is_hidden {
                                 painter.circle_stroke(

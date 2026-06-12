@@ -67,7 +67,11 @@ pub fn render(
         colors,
         outside_workspace,
         pane_title_font_size,
-        terminal.agent.as_ref().map(|a| &a.state),
+        terminal
+            .agent
+            .as_ref()
+            .map(|a| &a.state)
+            .or(terminal.activity.as_ref()),
     );
 
     let font_size = terminal.font_size;
