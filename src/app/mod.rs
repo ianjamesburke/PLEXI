@@ -184,6 +184,15 @@ pub struct PlexiApp {
     /// was opened. Resolved once on open, not per-frame, to avoid repeated
     /// filesystem traversal in the egui draw loop.
     pub(crate) palette_workspace_root: Option<std::path::PathBuf>,
+    /// TTL cache for the cwd-derived fallback workspace root passed to
+    /// `PlexiBehavior` each frame (#2023). The fallback
+    /// (`config::active_workspace_root()`) stat-walks the filesystem from the
+    /// process cwd, so it must not run per frame. The underlying state is
+    /// external filesystem layout — no enumerable mutation sites — so a 1s
+    /// TTL is the invalidation, matching the downstream
+    /// `OUTSIDE_WORKSPACE_CHECK_INTERVAL` of the only consumer (the terminal
+    /// "outside workspace" badge).
+    pub(crate) workspace_root_fallback_cache: Option<(std::time::Instant, Option<std::path::PathBuf>)>,
     pub(crate) context_visit_history: Vec<u64>,
     pub(crate) renaming_pane: Option<PaneId>,
     /// One-shot guard: true after `request_focus()` fires on the rename modal's
@@ -750,6 +759,7 @@ impl PlexiApp {
                     palette_query: String::new(),
                     palette_selected: 0,
                     palette_workspace_root: None,
+                    workspace_root_fallback_cache: None,
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
                     rename_pane_focus_requested: false,
@@ -939,6 +949,7 @@ impl PlexiApp {
             palette_query: String::new(),
             palette_selected: 0,
             palette_workspace_root: None,
+            workspace_root_fallback_cache: None,
             context_visit_history: Vec::new(),
             renaming_pane: None,
             rename_pane_focus_requested: false,
@@ -1142,6 +1153,7 @@ impl PlexiApp {
                 palette_query: String::new(),
                 palette_selected: 0,
                 palette_workspace_root: None,
+                workspace_root_fallback_cache: None,
                 context_visit_history: Vec::new(),
                 renaming_pane: None,
                 rename_pane_focus_requested: false,

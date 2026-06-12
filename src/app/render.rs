@@ -10,6 +10,22 @@ const FLASH_DUR: f32 = 0.4;
 const FLASH_TAU: f32 = 0.10;
 
 impl PlexiApp {
+    /// Cwd-derived fallback workspace root, used when the active context has no
+    /// explicit `root`. `config::active_workspace_root()` stat-walks the
+    /// filesystem from the process cwd, so it must not run every frame; the
+    /// result is cached with a 1s TTL (see `workspace_root_fallback_cache`).
+    fn fallback_workspace_root(&mut self) -> Option<std::path::PathBuf> {
+        const TTL: std::time::Duration = std::time::Duration::from_secs(1);
+        if let Some((resolved_at, ref root)) = self.workspace_root_fallback_cache {
+            if resolved_at.elapsed() < TTL {
+                return root.clone();
+            }
+        }
+        let root = crate::config::active_workspace_root();
+        self.workspace_root_fallback_cache = Some((std::time::Instant::now(), root.clone()));
+        root
+    }
+
     /// Early per-frame work that runs before overlay dispatch and panel rendering.
     /// Handles adopted context paths, finder service drains, notification polling,
     /// pane command draining, update channel checks, PTY event draining, and
@@ -231,16 +247,21 @@ impl PlexiApp {
                 let canvas_old_focus = self.windows[self.active_window].focused_pane;
                 let canvas_old_window_id = self.windows[self.active_window].window_id;
 
+                // Portal panes in the active window — computed once and shared by
+                // the preview map and the ContextState refresh below. Most contexts
+                // have zero portal panes; when the list is empty ALL portal work
+                // below is skipped (#2023).
+                let active_win = self.active_window;
+                let portal_panes: Vec<(crate::spatial::tiling::PaneId, u64)> = self.windows[active_win]
+                    .panes
+                    .iter()
+                    .filter_map(|(pid, p)| p.portal_target().map(|cid| (*pid, cid)))
+                    .collect();
+
                 // Build portal preview data before taking the mutable ctx borrow.
                 let portal_info: std::collections::HashMap<crate::spatial::tiling::PaneId, crate::spatial::tiling::PortalPreview> = {
-                    let active_win = self.active_window;
                     let mut map = std::collections::HashMap::new();
-                    let portal_panes: Vec<(crate::spatial::tiling::PaneId, u64)> = self.windows[active_win]
-                        .panes
-                        .iter()
-                        .filter_map(|(pid, p)| p.portal_target().map(|cid| (*pid, cid)))
-                        .collect();
-                    for (pane_id, child_ctx_id) in portal_panes {
+                    for &(pane_id, child_ctx_id) in &portal_panes {
                         let ctx_entry = self.router.iter().find(|c| c.context_id == child_ctx_id);
                         let ctx_name = ctx_entry
                             .map(|c| c.name.clone())
@@ -316,20 +337,17 @@ impl PlexiApp {
                     map
                 };
 
-                // Update cached ContextState on portal panes (recomputed each frame for now;
-                // future: throttle to change events only).
+                // Update cached ContextState on portal panes. Recomputed each frame
+                // while portal panes exist — child-context state mutates from too
+                // many sites to track a generation safely, and a stale preview is a
+                // correctness regression while an extra recompute is not (#2023).
+                // The whole block (including any Context access) is skipped when
+                // the active window has no portal panes.
                 {
-                    let contexts: Vec<crate::host::context::Context> = self.router.iter().cloned().collect();
-                    let active_win = self.active_window;
-                    let portal_pane_ids: Vec<(crate::spatial::tiling::PaneId, u64)> = self.windows[active_win]
-                        .panes
-                        .iter()
-                        .filter_map(|(pid, p)| p.portal_target().map(|cid| (*pid, cid)))
-                        .collect();
-                    for (pid, child_ctx_id) in portal_pane_ids {
+                    for &(pid, child_ctx_id) in &portal_panes {
                         let state = crate::host::context_state::ContextState::compute(
                             child_ctx_id,
-                            &contexts,
+                            self.router.as_slice(),
                             &self.windows,
                         );
                         if let Some(portal) = self.windows[active_win].panes.get_mut(&pid)
@@ -351,6 +369,16 @@ impl PlexiApp {
                 // Computed before the mutable borrow of `ctx` — needed by PlexiBehavior
                 // to prevent terminal panes from stealing egui focus while a modal is open.
                 let modal_open = self.input_captured_by_overlay();
+
+                // Resolved before the mutable borrow of the active window. The
+                // explicit context root is a cheap field clone; the cwd-derived
+                // fallback stat-walks the filesystem and is TTL-cached (#2023).
+                let workspace_root = self
+                    .router
+                    .active()
+                    .root
+                    .clone()
+                    .or_else(|| self.fallback_workspace_root());
 
                 let ctx = &mut self.windows[self.active_window];
 
@@ -495,7 +523,7 @@ impl PlexiApp {
                     pane_names,
                     drag_cursor_pos,
                     hovered_files,
-                    workspace_root: self.router.active().root.clone().or_else(crate::config::active_workspace_root),
+                    workspace_root,
                     unfocused_opacity,
                     portal_info,
                     modal_open,

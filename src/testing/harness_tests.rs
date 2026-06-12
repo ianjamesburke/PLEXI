@@ -3207,3 +3207,177 @@ default = "ask"
         tool_dispatch::unregister(PANE);
     }
 }
+
+// -- Central-panel per-frame metadata (#2023) -------------------------------
+//
+// Issue #2023 short-circuits all portal preview / ContextState work when the
+// active window has no portal panes. These tests guard the invalidation side:
+// the data must still refresh on the very next frame after a change.
+
+/// Insert a test App pane directly into the window with the given window_id.
+/// Mirrors `PlexiApp::add_test_pane` but targets an arbitrary window.
+fn add_app_pane_to_window(h: &mut HostHarness, window_id: u64, pane_id: u64) {
+    use crate::process_app::ProcessApp;
+    let (process_app, _draw_tx) = ProcessApp::new_for_test(pane_id, AppPermissions::builtin());
+    let app_pane = crate::host::pane::AppPane {
+        id: pane_id,
+        runtime: AppRuntime::Process(Box::new(process_app)),
+        workspace_root: std::env::temp_dir(),
+        permissions: AppPermissions::builtin(),
+        manifest_id: "test".to_string(),
+        name: "Test App".to_string(),
+        pane_group: None,
+        linked_pane_id: None,
+        overlay_replaced: None,
+        hidden: false,
+        agent: None,
+        slots: HashMap::new(),
+    };
+    let win = h
+        .app
+        .windows
+        .iter_mut()
+        .find(|w| w.window_id == window_id)
+        .expect("target window must exist");
+    win.panes
+        .insert(pane_id, Pane::App(Box::new(app_pane)));
+    let tile_id = win.tree.tiles.insert_pane(pane_id);
+    if win.tree.root.is_none() {
+        win.tree.root = Some(tile_id);
+    }
+}
+
+/// Portal preview (cached `ContextState` on the portal pane) must reflect a
+/// pane added to the child context on the next rendered frame.
+#[test]
+fn portal_context_state_refreshes_when_child_context_changes() {
+    let mut h = HostHarness::new();
+    let _root_pane = h.add_test_pane();
+    let root_ctx_id = h.app.router.active().context_id;
+
+    // Child context with its own window and one pane.
+    let child_ctx_id = 77001u64;
+    let child_win_id = 77002u64;
+    h.app.router.push(crate::host::context::Context {
+        name: "child".to_string(),
+        path: std::path::PathBuf::from("/tmp/harness_2023_child"),
+        root: None,
+        description: None,
+        context_id: child_ctx_id,
+        parent_id: Some(root_ctx_id),
+        depth: 1,
+        parked: false,
+    });
+    h.app.context_active_window.insert(child_ctx_id, child_win_id);
+    h.app.windows.push(crate::host::context::Window {
+        name: String::new(),
+        path: std::path::PathBuf::from("/tmp/harness_2023_child"),
+        tree: egui_tiles::Tree::empty("harness_2023_child"),
+        panes: HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 0,
+        window_id: child_win_id,
+        context_id: child_ctx_id,
+    });
+    add_app_pane_to_window(&mut h, child_win_id, 77100);
+
+    // Portal pane in the active (root) window pointing at the child context.
+    let portal_pane_id = 77200u64;
+    {
+        let win = &mut h.app.windows[0];
+        let _ = win.tree.tiles.insert_pane(portal_pane_id);
+        win.panes.insert(
+            portal_pane_id,
+            Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                pane_id: portal_pane_id,
+                target_context_id: child_ctx_id,
+                context_state: None,
+                hidden: false,
+            })),
+        );
+    }
+
+    let portal_state = |h: &HostHarness| {
+        let win = &h.app.windows[0];
+        match win.panes.get(&portal_pane_id) {
+            Some(Pane::Portal(p)) => p.context_state.clone(),
+            other => panic!("expected Portal pane, got {:?}", other.map(|p| p.id())),
+        }
+    };
+
+    h.run_frames(1);
+    let state = portal_state(&h).expect("context_state must be computed on first frame");
+    assert_eq!(state.pane_count, 1, "child context starts with one pane");
+
+    // Mutate the child context — add a second pane — and verify the portal
+    // preview reflects it on the very next frame (no stale cache).
+    add_app_pane_to_window(&mut h, child_win_id, 77101);
+    h.run_frames(1);
+    let state = portal_state(&h).expect("context_state must persist");
+    assert_eq!(
+        state.pane_count, 2,
+        "portal preview must reflect a pane added to the child context on the next frame"
+    );
+}
+
+/// The per-pane notification badge count must update on the next frame after
+/// a notification arrives, and clear after it is removed.
+#[test]
+fn notification_badge_count_propagates_to_sender_pane() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    h.run_frames(1);
+    assert_eq!(
+        h.process_app_mut(pane).pending_notification_count,
+        0,
+        "no notifications queued — badge count must be 0"
+    );
+
+    let source_context_id = h.app.router.active().context_id;
+    let source_window_id = h.app.windows[h.app.active_window].window_id;
+    h.app
+        .pending_notifications
+        .push(crate::app::PendingNotification {
+            notify_id: "harness-2023-badge".to_string(),
+            sender_pane_id: pane,
+            source_context_id,
+            source_window_id,
+            level: "info".to_string(),
+            title: "badge test".to_string(),
+            body: String::new(),
+            kind: crate::app_protocol::NotifyKind::Message,
+            options: vec![],
+            input_prompt: None,
+            required: false,
+            priority: 0,
+            scope: crate::app_protocol::NotifyScope::Global,
+            image_inline: None,
+            image_pipe_id: None,
+            response_file: None,
+            timeout_secs: None,
+            on_dismiss: None,
+            enqueued_at: std::time::Instant::now(),
+            tombstoned: false,
+            deliver_after: None,
+        });
+
+    h.run_frames(1);
+    assert_eq!(
+        h.process_app_mut(pane).pending_notification_count,
+        1,
+        "badge count must reflect the queued notification on the next frame"
+    );
+
+    h.app
+        .pending_notifications
+        .retain(|n| n.notify_id != "harness-2023-badge");
+    h.run_frames(1);
+    assert_eq!(
+        h.process_app_mut(pane).pending_notification_count,
+        0,
+        "badge count must clear on the next frame after the notification is removed"
+    );
+}
