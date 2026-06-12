@@ -1240,7 +1240,15 @@ impl ProcessApp {
 
     fn mark_render_needed(&mut self, reason: &'static str) {
         if self.runtime.request_render_now() {
-            log::info!("ProcessApp[{}]: render requested ({reason})", self.type_id);
+            // mouse_move fires once per pointer event while an app has mouse
+            // tracking enabled (opt-in via SetMouseTracking) — at info level
+            // it floods the log at cursor speed. Volume stays visible in the
+            // 10s render_diag summary.
+            if reason == "mouse_move" {
+                log::debug!("ProcessApp[{}]: render requested ({reason})", self.type_id);
+            } else {
+                log::info!("ProcessApp[{}]: render requested ({reason})", self.type_id);
+            }
         }
     }
 
