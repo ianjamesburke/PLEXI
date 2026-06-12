@@ -1004,6 +1004,7 @@ pub(super) fn open_github_ephemeral(
         eprintln!("error: could not write spawn request: {e}");
         return 1;
     }
+    crate::cli::nudge_running_instance();
     log::info!("open_github_ephemeral: queued path={abs_path}");
     println!("queued: open github:{owner}/{repo}");
     println!("(running outside a Plexi pane — Plexi will pick this up within a second)");

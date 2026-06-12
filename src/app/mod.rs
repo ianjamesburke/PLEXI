@@ -370,7 +370,35 @@ fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
     theme::setup_style(ctx, colors, true);
 }
 
-fn spawn_socket_listener(tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>) {
+/// Handle one newline-delimited JSON line from the notify socket: parse the
+/// `AppRequest`, queue it on the pane-IPC channel, and wake the UI thread.
+///
+/// The repaint request is load-bearing: a fully idle Plexi produces zero
+/// frames, and the pane-IPC channel is only drained during a frame. Without
+/// the wake, a CLI request against an idle instance sits queued until the
+/// user touches the window (#s13 perf batch regression).
+fn handle_socket_line(
+    line: &str,
+    tx: &std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
+    egui_ctx: &egui::Context,
+) {
+    match serde_json::from_str::<crate::app_protocol::AppRequest>(line) {
+        Ok(cmd) => {
+            if tx.send(cmd).is_ok() {
+                log::debug!("pane_ipc: request queued — requesting repaint to wake idle UI thread");
+                egui_ctx.request_repaint();
+            }
+        }
+        Err(e) => {
+            log::warn!("pane_ipc: parse error: {e}  line={line:?}");
+        }
+    }
+}
+
+fn spawn_socket_listener(
+    tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
+    egui_ctx: egui::Context,
+) {
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
 
@@ -388,6 +416,7 @@ fn spawn_socket_listener(tx: std::sync::mpsc::Sender<crate::app_protocol::AppReq
         for stream in listener.incoming() {
             let Ok(stream) = stream else { break };
             let tx = tx.clone();
+            let egui_ctx = egui_ctx.clone();
             std::thread::spawn(move || {
                 let reader = BufReader::new(stream);
                 for line in reader.lines() {
@@ -396,14 +425,7 @@ fn spawn_socket_listener(tx: std::sync::mpsc::Sender<crate::app_protocol::AppReq
                     if line.is_empty() {
                         continue;
                     }
-                    match serde_json::from_str::<crate::app_protocol::AppRequest>(&line) {
-                        Ok(cmd) => {
-                            let _ = tx.send(cmd);
-                        }
-                        Err(e) => {
-                            log::warn!("pane_ipc: parse error: {e}  line={line:?}");
-                        }
-                    }
+                    handle_socket_line(&line, &tx, &egui_ctx);
                 }
             });
         }
@@ -414,11 +436,18 @@ impl PlexiApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         frame_tick: crate::platform::logging::FrameTick,
+        heartbeat_ctx: crate::platform::logging::HeartbeatCtxSlot,
     ) -> Self {
+        // Hand the egui context to the heartbeat watchdog so it can tell
+        // healthy zero-frame idle apart from a genuine UI freeze.
+        if let Ok(mut slot) = heartbeat_ctx.lock() {
+            *slot = Some(cc.egui_ctx.clone());
+        }
+
         #[cfg(target_os = "macos")]
         crate::platform::macos_menu::customize_app_menu();
         #[cfg(target_os = "macos")]
-        crate::platform::finder_service::register();
+        crate::platform::finder_service::register(cc.egui_ctx.clone());
 
         // Repaint-cause diagnostics (#2019): route egui_term's repaint labels
         // into the host counters; `update()` flushes a summary every 10s.
@@ -524,7 +553,7 @@ impl PlexiApp {
 
         let (pane_ipc_tx, pane_ipc_rx) =
             std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
-        spawn_socket_listener(pane_ipc_tx);
+        spawn_socket_listener(pane_ipc_tx, cc.egui_ctx.clone());
 
         // One-time migration: remove the legacy file-queue directory if it
         // still exists from a previous install. Notify commands now travel

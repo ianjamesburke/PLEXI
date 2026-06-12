@@ -23,6 +23,12 @@ impl ProcessApp {
     /// Exhaustive match — no wildcard arm. The compiler enforces coverage.
     pub(super) fn route_command(&mut self, cmd: AppRequest) {
         match cmd {
+            // ── Wake (no-op) ───────────────────────────────────────────────
+            // CLI-originated nudge for the idle host; carries no payload and
+            // has no effect when routed from an app.
+            AppRequest::Wake => {
+                log::debug!("ProcessApp[{}]: wake request (no-op)", self.type_id);
+            }
             // ── Capability request ─────────────────────────────────────────
             AppRequest::CapabilityRequest {
                 request_id,

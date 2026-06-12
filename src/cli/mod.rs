@@ -164,6 +164,31 @@ pub(super) fn send_to_socket(payload: serde_json::Value) -> i32 {
     0
 }
 
+/// Best-effort wake of a running instance after a spawn-queue file write.
+///
+/// A fully idle Plexi produces zero frames and only drains the spawn-queue
+/// during a frame, so without this nudge an outside-shell `plexi terminal`
+/// hangs until the user touches the window. Connects to the channel
+/// profile's `notify.sock` and sends a no-op `AppRequest::Wake`; the socket
+/// listener requests a repaint, the resulting frame drains the queue.
+///
+/// All errors are ignored silently and intentionally: no instance running
+/// means the queue is drained at next startup — the designed fallback.
+pub(super) fn nudge_running_instance() {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    let path = crate::config::config_dir().join("notify.sock");
+    let Ok(mut stream) = UnixStream::connect(&path) else {
+        return;
+    };
+    let Ok(payload) = serde_json::to_string(&crate::app_protocol::AppRequest::Wake) else {
+        return;
+    };
+    if stream.write_all(format!("{payload}\n").as_bytes()).is_ok() {
+        log::debug!("cli: sent wake nudge to running instance at {path:?}");
+    }
+}
+
 pub(super) fn binary_in_path(name: &str) -> bool {
     std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).any(|dir| dir.join(name).is_file()))

@@ -995,7 +995,8 @@ fn main() -> eframe::Result {
 
     // Shell probes are done. Start the heartbeat now so it only monitors
     // eframe operation — not pre-startup shell work (#588).
-    crate::platform::logging::spawn_heartbeat(frame_tick.clone());
+    let heartbeat_ctx = crate::platform::logging::new_heartbeat_ctx_slot();
+    crate::platform::logging::spawn_heartbeat(frame_tick.clone(), heartbeat_ctx.clone());
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -1011,7 +1012,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         env!("CARGO_PKG_NAME"),
         native_options,
-        Box::new(|cc| Ok(Box::new(app::PlexiApp::new(cc, frame_tick)))),
+        Box::new(|cc| Ok(Box::new(app::PlexiApp::new(cc, frame_tick, heartbeat_ctx)))),
     )
 }
 

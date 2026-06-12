@@ -1628,6 +1628,12 @@ impl PlexiApp {
                     response_file,
                 );
             }
+            crate::app_protocol::AppRequest::Wake => {
+                // No-op: the wake effect is the socket listener's repaint
+                // request — by the time this arm runs, a frame is already
+                // in flight and queued work (spawn-queue, channels) drains.
+                log::debug!("pane_ipc: kind=wake (no-op)");
+            }
             _ => {
                 log::warn!("pane_ipc: unsupported command kind, dropping");
             }
