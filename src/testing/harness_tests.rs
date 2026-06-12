@@ -1104,10 +1104,7 @@ fn capability_modal_escape_fires_deny_once() {
     // One idle frame: sync_capability_modal_focus should push the layer.
     h.run_frames(1);
     assert!(
-        h.app
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::CapabilityModal),
+        h.app.focus_stack.contains(&FocusLayer::CapabilityModal),
         "CapabilityModal must be on the focus stack when the focused pane has pending prompts"
     );
 
@@ -1135,10 +1132,7 @@ fn capability_modal_escape_fires_deny_once() {
     // CapabilityModal must have been popped from the focus stack since
     // sync_capability_modal_focus removes it when pending_prompts drains.
     assert!(
-        !h.app
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::CapabilityModal),
+        !h.app.focus_stack.contains(&FocusLayer::CapabilityModal),
         "CapabilityModal must be removed from the focus stack after deny_once drains the queue"
     );
 }
@@ -1158,10 +1152,7 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
     h.app.pending_close = true;
     h.app.sync_confirm_close_focus();
     assert!(
-        h.app
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::ConfirmClose),
+        h.app.focus_stack.contains(&FocusLayer::ConfirmClose),
         "ConfirmClose must be pushed when pending_close is true"
     );
 
@@ -1174,10 +1165,7 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
         "CommandPalette must be at the top after its source state becomes true"
     );
     assert!(
-        h.app
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::ConfirmClose),
+        h.app.focus_stack.contains(&FocusLayer::ConfirmClose),
         "ConfirmClose must still be in the stack (buried beneath CommandPalette)"
     );
 
@@ -1186,17 +1174,14 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
     h.app.sync_confirm_close_focus();
 
     assert!(
-        !h.app.focus_stack.iter().any(|l| *l == FocusLayer::ConfirmClose),
+        !h.app.focus_stack.contains(&FocusLayer::ConfirmClose),
         "ConfirmClose must be removed from the stack even though CommandPalette was on top. \
          If this fails, sync_confirm_close_focus used pop_focus_layer (top-only) instead of retain."
     );
 
     // The layer that was on top must still be present — we only removed ConfirmClose.
     assert!(
-        h.app
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::CommandPalette),
+        h.app.focus_stack.contains(&FocusLayer::CommandPalette),
         "CommandPalette must remain in the stack after removing the buried ConfirmClose layer"
     );
 }
@@ -1440,7 +1425,7 @@ fn capability_secret_overlay_focus_wins_after_central_panel_steal() {
     // requests focus on capability_secret_input.
     h.run_frames(1);
     assert!(
-        h.app.focus_stack.iter().any(|l| *l == FocusLayer::CapabilityModal),
+        h.app.focus_stack.contains(&FocusLayer::CapabilityModal),
         "CapabilityModal must be on the focus stack when the focused pane has a pending Secret prompt"
     );
 
@@ -1860,10 +1845,7 @@ fn yellow_capability_queues_prompt_then_grant_forwards() {
         assert!(!response_file.exists());
     }
     assert!(
-        h.app
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::CapabilityModal),
+        h.app.focus_stack.contains(&FocusLayer::CapabilityModal),
         "CapabilityModal must be on the focus stack while the prompt is pending"
     );
 
@@ -2449,7 +2431,7 @@ fn rollback_blocked_on_revision_mismatch() {
     h.inject(
         pane,
         DrawCommand::Host(AppRequest::RollbackVerifyResult {
-            checkpoint_id: ckpt_id.clone(),
+            checkpoint_id: ckpt_id,
             current_revision: "rev-99".to_string(),
         }),
     );

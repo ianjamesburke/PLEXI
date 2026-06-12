@@ -735,7 +735,7 @@ impl PlexiApp {
                     binding_table: crate::host::keys::build_binding_table(&key_bindings),
                     pending_close: false,
                     pending_context_close: None,
-                    frame_tick: frame_tick.clone(),
+                    frame_tick,
                     frame_diag_window: None,
                     last_sent_window_title: None,
                     permission_store_dir: crate::config::config_dir(),
@@ -756,7 +756,7 @@ impl PlexiApp {
                     text_overlay: None,
                     text_overlay_browse_rx: None,
                     registry,
-                    features: features.clone(),
+                    features,
                     pending_notifications: load_pending_notifications_from(
                         &crate::config::config_dir().join("notifications.json"),
                     ),
@@ -813,7 +813,7 @@ impl PlexiApp {
                     focus_started_at: None,
                     last_system_theme: None,
                     overlay_held_cmds: Vec::new(),
-                    agent_host: crate::agent::AgentHost::production(config.ai.clone()),
+                    agent_host: crate::agent::AgentHost::production(config.ai),
                 };
                 app.apply_context_transition_effects();
                 return app;
@@ -831,7 +831,7 @@ impl PlexiApp {
                 .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
             // macOS GUI apps launch with CWD = /. Use home_dir instead so
             // the initial context and all derived CWDs start at ~.
-            if cwd == PathBuf::from("/") {
+            if cwd == std::path::Path::new("/") {
                 dirs::home_dir().unwrap_or(cwd)
             } else {
                 cwd
@@ -1077,7 +1077,7 @@ impl PlexiApp {
                 theme: theme::terminal_theme(&theme_cfg),
                 colors,
                 default_font_size: theme::FONT_SIZE,
-                ctx: ctx.clone(),
+                ctx,
                 router: crate::workspace::router::WorkspaceRouter::new(
                     vec![crate::host::context::Context {
                         name: "Test".into(),

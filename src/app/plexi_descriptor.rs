@@ -199,7 +199,7 @@ pub fn parse(json: &str) -> Result<PlexiDescriptor, DescriptorError> {
     let (major, _minor) = parse_semver_major_minor(&descriptor.plexi_version)?;
     if major > PLEXI_DESCRIPTOR_MAJOR {
         return Err(DescriptorError::UnsupportedMajorVersion {
-            found: descriptor.plexi_version.clone(),
+            found: descriptor.plexi_version,
             supported: PLEXI_DESCRIPTOR_MAJOR,
         });
     }

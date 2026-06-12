@@ -523,7 +523,7 @@ pub fn pane_info_cli(previous: bool) -> i32 {
                             return 1;
                         }
                         let mut obj = v;
-                        obj["socket"] = serde_json::Value::String(socket_path.clone());
+                        obj["socket"] = serde_json::Value::String(socket_path);
                         let channel =
                             crate::config::build_channel().unwrap_or_else(|| "main".to_string());
                         obj["channel"] = serde_json::Value::String(channel);

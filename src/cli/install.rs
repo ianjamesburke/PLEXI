@@ -148,7 +148,7 @@ pub fn install_workspace_pack_cli() -> i32 {
     // Walk up from CWD looking for the channel dir (workspace marker).
     let workspace_root = {
         let home = dirs::home_dir();
-        let mut current = cwd.clone();
+        let mut current = cwd;
         let mut found: Option<std::path::PathBuf> = None;
         loop {
             if let Some(ref h) = home {

@@ -206,7 +206,7 @@ impl SubscriptionRecord {
         if self.app_id != app_id {
             return false;
         }
-        if !self.event_names.is_empty() && !self.event_names.iter().any(|n| *n == record.event) {
+        if !self.event_names.is_empty() && !self.event_names.contains(&record.event) {
             return false;
         }
         match &self.resource_id {

@@ -351,7 +351,7 @@ impl AppRegistry {
                 registry.scan_dir(
                     &local_agents,
                     RegistrySource::LocalAgent,
-                    Some(root.clone()),
+                    Some(root),
                 );
             }
         }

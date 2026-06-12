@@ -484,9 +484,9 @@ impl PlexiApp {
                 let tracked_path = slots.get(slot_name).cloned();
                 let existing_path = tracked_path.clone().unwrap_or(slot_path.clone());
                 let write_path = if *append {
-                    tracked_path.clone().unwrap_or(slot_path.clone())
+                    tracked_path.clone().unwrap_or(slot_path)
                 } else {
-                    slot_path.clone()
+                    slot_path
                 };
                 let exists = tracked_path.as_ref().is_some_and(|path| path.exists());
                 if exists && !*append && !*replace {

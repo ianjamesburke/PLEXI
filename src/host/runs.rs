@@ -67,7 +67,7 @@ impl RunRegistry {
     pub fn complete(&mut self, run_id: &str) {
         if let Some(run) = self.runs.remove(run_id) {
             crate::host::event_log::emit(crate::host::event_log::HostEvent::RunCompleted {
-                run_id: run.run_id.clone(),
+                run_id: run.run_id,
                 status: RunStatus::Completed.as_str().to_string(),
                 timestamp: crate::host::event_log::now_timestamp(),
             });

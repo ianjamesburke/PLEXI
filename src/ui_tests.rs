@@ -52,7 +52,7 @@ impl PlexiUiHarness {
     pub fn new() -> Self {
         let frame_tick = Arc::new(AtomicU64::new(0));
         let harness = egui_kittest::Harness::new_eframe(move |cc| {
-            let (app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick.clone());
+            let (app, _ipc_tx) = PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
             app
         });
         Self { inner: harness }
@@ -67,7 +67,7 @@ impl PlexiUiHarness {
             .with_size(egui::Vec2::new(width, height))
             .build_eframe(move |cc| {
                 let (app, _ipc_tx) =
-                    PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick.clone());
+                    PlexiApp::new_for_test(cc.egui_ctx.clone(), frame_tick);
                 app
             });
         Self { inner: harness }

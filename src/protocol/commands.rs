@@ -1479,6 +1479,10 @@ pub enum ControlCommand {
 /// The JSON `{"type":"rect",...}` still works; `{"type":"ai_query",...}` still works.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(untagged)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "DrawCommand is a transient per-message wire decode (parsed, routed, dropped within a frame), never stored in bulk; boxing AppRequest would add a heap allocation per host request and force deref rewrites at 80+ match sites"
+)]
 pub enum DrawCommand {
     Render(RenderCommand),
     Host(AppRequest),

@@ -2142,7 +2142,7 @@ impl App for ProcessApp {
                             x: pos.x - origin.x,
                             y: pos.y - origin.y,
                             buttons,
-                            modifiers: frame_mods.clone(),
+                            modifiers: frame_mods,
                         });
                         self.mark_render_needed("mouse_move");
                         needs_tracking_repaint = true;

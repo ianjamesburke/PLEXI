@@ -655,8 +655,8 @@ mod tests {
         let dev = MockMidiDevice::new();
         let inputs = dev.list_input_ports();
         assert!(!inputs.is_empty(), "mock must report at least one input");
-        let defaults: Vec<_> = inputs.iter().filter(|p| p.default).collect();
-        assert_eq!(defaults.len(), 1, "exactly one input must be the default");
+        let defaults = inputs.iter().filter(|p| p.default).count();
+        assert_eq!(defaults, 1, "exactly one input must be the default");
     }
 
     #[test]

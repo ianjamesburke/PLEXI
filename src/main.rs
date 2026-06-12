@@ -605,7 +605,7 @@ fn main() -> eframe::Result {
                             }
                         }
                         // Any --host-action keys not matched to a --choice are an error.
-                        for (key, _) in &host_action_map {
+                        if let Some(key) = host_action_map.keys().next() {
                             let msg = format!(
                                 "error: --host-action key {:?} does not match any --choice key",
                                 key
@@ -723,7 +723,7 @@ fn main() -> eframe::Result {
                                 let payload = if enter {
                                     format!("{text}\n")
                                 } else {
-                                    text.clone()
+                                    text
                                 };
                                 log::info!(
                                     "pane_command:cli: pane_id={pane_id} len={} enter={enter}",

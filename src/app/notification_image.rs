@@ -276,7 +276,7 @@ mod tests {
     /// placeholder ("image frame malformed").
     #[test]
     fn notify_with_short_pipe_frame_is_malformed() {
-        let frame = vec![1u8, 2, 3]; // 3 bytes — too short for the header
+        let frame = [1u8, 2, 3]; // 3 bytes — too short for the header
         assert!(frame.len() < PIPE_HEADER_LEN);
     }
 }

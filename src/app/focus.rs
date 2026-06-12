@@ -566,7 +566,7 @@ impl PlexiApp {
         let theme_cfg = Self::resolve_theme_config(&fresh);
         let new_colors = crate::ui::theme::Colors::from_config(&theme_cfg);
         if self.colors != new_colors {
-            self.colors = new_colors.clone();
+            self.colors = new_colors;
             let dark_mode =
                 !crate::ui::theme::is_light_preset(
                     fresh.theme.as_ref().and_then(|t| t.preset.as_deref()).unwrap_or(""),
@@ -657,7 +657,7 @@ impl PlexiApp {
             let theme_cfg = crate::ui::theme::apply_preset(&preset, &user_theme);
             let new_colors = crate::ui::theme::Colors::from_config(&theme_cfg);
             if self.colors != new_colors {
-                self.colors = new_colors.clone();
+                self.colors = new_colors;
                 let dark_mode = !crate::ui::theme::is_light_preset(new_preset);
                 crate::ui::theme::setup_style(&self.ctx, &new_colors, dark_mode);
                 let window_theme = if dark_mode {
@@ -701,10 +701,7 @@ impl PlexiApp {
     /// deterministically each frame.
     pub(crate) fn sync_confirm_close_focus(&mut self) {
         let should_own = self.pending_close;
-        let has_layer = self
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::ConfirmClose);
+        let has_layer = self.focus_stack.contains(&FocusLayer::ConfirmClose);
         if should_own && !has_layer {
             self.push_focus_layer(FocusLayer::ConfirmClose);
         } else if !should_own && has_layer {
@@ -715,10 +712,7 @@ impl PlexiApp {
 
     pub(crate) fn sync_context_close_focus(&mut self) {
         let should_own = self.pending_context_close.is_some();
-        let has_layer = self
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::ContextCloseConfirm);
+        let has_layer = self.focus_stack.contains(&FocusLayer::ContextCloseConfirm);
         if should_own && !has_layer {
             self.push_focus_layer(FocusLayer::ContextCloseConfirm);
         } else if !should_own && has_layer {
@@ -799,10 +793,7 @@ impl PlexiApp {
 
     pub(crate) fn sync_notification_modal_focus(&mut self) {
         let should_own = self.show_notification_modal;
-        let has_layer = self
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::NotificationModal);
+        let has_layer = self.focus_stack.contains(&FocusLayer::NotificationModal);
         if should_own && !has_layer {
             self.push_focus_layer(FocusLayer::NotificationModal);
         } else if !should_own && has_layer {
@@ -814,10 +805,7 @@ impl PlexiApp {
 
     pub(crate) fn sync_cli_setup_prompt_focus(&mut self) {
         let should_own = self.show_cli_setup_prompt;
-        let has_layer = self
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::CliSetupPrompt);
+        let has_layer = self.focus_stack.contains(&FocusLayer::CliSetupPrompt);
         if should_own && !has_layer {
             log::info!("cli_setup: focus captured by CliSetupPrompt layer");
             self.push_focus_layer(FocusLayer::CliSetupPrompt);
@@ -835,10 +823,7 @@ impl PlexiApp {
     /// source of truth, focus stack follows it deterministically each frame.
     pub(crate) fn sync_command_palette_focus(&mut self) {
         let should_own = self.show_command_palette;
-        let has_layer = self
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::CommandPalette);
+        let has_layer = self.focus_stack.contains(&FocusLayer::CommandPalette);
         if should_own && !has_layer {
             self.push_focus_layer(FocusLayer::CommandPalette);
         } else if !should_own && has_layer {
@@ -909,10 +894,7 @@ impl PlexiApp {
     /// Reconcile the rename-pane focus layer with `renaming_pane`.
     pub(crate) fn sync_rename_pane_focus(&mut self) {
         let should_own = self.renaming_pane.is_some();
-        let has_layer = self
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::RenamePane);
+        let has_layer = self.focus_stack.contains(&FocusLayer::RenamePane);
         if should_own && !has_layer {
             self.push_focus_layer(FocusLayer::RenamePane);
         } else if !should_own && has_layer {
@@ -926,10 +908,7 @@ impl PlexiApp {
     /// never renders, so we promote the rename to a modal overlay instead.
     pub(crate) fn sync_context_rename_focus(&mut self) {
         let should_own = self.renaming_window.is_some() && !self.sidebar_visible;
-        let has_layer = self
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::ContextRename);
+        let has_layer = self.focus_stack.contains(&FocusLayer::ContextRename);
         if should_own && !has_layer {
             self.push_focus_layer(FocusLayer::ContextRename);
         } else if !should_own && has_layer {
@@ -941,7 +920,7 @@ impl PlexiApp {
     /// Reconcile the text-input overlay focus layer with `text_overlay`.
     pub(crate) fn sync_text_input_focus(&mut self) {
         let should_own = self.text_overlay.is_some();
-        let has_layer = self.focus_stack.iter().any(|l| *l == FocusLayer::TextInput);
+        let has_layer = self.focus_stack.contains(&FocusLayer::TextInput);
         if should_own && !has_layer {
             self.push_focus_layer(FocusLayer::TextInput);
         } else if !should_own && has_layer {
@@ -956,10 +935,7 @@ impl PlexiApp {
     /// without polling lag.
     pub(crate) fn sync_capability_modal_focus(&mut self) {
         let should_own = self.focused_pane_has_pending_prompts();
-        let has_layer = self
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::CapabilityModal);
+        let has_layer = self.focus_stack.contains(&FocusLayer::CapabilityModal);
         let is_top = matches!(self.focus_stack.last(), Some(FocusLayer::CapabilityModal));
         if should_own && !is_top {
             // Push to top (re-promoting from buried position if already in stack).

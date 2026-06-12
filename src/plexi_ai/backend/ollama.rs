@@ -263,7 +263,7 @@ mod tests {
         let raw = RawToolCall {
             id: String::new(),
             name,
-            arguments: arguments.clone(),
+            arguments,
         };
 
         assert_eq!(raw.name, "add");

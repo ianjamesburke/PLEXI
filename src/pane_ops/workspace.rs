@@ -156,7 +156,7 @@ fn clone_tile_subtree(
                 .map(|(_, new_child)| *new_child)
                 .collect();
             let mut new_grid = egui_tiles::Grid::new(new_children);
-            new_grid.layout = grid.layout.clone();
+            new_grid.layout = grid.layout;
             new_grid.col_shares = grid.col_shares.clone();
             new_grid.row_shares = grid.row_shares.clone();
             dest_tiles.insert_container(new_grid)
@@ -302,7 +302,7 @@ impl PlexiApp {
         });
         self.windows.push(crate::host::context::Window {
             name: String::new(),
-            path: path.clone(),
+            path,
             tree: child_tree,
             panes: child_panes,
             focused_pane: Some(child_root_tile),

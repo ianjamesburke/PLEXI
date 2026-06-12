@@ -37,7 +37,7 @@ pub fn start(config_path: PathBuf) -> Option<(ConfigWatcher, Receiver<()>)> {
     let (reload_tx, reload_rx) = mpsc::channel::<()>();
     let (raw_tx, raw_rx) = mpsc::channel::<()>();
 
-    let filter_name = target_name.clone();
+    let filter_name = target_name;
     let mut watcher = match notify::recommended_watcher(move |res: notify::Result<Event>| match res
     {
         Ok(ev) => {

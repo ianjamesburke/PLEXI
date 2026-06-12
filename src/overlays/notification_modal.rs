@@ -494,7 +494,7 @@ impl PlexiApp {
                                                     value: Some(
                                                         "tombstone_dismiss".to_string(),
                                                     ),
-                                                    response_file: n.response_file.clone(),
+                                                    response_file: n.response_file,
                                                     host_action: None,
                                                 });
                                         }

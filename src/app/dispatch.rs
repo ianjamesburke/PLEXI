@@ -312,7 +312,7 @@ impl PlexiApp {
                             options: options.clone(),
                             input_prompt: input_prompt.clone(),
                             required: *required,
-                            priority: priority.clone(),
+                            priority: *priority,
                             scope: resolved_scope,
                             image_inline: image_inline.clone(),
                             image_pipe_id: image_pipe_id.clone(),

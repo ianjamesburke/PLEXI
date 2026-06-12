@@ -1,3 +1,12 @@
+// Vendored crate: excluded from the first-party perf lint gate (`just perf-clippy`).
+// Do not refactor vendored code to satisfy these lints — see issue #2026.
+#![allow(
+    clippy::perf,
+    clippy::redundant_clone,
+    clippy::needless_collect,
+    clippy::large_enum_variant
+)]
+
 mod backend;
 mod bindings;
 mod diag;
