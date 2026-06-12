@@ -125,7 +125,8 @@ pub enum Action {
     /// Focus stays at the vacated tile (on whatever pane fills that slot).
     /// Bound to Cmd+Ctrl+Opt+H/J/K/L.
     SendPane(Direction),
-    /// Open the scratchpad overlay. Bound to Cmd+Shift+Space.
+    /// Create a new scratch note in the inbox and open it in a text-editor pane.
+    /// Bound to Cmd+Shift+Space.
     OpenScratchpad,
     /// Push the focused pane into a new sub-context. The pane becomes a portal
     /// and its content moves into the child. Bound to Cmd+Option+N.
@@ -141,7 +142,7 @@ pub enum Action {
     HidePane,
     /// Park/unpark the focused context. Bound to Cmd+Shift+U.
     ParkContext,
-    /// Open the notes picker overlay (text-editor pane only). Bound to Cmd+O when AppActive.
+    /// Open the notes picker overlay from any pane type. Bound to Cmd+O.
     OpenNotesPicker,
 }
 
@@ -974,6 +975,14 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             context: BindingContext::Normal,
             action: Action::OpenScratchpad,
         },
+        // Notes picker opens from any pane type — terminal, app, text-editor.
+        BindingEntry {
+            modifiers: b.open_notes_picker.0,
+            key: b.open_notes_picker.1,
+            exact: false,
+            context: BindingContext::Normal,
+            action: Action::OpenNotesPicker,
+        },
         // context_zoom_out is Cmd+Escape — not exact because plain Escape is AppActive only,
         // so there is no subset conflict on this key.
         BindingEntry {
@@ -998,13 +1007,6 @@ pub fn build_binding_table(b: &KeyBindings) -> Vec<BindingEntry> {
             exact: false,
             context: BindingContext::AppActive,
             action: Action::ToggleAppFocus,
-        },
-        BindingEntry {
-            modifiers: b.open_notes_picker.0,
-            key: b.open_notes_picker.1,
-            exact: false,
-            context: BindingContext::AppActive,
-            action: Action::OpenNotesPicker,
         },
     ];
 

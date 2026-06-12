@@ -20,11 +20,22 @@ pub enum ConfigDiagnostic {
         table: String,
         key: String,
     },
+    DeprecatedSection {
+        path: String,
+        section: String,
+        hint: String,
+        /// true → error (config key completely removed); false → warning (migration path still works).
+        error: bool,
+    },
 }
 
 impl ConfigDiagnostic {
     pub fn is_error(&self) -> bool {
-        matches!(self, Self::ReadError { .. } | Self::ParseError { .. })
+        match self {
+            Self::ReadError { .. } | Self::ParseError { .. } => true,
+            Self::DeprecatedSection { error, .. } => *error,
+            Self::UnknownKey { .. } => false,
+        }
     }
 }
 
@@ -39,6 +50,10 @@ impl std::fmt::Display for ConfigDiagnostic {
                 } else {
                     write!(f, "{path}: unknown key `{key}` in [{table}]")
                 }
+            }
+            Self::DeprecatedSection { path, section, hint, error } => {
+                let severity = if *error { "error" } else { "warning" };
+                write!(f, "{path}: {severity}: `{section}` is deprecated. {hint}")
             }
         }
     }
@@ -56,7 +71,6 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "confirm_quit",
     "confirm_close",
     "keybindings",
-    "quick_note",
     "focus_history_depth",
     "agents",
     "cli",
@@ -67,6 +81,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
 const KNOWN_AGENTS: &[&str] = &["low", "medium", "high"];
 const KNOWN_CLI: &[&str] = &["tips"];
 const KNOWN_THEME: &[&str] = &[
+    "preset",
     "bg_darkest",
     "bg_sidebar",
     "bg_toolbar",
@@ -236,6 +251,22 @@ pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
             }
             if let Some(toml::Value::Table(t)) = table.get("cli") {
                 check_unknown_keys(t, "cli", KNOWN_CLI, &path_str, &mut diags);
+            }
+            if table.contains_key("quick_note") {
+                diags.push(ConfigDiagnostic::DeprecatedSection {
+                    path: path_str.clone(),
+                    section: "quick_note".to_string(),
+                    hint: "Quick note now saves directly to notes/inbox/ — remove the [[quick_note.destinations]] section from your config. See https://plexiapp.com/docs/config".to_string(),
+                    error: true,
+                });
+            }
+            if table.contains_key("theme_preset") {
+                diags.push(ConfigDiagnostic::DeprecatedSection {
+                    path: path_str.clone(),
+                    section: "theme_preset".to_string(),
+                    hint: "Use [theme] preset = \"name\" instead. See https://plexiapp.com/docs/config".to_string(),
+                    error: false, // still works via fallback; migrate at your convenience
+                });
             }
         }
     }
@@ -422,7 +453,6 @@ pub struct PlexiConfig {
     /// Set to false to close panes immediately on Cmd+W without a confirmation dialog (default: true).
     pub confirm_close: Option<bool>,
     pub keybindings: Option<KeybindingsConfig>,
-    pub quick_note: Option<QuickNoteConfig>,
     pub focus_history_depth: Option<usize>,
     pub agents: Option<AgentsConfig>,
     pub cli: Option<CliConfig>,
@@ -642,6 +672,8 @@ pub struct BetaConfig {
 
 #[derive(Deserialize, Default, Clone)]
 pub struct ThemeConfig {
+    /// Theme preset name. Applied first; individual color fields override the preset.
+    pub preset: Option<String>,
     // UI chrome
     pub bg_darkest: Option<String>,
     pub bg_sidebar: Option<String>,
@@ -1184,11 +1216,6 @@ impl PlexiConfig {
             (None, Some(incoming)) => self.keybindings = Some(incoming),
             _ => {}
         }
-        match (self.quick_note.as_mut(), other.quick_note) {
-            (Some(existing), Some(incoming)) => existing.overlay(incoming),
-            (None, Some(incoming)) => self.quick_note = Some(incoming),
-            _ => {}
-        }
         match (self.agents.as_mut(), other.agents) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
             (None, Some(incoming)) => self.agents = Some(incoming),
@@ -1206,6 +1233,7 @@ impl ThemeConfig {
                 }
             };
         }
+        overlay_field!(preset);
         overlay_field!(bg_darkest);
         overlay_field!(bg_sidebar);
         overlay_field!(bg_toolbar);
@@ -1292,91 +1320,6 @@ impl NotificationsConfig {
             self.interrupt_threshold = other.interrupt_threshold;
         }
     }
-}
-
-/// Quick Note modal configuration.
-#[derive(Deserialize, Default, Clone)]
-pub struct QuickNoteConfig {
-    #[serde(default)]
-    pub destinations: Vec<QuickNoteNode>,
-}
-
-impl QuickNoteConfig {
-    fn overlay(&mut self, other: Self) {
-        if !other.destinations.is_empty() {
-            self.destinations = other.destinations;
-            warn_deprecated_quick_note_fields(&self.destinations);
-        }
-    }
-}
-
-fn warn_deprecated_quick_note_fields(nodes: &[QuickNoteNode]) {
-    for node in nodes {
-        if node.dest_type.as_deref() == Some("pane") || node.position.is_some() {
-            log::warn!(
-                "QuickNote: destination '{}' uses deprecated 'type = \"pane\"' or 'position'. \
-                 Migrate to a bare 'command' string. See config docs for the new schema.",
-                node.label
-            );
-        }
-        // Warn if command wraps tokens in quotes — tokens are already shell-escaped
-        if let Some(cmd) = &node.command {
-            for token in ["{note}", "{cwd}", "{context_root}"] {
-                let single = format!("'{token}'");
-                let double = format!("\"{token}\"");
-                if cmd.contains(&single) || cmd.contains(&double) {
-                    log::warn!(
-                        "QuickNote: destination '{}' wraps {token} in quotes — \
-                         tokens are already shell-escaped, extra quotes will break substitution",
-                        node.label
-                    );
-                }
-            }
-        }
-        if let Some(children) = &node.children_cmd {
-            for token in ["{note}", "{cwd}", "{context_root}"] {
-                let single = format!("'{token}'");
-                let double = format!("\"{token}\"");
-                if children.contains(&single) || children.contains(&double) {
-                    log::warn!(
-                        "QuickNote: destination '{}' children_cmd wraps {token} in quotes — \
-                         tokens are already shell-escaped, extra quotes will break substitution",
-                        node.label
-                    );
-                }
-            }
-        }
-        if let Some(opts) = &node.options {
-            warn_deprecated_quick_note_fields(opts);
-        }
-    }
-}
-
-/// A node in the quick-note destination tree. Used at every level — root destinations,
-/// static submenu children (`options`), and dynamic children (`children_cmd` output).
-#[derive(Deserialize, Clone)]
-pub struct QuickNoteNode {
-    pub key: u8,
-    pub label: String,
-    /// Shell command template. Tokens: {note}, {cwd}, {context_root}. Required on leaves.
-    pub command: Option<String>,
-    /// If true, run command without a visible terminal pane (fire-and-forget background spawn).
-    #[serde(default)]
-    pub hidden: bool,
-    /// Keep spawned pane alive after command exits. Defaults to false.
-    pub stay_alive: Option<bool>,
-    /// Static child nodes (submenu). Mutually exclusive with `command` at this node.
-    pub options: Option<Vec<QuickNoteNode>>,
-    /// Shell command whose stdout populates children dynamically. Format: one entry per
-    /// line as `key|label|command`. {note} and {cwd} in output are substituted before execution.
-    pub children_cmd: Option<String>,
-    // ── Deprecated ────────────────────────────────────────────────────────────────────────
-    // These fields are parsed for backward compatibility and to emit a migration warning,
-    // but are no longer used for dispatch.
-    #[serde(rename = "type")]
-    pub dest_type: Option<String>,
-    pub position: Option<String>,
-    pub path: Option<String>,
 }
 
 // ── Adopted workspace root (set once by main when an explicit path arg is
@@ -1489,7 +1432,7 @@ mod tests {
     fn validate_valid_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
-        fs::write(&path, "font_size = 14.0\ntheme_preset = \"dracula\"\n").unwrap();
+        fs::write(&path, "font_size = 14.0\n[theme]\npreset = \"dracula\"\n").unwrap();
         let diags = validate_from_path(&path);
         assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }

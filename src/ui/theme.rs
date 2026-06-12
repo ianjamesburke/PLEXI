@@ -164,7 +164,7 @@ impl Colors {
 /// preset). Shared by the GUI and the headless `app render` path.
 pub fn colors_from_config(config: &crate::config::PlexiConfig) -> Colors {
     let user_theme = config.theme.clone().unwrap_or_default();
-    let cfg = match &config.theme_preset {
+    let cfg = match config.theme.as_ref().and_then(|t| t.preset.as_deref()) {
         Some(preset_name) => match preset_colors(preset_name) {
             Some(preset) => apply_preset(&preset, &user_theme),
             None => user_theme,
@@ -266,6 +266,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
     let canonical = canonical_preset_name(name)?;
     match canonical {
         "catppuccin-mocha" => Some(ThemeConfig {
+            preset: None,
             bg_darkest: s("#11111b"),
             bg_sidebar: s("#181825"),
             bg_toolbar: s("#181825"),
@@ -299,6 +300,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_foreground: s("#f4f2f9"),
         }),
         "dracula" => Some(ThemeConfig {
+            preset: None,
             bg_darkest: s("#1e1f29"),
             bg_sidebar: s("#21222c"),
             bg_toolbar: s("#21222c"),
@@ -332,6 +334,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_foreground: s("#ffffff"),
         }),
         "tokyo-night" => Some(ThemeConfig {
+            preset: None,
             bg_darkest: s("#13131d"),
             bg_sidebar: s("#16161e"),
             bg_toolbar: s("#16161e"),
@@ -365,6 +368,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_foreground: s("#c0caf5"),
         }),
         "tokyo-day" => Some(ThemeConfig {
+            preset: None,
             bg_darkest: s("#c4c8da"),
             bg_sidebar: s("#d5d6db"),
             bg_toolbar: s("#d5d6db"),
@@ -398,6 +402,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_foreground: s("#3760bf"),
         }),
         "gruvbox-dark" => Some(ThemeConfig {
+            preset: None,
             bg_darkest: s("#1d2021"),
             bg_sidebar: s("#282828"),
             bg_toolbar: s("#282828"),
@@ -431,6 +436,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_foreground: s("#fbf1c7"),
         }),
         "gruvbox-light" => Some(ThemeConfig {
+            preset: None,
             bg_darkest: s("#f2e5bc"),
             bg_sidebar: s("#fbf1c7"),
             bg_toolbar: s("#fbf1c7"),
@@ -464,6 +470,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_foreground: s("#3c3836"),
         }),
         "nord" => Some(ThemeConfig {
+            preset: None,
             bg_darkest: s("#242933"),
             bg_sidebar: s("#3b4252"),
             bg_toolbar: s("#3b4252"),
@@ -497,6 +504,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_foreground: s("#e5e9f0"),
         }),
         "solarized-dark" => Some(ThemeConfig {
+            preset: None,
             bg_darkest: s("#00212b"),
             bg_sidebar: s("#073642"),
             bg_toolbar: s("#073642"),
@@ -530,6 +538,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_foreground: s("#fdf6e3"),
         }),
         "catppuccin-latte" => Some(ThemeConfig {
+            preset: None,
             bg_darkest: s("#e6e9ef"),
             bg_sidebar: s("#eff1f5"),
             bg_toolbar: s("#eff1f5"),
@@ -563,6 +572,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
             bright_foreground: s("#4c4f69"),
         }),
         "solarized-light" => Some(ThemeConfig {
+            preset: None,
             bg_darkest: s("#eee8d5"),
             bg_sidebar: s("#fdf6e3"),
             bg_toolbar: s("#fdf6e3"),
@@ -603,6 +613,7 @@ pub fn preset_colors(name: &str) -> Option<ThemeConfig> {
 pub fn apply_preset(preset: &ThemeConfig, user: &ThemeConfig) -> ThemeConfig {
     let m = |u: &Option<String>, p: &Option<String>| u.clone().or_else(|| p.clone());
     ThemeConfig {
+        preset: None,
         bg_darkest: m(&user.bg_darkest, &preset.bg_darkest),
         bg_sidebar: m(&user.bg_sidebar, &preset.bg_sidebar),
         bg_toolbar: m(&user.bg_toolbar, &preset.bg_toolbar),

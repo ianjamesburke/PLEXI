@@ -209,6 +209,8 @@ impl PlexiApp {
                                         (&["\u{2318}", "P"], "Command palette"),
                                         (&["\u{2318}", "E"], "File browser"),
                                         (&["\u{2318}", "0"], "Quick note"),
+                                        (&["\u{2318}", "O"], "Notes picker"),
+                                        (&["\u{2318}", "\u{21E7}", "\u{2423}"], "Scratch note"),
                                         (&["\u{2318}", "B"], "Toggle sidebar"),
                                         (&["\u{2318}", "\u{21E7}", "A"], "Notifications"),
                                         (&["\u{2318}", "\u{21E7}", "M"], "Toggle minimap"),
@@ -643,6 +645,16 @@ impl PlexiApp {
                         log::info!("rename_pane: pane {pane_id} name locked to {:?}", new_name);
                         Some(new_name)
                     };
+                } else if let Some(a) = pane.as_app_mut() {
+                    // Let the app react first — TextEditorApp persists the new
+                    // name into the note's frontmatter title.
+                    a.runtime.on_pane_renamed(&new_name);
+                    a.name = if new_name.is_empty() {
+                        a.runtime.display_name()
+                    } else {
+                        new_name.clone()
+                    };
+                    log::info!("rename_pane: app pane {pane_id} named {:?}", a.name);
                 }
             }
             self.renaming_pane = None;

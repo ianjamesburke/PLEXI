@@ -27,10 +27,12 @@ use std::path::{Path, PathBuf};
 pub(crate) fn builtin_factory(id: &str, cwd: &Path, args: &[String]) -> Option<Box<dyn App>> {
     match id {
         "text-editor" => {
+            // No explicit path → a fresh scratch note in the inbox. The file is
+            // only created once content is typed (empty notes are deleted).
             let path = args
                 .first()
                 .map(|s| std::path::PathBuf::from(s))
-                .unwrap_or_else(|| crate::config::config_dir().join("notes").join("scratch.md"));
+                .unwrap_or_else(new_inbox_note_path);
             Some(Box::new(crate::app::text_editor_app::TextEditorApp::new(
                 path,
             )))
@@ -1170,17 +1172,77 @@ impl PlexiApp {
         self.open_builtin_app_pane(app, perms, workspace_root, None, Some("split_h"), None);
     }
 
-    /// Open a native text-editor pane for scratchpad editing.
+    /// Create a new scratch note in `notes/inbox/` and open it in a text-editor
+    /// pane. Each press creates a fresh timestamped note — scratch notes share
+    /// the inbox with quick notes and flow through the same triage. Notes whose
+    /// body is still empty on close are deleted by the editor.
     ///
-    /// Launches the built-in `text-editor` app pane with the scratchpad file path.
     /// Works from any focused pane type (terminal, app, file browser).
     pub(crate) fn open_scratchpad(&mut self) {
-        let path = scratchpad_file();
+        let active = self.active_window;
+
+        // If an open editor still holds an untouched scratch note (body empty
+        // on disk), focus it instead of stacking another empty note.
+        if let Some((tile_id, pane_id)) = self.find_open_empty_inbox_editor(active) {
+            log::info!("scratchpad: empty scratch note already open in pane {pane_id}, focusing");
+            self.set_window_focused_pane(active, tile_id);
+            return;
+        }
+
+        // Capture context like a quick note so triage shows where it came from.
+        let cwd = self.windows[active]
+            .focused_pane
+            .and_then(|tile_id| self.windows[active].get_focused_pane_cwd(tile_id))
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
+        let ctx = crate::app::QuickNoteCtx {
+            cwd,
+            workspace_root: crate::config::active_workspace_root(),
+            context_root: self.router.active().root.clone(),
+        };
+        let dir = crate::config::config_dir().join("notes").join("inbox");
+        let Some(path) = Self::write_inbox_note("", "scratchpad", &dir, &ctx) else {
+            log::warn!("scratchpad: failed to create scratch note in {:?}", dir);
+            return;
+        };
+
         let path_str = path.display().to_string();
         log::info!("scratchpad: opening text-editor pane for {:?}", path);
         if let Err(e) = self.launch_app_by_id_with_layout("text-editor", None, &[path_str], None) {
             log::warn!("scratchpad: failed to launch text-editor pane: {e}");
         }
+    }
+
+    /// Find an open text-editor pane holding an inbox note whose on-disk body
+    /// is still empty (frontmatter only, or file not yet written).
+    fn find_open_empty_inbox_editor(
+        &self,
+        window_idx: usize,
+    ) -> Option<(TileId, PaneId)> {
+        let inbox_dir = crate::config::config_dir().join("notes").join("inbox");
+        let window = self.windows.get(window_idx)?;
+        window.tree.tiles.iter().find_map(|(tile_id, tile)| {
+            let Tile::Pane(pane_id) = tile else {
+                return None;
+            };
+            let app_pane = window.panes.get(pane_id)?.as_app()?;
+            if app_pane.runtime.type_id() != "text-editor" {
+                return None;
+            }
+            let path = app_pane
+                .runtime
+                .serialize_state()?
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from)?;
+            if !path.starts_with(&inbox_dir) {
+                return None;
+            }
+            let body_empty = match std::fs::read_to_string(&path) {
+                Ok(content) => crate::notes::parse_note(&content).1.trim().is_empty(),
+                Err(_) => true, // not yet written → still empty
+            };
+            body_empty.then_some((*tile_id, *pane_id))
+        })
     }
 
     /// Open the quick note modal: capture context and push FocusLayer::QuickNote.
@@ -1191,20 +1253,13 @@ impl PlexiApp {
             .and_then(|tile_id| self.windows[active].get_focused_pane_cwd(tile_id))
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
         let workspace_root = crate::config::active_workspace_root();
-        let context_id = self.windows.get(active).map(|w| w.context_id).unwrap_or(0);
-        let context = self.context_name_for(context_id);
         let context_root = self.router.active().root.clone();
-        let context_description = self.router.active().description.clone();
         self.quick_note_text = String::new();
         self.quick_note_ctx = crate::app::QuickNoteCtx {
             cwd,
             workspace_root,
-            context,
             context_root,
-            context_description,
         };
-        self.quick_note_children_cache.clear();
-        self.quick_note_children_rx = None;
         self.push_focus_layer(crate::app::FocusLayer::QuickNote);
         log::info!(
             "QuickNote: modal opened — cwd={}, workspace={:?}",
@@ -1213,268 +1268,61 @@ impl PlexiApp {
         );
     }
 
-    /// Commit a quick note: write backlog or spawn a pane.
-    /// Returns `false` only for backlog destinations that fail to write.
-    pub(crate) fn commit_quick_note(
-        &mut self,
+    /// Commit a quick note directly to notes/inbox/. Returns `false` if the write fails.
+    pub(crate) fn commit_quick_note_to_inbox(&mut self, text: &str) -> bool {
+        let ctx = self.quick_note_ctx.clone();
+        let dir = crate::config::config_dir().join("notes").join("inbox");
+        log::info!("QuickNote: committing to notes/inbox/");
+        Self::write_inbox_note(text, "quick-note", &dir, &ctx).is_some()
+    }
+
+    /// Write a timestamped note with capture-context frontmatter into `dir`.
+    /// Returns the created path, or `None` when the write fails.
+    fn write_inbox_note(
         text: &str,
-        node: &crate::config::QuickNoteNode,
-    ) -> bool {
-        let ctx = self.quick_note_ctx.clone();
+        source: &str,
+        dir: &PathBuf,
+        ctx: &crate::app::QuickNoteCtx,
+    ) -> Option<PathBuf> {
+        use chrono::Utc;
+        let now = Utc::now();
+        let captured_at = now.to_rfc3339();
+        let filename = format!("note-{}.md", now.format("%Y%m%d-%H%M%S%.3f"));
 
-        // Deprecation warning for old-style fields
-        if node.dest_type.as_deref() == Some("pane") || node.position.is_some() {
-            log::warn!(
-                "QuickNote: '{}' uses deprecated 'type = \"pane\"' or 'position' — migrate to bare command",
-                node.label
-            );
-        }
+        let workspace = ctx
+            .workspace_root
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let cwd_str = ctx.cwd.to_string_lossy();
+        let context_root_str = ctx
+            .context_root
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
 
-        if let Some(cmd_template) = &node.command {
-            let cmd = Self::substitute_note_tokens_static(cmd_template, text, &ctx);
-            // Visible panes default stay_alive=true so the response isn't lost on command exit.
-            // Hidden background spawns don't need it (fire-and-forget).
-            let stay_alive = node.stay_alive.unwrap_or(!node.hidden);
-
-            if node.hidden {
-                log::info!(
-                    "QuickNote: committed via '{}' (hidden background spawn) cmd={cmd:?}",
-                    node.label
-                );
-                if let Err(e) = std::process::Command::new("sh").args(["-c", &cmd]).spawn() {
-                    log::warn!("QuickNote: hidden spawn failed for '{}': {e}", cmd);
-                }
-            } else {
-                // Legacy position support during migration period
-                let position = node.position.as_deref().unwrap_or("new_window");
-                log::info!(
-                    "QuickNote: committed via '{}' position={:?} stay_alive={stay_alive} cmd={cmd:?}",
-                    node.label, position
-                );
-                match position {
-                    "context-end" => self.open_at_context_end(&cmd, stay_alive),
-                    "context-start" => self.open_at_context_start(&cmd, stay_alive),
-                    "split" => self.split_focused(false, Some(&cmd), !stay_alive, false, None),
-                    _ => {
-                        // Default: open in a new window to the right and pull focus there.
-                        let ws_id = self.router.active().context_id;
-                        let active_y = self.windows[self.active_window].grid_y;
-                        let new_x = self
-                            .windows
-                            .iter()
-                            .filter(|w| w.context_id == ws_id && w.grid_y == active_y)
-                            .map(|w| w.grid_x)
-                            .max()
-                            .map(|x| x + 1)
-                            .unwrap_or(1);
-                        log::info!(
-                            "QuickNote: opening in new window grid=({new_x},{active_y}) stay_alive={stay_alive}"
-                        );
-                        self.create_page_at(new_x, active_y, Some(&cmd), !stay_alive);
-                    }
-                }
-            }
-            true
-        } else if node.dest_type.as_deref() == Some("backlog")
-            || (node.dest_type.is_none()
-                && node.command.is_none()
-                && node.options.is_none()
-                && node.children_cmd.is_none())
-        {
-            // Backlog destination (type = "backlog" or bare with just path)
-            let path = node.path.as_deref().unwrap_or("");
-            let dir = if path.is_empty() {
-                crate::config::config_dir().join("backlog")
-            } else if path.starts_with("~/") {
-                dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("/"))
-                    .join(&path[2..])
-            } else {
-                PathBuf::from(path)
-            };
-            Self::write_backlog_note(text, &dir, &ctx)
-        } else {
-            log::warn!(
-                "QuickNote: leaf '{}' has no command or recognized dest_type",
-                node.label
-            );
-            false
-        }
-    }
-
-    /// Commit the hard-coded destination 0: save to config_dir/backlog.
-    /// Returns `false` if the write fails.
-    pub(crate) fn commit_quick_note_global_backlog(&mut self, text: &str) -> bool {
-        let ctx = self.quick_note_ctx.clone();
-        let dir = crate::config::config_dir().join("backlog");
-        log::info!("QuickNote: committed via global backlog (destination 0)");
-        Self::write_backlog_note(text, &dir, &ctx)
-    }
-
-    fn write_backlog_note(text: &str, dir: &PathBuf, ctx: &crate::app::QuickNoteCtx) -> bool {
-        use chrono::Local;
-        let now = Local::now();
-        let timestamp = now.format("%Y-%m-%d-%H%M%S").to_string();
-        let display_time = now.format("%Y-%m-%d %H:%M:%S").to_string();
-        let filename = format!("note-{timestamp}.md");
-
-        let context_line = {
-            let ws = ctx
-                .workspace_root
-                .as_ref()
-                .and_then(|p| {
-                    let home = dirs::home_dir()?;
-                    p.strip_prefix(&home)
-                        .ok()
-                        .map(|rel| format!("~/{}", rel.display()))
-                })
-                .or_else(|| {
-                    ctx.workspace_root
-                        .as_ref()
-                        .map(|p| p.to_string_lossy().to_string())
-                });
-            let name_and_desc = match &ctx.context_description {
-                Some(desc) if !desc.is_empty() => format!(
-                    "{} — \"{}\"",
-                    ctx.context,
-                    desc.replace('\n', " ").replace('\r', "")
-                ),
-                _ => ctx.context.clone(),
-            };
-            match ws {
-                Some(w) => format!("{name_and_desc} · {w}"),
-                None => name_and_desc,
-            }
-        };
-
-        let content = format!(
-            "# Quick Note — {display_time}\n**Context:** {context_line}\n---\n\n{}\n",
-            text.trim()
+        let frontmatter = format!(
+            "---\ntitle: \"\"\ncaptured_at: \"{captured_at}\"\nsource: \"{source}\"\ncwd: \"{cwd_str}\"\nworkspace: \"{workspace}\"\ncontext_root: \"{context_root_str}\"\n---\n\n"
         );
+        let content = format!("{frontmatter}{}\n", text.trim());
 
         if let Err(e) = std::fs::create_dir_all(dir) {
             log::error!(
-                "QuickNote: failed to create backlog dir {}: {e}",
+                "QuickNote: failed to create inbox dir {}: {e}",
                 dir.display()
             );
-            return false;
+            return None;
         }
         let path = dir.join(&filename);
         match std::fs::write(&path, &content) {
             Ok(()) => {
                 log::info!("QuickNote: saved to {}", path.display());
-                true
+                Some(path)
             }
             Err(e) => {
                 log::error!("QuickNote: save failed {}: {e}", path.display());
-                false
-            }
-        }
-    }
-
-    pub(crate) fn substitute_note_tokens_static(
-        cmd: &str,
-        note: &str,
-        ctx: &crate::app::QuickNoteCtx,
-    ) -> String {
-        let esc = |s: &str| -> String { crate::host::shell::shell_quote(s) };
-        let cwd_str = ctx.cwd.to_string_lossy().to_string();
-        let context_root_str = ctx
-            .context_root
-            .as_ref()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
-        cmd.replace("{note}", &esc(note))
-            .replace("{cwd}", &esc(&cwd_str))
-            .replace("{context_root}", &esc(&context_root_str))
-    }
-
-    /// Spawn a terminal pane as the last child of the root container.
-    pub(crate) fn open_at_context_end(&mut self, cmd: &str, stay_alive: bool) {
-        let did_insert = self.try_insert_at_root(cmd, false, stay_alive);
-        if !did_insert {
-            self.split_focused(false, Some(cmd), !stay_alive, false, None);
-        }
-    }
-
-    /// Spawn a terminal pane as the first child of the root container.
-    pub(crate) fn open_at_context_start(&mut self, cmd: &str, stay_alive: bool) {
-        let did_insert = self.try_insert_at_root(cmd, true, stay_alive);
-        if !did_insert {
-            self.split_focused(false, Some(cmd), !stay_alive, false, None);
-        }
-    }
-
-    fn try_insert_at_root(&mut self, cmd: &str, prepend: bool, stay_alive: bool) -> bool {
-        use egui_tiles::{Container, Tile};
-        let new_id = self.host.alloc_pane_id();
-        let active = self.active_window;
-        let cwd = self.windows[active]
-            .focused_pane
-            .and_then(|t| self.windows[active].get_focused_pane_cwd(t));
-        let ctx_id = self.windows.get(active).map(|w| w.context_id).unwrap_or(0);
-        let ctx_name = self.context_name_for(ctx_id);
-        let ctx_desc = self.context_description_for(ctx_id);
-        let ctx_root = self.context_root_for(ctx_id);
-        let ctx_depth = self.context_depth_for(ctx_id);
-        let mut settings = Self::make_backend_settings(
-            new_id,
-            cwd,
-            &self.colors,
-            ctx_id,
-            &ctx_name,
-            &ctx_desc,
-            ctx_root.as_ref(),
-            ctx_depth,
-        );
-
-        super::apply_initial_cmd(&mut settings, cmd, !stay_alive);
-
-        let Some(mut pane) = crate::host::pane::TerminalPane::new(
-            new_id,
-            self.ctx.clone(),
-            self.pty_event_tx.clone(),
-            settings,
-            self.default_font_size,
-        ) else {
-            return false;
-        };
-        pane.ephemeral = !stay_alive;
-        self.windows[active]
-            .panes
-            .insert(new_id, crate::host::pane::Pane::Terminal(Box::new(pane)));
-
-        let ctx = &mut self.windows[active];
-        let new_tile = ctx.tree.tiles.insert_pane(new_id);
-        let root = match ctx.tree.root {
-            Some(r) => r,
-            None => {
-                ctx.tree.root = Some(new_tile);
-                ctx.focused_pane = Some(new_tile);
-                return true;
-            }
-        };
-
-        match ctx.tree.tiles.get_mut(root) {
-            Some(Tile::Container(Container::Linear(lin))) => {
-                if prepend {
-                    lin.children.insert(0, new_tile);
-                } else {
-                    lin.children.push(new_tile);
-                }
-                ctx.focused_pane = Some(new_tile);
-                true
-            }
-            _ => {
-                let ordered = if prepend {
-                    vec![new_tile, root]
-                } else {
-                    vec![root, new_tile]
-                };
-                let container = ctx.tree.tiles.insert_vertical_tile(ordered);
-                ctx.tree.root = Some(container);
-                ctx.focused_pane = Some(new_tile);
-                true
+                None
             }
         }
     }
@@ -2049,129 +1897,30 @@ mod quick_note_tests {
         QuickNoteCtx {
             cwd: std::path::PathBuf::from(cwd),
             workspace_root: None,
-            context: "test".to_string(),
             context_root: None,
-            context_description: None,
         }
     }
 
-    /// Run `sh -c <cmd>` and return stdout. Panics if the command exits non-zero.
-    fn sh(cmd: &str) -> String {
-        let out = std::process::Command::new("sh")
-            .args(["-c", cmd])
-            .output()
-            .expect("sh -c failed");
-        if !out.status.success() {
-            panic!(
-                "sh command failed (exit {}): {}",
-                out.status,
-                String::from_utf8_lossy(&out.stderr)
-            );
-        }
-        String::from_utf8_lossy(&out.stdout).to_string()
-    }
-
+    /// Regression guard for #2193: write_inbox_note must create exactly one
+    /// file in the target dir with correct TOML frontmatter.
     #[test]
-    fn substitute_tokens_escapes_shell_special_chars() {
-        let result = PlexiApp::substitute_note_tokens_static(
-            "gh issue create --title {note} --body ''",
-            "it's a note \"with quotes\"",
-            &ctx("/tmp/test dir"),
-        );
-        assert!(
-            !result.contains("it's"),
-            "unescaped single quote found: {result}"
-        );
-        assert!(result.contains("it"), "note text missing from: {result}");
-    }
+    fn write_inbox_note_creates_file_with_frontmatter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let c = ctx("/tmp/myproject");
+        let path = PlexiApp::write_inbox_note("hello inbox", "quick-note", &dir.path().to_path_buf(), &c);
+        assert!(path.is_some(), "write_inbox_note must return the path on success");
 
-    /// `$(...)` in a note must not be evaluated by the shell.
-    #[test]
-    fn no_command_substitution_dollar_paren() {
-        let note = "$(printf INJECTED)";
-        let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {note}", note, &ctx("/tmp"));
-        let out = sh(&cmd);
-        assert_eq!(out, note, "dollar-paren injection executed: got {out:?}");
-    }
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(entries.len(), 1, "exactly one file must be created");
 
-    /// Backtick command substitution in a note must not execute.
-    #[test]
-    fn no_command_substitution_backtick() {
-        let note = "`printf INJECTED`";
-        let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {note}", note, &ctx("/tmp"));
-        let out = sh(&cmd);
-        assert_eq!(out, note, "backtick injection executed: got {out:?}");
-    }
-
-    /// A note containing `'; <command>; echo '` must not break out of the substitution context.
-    #[test]
-    fn no_injection_via_single_quote_break() {
-        let note = "'; printf INJECTED; printf '";
-        let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {note}", note, &ctx("/tmp"));
-        let out = sh(&cmd);
-        assert_eq!(
-            out, note,
-            "single-quote break injection executed: got {out:?}"
-        );
-    }
-
-    /// Backslash in a note is passed through as a literal character.
-    #[test]
-    fn backslash_in_note_is_literal() {
-        let note = r"a\b";
-        let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {note}", note, &ctx("/tmp"));
-        let out = sh(&cmd);
-        assert_eq!(out, note, "backslash mangled: got {out:?}");
-    }
-
-    /// Newlines in a note are preserved literally (not treated as command separators).
-    #[test]
-    fn newline_in_note_is_literal() {
-        let note = "first\nsecond";
-        let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {note}", note, &ctx("/tmp"));
-        let out = sh(&cmd);
-        assert_eq!(out, note, "newline not preserved literally: got {out:?}");
-    }
-
-    /// `{cwd}` with a directory name containing a single quote expands safely.
-    #[test]
-    fn cwd_with_apostrophe_expands_safely() {
-        let path = "/tmp/it's a dir";
-        let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {cwd}", "note", &ctx(path));
-        let out = sh(&cmd);
-        assert_eq!(out, path, "cwd apostrophe mangled: got {out:?}");
-    }
-
-    /// A note consisting entirely of apostrophes must survive the round-trip.
-    #[test]
-    fn note_all_apostrophes_round_trips() {
-        let note = "'''";
-        let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {note}", note, &ctx("/tmp"));
-        let out = sh(&cmd);
-        assert_eq!(out, note, "all-apostrophe note mangled: got {out:?}");
-    }
-
-    #[test]
-    fn context_root_token_is_shell_escaped() {
-        let mut c = ctx("/tmp");
-        c.context_root = Some(std::path::PathBuf::from("/projects/it's a dir"));
-        let cmd = PlexiApp::substitute_note_tokens_static("printf '%s' {context_root}", "note", &c);
-        let out = sh(&cmd);
-        assert_eq!(
-            out, "/projects/it's a dir",
-            "context_root apostrophe mangled: got {out:?}"
-        );
-    }
-
-    #[test]
-    fn context_root_empty_when_unset() {
-        let c = ctx("/tmp");
-        let result = PlexiApp::substitute_note_tokens_static("echo {context_root}", "note", &c);
-        // When context_root is None, {context_root} substitutes to shell_quote("") = ''
-        assert!(
-            result.contains("''") || result.ends_with("echo "),
-            "unexpected result: {result}"
-        );
+        let content = std::fs::read_to_string(entries[0].path()).unwrap();
+        assert!(content.contains("source: \"quick-note\""), "frontmatter must include source: quick-note");
+        assert!(content.contains("captured_at:"), "frontmatter must include captured_at");
+        assert!(content.contains("hello inbox"), "note body must be present");
+        assert!(content.starts_with("---\n"), "must start with frontmatter delimiter");
     }
 
     // ── Agent context spawning tests (#1518) ─────────────────────────────────
@@ -2339,17 +2088,14 @@ mod quick_note_tests {
     }
 }
 
-/// Build a timestamped note path under the workspace-scoped notes dir.
-fn scratchpad_file() -> PathBuf {
-    use chrono::Local;
-    let notes_base = crate::config::config_dir().join("notes");
-    let workspace_slug = crate::config::active_workspace_root()
-        .and_then(|p| p.file_name().map(|n| n.to_os_string()))
-        .map(|n| n.to_string_lossy().into_owned());
-    let dir = match workspace_slug {
-        Some(slug) => notes_base.join(slug),
-        None => notes_base,
-    };
-    let ts = Local::now().format("note-%Y%m%d-%H%M%S.md").to_string();
-    dir.join(ts)
+/// Build a fresh timestamped note path in `notes/inbox/`. Does not create the file.
+fn new_inbox_note_path() -> PathBuf {
+    let filename = format!(
+        "note-{}.md",
+        chrono::Utc::now().format("%Y%m%d-%H%M%S%.3f")
+    );
+    crate::config::config_dir()
+        .join("notes")
+        .join("inbox")
+        .join(filename)
 }

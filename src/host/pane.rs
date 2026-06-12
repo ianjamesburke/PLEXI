@@ -291,6 +291,29 @@ impl AppRuntime {
         }
     }
 
+    pub fn display_name(&self) -> String {
+        match self {
+            AppRuntime::Process(app) => app.display_name(),
+            AppRuntime::Builtin(app) => app.display_name(),
+        }
+    }
+
+    /// Seed text for the rename-pane overlay. See [`App::rename_seed`].
+    pub fn rename_seed(&self) -> Option<String> {
+        match self {
+            AppRuntime::Process(app) => app.rename_seed(),
+            AppRuntime::Builtin(app) => app.rename_seed(),
+        }
+    }
+
+    /// Notify the app that its pane was renamed. See [`App::on_pane_renamed`].
+    pub fn on_pane_renamed(&mut self, name: &str) {
+        match self {
+            AppRuntime::Process(app) => app.on_pane_renamed(name),
+            AppRuntime::Builtin(app) => app.on_pane_renamed(name),
+        }
+    }
+
     /// Pump event I/O for a pane not in the active context. No-op for builtins.
     pub fn background_tick(&mut self) {
         match self {

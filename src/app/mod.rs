@@ -65,9 +65,7 @@ fn is_auto_window_name(name: &str) -> bool {
 pub(crate) struct QuickNoteCtx {
     pub cwd: std::path::PathBuf,
     pub workspace_root: Option<std::path::PathBuf>,
-    pub context: String,
     pub context_root: Option<std::path::PathBuf>,
-    pub context_description: Option<String>,
 }
 
 /// What a `TextInputOverlay` commit should do.
@@ -217,21 +215,22 @@ pub struct PlexiApp {
     pub(crate) quick_note_text: String,
     /// Context captured at the time the quick note modal was opened.
     pub(crate) quick_note_ctx: QuickNoteCtx,
-    /// Notes picker: sorted list of (path, first-line-preview) for the current workspace.
-    pub(crate) notes_picker_entries: Vec<(std::path::PathBuf, String)>,
-    /// Notes picker: currently highlighted row index.
+    /// Notes picker: inbox notes first, then workspace notes sorted by mtime.
+    pub(crate) notes_picker_entries: Vec<crate::notes::NotePickerEntry>,
+    /// Notes picker: currently highlighted index into the filtered view.
     pub(crate) notes_picker_selected: usize,
-    /// Cursor row in the destination picker (0 = global backlog, 1+ = config destinations).
-    pub(crate) quick_note_dest_cursor: usize,
-    /// Cursor row in the sub-destination picker.
-    pub(crate) quick_note_sub_cursor: usize,
-    /// Cache of dynamically loaded children, keyed by full key path. Cleared on modal open.
-    pub(crate) quick_note_children_cache: HashMap<Vec<u8>, Vec<crate::config::QuickNoteNode>>,
-    /// Pending children_cmd receiver: (key_path, receiver).
-    pub(crate) quick_note_children_rx: Option<(
-        Vec<u8>,
-        std::sync::mpsc::Receiver<Result<Vec<crate::config::QuickNoteNode>, String>>,
-    )>,
+    /// Notes picker: fuzzy-filter query (active while `notes_picker_filtering`).
+    pub(crate) notes_picker_query: String,
+    /// Notes picker: true while the `/` search field has focus.
+    pub(crate) notes_picker_filtering: bool,
+    /// Notes picker: rename buffer — `Some` while the `r` rename field is open.
+    pub(crate) notes_picker_rename: Option<String>,
+    /// Notes triage: inbox notes loaded when the triage overlay opens.
+    pub(crate) notes_triage_notes: Vec<crate::notes::InboxNote>,
+    /// Notes triage: configured actions loaded when the triage overlay opens.
+    pub(crate) notes_triage_actions: Vec<crate::notes::TriageAction>,
+    /// Notes triage: index of the note currently being shown.
+    pub(crate) notes_triage_index: usize,
     /// notify_id of the notification the modal currently has state for. Used to
     /// detect a front-of-queue change and reset focus/input buffer.
     pub(crate) modal_state_notify_id: String,
@@ -472,7 +471,9 @@ impl PlexiApp {
         let default_font_size = config.font_size.unwrap_or(theme::FONT_SIZE);
         let theme_cfg = Self::resolve_theme_config(&config);
         let colors = Colors::from_config(&theme_cfg);
-        let dark_mode = !theme::is_light_preset(config.theme_preset.as_deref().unwrap_or(""));
+        let dark_mode = !theme::is_light_preset(
+            config.theme.as_ref().and_then(|t| t.preset.as_deref()).unwrap_or(""),
+        );
         theme::setup_style(&cc.egui_ctx, &colors, dark_mode);
         let window_theme = if dark_mode {
             egui::SystemTheme::Dark
@@ -761,10 +762,12 @@ impl PlexiApp {
                     quick_note_ctx: QuickNoteCtx::default(),
                     notes_picker_entries: Vec::new(),
                     notes_picker_selected: 0,
-                    quick_note_dest_cursor: 0,
-                    quick_note_sub_cursor: 0,
-                    quick_note_children_cache: HashMap::new(),
-                    quick_note_children_rx: None,
+                    notes_picker_query: String::new(),
+                    notes_picker_filtering: false,
+                    notes_picker_rename: None,
+                    notes_triage_notes: Vec::new(),
+                    notes_triage_actions: Vec::new(),
+                    notes_triage_index: 0,
                     modal_state_notify_id: String::new(),
                     notification_images: HashMap::new(),
                     notifications_enabled,
@@ -947,10 +950,12 @@ impl PlexiApp {
             quick_note_ctx: QuickNoteCtx::default(),
             notes_picker_entries: Vec::new(),
             notes_picker_selected: 0,
-            quick_note_dest_cursor: 0,
-            quick_note_sub_cursor: 0,
-            quick_note_children_cache: HashMap::new(),
-            quick_note_children_rx: None,
+            notes_picker_query: String::new(),
+            notes_picker_filtering: false,
+            notes_picker_rename: None,
+            notes_triage_notes: Vec::new(),
+            notes_triage_actions: Vec::new(),
+            notes_triage_index: 0,
             modal_state_notify_id: String::new(),
             notification_images: HashMap::new(),
             notifications_enabled,
@@ -1145,10 +1150,12 @@ impl PlexiApp {
                 quick_note_ctx: QuickNoteCtx::default(),
                 notes_picker_entries: Vec::new(),
                 notes_picker_selected: 0,
-                quick_note_dest_cursor: 0,
-                quick_note_sub_cursor: 0,
-                quick_note_children_cache: HashMap::new(),
-                quick_note_children_rx: None,
+                notes_picker_query: String::new(),
+                notes_picker_filtering: false,
+                notes_picker_rename: None,
+                notes_triage_notes: Vec::new(),
+                notes_triage_actions: Vec::new(),
+                notes_triage_index: 0,
                 modal_state_notify_id: String::new(),
                 notification_images: HashMap::new(),
                 notifications_enabled: false,
@@ -1236,7 +1243,10 @@ impl PlexiApp {
 
     fn resolve_theme_config(config: &config::PlexiConfig) -> config::ThemeConfig {
         let user_theme = config.theme.clone().unwrap_or_default();
-        if let Some(preset_name) = &config.theme_preset {
+        // Prefer [theme] preset; fall back to legacy top-level theme_preset so
+        // existing configs survive the migration without silently losing their theme.
+        let preset_name = user_theme.preset.as_deref().or(config.theme_preset.as_deref());
+        if let Some(preset_name) = preset_name {
             if let Some(preset) = theme::preset_colors(preset_name) {
                 log::info!("Applying theme preset: {}", preset_name.trim());
                 return theme::apply_preset(&preset, &user_theme);
@@ -1434,12 +1444,6 @@ impl eframe::App for PlexiApp {
                         self.context_description_handle_key(ctx)
                     }
                     Some(FocusLayer::QuickNote) => self.quick_note_handle_key(ctx),
-                    Some(FocusLayer::QuickNoteDestination) => {
-                        self.quick_note_destination_handle_key(ctx)
-                    }
-                    Some(FocusLayer::QuickNoteSubDestination(_)) => {
-                        self.quick_note_sub_destination_handle_key(ctx)
-                    }
                     Some(FocusLayer::CliSetupPrompt) => self.cli_setup_prompt_handle_key(ctx),
                     Some(FocusLayer::TextInput) => self.text_input_handle_key(ctx),
                     Some(FocusLayer::ContextCloseConfirm) => {
@@ -1450,11 +1454,13 @@ impl eframe::App for PlexiApp {
                         self.notes_picker_handle_key(ctx);
                         crate::app::app_trait::KeyDisposition::Passthrough
                     }
+                    Some(FocusLayer::NotesTriage) => {
+                        self.notes_triage_handle_key(ctx);
+                        crate::app::app_trait::KeyDisposition::Passthrough
+                    }
                     None => crate::app::app_trait::KeyDisposition::Passthrough,
                 };
                 // Step 2: render the overlay (visual only — key reads already done above).
-                // .cloned() is required: the QuickNoteSubDestination arm borrows `path` from
-                // focus_stack while calling draw_quick_note_menu which needs &mut self.
                 match self.focus_stack.last().cloned() {
                     Some(FocusLayer::NotificationModal) => {
                         early_modal_cmds = self.draw_notification_modal(ctx);
@@ -1477,12 +1483,6 @@ impl eframe::App for PlexiApp {
                     Some(FocusLayer::QuickNote) => {
                         self.draw_quick_note_modal(ctx);
                     }
-                    Some(FocusLayer::QuickNoteDestination) => {
-                        self.draw_quick_note_destination(ctx);
-                    }
-                    Some(FocusLayer::QuickNoteSubDestination(path)) => {
-                        self.draw_quick_note_menu(ctx, &path);
-                    }
                     Some(FocusLayer::CliSetupPrompt) => {
                         self.draw_cli_setup_modal(ctx);
                     }
@@ -1497,6 +1497,9 @@ impl eframe::App for PlexiApp {
                     }
                     Some(FocusLayer::NotesPicker) => {
                         self.draw_notes_picker(ctx);
+                    }
+                    Some(FocusLayer::NotesTriage) => {
+                        self.draw_notes_triage(ctx);
                     }
                     None => {}
                 }
@@ -2771,8 +2774,18 @@ impl eframe::App for PlexiApp {
                             self.rename_buffer = active_ctx
                                 .panes
                                 .get(&pane_id)
-                                .and_then(|p| p.as_terminal())
-                                .and_then(|t| t.name.clone())
+                                .map(|p| match p {
+                                    crate::host::pane::Pane::Terminal(t) => {
+                                        t.name.clone().unwrap_or_default()
+                                    }
+                                    // Note editors seed the frontmatter title so
+                                    // renaming edits the title, not the filename.
+                                    crate::host::pane::Pane::App(a) => a
+                                        .runtime
+                                        .rename_seed()
+                                        .unwrap_or_else(|| a.name.clone()),
+                                    crate::host::pane::Pane::Portal(_) => String::new(),
+                                })
                                 .unwrap_or_default();
                             self.renaming_pane = Some(pane_id);
                             self.rename_pane_focus_requested = false;
@@ -2970,22 +2983,8 @@ impl eframe::App for PlexiApp {
                     self.open_scratchpad();
                 }
                 Action::OpenNotesPicker => {
-                    let active = self.active_window;
-                    let is_text_editor = self.windows[active]
-                        .focused_pane
-                        .and_then(|tile_id| {
-                            if let Some(egui_tiles::Tile::Pane(pane_id)) = self.windows[active].tree.tiles.get(tile_id) {
-                                self.windows[active].panes.get(pane_id)
-                            } else {
-                                None
-                            }
-                        })
-                        .map(|pane| matches!(pane, crate::host::pane::Pane::App(a) if a.runtime.type_id() == "text-editor"))
-                        .unwrap_or(false);
-                    if is_text_editor {
-                        log::info!("notes_picker: Cmd+O — opening picker");
-                        self.open_notes_picker();
-                    }
+                    log::info!("notes_picker: Cmd+O — opening picker");
+                    self.open_notes_picker();
                 }
                 Action::ContextZoomOut => {
                     log::info!(
@@ -3124,6 +3123,31 @@ impl eframe::App for PlexiApp {
 impl PlexiApp {
     pub(crate) fn open_notes_picker(&mut self) {
         let notes_base = crate::config::config_dir().join("notes");
+
+        // Sorted .md paths (newest mtime first) from one directory.
+        let scan_dir = |dir: &std::path::Path| -> Vec<std::path::PathBuf> {
+            let mut with_mtime: Vec<(std::time::SystemTime, std::path::PathBuf)> =
+                std::fs::read_dir(dir)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().map_or(false, |x| x == "md"))
+                    .filter_map(|e| {
+                        let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
+                        Some((mtime, e.path()))
+                    })
+                    .collect();
+            with_mtime.sort_by(|a, b| b.0.cmp(&a.0));
+            with_mtime.into_iter().map(|(_, p)| p).collect()
+        };
+
+        // Inbox notes first (scratch + quick-note captures), then kept workspace notes.
+        let mut entries: Vec<crate::notes::NotePickerEntry> = scan_dir(&notes_base.join("inbox"))
+            .iter()
+            .filter_map(|p| crate::notes::NotePickerEntry::load(p, true))
+            .collect();
+        let inbox_count = entries.len();
+
         let workspace_slug = crate::config::active_workspace_root()
             .and_then(|p| p.file_name().map(|n| n.to_os_string()))
             .map(|n| n.to_string_lossy().into_owned());
@@ -3131,38 +3155,23 @@ impl PlexiApp {
             Some(ref slug) => notes_base.join(slug),
             None => notes_base,
         };
-        let mut with_mtime: Vec<(std::time::SystemTime, std::path::PathBuf, String)> =
-            std::fs::read_dir(&notes_dir)
-                .into_iter()
-                .flatten()
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().extension().map_or(false, |x| x == "md"))
-                .filter_map(|e| {
-                    let path = e.path();
-                    let mtime = e.metadata().and_then(|m| m.modified()).ok()?;
-                    let preview = std::fs::read_to_string(&path).unwrap_or_default();
-                    let first_line = preview
-                        .lines()
-                        .find(|l| !l.trim().is_empty())
-                        .unwrap_or("")
-                        .to_string();
-                    Some((mtime, path, first_line))
-                })
-                .collect();
-        with_mtime.sort_by(|a, b| b.0.cmp(&a.0));
-        let entries: Vec<(std::path::PathBuf, String)> =
-            with_mtime.into_iter().map(|(_, p, l)| (p, l)).collect();
-        if entries.is_empty() {
-            log::info!("notes_picker: no notes in {:?}", notes_dir);
-            return;
-        }
+        entries.extend(
+            scan_dir(&notes_dir)
+                .iter()
+                .filter_map(|p| crate::notes::NotePickerEntry::load(p, false)),
+        );
+
         log::info!(
-            "notes_picker: {} notes found in {:?}",
-            entries.len(),
+            "notes_picker: {} inbox + {} kept notes ({:?})",
+            inbox_count,
+            entries.len() - inbox_count,
             notes_dir
         );
         self.notes_picker_entries = entries;
         self.notes_picker_selected = 0;
+        self.notes_picker_query.clear();
+        self.notes_picker_filtering = false;
+        self.notes_picker_rename = None;
         self.push_focus_layer(FocusLayer::NotesPicker);
         // Surrender egui keyboard focus from the active TextEdit so the picker
         // receives j/k and other navigation keys immediately on the first frame.

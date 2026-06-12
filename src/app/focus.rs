@@ -57,11 +57,6 @@ pub(crate) enum FocusLayer {
     ContextDescription,
     /// Quick note compose modal (text input phase).
     QuickNote,
-    /// Quick note destination picker.
-    QuickNoteDestination,
-    /// Quick note sub-destination picker. Inner Vec<u8> = key path from root to current node.
-    /// E.g. vec![3] = inside destination 3's children; vec![3,2] = destination 3 -> child 2.
-    QuickNoteSubDestination(Vec<u8>),
     /// First-launch CLI setup prompt. No text input — intercepts keys so they
     /// don't fall through to the active terminal while the modal is visible.
     CliSetupPrompt,
@@ -76,6 +71,8 @@ pub(crate) enum FocusLayer {
     CapabilityModal,
     /// Notes picker overlay: lists workspace notes sorted by mtime, opens selected in focused text-editor.
     NotesPicker,
+    /// Notes inbox triage overlay: shows inbox notes one at a time for keep/trash/action.
+    NotesTriage,
 }
 
 /// A single pane entry shown in the context-close confirmation dialog.
@@ -269,13 +266,12 @@ impl PlexiApp {
                 | Some(FocusLayer::ContextRename)
                 | Some(FocusLayer::ContextDescription)
                 | Some(FocusLayer::QuickNote)
-                | Some(FocusLayer::QuickNoteDestination)
-                | Some(FocusLayer::QuickNoteSubDestination(_))
                 | Some(FocusLayer::CliSetupPrompt)
                 | Some(FocusLayer::TextInput)
                 | Some(FocusLayer::ContextCloseConfirm)
                 | Some(FocusLayer::CapabilityModal)
                 | Some(FocusLayer::NotesPicker)
+                | Some(FocusLayer::NotesTriage)
         )
     }
 
@@ -572,7 +568,9 @@ impl PlexiApp {
         if self.colors != new_colors {
             self.colors = new_colors.clone();
             let dark_mode =
-                !crate::ui::theme::is_light_preset(fresh.theme_preset.as_deref().unwrap_or(""));
+                !crate::ui::theme::is_light_preset(
+                    fresh.theme.as_ref().and_then(|t| t.preset.as_deref()).unwrap_or(""),
+                );
             crate::ui::theme::setup_style(&self.ctx, &new_colors, dark_mode);
             let window_theme = if dark_mode {
                 egui::SystemTheme::Dark
@@ -649,7 +647,7 @@ impl PlexiApp {
     /// Auto-switch to the paired preset for `system_theme`.
     /// No-ops if the configured preset has no paired variant (e.g. nord, dracula).
     pub(super) fn apply_auto_theme(&mut self, system_theme: egui::Theme) {
-        let current_preset = self.config.theme_preset.as_deref().unwrap_or("");
+        let current_preset = self.config.theme.as_ref().and_then(|t| t.preset.as_deref()).unwrap_or("");
         let Some(new_preset) = crate::ui::theme::paired_preset(current_preset, system_theme) else {
             return;
         };

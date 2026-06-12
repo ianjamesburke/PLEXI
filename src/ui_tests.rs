@@ -313,6 +313,7 @@ mod tests {
     use crate::host::context::Window;
     use crate::host::pane::{AppPane, AppRuntime, Pane, PortalPane};
     use crate::process_app::ProcessApp;
+    use egui_kittest::kittest::Queryable;
 
     fn add_focused_pane(h: &mut PlexiUiHarness) -> crate::spatial::tiling::PaneId {
         h.with_app_mut(|app| {
@@ -357,6 +358,144 @@ mod tests {
 
     // Visual smoke coverage lives in `tests/scenes/*.toml`, executed by
     // `scenes::tests::scene_suite`. Run one ad hoc with `just scene <file>`.
+
+    /// Note editor pane: frontmatter is hidden from the buffer and the
+    /// frontmatter title renders as a header row.
+    #[test]
+    fn text_editor_note_hides_frontmatter_and_shows_title() {
+        let mut h = PlexiUiHarness::new();
+        h.step();
+
+        let path = std::env::temp_dir().join(format!(
+            "plexi-ui-note-title-{}.md",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            "---\ntitle: \"Groceries\"\nsource: \"scratchpad\"\n---\nmilk and eggs\n",
+        )
+        .expect("seed note");
+
+        h.with_app_mut(|app| {
+            let pane_id = app.host.alloc_pane_id();
+            let app_pane = AppPane {
+                id: pane_id,
+                runtime: AppRuntime::Builtin(Box::new(
+                    crate::app::text_editor_app::TextEditorApp::new_for_test_note(path.clone()),
+                )),
+                workspace_root: std::env::temp_dir(),
+                permissions: AppPermissions::builtin(),
+                manifest_id: "text-editor".to_string(),
+                name: "Text Editor".to_string(),
+                pane_group: None,
+                linked_pane_id: None,
+                overlay_replaced: None,
+                hidden: false,
+                agent: None,
+                slots: std::collections::HashMap::new(),
+            };
+            let win = &mut app.windows[app.active_window];
+            win.panes.insert(pane_id, Pane::App(Box::new(app_pane)));
+            let tile_id = win.tree.tiles.insert_pane(pane_id);
+            if win.tree.root.is_none() {
+                win.tree.root = Some(tile_id);
+            }
+            win.focused_pane = Some(tile_id);
+        });
+        h.run_steps(2);
+
+        // Title row is a real ui.label; the YAML block lives only in
+        // `note_header` and never reaches the TextEdit buffer (unit-tested
+        // via `split_note` in text_editor_app.rs).
+        h.harness().get_by_label("Groceries");
+        h.save_screenshot("/tmp/plexi_note_editor.png")
+            .expect("render failed");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Notes picker overlay: open → step → still visible and renders.
+    #[test]
+    fn notes_picker_overlay_smoke() {
+        let mut h = PlexiUiHarness::new();
+        h.step();
+        add_focused_pane(&mut h);
+        h.step();
+
+        h.with_app_mut(|app| {
+            app.open_notes_picker();
+            // Deterministic entries — don't depend on the machine's notes dir.
+            let mk = |name: &str, inbox: bool| crate::notes::NotePickerEntry {
+                path: std::env::temp_dir().join(format!("plexi-ui-{name}.md")),
+                title: name.to_string(),
+                preview: format!("{name} preview"),
+                inbox,
+                search_text: name.to_lowercase(),
+            };
+            app.notes_picker_entries = vec![mk("inbox-note", true), mk("kept-note", false)];
+            app.notes_picker_selected = 0;
+        });
+        // Two steps: egui Areas spend their first frame on an invisible
+        // sizing pass; the modal is visible from the second frame.
+        h.run_steps(2);
+
+        h.with_app(|app| {
+            assert!(app
+                .focus_stack
+                .contains(&crate::app::FocusLayer::NotesPicker));
+        });
+        // ListRow titles are painted as galleys (not accessible labels);
+        // assert on the section headers, which are real ui.label widgets.
+        h.harness().get_by_label("Inbox (1) — press t to triage");
+        // "Notes" appears as both the modal title and the kept-notes header.
+        let notes_labels = h.harness().get_all_by_label("Notes").count();
+        assert_eq!(notes_labels, 2, "modal title + kept-notes section header");
+        h.save_screenshot("/tmp/plexi_notes_picker.png")
+            .expect("render failed");
+    }
+
+    /// Notes triage overlay: renders a note, and emptying the inbox returns
+    /// to the picker instead of closing outright.
+    #[test]
+    fn notes_triage_overlay_smoke_returns_to_picker() {
+        let mut h = PlexiUiHarness::new();
+        h.step();
+        add_focused_pane(&mut h);
+        h.step();
+
+        h.with_app_mut(|app| {
+            app.notes_triage_notes = vec![crate::notes::InboxNote {
+                path: std::env::temp_dir().join("plexi-ui-triage.md"),
+                frontmatter: crate::notes::NoteFrontmatter::default(),
+                body: "triage me\n".to_string(),
+            }];
+            app.notes_triage_actions = Vec::new();
+            app.notes_triage_index = 0;
+            app.push_focus_layer(crate::app::FocusLayer::NotesTriage);
+        });
+        // Two steps for the egui Area sizing pass (see picker smoke test).
+        h.run_steps(2);
+        h.with_app(|app| {
+            assert!(app
+                .focus_stack
+                .contains(&crate::app::FocusLayer::NotesTriage));
+        });
+        h.harness().get_by_label("Inbox Triage (1/1)");
+        h.harness().get_by_label("triage me");
+        h.save_screenshot("/tmp/plexi_notes_triage.png")
+            .expect("render failed");
+
+        h.with_app_mut(|app| app.notes_triage_advance());
+        h.step();
+        h.with_app(|app| {
+            assert!(!app
+                .focus_stack
+                .contains(&crate::app::FocusLayer::NotesTriage));
+            assert!(app
+                .focus_stack
+                .contains(&crate::app::FocusLayer::NotesPicker));
+        });
+    }
 
     /// Render after adding a test pane.
     #[test]
