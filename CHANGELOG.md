@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.746] — 2026-06-12
+
+### Changes
+- fix(sdk): add missing Any import to ui.py; improve install.sh error handling
+- chore: add stint 0171-0176 + rescope 0167 — cleanup batch (gh #2216-#2222)
 ## [0.0.745] — 2026-06-12
 
 ### Changes
