@@ -39,7 +39,7 @@ pub(crate) fn parse_note(content: &str) -> (NoteFrontmatter, String) {
             continue;
         };
         let key = key.trim();
-        let val = val.trim().to_string();
+        let val = val.trim().trim_matches('"').to_string();
         match key {
             "captured_at" => fm.captured_at = Some(val),
             "source" => fm.source = Some(val),

@@ -135,9 +135,9 @@ impl PlexiApp {
                         note.path
                     );
                     self.notes_triage_run_action(&note, &action);
-                    // If the action specifies a workspace destination, keep instead of trash.
-                    if action.workspace.is_some() {
-                        self.notes_triage_keep(&note);
+                    // action.workspace overrides the keep destination; present means keep there.
+                    if let Some(ws) = action.workspace.as_deref() {
+                        self.notes_triage_keep_to(&note, ws);
                     } else {
                         self.notes_triage_trash(&note);
                     }
@@ -268,9 +268,8 @@ impl PlexiApp {
         }
     }
 
-    /// Move `note` to `notes/<workspace>/` (keep).
+    /// Move `note` to `notes/<workspace>/` using the workspace slug from the note's frontmatter.
     pub(crate) fn notes_triage_keep(&self, note: &InboxNote) {
-        // Resolve workspace slug: prefer frontmatter, then active workspace root basename.
         let active_root = crate::config::active_workspace_root();
         let active_slug: Option<String> = active_root
             .as_ref()
@@ -283,6 +282,11 @@ impl PlexiApp {
             .as_deref()
             .or_else(|| active_slug.as_deref())
             .unwrap_or("default");
+        self.notes_triage_keep_to(note, workspace);
+    }
+
+    /// Move `note` to `notes/<workspace>/` using an explicit workspace slug.
+    pub(crate) fn notes_triage_keep_to(&self, note: &InboxNote, workspace: &str) {
         let dest_dir = crate::config::config_dir()
             .join("notes")
             .join(workspace);
@@ -352,7 +356,8 @@ impl PlexiApp {
     }
 
     /// Execute the action's shell command against the note.
-    pub(crate) fn notes_triage_run_action(&self, note: &InboxNote, action: &TriageAction) {
+    /// Hidden actions run silently in the background. Visible actions open a terminal pane.
+    pub(crate) fn notes_triage_run_action(&mut self, note: &InboxNote, action: &TriageAction) {
         let cmd =
             crate::notes::substitute_action_tokens(&action.command, &note.body, &note.frontmatter);
         log::info!(
@@ -362,17 +367,29 @@ impl PlexiApp {
             cmd
         );
 
-        // Both hidden and visible actions use a background spawn here.
-        // A visible-terminal path would require &mut self (to open a pane via the
-        // spawn-queue); since this method takes &self, we spawn hidden in both cases.
-        // TODO: route visible actions through a spawn queue that accepts &mut self.
-        let _ = action.hidden; // field read; routing is identical until spawn queue supports it
-        match std::process::Command::new("sh")
-            .args(["-c", &cmd])
-            .spawn()
-        {
-            Ok(_) => log::info!("notes_triage: action spawned successfully"),
-            Err(e) => log::warn!("notes_triage: action spawn failed: {e}"),
+        if action.hidden {
+            match std::process::Command::new("sh").args(["-c", &cmd]).spawn() {
+                Ok(_) => log::info!("notes_triage: hidden action spawned"),
+                Err(e) => log::warn!("notes_triage: hidden action spawn failed: {e}"),
+            }
+        } else {
+            // Open a visible terminal pane that stays open after the command finishes.
+            let win_idx = self.active_window;
+            if let Some(focused_tile) = self.windows[win_idx].focused_pane {
+                self.spawn_terminal_pane_at(
+                    win_idx,
+                    focused_tile,
+                    true,  // split vertically
+                    false,
+                    Some(&cmd),
+                    false, // keep pane open after exit
+                    None,
+                    false,
+                );
+            } else {
+                log::warn!("notes_triage: no focused tile — falling back to background spawn");
+                let _ = std::process::Command::new("sh").args(["-c", &cmd]).spawn();
+            }
         }
     }
 }

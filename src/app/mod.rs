@@ -1228,7 +1228,10 @@ impl PlexiApp {
 
     fn resolve_theme_config(config: &config::PlexiConfig) -> config::ThemeConfig {
         let user_theme = config.theme.clone().unwrap_or_default();
-        if let Some(preset_name) = user_theme.preset.as_deref() {
+        // Prefer [theme] preset; fall back to legacy top-level theme_preset so
+        // existing configs survive the migration without silently losing their theme.
+        let preset_name = user_theme.preset.as_deref().or(config.theme_preset.as_deref());
+        if let Some(preset_name) = preset_name {
             if let Some(preset) = theme::preset_colors(preset_name) {
                 log::info!("Applying theme preset: {}", preset_name.trim());
                 return theme::apply_preset(&preset, &user_theme);

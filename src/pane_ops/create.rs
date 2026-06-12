@@ -2030,22 +2030,8 @@ fn scratchpad_file() -> PathBuf {
     let now = Utc::now();
     let dir = crate::config::config_dir().join("notes").join("inbox");
     let filename = format!("scratch-{}.md", now.format("%Y%m%d-%H%M%S"));
-    let path = dir.join(&filename);
-
-    // Stamp frontmatter if the file doesn't exist yet.
-    if !path.exists() {
-        if let Ok(()) = std::fs::create_dir_all(&dir) {
-            let workspace = crate::config::active_workspace_root()
-                .and_then(|p| p.file_name().map(|n| n.to_os_string()))
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            let captured_at = now.to_rfc3339();
-            let frontmatter = format!(
-                "---\ncaptured_at: \"{captured_at}\"\nsource: \"scratchpad\"\nworkspace: \"{workspace}\"\n---\n\n"
-            );
-            let _ = std::fs::write(&path, &frontmatter);
-            log::info!("scratchpad: created {:?}", path);
-        }
-    }
-    path
+    // Return path only — do not pre-write. TextEditorApp creates the file on first
+    // save, so abandoning scratchpad without typing leaves no phantom inbox note.
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join(&filename)
 }
