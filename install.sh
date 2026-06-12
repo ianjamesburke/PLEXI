@@ -1,7 +1,52 @@
 #!/usr/bin/env bash
+# Usage:
+#   curl -fsSL https://plexiapp.com/install.sh | bash
+#   curl -fsSL https://plexiapp.com/install.sh | bash -s -- --channel alpha
+#   curl -fsSL https://plexiapp.com/install.sh | bash -s -- --channel beta
 set -euo pipefail
 
 REPO="https://github.com/ianjamesburke/PLEXI.git"
+CHANNEL="main"
+
+# Parse flags
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --channel|-c)
+      CHANNEL="${2:-}"
+      if [[ -z "$CHANNEL" ]]; then
+        echo "Error: --channel requires a value (main, alpha, beta)."
+        exit 1
+      fi
+      shift 2
+      ;;
+    --channel=*|-c=*)
+      CHANNEL="${1#*=}"
+      shift
+      ;;
+    --help|-h)
+      echo "Usage: install.sh [--channel main|alpha|beta]"
+      echo ""
+      echo "  --channel, -c   Which release channel to install (default: main)"
+      echo "                  main   — stable release"
+      echo "                  beta   — staging / pre-release"
+      echo "                  alpha  — active development"
+      exit 0
+      ;;
+    *)
+      echo "Error: unknown argument '$1'. Run with --help for usage."
+      exit 1
+      ;;
+  esac
+done
+
+# Validate channel
+case "$CHANNEL" in
+  main|alpha|beta) ;;
+  *)
+    echo "Error: invalid channel '$CHANNEL'. Must be one of: main, alpha, beta."
+    exit 1
+    ;;
+esac
 
 # Print a clear error message and the failing line on any unexpected exit.
 _on_error() {
@@ -42,7 +87,6 @@ if ! command -v cargo &>/dev/null; then
     [yY][eE][sS]|[yY])
       echo "Installing Rust..."
       curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-      # Source the new cargo env so the rest of this script can use it
       # shellcheck source=/dev/null
       source "$HOME/.cargo/env"
       ;;
@@ -55,13 +99,13 @@ if ! command -v cargo &>/dev/null; then
   esac
 fi
 
-# If we're not inside the repo, clone it to a temp dir and build from there
+# If we're not inside the repo, clone the requested branch to a temp dir
 if [ ! -f "Cargo.toml" ] || ! grep -q 'name = "plexi"' Cargo.toml 2>/dev/null; then
   TMP=$(mktemp -d)
   trap 'rm -rf "$TMP"' EXIT
-  echo "Cloning Plexi..."
-  if ! git clone --depth=1 "$REPO" "$TMP/PLEXI"; then
-    echo "Error: git clone failed."
+  echo "Cloning Plexi ($CHANNEL)..."
+  if ! git clone --depth=1 --branch "$CHANNEL" "$REPO" "$TMP/PLEXI"; then
+    echo "Error: git clone failed for branch '$CHANNEL'."
     echo "  Check your network connection and that $REPO is accessible."
     exit 1
   fi
@@ -78,25 +122,6 @@ if ! command -v cargo-bundle &>/dev/null; then
   fi
 fi
 
-echo "Building Plexi.app (this may take a few minutes on first build)..."
-if ! cargo bundle --release; then
-  echo "Error: 'cargo bundle --release' failed."
-  echo "  Check the compiler output above for details."
-  exit 1
-fi
-
-APP_SRC=$(find target/release/bundle/osx -maxdepth 1 -name "*.app" 2>/dev/null | head -1)
-APP_DEST="/Applications/Plexi.app"
-
-if [ -z "$APP_SRC" ] || [ ! -d "$APP_SRC" ]; then
-  echo "Error: bundle not found in target/release/bundle/osx/"
-  echo "  'cargo bundle --release' appeared to succeed but produced no .app bundle."
-  exit 1
-fi
-
-echo "Copying to /Applications..."
-rm -rf "$APP_DEST"
-cp -r "$APP_SRC" "$APP_DEST"
-
-echo ""
-echo "Done — Plexi.app installed to /Applications"
+# Delegate to the full installer which handles per-channel binary naming,
+# symlinks, SDK deployment, config seeding, completions, and skills.
+bash scripts/install.sh "$CHANNEL"
