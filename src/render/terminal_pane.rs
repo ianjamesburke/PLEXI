@@ -9,6 +9,7 @@
 //! background — only the exit-message rect, which gets its own fill to cover
 //! any stale terminal glyphs underneath.
 
+use crate::app_protocol::AgentState;
 use crate::host::pane::TerminalPane;
 use crate::spatial::tiling::{paint_tab_dots, PaneId, DOT_RADIUS, TAB_DOT_RESERVED_HEIGHT};
 use crate::ui::theme::{self, Colors};
@@ -66,6 +67,11 @@ pub fn render(
         colors,
         outside_workspace,
         pane_title_font_size,
+        terminal
+            .agent
+            .as_ref()
+            .map(|a| &a.state)
+            .or(terminal.activity.as_ref()),
     );
 
     let font_size = terminal.font_size;
@@ -115,6 +121,7 @@ fn render_name_bar_and_dots(
     colors: &Colors,
     outside_workspace: bool,
     name_font_size: f32,
+    agent_state: Option<&AgentState>,
 ) {
     let name_bar_height = 20.0;
     let has_name = pane_names.contains_key(pane_id);
@@ -154,6 +161,23 @@ fn render_name_bar_and_dots(
                 egui::FontId::proportional(name_font_size),
                 colors.text_dim,
             );
+        }
+
+        // Activity dot — rendered left of center when there's a named bar.
+        if let Some(state) = agent_state {
+            const ACTIVITY_DOT_RADIUS: f32 = 3.0;
+            const ACTIVITY_DOT_MARGIN: f32 = 6.0;
+            let t = ui.input(|i| i.time);
+            let color = crate::ui::activity::dot_color_from_time(state, colors, t);
+            let cx = bar_rect.left() + ACTIVITY_DOT_MARGIN + ACTIVITY_DOT_RADIUS;
+            ui.painter().circle_filled(
+                egui::pos2(cx, bar_rect.center().y),
+                ACTIVITY_DOT_RADIUS,
+                color,
+            );
+            if matches!(state, AgentState::Working) {
+                ui.ctx().request_repaint();
+            }
         }
 
         if outside_workspace {

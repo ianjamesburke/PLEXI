@@ -296,6 +296,36 @@ pub fn get_pid_cwd(pid: u32) -> Option<PathBuf> {
     result
 }
 
+/// True when `pid` has at least one live child process. Used as one of the
+/// two terminal-activity signals (alongside the PTY foreground pgid): a
+/// shell with children is running something — a script, a server, a REPL.
+pub fn pid_has_children(pid: u32) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        // One pid slot is enough — we only care whether any child exists.
+        let mut buf = [0i32; 1];
+        let n = unsafe {
+            libc::proc_listchildpids(
+                pid as libc::pid_t,
+                buf.as_mut_ptr() as *mut libc::c_void,
+                std::mem::size_of_val(&buf) as libc::c_int,
+            )
+        };
+        n > 0
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 fn get_pid_cwd_uncached(pid: u32) -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     {

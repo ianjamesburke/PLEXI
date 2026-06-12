@@ -58,6 +58,8 @@ pub struct PaneDots {
     pub focused_idx: Option<usize>,
     /// Set of dot indices that are hidden (rendered as stroke-only outlines).
     pub hidden_set: std::collections::HashSet<usize>,
+    /// Per-dot agent state (parallel to dot index). `None` means no agent.
+    pub activities: Vec<Option<crate::app_protocol::AgentState>>,
 }
 
 pub struct ContextItem {
@@ -81,8 +83,7 @@ pub struct ContextItem {
 fn draw_pips(
     ui: &mut egui::Ui,
     pane_dots: &Option<PaneDots>,
-    accent_color: Color32,
-    text_dim: Color32,
+    colors: &Colors,
     row_alpha: f32,
     is_dragging: bool,
 ) {
@@ -97,16 +98,26 @@ fn draw_pips(
     }
     let dot_size = Vec2::new(dot_area_width, PANE_DOT_RADIUS * 2.0 + 4.0);
     let (rect, _) = ui.allocate_exact_size(dot_size, Sense::hover());
+    let t = ui.input(|i| i.time);
+    let has_working = dots
+        .activities
+        .iter()
+        .any(|s| matches!(s, Some(crate::app_protocol::AgentState::Working)));
+    if has_working {
+        ui.ctx().request_repaint();
+    }
     let painter = ui.painter();
     let cy = rect.center().y;
     for dot_i in 0..capped {
         let cx = rect.min.x + (dot_i as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS;
         let is_hidden = dots.hidden_set.contains(&dot_i);
-        let color = if dots.focused_idx == Some(dot_i) {
-            with_alpha(accent_color, row_alpha)
-        } else {
-            with_alpha(text_dim, if is_dragging { 0.15 } else { 0.35 })
-        };
+        let agent_state = dots.activities.get(dot_i).and_then(|s| s.as_ref());
+        let focused = dots.focused_idx == Some(dot_i);
+        let mut color =
+            crate::ui::activity::pip_color(agent_state, focused, colors, t).gamma_multiply(row_alpha);
+        if is_dragging && agent_state.is_none() && !focused {
+            color = color.gamma_multiply(0.4);
+        }
         let center = egui::pos2(cx, cy);
         if is_hidden {
             painter.circle_stroke(center, PANE_DOT_RADIUS, egui::Stroke::new(1.0, color));
@@ -119,9 +130,9 @@ fn draw_pips(
             rect.min.x + (capped as f32) * PANE_DOT_SPACING + PANE_DOT_RADIUS * 0.5;
         let overflow_color =
             if dots.focused_idx.map_or(false, |idx| idx >= PANE_DOT_MAX) {
-                with_alpha(accent_color, row_alpha)
+                with_alpha(colors.accent, row_alpha)
             } else {
-                with_alpha(text_dim, 0.5)
+                with_alpha(colors.text_dim, 0.5)
             };
         painter.text(
             egui::pos2(overflow_x, cy),
@@ -233,14 +244,7 @@ impl ContextItem {
                         });
 
                         // Pips: rendered inline right of the name, before badge/action.
-                        draw_pips(
-                            ui,
-                            &pane_dots,
-                            accent_color,
-                            text_dim,
-                            row_alpha,
-                            is_dragging,
-                        );
+                        draw_pips(ui, &pane_dots, &colors, row_alpha, is_dragging);
 
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.add_space(if action_enabled { ACTION_ZONE_WIDTH } else { 0.0 });

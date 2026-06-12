@@ -36,6 +36,7 @@ impl PlexiApp {
             self.drain_spawn_queue();
             self.tick_scheduler();
             self.tick_notification_timeouts();
+            self.tick_terminal_activity();
         }
         self.drain_pane_cmd_channel();
         if let Some(rx) = &self.update_rx {
@@ -282,6 +283,9 @@ impl PlexiApp {
                                             .or_else(|| p.as_app().map(|a| a.name.clone()))
                                     });
                                     let focused = is_active_win && w.focused_pane == Some(*tile_id);
+                                    let activity = pane_ref
+                                        .and_then(|p| p.effective_activity())
+                                        .cloned();
                                     crate::spatial::tiling::MiniPane {
                                         norm_rect: *norm_rect,
                                         kind,
@@ -289,6 +293,7 @@ impl PlexiApp {
                                         has_content: true,
                                         title,
                                         active: true,
+                                        activity,
                                     }
                                 }).collect();
                                 Some(crate::spatial::tiling::MiniWindow {

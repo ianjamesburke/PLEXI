@@ -59,6 +59,8 @@ pub struct MiniPane {
     pub title: Option<String>,
     /// False for terminal panes that have exited; dims the pane in the minimap.
     pub active: bool,
+    /// Agent/terminal activity state; renders a dot in the pane's top-left corner.
+    pub activity: Option<crate::app_protocol::AgentState>,
 }
 
 /// One window in the child context, with its spatial grid position.
@@ -214,12 +216,13 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             let padding = style::SPACE_MD;
             let inner = pane_rect.shrink(padding);
             let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
+            let colors_for_portal = self.colors.clone();
             portal_ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 ui.label(
                     egui::RichText::new(&preview.context_name)
                         .size(style::TEXT_BODY)
                         .strong()
-                        .color(self.colors.text_primary),
+                        .color(colors_for_portal.text_primary),
                 );
                 if !preview.context_description.is_empty() {
                     ui.scope(|ui| {
@@ -227,7 +230,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         crate::ui::labels::description_label(
                             ui,
                             &preview.context_description,
-                            &self.colors,
+                            &colors_for_portal,
                         );
                     });
                 }
@@ -254,7 +257,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                     ui.label(
                         egui::RichText::new(count_label)
                             .size(style::TEXT_HINT)
-                            .color(self.colors.text_dim),
+                            .color(colors_for_portal.text_dim),
                     );
                 }
                 ui.add_space(style::SPACE_SM);
@@ -265,9 +268,14 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
                         egui::vec2(inner.width(), map_h),
                         egui::Sense::hover(),
                     );
+                    let t = ui.input(|i| i.time);
+                    if preview.windows.iter().flat_map(|w| &w.panes).any(|p| {
+                        matches!(p.activity, Some(crate::app_protocol::AgentState::Working))
+                    }) {
+                        ui.ctx().request_repaint();
+                    }
                     let painter = ui.painter();
-                    let colors = self.colors.clone();
-                    paint_portal_minimap(painter, map_area, &preview.windows, &colors);
+                    paint_portal_minimap(painter, map_area, &preview.windows, &colors_for_portal, t);
                 }
             });
             // Double-click on portal pane to zoom into the sub-context.
@@ -523,6 +531,7 @@ pub(crate) fn paint_portal_minimap(
     area: egui::Rect,
     windows: &[MiniWindow],
     colors: &Colors,
+    time: f64,
 ) {
     if windows.is_empty() {
         return;
@@ -654,6 +663,25 @@ pub(crate) fn paint_portal_minimap(
                 );
             }
 
+            // Activity dot — top-left of the pane, mirroring the title-bar
+            // dot on real panes. Vertically centered on the title line so it
+            // reads as part of the title row, with matching left padding.
+            const ACTIVITY_DOT_R: f32 = 2.5;
+            const ACTIVITY_DOT_PAD: f32 = 5.0;
+            let title_font_size: f32 = if cell.width() > 80.0 { 11.0 } else { 9.0 };
+            let activity_dot = pane.activity.as_ref().filter(|_| cell.width() > 14.0);
+            if let Some(state) = activity_dot {
+                let color = crate::ui::activity::dot_color_from_time(state, colors, time);
+                painter.circle_filled(
+                    egui::pos2(
+                        cell.min.x + ACTIVITY_DOT_PAD + ACTIVITY_DOT_R,
+                        cell.min.y + 2.0 + title_font_size * 0.5,
+                    ),
+                    ACTIVITY_DOT_R,
+                    color,
+                );
+            }
+
             if !pane.has_content {
                 continue;
             }
@@ -680,9 +708,16 @@ pub(crate) fn paint_portal_minimap(
                         colors.text_dim.b(),
                         title_alpha,
                     );
-                    let font_size = if cell.width() > 80.0 { 11.0 } else { 9.0 };
+                    let font_size = title_font_size;
+                    // Title clears the dot (pad + diameter + gap), measured
+                    // from the cell edge like the dot itself.
+                    let title_x_offset = if activity_dot.is_some() {
+                        ACTIVITY_DOT_PAD + ACTIVITY_DOT_R * 2.0 + 4.0 - 2.0
+                    } else {
+                        1.0
+                    };
                     painter.text(
-                        egui::pos2(content_area.min.x + 1.0, content_area.min.y),
+                        egui::pos2(content_area.min.x + title_x_offset, content_area.min.y),
                         egui::Align2::LEFT_TOP,
                         title,
                         egui::FontId::proportional(font_size),

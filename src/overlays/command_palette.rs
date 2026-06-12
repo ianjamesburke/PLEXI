@@ -108,10 +108,23 @@ fn palette_pips_for_context(
         })
         .collect();
 
+    let activities = pane_ids
+        .iter()
+        .map(|pane_id| {
+            windows
+                .iter()
+                .filter(|w| w.context_id == ctx_id)
+                .find_map(|w| w.panes.get(pane_id))
+                .and_then(|pane| pane.effective_activity())
+                .cloned()
+        })
+        .collect();
+
     Some(ListRowPips {
         count: pane_ids.len(),
         focused_idx,
         hidden_indices,
+        activities,
     })
 }
 
@@ -667,6 +680,7 @@ mod tests {
                 count: 3,
                 focused_idx: Some(1),
                 hidden_indices: vec![2],
+                activities: vec![None, None, None],
             })
         );
     }
@@ -685,6 +699,7 @@ mod tests {
                 count: 6,
                 focused_idx: Some(5),
                 hidden_indices: vec![1, 4],
+                activities: vec![None, None, None, None, None, None],
             })
         );
     }
