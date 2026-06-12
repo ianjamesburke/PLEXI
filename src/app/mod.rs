@@ -1299,6 +1299,72 @@ impl PlexiApp {
         }
     }
 
+    /// Single entry point for Cmd+R. Opens the pane rename modal for the
+    /// focused pane — except portals, which have no name of their own:
+    /// there the rename falls through to the portal's target subcontext,
+    /// same as Cmd+Shift+R from inside it.
+    pub(crate) fn open_rename_for_focused(&mut self) {
+        self.ctx.memory_mut(|m| {
+            if let Some(id) = m.focused() {
+                m.surrender_focus(id);
+            }
+        });
+        let active_ctx = &self.windows[self.active_window];
+        let Some(focused_tile) = active_ctx.focused_pane else {
+            return;
+        };
+        let Some(Tile::Pane(pane_id)) = active_ctx.tree.tiles.get(focused_tile) else {
+            return;
+        };
+        let pane_id = *pane_id;
+        let portal_target = active_ctx
+            .panes
+            .get(&pane_id)
+            .and_then(|p| p.portal_target());
+        if let Some(target) = portal_target {
+            if let Some(ctx_idx) = self.router.position(|c| c.context_id == target) {
+                self.open_context_rename(ctx_idx);
+            } else {
+                log::warn!("rename_pane: portal {pane_id} targets unknown context {target}");
+            }
+            return;
+        }
+        self.rename_buffer = active_ctx
+            .panes
+            .get(&pane_id)
+            .map(|p| match p {
+                crate::host::pane::Pane::Terminal(t) => t.name.clone().unwrap_or_default(),
+                // Note editors seed the frontmatter title so renaming edits
+                // the title, not the filename.
+                crate::host::pane::Pane::App(a) => {
+                    a.runtime.rename_seed().unwrap_or_else(|| a.name.clone())
+                }
+                crate::host::pane::Pane::Portal(_) => String::new(),
+            })
+            .unwrap_or_default();
+        self.renaming_pane = Some(pane_id);
+        self.rename_pane_focus_requested = false;
+        // Sync the focus layer immediately so `input_captured_by_overlay()`
+        // is accurate for the rest of this frame — without this, there is a
+        // one-frame window where `renaming_pane` is Some but the focus layer
+        // has not been pushed yet.
+        self.sync_rename_pane_focus();
+        log::info!("rename_pane: opened for pane {pane_id:?}");
+    }
+
+    /// Single entry point for opening a context rename. Used by Cmd+Shift+R
+    /// (active context) and by Cmd+R falling through from a focused portal
+    /// pane (the portal's target subcontext). Renders inline in the sidebar
+    /// when visible, otherwise as the centered overlay.
+    pub(crate) fn open_context_rename(&mut self, ctx_idx: usize) {
+        self.rename_buffer = self.router.get(ctx_idx).name.clone();
+        self.renaming_window = Some(ctx_idx);
+        log::info!(
+            "context_rename: opened for context {:?} (idx {ctx_idx})",
+            self.router.get(ctx_idx).name
+        );
+    }
+
     pub(crate) fn context_name_for(&self, context_id: u64) -> String {
         self.router
             .iter()
@@ -2762,41 +2828,7 @@ impl eframe::App for PlexiApp {
                     }
                 }
                 Action::RenamePane => {
-                    self.ctx.memory_mut(|m| {
-                        if let Some(id) = m.focused() {
-                            m.surrender_focus(id);
-                        }
-                    });
-                    let active_ctx = &self.windows[self.active_window];
-                    if let Some(focused_tile) = active_ctx.focused_pane {
-                        if let Some(Tile::Pane(pane_id)) = active_ctx.tree.tiles.get(focused_tile) {
-                            let pane_id = *pane_id;
-                            self.rename_buffer = active_ctx
-                                .panes
-                                .get(&pane_id)
-                                .map(|p| match p {
-                                    crate::host::pane::Pane::Terminal(t) => {
-                                        t.name.clone().unwrap_or_default()
-                                    }
-                                    // Note editors seed the frontmatter title so
-                                    // renaming edits the title, not the filename.
-                                    crate::host::pane::Pane::App(a) => a
-                                        .runtime
-                                        .rename_seed()
-                                        .unwrap_or_else(|| a.name.clone()),
-                                    crate::host::pane::Pane::Portal(_) => String::new(),
-                                })
-                                .unwrap_or_default();
-                            self.renaming_pane = Some(pane_id);
-                            self.rename_pane_focus_requested = false;
-                            // Sync the focus layer immediately so `input_captured_by_overlay()`
-                            // is accurate for the rest of this frame — without this, there is a
-                            // one-frame window where `renaming_pane` is Some but the focus layer
-                            // has not been pushed yet.
-                            self.sync_rename_pane_focus();
-                            log::info!("rename_pane: opened for pane {pane_id:?}");
-                        }
-                    }
+                    self.open_rename_for_focused();
                 }
                 Action::HidePane => {
                     let win = &mut self.windows[self.active_window];
@@ -2916,14 +2948,7 @@ impl eframe::App for PlexiApp {
                     self.open_assistant_pane();
                 }
                 Action::RenameContext => {
-                    let ctx_idx = self.router.active_idx();
-                    self.rename_buffer = self.router.active().name.clone();
-                    self.renaming_window = Some(ctx_idx);
-                    log::info!(
-                        "RenameContext: opening rename for context {:?} (idx {})",
-                        self.router.active().name,
-                        ctx_idx
-                    );
+                    self.open_context_rename(self.router.active_idx());
                 }
                 Action::ToggleNotificationModal => {
                     if self.show_notification_modal {

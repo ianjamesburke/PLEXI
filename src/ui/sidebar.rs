@@ -469,8 +469,7 @@ impl PlexiApp {
         } else if let Some((i, action)) = menu_action {
             match action {
                 WindowMenuAction::Rename => {
-                    self.renaming_window = Some(i);
-                    self.rename_buffer = self.router.get(i).name.clone();
+                    self.open_context_rename(i);
                 }
                 WindowMenuAction::EditDescription => {
                     log::info!("sidebar: edit context description ctx_idx={i}");

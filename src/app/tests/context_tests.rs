@@ -1423,3 +1423,74 @@ fn create_context_with_windows_adds_extra_pages() {
         "anchor + 2 --window args = 3 windows total"
     );
 }
+
+/// Cmd+R on a focused portal pane falls through to renaming the portal's
+/// target subcontext (same as Cmd+Shift+R from inside it) — it must not
+/// open the pane rename modal.
+#[test]
+fn rename_on_focused_portal_falls_through_to_subcontext() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let root_id = app.router.active().context_id;
+    let child_id = 7701u64;
+    app.router.push(crate::host::context::Context {
+        name: "Child".to_string(),
+        path: std::path::PathBuf::from("/tmp/child_rename"),
+        root: None,
+        description: None,
+        context_id: child_id,
+        parent_id: Some(root_id),
+        depth: 1,
+        parked: false,
+    });
+
+    // Insert a portal pane targeting the child and focus it.
+    let portal_pane_id = 77011u64;
+    let portal_tile;
+    {
+        let win = &mut app.windows[0];
+        portal_tile = win.tree.tiles.insert_pane(portal_pane_id);
+        win.panes.insert(
+            portal_pane_id,
+            crate::host::pane::Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                pane_id: portal_pane_id,
+                target_context_id: child_id,
+                context_state: None,
+                hidden: false,
+            })),
+        );
+        win.focused_pane = Some(portal_tile);
+    }
+
+    app.open_rename_for_focused();
+
+    let child_idx = app.router.position(|c| c.context_id == child_id).unwrap();
+    assert_eq!(
+        app.renaming_window,
+        Some(child_idx),
+        "portal Cmd+R must open the context rename targeting the child"
+    );
+    assert_eq!(
+        app.renaming_pane, None,
+        "portal Cmd+R must not open the pane rename modal"
+    );
+    assert_eq!(app.rename_buffer, "Child");
+}
+
+/// Cmd+R on a non-portal pane still opens the pane rename modal.
+#[test]
+fn rename_on_focused_pane_opens_pane_rename() {
+    let ctx = egui::Context::default();
+    let frame_tick = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut app, _tx) = PlexiApp::new_for_test(ctx, frame_tick);
+
+    let (pane_tile, pane_id) = app.add_test_pane();
+    app.windows[0].focused_pane = Some(pane_tile);
+
+    app.open_rename_for_focused();
+
+    assert_eq!(app.renaming_pane, Some(pane_id));
+    assert_eq!(app.renaming_window, None);
+}
