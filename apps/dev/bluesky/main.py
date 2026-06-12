@@ -7,8 +7,8 @@ Views:
   FEED    — Discover / What's Hot feed (or author feed after profile lookup)
   THREAD  — Full thread for the selected post
 
-Keys (FEED): j/k nav · Enter thread · p profile · r refresh · o browser · n/N page · Esc close
-Keys (THREAD): Esc back · o browser
+Keys (FEED): j/k nav · Enter thread · z image · p profile · r refresh · o browser · n/N page · Esc close
+Keys (THREAD): z image · Esc back · o browser
 """
 
 import asyncio
@@ -33,8 +33,8 @@ LIMIT    = 30
 AVATAR_R  = 14.0   # avatar circle radius in thread view
 NARROW_W  = 400    # pane width threshold for compact layout
 IMG_MIN_H = 96.0
-IMG_MAX_H = 200.0
-IMG_FRAC  = 0.36
+IMG_MAX_H = 500.0
+IMG_FRAC  = 0.62
 THREAD_TEXT_SIZE = 14.0
 # Thread row layout constants
 _TH_TOP   = 6.0    # padding above author line
@@ -87,15 +87,25 @@ def _text(post: dict) -> str:
     return _strip_unrendered_symbols((post.get("record") or {}).get("text", ""))
 
 
-def _thumbs(post: dict) -> list[str]:
+def _images(post: dict) -> list[dict]:
     e = post.get("embed") or {}
     t = e.get("$type", "")
     if "images#view" in t:
-        return [i["thumb"] for i in e.get("images", []) if i.get("thumb")]
+        return [i for i in e.get("images", []) if i.get("thumb") or i.get("fullsize")]
     media = e.get("media") or {}
     if "images#view" in media.get("$type", ""):
-        return [i["thumb"] for i in media.get("images", []) if i.get("thumb")]
+        return [i for i in media.get("images", []) if i.get("thumb") or i.get("fullsize")]
     return []
+
+
+def _thumbs(post: dict) -> list[str]:
+    return [_image_src(image, prefer_fullsize=False) for image in _images(post)]
+
+
+def _image_src(image: dict, prefer_fullsize: bool) -> str:
+    if prefer_fullsize:
+        return image.get("fullsize") or image.get("thumb") or ""
+    return image.get("thumb") or image.get("fullsize") or ""
 
 
 def _est_text_h(text: str, avail_w: float) -> float:
@@ -171,6 +181,8 @@ class BlueskyApp(App):
         self._t_scroll = 0.0
 
         self._avatar_handles: dict[str, str] = {}
+        self._zoom_image_src: str | None = None
+        self._zoom_image_alt: str = ""
 
         # Headless render: --state JSON lands in self._app_state before on_init.
         seeded = self._app_state
@@ -426,10 +438,10 @@ class BlueskyApp(App):
 
         feed_keys = [
             (["j", "k"], "nav"), ("enter", "thread"),
-            ("p", "profile"), ("r", "refresh"),
+            ("z", "image"), ("p", "profile"), ("r", "refresh"),
             ("o", "browser"), (["n", "N"], "page"), ("esc", "close"),
         ]
-        thread_keys = [("esc", "back"), ("o", "browser")]
+        thread_keys = [("z", "image"), ("esc", "back"), ("o", "browser")]
         footer = FooterKeys(thread_keys if self._view == self.VIEW_THREAD else feed_keys)
         footer_h = footer.measure(ctx.w)
 
@@ -461,6 +473,8 @@ class BlueskyApp(App):
                 y=content_y,
                 h=content_h,
             )
+        if self._zoom_image_src:
+            self._draw_image_zoom(ctx)
 
     def _draw_thread(self, ctx: RenderContext, content_y: float, content_h: float) -> None:
         if not self._thread:
@@ -525,7 +539,8 @@ class BlueskyApp(App):
             img_y  = text_y + text_h + _TH_IMGAP
             img_w  = max(120.0, avail_w)
             for thumb in _thumbs(post)[:2]:
-                ctx.image(thumb, t_x, img_y, img_w, image_h, fit="cover")
+                ctx.rect(t_x, img_y, img_w, image_h, fill=ctx.theme.surface, radius=6.0)
+                ctx.image(thumb, t_x, img_y, img_w, image_h, fit="contain")
                 img_y += image_h + _TH_IMG_GAP
 
             likes   = post.get("likeCount", 0)
@@ -538,6 +553,22 @@ class BlueskyApp(App):
             y += h
 
         ctx.end_scroll()
+
+    def _draw_image_zoom(self, ctx: RenderContext) -> None:
+        src = self._zoom_image_src
+        if not src:
+            return
+        ctx.rect(0, 0, ctx.w, ctx.h, fill="#090913ee")
+        margin = 20.0 if ctx.w <= NARROW_W else 32.0
+        label_h = 24.0
+        max_h = min(1200.0, ctx.h - margin * 2 - label_h)
+        box_w = max(1.0, ctx.w - margin * 2)
+        box_h = max(1.0, max_h)
+        box_y = margin + label_h
+        ctx.image(src, margin, box_y, box_w, box_h, fit="contain")
+        label = self._zoom_image_alt or "image"
+        ctx.text(margin, margin, f"{label}  ·  z/esc close",
+                 size=HINT, color=ctx.theme.fg, max_width=box_w)
 
     def _draw_input_overlay(self, ctx: RenderContext, content_y: float) -> None:
         pw = min(380.0, ctx.w - PAD * 4)
@@ -554,6 +585,9 @@ class BlueskyApp(App):
     # ── input ─────────────────────────────────────────────────────────────────
 
     def on_escape(self) -> bool:
+        if self._zoom_image_src:
+            self._close_image_zoom()
+            return True
         if self._show_input:
             self._show_input = False
             self.emit.schedule_render()
@@ -577,6 +611,8 @@ class BlueskyApp(App):
             if key == "p":
                 self._show_input = True
                 self.emit.schedule_render()
+            elif key in ("z", "Z"):
+                self._open_image_zoom()
             elif key == "r":
                 self.emit.info("bluesky: refresh")
                 self._page_fetch(self._cursors[self._page_idx])
@@ -588,7 +624,9 @@ class BlueskyApp(App):
                 self._prev_page()
 
         elif self._view == self.VIEW_THREAD:
-            if key == "o":
+            if key in ("z", "Z"):
+                self._open_image_zoom()
+            elif key == "o":
                 self._open_browser(from_thread=True)
 
     def on_text_submitted(self, id: str, text: str) -> None:
@@ -631,6 +669,64 @@ class BlueskyApp(App):
         self._thread_measure_pending_w = None
         self._thread_measure_pending_generation = None
         asyncio.create_task(self._fetch_thread(uri))
+
+    def _open_image_zoom(self) -> None:
+        target = self._image_zoom_target()
+        if not target:
+            self.emit.info("bluesky: image zoom requested but no image found")
+            return
+        self._zoom_image_src, self._zoom_image_alt = target
+        self.emit.info(f"bluesky: image zoom open src={self._zoom_image_src!r}")
+        self.emit.schedule_render()
+
+    def _close_image_zoom(self) -> None:
+        self.emit.info("bluesky: image zoom close")
+        self._zoom_image_src = None
+        self._zoom_image_alt = ""
+        self.emit.schedule_render()
+
+    def _image_zoom_target(self) -> tuple[str, str] | None:
+        if self._view == self.VIEW_FEED and self._feed:
+            post = self._feed[min(self._sel, len(self._feed) - 1)]
+            images = _images(post)
+            if images:
+                return (_image_src(images[0], prefer_fullsize=True), _author(post))
+
+        if self._view == self.VIEW_THREAD and self._thread:
+            preferred = self._visible_thread_image_post()
+            candidates = [preferred] if preferred else []
+            candidates.extend(item["post"] for item in self._thread)
+            seen: set[str] = set()
+            for post in candidates:
+                uri = post.get("uri", "")
+                if uri in seen:
+                    continue
+                seen.add(uri)
+                images = _images(post)
+                if images:
+                    return (_image_src(images[0], prefer_fullsize=True), _author(post))
+        return None
+
+    def _visible_thread_image_post(self) -> dict | None:
+        if not self._thread:
+            return None
+        pane_w = float(self._rect.get("w", 800.0))
+        pane_h = float(self._rect.get("h", 600.0))
+        image_h = _image_h(pane_w)
+        text_heights = list(self._thread_heights)
+        if len(text_heights) != len(self._thread):
+            text_heights = [
+                _est_text_h(_text(item["post"]), self._thread_text_w(pane_w, int(item.get("depth", 0))))
+                for item in self._thread
+            ]
+        y = -self._t_scroll
+        for idx, item in enumerate(self._thread):
+            post = item["post"]
+            h = _thread_row_h(post, text_heights[idx], image_h)
+            if y + h >= 0 and y <= pane_h and _images(post):
+                return post
+            y += h
+        return None
 
     def _open_browser(self, from_thread: bool) -> None:
         uri = ""

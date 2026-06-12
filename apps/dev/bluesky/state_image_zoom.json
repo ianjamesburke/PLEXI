@@ -1,0 +1,47 @@
+{
+  "_loading": false,
+  "_thread": [
+    {
+      "uri": "at://did:plc:img1/app.bsky.feed.post/1",
+      "author": {
+        "did": "did:plc:img1",
+        "handle": "imageposter.bsky.social",
+        "displayName": "Image Poster",
+        "avatar": ""
+      },
+      "record": {
+        "text": "Portrait-style image post used by the zoom scene. Inline preview should show the whole image, and z should open the focused image overlay.",
+        "createdAt": "2026-06-11T10:00:00Z"
+      },
+      "embed": {
+        "$type": "app.bsky.embed.images#view",
+        "images": [
+          {
+            "thumb": "app-icon-master.png",
+            "fullsize": "app-icon-master.png",
+            "alt": "Plexi app icon"
+          }
+        ]
+      },
+      "likeCount": 11,
+      "repostCount": 2,
+      "replyCount": 1
+    },
+    {
+      "uri": "at://did:plc:img2/app.bsky.feed.post/2",
+      "author": {
+        "did": "did:plc:img2",
+        "handle": "replyperson.bsky.social",
+        "displayName": "Reply Person",
+        "avatar": ""
+      },
+      "record": {
+        "text": "Reply row after the image.",
+        "createdAt": "2026-06-11T10:05:00Z"
+      },
+      "likeCount": 3,
+      "repostCount": 0,
+      "replyCount": 0
+    }
+  ]
+}

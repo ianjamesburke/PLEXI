@@ -1,0 +1,26 @@
+# Bluesky image preview/zoom smoke test. suite = false because it spawns
+# a real child process; run with `just scene tests/scenes/bluesky-image-zoom-smoke.toml`.
+size = [700.0, 760.0]
+suite = false
+
+[[steps]]
+open_app = "apps/dev/bluesky"
+args = ["--fixture", "state_image_zoom.json"]
+
+[[steps]]
+wait_app_frame = { timeout_s = 15.0 }
+
+[[steps]]
+run_steps = 30
+
+[[steps]]
+key = "z"
+
+[[steps]]
+run_steps = 300
+
+[[steps]]
+assert = { pane_count = 1, lifecycle = "running", tree_contains = "z/esc close" }
+
+[[steps]]
+shot = "bluesky-image-zoom-smoke.png"
