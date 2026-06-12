@@ -131,7 +131,7 @@ fn render_name_bar_and_dots(
             egui::vec2(ui.available_width(), name_bar_height),
         );
         ui.advance_cursor_after_rect(bar_rect);
-        ui.painter().rect_filled(bar_rect, 0.0, colors.terminal_bg);
+        ui.painter().rect_filled(bar_rect, 0.0, colors.pane_header_bg());
 
         if let Some(&(active_idx, count)) = tab_info.get(&tile_id) {
             paint_tab_dots(
