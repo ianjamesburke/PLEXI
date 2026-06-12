@@ -173,6 +173,7 @@ const KNOWN_KEYBINDINGS: &[&str] = &[
     "hide_pane",
     "park_context",
     "open_notes_picker",
+    "open_notes_triage",
 ];
 
 pub fn validate_from_path(path: &Path) -> Vec<ConfigDiagnostic> {
@@ -355,6 +356,7 @@ pub struct KeybindingsConfig {
     pub hide_pane: Option<String>,
     pub park_context: Option<String>,
     pub open_notes_picker: Option<String>,
+    pub open_notes_triage: Option<String>,
 }
 
 impl KeybindingsConfig {
@@ -419,6 +421,7 @@ impl KeybindingsConfig {
         overlay_field!(hide_pane);
         overlay_field!(park_context);
         overlay_field!(open_notes_picker);
+        overlay_field!(open_notes_triage);
     }
 }
 

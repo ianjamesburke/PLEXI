@@ -2,6 +2,106 @@ use super::pane::pane_send_cli;
 
 use super::binary_in_path;
 
+/// `plexi note "<text>"` — capture a quick note to the inbox.
+pub fn note_capture_cli(text: &str) -> i32 {
+    let inbox_dir = crate::config::config_dir().join("notes").join("inbox");
+    if let Err(e) = std::fs::create_dir_all(&inbox_dir) {
+        eprintln!("error: failed to create inbox dir {:?}: {e}", inbox_dir);
+        return 1;
+    }
+
+    // Timestamp for filename and frontmatter.
+    let now = chrono::Utc::now();
+    let ts = now.format("%Y%m%dT%H%M%SZ").to_string();
+    let ts_human = now.to_rfc3339();
+
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let workspace = crate::config::active_workspace_root()
+        .and_then(|p| p.file_name().map(|n| n.to_os_string()))
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let frontmatter = format!(
+        "---\ncaptured_at: {ts_human}\nsource: cli\ncwd: {cwd}\nworkspace: {workspace}\n---\n"
+    );
+    let content = format!("{frontmatter}{}\n", text.trim());
+
+    let filename = format!("{ts}.md");
+    let path = inbox_dir.join(&filename);
+    match std::fs::write(&path, &content) {
+        Ok(_) => {
+            log::info!("note_capture: wrote {:?}", path);
+            println!("{}", path.display());
+            0
+        }
+        Err(e) => {
+            eprintln!("error: failed to write note: {e}");
+            1
+        }
+    }
+}
+
+/// `plexi notes inbox` — list inbox notes with frontmatter context.
+pub fn notes_inbox_cli() -> i32 {
+    let notes = crate::notes::scan_inbox();
+    if notes.is_empty() {
+        println!("Inbox is empty.");
+        return 0;
+    }
+    for note in &notes {
+        let ts = note
+            .frontmatter
+            .captured_at
+            .as_deref()
+            .unwrap_or("unknown");
+        let cwd = note.frontmatter.cwd.as_deref().unwrap_or("");
+        let preview: String = note.body.trim().chars().take(60).collect();
+        println!("{}\t{}\t{}", ts, cwd, preview);
+    }
+    0
+}
+
+/// `plexi notes process` — print inbox notes in agent-legible format.
+pub fn notes_process_cli() -> i32 {
+    let notes = crate::notes::scan_inbox();
+    let actions = crate::notes::load_triage_actions();
+
+    if notes.is_empty() {
+        println!("# Inbox empty");
+        return 0;
+    }
+
+    println!("# Inbox notes ({} total)", notes.len());
+    println!();
+    for (i, note) in notes.iter().enumerate() {
+        println!("## Note {} of {}", i + 1, notes.len());
+        if let Some(ref ts) = note.frontmatter.captured_at {
+            println!("captured_at: {ts}");
+        }
+        if let Some(ref cwd) = note.frontmatter.cwd {
+            println!("cwd: {cwd}");
+        }
+        if let Some(ref ws) = note.frontmatter.workspace {
+            println!("workspace: {ws}");
+        }
+        println!();
+        println!("{}", note.body.trim());
+        println!();
+    }
+
+    if !actions.is_empty() {
+        println!("# Triage actions");
+        for a in &actions {
+            println!("  {} — {}: {}", a.key, a.label, a.command);
+        }
+    }
+
+    0
+}
+
 pub fn notes_list_cli() -> i32 {
     let notes_base = crate::config::config_dir().join("notes");
 

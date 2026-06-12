@@ -171,6 +171,16 @@ pub enum Commands {
         #[command(subcommand)]
         cmd: Option<NotesCmd>,
     },
+    /// Capture a quick note to the inbox.
+    ///
+    /// Writes a timestamped note to `<config_dir>/notes/inbox/` with frontmatter
+    /// capturing cwd, workspace, and context root. Triage later with Cmd+Shift+0.
+    ///
+    /// Example: plexi note "remember to update the docs"
+    Note {
+        /// Note text to capture
+        text: String,
+    },
     /// Audit all installed apps for capability and config gaps.
     ///
     /// Checks every installed app's declared capabilities against your current config.toml
@@ -925,6 +935,10 @@ pub enum NotesCmd {
     /// Requires fzf to be installed. Falls back to printing the notes directory when fzf
     /// is not available or PLEXI_SOCKET is not set.
     Open,
+    /// List notes in the inbox with frontmatter context.
+    Inbox,
+    /// Print inbox notes in agent-legible format with configured triage actions.
+    Process,
 }
 
 #[derive(Subcommand)]

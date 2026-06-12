@@ -178,11 +178,55 @@ impl PlexiApp {
         // Track which row the user clicked × on (Cell for shared borrow across nested closures).
         let delete_cell = std::cell::Cell::new(None::<usize>);
 
+        // Snapshot inbox count once — avoid repeated filesystem scans per frame.
+        let inbox_notes = crate::notes::scan_inbox();
+        let inbox_count = inbox_notes.len();
+
         let modal_response = ModalShell::centered("notes_picker")
             .title("Notes")
             .width(480.0)
             .escape(true)
             .show(ctx, &colors, |ui| {
+                // ── Inbox section ───────────────────────────────────────────────
+                if inbox_count > 0 {
+                    ui.label(
+                        egui::RichText::new(format!("Inbox ({inbox_count})"))
+                            .size(style::TEXT_CAPTION)
+                            .color(colors.text_dim),
+                    );
+                    let preview_count = inbox_count.min(5);
+                    for note in inbox_notes.iter().take(preview_count) {
+                        let preview: String = note.body.trim().chars().take(60).collect();
+                        let file_name = note
+                            .path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default();
+                        ui.label(
+                            egui::RichText::new(format!("  {file_name}  {preview}"))
+                                .size(style::TEXT_HINT)
+                                .color(colors.text_dim),
+                        );
+                    }
+                    if inbox_count > 5 {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "  … and {} more — press \u{2318}+Shift+0 to triage",
+                                inbox_count - 5
+                            ))
+                            .size(style::TEXT_HINT)
+                            .color(colors.text_dim),
+                        );
+                    } else {
+                        ui.label(
+                            egui::RichText::new("  Press \u{2318}+Shift+0 to triage inbox")
+                                .size(style::TEXT_HINT)
+                                .color(colors.text_dim),
+                        );
+                    }
+                    ui.add_space(style::SPACE_SM);
+                }
+
                 if entries.is_empty() {
                     ui.label(
                         egui::RichText::new(

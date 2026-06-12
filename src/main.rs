@@ -14,6 +14,7 @@ mod cli;
 
 mod config;
 mod features;
+mod notes;
 mod file_browser;
 mod host;
 mod media;
@@ -941,7 +942,16 @@ fn main() -> eframe::Result {
                     Commands::Notes { cmd } => match cmd {
                         Some(NotesCmd::List) | None => std::process::exit(cli::notes_list_cli()),
                         Some(NotesCmd::Open) => std::process::exit(cli::notes_open_cli()),
+                        Some(NotesCmd::Inbox) => {
+                            std::process::exit(cli::notes::notes_inbox_cli())
+                        }
+                        Some(NotesCmd::Process) => {
+                            std::process::exit(cli::notes::notes_process_cli())
+                        }
                     },
+                    Commands::Note { text } => {
+                        std::process::exit(cli::notes::note_capture_cli(&text))
+                    }
                     Commands::Ai { cmd } => match cmd {
                         AiCmd::Doctor { json } => std::process::exit(cli::ai_doctor_cli(json)),
                         AiCmd::Setup => std::process::exit(cli::ai_setup_cli()),

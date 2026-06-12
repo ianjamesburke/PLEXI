@@ -71,6 +71,8 @@ pub(crate) enum FocusLayer {
     CapabilityModal,
     /// Notes picker overlay: lists workspace notes sorted by mtime, opens selected in focused text-editor.
     NotesPicker,
+    /// Notes inbox triage overlay: shows inbox notes one at a time for keep/trash/action.
+    NotesTriage,
 }
 
 /// A single pane entry shown in the context-close confirmation dialog.
@@ -269,6 +271,7 @@ impl PlexiApp {
                 | Some(FocusLayer::ContextCloseConfirm)
                 | Some(FocusLayer::CapabilityModal)
                 | Some(FocusLayer::NotesPicker)
+                | Some(FocusLayer::NotesTriage)
         )
     }
 

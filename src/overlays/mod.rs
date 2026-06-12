@@ -8,6 +8,7 @@ pub(crate) mod command_palette;
 pub(crate) mod confirmations;
 pub(crate) mod misc;
 pub(crate) mod notes_picker;
+pub(crate) mod notes_triage;
 pub(crate) mod notification_modal;
 pub(crate) mod quick_note;
 pub(crate) mod setup;

@@ -219,6 +219,12 @@ pub struct PlexiApp {
     pub(crate) notes_picker_entries: Vec<(std::path::PathBuf, String)>,
     /// Notes picker: currently highlighted row index.
     pub(crate) notes_picker_selected: usize,
+    /// Notes triage: inbox notes loaded when the triage overlay opens.
+    pub(crate) notes_triage_notes: Vec<crate::notes::InboxNote>,
+    /// Notes triage: configured actions loaded when the triage overlay opens.
+    pub(crate) notes_triage_actions: Vec<crate::notes::TriageAction>,
+    /// Notes triage: index of the note currently being shown.
+    pub(crate) notes_triage_index: usize,
     /// notify_id of the notification the modal currently has state for. Used to
     /// detect a front-of-queue change and reset focus/input buffer.
     pub(crate) modal_state_notify_id: String,
@@ -750,6 +756,9 @@ impl PlexiApp {
                     quick_note_ctx: QuickNoteCtx::default(),
                     notes_picker_entries: Vec::new(),
                     notes_picker_selected: 0,
+                    notes_triage_notes: Vec::new(),
+                    notes_triage_actions: Vec::new(),
+                    notes_triage_index: 0,
                     modal_state_notify_id: String::new(),
                     notification_images: HashMap::new(),
                     notifications_enabled,
@@ -932,6 +941,9 @@ impl PlexiApp {
             quick_note_ctx: QuickNoteCtx::default(),
             notes_picker_entries: Vec::new(),
             notes_picker_selected: 0,
+            notes_triage_notes: Vec::new(),
+            notes_triage_actions: Vec::new(),
+            notes_triage_index: 0,
             modal_state_notify_id: String::new(),
             notification_images: HashMap::new(),
             notifications_enabled,
@@ -1126,6 +1138,9 @@ impl PlexiApp {
                 quick_note_ctx: QuickNoteCtx::default(),
                 notes_picker_entries: Vec::new(),
                 notes_picker_selected: 0,
+                notes_triage_notes: Vec::new(),
+                notes_triage_actions: Vec::new(),
+                notes_triage_index: 0,
                 modal_state_notify_id: String::new(),
                 notification_images: HashMap::new(),
                 notifications_enabled: false,
@@ -1421,6 +1436,10 @@ impl eframe::App for PlexiApp {
                         self.notes_picker_handle_key(ctx);
                         crate::app::app_trait::KeyDisposition::Passthrough
                     }
+                    Some(FocusLayer::NotesTriage) => {
+                        self.notes_triage_handle_key(ctx);
+                        crate::app::app_trait::KeyDisposition::Passthrough
+                    }
                     None => crate::app::app_trait::KeyDisposition::Passthrough,
                 };
                 // Step 2: render the overlay (visual only — key reads already done above).
@@ -1460,6 +1479,9 @@ impl eframe::App for PlexiApp {
                     }
                     Some(FocusLayer::NotesPicker) => {
                         self.draw_notes_picker(ctx);
+                    }
+                    Some(FocusLayer::NotesTriage) => {
+                        self.draw_notes_triage(ctx);
                     }
                     None => {}
                 }
@@ -2948,6 +2970,14 @@ impl eframe::App for PlexiApp {
                     if is_text_editor {
                         log::info!("notes_picker: Cmd+O — opening picker");
                         self.open_notes_picker();
+                    }
+                }
+                Action::OpenNotesTriage => {
+                    if !self.focus_stack.contains(&FocusLayer::NotesTriage) {
+                        log::info!("notes_triage: Cmd+Shift+0 — opening triage");
+                        self.open_notes_triage();
+                    } else {
+                        self.pop_focus_layer(&FocusLayer::NotesTriage);
                     }
                 }
                 Action::ContextZoomOut => {
