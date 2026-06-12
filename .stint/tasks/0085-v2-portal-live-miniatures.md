@@ -1,9 +1,11 @@
 ---
 id: "0085"
 title: "v2 portals: agent state visualization"
-status: in-progress
+status: done
 estimate: "3h"
+actual: "91m"
 started_at: "2026-06-12T17:30:28Z"
+completed_at: "2026-06-12T19:00:47Z"
 sprint: "s20"
 blocked_by:
   - 81
@@ -19,6 +21,7 @@ tags:
   - "portals"
   - "agents"
 ---
+
 
 
 Surface agent state in the existing Portal tile presentation instead of prioritizing live miniature rendering before v1.
