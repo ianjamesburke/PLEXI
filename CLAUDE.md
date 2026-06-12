@@ -15,6 +15,10 @@
 
 Before reporting anything as "done" or "missing", verify against `git log`.
 
+## Website / Domain
+
+The product website is **`plexiapp.com`**. All docs links use `https://plexiapp.com/docs/...`. Never write `plexiapp.dev` or `plexi.app` — both are wrong.
+
 ## Planning Source
 
 Plexi no longer uses GitHub Project board #7, `NEXT.md`, or generated dispatch snapshots to decide what happens next. Do not query, update, or trust the Project board for planning.
