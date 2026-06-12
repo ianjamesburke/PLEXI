@@ -1,6 +1,11 @@
 # Changelog
 
 Newest releases appear first.
+## [0.0.750] — 2026-06-12
+
+### Changes
+- fix scroll jitter + notes as palette entries (#2217, #2222) (#2225)
+- chore: add stint 0177 — notes-picker-chip-alignment (gh #2227)
 ## [0.0.749] — 2026-06-12
 
 ### Changes
