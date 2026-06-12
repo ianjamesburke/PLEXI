@@ -540,29 +540,9 @@ impl PlexiApp {
                 let mut shown_apps_header = false;
                 let mut shown_notes_header = false;
 
-                let palette_scroll_id =
-                    ui.make_persistent_id(egui::Id::new("palette_list"));
-                {
-                    // Account for inline APPS/NOTES section headers above the selected row.
-                    let first_app = entries.iter().position(|e| matches!(e, PaletteEntry::App { .. }));
-                    let first_note = entries.iter().position(|e| matches!(e, PaletteEntry::Note { .. }));
-                    let headers_above: f32 = [first_app, first_note]
-                        .into_iter()
-                        .flatten()
-                        .filter(|&k| self.palette_selected >= k)
-                        .map(|_| style::INLINE_SECTION_H)
-                        .sum();
-                    let row_top_px = self.palette_selected as f32 * style::LIST_ROW_H + headers_above;
-                    crate::ui::list::keyboard_scroll_update(
-                        ctx,
-                        palette_scroll_id,
-                        row_top_px,
-                        should_scroll,
-                        style::LIST_ROW_H,
-                        palette_max_list_h,
-                    );
-                }
                 egui::ScrollArea::vertical()
+                    // animated(false): required by scroll_row_into_view — see src/ui/list.rs.
+                    .animated(false)
                     .id_salt("palette_list")
                     .max_height(palette_max_list_h)
                     .min_scrolled_height(palette_max_list_h)
@@ -594,6 +574,9 @@ impl PlexiApp {
                                         row = row.pane_pips(pips);
                                     }
                                     let row_response = row.show(ui, &colors);
+                                    if is_selected {
+                                        row_response.scroll_into_view(ui, should_scroll);
+                                    }
 
                                     if row_response.row_clicked() {
                                         click_action = Some(Action::JumpContext(
@@ -633,6 +616,9 @@ impl PlexiApp {
                                         .selected(is_selected);
 
                                     let row_response = row.show(ui, &colors);
+                                    if is_selected {
+                                        row_response.scroll_into_view(ui, should_scroll);
+                                    }
 
                                     if row_response.row_clicked() {
                                         click_action = Some(Action::LaunchApp(id.clone()));
@@ -657,6 +643,9 @@ impl PlexiApp {
                                         .secondary(preview.as_str())
                                         .selected(is_selected);
                                     let row_response = row.show(ui, &colors);
+                                    if is_selected {
+                                        row_response.scroll_into_view(ui, should_scroll);
+                                    }
                                     if row_response.row_clicked() {
                                         click_action =
                                             Some(Action::OpenNote(path.clone()));

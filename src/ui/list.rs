@@ -284,6 +284,11 @@ impl ListRowResponse {
     pub fn trailing_clicked(&self) -> bool {
         self.trailing.as_ref().is_some_and(Response::clicked)
     }
+
+    /// See [`scroll_row_into_view`].
+    pub fn scroll_into_view(&self, ui: &egui::Ui, selection_changed: bool) {
+        scroll_row_into_view(ui, &self.row, selection_changed);
+    }
 }
 
 /// Paints the primary title (and optional secondary line) and returns the
@@ -428,38 +433,34 @@ pub fn paint_selection(painter: &egui::Painter, row_rect: egui::Rect, colors: &C
     }
 }
 
-/// Pre-scrolls a `ScrollArea` so the selected row is fully visible in the CURRENT
-/// frame, avoiding the one-frame jitter from `Response::scroll_to_me`.
+/// Keeps the selected row of a keyboard-navigated list fully visible.
 ///
-/// Call BEFORE `ScrollArea::show()`. `scroll_id` must match the id used by the
-/// scroll area (i.e. `ui.make_persistent_id(egui::Id::new("my_scroll"))`).
-/// `row_top_px` is the pixel offset of the selected row's top edge within the
-/// scroll area (i.e. `idx * row_h + any_header_px_above`).
-pub(crate) fn keyboard_scroll_update(
-    ctx: &egui::Context,
-    scroll_id: egui::Id,
-    row_top_px: f32,
-    should_scroll: bool,
-    row_h: f32,
-    visible_h: f32,
-) {
-    if !should_scroll {
+/// Call on the selected row's response inside the `ScrollArea`, every frame,
+/// passing whether the selection changed this frame. egui already measured the
+/// row's rect, so geometry (section headers, item spacing, dense rows) is
+/// always exact — never compute row offsets by hand.
+///
+/// The enclosing `ScrollArea` MUST be built with `.animated(false)`. With the
+/// default `animated(true)`, `scroll_to_me` routes through the ScrollArea's
+/// `offset_target` animation state and the new offset is never applied to the
+/// pass being presented — the scroll permanently lags the selection under
+/// key-repeat, which is the original #2217 jitter. With `animated(false)` the
+/// offset is written synchronously in the ScrollArea's `end()`, so the
+/// discarded re-pass below renders at the corrected offset.
+///
+/// `request_discard` makes selection and scroll move atomically: the stale
+/// pass is thrown away and only the corrected one is presented. Event-driven
+/// input is safe across the re-run — `Context::run` hands `RawInput::take()`
+/// to each pass, so key events fire exactly once.
+pub(crate) fn scroll_row_into_view(ui: &egui::Ui, row: &egui::Response, selection_changed: bool) {
+    if !selection_changed {
         return;
     }
-    let mut state =
-        egui::containers::scroll_area::State::load(ctx, scroll_id).unwrap_or_default();
-    let current = state.offset.y;
-    let row_top = row_top_px;
-    let row_bottom = row_top + row_h;
-    let new_offset = if row_top < current {
-        row_top
-    } else if row_bottom > current + visible_h {
-        row_bottom - visible_h
-    } else {
-        return; // already fully visible
-    };
-    state.offset.y = new_offset.max(0.0);
-    state.store(ctx, scroll_id);
+    if ui.clip_rect().contains_rect(row.rect) {
+        return; // already fully visible — no scroll, no extra pass
+    }
+    row.scroll_to_me(None);
+    ui.ctx().request_discard("keyboard list scroll");
 }
 
 /// Trailing actions sit further off the row edge than body content — they are
@@ -683,38 +684,53 @@ mod tests {
         let _ = ctx.end_pass();
     }
 
-    #[test]
-    fn keyboard_scroll_update_scrolls_down_past_fold() {
-        let ctx = egui::Context::default();
-        ctx.begin_pass(egui::RawInput::default());
-        egui::CentralPanel::default().show(&ctx, |ui| {
-            let id = ui.make_persistent_id(egui::Id::new("ks_test_down"));
-            // row_top=288 (6*48), row_h=48, visible_h=200 → row_bottom=336 > 200 → offset = 136
-            keyboard_scroll_update(&ctx, id, 6.0 * 48.0, true, 48.0, 200.0);
-            let state = egui::containers::scroll_area::State::load(&ctx, id)
-                .expect("state written");
-            assert_eq!(state.offset.y, 6.0 * 48.0 + 48.0 - 200.0);
+    /// Drives one frame of a 30-row list with the given selection and reports
+    /// whether the selected row's rect ended up fully inside the scroll
+    /// viewport. Uses real egui layout — row spacing, section headers, and
+    /// scroll state all behave exactly as in the app.
+    fn run_list_frame(ctx: &egui::Context, selected: usize) -> bool {
+        let mut visible = false;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .animated(false)
+                    .id_salt("scroll_into_view_test")
+                    .max_height(200.0)
+                    .show(ui, |ui| {
+                        for i in 0..30 {
+                            // Mimic the palette's inline section header midway
+                            // through the list — non-uniform content is the
+                            // case the old index*row_h math got wrong.
+                            if i == 10 {
+                                ui.label("SECTION");
+                            }
+                            let (rect, resp) = ui.allocate_exact_size(
+                                egui::vec2(120.0, 48.0),
+                                egui::Sense::click(),
+                            );
+                            scroll_row_into_view(ui, &resp, i == selected);
+                            if i == selected {
+                                visible = ui.clip_rect().contains_rect(rect);
+                            }
+                        }
+                    });
+            });
         });
-        let _ = ctx.end_pass();
+        visible
     }
 
     #[test]
-    fn keyboard_scroll_update_scrolls_up_when_above_viewport() {
+    fn scroll_row_into_view_keeps_selection_visible_past_fold() {
         let ctx = egui::Context::default();
-        ctx.begin_pass(egui::RawInput::default());
-        egui::CentralPanel::default().show(&ctx, |ui| {
-            let id = ui.make_persistent_id(egui::Id::new("ks_test_up"));
-            // Pre-set scroll to 300
-            let mut state = egui::containers::scroll_area::State::default();
-            state.offset.y = 300.0;
-            state.store(&ctx, id);
-            // row_top=96 (2*48) < 300 → offset should become 96
-            keyboard_scroll_update(&ctx, id, 2.0 * 48.0, true, 48.0, 200.0);
-            let state = egui::containers::scroll_area::State::load(&ctx, id)
-                .expect("state written");
-            assert_eq!(state.offset.y, 2.0 * 48.0);
-        });
-        let _ = ctx.end_pass();
+        // Walk the selection down past the fold and back up; the selected row
+        // must be fully visible on the frame the selection changes (the
+        // request_discard re-pass renders at the corrected offset).
+        for &selected in &[0usize, 8, 17, 29, 12, 3, 0] {
+            assert!(
+                run_list_frame(&ctx, selected),
+                "row {selected} not fully visible after scroll_row_into_view"
+            );
+        }
     }
 
     #[test]

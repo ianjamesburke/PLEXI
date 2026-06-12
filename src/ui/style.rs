@@ -68,10 +68,6 @@ pub const BUTTON_H_LG: f32 = 52.0; // Primary action buttons in modals.
 // the selection highlight; 14 horizontal padding keeps the title clear of
 // the highlight's left edge — 10 read as cramped against the outline.
 pub const LIST_ROW_H: f32 = 48.0;
-// Approximate height of an inline section-header block (space + label + space).
-// Used by keyboard_scroll_update callers that insert headers inside a ScrollArea.
-// Computed as SPACE_XS + font_row_h(TEXT_HINT) + SPACE_XS where font_row_h ≈ TEXT_HINT + 4.
-pub const INLINE_SECTION_H: f32 = SPACE_XS + TEXT_HINT + 4.0 + SPACE_XS; // ≈ 23
 // Dense single-line variant for data-dense listings (file browser rows).
 // 30 fits one 12pt medium line with ~7px of air — the file-explorer PRD's
 // 28-32px density target. The 48px two-line row above is for pickers.

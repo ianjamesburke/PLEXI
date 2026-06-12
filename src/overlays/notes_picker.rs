@@ -445,37 +445,9 @@ impl PlexiApp {
 
                 let mut shown_inbox_header = false;
                 let mut shown_kept_header = false;
-                let notes_scroll_id =
-                    ui.make_persistent_id(egui::Id::new("notes_picker_list"));
-                {
-                    // Account for inline section headers above the selected row.
-                    let first_inbox = filtered
-                        .iter()
-                        .position(|&i| self.notes_picker_entries[i].inbox);
-                    let first_kept = filtered
-                        .iter()
-                        .position(|&i| !self.notes_picker_entries[i].inbox);
-                    // "Inbox" block: label + SPACE_XS (no leading space, it's at the top)
-                    let inbox_h = style::TEXT_CAPTION + 4.0 + style::SPACE_XS;
-                    // "Notes" block: SPACE_XS (only when inbox section also shown) + label + SPACE_XS
-                    let kept_h = if first_inbox.is_some() { style::SPACE_XS } else { 0.0 }
-                        + style::TEXT_CAPTION
-                        + 4.0
-                        + style::SPACE_XS;
-                    let headers_above: f32 =
-                        first_inbox.filter(|&k| selected >= k).map(|_| inbox_h).unwrap_or(0.0)
-                        + first_kept.filter(|&k| selected >= k).map(|_| kept_h).unwrap_or(0.0);
-                    let row_top_px = selected as f32 * style::LIST_ROW_H + headers_above;
-                    crate::ui::list::keyboard_scroll_update(
-                        ui.ctx(),
-                        notes_scroll_id,
-                        row_top_px,
-                        selected != prev_selected_cell.get(),
-                        style::LIST_ROW_H,
-                        320.0,
-                    );
-                }
                 egui::ScrollArea::vertical()
+                    // animated(false): required by scroll_row_into_view — see src/ui/list.rs.
+                    .animated(false)
                     .id_salt("notes_picker_list")
                     .max_height(320.0)
                     .show(ui, |ui| {
@@ -517,6 +489,10 @@ impl PlexiApp {
                                 .danger_trailing(true)
                                 .selected(is_selected)
                                 .show(ui, &colors);
+                            if is_selected {
+                                row_response
+                                    .scroll_into_view(ui, selected != prev_selected_cell.get());
+                            }
                             if row_response.row_clicked() && !row_response.trailing_clicked() {
                                 open_cell.set(Some(row));
                             }

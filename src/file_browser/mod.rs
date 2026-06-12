@@ -1179,6 +1179,7 @@ impl FileBrowserApp {
 
     fn draw_compact_list(&mut self, ui: &mut egui::Ui, colors: &Colors) -> Option<(PathBuf, bool)> {
         let mut navigate_to: Option<(PathBuf, bool)> = None;
+        let should_scroll = self.pending_scroll;
         self.pending_scroll = false;
         for (idx, actual_idx) in self.visible_entry_indices().into_iter().enumerate() {
             let entry = self.entries[actual_idx].clone();
@@ -1192,6 +1193,9 @@ impl FileBrowserApp {
                 .dense()
                 .selected(is_selected)
                 .show(ui, colors);
+            if is_selected {
+                response.scroll_into_view(ui, should_scroll);
+            }
             if response.row_clicked() {
                 let modifiers = ui.input(|input| input.modifiers);
                 if modifiers.shift {
@@ -1215,6 +1219,7 @@ impl FileBrowserApp {
         ui: &mut egui::Ui,
         colors: &Colors,
     ) -> Option<(PathBuf, bool)> {
+        let should_scroll = self.pending_scroll;
         self.pending_scroll = false;
         self.draw_details_header(ui, colors);
 
@@ -1226,6 +1231,9 @@ impl FileBrowserApp {
                 egui::Sense::click(),
             );
             let selected = self.is_entry_selected(idx, &entry);
+            if self.selected == idx {
+                crate::ui::list::scroll_row_into_view(ui, &response, should_scroll);
+            }
             let fill = if selected {
                 colors.bg_active
             } else if response.hovered() {
@@ -2132,17 +2140,10 @@ impl App for FileBrowserApp {
                             egui::vec2(list_width, body_height),
                             egui::Layout::top_down(egui::Align::Min),
                             |ui| {
-                                let fb_scroll_id =
-                                    ui.make_persistent_id(egui::Id::new("fb_list"));
-                                crate::ui::list::keyboard_scroll_update(
-                                    ui.ctx(),
-                                    fb_scroll_id,
-                                    self.selected as f32 * style::LIST_ROW_DENSE_H,
-                                    self.pending_scroll,
-                                    style::LIST_ROW_DENSE_H,
-                                    body_height,
-                                );
                                 egui::ScrollArea::vertical()
+                                    // animated(false): required by scroll_row_into_view —
+                                    // see src/ui/list.rs.
+                                    .animated(false)
                                     .id_salt("fb_list")
                                     .auto_shrink([false, false])
                                     .max_height(body_height)
@@ -2183,17 +2184,10 @@ impl App for FileBrowserApp {
                     });
                 } else {
                     {
-                        let fb_scroll_id =
-                            ui.make_persistent_id(egui::Id::new("fb_list"));
-                        crate::ui::list::keyboard_scroll_update(
-                            ui.ctx(),
-                            fb_scroll_id,
-                            self.selected as f32 * style::LIST_ROW_DENSE_H,
-                            self.pending_scroll,
-                            style::LIST_ROW_DENSE_H,
-                            body_height,
-                        );
                         egui::ScrollArea::vertical()
+                            // animated(false): required by scroll_row_into_view —
+                            // see src/ui/list.rs.
+                            .animated(false)
                             .id_salt("fb_list")
                             .auto_shrink([false, false])
                             .max_height(body_height)
