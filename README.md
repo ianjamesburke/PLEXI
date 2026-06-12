@@ -268,17 +268,15 @@ Current protocol version: **pgap/3**. The Python SDK has its own authoring API v
 
 ## Secrets management *(in development)*
 
-Workspace-scoped secrets store credentials in the macOS Keychain without exposing them to the shell environment or other apps.
-
-Secrets are keyed by a `(app_id, workspace_root, capability)` triple. An app initialized at `/foo` cannot read a secret granted at `/bar` — a new prompt appears for each workspace root. Secret injection into the shell environment is on the roadmap.
+Workspace-scoped secrets store credentials in the macOS Keychain. Secrets use canonical environment-variable names (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, etc.) as their primary identity. A workspace value wins over a global fallback value — two workspaces can hold different values for the same key.
 
 **CLI:**
 
 ```bash
-plexi secret set <key>          # prompt for value, store in Keychain
-plexi secret get <key>          # retrieve (requires workspace context)
+plexi secret set <KEY>          # prompt for value, store in Keychain
+plexi secret get <KEY>          # retrieve (requires workspace context)
 plexi secret list               # list keys scoped to current workspace
-plexi secret delete <key>       # remove from Keychain
+plexi secret delete <KEY>       # remove from Keychain
 ```
 
 **From an app**, request the `secrets.get` capability in the manifest and call:
@@ -288,6 +286,8 @@ value = await self.emit.secret_get("MY_API_KEY")
 ```
 
 The host presents a permission prompt on first access; subsequent calls within the same session use the cached grant.
+
+Terminal injection — automatically placing selected secrets into new PTY pane environments — is in active development. Configure which keys are injected via `terminal.env.inject` in your workspace `secrets.toml`.
 
 ---
 
