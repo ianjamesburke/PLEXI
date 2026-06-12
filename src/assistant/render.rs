@@ -23,8 +23,6 @@ pub enum ComposerEvent {
 pub struct AssistantRenderer;
 
 impl AssistantRenderer {
-    /// Height reserved for the composer + picker at the bottom of the pane.
-    const COMPOSER_H: f32 = 72.0;
     /// Height reserved for the permission sheet when one is pending.
     const SHEET_H: f32 = 110.0;
 
@@ -38,12 +36,28 @@ impl AssistantRenderer {
         let mut event = None;
 
         ui.vertical(|ui| {
+            // Compute composer height dynamically from line count so the
+            // transcript region shrinks/grows with the composer content.
+            let line_count = model.composer.lines().count().max(2);
+            let font_id = egui::FontId::proportional(style::TEXT_BODY);
+            let row_height = ui.fonts(|f| f.row_height(&font_id));
+            // Add top/bottom padding (SPACE_XS each side) + margin from add_space call.
+            let composer_h = (line_count as f32 * row_height
+                + style::SPACE_SM * 2.0
+                + style::SPACE_XS * 2.0)
+                .clamp(60.0, 200.0);
             let sheet_h = if model.pending_permission.is_some() {
                 Self::SHEET_H
             } else {
                 0.0
             };
-            let transcript_h = (total.height() - Self::COMPOSER_H - sheet_h).max(0.0);
+            // Reserve space for picker (up to 40% of remaining height, min 0).
+            let picker_max_h = if model.picker_active() {
+                ((total.height() - composer_h - sheet_h) * 0.4).max(0.0)
+            } else {
+                0.0
+            };
+            let transcript_h = (total.height() - composer_h - sheet_h - picker_max_h).max(0.0);
             ui.allocate_ui(egui::vec2(total.width(), transcript_h), |ui| {
                 Self::draw_transcript(ui, model, colors);
             });
@@ -51,7 +65,7 @@ impl AssistantRenderer {
                 event = Some(ComposerEvent::Permission(choice));
             }
             if model.picker_active() {
-                Self::draw_picker(ui, model, colors);
+                Self::draw_picker(ui, model, colors, picker_max_h);
             }
             if let Some(composer_event) = Self::draw_composer(ui, model, colors, is_focused) {
                 event = Some(composer_event);
@@ -278,7 +292,12 @@ impl AssistantRenderer {
         ui.add_space(style::SPACE_MD);
     }
 
-    fn draw_picker(ui: &mut egui::Ui, model: &mut AssistantModel, colors: &Colors) {
+    fn draw_picker(
+        ui: &mut egui::Ui,
+        model: &mut AssistantModel,
+        colors: &Colors,
+        max_h: f32,
+    ) {
         let matches = commands::filter_commands(&model.picker_query());
         if matches.is_empty() {
             return;
@@ -309,6 +328,7 @@ impl AssistantRenderer {
             model.composer = format!("/{name} ");
         }
 
+        let selected_idx = model.picker_selected;
         egui::Frame::new()
             .fill(colors.bg_active)
             .stroke(egui::Stroke::new(1.0, colors.border))
@@ -316,24 +336,33 @@ impl AssistantRenderer {
             .inner_margin(egui::Margin::same(style::SPACE_SM as i8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                let visible = matches.len().min(8);
-                for (i, (name, purpose)) in matches.iter().take(visible).enumerate() {
-                    let selected = i == model.picker_selected;
-                    let name_color = if selected { colors.accent } else { colors.text_primary };
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(format!("/{name}"))
-                                .size(style::TEXT_CAPTION)
-                                .monospace()
-                                .color(name_color),
-                        );
-                        ui.add_space(style::SPACE_SM);
-                        ui.scope(|ui| {
-                            ui.set_max_width(ui.available_width());
-                            crate::ui::labels::description_label(ui, purpose, colors);
-                        });
+                egui::ScrollArea::vertical()
+                    .id_salt("assistant_picker_scroll")
+                    .max_height(max_h.max(80.0))
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for (i, (name, purpose)) in matches.iter().enumerate() {
+                            let selected = i == selected_idx;
+                            let name_color =
+                                if selected { colors.accent } else { colors.text_primary };
+                            let row_resp = ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("/{name}"))
+                                        .size(style::TEXT_CAPTION)
+                                        .monospace()
+                                        .color(name_color),
+                                );
+                                ui.add_space(style::SPACE_SM);
+                                ui.scope(|ui| {
+                                    ui.set_max_width(ui.available_width());
+                                    crate::ui::labels::description_label(ui, purpose, colors);
+                                });
+                            });
+                            if selected {
+                                row_resp.response.scroll_to_me(None);
+                            }
+                        }
                     });
-                }
             });
     }
 

@@ -20,6 +20,8 @@ use super::model::Turn;
 #[derive(serde::Serialize, serde::Deserialize)]
 struct StateToml {
     active_conversation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_name: Option<String>,
 }
 
 /// Handle to the on-disk Assistant store for one workspace.
@@ -60,16 +62,23 @@ impl AssistantStore {
         }
     }
 
-    /// Persist `id` as the active conversation.
-    pub fn set_active_conversation(&self, id: &str) -> Result<(), String> {
+    /// Persist `id` as the active conversation, along with an optional session name.
+    pub fn set_active_conversation(&self, id: &str, session_name: Option<&str>) -> Result<(), String> {
         std::fs::create_dir_all(&self.dir)
             .map_err(|e| format!("create {}: {e}", self.dir.display()))?;
         let state = StateToml {
             active_conversation: id.to_string(),
+            session_name: session_name.map(str::to_string),
         };
         let raw = toml::to_string(&state).map_err(|e| format!("serialize state.toml: {e}"))?;
         std::fs::write(self.state_path(), raw)
             .map_err(|e| format!("write {}: {e}", self.state_path().display()))
+    }
+
+    /// The persisted session name for the active conversation, if any.
+    pub fn active_session_name(&self) -> Option<String> {
+        let raw = std::fs::read_to_string(self.state_path()).ok()?;
+        toml::from_str::<StateToml>(&raw).ok()?.session_name
     }
 
     /// Append one turn to the conversation's JSONL file.
@@ -132,7 +141,7 @@ mod tests {
         assert_eq!(store.active_conversation(), None);
 
         let id = "conv-test-1";
-        store.set_active_conversation(id).unwrap();
+        store.set_active_conversation(id, None).unwrap();
         store.append_turn(id, &Turn::now(TurnRole::User, "hello")).unwrap();
         store
             .append_turn(id, &Turn::now(TurnRole::Assistant, "hi there"))
@@ -153,7 +162,7 @@ mod tests {
     fn store_path_is_channel_aware() {
         let ws = tempfile::tempdir().unwrap();
         let store = AssistantStore::new(ws.path());
-        store.set_active_conversation("c1").unwrap();
+        store.set_active_conversation("c1", None).unwrap();
         let expected = ws
             .path()
             .join(crate::config::workspace_channel_dir())

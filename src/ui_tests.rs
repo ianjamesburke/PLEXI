@@ -632,6 +632,16 @@ mod tests {
     }
 
     #[test]
+    fn assistant_pane_renders_without_crash() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut h = PlexiUiHarness::new_sized(1280.0, 900.0);
+        h.open_assistant(ws.path().to_path_buf());
+        h.run_steps(5);
+        h.save_screenshot("/tmp/plexi-render-2216-assistant.png")
+            .expect("render failed");
+    }
+
+    #[test]
     fn screenshot_permission_prompt_uses_host_chrome() {
         let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
         let pane_id = add_focused_pane(&mut h);

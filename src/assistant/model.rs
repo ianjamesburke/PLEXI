@@ -122,6 +122,8 @@ fn new_conversation_id() -> String {
 #[derive(Debug)]
 pub struct AssistantModel {
     pub conversation_id: String,
+    /// User-visible name for this session, persisted across restarts.
+    pub session_name: Option<String>,
     pub turns: Vec<Turn>,
     pub composer: String,
     pub streaming: StreamingState,
@@ -143,6 +145,7 @@ impl AssistantModel {
     pub fn resume(conversation_id: String, turns: Vec<Turn>) -> Self {
         Self {
             conversation_id,
+            session_name: None,
             turns,
             composer: String::new(),
             streaming: StreamingState::default(),
@@ -151,6 +154,15 @@ impl AssistantModel {
             pending_permission: None,
             queued_user_turns: 0,
         }
+    }
+
+    /// Set the user-visible session name. Blank/whitespace-only clears it.
+    pub fn set_session_name(&mut self, name: &str) {
+        self.session_name = if name.trim().is_empty() {
+            None
+        } else {
+            Some(name.trim().to_string())
+        };
     }
 
     /// Start a brand-new conversation.

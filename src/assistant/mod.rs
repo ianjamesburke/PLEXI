@@ -236,7 +236,7 @@ impl AssistantApp {
         timeline: Arc<Mutex<AppTimeline>>,
     ) -> Self {
         let store = AssistantStore::new(&workspace_root);
-        let model = match store.active_conversation() {
+        let mut model = match store.active_conversation() {
             Some(id) => {
                 let turns = store.load_turns(&id);
                 log::info!(
@@ -256,6 +256,8 @@ impl AssistantApp {
                 model
             }
         };
+        // Load persisted session name (if any) so it survives restarts.
+        model.session_name = store.active_session_name();
         let persisted_turns = model.turns.len();
         let persisted_conversation = model.conversation_id.clone();
         let (outcome_tx, outcome_rx) = std::sync::mpsc::channel();
@@ -516,7 +518,7 @@ impl AssistantApp {
         }
         if let Err(e) = self
             .store
-            .set_active_conversation(&self.model.conversation_id)
+            .set_active_conversation(&self.model.conversation_id, self.model.session_name.as_deref())
         {
             log::error!("assistant: failed to persist active conversation: {e}");
         }
@@ -1167,6 +1169,16 @@ impl App for AssistantApp {
         "Assistant".to_string()
     }
 
+    fn rename_seed(&self) -> Option<String> {
+        self.model.session_name.clone()
+    }
+
+    fn on_pane_renamed(&mut self, name: &str) {
+        log::info!("assistant[{}]: pane renamed to '{name}'", self.model.conversation_id);
+        self.model.set_session_name(name);
+        self.session_write();
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, ctx: &AppRenderContext<'_>) {
         self.pump_turn_io();
         if self.model.streaming.in_flight {
@@ -1190,25 +1202,48 @@ mod tests {
     use super::*;
     use crate::plexi_ai::broker::AiBrokerResponse;
 
-    /// Test broker: echoes a canned reply and streams deltas via `on_delta`.
-    struct EchoBroker;
+    /// Scripted test broker.
+    struct MockBroker {
+        /// Canned reply text. If None, simulates an error turn.
+        reply: Option<String>,
+    }
 
-    impl AiBroker for EchoBroker {
+    impl MockBroker {
+        fn ok(reply: impl Into<String>) -> Arc<Self> {
+            Arc::new(Self { reply: Some(reply.into()) })
+        }
+        fn error() -> Arc<Self> {
+            Arc::new(Self { reply: None })
+        }
+    }
+
+    impl AiBroker for MockBroker {
         fn dispatch(
             &self,
             _request: AiBrokerRequest,
             on_delta: &mut dyn FnMut(TurnDelta<'_>),
         ) -> AiBrokerResponse {
-            on_delta(TurnDelta::Reasoning("pondering"));
-            on_delta(TurnDelta::Text("echo: "));
-            on_delta(TurnDelta::Text("ok"));
-            AiBrokerResponse::ok("echo: ok".to_string(), 1, 1)
+            match &self.reply {
+                Some(text) => {
+                    on_delta(TurnDelta::Reasoning("pondering"));
+                    for chunk in text.split_inclusive(' ') {
+                        on_delta(TurnDelta::Text(chunk));
+                    }
+                    AiBrokerResponse::ok(text.clone(), 1, 1)
+                }
+                None => AiBrokerResponse {
+                    content: None,
+                    error: Some("mock_error: simulated broker failure".to_string()),
+                    tokens_in: 0,
+                    tokens_out: 0,
+                },
+            }
         }
     }
 
     /// Assistant whose grants + audit live in the (temp) workspace dir.
     fn test_app(ws: &Path) -> AssistantApp {
-        AssistantApp::new(ws.to_path_buf(), Arc::new(EchoBroker), ws)
+        AssistantApp::new(ws.to_path_buf(), MockBroker::ok("echo: ok"), ws)
     }
 
     fn wait_for_turn(app: &mut AssistantApp) {
@@ -1606,7 +1641,7 @@ mod tests {
     }
 
     fn test_app_with_timeline(ws: &Path, timeline: Arc<Mutex<AppTimeline>>) -> AssistantApp {
-        AssistantApp::new_with_timeline(ws.to_path_buf(), Arc::new(EchoBroker), ws, timeline)
+        AssistantApp::new_with_timeline(ws.to_path_buf(), MockBroker::ok("echo: ok"), ws, timeline)
     }
 
     fn emit_move(
@@ -1930,5 +1965,29 @@ mod tests {
         );
         let result = rx.try_recv().unwrap();
         assert!(result.error.as_deref().unwrap_or("").contains("not_subscribed"));
+    }
+
+    #[test]
+    fn rename_persists_session_name() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = AssistantApp::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path());
+        assert_eq!(app.model.session_name, None);
+        app.on_pane_renamed("My Session");
+        assert_eq!(app.model.session_name.as_deref(), Some("My Session"));
+        // Reopen: name persists.
+        drop(app);
+        let reopened = AssistantApp::new(ws.path().to_path_buf(), MockBroker::ok("ok"), ws.path());
+        assert_eq!(reopened.model.session_name.as_deref(), Some("My Session"));
+    }
+
+    #[test]
+    fn error_turn_appends_error_row() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut app = AssistantApp::new(ws.path().to_path_buf(), MockBroker::error(), ws.path());
+        app.model.composer = "trigger error".to_string();
+        let effects = app.model.submit();
+        app.execute_effects(effects);
+        wait_for_turn(&mut app);
+        assert_eq!(app.model.turns.last().unwrap().role, TurnRole::Error);
     }
 }
