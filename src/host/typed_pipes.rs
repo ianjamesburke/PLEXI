@@ -220,7 +220,7 @@ impl TypedPipeRegistry {
             error_flag,
         };
 
-        self.pipes.insert(pipe_id.clone(), PipeEntry::Binary(entry));
+        self.pipes.insert(pipe_id, PipeEntry::Binary(entry));
 
         Ok(BinaryPipeAllocation { socket_path })
     }

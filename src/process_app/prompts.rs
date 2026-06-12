@@ -12,7 +12,7 @@ use crate::ui::text_field::TextField;
 use crate::workspace::secrets::SecretStore;
 use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::{mpsc::Sender, Arc};
+use std::sync::Arc;
 
 use super::{DeferredAiQuery, PendingPrompt};
 
@@ -101,8 +101,9 @@ pub(crate) fn show_prompt_modal(
     deferred_gated_requests: &mut Vec<(Capability, AppRequest)>,
     pending_commands: &mut Vec<AppCommand>,
     ai_broker: Arc<dyn AiBroker>,
-    http_tx: Sender<PlexiEvent>,
+    http_tx: super::transport::WakingEventSender,
     pane_id: u64,
+    pending_async_completions: &mut usize,
 ) {
     let Some(prompt) = pending_prompts.front() else {
         return;
@@ -370,6 +371,16 @@ pub(crate) fn show_prompt_modal(
                             ),
                         );
                         while let Some(q) = deferred_ai_queries.pop_front() {
+                            // Keep the async-wake accounting balanced: the
+                            // AiResponse drain decrements this counter, so
+                            // every deferred dispatch must increment it
+                            // (mirrors `arm_async_completion_wake`, #2021).
+                            *pending_async_completions =
+                                pending_async_completions.saturating_add(1);
+                            log::info!(
+                                "prompts: async wake armed (ai_query_deferred); pending={}",
+                                *pending_async_completions
+                            );
                             let broker = Arc::clone(&ai_broker);
                             let app_id = type_id.to_string();
                             let tx = http_tx.clone();

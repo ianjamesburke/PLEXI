@@ -282,7 +282,7 @@ mod avf_impl {
         let state = Arc::new(std::sync::Mutex::new(VideoState::Play));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        let path_thread = path.clone();
+        let path_thread = path;
         let state_thread = Arc::clone(&state);
         let stop_thread = Arc::clone(&stop);
         let width = metadata.width;

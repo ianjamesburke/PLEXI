@@ -118,7 +118,7 @@ impl ProcessApp {
                 );
                 self.outbound_events.push_back(
                     crate::app_protocol::PlexiEvent::TextWrappedMeasured {
-                        request_id: request_id.clone(),
+                        request_id,
                         height,
                     },
                 );

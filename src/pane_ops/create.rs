@@ -917,7 +917,7 @@ impl PlexiApp {
         let missing = self.registry.check_config_capabilities(id, &self.config);
         if !missing.is_empty() {
             log::warn!("pre-flight: '{id}' cannot launch — missing: {missing:?}");
-            let fail_hint = layout.clone().or_else(|| Some("overlay".to_string()));
+            let fail_hint = layout.or_else(|| Some("overlay".to_string()));
             self.open_launch_failed_pane(id, fail_hint.as_deref(), missing, cwd);
             return Ok(());
         }
@@ -1064,7 +1064,7 @@ impl PlexiApp {
         let perms = crate::app::permissions::AppPermissions::from_capability_strings(
             &descriptor.capabilities,
         );
-        let caps = perms.capabilities.clone();
+        let caps = perms.capabilities;
 
         // Step 4: Spawn the ProcessApp.
         let app_id = format!("cli:{cli_name}");

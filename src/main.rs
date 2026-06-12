@@ -605,7 +605,7 @@ fn main() -> eframe::Result {
                             }
                         }
                         // Any --host-action keys not matched to a --choice are an error.
-                        for (key, _) in &host_action_map {
+                        if let Some(key) = host_action_map.keys().next() {
                             let msg = format!(
                                 "error: --host-action key {:?} does not match any --choice key",
                                 key
@@ -723,7 +723,7 @@ fn main() -> eframe::Result {
                                 let payload = if enter {
                                     format!("{text}\n")
                                 } else {
-                                    text.clone()
+                                    text
                                 };
                                 log::info!(
                                     "pane_command:cli: pane_id={pane_id} len={} enter={enter}",
@@ -995,7 +995,8 @@ fn main() -> eframe::Result {
 
     // Shell probes are done. Start the heartbeat now so it only monitors
     // eframe operation — not pre-startup shell work (#588).
-    crate::platform::logging::spawn_heartbeat(frame_tick.clone());
+    let heartbeat_ctx = crate::platform::logging::new_heartbeat_ctx_slot();
+    crate::platform::logging::spawn_heartbeat(frame_tick.clone(), heartbeat_ctx.clone());
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -1011,7 +1012,7 @@ fn main() -> eframe::Result {
     eframe::run_native(
         env!("CARGO_PKG_NAME"),
         native_options,
-        Box::new(|cc| Ok(Box::new(app::PlexiApp::new(cc, frame_tick)))),
+        Box::new(|cc| Ok(Box::new(app::PlexiApp::new(cc, frame_tick, heartbeat_ctx)))),
     )
 }
 

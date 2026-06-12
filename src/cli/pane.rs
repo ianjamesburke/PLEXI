@@ -523,7 +523,7 @@ pub fn pane_info_cli(previous: bool) -> i32 {
                             return 1;
                         }
                         let mut obj = v;
-                        obj["socket"] = serde_json::Value::String(socket_path.clone());
+                        obj["socket"] = serde_json::Value::String(socket_path);
                         let channel =
                             crate::config::build_channel().unwrap_or_else(|| "main".to_string());
                         obj["channel"] = serde_json::Value::String(channel);
@@ -1004,6 +1004,7 @@ pub(super) fn open_github_ephemeral(
         eprintln!("error: could not write spawn request: {e}");
         return 1;
     }
+    crate::cli::nudge_running_instance();
     log::info!("open_github_ephemeral: queued path={abs_path}");
     println!("queued: open github:{owner}/{repo}");
     println!("(running outside a Plexi pane — Plexi will pick this up within a second)");

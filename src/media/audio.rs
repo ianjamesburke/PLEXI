@@ -667,8 +667,8 @@ mod tests {
         let dev = MockAudioDevice::new();
         let inputs = dev.list_input_devices();
         assert!(!inputs.is_empty(), "mock must report at least one input");
-        let defaults: Vec<_> = inputs.iter().filter(|d| d.default).collect();
-        assert_eq!(defaults.len(), 1, "exactly one input must be the default");
+        let defaults = inputs.iter().filter(|d| d.default).count();
+        assert_eq!(defaults, 1, "exactly one input must be the default");
     }
 
     #[test]

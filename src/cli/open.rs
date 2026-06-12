@@ -186,6 +186,7 @@ pub fn pane_new_cli(
         eprintln!("error: could not write spawn request: {e}");
         return 1;
     }
+    crate::cli::nudge_running_instance();
     log::info!("pane_new:cli: queued type_id={type_id} name={name:?} ephemeral={ephemeral} no_focus={no_focus} cwd={cwd:?}");
     println!("queued: open {type_id}");
     println!("(running outside a Plexi pane — Plexi will pick this up within a second)");
@@ -496,6 +497,7 @@ fn open_app_by_path(abs_path: &str, layout: Option<&str>, from_pane_id: Option<u
         eprintln!("error: could not write spawn request: {e}");
         return 1;
     }
+    crate::cli::nudge_running_instance();
     log::info!("open_app_by_path: queued path={abs_path}");
     println!("queued: open {abs_path}");
     println!("(running outside a Plexi pane; Plexi will pick this up within a second)");

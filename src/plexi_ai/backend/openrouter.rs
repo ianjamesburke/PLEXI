@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn system_prompt_goes_in_messages_array_not_top_level() {
         let system = "You are a helpful assistant.".to_string();
-        let msgs = vec![serde_json::json!({"role": "user", "content": "hello"})];
+        let msgs = [serde_json::json!({"role": "user", "content": "hello"})];
 
         let mut messages: Vec<serde_json::Value> = Vec::new();
         if !system.is_empty() {
@@ -392,7 +392,7 @@ mod tests {
     #[test]
     fn empty_system_omits_system_message() {
         let system = String::new();
-        let msgs = vec![serde_json::json!({"role": "user", "content": "hi"})];
+        let msgs = [serde_json::json!({"role": "user", "content": "hi"})];
 
         let mut messages: Vec<serde_json::Value> = Vec::new();
         if !system.is_empty() {

@@ -484,9 +484,9 @@ impl PlexiApp {
                 let tracked_path = slots.get(slot_name).cloned();
                 let existing_path = tracked_path.clone().unwrap_or(slot_path.clone());
                 let write_path = if *append {
-                    tracked_path.clone().unwrap_or(slot_path.clone())
+                    tracked_path.clone().unwrap_or(slot_path)
                 } else {
-                    slot_path.clone()
+                    slot_path
                 };
                 let exists = tracked_path.as_ref().is_some_and(|path| path.exists());
                 if exists && !*append && !*replace {
@@ -1627,6 +1627,12 @@ impl PlexiApp {
                     state,
                     response_file,
                 );
+            }
+            crate::app_protocol::AppRequest::Wake => {
+                // No-op: the wake effect is the socket listener's repaint
+                // request — by the time this arm runs, a frame is already
+                // in flight and queued work (spawn-queue, channels) drains.
+                log::debug!("pane_ipc: kind=wake (no-op)");
             }
             _ => {
                 log::warn!("pane_ipc: unsupported command kind, dropping");

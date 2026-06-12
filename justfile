@@ -31,6 +31,12 @@ coverage:
 coverage-summary:
     cargo llvm-cov --bin plexi --summary-only -- --skip "welcome_tab_falls_back_to_home_dir_when_no_root"
 
+# Perf lint gate — run before and after any perf work; must exit clean.
+# Scoped to the perf lint set only (`-A clippy::all` silences unrelated lints);
+# vendored deps/egui_term opts out via crate-level allows in its lib.rs.
+perf-clippy:
+    RUSTC_WRAPPER= RUSTFLAGS= cargo clippy --all-targets --all-features --locked -- -A clippy::all -D clippy::perf -D clippy::redundant_clone -D clippy::needless_collect -D clippy::large_enum_variant -D clippy::clone_on_copy
+
 build:
     cargo build --release
 

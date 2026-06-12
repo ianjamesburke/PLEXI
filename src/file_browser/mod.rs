@@ -425,7 +425,7 @@ impl FileBrowserApp {
             self.directory_selection_memory
                 .insert(self.cwd.clone(), entry.name.clone());
         }
-        self.cwd = path.clone();
+        self.cwd = path;
         self.selected = 0;
         self.refresh();
         self.pending_scroll = true;
@@ -520,7 +520,7 @@ impl FileBrowserApp {
                 .cwd
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string());
-            self.cwd = parent.clone();
+            self.cwd = parent;
             self.selected = 0;
             self.refresh();
             let restore_name = self

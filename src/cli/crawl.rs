@@ -206,7 +206,7 @@ fn is_command_section_header(line: &str) -> bool {
     let upper = line.trim().to_uppercase();
     // Strip a trailing colon before matching.
     let upper = upper.trim_end_matches(':').trim();
-    COMMAND_SECTION_KEYWORDS.iter().any(|kw| upper == *kw)
+    COMMAND_SECTION_KEYWORDS.contains(&upper)
 }
 
 fn is_any_section_header(line: &str) -> bool {

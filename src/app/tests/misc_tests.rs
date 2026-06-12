@@ -37,3 +37,48 @@ fn test_spawn_pane_targets_correct_window_with_from_pane_id() {
     assert_eq!(found_win_idx, 0, "pane should be in window 0");
     assert_eq!(found_tile, tile_in_w0);
 }
+
+/// A valid socket line must queue the request AND leave a repaint pending —
+/// with zero-frame idle, the repaint is what gets the queued request drained.
+#[test]
+fn socket_line_queues_request_and_requests_repaint() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ctx = egui::Context::default();
+    handle_socket_line(r#"{"type":"wake"}"#, &tx, &ctx);
+    assert!(
+        matches!(rx.try_recv(), Ok(crate::app_protocol::AppRequest::Wake)),
+        "request must be queued on the pane-IPC channel"
+    );
+    assert!(
+        ctx.has_requested_repaint(),
+        "socket line must request a repaint so the idle UI thread wakes"
+    );
+}
+
+/// A malformed socket line must queue nothing (and therefore wake nothing).
+#[test]
+fn socket_line_parse_error_queues_nothing() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ctx = egui::Context::default();
+    handle_socket_line("definitely not json", &tx, &ctx);
+    assert!(
+        rx.try_recv().is_err(),
+        "parse failures must not queue anything"
+    );
+}
+
+/// `AppRequest::Wake` through the host handler is a pure no-op: no panic,
+/// no window/pane state change.
+#[test]
+fn wake_request_is_noop_on_host() {
+    let mut h = crate::testing::HostHarness::new();
+    let windows_before = h.app.windows.len();
+    let panes_before: usize = h.app.windows.iter().map(|w| w.panes.len()).sum();
+
+    h.inject_ipc(crate::app_protocol::AppRequest::Wake);
+    h.app.drain_pane_cmd_channel();
+
+    assert_eq!(h.app.windows.len(), windows_before, "wake must not touch windows");
+    let panes_after: usize = h.app.windows.iter().map(|w| w.panes.len()).sum();
+    assert_eq!(panes_after, panes_before, "wake must not touch panes");
+}

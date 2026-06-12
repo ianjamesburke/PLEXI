@@ -596,7 +596,7 @@ fn run_turn_and_respond(
                     let row = LedgerRow::with_attribution(
                         &backend_name,
                         billing,
-                        Some(app_id.clone()),
+                        Some(app_id),
                         Some(model_id_bg),
                         Some(tokens_in),
                         Some(tokens_out),
@@ -635,7 +635,7 @@ fn run_turn_and_respond(
     let row = LedgerRow::with_attribution(
         backend.name(),
         billing,
-        Some(request.app_id.clone()),
+        Some(request.app_id),
         Some(model_id),
         Some(total_tokens_in),
         Some(total_tokens_out),

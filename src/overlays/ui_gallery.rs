@@ -17,7 +17,7 @@ impl PlexiApp {
             return;
         }
 
-        let colors = self.colors.clone();
+        let colors = self.colors;
         // Escape is gated off while the nested text-entry demo is open so the
         // nested modal consumes it first — otherwise one press closes both.
         let response = ModalShell::centered("host_ui_gallery")

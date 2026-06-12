@@ -106,6 +106,64 @@ fn idle_frame_requests_no_immediate_repaint() {
     );
 }
 
+/// Issue #2208: a PGAP app that never sends FrameDone must not pin the host
+/// at full frame rate. Two guarantees:
+///
+/// 1. While a render is legitimately in flight, the poll is a *bounded
+///    delay* — never an immediate repaint. The old 16ms poll saturated to
+///    zero inside egui's `request_repaint_after` (it subtracts the predicted
+///    frame time, ~16.7ms at 60Hz), which meant 60fps polling.
+/// 2. After `RENDER_IN_FLIGHT_TIMEOUT` with no FrameDone, the host abandons
+///    the render transaction, marks the app hung (existing lifecycle path),
+///    and stops requesting repaints entirely.
+#[test]
+fn hung_render_stops_repaint_polling_after_timeout() {
+    use crate::process_app::{LifecycleState, RENDER_IN_FLIGHT_TIMEOUT};
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    // Frame 1 sends Render(1); the app never answers with FrameDone.
+    h.run_frames(1);
+    h.render_payload_take(pane)
+        .expect("first visible frame must request an app Render");
+    h.run_frames(3);
+
+    // Pre-timeout: the in-flight poll must survive egui's predicted-frame-
+    // time subtraction — a bounded delayed repaint, not an immediate one.
+    assert!(
+        !h.app.ctx.requested_repaint_last_pass(),
+        "render-in-flight polling must be a bounded delay, not an immediate \
+         repaint; a poll interval at or below one frame time saturates to \
+         zero and pins the host at full frame rate"
+    );
+    assert!(
+        h.process_app_mut(pane).render_in_flight_for_test(),
+        "render must still be in flight before the timeout"
+    );
+
+    // Simulate the render having been stuck for longer than the timeout.
+    h.process_app_mut(pane)
+        .backdate_in_flight_render(RENDER_IN_FLIGHT_TIMEOUT + std::time::Duration::from_secs(1));
+    h.run_frames(2);
+
+    let app = h.process_app_mut(pane);
+    assert!(
+        !app.render_in_flight_for_test(),
+        "render-in-flight state must be cleared once the timeout expires"
+    );
+    assert_eq!(
+        app.lifecycle.state(),
+        LifecycleState::Hung,
+        "a render timeout must surface through the existing hung status path"
+    );
+    assert!(
+        !h.app.ctx.requested_repaint_last_pass(),
+        "after the render timeout the host must stop requesting repaints \
+         for the hung app instead of polling forever"
+    );
+}
+
 #[test]
 fn visible_idle_process_app_does_not_emit_recurring_render_events() {
     let mut h = HostHarness::new();
@@ -1104,10 +1162,7 @@ fn capability_modal_escape_fires_deny_once() {
     // One idle frame: sync_capability_modal_focus should push the layer.
     h.run_frames(1);
     assert!(
-        h.app
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::CapabilityModal),
+        h.app.focus_stack.contains(&FocusLayer::CapabilityModal),
         "CapabilityModal must be on the focus stack when the focused pane has pending prompts"
     );
 
@@ -1135,10 +1190,7 @@ fn capability_modal_escape_fires_deny_once() {
     // CapabilityModal must have been popped from the focus stack since
     // sync_capability_modal_focus removes it when pending_prompts drains.
     assert!(
-        !h.app
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::CapabilityModal),
+        !h.app.focus_stack.contains(&FocusLayer::CapabilityModal),
         "CapabilityModal must be removed from the focus stack after deny_once drains the queue"
     );
 }
@@ -1158,10 +1210,7 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
     h.app.pending_close = true;
     h.app.sync_confirm_close_focus();
     assert!(
-        h.app
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::ConfirmClose),
+        h.app.focus_stack.contains(&FocusLayer::ConfirmClose),
         "ConfirmClose must be pushed when pending_close is true"
     );
 
@@ -1174,10 +1223,7 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
         "CommandPalette must be at the top after its source state becomes true"
     );
     assert!(
-        h.app
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::ConfirmClose),
+        h.app.focus_stack.contains(&FocusLayer::ConfirmClose),
         "ConfirmClose must still be in the stack (buried beneath CommandPalette)"
     );
 
@@ -1186,17 +1232,14 @@ fn buried_stale_focus_layer_is_removed_by_sync() {
     h.app.sync_confirm_close_focus();
 
     assert!(
-        !h.app.focus_stack.iter().any(|l| *l == FocusLayer::ConfirmClose),
+        !h.app.focus_stack.contains(&FocusLayer::ConfirmClose),
         "ConfirmClose must be removed from the stack even though CommandPalette was on top. \
          If this fails, sync_confirm_close_focus used pop_focus_layer (top-only) instead of retain."
     );
 
     // The layer that was on top must still be present — we only removed ConfirmClose.
     assert!(
-        h.app
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::CommandPalette),
+        h.app.focus_stack.contains(&FocusLayer::CommandPalette),
         "CommandPalette must remain in the stack after removing the buried ConfirmClose layer"
     );
 }
@@ -1440,7 +1483,7 @@ fn capability_secret_overlay_focus_wins_after_central_panel_steal() {
     // requests focus on capability_secret_input.
     h.run_frames(1);
     assert!(
-        h.app.focus_stack.iter().any(|l| *l == FocusLayer::CapabilityModal),
+        h.app.focus_stack.contains(&FocusLayer::CapabilityModal),
         "CapabilityModal must be on the focus stack when the focused pane has a pending Secret prompt"
     );
 
@@ -1860,10 +1903,7 @@ fn yellow_capability_queues_prompt_then_grant_forwards() {
         assert!(!response_file.exists());
     }
     assert!(
-        h.app
-            .focus_stack
-            .iter()
-            .any(|l| *l == FocusLayer::CapabilityModal),
+        h.app.focus_stack.contains(&FocusLayer::CapabilityModal),
         "CapabilityModal must be on the focus stack while the prompt is pending"
     );
 
@@ -2449,7 +2489,7 @@ fn rollback_blocked_on_revision_mismatch() {
     h.inject(
         pane,
         DrawCommand::Host(AppRequest::RollbackVerifyResult {
-            checkpoint_id: ckpt_id.clone(),
+            checkpoint_id: ckpt_id,
             current_revision: "rev-99".to_string(),
         }),
     );
@@ -3166,4 +3206,178 @@ default = "ask"
 
         tool_dispatch::unregister(PANE);
     }
+}
+
+// -- Central-panel per-frame metadata (#2023) -------------------------------
+//
+// Issue #2023 short-circuits all portal preview / ContextState work when the
+// active window has no portal panes. These tests guard the invalidation side:
+// the data must still refresh on the very next frame after a change.
+
+/// Insert a test App pane directly into the window with the given window_id.
+/// Mirrors `PlexiApp::add_test_pane` but targets an arbitrary window.
+fn add_app_pane_to_window(h: &mut HostHarness, window_id: u64, pane_id: u64) {
+    use crate::process_app::ProcessApp;
+    let (process_app, _draw_tx) = ProcessApp::new_for_test(pane_id, AppPermissions::builtin());
+    let app_pane = crate::host::pane::AppPane {
+        id: pane_id,
+        runtime: AppRuntime::Process(Box::new(process_app)),
+        workspace_root: std::env::temp_dir(),
+        permissions: AppPermissions::builtin(),
+        manifest_id: "test".to_string(),
+        name: "Test App".to_string(),
+        pane_group: None,
+        linked_pane_id: None,
+        overlay_replaced: None,
+        hidden: false,
+        agent: None,
+        slots: HashMap::new(),
+    };
+    let win = h
+        .app
+        .windows
+        .iter_mut()
+        .find(|w| w.window_id == window_id)
+        .expect("target window must exist");
+    win.panes
+        .insert(pane_id, Pane::App(Box::new(app_pane)));
+    let tile_id = win.tree.tiles.insert_pane(pane_id);
+    if win.tree.root.is_none() {
+        win.tree.root = Some(tile_id);
+    }
+}
+
+/// Portal preview (cached `ContextState` on the portal pane) must reflect a
+/// pane added to the child context on the next rendered frame.
+#[test]
+fn portal_context_state_refreshes_when_child_context_changes() {
+    let mut h = HostHarness::new();
+    let _root_pane = h.add_test_pane();
+    let root_ctx_id = h.app.router.active().context_id;
+
+    // Child context with its own window and one pane.
+    let child_ctx_id = 77001u64;
+    let child_win_id = 77002u64;
+    h.app.router.push(crate::host::context::Context {
+        name: "child".to_string(),
+        path: std::path::PathBuf::from("/tmp/harness_2023_child"),
+        root: None,
+        description: None,
+        context_id: child_ctx_id,
+        parent_id: Some(root_ctx_id),
+        depth: 1,
+        parked: false,
+    });
+    h.app.context_active_window.insert(child_ctx_id, child_win_id);
+    h.app.windows.push(crate::host::context::Window {
+        name: String::new(),
+        path: std::path::PathBuf::from("/tmp/harness_2023_child"),
+        tree: egui_tiles::Tree::empty("harness_2023_child"),
+        panes: HashMap::new(),
+        focused_pane: None,
+        zoomed_pane: None,
+        grid_x: 0,
+        grid_y: 0,
+        window_id: child_win_id,
+        context_id: child_ctx_id,
+    });
+    add_app_pane_to_window(&mut h, child_win_id, 77100);
+
+    // Portal pane in the active (root) window pointing at the child context.
+    let portal_pane_id = 77200u64;
+    {
+        let win = &mut h.app.windows[0];
+        let _ = win.tree.tiles.insert_pane(portal_pane_id);
+        win.panes.insert(
+            portal_pane_id,
+            Pane::Portal(Box::new(crate::host::pane::PortalPane {
+                pane_id: portal_pane_id,
+                target_context_id: child_ctx_id,
+                context_state: None,
+                hidden: false,
+            })),
+        );
+    }
+
+    let portal_state = |h: &HostHarness| {
+        let win = &h.app.windows[0];
+        match win.panes.get(&portal_pane_id) {
+            Some(Pane::Portal(p)) => p.context_state.clone(),
+            other => panic!("expected Portal pane, got {:?}", other.map(|p| p.id())),
+        }
+    };
+
+    h.run_frames(1);
+    let state = portal_state(&h).expect("context_state must be computed on first frame");
+    assert_eq!(state.pane_count, 1, "child context starts with one pane");
+
+    // Mutate the child context — add a second pane — and verify the portal
+    // preview reflects it on the very next frame (no stale cache).
+    add_app_pane_to_window(&mut h, child_win_id, 77101);
+    h.run_frames(1);
+    let state = portal_state(&h).expect("context_state must persist");
+    assert_eq!(
+        state.pane_count, 2,
+        "portal preview must reflect a pane added to the child context on the next frame"
+    );
+}
+
+/// The per-pane notification badge count must update on the next frame after
+/// a notification arrives, and clear after it is removed.
+#[test]
+fn notification_badge_count_propagates_to_sender_pane() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    h.run_frames(1);
+    assert_eq!(
+        h.process_app_mut(pane).pending_notification_count,
+        0,
+        "no notifications queued — badge count must be 0"
+    );
+
+    let source_context_id = h.app.router.active().context_id;
+    let source_window_id = h.app.windows[h.app.active_window].window_id;
+    h.app
+        .pending_notifications
+        .push(crate::app::PendingNotification {
+            notify_id: "harness-2023-badge".to_string(),
+            sender_pane_id: pane,
+            source_context_id,
+            source_window_id,
+            level: "info".to_string(),
+            title: "badge test".to_string(),
+            body: String::new(),
+            kind: crate::app_protocol::NotifyKind::Message,
+            options: vec![],
+            input_prompt: None,
+            required: false,
+            priority: 0,
+            scope: crate::app_protocol::NotifyScope::Global,
+            image_inline: None,
+            image_pipe_id: None,
+            response_file: None,
+            timeout_secs: None,
+            on_dismiss: None,
+            enqueued_at: std::time::Instant::now(),
+            tombstoned: false,
+            deliver_after: None,
+        });
+
+    h.run_frames(1);
+    assert_eq!(
+        h.process_app_mut(pane).pending_notification_count,
+        1,
+        "badge count must reflect the queued notification on the next frame"
+    );
+
+    h.app
+        .pending_notifications
+        .retain(|n| n.notify_id != "harness-2023-badge");
+    h.run_frames(1);
+    assert_eq!(
+        h.process_app_mut(pane).pending_notification_count,
+        0,
+        "badge count must clear on the next frame after the notification is removed"
+    );
 }

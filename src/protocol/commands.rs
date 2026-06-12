@@ -1326,6 +1326,13 @@ pub enum AppRequest {
     /// (`PlexiEvent::RollbackVerify` → `AppRequest::RollbackVerifyResult` →
     /// `PlexiEvent::RollbackApply`). Denials and conflicts are logged.
     RequestRollback { checkpoint_id: String },
+
+    /// No-op wake. Nudges the (zero-frame-idle) UI thread to run a frame so
+    /// queued work — spawn-queue files, pane-IPC channel messages — is
+    /// drained promptly. Sent by the CLI after writing a spawn-queue file
+    /// when no `PLEXI_SOCKET` is set. Fire-and-forget; the handler does
+    /// nothing — the wake effect is the socket listener's repaint request.
+    Wake,
 }
 
 /// Who caused an app state change (`AppRequest::EmitEvent`).
@@ -1479,6 +1486,10 @@ pub enum ControlCommand {
 /// The JSON `{"type":"rect",...}` still works; `{"type":"ai_query",...}` still works.
 #[derive(Serialize, Deserialize, JsonSchema, Debug, Clone)]
 #[serde(untagged)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "DrawCommand is a transient per-message wire decode (parsed, routed, dropped within a frame), never stored in bulk; boxing AppRequest would add a heap allocation per host request and force deref rewrites at 80+ match sites"
+)]
 pub enum DrawCommand {
     Render(RenderCommand),
     Host(AppRequest),
@@ -3923,6 +3934,19 @@ mod ai_stream_chunk_tests {
         assert!(
             serialised.contains(r#""response_file":"/tmp/prev.json""#),
             "response_file missing: {serialised}"
+        );
+    }
+
+    /// Wire-format round-trip for the no-op Wake nudge sent by the CLI
+    /// after a spawn-queue write.
+    #[test]
+    fn wake_round_trips_serde() {
+        let req: AppRequest = serde_json::from_str(r#"{"type":"wake"}"#).expect("deserialise");
+        assert!(matches!(req, AppRequest::Wake), "expected Wake, got {req:?}");
+        let serialised = serde_json::to_string(&req).expect("serialise");
+        assert!(
+            serialised.contains(r#""type":"wake""#),
+            "wire tag missing: {serialised}"
         );
     }
 

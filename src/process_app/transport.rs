@@ -29,6 +29,57 @@ pub(crate) fn request_repaint_from_thread(repaint_ctx: &Arc<Mutex<Option<egui::C
     }
 }
 
+/// Wake the host because background work arrived (issue #2021). Same as
+/// [`request_repaint_from_thread`] but with a trace, so every async wake
+/// path is observable in the log.
+pub(crate) fn wake_host_for_background_work(
+    repaint_ctx: &Arc<Mutex<Option<egui::Context>>>,
+    reason: &str,
+) {
+    log::debug!("host wake requested from background thread ({reason})");
+    request_repaint_from_thread(repaint_ctx);
+}
+
+/// An `http_tx` / `file_picker_tx` sender that wakes the host after every
+/// send, so async completions (timer fires, HTTP responses, AI chunks,
+/// picker results) surface on the next frame instead of waiting for the
+/// bounded 100ms async-wake poll (issue #2021).
+#[derive(Clone)]
+pub(crate) struct WakingEventSender {
+    tx: Sender<crate::app_protocol::PlexiEvent>,
+    repaint_ctx: Arc<Mutex<Option<egui::Context>>>,
+    reason: &'static str,
+}
+
+impl WakingEventSender {
+    pub(crate) fn new(
+        tx: Sender<crate::app_protocol::PlexiEvent>,
+        repaint_ctx: Arc<Mutex<Option<egui::Context>>>,
+        reason: &'static str,
+    ) -> Self {
+        Self {
+            tx,
+            repaint_ctx,
+            reason,
+        }
+    }
+
+    /// Send and wake. The error drops the payload (`SendError<()>`) — a
+    /// 232-byte `PlexiEvent` in the `Err` variant trips
+    /// `clippy::result_large_err`, and no caller recovers the event anyway.
+    pub(crate) fn send(
+        &self,
+        event: crate::app_protocol::PlexiEvent,
+    ) -> Result<(), std::sync::mpsc::SendError<()>> {
+        let result = self
+            .tx
+            .send(event)
+            .map_err(|_| std::sync::mpsc::SendError(()));
+        wake_host_for_background_work(&self.repaint_ctx, self.reason);
+        result
+    }
+}
+
 fn stdout_command_wakes_host(cmd: &DrawCommand) -> bool {
     !matches!(cmd, DrawCommand::Render(_))
 }
@@ -110,6 +161,7 @@ pub(crate) fn spawn_stdout_reader(
     type_id: String,
     stdout: ChildStdout,
     draw_tx: Sender<DrawCommand>,
+    draw_pending: Arc<AtomicBool>,
     lifecycle: Arc<LifecycleTracker>,
     repaint_ctx: Arc<Mutex<Option<egui::Context>>>,
 ) {
@@ -125,6 +177,11 @@ pub(crate) fn spawn_stdout_reader(
                             if draw_tx.send(cmd).is_err() {
                                 break;
                             }
+                            // Mark AFTER the send (paired with the host's
+                            // clear-then-drain in drain_draw_commands) so a
+                            // command can never sit in the channel with the
+                            // flag unset (#2021).
+                            draw_pending.store(true, Ordering::Release);
                             if wakes_host {
                                 request_repaint_from_thread(&repaint_ctx);
                             }

@@ -1,7 +1,6 @@
 //! App command dispatch — keyboard routing + command drain from app panes.
 
 use crate::app::app_trait::{App, AppCommand};
-use crate::host::pane::AppRuntime;
 
 use super::PlexiApp;
 
@@ -85,6 +84,157 @@ mod tests {
         assert!(
             h.app.background_processes_need_wake(),
             "parked process apps with pending timers/async work must keep the host wake loop alive"
+        );
+    }
+
+    /// Issue #2021: an idle parked app (no pending timers, no async work, no
+    /// queued draw commands) must NOT be background-ticked on every frame.
+    #[test]
+    fn idle_parked_app_is_not_background_ticked() {
+        let mut h = HostHarness::new();
+        let (process_app, _draw_tx) = ProcessApp::new_for_test(999, AppPermissions::builtin());
+        assert!(
+            !process_app.needs_background_tick(),
+            "a fresh idle test app must report no pending background work"
+        );
+        h.app
+            .background_apps
+            .insert("idle-app".to_string(), (1, Box::new(process_app)));
+
+        let _ = h.app.drain_all_app_commands();
+
+        let (_, app) = &h.app.background_apps["idle-app"];
+        assert_eq!(
+            app.background_tick_count, 0,
+            "idle parked app must not be ticked by the foreground frame loop (#2021)"
+        );
+        assert!(
+            !h.app.background_processes_need_wake(),
+            "an idle parked app must not keep the host wake loop alive"
+        );
+    }
+
+    /// Issue #2021 done-condition: a parked app's timer can surface its event
+    /// in a single wake frame, without relying on continuous foreground
+    /// repaint — and after draining, the app quiesces again.
+    #[test]
+    fn parked_app_timer_event_is_consumed_by_a_single_gated_tick() {
+        let mut h = HostHarness::new();
+        let (mut process_app, _draw_tx) = ProcessApp::new_for_test(999, AppPermissions::builtin());
+        // Simulate SetTimer: routing inserts the pending flag, the timer
+        // thread later delivers the Timer event on http_tx.
+        process_app.pending_timers.insert(
+            "t1".to_string(),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        process_app
+            .http_tx
+            .clone()
+            .send(PlexiEvent::Timer {
+                timer_id: "t1".to_string(),
+            })
+            .expect("test http channel send");
+        assert!(
+            process_app.needs_background_tick(),
+            "a pending timer must mark the parked app as needing a tick"
+        );
+        h.app
+            .background_apps
+            .insert("timer-app".to_string(), (1, Box::new(process_app)));
+        assert!(
+            h.app.background_processes_need_wake(),
+            "pending timer must keep the host wake loop alive"
+        );
+
+        let _ = h.app.drain_all_app_commands();
+
+        let (_, app) = &h.app.background_apps["timer-app"];
+        assert_eq!(
+            app.background_tick_count, 1,
+            "parked app with a fired timer must be ticked exactly once"
+        );
+        assert!(
+            app.pending_timers.is_empty(),
+            "the gated tick must consume the timer event"
+        );
+        assert!(
+            !h.app.background_processes_need_wake(),
+            "after the timer drains, the host wake loop must quiesce"
+        );
+    }
+
+    /// Issue #2021: a parked app emitting a notification from its own process
+    /// (draw command arriving on the stdout channel) surfaces in one wake
+    /// frame. The stdout reader thread marks `draw_pending` and wakes the
+    /// host; the next drain must tick the app and return the notification.
+    #[test]
+    fn parked_app_draw_command_notification_surfaces_via_draw_pending() {
+        let mut h = HostHarness::new();
+        let (process_app, draw_tx) = ProcessApp::new_for_test(999, AppPermissions::builtin());
+        let draw_pending = std::sync::Arc::clone(&process_app.draw_pending);
+        h.app
+            .background_apps
+            .insert("notify-app".to_string(), (7, Box::new(process_app)));
+
+        // Idle frame first: no tick.
+        let _ = h.app.drain_all_app_commands();
+        assert_eq!(h.app.background_apps["notify-app"].1.background_tick_count, 0);
+
+        // App emits a notification: the stdout reader sends the command, then
+        // sets draw_pending (and wakes the host via repaint_ctx in prod).
+        let cmd: crate::app_protocol::DrawCommand = serde_json::from_str(
+            r#"{"type":"notify","level":"info","title":"ping","body":"","priority":50}"#,
+        )
+        .expect("notify draw command parses");
+        draw_tx.send(cmd).expect("draw channel send");
+        draw_pending.store(true, std::sync::atomic::Ordering::Release);
+
+        let cmds = h.app.drain_all_app_commands();
+        assert!(
+            cmds.iter().any(|c| matches!(
+                c,
+                AppCommand::ShowNotification { title, .. } if title == "ping"
+            )),
+            "parked app's notification must surface on the wake frame"
+        );
+        assert!(
+            !h.app.background_processes_need_wake(),
+            "after draining the draw command, the host wake loop must quiesce"
+        );
+    }
+
+    /// Issue #2021: an app exposing an MCP server must not keep the host in
+    /// a permanent 100ms wake loop — only a queued (undelivered) tool call
+    /// counts as pending background work.
+    #[test]
+    fn mcp_server_only_needs_tick_when_calls_are_queued() {
+        use std::sync::{Arc, Mutex};
+
+        let (mut process_app, _draw_tx) = ProcessApp::new_for_test(999, AppPermissions::builtin());
+        let handle =
+            crate::process_app::mcp_server::start_mcp_server(vec![], Arc::new(Mutex::new(None)))
+                .expect("mcp server starts");
+        let queue = Arc::clone(&handle.call_queue);
+        process_app.mcp_server = Some(handle);
+
+        assert!(
+            !process_app.needs_background_tick(),
+            "an MCP server with an empty call queue must not keep the host awake"
+        );
+
+        let (response_tx, _response_rx) = std::sync::mpsc::sync_channel(1);
+        queue
+            .lock()
+            .unwrap()
+            .push_back(crate::process_app::mcp_server::McpCallRequest {
+                call_id: "c1".to_string(),
+                tool_name: "noop".to_string(),
+                arguments: serde_json::Value::Null,
+                response_tx,
+            });
+        assert!(
+            process_app.needs_background_tick(),
+            "a queued MCP tool call must mark the app as needing a background tick"
         );
     }
 
@@ -199,6 +349,11 @@ impl PlexiApp {
         }
     }
 
+    /// True when any non-active-context pane or parked background app has
+    /// pending background work. Drives the bounded 100ms wake loop in
+    /// `update()` — this MUST use the same predicate as the tick gate in
+    /// [`Self::drain_all_app_commands`], otherwise work could be marked
+    /// pending without a frame ever being scheduled to drain it (#2021).
     pub(crate) fn background_processes_need_wake(&self) -> bool {
         let active = self.active_window;
         let inactive_context_needs_wake =
@@ -206,11 +361,7 @@ impl PlexiApp {
                 ctx_idx != active
                     && context.panes.values().any(|pane| {
                         pane.as_app()
-                            .and_then(|app_pane| match &app_pane.runtime {
-                                AppRuntime::Process(app) => Some(app.needs_headless_wake_poll()),
-                                AppRuntime::Builtin(_) => None,
-                            })
-                            .unwrap_or(false)
+                            .is_some_and(|app_pane| app_pane.runtime.needs_background_tick())
                     })
             });
 
@@ -218,7 +369,7 @@ impl PlexiApp {
             || self
                 .background_apps
                 .values()
-                .any(|(_, app)| app.needs_headless_wake_poll())
+                .any(|(_, app)| app.needs_background_tick())
     }
 
     /// Drain `pending_commands` from **every** app pane in **every** context,
@@ -246,8 +397,11 @@ impl PlexiApp {
                     // Active-context panes are already fully updated by ui()
                     // this frame. Non-active panes need a headless tick so
                     // timer/async events reach the subprocess and control
-                    // commands flow out.
-                    if ctx_idx != active {
+                    // commands flow out — but only when they actually have
+                    // pending background work; idle apps are skipped so a
+                    // busy foreground doesn't tick every background app on
+                    // every frame (#2021).
+                    if ctx_idx != active && app_pane.runtime.needs_background_tick() {
                         app_pane.runtime.background_tick();
                     }
                     let type_id = app_pane.runtime.type_id().to_string();
@@ -269,7 +423,13 @@ impl PlexiApp {
             .background_apps
             .iter_mut()
             .map(|(type_id, (park_context_id, app))| {
-                app.background_tick();
+                // Same gate as visible non-active panes: tick only when the
+                // app has pending background work (#2021). Already-queued
+                // pending_commands are still taken unconditionally.
+                if app.needs_background_tick() {
+                    log::debug!("parked background app '{type_id}': pending work — ticking");
+                    app.background_tick();
+                }
                 let cmds = app.take_pending_commands();
                 (type_id.to_owned(), *park_context_id, cmds)
             })
@@ -312,7 +472,7 @@ impl PlexiApp {
                             options: options.clone(),
                             input_prompt: input_prompt.clone(),
                             required: *required,
-                            priority: priority.clone(),
+                            priority: *priority,
                             scope: resolved_scope,
                             image_inline: image_inline.clone(),
                             image_pipe_id: image_pipe_id.clone(),

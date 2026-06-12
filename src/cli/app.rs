@@ -132,7 +132,7 @@ pub fn app_init(
     } else {
         let home = dirs::home_dir();
         let workspace_root = {
-            let mut current = cwd.clone();
+            let mut current = cwd;
             let mut found: Option<std::path::PathBuf> = None;
             loop {
                 if let Some(ref h) = home {

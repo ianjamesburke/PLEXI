@@ -216,7 +216,7 @@ impl Behavior<PaneId> for PlexiBehavior<'_> {
             let padding = style::SPACE_MD;
             let inner = pane_rect.shrink(padding);
             let mut portal_ui = ui.new_child(egui::UiBuilder::new().max_rect(inner));
-            let colors_for_portal = self.colors.clone();
+            let colors_for_portal = self.colors;
             portal_ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 ui.label(
                     egui::RichText::new(&preview.context_name)

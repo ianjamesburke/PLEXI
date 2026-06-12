@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How often the watchdog samples the frame counter. Short enough to catch brief freezes.
@@ -201,13 +201,37 @@ pub fn new_frame_tick() -> FrameTick {
     Arc::new(AtomicU64::new(0))
 }
 
-/// Spawn a background thread that:
-/// - Writes a heartbeat line every 30s (grep `[HEARTBEAT]` for last-alive timestamp)
-/// - Detects UI-thread freezes via `frame_tick` and logs `[FREEZE]` / `[THAW]` lines
+/// Shared slot the heartbeat reads the egui context from. Filled by
+/// `PlexiApp::new` once eframe hands out the context; `None` until then.
+/// The heartbeat needs it to distinguish a genuine UI freeze (repaint
+/// requested but no frame produced) from healthy zero-frame idle.
+pub type HeartbeatCtxSlot = Arc<Mutex<Option<egui::Context>>>;
+
+/// Create an empty heartbeat context slot. Pass one clone to
+/// `spawn_heartbeat` and another into `PlexiApp::new` to fill.
+pub fn new_heartbeat_ctx_slot() -> HeartbeatCtxSlot {
+    Arc::new(Mutex::new(None))
+}
+
+/// Pure freeze decision. A stalled frame counter alone is the *normal* idle
+/// state (a fully idle Plexi produces zero frames); a freeze additionally
+/// requires egui to have a pending repaint request that the UI thread is
+/// failing to service. `repaint_pending` is `None` when the egui context is
+/// not yet available — never report a freeze in that window.
+pub(crate) fn freeze_verdict(counter_stalled: bool, repaint_pending: Option<bool>) -> bool {
+    counter_stalled && repaint_pending == Some(true)
+}
+
+/// Spawn a background thread that detects UI-thread freezes via `frame_tick`
+/// and logs `[FREEZE]` / `[THAW]` lines.
 ///
-/// Both writes go directly to the file, bypassing the logger, so they survive
+/// `egui_ctx` gates the verdict: with zero-frame idle, a stalled counter only
+/// counts as frozen while egui has a repaint request pending (see
+/// `freeze_verdict`). Healthy idle produces neither FREEZE nor THAW lines.
+///
+/// Writes go directly to the file, bypassing the logger, so they survive
 /// even if the logger thread is itself blocked by a freeze.
-pub fn spawn_heartbeat(frame_tick: FrameTick) {
+pub fn spawn_heartbeat(frame_tick: FrameTick, egui_ctx: HeartbeatCtxSlot) {
     let log_path = log_path();
     std::thread::Builder::new()
         .name("plexi-heartbeat".into())
@@ -226,13 +250,26 @@ pub fn spawn_heartbeat(frame_tick: FrameTick) {
                 let mut lines = String::new();
 
                 if now_tick == last_tick {
-                    // Frame counter stalled — UI thread may be frozen.
-                    let frozen_secs = last_tick_seen_at.elapsed().as_secs();
-                    if frozen_secs >= FREEZE_THRESHOLD_SECS && !freeze_reported {
-                        freeze_reported = true;
-                        lines.push_str(&format!(
-                            "[{now}] [WARN] [plexi::heartbeat] [FREEZE] UI thread unresponsive for {frozen_secs}s\n"
-                        ));
+                    // Frame counter stalled — frozen only if egui has a
+                    // repaint pending that the UI thread isn't servicing.
+                    // Zero frames with nothing pending is healthy idle.
+                    let repaint_pending = egui_ctx
+                        .lock()
+                        .ok()
+                        .and_then(|slot| slot.as_ref().map(|c| c.has_requested_repaint()));
+                    if freeze_verdict(true, repaint_pending) {
+                        let frozen_secs = last_tick_seen_at.elapsed().as_secs();
+                        if frozen_secs >= FREEZE_THRESHOLD_SECS && !freeze_reported {
+                            freeze_reported = true;
+                            lines.push_str(&format!(
+                                "[{now}] [WARN] [plexi::heartbeat] [FREEZE] UI thread unresponsive for {frozen_secs}s\n"
+                            ));
+                        }
+                    } else if !freeze_reported {
+                        // Healthy idle: keep the freeze clock pinned to now so
+                        // a later pending repaint measures only its own stall,
+                        // not the whole idle period before it.
+                        last_tick_seen_at = Instant::now();
                     }
                 } else {
                     // Frame counter advanced — UI thread is alive.
@@ -267,6 +304,34 @@ mod tests {
     use super::*;
     use chrono::NaiveDate;
     use std::fs;
+
+    /// Zero frames with no pending repaint is healthy idle — never a freeze.
+    #[test]
+    fn freeze_verdict_idle_without_pending_repaint_is_not_frozen() {
+        assert!(!freeze_verdict(true, Some(false)));
+    }
+
+    /// Stalled counter with a pending repaint the UI thread isn't servicing
+    /// is the genuine freeze condition.
+    #[test]
+    fn freeze_verdict_stalled_with_pending_repaint_is_frozen() {
+        assert!(freeze_verdict(true, Some(true)));
+    }
+
+    /// Before `PlexiApp::new` fills the context slot there is no signal —
+    /// never report a freeze in that window.
+    #[test]
+    fn freeze_verdict_without_ctx_is_not_frozen() {
+        assert!(!freeze_verdict(true, None));
+    }
+
+    /// An advancing frame counter is never frozen, whatever egui says.
+    #[test]
+    fn freeze_verdict_advancing_counter_is_not_frozen() {
+        assert!(!freeze_verdict(false, Some(true)));
+        assert!(!freeze_verdict(false, Some(false)));
+        assert!(!freeze_verdict(false, None));
+    }
 
     fn today_plus(days: i64) -> NaiveDate {
         chrono::Local::now().date_naive() + chrono::Duration::days(days)

@@ -184,6 +184,15 @@ pub struct PlexiApp {
     /// was opened. Resolved once on open, not per-frame, to avoid repeated
     /// filesystem traversal in the egui draw loop.
     pub(crate) palette_workspace_root: Option<std::path::PathBuf>,
+    /// TTL cache for the cwd-derived fallback workspace root passed to
+    /// `PlexiBehavior` each frame (#2023). The fallback
+    /// (`config::active_workspace_root()`) stat-walks the filesystem from the
+    /// process cwd, so it must not run per frame. The underlying state is
+    /// external filesystem layout — no enumerable mutation sites — so a 1s
+    /// TTL is the invalidation, matching the downstream
+    /// `OUTSIDE_WORKSPACE_CHECK_INTERVAL` of the only consumer (the terminal
+    /// "outside workspace" badge).
+    pub(crate) workspace_root_fallback_cache: Option<(std::time::Instant, Option<std::path::PathBuf>)>,
     pub(crate) context_visit_history: Vec<u64>,
     pub(crate) renaming_pane: Option<PaneId>,
     /// One-shot guard: true after `request_focus()` fires on the rename modal's
@@ -361,7 +370,35 @@ fn configure_egui_ctx(ctx: &egui::Context, colors: &Colors) {
     theme::setup_style(ctx, colors, true);
 }
 
-fn spawn_socket_listener(tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>) {
+/// Handle one newline-delimited JSON line from the notify socket: parse the
+/// `AppRequest`, queue it on the pane-IPC channel, and wake the UI thread.
+///
+/// The repaint request is load-bearing: a fully idle Plexi produces zero
+/// frames, and the pane-IPC channel is only drained during a frame. Without
+/// the wake, a CLI request against an idle instance sits queued until the
+/// user touches the window (#s13 perf batch regression).
+fn handle_socket_line(
+    line: &str,
+    tx: &std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
+    egui_ctx: &egui::Context,
+) {
+    match serde_json::from_str::<crate::app_protocol::AppRequest>(line) {
+        Ok(cmd) => {
+            if tx.send(cmd).is_ok() {
+                log::debug!("pane_ipc: request queued — requesting repaint to wake idle UI thread");
+                egui_ctx.request_repaint();
+            }
+        }
+        Err(e) => {
+            log::warn!("pane_ipc: parse error: {e}  line={line:?}");
+        }
+    }
+}
+
+fn spawn_socket_listener(
+    tx: std::sync::mpsc::Sender<crate::app_protocol::AppRequest>,
+    egui_ctx: egui::Context,
+) {
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
 
@@ -379,6 +416,7 @@ fn spawn_socket_listener(tx: std::sync::mpsc::Sender<crate::app_protocol::AppReq
         for stream in listener.incoming() {
             let Ok(stream) = stream else { break };
             let tx = tx.clone();
+            let egui_ctx = egui_ctx.clone();
             std::thread::spawn(move || {
                 let reader = BufReader::new(stream);
                 for line in reader.lines() {
@@ -387,14 +425,7 @@ fn spawn_socket_listener(tx: std::sync::mpsc::Sender<crate::app_protocol::AppReq
                     if line.is_empty() {
                         continue;
                     }
-                    match serde_json::from_str::<crate::app_protocol::AppRequest>(&line) {
-                        Ok(cmd) => {
-                            let _ = tx.send(cmd);
-                        }
-                        Err(e) => {
-                            log::warn!("pane_ipc: parse error: {e}  line={line:?}");
-                        }
-                    }
+                    handle_socket_line(&line, &tx, &egui_ctx);
                 }
             });
         }
@@ -405,11 +436,18 @@ impl PlexiApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         frame_tick: crate::platform::logging::FrameTick,
+        heartbeat_ctx: crate::platform::logging::HeartbeatCtxSlot,
     ) -> Self {
+        // Hand the egui context to the heartbeat watchdog so it can tell
+        // healthy zero-frame idle apart from a genuine UI freeze.
+        if let Ok(mut slot) = heartbeat_ctx.lock() {
+            *slot = Some(cc.egui_ctx.clone());
+        }
+
         #[cfg(target_os = "macos")]
         crate::platform::macos_menu::customize_app_menu();
         #[cfg(target_os = "macos")]
-        crate::platform::finder_service::register();
+        crate::platform::finder_service::register(cc.egui_ctx.clone());
 
         // Repaint-cause diagnostics (#2019): route egui_term's repaint labels
         // into the host counters; `update()` flushes a summary every 10s.
@@ -515,7 +553,7 @@ impl PlexiApp {
 
         let (pane_ipc_tx, pane_ipc_rx) =
             std::sync::mpsc::channel::<crate::app_protocol::AppRequest>();
-        spawn_socket_listener(pane_ipc_tx);
+        spawn_socket_listener(pane_ipc_tx, cc.egui_ctx.clone());
 
         // One-time migration: remove the legacy file-queue directory if it
         // still exists from a previous install. Notify commands now travel
@@ -735,7 +773,7 @@ impl PlexiApp {
                     binding_table: crate::host::keys::build_binding_table(&key_bindings),
                     pending_close: false,
                     pending_context_close: None,
-                    frame_tick: frame_tick.clone(),
+                    frame_tick,
                     frame_diag_window: None,
                     last_sent_window_title: None,
                     permission_store_dir: crate::config::config_dir(),
@@ -750,13 +788,14 @@ impl PlexiApp {
                     palette_query: String::new(),
                     palette_selected: 0,
                     palette_workspace_root: None,
+                    workspace_root_fallback_cache: None,
                     context_visit_history: Vec::new(),
                     renaming_pane: None,
                     rename_pane_focus_requested: false,
                     text_overlay: None,
                     text_overlay_browse_rx: None,
                     registry,
-                    features: features.clone(),
+                    features,
                     pending_notifications: load_pending_notifications_from(
                         &crate::config::config_dir().join("notifications.json"),
                     ),
@@ -813,7 +852,7 @@ impl PlexiApp {
                     focus_started_at: None,
                     last_system_theme: None,
                     overlay_held_cmds: Vec::new(),
-                    agent_host: crate::agent::AgentHost::production(config.ai.clone()),
+                    agent_host: crate::agent::AgentHost::production(config.ai),
                 };
                 app.apply_context_transition_effects();
                 return app;
@@ -831,7 +870,7 @@ impl PlexiApp {
                 .unwrap_or_else(|_| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")));
             // macOS GUI apps launch with CWD = /. Use home_dir instead so
             // the initial context and all derived CWDs start at ~.
-            if cwd == PathBuf::from("/") {
+            if cwd == std::path::Path::new("/") {
                 dirs::home_dir().unwrap_or(cwd)
             } else {
                 cwd
@@ -939,6 +978,7 @@ impl PlexiApp {
             palette_query: String::new(),
             palette_selected: 0,
             palette_workspace_root: None,
+            workspace_root_fallback_cache: None,
             context_visit_history: Vec::new(),
             renaming_pane: None,
             rename_pane_focus_requested: false,
@@ -1077,7 +1117,7 @@ impl PlexiApp {
                 theme: theme::terminal_theme(&theme_cfg),
                 colors,
                 default_font_size: theme::FONT_SIZE,
-                ctx: ctx.clone(),
+                ctx,
                 router: crate::workspace::router::WorkspaceRouter::new(
                     vec![crate::host::context::Context {
                         name: "Test".into(),
@@ -1142,6 +1182,7 @@ impl PlexiApp {
                 palette_query: String::new(),
                 palette_selected: 0,
                 palette_workspace_root: None,
+                workspace_root_fallback_cache: None,
                 context_visit_history: Vec::new(),
                 renaming_pane: None,
                 rename_pane_focus_requested: false,
@@ -1459,6 +1500,10 @@ impl eframe::App for PlexiApp {
                     crate::platform::frame_diag::RepaintCause::UserInput,
                 );
             }
+            // Ground truth (#2209): egui records the file:line of every
+            // request_repaint() from the previous pass — including sites the
+            // self-reported counters above never instrumented.
+            crate::platform::frame_diag::note_egui_causes(&ctx.repaint_causes());
             if elapsed >= std::time::Duration::from_secs(10) {
                 let counts = crate::platform::frame_diag::snapshot_and_reset();
                 log::info!(
@@ -1469,6 +1514,12 @@ impl eframe::App for PlexiApp {
                         elapsed.as_secs_f32(),
                         &counts
                     )
+                );
+                let egui_counts = crate::platform::frame_diag::egui_snapshot_and_reset();
+                log::info!(
+                    target: "plexi::frame_diag",
+                    "{}",
+                    crate::platform::frame_diag::egui_summary_line(&egui_counts, 8)
                 );
                 self.frame_diag_window = Some((std::time::Instant::now(), 0));
             }

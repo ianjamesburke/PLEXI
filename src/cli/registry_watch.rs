@@ -103,7 +103,7 @@ pub fn watch_one<I: CliInspector>(inspector: &I, cli: &str) -> WatchReport {
             cli: cli.to_string(),
             status: WatchStatus::Stale {
                 installed: installed_version,
-                registered: descriptor.version.clone(),
+                registered: descriptor.version,
             },
         };
     }
@@ -134,7 +134,7 @@ pub fn watch_one<I: CliInspector>(inspector: &I, cli: &str) -> WatchReport {
     WatchReport {
         cli: cli.to_string(),
         status: WatchStatus::UpToDate {
-            version: descriptor.version.clone(),
+            version: descriptor.version,
         },
     }
 }

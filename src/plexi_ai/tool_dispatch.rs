@@ -548,7 +548,7 @@ mod tests {
         reg.register(
             1,
             vec![make_tool("search")],
-            AppEventSender { tx: tx.clone() },
+            AppEventSender { tx },
             ws.clone(),
         );
 
@@ -573,7 +573,7 @@ mod tests {
         reg.register(
             20,
             vec![make_tool("safe_tool")],
-            AppEventSender { tx: tx.clone() },
+            AppEventSender { tx },
             PathBuf::from("/workspace/victim"),
         );
 

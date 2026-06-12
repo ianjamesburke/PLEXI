@@ -130,7 +130,6 @@ impl NotePickerEntry {
             .to_string();
         let title = fm
             .title
-            .clone()
             .filter(|t| !t.is_empty())
             .or_else(|| (!first_line.is_empty()).then(|| first_line.clone()))
             .unwrap_or_else(|| file_name.clone());
