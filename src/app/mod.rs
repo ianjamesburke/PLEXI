@@ -3134,10 +3134,6 @@ impl PlexiApp {
         with_mtime.sort_by(|a, b| b.0.cmp(&a.0));
         let entries: Vec<(std::path::PathBuf, String)> =
             with_mtime.into_iter().map(|(_, p, l)| (p, l)).collect();
-        if entries.is_empty() {
-            log::info!("notes_picker: no notes in {:?}", notes_dir);
-            return;
-        }
         log::info!(
             "notes_picker: {} notes found in {:?}",
             entries.len(),

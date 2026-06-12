@@ -26,7 +26,7 @@ impl PlexiApp {
         })
     }
 
-    fn find_open_text_editor_tile(
+    pub(crate) fn find_open_text_editor_tile(
         &self,
         window_idx: usize,
         path: &std::path::Path,

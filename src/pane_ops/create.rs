@@ -1176,6 +1176,13 @@ impl PlexiApp {
     /// Works from any focused pane type (terminal, app, file browser).
     pub(crate) fn open_scratchpad(&mut self) {
         let path = scratchpad_file();
+        let active = self.active_window;
+        // Focus existing scratchpad pane if already open — never open duplicates.
+        if let Some((tile_id, pane_id)) = self.find_open_text_editor_tile(active, &path) {
+            log::info!("scratchpad: already open in pane {pane_id}, focusing");
+            self.set_window_focused_pane(active, tile_id);
+            return;
+        }
         let path_str = path.display().to_string();
         log::info!("scratchpad: opening text-editor pane for {:?}", path);
         if let Err(e) = self.launch_app_by_id_with_layout("text-editor", None, &[path_str], None) {
@@ -2026,12 +2033,8 @@ mod quick_note_tests {
 
 /// Build a timestamped note path under the workspace-scoped notes dir.
 fn scratchpad_file() -> PathBuf {
-    use chrono::Utc;
-    let now = Utc::now();
-    let dir = crate::config::config_dir().join("notes").join("inbox");
-    let filename = format!("scratch-{}.md", now.format("%Y%m%d-%H%M%S%.3f"));
-    // Return path only — do not pre-write. TextEditorApp creates the file on first
-    // save, so abandoning scratchpad without typing leaves no phantom inbox note.
+    // Fixed path — not in inbox so it never appears as an item to triage.
+    let dir = crate::config::config_dir().join("notes");
     let _ = std::fs::create_dir_all(&dir);
-    dir.join(&filename)
+    dir.join("scratch.md")
 }
