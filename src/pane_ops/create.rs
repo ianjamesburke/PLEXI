@@ -1126,11 +1126,12 @@ impl PlexiApp {
     }
 
     /// Open (or focus) the host Assistant pane (Phase 1 of
-    /// `docs/prm/assistant-host-app.md`, hidden behind Cmd+Ctrl+A — no menu
-    /// entry yet). One Assistant pane per window: if one already exists it is
-    /// focused and unhidden instead of spawning a duplicate. Conversation
-    /// state is workspace-scoped on disk, so close-then-reopen resumes the
-    /// same conversation.
+    /// `docs/prm/assistant-host-app.md`, reachable via Cmd+Ctrl+A and the
+    /// Cmd+P palette). Opens as an overlay — it overtakes the focused pane
+    /// like every other app launch. One Assistant pane per window: if one
+    /// already exists it is focused and unhidden instead of spawning a
+    /// duplicate. Conversation state is workspace-scoped on disk, so
+    /// close-then-reopen resumes the same conversation.
     pub(crate) fn open_assistant_pane(&mut self) {
         let active = self.active_window;
         // Focus an existing Assistant pane instead of opening a second one.
@@ -1169,7 +1170,7 @@ impl PlexiApp {
             &crate::config::config_dir(),
         ));
         let perms = crate::app::permissions::AppPermissions::builtin();
-        self.open_builtin_app_pane(app, perms, workspace_root, None, Some("split_h"), None);
+        self.open_builtin_app_pane(app, perms, workspace_root, None, Some("overlay"), None);
     }
 
     /// Create a new scratch note in `notes/inbox/` and open it in a text-editor

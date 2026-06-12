@@ -641,6 +641,43 @@ mod tests {
             .expect("render failed");
     }
 
+    /// Seeded transcript (user bubble right, assistant plain left) with the
+    /// slash-command picker open above the bottom-pinned composer.
+    #[test]
+    fn assistant_transcript_and_picker_render() {
+        let ws = tempfile::tempdir().unwrap();
+        let mut h = PlexiUiHarness::new_sized(1280.0, 900.0);
+        h.step();
+
+        let broker: std::sync::Arc<dyn crate::plexi_ai::broker::AiBroker> =
+            std::sync::Arc::new(crate::plexi_ai::broker::LiveAiBroker::new(None));
+        let mut assistant =
+            crate::assistant::AssistantApp::new(ws.path().to_path_buf(), broker, ws.path());
+        let turn = |role, text: &str| crate::assistant::model::Turn {
+            role,
+            text: text.to_string(),
+            created_at: "2026-06-12T00:00:00Z".to_string(),
+            status: None,
+        };
+        assistant.model.turns = vec![
+            turn(
+                crate::assistant::model::TurnRole::User,
+                "Summarize the open PRs for this repo, please.",
+            ),
+            turn(
+                crate::assistant::model::TurnRole::Assistant,
+                "There are 3 open PRs. #2224 overhauls the assistant UI, \
+                 #2220 fixes IPC socket recovery, and #2218 regenerates docs.",
+            ),
+            turn(crate::assistant::model::TurnRole::User, "Thanks!"),
+        ];
+        assistant.model.composer = "/".to_string();
+        h.open_assistant_built(assistant, ws.path().to_path_buf());
+        h.run_steps(10);
+        h.save_screenshot("/tmp/plexi-render-2216-assistant-picker.png")
+            .expect("render failed");
+    }
+
     #[test]
     fn screenshot_permission_prompt_uses_host_chrome() {
         let mut h = PlexiUiHarness::new_sized(1000.0, 720.0);
