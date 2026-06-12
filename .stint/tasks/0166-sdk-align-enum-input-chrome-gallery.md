@@ -1,9 +1,11 @@
 ---
 id: "0166"
 title: "SDK fail-fast align enum, single-chrome TextInput, Canvas leaf, UI gallery app"
-status: backlog
+status: done
+estimate: "6h"
+completed_at: "2026-06-12T04:20:34Z"
 sprint: "s2"
-estimate: 6h
+blocked_by: []
 gh_issue:
   - "2198"
 area:
@@ -15,6 +17,7 @@ tags:
   - "sdk-v2"
   - "fail-fast"
 ---
+
 
 Replace the stringly-typed `ctx.text` align (silent LEFT_TOP fallback in the host) with a closed 9-value `{left,center,right}_{top,center,bottom}` vocabulary validated in the SDK and deserialized as a serde enum on the host. Rework the host TextInput to a single pill chrome (no stacked frame + glow + extra rect). Add a `Canvas(draw=fn)` SDK leaf so custom drawing needs no Component subclass. Ship a ui-gallery example app rendering every SDK component perfectly, including a 9-anchor align demo grid.
 
