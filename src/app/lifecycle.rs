@@ -2039,12 +2039,7 @@ impl PlexiApp {
                         }
                     } else {
                         let title_trimmed = title.trim();
-                        let osc_enabled = self
-                            .config
-                            .beta
-                            .as_ref()
-                            .and_then(|b| b.osc_pane_title)
-                            .unwrap_or(false);
+                        let osc_enabled = self.config.osc_pane_title_enabled();
                         for win in &mut self.windows {
                             if let Some(pane) = win.panes.get_mut(&id) {
                                 if let Some(t) = pane.as_terminal_mut() {

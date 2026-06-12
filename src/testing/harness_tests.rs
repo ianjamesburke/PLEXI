@@ -819,6 +819,76 @@ fn set_pane_title_unknown_pane_id_does_not_panic() {
     h.run_frames(1); // must not panic; logs warn "not found"
 }
 
+#[test]
+fn osc_title_updates_unlocked_terminal_pane_name_by_default() {
+    let mut h = HostHarness::new();
+    let app_pane = h.add_test_pane();
+    h.focus_pane(app_pane);
+    h.run_frames(1);
+
+    h.app.split_focused(true, None, false, false, None);
+    let terminal_pane_id = h.app.windows[0]
+        .panes
+        .iter()
+        .find_map(|(id, pane)| pane.as_terminal().map(|_| *id))
+        .expect("split should create a terminal pane");
+
+    h.app
+        .pty_event_tx
+        .send((
+            terminal_pane_id,
+            egui_term::PtyEvent::Title("/tmp/claude-work".to_string()),
+        ))
+        .unwrap();
+    h.run_frames(1);
+
+    let terminal = h.app.windows[0]
+        .panes
+        .get(&terminal_pane_id)
+        .and_then(|pane| pane.as_terminal())
+        .expect("terminal pane should still exist");
+    assert_eq!(terminal.pty_title.as_deref(), Some("/tmp/claude-work"));
+    assert_eq!(terminal.name.as_deref(), Some("/tmp/claude-work"));
+}
+
+#[test]
+fn osc_title_tracks_but_does_not_overwrite_locked_terminal_pane_name() {
+    let mut h = HostHarness::new();
+    let app_pane = h.add_test_pane();
+    h.focus_pane(app_pane);
+    h.run_frames(1);
+
+    h.app.split_focused(true, None, false, false, None);
+    let terminal_pane_id = h.app.windows[0]
+        .panes
+        .iter()
+        .find_map(|(id, pane)| pane.as_terminal().map(|_| *id))
+        .expect("split should create a terminal pane");
+
+    h.inject_ipc(AppRequest::SetPaneTitle {
+        pane_id: terminal_pane_id,
+        name: "Pinned".to_string(),
+    });
+    h.run_frames(1);
+
+    h.app
+        .pty_event_tx
+        .send((
+            terminal_pane_id,
+            egui_term::PtyEvent::Title("/tmp/claude-work".to_string()),
+        ))
+        .unwrap();
+    h.run_frames(1);
+
+    let terminal = h.app.windows[0]
+        .panes
+        .get(&terminal_pane_id)
+        .and_then(|pane| pane.as_terminal())
+        .expect("terminal pane should still exist");
+    assert_eq!(terminal.pty_title.as_deref(), Some("/tmp/claude-work"));
+    assert_eq!(terminal.name.as_deref(), Some("Pinned"));
+}
+
 /// Regression guard for issue #1018: dismissing the command palette must
 /// surrender egui focus from palette_search so AccessKit holds no stale
 /// focused node ID after the widget is gone. Without the fix, the next

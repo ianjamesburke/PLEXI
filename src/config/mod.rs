@@ -62,6 +62,7 @@ const KNOWN_TOP_LEVEL: &[&str] = &[
     "cli",
     "pane_gap",
     "pane_title_font_size",
+    "osc_pane_title",
 ];
 const KNOWN_AGENTS: &[&str] = &["low", "medium", "high"];
 const KNOWN_CLI: &[&str] = &["tips"];
@@ -404,6 +405,9 @@ pub struct PlexiConfig {
     pub pane_gap: Option<f32>,
     /// Pane title bar font size. Default: 11.0. Clamped to [6.0, 32.0].
     pub pane_title_font_size: Option<f32>,
+    /// Apply OSC 0/1/2 title sequences from terminal processes as pane names.
+    /// Defaults to true; set false to keep terminal pane names manual-only.
+    pub osc_pane_title: Option<bool>,
     pub theme_preset: Option<String>,
     pub theme: Option<ThemeConfig>,
     pub beta: Option<BetaConfig>,
@@ -1021,6 +1025,12 @@ pub fn open_file_with_fallback(path: &std::path::Path) -> bool {
 }
 
 impl PlexiConfig {
+    pub fn osc_pane_title_enabled(&self) -> bool {
+        self.osc_pane_title
+            .or_else(|| self.beta.as_ref().and_then(|b| b.osc_pane_title))
+            .unwrap_or(true)
+    }
+
     /// Load the global config only — no project-level merge. Most call sites
     /// should prefer [`load_with_workspace`] so a workspace's
     /// channel-scoped config can override.
@@ -1096,6 +1106,9 @@ impl PlexiConfig {
         }
         if other.pane_title_font_size.is_some() {
             self.pane_title_font_size = other.pane_title_font_size;
+        }
+        if other.osc_pane_title.is_some() {
+            self.osc_pane_title = other.osc_pane_title;
         }
         match (self.theme.as_mut(), other.theme) {
             (Some(existing), Some(incoming)) => existing.overlay(incoming),
@@ -1482,6 +1495,28 @@ mod tests {
         assert_eq!(diags.len(), 1);
         assert!(!diags[0].is_error());
         assert!(diags[0].to_string().contains("foobar"));
+    }
+
+    #[test]
+    fn validate_osc_pane_title_top_level_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "osc_pane_title = false\n").unwrap();
+        let diags = validate_from_path(&path);
+        assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+    }
+
+    #[test]
+    fn osc_pane_title_defaults_on_with_beta_fallback() {
+        let default_cfg = PlexiConfig::default();
+        assert!(default_cfg.osc_pane_title_enabled());
+
+        let top_level_disabled: PlexiConfig = toml::from_str("osc_pane_title = false\n").unwrap();
+        assert!(!top_level_disabled.osc_pane_title_enabled());
+
+        let beta_disabled: PlexiConfig =
+            toml::from_str("[beta]\nosc_pane_title = false\n").unwrap();
+        assert!(!beta_disabled.osc_pane_title_enabled());
     }
 
     #[test]
