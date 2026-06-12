@@ -306,7 +306,7 @@ class RenderContext:
         bg = active_fill if (clicked or active) else (hover_fill if hovered else fill)
         self.rect(x, y, w, h, fill=bg, radius=radius)
         self.text(x + w / 2, y + h / 2, label, size=font_size,
-                  color=text_color, align="center")
+                  color=text_color, align="center_center")
         return clicked
 
     def key_chip_row(self, x: float, y: float, keys: "list[str]",
@@ -968,7 +968,7 @@ class RenderContext:
             "type": "text", "x": 0.0, "y": 0.0,
             "text": text, "size": size, "color": color,
             "monospace": monospace, "bold": bold,
-            "align": "top_left", "max_width": max_width,
+            "align": "left_top", "max_width": max_width,
             "elide": elide, "selectable": selectable,
         }}
 
