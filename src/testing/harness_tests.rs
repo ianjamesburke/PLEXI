@@ -106,6 +106,64 @@ fn idle_frame_requests_no_immediate_repaint() {
     );
 }
 
+/// Issue #2208: a PGAP app that never sends FrameDone must not pin the host
+/// at full frame rate. Two guarantees:
+///
+/// 1. While a render is legitimately in flight, the poll is a *bounded
+///    delay* — never an immediate repaint. The old 16ms poll saturated to
+///    zero inside egui's `request_repaint_after` (it subtracts the predicted
+///    frame time, ~16.7ms at 60Hz), which meant 60fps polling.
+/// 2. After `RENDER_IN_FLIGHT_TIMEOUT` with no FrameDone, the host abandons
+///    the render transaction, marks the app hung (existing lifecycle path),
+///    and stops requesting repaints entirely.
+#[test]
+fn hung_render_stops_repaint_polling_after_timeout() {
+    use crate::process_app::{LifecycleState, RENDER_IN_FLIGHT_TIMEOUT};
+
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    // Frame 1 sends Render(1); the app never answers with FrameDone.
+    h.run_frames(1);
+    h.render_payload_take(pane)
+        .expect("first visible frame must request an app Render");
+    h.run_frames(3);
+
+    // Pre-timeout: the in-flight poll must survive egui's predicted-frame-
+    // time subtraction — a bounded delayed repaint, not an immediate one.
+    assert!(
+        !h.app.ctx.requested_repaint_last_pass(),
+        "render-in-flight polling must be a bounded delay, not an immediate \
+         repaint; a poll interval at or below one frame time saturates to \
+         zero and pins the host at full frame rate"
+    );
+    assert!(
+        h.process_app_mut(pane).render_in_flight_for_test(),
+        "render must still be in flight before the timeout"
+    );
+
+    // Simulate the render having been stuck for longer than the timeout.
+    h.process_app_mut(pane)
+        .backdate_in_flight_render(RENDER_IN_FLIGHT_TIMEOUT + std::time::Duration::from_secs(1));
+    h.run_frames(2);
+
+    let app = h.process_app_mut(pane);
+    assert!(
+        !app.render_in_flight_for_test(),
+        "render-in-flight state must be cleared once the timeout expires"
+    );
+    assert_eq!(
+        app.lifecycle.state(),
+        LifecycleState::Hung,
+        "a render timeout must surface through the existing hung status path"
+    );
+    assert!(
+        !h.app.ctx.requested_repaint_last_pass(),
+        "after the render timeout the host must stop requesting repaints \
+         for the hung app instead of polling forever"
+    );
+}
+
 #[test]
 fn visible_idle_process_app_does_not_emit_recurring_render_events() {
     let mut h = HostHarness::new();

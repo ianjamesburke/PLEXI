@@ -26,6 +26,7 @@ pub(crate) enum RuntimeState {
     Idle,
     Rendering {
         frame_id: u64,
+        started_at: Instant,
         followup_deadline: Option<Instant>,
     },
     Closing,
@@ -57,6 +58,10 @@ pub(crate) enum RenderPoll {
 pub(crate) struct PgapRuntime {
     state: RuntimeState,
     frame_counter: u64,
+    /// Frame id of a Render transaction abandoned by the in-flight timeout
+    /// (issue #2208). A late FrameDone for this id is tolerated — the app
+    /// recovered, slowly — instead of being treated as a protocol error.
+    abandoned_frame_id: Option<u64>,
 }
 
 impl PgapRuntime {
@@ -66,6 +71,7 @@ impl PgapRuntime {
                 pending_deadline: Some(Instant::now()),
             },
             frame_counter: 0,
+            abandoned_frame_id: None,
         }
     }
 
@@ -76,6 +82,7 @@ impl PgapRuntime {
                 next_deadline: Instant::now(),
             },
             frame_counter: 0,
+            abandoned_frame_id: None,
         }
     }
 
@@ -148,6 +155,7 @@ impl PgapRuntime {
                 let frame_id = self.frame_counter;
                 self.state = RuntimeState::Rendering {
                     frame_id,
+                    started_at: now,
                     followup_deadline: None,
                 };
                 RenderPoll::Send { frame_id }
@@ -164,10 +172,49 @@ impl PgapRuntime {
         }
     }
 
+    /// If the in-flight render has been outstanding longer than `timeout`,
+    /// abandon the transaction so the host stops repaint-polling for a
+    /// FrameDone that may never come (issue #2208). Returns the abandoned
+    /// frame id when the timeout fires, `None` otherwise.
+    ///
+    /// Any followup deadline is dropped — re-arming a render against an app
+    /// that has stopped answering would just restart the poll loop. A late
+    /// FrameDone for the abandoned frame is still committed (see
+    /// `complete_frame`), and fresh input re-arms rendering normally.
+    pub(crate) fn abandon_render_if_stalled(
+        &mut self,
+        now: Instant,
+        timeout: Duration,
+    ) -> Option<u64> {
+        let RuntimeState::Rendering {
+            frame_id,
+            started_at,
+            ..
+        } = self.state
+        else {
+            return None;
+        };
+        if now.saturating_duration_since(started_at) < timeout {
+            return None;
+        }
+        self.abandoned_frame_id = Some(frame_id);
+        self.state = RuntimeState::Idle;
+        Some(frame_id)
+    }
+
     pub(crate) fn complete_frame(&mut self, frame_id: u64) -> FrameDoneOutcome {
+        if self.abandoned_frame_id == Some(frame_id) {
+            // The app finally answered a render the timeout already gave up
+            // on. The state machine has moved on (Idle, or a newer request);
+            // commit the late frame without disturbing it.
+            self.abandoned_frame_id = None;
+            return FrameDoneOutcome::Matched;
+        }
+
         let RuntimeState::Rendering {
             frame_id: expected,
             followup_deadline,
+            ..
         } = &self.state
         else {
             let expected = self.in_flight_frame_id();
@@ -200,6 +247,17 @@ impl PgapRuntime {
             None => RuntimeState::Idle,
         };
         FrameDoneOutcome::Matched
+    }
+
+    /// Test hook: shift the in-flight render's start time into the past so a
+    /// wall-clock timeout can be exercised without sleeping.
+    #[cfg(test)]
+    pub(crate) fn backdate_in_flight_render(&mut self, by: Duration) {
+        if let RuntimeState::Rendering { started_at, .. } = &mut self.state {
+            *started_at = started_at
+                .checked_sub(by)
+                .expect("backdate underflowed the Instant epoch");
+        }
     }
 
     pub(crate) fn in_flight_frame_id(&self) -> Option<u64> {
@@ -345,6 +403,56 @@ mod tests {
             runtime.poll_render(commit),
             RenderPoll::Send { frame_id: 2 }
         );
+    }
+
+    #[test]
+    fn stalled_render_is_abandoned_after_timeout() {
+        let mut runtime = PgapRuntime::ready_for_test_with_initial_render();
+        let t0 = Instant::now();
+        assert_eq!(runtime.poll_render(t0), RenderPoll::Send { frame_id: 1 });
+
+        let timeout = Duration::from_secs(5);
+        // Before the timeout: still a live transaction.
+        assert_eq!(
+            runtime.abandon_render_if_stalled(t0 + Duration::from_secs(4), timeout),
+            None
+        );
+        assert!(runtime.is_rendering());
+
+        // Past the timeout: abandoned, in-flight cleared, polling stops.
+        assert_eq!(
+            runtime.abandon_render_if_stalled(t0 + Duration::from_secs(6), timeout),
+            Some(1)
+        );
+        assert!(!runtime.is_rendering());
+        assert_eq!(
+            runtime.poll_render(t0 + Duration::from_secs(6)),
+            RenderPoll::Idle
+        );
+        // Idempotent — no second abandon for the same stall.
+        assert_eq!(
+            runtime.abandon_render_if_stalled(t0 + Duration::from_secs(7), timeout),
+            None
+        );
+    }
+
+    #[test]
+    fn late_frame_done_after_abandonment_is_tolerated() {
+        let mut runtime = PgapRuntime::ready_for_test_with_initial_render();
+        let t0 = Instant::now();
+        assert_eq!(runtime.poll_render(t0), RenderPoll::Send { frame_id: 1 });
+        runtime.abandon_render_if_stalled(t0 + Duration::from_secs(6), Duration::from_secs(5));
+
+        // The app finally answers — commit, don't flag a protocol error.
+        assert_eq!(runtime.complete_frame(1), FrameDoneOutcome::Matched);
+
+        // The runtime is healthy again: a fresh render round-trips normally.
+        assert!(runtime.request_render_now());
+        assert_eq!(
+            runtime.poll_render(Instant::now()),
+            RenderPoll::Send { frame_id: 2 }
+        );
+        assert_eq!(runtime.complete_frame(2), FrameDoneOutcome::Matched);
     }
 
     #[test]

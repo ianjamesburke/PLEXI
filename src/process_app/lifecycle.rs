@@ -160,6 +160,16 @@ impl LifecycleTracker {
             .store(self.elapsed_ms().max(1), Ordering::Release);
     }
 
+    /// Called by the UI thread when a Render transaction exceeded the
+    /// render-in-flight timeout with no FrameDone (issue #2208). The process
+    /// may still be alive, but it has stopped answering the render protocol —
+    /// the same user-facing condition the frame-gap detector reports, so it
+    /// reuses the non-sticky `Hung` state: a late FrameDone flips the app
+    /// back to `Running` via `on_frame_done`.
+    pub fn on_render_timeout(&self) {
+        self.set_state(LifecycleState::Hung);
+    }
+
     /// Called when `process.try_wait()` returns `Some(_)` — i.e. the
     /// subprocess has exited. Sticky: Crashed.
     pub fn on_process_exited(&self) {

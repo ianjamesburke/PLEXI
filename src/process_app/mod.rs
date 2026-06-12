@@ -31,6 +31,8 @@ pub(crate) use lifecycle::{LifecycleState, LifecycleTracker};
 use render_diag::RenderDiagnostics;
 use render_session::RenderSession;
 use runtime_state::{FrameDoneOutcome, PgapRuntime, RenderPoll};
+#[cfg(test)]
+pub(crate) use scheduler::RENDER_IN_FLIGHT_TIMEOUT;
 pub(crate) use transport::StdinItem;
 
 fn channel_from_config_dir(config_dir: &Path) -> Option<String> {
@@ -1263,6 +1265,26 @@ impl ProcessApp {
         }
     }
 
+    /// Abandon a Render that has been in flight longer than
+    /// `RENDER_IN_FLIGHT_TIMEOUT` with no FrameDone (issue #2208). Clears the
+    /// in-flight state so the repaint scheduler stops polling, and surfaces
+    /// the app through the existing hung lifecycle path. Called once per
+    /// frame from both `ui()` and `background_tick()`.
+    fn check_render_timeout(&mut self) {
+        if let Some(frame_id) = self.runtime.abandon_render_if_stalled(
+            std::time::Instant::now(),
+            scheduler::RENDER_IN_FLIGHT_TIMEOUT,
+        ) {
+            log::warn!(
+                "ProcessApp[{}]: no FrameDone for render frame {frame_id} within {:?}; \
+                 marking app hung and stopping render polling",
+                self.type_id,
+                scheduler::RENDER_IN_FLIGHT_TIMEOUT,
+            );
+            self.lifecycle.on_render_timeout();
+        }
+    }
+
     fn arm_async_completion_wake(&mut self, reason: &'static str) {
         self.pending_async_completions = self.pending_async_completions.saturating_add(1);
         log::info!(
@@ -1550,6 +1572,19 @@ impl ProcessApp {
         self.outbound_events.push_back(ev);
     }
 
+    /// Test hook: shift the in-flight render's start time into the past so
+    /// the render-in-flight timeout can be exercised without sleeping.
+    #[cfg(test)]
+    pub(crate) fn backdate_in_flight_render(&mut self, by: std::time::Duration) {
+        self.runtime.backdate_in_flight_render(by);
+    }
+
+    /// Test hook: is a Render transaction currently in flight?
+    #[cfg(test)]
+    pub(crate) fn render_in_flight_for_test(&self) -> bool {
+        self.runtime.is_rendering()
+    }
+
     /// Pump event I/O for a pane that is not currently rendered.
     ///
     /// Active-context panes are fully updated by `ui()` each frame. Non-active
@@ -1567,6 +1602,9 @@ impl ProcessApp {
         self.drain_async_events();
         self.poll_mcp_calls();
         self.flush_outbound_events();
+        // A hung in-flight render must not keep the headless wake poll alive
+        // forever either (`needs_headless_wake_poll` checks `is_rendering`).
+        self.check_render_timeout();
         for cmd in self.drain_draw_commands() {
             match cmd {
                 DrawCommand::Host(h) => self.route_command(h),
@@ -1659,6 +1697,10 @@ impl App for ProcessApp {
 
         // Lifecycle: drive the time-based Hung check once per frame.
         self.lifecycle.tick_check_hung();
+
+        // Render-in-flight timeout: an app that never sends FrameDone must
+        // not keep the host repaint-polling forever (issue #2208).
+        self.check_render_timeout();
 
         if !self.initialized {
             self.initialized = true;

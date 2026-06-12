@@ -3,8 +3,24 @@
 use crate::platform::frame_diag::{self, RepaintCause};
 use std::time::{Duration, Instant};
 
-const RENDER_IN_FLIGHT_POLL: Duration = Duration::from_millis(16);
+/// Poll cadence while a Render is in flight, waiting for FrameDone.
+///
+/// Must stay comfortably above one host frame time: egui's
+/// `request_repaint_after` subtracts the predicted frame time (~16.7ms at
+/// 60Hz) from the requested delay, so a 16ms poll saturated to zero and
+/// repainted the host at full frame rate (issue #2208). 50ms survives the
+/// subtraction with margin (even at 24Hz, predicted ~41.7ms) and a 20Hz
+/// FrameDone pickup adds at most one host frame of latency to a commit.
+const RENDER_IN_FLIGHT_POLL: Duration = Duration::from_millis(50);
 const ASYNC_WAKE_POLL: Duration = Duration::from_millis(100);
+
+/// How long a Render may stay in flight with no FrameDone before the host
+/// abandons the transaction, marks the app hung, and stops repaint polling.
+///
+/// 5s matches `lifecycle::HUNG_FRAME_GAP` — there is exactly one notion of
+/// "this app has stopped answering" so the repaint scheduler and the status
+/// pill flip at the same moment.
+pub(crate) const RENDER_IN_FLIGHT_TIMEOUT: Duration = super::lifecycle::HUNG_FRAME_GAP;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppSchedulerMode {
@@ -157,12 +173,28 @@ mod tests {
     }
 
     #[test]
-    fn in_flight_render_polls_at_frame_cadence() {
+    fn in_flight_render_polls_at_bounded_cadence() {
         let mut input = idle_inputs();
         input.render_in_flight = true;
         assert_eq!(
             decide_repaint(input),
             RepaintDecision::After(RENDER_IN_FLIGHT_POLL)
+        );
+    }
+
+    /// Issue #2208: egui's `request_repaint_after` subtracts the predicted
+    /// frame time (~16.7ms at 60Hz) from the requested delay. A poll at or
+    /// below one frame time saturates to zero = immediate repaint = the host
+    /// pinned at full frame rate while any render is in flight.
+    #[test]
+    fn in_flight_poll_survives_predicted_frame_time_subtraction() {
+        let predicted_60hz_frame = Duration::from_secs_f32(1.0 / 60.0);
+        assert!(
+            !RENDER_IN_FLIGHT_POLL
+                .saturating_sub(predicted_60hz_frame)
+                .is_zero(),
+            "RENDER_IN_FLIGHT_POLL ({RENDER_IN_FLIGHT_POLL:?}) must exceed one \
+             60Hz frame time or egui turns it into an immediate repaint"
         );
     }
 
