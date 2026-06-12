@@ -101,17 +101,16 @@ Hold the full issue body in context — Phase 3 uses it directly. Do not re-fetc
 
 **Hard stops — check all before proceeding. Any failure exits immediately, no conditional paths:**
 
-1. Unpushed commits on alpha → **allowed** as long as the working tree is clean. Log a warning: "NOTE: local alpha is ahead of origin — worktree will branch from local HEAD, not origin/alpha." Skip the `git pull --rebase` step below (pulling would try to reconcile unpushed local commits). Do NOT stop.
-2. Dirty working tree → STOP. Print `git status --short`. Do not stash, do not proceed.
+1. Dirty working tree → **allowed and ignored**. Worktrees are commit-isolated — dirty files in the main tree cannot bleed into a worktree checkout. Do NOT stop, do NOT stash. The only hard stop is an in-progress merge or rebase (check `test -f .git/MERGE_HEAD || test -f .git/REBASE_HEAD`) which puts HEAD itself in an indeterminate state.
+2. In-progress merge or rebase → STOP. "Cannot create worktree: HEAD is mid-merge/rebase. Resolve first."
 3. Issue is `CLOSED` → set pane `noop`, stop. "Issue #<n> is already closed."
 4. Issue is labeled `in progress` → STOP. "ERROR: issue #<n> is already in progress." Surface existing worktree + any open PR. Do not proceed.
 
-Then run in parallel:
+Then run:
 ```bash
-# Only pull when in sync with origin (no unpushed commits). Skip when ahead — worktree already branches from local HEAD.
-git pull --rebase origin alpha  # skip if local alpha is ahead of origin
 git ls-remote origin "refs/heads/feature/<issue-number>-*"
 ```
+Skip `git pull --rebase` entirely — the worktree always branches from local HEAD (which includes any unpushed commits), so pulling is unnecessary and risks reconciling unrelated work.
 
 If ls-remote is non-empty: another agent owns this branch. Surface it and any existing PR, then stop.
 

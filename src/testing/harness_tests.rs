@@ -76,6 +76,36 @@ fn add_test_pane_appears_in_snapshot() {
     );
 }
 
+/// Regression guard for the per-frame `ViewportCommand::Title` repaint loop:
+/// `egui::Context::send_viewport_cmd` unconditionally requests an immediate
+/// repaint, so any host code that sends a viewport command every frame pins
+/// the render loop at the display refresh rate (uncapped when occluded).
+/// An idle, settled frame must not request an immediate repaint.
+#[test]
+fn idle_frame_requests_no_immediate_repaint() {
+    let mut h = HostHarness::new();
+    let pane = h.add_test_pane();
+
+    // Settle: first frames legitimately repaint (initial title send, app
+    // render kick-off). Commit the pane's first render so it goes idle —
+    // a render left in flight polls at frame rate by design.
+    h.run_frames(1);
+    h.render_payload_take(pane);
+    h.inject(
+        pane,
+        DrawCommand::Control(crate::app_protocol::ControlCommand::FrameDone { frame_id: 1 }),
+    );
+    h.run_frames(5);
+
+    h.run_frames(1);
+    assert!(
+        !h.app.ctx.requested_repaint_last_pass(),
+        "an idle settled frame must not request an immediate repaint; \
+         some per-frame code path (e.g. an unconditional send_viewport_cmd) \
+         is forcing a continuous render loop"
+    );
+}
+
 #[test]
 fn visible_idle_process_app_does_not_emit_recurring_render_events() {
     let mut h = HostHarness::new();

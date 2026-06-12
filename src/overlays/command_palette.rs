@@ -585,7 +585,7 @@ impl PlexiApp {
 
                 ui.add_space(style::SPACE_SM);
                 let hints = [
-                    HintGroup::new(&["j", "k"], "navigate"),
+                    HintGroup::alternatives(&[&["\u{2318}", "j"], &["\u{2318}", "k"]], "navigate"),
                     HintGroup::new(&["\u{21b5}"], "open"),
                     HintGroup::new(&["esc"], "dismiss"),
                 ];

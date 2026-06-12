@@ -524,7 +524,7 @@ impl PlexiApp {
                     ]
                 } else {
                     vec![
-                        HintGroup::new(&["j", "k"], "navigate"),
+                        HintGroup::alternatives(&[&["\u{2318}", "j"], &["\u{2318}", "k"]], "navigate"),
                         HintGroup::new(&["\u{21b5}"], "open"),
                         HintGroup::new(&["s"], "new pane"),
                         HintGroup::new(&["/"], "search"),
