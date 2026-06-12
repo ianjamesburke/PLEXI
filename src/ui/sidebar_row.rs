@@ -142,7 +142,9 @@ impl ContextItem {
         // Reserve background shape slot before rendering content.
         let bg_idx = ui.painter().add(egui::Shape::Noop);
 
-        let indent = 20.0 + 16.0 * self.indent as f32;
+        // 6px base + 16px per nesting level — keeps the gutter number close to
+        // the sidebar edge for top-level contexts.
+        let indent = 6.0 + 16.0 * self.indent as f32;
 
         let is_active = self.is_active;
         let is_dragging = self.is_dragging;
@@ -231,9 +233,7 @@ impl ContextItem {
                     // When subtitle is absent but pips exist, render pips alone.
                     if let Some(ref path) = subtitle {
                         ui.horizontal(|ui| {
-                            let right_reserve = if action_enabled { ACTION_ZONE_WIDTH } else { 0.0 };
-
-                            // Compute pip strip width so we can reserve it.
+                            // × is on the name row only — full width minus pip strip and margin.
                             let pip_strip_w = if let Some(ref dots) = pane_dots {
                                 if dots.count > 0 {
                                     let capped = dots.count.min(PANE_DOT_MAX);
@@ -249,11 +249,7 @@ impl ContextItem {
                                 0.0
                             };
 
-                            let path_max = (ui.available_width()
-                                - right_reserve
-                                - pip_strip_w
-                                - 8.0)
-                                .max(0.0);
+                            let path_max = (ui.available_width() - pip_strip_w - 8.0).max(0.0);
 
                             ui.scope(|ui| {
                                 ui.set_max_width(path_max);
@@ -323,7 +319,13 @@ impl ContextItem {
                     with_alpha(bg_active, row_alpha),
                 );
             } else {
-                paint_selection(ui.painter(), row_rect, colors);
+                // 4px horizontal inset gives the pill breathing room from the
+                // sidebar edges, matching the visual weight of palette rows.
+                let pill_rect = Rect::from_min_max(
+                    egui::pos2(row_rect.min.x + 4.0, row_rect.min.y),
+                    egui::pos2(row_rect.max.x - 4.0, row_rect.max.y),
+                );
+                paint_selection(ui.painter(), pill_rect, colors);
             }
         } else {
             let fill = if hovered && !is_dragging {
