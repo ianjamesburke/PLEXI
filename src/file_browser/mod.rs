@@ -1179,7 +1179,6 @@ impl FileBrowserApp {
 
     fn draw_compact_list(&mut self, ui: &mut egui::Ui, colors: &Colors) -> Option<(PathBuf, bool)> {
         let mut navigate_to: Option<(PathBuf, bool)> = None;
-        let should_scroll = self.pending_scroll;
         self.pending_scroll = false;
         for (idx, actual_idx) in self.visible_entry_indices().into_iter().enumerate() {
             let entry = self.entries[actual_idx].clone();
@@ -1193,9 +1192,6 @@ impl FileBrowserApp {
                 .dense()
                 .selected(is_selected)
                 .show(ui, colors);
-            if is_selected && should_scroll {
-                response.scroll_to_me(None);
-            }
             if response.row_clicked() {
                 let modifiers = ui.input(|input| input.modifiers);
                 if modifiers.shift {
@@ -1219,7 +1215,6 @@ impl FileBrowserApp {
         ui: &mut egui::Ui,
         colors: &Colors,
     ) -> Option<(PathBuf, bool)> {
-        let should_scroll = self.pending_scroll;
         self.pending_scroll = false;
         self.draw_details_header(ui, colors);
 
@@ -1230,9 +1225,6 @@ impl FileBrowserApp {
                 egui::vec2(ui.available_width(), DETAILS_ROW_H),
                 egui::Sense::click(),
             );
-            if self.selected == idx && should_scroll {
-                response.scroll_to_me(None);
-            }
             let selected = self.is_entry_selected(idx, &entry);
             let fill = if selected {
                 colors.bg_active
@@ -2140,7 +2132,18 @@ impl App for FileBrowserApp {
                             egui::vec2(list_width, body_height),
                             egui::Layout::top_down(egui::Align::Min),
                             |ui| {
+                                let fb_scroll_id =
+                                    ui.make_persistent_id(egui::Id::new("fb_list"));
+                                crate::ui::list::keyboard_scroll_update(
+                                    ui.ctx(),
+                                    fb_scroll_id,
+                                    self.selected,
+                                    self.pending_scroll,
+                                    style::LIST_ROW_DENSE_H,
+                                    body_height,
+                                );
                                 egui::ScrollArea::vertical()
+                                    .id_source("fb_list")
                                     .auto_shrink([false, false])
                                     .max_height(body_height)
                                     .show(ui, |ui| {
@@ -2179,16 +2182,29 @@ impl App for FileBrowserApp {
                         );
                     });
                 } else {
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .max_height(body_height)
-                        .show(ui, |ui| {
-                            navigate_to = if layout.shows_details() {
-                                self.draw_details_table(ui, colors)
-                            } else {
-                                self.draw_compact_list(ui, colors)
-                            };
-                        });
+                    {
+                        let fb_scroll_id =
+                            ui.make_persistent_id(egui::Id::new("fb_list"));
+                        crate::ui::list::keyboard_scroll_update(
+                            ui.ctx(),
+                            fb_scroll_id,
+                            self.selected,
+                            self.pending_scroll,
+                            style::LIST_ROW_DENSE_H,
+                            body_height,
+                        );
+                        egui::ScrollArea::vertical()
+                            .id_source("fb_list")
+                            .auto_shrink([false, false])
+                            .max_height(body_height)
+                            .show(ui, |ui| {
+                                navigate_to = if layout.shows_details() {
+                                    self.draw_details_table(ui, colors)
+                                } else {
+                                    self.draw_compact_list(ui, colors)
+                                };
+                            });
+                    }
                 }
 
                 self.draw_status_bar(ui, colors, show_inspector);

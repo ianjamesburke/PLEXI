@@ -445,7 +445,18 @@ impl PlexiApp {
 
                 let mut shown_inbox_header = false;
                 let mut shown_kept_header = false;
+                let notes_scroll_id =
+                    ui.make_persistent_id(egui::Id::new("notes_picker_list"));
+                crate::ui::list::keyboard_scroll_update(
+                    ui.ctx(),
+                    notes_scroll_id,
+                    selected,
+                    selected != prev_selected_cell.get(),
+                    style::LIST_ROW_H,
+                    320.0,
+                );
                 egui::ScrollArea::vertical()
+                    .id_source("notes_picker_list")
                     .max_height(320.0)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -486,9 +497,6 @@ impl PlexiApp {
                                 .danger_trailing(true)
                                 .selected(is_selected)
                                 .show(ui, &colors);
-                            if is_selected && selected != prev_selected_cell.get() {
-                                row_response.scroll_to_me(None);
-                            }
                             if row_response.row_clicked() && !row_response.trailing_clicked() {
                                 open_cell.set(Some(row));
                             }

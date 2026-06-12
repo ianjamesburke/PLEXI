@@ -281,10 +281,6 @@ impl ListRowResponse {
         self.row.hovered()
     }
 
-    pub fn scroll_to_me(&self, align: Option<egui::Align>) {
-        self.row.scroll_to_me(align);
-    }
-
     pub fn trailing_clicked(&self) -> bool {
         self.trailing.as_ref().is_some_and(Response::clicked)
     }
@@ -430,6 +426,38 @@ pub fn paint_selection(painter: &egui::Painter, row_rect: egui::Rect, colors: &C
     for shape in selection_shapes(row_rect, colors) {
         painter.add(shape);
     }
+}
+
+/// Pre-scrolls a `ScrollArea` so the selected row is fully visible in the CURRENT
+/// frame, avoiding the one-frame jitter from `Response::scroll_to_me`.
+///
+/// Call BEFORE `ScrollArea::show()`. `scroll_id` must match the id used by the
+/// scroll area (i.e. `ui.make_persistent_id(egui::Id::new("my_scroll"))`).
+pub(crate) fn keyboard_scroll_update(
+    ctx: &egui::Context,
+    scroll_id: egui::Id,
+    selected_idx: usize,
+    should_scroll: bool,
+    row_h: f32,
+    visible_h: f32,
+) {
+    if !should_scroll {
+        return;
+    }
+    let mut state =
+        egui::containers::scroll_area::State::load(ctx, scroll_id).unwrap_or_default();
+    let current = state.offset.y;
+    let row_top = selected_idx as f32 * row_h;
+    let row_bottom = row_top + row_h;
+    let new_offset = if row_top < current {
+        row_top
+    } else if row_bottom > current + visible_h {
+        row_bottom - visible_h
+    } else {
+        return; // already fully visible
+    };
+    state.offset.y = new_offset.max(0.0);
+    state.store(ctx, scroll_id);
 }
 
 /// Trailing actions sit further off the row edge than body content — they are
@@ -649,6 +677,40 @@ mod tests {
                 pip_top - chip_bottom >= style::SPACE_SM,
                 "compact metadata pips need visible padding below the chip"
             );
+        });
+        let _ = ctx.end_pass();
+    }
+
+    #[test]
+    fn keyboard_scroll_update_scrolls_down_past_fold() {
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            let id = ui.make_persistent_id(egui::Id::new("ks_test_down"));
+            // selected=6, row_h=48, visible_h=200 → row_bottom=336 > 200 → offset = 136
+            keyboard_scroll_update(&ctx, id, 6, true, 48.0, 200.0);
+            let state = egui::containers::scroll_area::State::load(&ctx, id)
+                .expect("state written");
+            assert_eq!(state.offset.y, 6.0 * 48.0 + 48.0 - 200.0);
+        });
+        let _ = ctx.end_pass();
+    }
+
+    #[test]
+    fn keyboard_scroll_update_scrolls_up_when_above_viewport() {
+        let ctx = egui::Context::default();
+        ctx.begin_pass(egui::RawInput::default());
+        egui::CentralPanel::default().show(&ctx, |ui| {
+            let id = ui.make_persistent_id(egui::Id::new("ks_test_up"));
+            // Pre-set scroll to 300
+            let mut state = egui::containers::scroll_area::State::default();
+            state.offset.y = 300.0;
+            state.store(&ctx, id);
+            // selected=2 → row_top=96 < 300 → offset should become 96
+            keyboard_scroll_update(&ctx, id, 2, true, 48.0, 200.0);
+            let state = egui::containers::scroll_area::State::load(&ctx, id)
+                .expect("state written");
+            assert_eq!(state.offset.y, 2.0 * 48.0);
         });
         let _ = ctx.end_pass();
     }
