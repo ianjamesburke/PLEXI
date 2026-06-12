@@ -204,6 +204,9 @@ pub struct AssistantApp {
     /// Trigger lines for non-self-caused deliveries that arrived while a
     /// turn was in flight — folded into the next dispatched turn.
     queued_event_lines: Vec<String>,
+    /// Cached layout state for `egui_commonmark` markdown rendering of
+    /// assistant replies. Persists across frames for performance.
+    commonmark_cache: egui_commonmark::CommonMarkCache,
 }
 
 /// An ask-gated subscribe waiting on the permission sheet.
@@ -281,6 +284,7 @@ impl AssistantApp {
             live_subs: Vec::new(),
             pending_subscribe: None,
             queued_event_lines: Vec::new(),
+            commonmark_cache: egui_commonmark::CommonMarkCache::default(),
         };
         // Persist the active id immediately so close-then-reopen resumes
         // this conversation even before the first turn.
@@ -1185,7 +1189,13 @@ impl App for AssistantApp {
             // Keep frames coming while a worker thread streams a turn.
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
         }
-        let event = AssistantRenderer::draw(ui, &mut self.model, ctx.colors, ctx.is_focused);
+        let event = AssistantRenderer::draw(
+            ui,
+            &mut self.model,
+            &mut self.commonmark_cache,
+            ctx.colors,
+            ctx.is_focused,
+        );
         match event {
             Some(ComposerEvent::Submit) => {
                 let effects = self.model.submit();

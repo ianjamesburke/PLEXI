@@ -666,8 +666,10 @@ mod tests {
             ),
             turn(
                 crate::assistant::model::TurnRole::Assistant,
-                "There are 3 open PRs. #2224 overhauls the assistant UI, \
-                 #2220 fixes IPC socket recovery, and #2218 regenerates docs.",
+                "There are **3 open PRs**:\n\n\
+                 - [#2224](https://github.com/x/x/pull/2224) overhauls the assistant UI\n\
+                 - #2220 fixes `IPC` socket recovery\n\
+                 - #2218 regenerates docs",
             ),
             turn(crate::assistant::model::TurnRole::User, "Thanks!"),
         ];
