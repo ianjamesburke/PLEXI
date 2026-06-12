@@ -1,17 +1,17 @@
 ---
 id: "0040"
-title: "Text editor: filename header"
+title: "Text editor: note title header bar"
 status: backlog
 sprint: "s9"
-estimate: 3h
+estimate: 2h
 blocked_by: []
-gh_issue: ["2086"]
+gh_issue: ["2205"]
 area: ["apps/text-editor", "ui/widgets"]
 tags: ["v1", "text-editor", "ui"]
 ---
 
-Show a slim filename header in text editor panes so the open note is visible inside the app surface.
+Restyle the note title row (added in PR #2197) as a centered pane-style header bar: full-width 20px strip flush with the top of the pane, `pane_header_bg()` fill, title (or filename-stem placeholder) painted centered in `text_dim` — matching the terminal pane name bar.
 
 ## Why
 
-Users should not need to infer the active note only from pane chrome.
+The current left-aligned, inset title reads as body text and the gap above it looks like a rendering bug. Supersedes the original filename-header scope (gh #2086, closed).
