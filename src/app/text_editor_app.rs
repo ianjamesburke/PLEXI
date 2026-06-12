@@ -6,6 +6,10 @@ use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const DEBOUNCE: Duration = Duration::from_secs(2);
+/// Mirrors the terminal pane name bar (`render_name_bar_and_dots`): same
+/// height, fill, and centered dim 11px text, so note panes match terminal chrome.
+const NOTE_HEADER_BAR_HEIGHT: f32 = 20.0;
+const NOTE_HEADER_FONT_SIZE: f32 = 11.0;
 const FONT_SIZE_DEFAULT: f32 = 14.0;
 const FONT_SIZE_MIN: f32 = 9.0;
 const FONT_SIZE_MAX: f32 = 32.0;
@@ -195,6 +199,21 @@ mod tests {
     }
 
     #[test]
+    fn split_note_absorbs_blank_lines_after_fence_into_header() {
+        // Captures write "---\n...\n---\n\n" — the blank line must live in the
+        // hidden header, not the editable body, or it renders as dead space.
+        let raw = "---\ntitle: \"\"\nsource: \"scratchpad\"\n---\n\nbody text\n";
+        let (header, body, _) = split_note(true, raw.to_string());
+        assert_eq!(
+            header.as_deref(),
+            Some("---\ntitle: \"\"\nsource: \"scratchpad\"\n---\n\n")
+        );
+        assert_eq!(body, "body text\n");
+        // Recomposition is lossless.
+        assert_eq!(format!("{}{body}", header.unwrap()), raw);
+    }
+
+    #[test]
     fn split_note_passes_through_non_notes_and_headerless_content() {
         let raw = "---\ntitle: \"x\"\n---\nbody\n";
         let (header, body, title) = split_note(false, raw.to_string());
@@ -276,8 +295,15 @@ fn split_note(is_note: bool, raw: String) -> (Option<String>, String, String) {
     }
     if let Some(rest) = raw.strip_prefix("---\n") {
         if let Some(end) = rest.find("\n---\n") {
-            let header = raw[..4 + end + 5].to_string(); // "---\n" + header + "\n---\n"
-            let body = rest[end + 5..].to_string();
+            // "---\n" + header + "\n---\n", plus any blank lines between the
+            // fence and the body — captures write "---\n\n" and that leading
+            // blank line must not render as dead space under the title bar.
+            let mut header_end = 4 + end + 5;
+            while raw[header_end..].starts_with('\n') {
+                header_end += 1;
+            }
+            let header = raw[..header_end].to_string();
+            let body = raw[header_end..].to_string();
             let title = crate::notes::parse_note(&raw).0.title.unwrap_or_default();
             return (Some(header), body, title);
         }
@@ -402,37 +428,48 @@ impl App for TextEditorApp {
             return;
         }
 
-        // Fill the entire pane rect for consistent background in both tiled and zoomed modes.
+        // Fill only the remaining rect, not `max_rect()`: when this editor
+        // overtakes another pane, `app_pane::render` has already allocated the
+        // overtake bar above us, and filling max_rect would paint over it —
+        // leaving an invisible bar-sized gap. Matches the terminal pane
+        // background so note panes and terminals read as the same surface.
         ui.painter()
-            .rect_filled(ui.max_rect(), 0.0, colors.bg_darkest);
+            .rect_filled(ui.available_rect_before_wrap(), 0.0, colors.terminal_bg);
 
-        ui.visuals_mut().extreme_bg_color = colors.bg_darkest;
+        ui.visuals_mut().extreme_bg_color = colors.terminal_bg;
         ui.visuals_mut().override_text_color = Some(colors.text_primary);
 
-        // Notes show their frontmatter title as a header row; the YAML block
-        // itself is held out of the buffer and never rendered.
+        // Notes show their frontmatter title in a header bar styled exactly
+        // like the terminal pane name bar (same height, fill, and centered dim
+        // text — whether the title is custom or the file-name fallback). The
+        // YAML block itself is held out of the buffer and never rendered.
         if self.is_note {
-            let (text, color) = if self.note_title.is_empty() {
-                let placeholder = self
-                    .path
+            let title = if self.note_title.is_empty() {
+                self.path
                     .file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "untitled".to_string());
-                (placeholder, colors.text_dim)
+                    .unwrap_or_else(|| "untitled".to_string())
             } else {
-                (self.note_title.clone(), colors.text_primary)
+                self.note_title.clone()
             };
-            ui.add_space(crate::ui::style::SPACE_SM);
-            ui.horizontal(|ui| {
-                ui.add_space(4.0);
+            let bar_rect = egui::Rect::from_min_size(
+                ui.cursor().min,
+                egui::vec2(ui.available_width(), NOTE_HEADER_BAR_HEIGHT),
+            );
+            ui.advance_cursor_after_rect(bar_rect);
+            ui.painter()
+                .rect_filled(bar_rect, 0.0, colors.pane_header_bg());
+            // A real label (not painter text) so the title stays in the
+            // accessibility tree for UI-harness queries.
+            let mut bar_ui = ui.new_child(egui::UiBuilder::new().max_rect(bar_rect));
+            bar_ui.centered_and_justified(|ui| {
                 ui.label(
-                    egui::RichText::new(text)
-                        .size(crate::ui::style::TEXT_BODY)
-                        .strong()
-                        .color(color),
+                    egui::RichText::new(title)
+                        .size(NOTE_HEADER_FONT_SIZE)
+                        .color(colors.text_dim),
                 );
             });
-            ui.add_space(crate::ui::style::SPACE_SM);
+            ui.add_space(crate::ui::style::SPACE_XS);
         }
 
         let te_id = egui::Id::new("text_editor_content").with(&self.path);
